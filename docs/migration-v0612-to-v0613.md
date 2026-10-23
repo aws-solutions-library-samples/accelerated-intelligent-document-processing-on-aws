@@ -220,10 +220,15 @@ What gets refused is an unrecognised value for any of the classification
 settings that take a fixed set of values: `strategy`, either `granularity`,
 `boundary_hints`, either `method`, `section_classification.pages`, the
 class-confidence `mode`, and `file_shape.sectionSplitting`. What gets normalised
-is a value that has a safe reading — a blank takes the setting's default, and an
-unusable page limit becomes `ALL` — which is why
+is a value that has a safe reading: an unusable page limit becomes `ALL`, and an
+unrecognised `reasoning_effort` becomes `medium`. That is why
 `maxPagesForClassification: banana` is reported and tolerated where
 `sectionSplitting: banana` is not.
+
+⚠️ A **blank** is not the same as an unset value everywhere. For most settings
+it takes the default, but a blank class-confidence `mode` turns class confidence
+**off**, where leaving it unset gives `topk`. Delete the key rather than
+emptying it if you mean the default.
 
 No shipped preset or configuration can carry one: the editor renders each of
 these as a picklist, and every value in `config_library/` is on-list. This is

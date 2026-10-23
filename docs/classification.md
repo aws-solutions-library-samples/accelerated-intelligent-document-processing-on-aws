@@ -922,10 +922,12 @@ takes the default silently, as clearing any other setting does.
 ⚠️ The same check runs on **deploy**, not only on save. A `CustomConfigPath`
 file carrying an unrecognised `sectionSplitting` fails the stack operation that
 applies it — which on an update means a rollback, so correct the value before
-deploying rather than after. The same is true of every classification setting
-that takes a fixed set of values, not just this one. No shipped preset or
-configuration can carry a bad one: the editor renders them as picklists, and
-every value in `config_library/` is on-list.
+deploying rather than after. `strategy`, either `granularity`, `boundary_hints`,
+either `method` and `section_classification.pages` behave the same way; the
+exceptions are `reasoning_effort` and `maxPagesForClassification`, which are
+normalised with a warning because a bad value there has a safe reading. No
+shipped preset or configuration can carry a bad one: the editor renders these as
+picklists, and every value in `config_library/` is on-list.
 
 `maxPagesForClassification` accepts `ALL` or a positive number of pages;
 anything else — a word, a negative number, an unquoted YAML `true` — is reported
