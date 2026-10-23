@@ -1236,6 +1236,13 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         // prompt if the template references it; substitutions for
         // unreferenced keys are no-ops.
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = formatClassAndAttributeNamesAndDescriptions(classes);
+        // {BOUNDARY_HINTS} belongs to the segmentation step alone — the block
+        // it renders tells the model to report no document type, which is the
+        // one thing these two steps exist to do — so the service substitutes
+        // empty here. It has no DOCUMENT_PLACEHOLDER_LABELS entry either, so
+        // without this the literal token would survive into the preview while
+        // the real call drops it.
+        subs.BOUNDARY_HINTS = '';
         break;
 
       case 'classification_segmentation': {
@@ -1247,6 +1254,12 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         const hints = String(objAt(cls, 'two_stage', 'segmentation', 'llm').boundary_hints ?? 'none');
         subs.CLASS_NAMES_AND_DESCRIPTIONS = '';
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = '';
+        // Stage A sends no examples either, for the same reason and at a
+        // larger saving — an example is a page shown with its class, and it
+        // carries images. Set explicitly so the generic
+        // DOCUMENT_PLACEHOLDER_LABELS marker ("will be inserted here at
+        // runtime") does not promise content this stage never sends.
+        subs.FEW_SHOT_EXAMPLES = '';
         subs.BOUNDARY_HINTS =
           hints === 'class_names' && classes.length
             ? `<document-type-hints>\n${classes.map((c) => getClassId(c)).join(', ')}\n</document-type-hints>`

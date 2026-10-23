@@ -1145,6 +1145,19 @@ same setting would give different answers for different files in one run.
 
 The Configuration page includes a **Prompt Preview** tab that lets you see the actual prompts sent to the LLM for each processing step (Classification, Extraction, Assessment, Summarization) with your configuration values filled in. This is useful for optimizing document class schemas and prompt templates — you can see exactly how your class names, descriptions, and JSON Schema attributes appear in the prompt that the LLM receives. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
+## A `%` in a prompt is literal text
+
+Prompt templates are filled in by name — `{DOCUMENT_TEXT}`, `{DOCUMENT_CLASS}`
+and the other placeholders each page lists — and every other character is passed
+through as written. So "answer only when you are over 90% confident" and "95%
+certainty" mean what they say, and need no escaping. The same holds for a
+`%`-shaped sequence that is not an IDP placeholder, such as `%(FOO)s` or `100%s`:
+those are prompt text, not substitutions. A doubled `%%` is accepted too and
+renders as a single `%`.
+
+A `{NAME}` the step does not recognise is also left as written rather than
+emptied, so a prompt can refer to literal brace-wrapped text.
+
 ## Prompt Optimization
 
 ### Bedrock Prompt Caching

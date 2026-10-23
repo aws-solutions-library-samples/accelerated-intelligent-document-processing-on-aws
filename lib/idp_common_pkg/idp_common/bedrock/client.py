@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -70,6 +71,11 @@ from .session import get_bedrock_session
 
 # Sentinel value for LambdaHook model selection
 LAMBDA_HOOK_MODEL_ID = "LambdaHook"
+
+# Every "%" a prompt author wrote, for ``BedrockClient.format_prompt`` to escape
+# before it runs the % substitution. An existing "%%" matches ahead of a bare
+# "%", so it is carried through unchanged and still renders as one "%".
+_LITERAL_PERCENT = re.compile(r"%%|%")
 
 
 def numeric_usage(usage: Any) -> Dict[str, Any]:
@@ -2865,6 +2871,13 @@ class BedrockClient:
         """
         Prepare prompt from template by replacing placeholders with values.
 
+        Only the ``{PLACEHOLDER}`` names in ``substitutions`` are replaced; every
+        other character of the template is prompt text and is passed through as
+        written. That includes a ``%``, which an operator writing "over 90%
+        confident" has no reason to escape, and a ``%``-shaped sequence that is
+        not an IDP placeholder, such as a literal ``%(FOO)s``. A ``{NAME}`` with
+        no value offered is left in place rather than emptied.
+
         Args:
             prompt_template: The prompt template with placeholders in {PLACEHOLDER} format
             substitutions: Dictionary of placeholder values
@@ -2876,7 +2889,8 @@ class BedrockClient:
         Raises:
             ValueError: If a required placeholder is missing from the template
         """
-        # Validate required placeholders if specified
+        # Validate required placeholders against the template the caller passed,
+        # before any rewriting below changes what the string looks like.
         if required_placeholders:
             missing_placeholders = [
                 p for p in required_placeholders if f"{{{p}}}" not in prompt_template
@@ -2885,6 +2899,20 @@ class BedrockClient:
                 raise ValueError(
                     f"Prompt template must contain the following placeholders: {', '.join([f'{{{p}}}' for p in missing_placeholders])}"
                 )
+
+        # Substitution below is done with the % operator, so every % in the
+        # operator-authored text is a conversion specifier to it: "90% confident"
+        # raises TypeError and "%(FOO)s" would be read as a substitution the
+        # caller never offered. Escape them to literals first. This runs BEFORE
+        # the {KEY} -> %(KEY)s rewrite so it cannot touch the conversions this
+        # function introduces itself; escaping afterwards would double-escape
+        # them and emit "%(KEY)s" verbatim instead of the value.
+        #
+        # The alternation matches an existing "%%" in preference to a bare "%",
+        # which leaves an already-escaped "%%" rendering as one "%" rather than
+        # turning it into two. That spelling is the workaround operators have
+        # had to use until now, so prompts in the wild carry it.
+        prompt_template = _LITERAL_PERCENT.sub("%%", prompt_template)
 
         # Check if template uses {PLACEHOLDER} format and convert to %(PLACEHOLDER)s for secure replacement
         if any(f"{{{key}}}" in prompt_template for key in substitutions):
