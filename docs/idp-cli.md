@@ -663,6 +663,7 @@ from one that deleted cleanly.
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
+- This stack's own CloudFront distributions, one step per pass: disabled if enabled, deleted once disabled and deployed
 - This stack's own CloudFront response headers policy, once its distribution is gone
 - CloudWatch Logs resource policies (stack-specific)
 - AppSync log groups (pre-migration stacks only)

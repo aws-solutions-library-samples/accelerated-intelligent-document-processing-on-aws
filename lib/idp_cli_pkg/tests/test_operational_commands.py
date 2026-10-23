@@ -911,6 +911,7 @@ class TestRemoveDeletedStackResourcesScope:
         assert surviving == [protected]
         log_section = result.output.split("LOG GROUPS:", 1)[1].split("\n\n", 1)[0]
         assert "Skipped (" in log_section
+        assert protected in log_section
         assert "No resources found" not in log_section
 
 

@@ -2034,6 +2034,8 @@ def test_the_stacks_own_distribution_is_disabled_for_a_later_pass(
         )
         with stub:
             deployer._cleanup_additional_resources(S1_ID)
+        # Both reads happened: the distribution step and the policy step.
+        stub.assert_no_pending_responses()
 
         mine_config = cloudfront.get_distribution(Id=mine)["Distribution"]
         namesake_config = cloudfront.get_distribution(Id=namesake)["Distribution"]
@@ -2818,7 +2820,9 @@ def test_a_failed_distribution_step_does_not_stop_the_iam_sweep(
     caplog: pytest.LogCaptureFixture,
 ):
     """Every step of the additional cleanup is isolated, and the distribution
-    step sits before the IAM sweep."""
+    step sits before the IAM sweep. This guards the wrapper deliberately: the
+    step catches its per-distribution failures itself, so what can still escape
+    it is a failure to build the client or read the resource list."""
     real_client = boto3.client
     with mock_aws():
         real_client("iam", region_name=REGION).create_policy(
