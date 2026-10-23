@@ -109,4 +109,11 @@ describe('ReviewEffortModal with nothing to review', () => {
     expect(screen.queryByText('No draft labels in the sample')).toBeNull();
     expect(continueDisabled()).toBe(false);
   });
+
+  it('states the sample as documents read of the set, not of the reviewable estimate', async () => {
+    // 4 of 500 read, 2 of them drafts: totalDocs is the scaled 250, which is not a
+    // population anything was sampled from.
+    await renderWith(250, 4, 500);
+    expect(screen.getByText(/sampled 4 of 500 documents/)).toBeTruthy();
+  });
 });

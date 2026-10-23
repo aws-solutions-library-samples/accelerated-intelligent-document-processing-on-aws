@@ -477,9 +477,11 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                         {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
                           ? ` · AUROC ${estimate.calibration.auroc.toFixed(3)}`
                           : ''}
-                        {estimate.sampledDocs !== null && estimate.sampledDocs !== undefined && estimate.sampledDocs < estimate.totalDocs
-                          ? ` · sampled ${estimate.sampledDocs} of ${estimate.totalDocs} documents`
-                          : ''}
+                        {sampleWasPartial
+                          ? ` · sampled ${estimate.inspectedDocs} of ${estimate.setDocs} documents`
+                          : estimate.sampledDocs !== null && estimate.sampledDocs !== undefined && estimate.sampledDocs < estimate.totalDocs
+                            ? ` · sampled ${estimate.sampledDocs} of ${estimate.totalDocs} documents`
+                            : ''}
                       </Box>
                       <Table
                         variant="embedded"
