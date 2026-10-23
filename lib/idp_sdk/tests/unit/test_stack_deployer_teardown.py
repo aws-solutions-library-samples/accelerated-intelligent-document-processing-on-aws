@@ -2806,6 +2806,39 @@ def test_a_failed_cloudfront_listing_does_not_stop_the_iam_sweep(
     assert "Failed to cleanup CloudFront distributions" in caplog.text
 
 
+def test_a_failed_policy_step_does_not_stop_the_iam_sweep(
+    aws_credentials: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Every step of the additional cleanup is isolated, and the policy step sits
+    before the IAM and Bedrock Data Automation sweeps, so an escape from it would
+    leak their orphans behind one generic warning."""
+    real_client = boto3.client
+    with mock_aws():
+        real_client("iam", region_name=REGION).create_policy(
+            PolicyName="S1-OCRPolicy",
+            PolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+                }
+            ),
+        )
+        deployer = StackDeployer(region=REGION)
+
+        def explode(_identifier: str) -> None:
+            raise RuntimeError("NoRegionError")
+
+        monkeypatch.setattr(deployer, "_delete_own_response_headers_policy", explode)
+        with caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
+            deployer._cleanup_additional_resources("S1")
+        names = _iam_policy_names(real_client)
+
+    assert "S1-OCRPolicy" not in names
+    assert "Failed to cleanup CloudFront policies: NoRegionError" in caplog.text
+
+
 def test_our_own_disabled_distribution_is_deleted_immediately(
     aws_credentials: str, monkeypatch: pytest.MonkeyPatch
 ):

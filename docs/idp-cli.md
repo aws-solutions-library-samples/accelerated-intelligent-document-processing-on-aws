@@ -2377,7 +2377,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 2. **IDP Stack Identification** - Identifies IDP stacks by their Description ("AWS GenAI IDP Accelerator") or naming patterns (IDP-*, PATTERN1/2/3)
 3. **Active Stack Protection** - Tracks both ACTIVE and DELETED stacks; resources from active stacks are NEVER touched
 4. **Safe Cleanup** - Only targets resources belonging to stacks in DELETE_COMPLETE state
-5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is skipped with the reason
+5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is skipped and nothing is deleted. The reason is recorded in the SDK result's `skipped` list; the CLI summary does not print skipped resources, so a run that skipped everything reports `No resources found`
 
 **Safety Features:**
 - Resources from ACTIVE stacks are protected and skipped
@@ -2404,7 +2404,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 - `--yes`, `-y`: Auto-approve all deletions (skip confirmations)
 - `--check-stack-regions`: Comma-separated regions to check for stacks (default: `us-east-1,us-west-2,eu-central-1`). Pass `ca-central-1` explicitly to sweep a Canada deployment
 
-**Permissions:** besides delete permissions for the resources it cleans, the global resource check needs `ec2:DescribeRegions` and `cloudformation:DescribeStacks` in every enabled Region. Without them, every CloudFront distribution, response headers policy, IAM policy and S3 bucket is skipped with the reason instead of being deleted.
+**Permissions:** besides delete permissions for the resources it cleans, the global resource check needs `ec2:DescribeRegions` and `cloudformation:DescribeStacks` in every enabled Region. A `DescribeStacks` grant scoped to one Region counts as missing for the others. Without them, every CloudFront distribution, response headers policy, IAM policy and S3 bucket is skipped instead of being deleted.
 
 **Examples:**
 

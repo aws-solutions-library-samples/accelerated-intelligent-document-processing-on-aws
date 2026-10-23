@@ -2003,7 +2003,8 @@ class StackDeployer:
         if not owned:
             return
 
-        cloudfront_client = boto3.client("cloudfront")
+        # CloudFront is global, but the client still needs a Region to sign with.
+        cloudfront_client = boto3.client("cloudfront", region_name=self.region)
         for policy_id in owned:
             try:
                 response = cloudfront_client.get_response_headers_policy(Id=policy_id)
@@ -2236,7 +2237,10 @@ class StackDeployer:
             # Clean up this stack's CloudFront Response Headers Policy -- and only
             # this stack's. See _delete_own_response_headers_policy for why the
             # account-wide sweep that used to live here was removed (#1533).
-            self._delete_own_response_headers_policy(stack_identifier)
+            try:
+                self._delete_own_response_headers_policy(stack_identifier)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup CloudFront policies: {e}")
 
             # Clean up IAM custom policies
             try:
