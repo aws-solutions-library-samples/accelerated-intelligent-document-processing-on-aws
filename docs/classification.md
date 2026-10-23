@@ -918,6 +918,17 @@ Both are assertions about the file, so both are checked when you save.
 **refused**, naming the setting, rather than quietly becoming `llm_determined`,
 which is the expensive value and changes where sections start. Clearing the field
 takes the default silently, as clearing any other setting does.
+
+⚠️ The same check runs on **deploy**, not only on save. A `CustomConfigPath`
+file carrying an unrecognised `sectionSplitting` fails the stack operation that
+applies it — which on an update means a rollback, so correct the value before
+deploying rather than after. `strategy`, either `granularity`, `boundary_hints`,
+either `method` and `section_classification.pages` behave the same way; the
+exceptions are `reasoning_effort` and `maxPagesForClassification`, which are
+normalised with a warning because a bad value there has a safe reading. No
+shipped preset or configuration can carry a bad one: the editor renders these as
+picklists, and every value in `config_library/` is on-list.
+
 `maxPagesForClassification` accepts `ALL` or a positive number of pages;
 anything else — a word, a negative number, an unquoted YAML `true` — is reported
 and the file is classified in full, because that is what the pipeline does with a

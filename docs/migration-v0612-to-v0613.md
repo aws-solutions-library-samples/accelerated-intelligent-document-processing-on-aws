@@ -211,6 +211,30 @@ a class cannot be decided. Extraction reads it from there too.
   Save As Default, `idp-cli config-upload`, and the stack's own presets and
   `CustomConfigPath` file on deploy.
 
+⚠️ On the deploy path the conversion also **validates**, so a hand-written
+`CustomConfigPath` file is refused there rather than corrected — and on a stack
+update a refusal is a rollback, so correct the file before deploying rather than
+after.
+
+What gets refused is an unrecognised value for any of the classification
+settings that take a fixed set of values: `strategy`, either `granularity`,
+`boundary_hints`, either `method`, `section_classification.pages`, the
+class-confidence `mode`, and `file_shape.sectionSplitting`. What gets normalised
+is a value that has a safe reading: an unusable page limit becomes `ALL`, and an
+unrecognised `reasoning_effort` becomes `medium`. That is why
+`maxPagesForClassification: banana` is reported and tolerated where
+`sectionSplitting: banana` is not.
+
+⚠️ A **blank** is not the same as an unset value everywhere. For most settings
+it takes the default, but a blank class-confidence `mode` turns class confidence
+**off**, where leaving it unset gives `topk`. Delete the key rather than
+emptying it if you mean the default.
+
+No shipped preset or configuration can carry one: the editor renders each of
+these as a picklist, and every value in `config_library/` is on-list. This is
+about a hand-edited file. The full list of values each setting accepts is in
+[Configuration placement](classification.md#configuration-placement).
+
 The trigger is the presence of an old key, not the `config_format_version`
 stamp. A file that mixes old keys with new ones — for example a v0.6.12 file
 applied on top of a v0.6.13 one — has its old keys win, because they are the more
