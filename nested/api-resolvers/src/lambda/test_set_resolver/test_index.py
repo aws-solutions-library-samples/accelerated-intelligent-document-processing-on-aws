@@ -9,11 +9,14 @@ get_file_contents_resolver/test_index.py).
 """
 
 import importlib
+from pathlib import Path
 
 import boto3
 import pytest
+import yaml
 from moto import mock_aws
 
+from idp_common import testset_scope
 from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS
 
 TEST_SET_BUCKET = "test-set-bucket"
@@ -240,6 +243,76 @@ ANNOTATOR = "ann@example.com"
 
 def _caller(groups, email):
     return {"claims": {"cognito:groups": list(groups), "email": email}}
+
+
+# --------------------------------------------------------------------------
+# claimTestSetDocument: the dispatch group set is the expectations entry's
+# --------------------------------------------------------------------------
+
+_REPO = Path(__file__).resolve().parents[5]
+_ROLES = ("Admin", "Author", "Reviewer", "Annotator", "Viewer")
+
+
+def _claim_entry():
+    spec = yaml.safe_load(
+        (_REPO / "scripts" / "api_rbac_expectations.yaml").read_text(encoding="utf-8")
+    )
+    return spec["operations"]["claimTestSetDocument"]
+
+
+def _claim_event(groups, entry):
+    return {
+        "info": {"fieldName": "claimTestSetDocument"},
+        "arguments": dict(entry["args"]),
+        "identity": _caller(groups, ANNOTATOR),
+    }
+
+
+@pytest.fixture
+def scoped_resolver(resolver, monkeypatch):
+    """The resolver with the probe's test set in every Annotator's scope."""
+    index, _ = resolver
+    entry = _claim_entry()
+    monkeypatch.setattr(
+        testset_scope,
+        "get_allowed_test_sets",
+        lambda email, users_table=None: [entry["args"]["testSetId"]],
+    )
+    return index
+
+
+@pytest.mark.unit
+def test_each_group_the_claim_entry_lists_reaches_not_found(scoped_resolver):
+    """A listed group passes every group check and reaches the missing test set.
+
+    This drives the resolver with the groups the expectations file declares, so
+    a dispatch table or a resolver check that refuses a declared group fails here
+    rather than in the live matrix.
+    """
+    index = scoped_resolver
+    entry = _claim_entry()
+    test_set_id = entry["args"]["testSetId"]
+    for groups in [[g] for g in entry["groups"]] + [["Admin", "Annotator"]]:
+        with pytest.raises(index.ResourceNotFound, match=test_set_id):
+            index.handler(_claim_event(groups, entry), None)
+
+
+_OMITTED_ROLES = [r for r in _ROLES if r not in _claim_entry()["groups"]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("role", _OMITTED_ROLES)
+def test_a_group_the_claim_entry_omits_is_refused_by_the_dispatch(
+    scoped_resolver, role
+):
+    index = scoped_resolver
+    entry = _claim_entry()
+    with pytest.raises(
+        Exception,
+        match=rf"^Unauthorized: 'claimTestSetDocument' requires "
+        rf"{' or '.join(entry['groups'])} group$",
+    ):
+        index.handler(_claim_event([role], entry), None)
 
 
 @pytest.fixture
@@ -586,3 +659,17 @@ def test_my_tasks_lists_only_sets_the_caller_may_still_open(queues, monkeypatch)
 def test_my_tasks_is_empty_for_a_caller_with_no_email(queues):
     index, _, _ = queues
     assert index.list_my_test_set_tasks({"identity": {"claims": {}}}) == []
+
+
+@pytest.mark.unit
+def test_get_annotation_queue_returns_the_set_name(queues, monkeypatch):
+    """The breadcrumb names the set from the metadata this query already reads."""
+    index, _, _ = queues
+    monkeypatch.setattr(index, "_harvest_active_label_job", lambda *a: None)
+    monkeypatch.setattr(index, "_ensure_summaries", lambda *a: ("READY", 0))
+
+    result = index.handler(
+        _event("getAnnotationQueue", {"testSetId": TEST_SET_ID}), None
+    )
+
+    assert (result["testSetId"], result["name"]) == (TEST_SET_ID, "my set")

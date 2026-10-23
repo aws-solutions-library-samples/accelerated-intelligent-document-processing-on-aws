@@ -10,7 +10,6 @@ mutation UpdateReviewQueue($input: ReviewQueueDefinitionInput!) {
     timeLimitMinutes
     eligibleAnnotators
     isDefaultQueue
-    confidenceThreshold
     enabled
   }
 }

@@ -2909,12 +2909,11 @@ Resources:
               confidence_threshold:
                 type: number
                 title: Confidence threshold
-                description: "Confidence threshold (0.0-1.0). Fields scoring below this trigger HITL review and show confidence alerts."
+                description: "Confidence threshold (0.0-1.0) used for a field with no threshold of its own. Fields scoring below their threshold raise confidence alerts; with HITL enabled they send the document to review."
                 minimum: 0.0
                 maximum: 1.0
                 default: 0.8
                 order: 1
-                hideWhen: { field: "hitl.enabled", value: false }
               notifications:
                 type: object
                 order: 2

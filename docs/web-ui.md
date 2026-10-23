@@ -32,7 +32,7 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues) and one annotation screen; Admins create review queues and assign their items in HITL › Queue Management (see [HITL](#hitl))
+- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one document editor (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -180,8 +180,8 @@ markdown automatically.
 
 ## Comparing a document against its baseline
 
-On a document that has an evaluation baseline, **View Data** shows the
-**document class** comparison straight away — predicted, expected, and a verdict
+On a document that has an evaluation baseline, **Edit Data** (or **View Data**)
+opens the document editor, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -208,7 +208,8 @@ set, see
 
 ## Re-grouping a processed document's pages
 
-**Document Sections → Edit page grouping** opens a board with every section side by
+**Document Sections → Edit Page Grouping**, or **Edit Page Grouping** in the document
+editor (**Edit** on the document page), opens a board with every section side by
 side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
 to section** menu — the keyboard and screen-reader route to the same operation.
 Shift-click selects a run of pages so they move together, which is usually what a wrong
@@ -230,12 +231,13 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes** afterwards if you
-would rather the pipeline redo them.
+so they may no longer match; use **Edit Mode → Process Changes**, or **Complete**
+in the document editor, afterwards if you would rather the pipeline redo
+them.
 
 That is the difference between the two routes, and it is the reason both exist:
 
-| | Edit page grouping | Edit Mode → Process Changes |
+| | Edit Page Grouping | Edit Mode → Process Changes |
 |---|---|---|
 | Page assignments | drag and drop | comma-separated text |
 | Page order within a section | drag, or Move earlier / later | order of the ids you type |
@@ -318,7 +320,7 @@ The Edit Sections feature uses **2-phase schema knowledge optimization**:
 
 Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic section management. Edit Mode in Pattern-1 provides **data-only editing**:
 
-- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" button for each section
+- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" link for each section, which opens the document editor
 - **Section Structure**: Read-only - section boundaries, classifications, and page assignments are managed by BDA
 - **Reprocessing**: "Save and Reprocess" triggers evaluation and summarization steps without re-invoking BDA
 - **BDA Skip Logic**: When reprocessing with existing pages/sections data, BDA invocation is automatically skipped
@@ -647,11 +649,13 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
   Queues** (one per test set), each listing Queue, Items, Pending, Assigned and
-  Annotators with an actions menu. Admins create, edit and delete
-  Production queues here, setting each one's name, priority, time limit, eligible
-  Annotators (who works the queue), **Enabled** switch and **Confidence threshold**
-  in its **Settings**. Low-confidence production documents go to the Default
-  queue when it is enabled, judged against its threshold. Deleting a queue moves its
+  Annotators with an actions menu. Admins edit and delete Production queues here,
+  setting each one's name, priority, time limit, eligible Annotators (who works the
+  queue) and **Enabled** switch in its **Settings**; there is no **Create queue**.
+  When HITL is enabled in a document's configuration and the Default queue is
+  enabled, a production document that raised confidence alerts goes to the Default
+  queue. Queues have no threshold of their own: the alerts use each field's own
+  threshold, otherwise `hitl.confidence_threshold`. Deleting a queue moves its
   items to Default; Default itself can't be deleted. On each queue's page, Admins
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
   to another queue, or **Remove from queue** (the document completes with
@@ -664,14 +668,26 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   removes it from the list and the count straight away (**Skip** gives the item back
   to its queue, unassigned and not finished), and work assigned to you by an Admin
   appears within about 30 seconds.
-- **The annotation screen** is the same for every item, whether you open it from
-  Tasks, an Inbox message or Queue Management. Production documents are at
-  `#/review-queues/items/<document>` and test-set documents at
-  `#/review-queues/test-sets/<id>/items/<document>`, and the breadcrumbs name the
-  item's queue or test set, linking to its page. The actions are **Complete** and,
-  for the assignee, **Skip**. An Admin edits an unassigned Production item directly
-  (the first saved edit, or Complete, assigns it to them) and uses **Take over** on
-  one assigned to someone else.
+- **The document editor** is the same for every edit, whether you open a queue item
+  from Tasks, an Inbox message or Queue Management, or edit a document directly. It
+  has three routes:
+  - a Production item at `#/review-queues/items/<document>`
+  - a test-set document at `#/review-queues/test-sets/<id>/items/<document>`
+  - a direct edit of any document at `#/documents/<document>/edit` (optionally
+    `?section=<id>`), opened from **Edit Data** on a section row or **Edit** on the
+    document page
+
+  The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
+  role. The actions are at the top, each shown where it applies: **History** (field
+  edits, and a Production item's review activity), **Skip** (queue items, for the
+  assignee), **Discard Changes**, **Save** (Production items and direct
+  edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
+  Complete finishes a queue item, and on a direct edit saves the edits,
+  confirms, and reprocesses the document. A direct edit also shows the evaluation
+  baseline when the document has one: the class comparison, **Show Evaluation** to
+  compare every field, and baseline editing. An Admin edits an unassigned Production
+  item directly (the first saved edit, or Complete, assigns it to them) and
+  uses **Take over** on one assigned to someone else.
 - The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
   **Review Status** as **In Review**, which for Admins and Annotators links to the queue
   item. A queued document is reviewed only from that item; the legacy Reviewer flow

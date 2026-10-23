@@ -104,7 +104,7 @@ export const MoveItemModal = ({ items, loading, onDismiss, onConfirm, queues }: 
             onChange={({ detail }) => setChoice(detail.selectedOption)}
             options={options}
             filteringType="auto"
-            empty="No other queues. Create one in Queue Management."
+            empty="There is no other queue to move to."
             placeholder="Choose a queue"
           />
         </FormField>

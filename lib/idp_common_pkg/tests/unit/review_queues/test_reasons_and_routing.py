@@ -3,11 +3,12 @@
 
 """Review reasons and the routing decision ProcessResults acts on.
 
-``build_reasons`` reads each section's extraction result and compares every field
-confidence with the Default queue's threshold, worst first; ``route_for_review``
-decides whether a run holds for review, finalizes a disposed item, or neither.
-Both are exercised with plain stand-ins for the document, the S3 reads, the
-queue definitions and the store, so each test names the decision it pins.
+``build_reasons`` turns each section's confidence alerts (and, in BDA mode, a
+blueprint confidence under ``hitl.confidence_threshold``) into reasons, worst
+first; ``route_for_review`` decides whether a run holds for review, finalizes a
+disposed item, or neither. Both are exercised with plain stand-ins for the
+document, the queue definitions and the store, so each test names the decision
+it pins.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from idp_common.review_queues.models import ReviewItemRecord
 from idp_common.review_queues.queue_defs import DEFAULT_QUEUE_ID, QueueDefinition
 from idp_common.review_queues.reasons import (
     MAX_REASONS,
-    UNAVAILABLE_LABEL,
     build_reasons,
     field_label,
 )
@@ -33,51 +33,38 @@ ARN = "arn:aws:states:us-east-1:111122223333:execution:sm:run-1"
 
 
 def _config(*, hitl=True, threshold=0.8):
-    """A profile; routing reads neither ``hitl.enabled`` nor its threshold."""
+    """A profile: ``hitl.enabled`` gates queue mode, its threshold scores BDA."""
     return SimpleNamespace(
         classes=[],
         hitl=SimpleNamespace(enabled=hitl, confidence_threshold=threshold),
     )
 
 
-def _uri(section_id):
-    return f"s3://out/in/doc.pdf/sections/{section_id}/result.json"
-
-
 class _S3:
-    """``get_json_content`` over in-memory results; a missing URI raises."""
+    """Records reads; routing must not read section results any more."""
 
-    def __init__(self, results=None):
-        self.results = dict(results or {})
+    def __init__(self):
         self.reads = []
 
     def get_json_content(self, uri):
         self.reads.append(uri)
-        if uri not in self.results:
-            raise RuntimeError("NoSuchKey")
-        return self.results[uri]
+        raise AssertionError(f"routing read {uri}")
 
 
-def _result(**fields):
-    """A result.json whose explainability_info scores each field."""
+def _alert(name, confidence, threshold=0.8):
     return {
-        "inference_result": {name: "x" for name in fields},
-        "explainability_info": [
-            {
-                name: {"value": "x", "confidence": score}
-                for name, score in fields.items()
-            }
-        ],
+        "attribute_name": name,
+        "confidence": confidence,
+        "confidence_threshold": threshold,
     }
 
 
-def _section(section_id, confidence=None, classification="W2", uri=True):
+def _section(section_id, *alerts, confidence=None, classification="W2"):
     return SimpleNamespace(
         section_id=section_id,
         classification=classification,
-        confidence_threshold_alerts=[],
+        confidence_threshold_alerts=list(alerts),
         confidence=confidence,
-        extraction_result_uri=_uri(section_id) if uri else None,
     )
 
 
@@ -110,13 +97,8 @@ class _DefsClient:
         self.items.append(item)
 
 
-def _default(enabled=True, threshold=0.8, priority=50):
-    return QueueDefinition(
-        id=DEFAULT_QUEUE_ID,
-        enabled=enabled,
-        confidence_threshold=threshold,
-        priority=priority,
-    )
+def _default(enabled=True, priority=50):
+    return QueueDefinition(id=DEFAULT_QUEUE_ID, enabled=enabled, priority=priority)
 
 
 class _Store:
@@ -167,98 +149,78 @@ def _live_item(**overrides):
     return ReviewItemRecord(**fields)
 
 
-def _route(doc, store, s3, mode="pipeline", config=None):
+def _route(doc, store, s3=None, mode="pipeline", config=None):
     return routing.route_for_review(
         doc,
         config or _config(),
         mode=mode,
         execution_arn=ARN,
         store=store,
-        s3=s3,
+        s3=s3 if s3 is not None else _S3(),
         now=NOW,
     )
 
 
 @pytest.mark.unit
 class TestBuildReasons:
-    def test_fields_below_the_threshold_are_reasons_worst_first(self):
-        s3 = _S3(
-            {
-                _uri("2"): _result(Total=0.70, Ok=0.95),
-                _uri("1"): _result(Name=0.10, Date=0.75),
-            }
+    def test_alerts_are_reasons_worst_first_with_their_own_threshold(self):
+        doc = _document(
+            _section("2", _alert("Total", 0.70)),
+            _section("1", _alert("Name", 0.10), _alert("Date", 0.85, 0.9)),
         )
-        doc = _document(_section("2"), _section("1"))
-        reasons = build_reasons(doc, _config(), threshold=0.8, mode="pipeline", s3=s3)
+        reasons = build_reasons(doc, _config(), mode="pipeline")
         assert [(r.section_id, r.field, r.score, r.threshold) for r in reasons] == [
             ("1", "Name", 0.10, 0.8),
             ("2", "Total", 0.70, 0.8),
-            ("1", "Date", 0.75, 0.8),
+            ("1", "Date", 0.85, 0.9),
         ]
         assert {r.kind for r in reasons} == {"low_confidence"}
-        # Each section's result is read once.
-        assert sorted(s3.reads) == [_uri("1"), _uri("2")]
 
-    def test_the_queue_threshold_decides_not_the_profile_or_the_schema(self):
-        result = _result(Total=0.85)
-        # A per-field threshold stored beside the score is not consulted.
-        result["explainability_info"][0]["Total"]["confidence_threshold"] = 0.99
-        s3 = _S3({_uri("1"): result})
-        doc = _document(_section("1"))
-        config = _config(threshold=0.99)
-        assert build_reasons(doc, config, threshold=0.8, mode="pipeline", s3=s3) == []
-        [reason] = build_reasons(doc, config, threshold=0.9, mode="pipeline", s3=s3)
-        assert (reason.field, reason.threshold) == ("Total", 0.9)
+    def test_the_alert_threshold_decides(self):
+        # A per-field threshold of 0.95 with a score of 0.9 gives a reason.
+        [reason] = build_reasons(
+            _document(_section("1", _alert("Total", 0.9, 0.95))),
+            _config(threshold=0.5),
+            mode="pipeline",
+        )
+        assert (reason.field, reason.score, reason.threshold) == ("Total", 0.9, 0.95)
+        # A score at or above its alert threshold gives none.
+        assert (
+            build_reasons(
+                _document(_section("1", _alert("Total", 0.96, 0.95))),
+                _config(),
+                mode="pipeline",
+            )
+            == []
+        )
 
     def test_nested_and_table_fields_are_named_by_path(self):
-        s3 = _S3(
-            {
-                _uri("1"): {
-                    "explainability_info": [
-                        {
-                            "Address": {"City": {"confidence": 0.2}},
-                            "Rows": [{"Amount": {"confidence": 0.3}}],
-                        }
-                    ]
-                }
-            }
+        doc = _document(
+            _section("1", _alert("Address.City", 0.2), _alert("Rows[0].Amount", 0.3))
         )
-        reasons = build_reasons(
-            _document(_section("1")), None, threshold=0.8, mode="pipeline", s3=s3
-        )
+        reasons = build_reasons(doc, None, mode="pipeline")
         assert [(r.field, r.label) for r in reasons] == [
             ("Address.City", "City"),
             ("Rows[0].Amount", "Amount"),
         ]
 
-    def test_an_unreadable_result_still_routes(self):
-        s3 = _S3({_uri("1"): _result(Total=0.99)})
-        doc = _document(_section("1"), _section("2"), _section("3", uri=False))
-        reasons = build_reasons(doc, None, threshold=0.8, mode="pipeline", s3=s3)
-        assert [(r.section_id, r.kind, r.field, r.label) for r in reasons] == [
-            ("2", "low_confidence", None, UNAVAILABLE_LABEL),
-            ("3", "low_confidence", None, UNAVAILABLE_LABEL),
-        ]
+    def test_a_section_with_no_alerts_gives_no_reason(self):
+        assert build_reasons(_document(_section("1")), None, mode="pipeline") == []
 
-    def test_a_result_without_confidences_gives_no_reason(self):
-        s3 = _S3({_uri("1"): {"inference_result": {"A": "x"}}})
-        assert (
-            build_reasons(
-                _document(_section("1")), None, threshold=0.8, mode="pipeline", s3=s3
-            )
-            == []
-        )
-
-    def test_bda_blueprint_confidence_is_compared_with_the_queue_threshold(self):
-        s3 = _S3({_uri("1"): _result(A=0.99), _uri("2"): _result(A=0.99)})
+    def test_bda_blueprint_confidence_is_compared_with_the_hitl_threshold(self):
         doc = _document(_section("1", confidence=0.85), _section("2", confidence=0.95))
-        reasons = build_reasons(doc, None, threshold=0.9, mode="bda", s3=s3)
+        reasons = build_reasons(doc, _config(threshold=0.9), mode="bda")
         assert [(r.kind, r.section_id, r.score, r.threshold) for r in reasons] == [
             ("blueprint_confidence", "1", 0.85, 0.9)
         ]
-        assert build_reasons(doc, None, threshold=0.8, mode="bda", s3=s3) == []
+        assert build_reasons(doc, _config(threshold=0.8), mode="bda") == []
         # Pipeline mode never reads the blueprint confidence.
-        assert build_reasons(doc, None, threshold=0.9, mode="pipeline", s3=s3) == []
+        assert build_reasons(doc, _config(threshold=0.9), mode="pipeline") == []
+
+    def test_bda_without_a_hitl_threshold_uses_the_default(self):
+        doc = _document(_section("1", confidence=0.75))
+        [reason] = build_reasons(doc, None, mode="bda")
+        assert (reason.kind, reason.threshold) == ("blueprint_confidence", 0.8)
 
 
 @pytest.mark.unit
@@ -288,21 +250,24 @@ class TestFieldLabel:
 
 @pytest.mark.unit
 class TestReviewMode:
-    def test_queues_when_a_store_exists_and_the_default_queue_is_enabled(self):
+    def test_queues_when_hitl_is_on_and_the_default_queue_is_enabled(self):
         assert routing.review_mode(_config(), _Store()) == "queues"
-        # The profile's hitl.enabled no longer decides.
-        assert routing.review_mode(_config(hitl=False), _Store()) == "queues"
-        assert routing.review_mode(None, _Store()) == "queues"
         assert routing.review_mode(_config(), None) == "legacy"
 
-    def test_a_disabled_default_queue_means_legacy(self):
+    def test_hitl_off_means_legacy_even_with_default_enabled(self):
+        assert routing.review_mode(_config(hitl=False), _Store()) == "legacy"
+        assert routing.review_mode(None, _Store()) == "legacy"
+
+    def test_hitl_on_with_default_disabled_means_legacy(self):
         store = _Store(definitions=[_default(enabled=False)])
         assert routing.review_mode(_config(), store, _document()) == "legacy"
 
-    def test_a_missing_default_is_seeded_disabled(self):
+    def test_a_missing_default_is_seeded_enabled(self):
         store = _Store(definitions=[])
-        assert routing.review_mode(_config(), store) == "legacy"
-        assert [i["QueueId"] for i in store.defs_client.items] == [DEFAULT_QUEUE_ID]
+        assert routing.review_mode(_config(), store) == "queues"
+        assert [(i["QueueId"], i["Enabled"]) for i in store.defs_client.items] == [
+            (DEFAULT_QUEUE_ID, True)
+        ]
 
     def test_unreadable_definitions_mean_legacy(self):
         store = _Store()
@@ -314,6 +279,11 @@ class TestReviewMode:
         store = _Store(item=item, definitions=[_default(enabled=False)])
         assert routing.review_mode(_config(), store, _document()) == "queues"
 
+    def test_a_finalizing_item_keeps_queue_mode_with_hitl_off(self):
+        item = _live_item(state=QueueItemState.FINALIZING.value)
+        store = _Store(item=item)
+        assert routing.review_mode(_config(hitl=False), store, _document()) == "queues"
+
     def test_a_test_studio_document_is_never_queue_routed(self):
         store = _Store()
         assert (
@@ -322,7 +292,7 @@ class TestReviewMode:
         )
         studio = _document(submission_source=routing.TEST_STUDIO_SOURCE)
         assert routing.review_mode(_config(), store, studio) == "legacy"
-        decision = _route(studio, store, _S3())
+        decision = _route(studio, store)
         assert decision.mode == "legacy" and store.holding == []
 
 
@@ -350,25 +320,34 @@ class TestLegacyTriggers:
 class TestRouteForReview:
     def test_a_disabled_default_means_no_queueing(self):
         store = _Store(definitions=[_default(enabled=False)])
-        s3 = _S3({_uri("1"): _result(A=0.1)})
-        decision = _route(_document(_section("1")), store, s3)
+        decision = _route(_document(_section("1", _alert("A", 0.1))), store)
         assert decision.mode == "legacy"
-        assert store.holding == [] and s3.reads == []
+        assert store.holding == []
 
-    def test_no_field_below_the_threshold_means_no_hold(self):
+    def test_hitl_off_means_no_queueing(self):
         store = _Store()
         decision = _route(
-            _document(_section("1")), store, _S3({_uri("1"): _result(A=0.95)})
+            _document(_section("1", _alert("A", 0.1))),
+            store,
+            config=_config(hitl=False),
         )
+        assert decision.mode == "legacy" and store.holding == []
+
+    def test_no_alert_means_no_hold(self):
+        store = _Store()
+        decision = _route(_document(_section("1")), store)
         assert decision.mode == "queues" and decision.hold is False
         assert store.holding == []
 
-    def test_a_field_below_the_threshold_holds_in_the_default_queue(self):
+    def test_an_alert_holds_in_the_default_queue_without_reading_s3(self):
         store = _Store(definitions=[_default(priority=70)])
-        s3 = _S3({_uri("1"): _result(A=0.1, B=0.7, C=0.9)})
-        decision = _route(_document(_section("1")), store, s3)
+        s3 = _S3()
+        decision = _route(
+            _document(_section("1", _alert("A", 0.1), _alert("B", 0.7))), store, s3
+        )
         assert decision.hold is True and decision.queue == DEFAULT_QUEUE_ID
         assert decision.sections == ["1"]
+        assert s3.reads == []
         [(record, supersede, history)] = store.holding
         assert supersede is None and history is None
         assert record.queue == DEFAULT_QUEUE_ID and record.priority == 70
@@ -386,37 +365,39 @@ class TestRouteForReview:
             record.expires_after == int(NOW.timestamp()) + routing.HOLDING_TTL_SECONDS
         )
 
-    def test_a_threshold_change_takes_effect(self):
-        s3 = _S3({_uri("1"): _result(A=0.85)})
-        low = _Store(definitions=[_default(threshold=0.8)])
-        assert _route(_document(_section("1")), low, s3).hold is False
-        high = _Store(definitions=[_default(threshold=0.9)])
-        decision = _route(_document(_section("1")), high, s3)
+    def test_a_per_field_threshold_routes_the_document(self):
+        decision = _route(_document(_section("1", _alert("A", 0.9, 0.95))), _Store())
         assert decision.hold is True
-        assert [(r.field, r.threshold) for r in decision.reasons] == [("A", 0.9)]
+        assert [(r.field, r.threshold) for r in decision.reasons] == [("A", 0.95)]
 
-    def test_an_unreadable_result_still_routes(self):
-        store = _Store()
-        decision = _route(_document(_section("1")), store, _S3())
-        assert decision.hold is True
-        [reason] = decision.reasons
-        assert (reason.field, reason.label) == (None, UNAVAILABLE_LABEL)
-
-    def test_bda_blueprint_confidence_against_the_queue_threshold(self):
-        s3 = _S3({_uri("1"): _result(A=0.99)})
+    def test_bda_blueprint_confidence_against_the_hitl_threshold(self):
         doc = _document(_section("1", confidence=0.85))
         assert (
-            _route(doc, _Store(definitions=[_default(threshold=0.8)]), s3, "bda").hold
+            _route(doc, _Store(), mode="bda", config=_config(threshold=0.8)).hold
             is False
         )
-        decision = _route(doc, _Store(definitions=[_default(threshold=0.9)]), s3, "bda")
+        decision = _route(doc, _Store(), mode="bda", config=_config(threshold=0.9))
         assert decision.hold is True
         assert [r.kind for r in decision.reasons] == ["blueprint_confidence"]
 
+    def test_hitl_off_finalizing_item_on_a_fresh_run_does_not_hold(self):
+        item = _live_item(
+            state=QueueItemState.FINALIZING.value,
+            finalize_execution_name="another-run",
+        )
+        store = _Store(item=item)
+        decision = _route(
+            _document(_section("1", _alert("A", 0.1))),
+            store,
+            config=_config(hitl=False),
+        )
+        assert decision.mode == "queues" and decision.hold is False
+        assert store.holding == []
+
     def test_reasons_kept_on_the_item_are_capped(self):
         store = _Store()
-        fields = {f"F{i:02d}": 0.1 for i in range(MAX_REASONS + 5)}
-        _route(_document(_section("1")), store, _S3({_uri("1"): _result(**fields)}))
+        alerts = [_alert(f"F{i:02d}", 0.1) for i in range(MAX_REASONS + 5)]
+        _route(_document(_section("1", *alerts)), store)
         record = store.holding[0][0]
         assert len(record.reasons) == MAX_REASONS
         assert record.reason_count == MAX_REASONS + 5
@@ -424,9 +405,7 @@ class TestRouteForReview:
     def test_a_new_run_supersedes_a_live_item_and_records_why(self):
         old = _live_item()
         store = _Store(item=old)
-        decision = _route(
-            _document(_section("1")), store, _S3({_uri("1"): _result(A=0.1)})
-        )
+        decision = _route(_document(_section("1", _alert("A", 0.1))), store)
         [(record, supersede, history)] = store.holding
         assert supersede is old
         assert record.version == old.version + 1
@@ -441,9 +420,7 @@ class TestRouteForReview:
     def test_a_retry_of_the_same_execution_keeps_its_cycle(self):
         old = _live_item(phase1_execution_arn=ARN)
         store = _Store(item=old)
-        decision = _route(
-            _document(_section("1")), store, _S3({_uri("1"): _result(A=0.1)})
-        )
+        decision = _route(_document(_section("1", _alert("A", 0.1))), store)
         assert decision.cycle_id == "c-old"
         [(record, supersede, _)] = store.holding
         assert supersede is None and record.version == 1
@@ -468,9 +445,7 @@ class TestRouteForReview:
         )
         store = _Store(item=item, definitions=[_default(enabled=False)])
         store.client = SimpleNamespace(update_item=lambda *a, **k: None)
-        decision = _route(
-            _document(_section("1")), store, _S3({_uri("1"): _result(A=0.1)})
-        )
+        decision = _route(_document(_section("1", _alert("A", 0.1))), store)
         assert decision.mode == "queues" and decision.outcome == outcome
         assert decision.cycle_id == "c-old" and decision.queue == "claims"
         # Only a completed review applies the reviewer's corrections.
@@ -481,32 +456,39 @@ class TestRouteForReview:
 
 @pytest.mark.unit
 class TestReasonEdges:
-    def test_a_result_that_is_not_an_object_counts_as_unavailable(self):
-        s3 = _S3({_uri("1"): ["not", "an", "object"]})
-        [reason] = build_reasons(
-            _document(_section("1")), None, threshold=0.8, mode="pipeline", s3=s3
+    def test_a_malformed_alert_is_skipped(self):
+        doc = _document(
+            _section(
+                "1",
+                "not an alert",
+                {"attribute_name": "A", "confidence_threshold": 0.8},
+                {"attribute_name": "B", "confidence": 0.1},
+                {
+                    "attribute_name": "C",
+                    "confidence": True,
+                    "confidence_threshold": 0.8,
+                },
+                {"attributeName": "D", "confidence": 0.2, "confidenceThreshold": 0.8},
+            )
         )
-        assert reason.label == UNAVAILABLE_LABEL
+        assert [r.field for r in build_reasons(doc, None, mode="pipeline")] == ["D"]
 
     @pytest.mark.parametrize("confidence", [False, "high", None])
     def test_an_unusable_blueprint_confidence_gives_no_reason(self, confidence):
-        s3 = _S3({_uri("1"): _result(A=0.99)})
         doc = _document(_section("1", confidence=confidence))
-        assert build_reasons(doc, None, threshold=0.9, mode="bda", s3=s3) == []
+        assert build_reasons(doc, _config(threshold=0.9), mode="bda") == []
 
-    def test_results_are_read_through_idp_common_s3_by_default(self, monkeypatch):
+    def test_reasons_never_read_section_results(self, monkeypatch):
         import idp_common.s3 as s3_module
 
-        reads = []
-        monkeypatch.setattr(
-            s3_module,
-            "get_json_content",
-            lambda uri: reads.append(uri) or _result(A=0.1),
-        )
+        def boom(uri):
+            raise AssertionError(f"build_reasons read {uri}")
+
+        monkeypatch.setattr(s3_module, "get_json_content", boom)
         [reason] = build_reasons(
-            _document(_section("1")), None, threshold=0.8, mode="pipeline"
+            _document(_section("1", _alert("A", 0.1))), None, mode="pipeline"
         )
-        assert (reason.field, reads) == ("A", [_uri("1")])
+        assert reason.field == "A"
 
     def test_an_array_whose_items_are_not_a_schema_humanises_the_name(self):
         schema = {"properties": {"Rows": {"type": "array", "items": "x"}}}
