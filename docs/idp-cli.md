@@ -645,7 +645,7 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 2. **Additional Resource Cleanup Phase** (happens with `--wait` on all deletions and always with `--force-delete-all`): Removes stack-specific resources not tracked by CloudFormation:
    - CloudWatch Log Groups (Lambda functions, Glue crawlers)
    - AppSync APIs and their log groups (only ever present in stacks created before AppSync was removed; current stacks create none)
-   - CloudFront distributions (two-phase cleanup - initiates disable, takes 15-20 minutes to propagate globally)
+   - This stack's own CloudFront distributions, identified from the stack's resource list rather than by their comment, which carries only the stack name and so is shared by a same-named stack in another Region. A distribution has to be disabled, and finish deploying (15-20 minutes), before it can be deleted, so each pass moves it one step: an enabled one is disabled, a disabled and deployed one is deleted, and one still deploying is left with a message to re-run. Other stacks' distributions, including disabled orphans, are `remove-deleted-stack-resources`'s job
    - This stack's own CloudFront Response Headers Policy, identified from the stack's resource list rather than by name. No other stack's policy is touched: CloudFront is global, so the account's policy list includes those of IDP stacks in every Region, and sweeping orphans out of it is `remove-deleted-stack-resources`'s job. A policy is usually already gone, because CloudFormation deletes it with the stack; one left by a failed stack deletion cannot be deleted until its distribution has finished deleting (15-20 minutes after it is disabled), and the CLI logs that and says to re-run rather than reporting a failure
    - IAM custom policies and permissions boundaries
    - CloudWatch Logs resource policies
@@ -663,6 +663,7 @@ from one that deleted cleanly.
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
+- This stack's own CloudFront distributions, one step per pass: disabled if enabled, deleted once disabled and deployed
 - This stack's own CloudFront response headers policy, once its distribution is gone
 - CloudWatch Logs resource policies (stack-specific)
 - AppSync log groups (pre-migration stacks only)
@@ -2377,7 +2378,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 2. **IDP Stack Identification** - Identifies IDP stacks by their Description ("AWS GenAI IDP Accelerator") or naming patterns (IDP-*, PATTERN1/2/3)
 3. **Active Stack Protection** - Tracks both ACTIVE and DELETED stacks; resources from active stacks are NEVER touched
 4. **Safe Cleanup** - Only targets resources belonging to stacks in DELETE_COMPLETE state
-5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is left in place and reported under **Errors** with the reason, and the command exits 1. A resource left because its stack still exists in another Region is a deliberate skip: it is recorded in the SDK result's `skipped` list, which the CLI summary does not print
+5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is left in place and reported under **Errors** with the reason, and the command exits 1. A resource left because its stack still exists in another Region is a deliberate skip: it is recorded in the SDK result's `skipped` list and listed under **Skipped** in the CLI summary
 
 **Safety Features:**
 - Resources from ACTIVE stacks are protected and skipped

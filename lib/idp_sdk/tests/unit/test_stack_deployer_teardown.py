@@ -1988,34 +1988,151 @@ def test_stack_named_resource_policies_are_deleted_whole(aws_credentials: str):
     assert names == {"OtherStack-DeliveryPolicy"}
 
 
-def test_the_stacks_cloudfront_distribution_is_disabled_for_a_later_sweep(
+DISTRIBUTION_TYPE = "AWS::CloudFront::Distribution"
+S1_ID = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+
+
+def _create_distribution(
+    cloudfront: Any, comment: str, enabled: bool = True, reference: str = ""
+) -> str:
+    config = _distribution_config(comment)
+    config["Enabled"] = enabled
+    # CloudFront keys creation on CallerReference, so two distributions with the
+    # same comment need distinct references.
+    config["CallerReference"] = reference or f"{comment}-{enabled}"
+    return cloudfront.create_distribution(DistributionConfig=config)["Distribution"][
+        "Id"
+    ]
+
+
+def _distribution_ids(cloudfront: Any) -> set[str]:
+    return {
+        d["Id"]
+        for d in cloudfront.list_distributions()
+        .get("DistributionList", {})
+        .get("Items", [])
+    }
+
+
+def test_the_stacks_own_distribution_is_disabled_for_a_later_pass(
     aws_credentials: str,
 ):
-    """A CloudFront distribution cannot be deleted until it is disabled and the
-    disable has propagated, which takes far longer than a teardown. So this
-    teardown disables it and a *later* teardown deletes it — which is why the
-    comment-based identification has to be exact in both directions."""
+    """A distribution cannot be deleted until it is disabled and the disable has
+    propagated, which takes far longer than a teardown, so this pass disables it.
+    The same-named distribution beside it stands for a stack called ``S1`` in
+    another Region: it carries the identical comment, and must stay enabled
+    because this stack's resource list does not name it."""
     with mock_aws():
         cloudfront = boto3.client("cloudfront")
-        created = cloudfront.create_distribution(
-            DistributionConfig=_distribution_config(
-                "Web app cloudfront distribution S1"
-            )
+        mine = _create_distribution(cloudfront, "Web app cloudfront distribution S1")
+        namesake = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", reference="namesake"
         )
-        dist_id = created["Distribution"]["Id"]
-        other = cloudfront.create_distribution(
-            DistributionConfig=_distribution_config(
-                "Web app cloudfront distribution OtherStack"
-            )
+        deployer = StackDeployer(region=REGION)
+        stub = _stub_stack_resources(
+            deployer, S1_ID, [(DISTRIBUTION_TYPE, mine)], calls=2
         )
-        other_id = other["Distribution"]["Id"]
+        with stub:
+            deployer._cleanup_additional_resources(S1_ID)
+        # Both reads happened: the distribution step and the policy step.
+        stub.assert_no_pending_responses()
 
+        mine_config = cloudfront.get_distribution(Id=mine)["Distribution"]
+        namesake_config = cloudfront.get_distribution(Id=namesake)["Distribution"]
+    assert mine_config["DistributionConfig"]["Enabled"] is False
+    assert namesake_config["DistributionConfig"]["Enabled"] is True
+
+
+def test_the_stacks_own_disabled_distribution_is_deleted(aws_credentials: str):
+    """The second pass: this stack's distribution, already disabled and deployed,
+    is deleted outright."""
+    with mock_aws():
+        cloudfront = boto3.client("cloudfront")
+        mine = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", enabled=False
+        )
+        deployer = StackDeployer(region=REGION)
+        with _stub_stack_resources(
+            deployer, S1_ID, [(DISTRIBUTION_TYPE, mine)], calls=2
+        ):
+            deployer._cleanup_additional_resources(S1_ID)
+        remaining = _distribution_ids(cloudfront)
+    assert mine not in remaining
+
+
+def test_another_stacks_disabled_distribution_is_never_deleted(aws_credentials: str):
+    """The defect this ownership rule closes. Teardown used to delete *any*
+    disabled, deployed ``Web app cloudfront distribution ...`` in the account,
+    whichever stack owned it -- including a live stack's in another Region that
+    had been disabled deliberately. Orphans of other stacks are
+    ``remove-deleted-stack-resources``'s job, which checks every Region first."""
+    with mock_aws():
+        cloudfront = boto3.client("cloudfront")
+        theirs = _create_distribution(
+            cloudfront, "Web app cloudfront distribution OldStack", enabled=False
+        )
+        deployer = StackDeployer(region=REGION)
+        with _stub_stack_resources(deployer, S1_ID, [], calls=2):
+            deployer._cleanup_additional_resources(S1_ID)
+        remaining = _distribution_ids(cloudfront)
+    assert theirs in remaining
+
+
+def test_an_unreadable_resource_list_touches_no_distribution(aws_credentials: str):
+    """Ownership unknown must mean touch nothing, never a fall back to the
+    comment. Under moto there is no stack ``S1``, so its resource list cannot be
+    read; its comment-matching distribution, enabled and disabled, survives."""
+    with mock_aws():
+        cloudfront = boto3.client("cloudfront")
+        enabled = _create_distribution(cloudfront, "Web app cloudfront distribution S1")
+        disabled = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", enabled=False
+        )
         StackDeployer(region=REGION)._cleanup_additional_resources("S1")
+        remaining = _distribution_ids(cloudfront)
+        enabled_now = cloudfront.get_distribution(Id=enabled)["Distribution"][
+            "DistributionConfig"
+        ]["Enabled"]
+    assert {enabled, disabled} <= remaining
+    assert enabled_now is True
 
-        mine = cloudfront.get_distribution(Id=dist_id)["Distribution"]
-        theirs = cloudfront.get_distribution(Id=other_id)["Distribution"]
-    assert mine["DistributionConfig"]["Enabled"] is False
-    assert theirs["DistributionConfig"]["Enabled"] is True
+
+def test_a_disabled_distribution_still_deploying_is_left_with_a_remedy(
+    aws_credentials: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """CloudFront refuses to delete a distribution whose disable has not finished
+    propagating, so the pass says to re-run instead of attempting it."""
+    real_client = boto3.client
+    with mock_aws():
+        cloudfront = real_client("cloudfront")
+        mine = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", enabled=False
+        )
+
+        def in_progress(**k: Any) -> Any:
+            response = cloudfront.get_distribution(**k)
+            response["Distribution"]["Status"] = "InProgress"
+            return response
+
+        def factory(service: str, *a: Any, **k: Any) -> Any:
+            client = real_client(service, *a, **k)
+            if service == "cloudfront":
+                return PartialFake(client, {"get_distribution": in_progress})
+            return client
+
+        deployer = StackDeployer(region=REGION)
+        monkeypatch.setattr(boto3, "client", factory)
+        with caplog.at_level("INFO", logger="idp_sdk._core.stack"):
+            with _stub_stack_resources(
+                deployer, S1_ID, [(DISTRIBUTION_TYPE, mine)], calls=2
+            ):
+                deployer._cleanup_additional_resources(S1_ID)
+        remaining = _distribution_ids(cloudfront)
+    assert mine in remaining
+    assert "still deploying" in caplog.text
+    assert "Re-run this delete" in caplog.text
 
 
 def _distribution_config(comment: str) -> dict:
@@ -2038,49 +2155,6 @@ def _distribution_config(comment: str) -> dict:
             "ViewerProtocolPolicy": "redirect-to-https",
         },
     }
-
-
-def test_an_already_disabled_distribution_is_deleted(aws_credentials: str):
-    """The second half of the two-pass scheme. Any stack's disabled, deployed
-    "Web app cloudfront distribution ..." is fair game, because an enabled one is
-    never touched."""
-    with mock_aws():
-        cloudfront = boto3.client("cloudfront")
-        config = _distribution_config("Web app cloudfront distribution OldStack")
-        config["Enabled"] = False
-        created = cloudfront.create_distribution(DistributionConfig=config)
-        dist_id = created["Distribution"]["Id"]
-
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-
-        remaining = [
-            d["Id"]
-            for d in cloudfront.list_distributions()
-            .get("DistributionList", {})
-            .get("Items", [])
-        ]
-    assert dist_id not in remaining
-
-
-def test_an_unrelated_distribution_is_never_examined(aws_credentials: str):
-    """The comment prefix is the only thing separating this solution's
-    distributions from the rest of the account's."""
-    with mock_aws():
-        cloudfront = boto3.client("cloudfront")
-        config = _distribution_config("someone else's production CDN")
-        config["Enabled"] = False
-        created = cloudfront.create_distribution(DistributionConfig=config)
-        dist_id = created["Distribution"]["Id"]
-
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-
-        remaining = [
-            d["Id"]
-            for d in cloudfront.list_distributions()
-            .get("DistributionList", {})
-            .get("Items", [])
-        ]
-    assert dist_id in remaining
 
 
 # CloudFront is global: `list_response_headers_policies` returns the policies of
@@ -2187,34 +2261,40 @@ def _headers_policy(name: str, policy_id: str) -> dict:
 
 
 def _stub_stack_resources(
-    deployer: StackDeployer, stack_identifier: str, resources: list[tuple[str, str]]
+    deployer: StackDeployer,
+    stack_identifier: str,
+    resources: list[tuple[str, str]],
+    calls: int = 1,
 ) -> Stubber:
     """Answer ``list_stack_resources`` with ``(type, physical id)`` pairs.
 
     Stubbed rather than created through moto, because moto has no
     ``AWS::CloudFront::ResponseHeadersPolicy`` provider to give a policy a physical
     id. The Stubber validates the response against the CloudFormation service
-    model, so the shape is the service's and not this file's.
+    model, so the shape is the service's and not this file's. ``calls`` queues the
+    same answer that many times: the whole additional cleanup reads the list once
+    for its distributions and once for its headers policy.
     """
     stub = Stubber(deployer.cfn)
-    stub.add_response(
-        "list_stack_resources",
-        {
-            "StackResourceSummaries": [
-                {
-                    "LogicalResourceId": f"R{index}",
-                    "PhysicalResourceId": physical_id,
-                    "ResourceType": resource_type,
-                    "LastUpdatedTimestamp": dt.datetime(
-                        2026, 1, 1, tzinfo=dt.timezone.utc
-                    ),
-                    "ResourceStatus": "DELETE_FAILED",
-                }
-                for index, (resource_type, physical_id) in enumerate(resources)
-            ]
-        },
-        {"StackName": stack_identifier},
-    )
+    for _ in range(calls):
+        stub.add_response(
+            "list_stack_resources",
+            {
+                "StackResourceSummaries": [
+                    {
+                        "LogicalResourceId": f"R{index}",
+                        "PhysicalResourceId": physical_id,
+                        "ResourceType": resource_type,
+                        "LastUpdatedTimestamp": dt.datetime(
+                            2026, 1, 1, tzinfo=dt.timezone.utc
+                        ),
+                        "ResourceStatus": "DELETE_FAILED",
+                    }
+                    for index, (resource_type, physical_id) in enumerate(resources)
+                ]
+            },
+            {"StackName": stack_identifier},
+        )
     return stub
 
 
@@ -2734,11 +2814,15 @@ def test_an_appsync_api_whose_log_group_is_already_gone_is_not_an_error(
     assert "Failed to clean up AppSync log groups" not in caplog.text
 
 
-def test_a_failed_cloudfront_listing_does_not_stop_the_iam_sweep(
+def test_a_failed_distribution_step_does_not_stop_the_iam_sweep(
     aws_credentials: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
+    """Every step of the additional cleanup is isolated, and the distribution
+    step sits before the IAM sweep. This guards the wrapper deliberately: the
+    step catches its per-distribution failures itself, so what can still escape
+    it is a failure to build the client or read the resource list."""
     real_client = boto3.client
     with mock_aws():
         real_client("iam", region_name=REGION).create_policy(
@@ -2750,17 +2834,18 @@ def test_a_failed_cloudfront_listing_does_not_stop_the_iam_sweep(
                 }
             ),
         )
-        monkeypatch.setattr(
-            boto3,
-            "client",
-            _break("cloudfront", "list_distributions", RuntimeError("AccessDenied")),
-        )
+        deployer = StackDeployer(region=REGION)
+
+        def explode(_identifier: str) -> None:
+            raise RuntimeError("AccessDenied")
+
+        monkeypatch.setattr(deployer, "_disable_or_delete_own_distributions", explode)
         with caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
-            StackDeployer(region=REGION)._cleanup_additional_resources("S1")
+            deployer._cleanup_additional_resources("S1")
         names = _iam_policy_names(real_client)
 
     assert "S1-OCRPolicy" not in names
-    assert "Failed to cleanup CloudFront distributions" in caplog.text
+    assert "Failed to cleanup CloudFront distributions: AccessDenied" in caplog.text
 
 
 def test_a_failed_policy_step_does_not_stop_the_iam_sweep(
@@ -2794,61 +2879,6 @@ def test_a_failed_policy_step_does_not_stop_the_iam_sweep(
 
     assert "S1-OCRPolicy" not in names
     assert "Failed to cleanup CloudFront policies: NoRegionError" in caplog.text
-
-
-def test_our_own_disabled_distribution_is_deleted_immediately(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
-):
-    """The second pass deletes this stack's distribution outright when it is
-    already disabled, rather than disabling it again and leaving it for a third
-    teardown that may never happen.
-
-    Reaching this branch needs the listing to report a status other than
-    ``Deployed`` — otherwise the account-wide first pass has already taken it —
-    so only ``list_distributions`` is faked; the delete is real.
-    """
-    real_client = boto3.client
-    config = _distribution_config("Web app cloudfront distribution S1")
-    config["Enabled"] = False
-
-    with mock_aws():
-        cloudfront = real_client("cloudfront")
-        dist_id = cloudfront.create_distribution(DistributionConfig=config)[
-            "Distribution"
-        ]["Id"]
-
-        def factory(service: str, *a: Any, **k: Any) -> Any:
-            client = real_client(service, *a, **k)
-            if service == "cloudfront":
-                return PartialFake(
-                    client,
-                    {
-                        "list_distributions": lambda **_k: {
-                            "DistributionList": {
-                                "Items": [
-                                    {
-                                        "Id": dist_id,
-                                        "Comment": "Web app cloudfront distribution S1",
-                                        "Status": "InProgress",
-                                        "Enabled": False,
-                                    }
-                                ]
-                            }
-                        }
-                    },
-                )
-            return client
-
-        monkeypatch.setattr(boto3, "client", factory)
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-
-        remaining = [
-            d["Id"]
-            for d in cloudfront.list_distributions()
-            .get("DistributionList", {})
-            .get("Items", [])
-        ]
-    assert dist_id not in remaining
 
 
 def test_a_failed_headers_policy_delete_is_warned_not_raised(

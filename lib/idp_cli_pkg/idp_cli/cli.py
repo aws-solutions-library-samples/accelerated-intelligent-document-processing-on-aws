@@ -4956,8 +4956,17 @@ def remove_residual_resources_from_deleted_stacks(
                 for error in result["errors"]:
                     console.print(f"    - {error}")
 
+            # Without this a resource left alone (its stack still exists, here or
+            # in another Region, or the user declined) read as "No resources
+            # found", indistinguishable from an account with nothing there.
+            if result.get("skipped"):
+                console.print(f"  [dim]Skipped ({len(result['skipped'])}):[/dim]")
+                for item in result["skipped"]:
+                    console.print(f"    - {item}")
+
             if not any(
-                result.get(key) for key in ["deleted", "disabled", "updated", "errors"]
+                result.get(key)
+                for key in ["deleted", "disabled", "updated", "errors", "skipped"]
             ):
                 console.print("  No resources found")
 
