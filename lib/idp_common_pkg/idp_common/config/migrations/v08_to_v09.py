@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 from typing import Any, Dict, Iterable, List, Tuple
 
 from ._version import is_at_or_after, is_newer_than
@@ -183,6 +184,12 @@ def _follows_one_stage(existing: Any, previous_one_stage: Any) -> bool:
     set, and one equal to the value the one-stage call already had was following it.
     Either way the flat value replaces it. A stage value that differs was chosen by
     the operator and is kept.
+
+    The equality is **type-sensitive**, deliberately matching the rule row 2 already
+    applies to the model: a stage holding ``"0.0"`` against a one-stage ``0.0`` reads
+    as chosen and is kept. That is the protective direction, and the shipped defaults
+    are consistently typed on all three calls, so the case needs a hand edit that
+    mixes the two spellings to arise at all.
     """
     return _is_unset(existing) or existing == previous_one_stage
 
@@ -207,10 +214,19 @@ def _is_page_limit(value: Any) -> bool:
     if value is None or isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
-        # Truncated first: a fraction below one page is not a page count, and
-        # ``0.4 > 0`` would otherwise answer True here while ``parse_max_pages``
-        # rendered it as no limit at all — the same shape as the ``bool`` trap,
-        # with the same consequence of taking boundary detection with it.
+        if isinstance(value, float) and not math.isfinite(value):
+            # ⚠️ Guarded *before* the truncation below, which cannot survive these:
+            # ``int(inf)`` raises ``OverflowError`` and ``int(nan)`` raises
+            # ``ValueError``. This function is called from ``conversion_notices``,
+            # which ``merge_utils`` invokes ABOVE the ``try`` that wraps the merge,
+            # so a raise here aborts ``idp-cli config-validate`` with a traceback
+            # instead of reporting the value. ``FileShapeConfig.parse_max_pages``
+            # guards the same two for the same reason.
+            return False
+        # Truncated: a fraction below one page is not a page count, and ``0.4 > 0``
+        # would otherwise answer True here while ``parse_max_pages`` rendered it as
+        # no limit at all — the same shape as the ``bool`` trap, with the same
+        # consequence of taking boundary detection with it.
         return int(value) > 0
     text = str(value).strip().upper()
     if text in ("", "ALL", "0"):

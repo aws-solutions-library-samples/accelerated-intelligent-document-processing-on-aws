@@ -178,5 +178,8 @@ export const unknownSectionSplittingIn = (config: unknown): string | null => {
   const cls = classification as Record<string, unknown>;
   const raw = sectionSplittingOf(cls);
   if (raw === undefined) return null;
-  return knownSectionSplitting(raw) === null ? String(raw) : null;
+  if (knownSectionSplitting(raw) !== null) return null;
+  // A malformed nesting in an imported file renders as `[object Object]` through
+  // `String`, which tells the operator nothing about the file they are holding.
+  return typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
 };

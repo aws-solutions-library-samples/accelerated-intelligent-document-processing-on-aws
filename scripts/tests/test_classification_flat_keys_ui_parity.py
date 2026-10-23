@@ -9,6 +9,7 @@ the UI does not list would be converted with no notice.
 """
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -108,3 +109,72 @@ def test_the_page_limit_predicate_answers_the_shared_table(value, expected, why)
     from idp_common.config.migrations.v08_to_v09 import _is_page_limit
 
     assert _is_page_limit(value) is expected, why
+
+
+#: The two spellings JSON cannot carry, so they cannot live in the shared table —
+#: `Infinity` and `NaN` are not JSON. They belong here rather than in the
+#: `FileShapeConfig` suite because what they threaten is the *migration* predicate:
+#: it truncates, and `int(inf)` raises `OverflowError` while `int(nan)` raises
+#: `ValueError`. `conversion_notices` calls it from above the `try` that wraps the
+#: merge, so a raise there aborts `idp-cli config-validate` with a traceback instead
+#: of reporting the value.
+_NON_FINITE_PAGE_LIMITS = (float("inf"), float("-inf"), float("nan"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", _NON_FINITE_PAGE_LIMITS, ids=repr)
+def test_a_non_finite_page_limit_is_answered_rather_than_raised(value):
+    from idp_common.config.migrations.v08_to_v09 import (
+        _is_page_limit,
+        conversion_notices,
+    )
+
+    assert _is_page_limit(value) is False
+    # And the caller that sits outside a try block still returns.
+    notices = conversion_notices(
+        {"classification": {"model": "m", "maxPagesForClassification": value}}
+    )
+    assert notices, "the pre-0.9 layout notice should still be produced"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", _NON_FINITE_PAGE_LIMITS, ids=repr)
+def test_a_non_finite_page_limit_normalises_in_the_model_too(value):
+    """The two predicates must agree about it, which is the table's whole point —
+    they just cannot agree *in* the table, because JSON has no spelling for it."""
+    from idp_common.config.models import FileShapeConfig
+
+    assert (
+        FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+        == "ALL"
+    )
+
+
+@pytest.mark.unit
+def test_no_float_spelling_is_unaccounted_for_by_both_case_sets():
+    """Closure over the inputs these two predicates are asserted about.
+
+    The cases live in two places for one reason — JSON has no spelling for
+    ``Infinity`` or ``NaN`` — and a split like that is how a value ends up in
+    neither set. So: ``math.isfinite`` partitions ``float`` on exactly ``inf``,
+    ``-inf`` and ``nan``, which is why :data:`_NON_FINITE_PAGE_LIMITS` is three long
+    and not an open list; every member of it really is non-finite, so none of them
+    belongs in the table; and nothing in the table is non-finite, so none of those
+    belongs here. Between them the two sets leave no float spelling uncovered.
+    """
+    assert all(not math.isfinite(v) for v in _NON_FINITE_PAGE_LIMITS), (
+        "a finite value in this list belongs in the shared table instead, where both "
+        "languages can read it"
+    )
+    assert len(_NON_FINITE_PAGE_LIMITS) == 3, (
+        "math.isfinite partitions float on exactly inf, -inf and nan, so a fourth "
+        "entry here is either a duplicate or not a float spelling at all"
+    )
+    table = [
+        case["json"] for case in json.loads(_PAGE_LIMIT_FIXTURES.read_text())["cases"]
+    ]
+    stranded = [v for v in table if isinstance(v, float) and not math.isfinite(v)]
+    assert not stranded, (
+        f"these non-finite values sit in the shared table, which cannot express them "
+        f"as JSON, so the TypeScript half never sees them: {stranded}"
+    )

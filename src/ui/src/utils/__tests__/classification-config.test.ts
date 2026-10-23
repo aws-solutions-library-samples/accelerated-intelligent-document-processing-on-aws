@@ -137,6 +137,22 @@ describe('unknownSectionSplittingIn', () => {
     expect(unknownSectionSplittingIn({ classification: { file_shape: { sectionSplitting: 'Bogus' } } })).toBe('Bogus');
   });
 
+  it('renders a malformed nesting readably rather than as [object Object]', () => {
+    expect(unknownSectionSplittingIn({ classification: { sectionSplitting: { mode: 'page' } } })).toBe('{"mode":"page"}');
+  });
+
+  it('prefers the flat key, which is the one the migration keeps', () => {
+    // `v08_to_v09.py`: in a hybrid the flat key wins, and `_put` overwrites
+    // `file_shape.sectionSplitting` with it. Warning about the nested value would
+    // name one the migration discards.
+    expect(unknownSectionSplittingIn({ classification: { sectionSplitting: 'pages', file_shape: { sectionSplitting: 'page' } } })).toBe(
+      'pages',
+    );
+    expect(
+      unknownSectionSplittingIn({ classification: { sectionSplitting: 'page', file_shape: { sectionSplitting: 'pages' } } }),
+    ).toBeNull();
+  });
+
   it('is null for every value the backend accepts, and for an unset one', () => {
     for (const value of [...SECTION_SPLITTING_VALUES, 'DISABLED', ' page ', '', '   ', null, undefined]) {
       expect(unknownSectionSplittingIn({ classification: { sectionSplitting: value } })).toBeNull();

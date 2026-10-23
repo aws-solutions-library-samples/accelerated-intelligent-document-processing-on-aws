@@ -3170,6 +3170,17 @@
         1529
       ],
       "reason": "Whether a model id can be invoked in GovCloud is a fact about live Bedrock that this tree cannot compute, and the preset header admits a model only after a real Converse call succeeds in us-gov-west-1. Per member: amazon.nova-pro-v1:0 and amazon.nova-lite-v1:0 are the in-region Nova ids the preset already pinned for classification, extraction and confidence under the header's 2026-07-17 Converse verification; us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0 is the GovCloud inference profile the preset's chat comment records as verified with Converse, including tool use, on the same date (the bare anthropic. id is rejected for on-demand use). test_the_verified_list_is_exactly_what_the_preset_pins asserts this set equals the set the raw preset pins in both directions, so an id cannot be allowed here without being shipped, and a dropped id leaves no dead allowance. What it cannot check is that a newly added id was actually verified; that remains the reviewer's judgement on this entry."
+    },
+    "scripts/tests/test_classification_flat_keys_ui_parity.py::_NON_FINITE_PAGE_LIMITS": {
+      "kind": "enforced-universe",
+      "memberKind": "a non-finite float spelling of maxPagesForClassification",
+      "turnsOff": "nothing. It is the universe the two parametrised tests beside it are driven over, so a member being in it is what makes that member asserted about rather than what excuses it. Both tests require the value to be ANSWERED rather than to raise -- _is_page_limit truncates, and int(inf) raises OverflowError while int(nan) raises ValueError -- and the second requires FileShapeConfig to normalise the same value to 'ALL', so the two predicates are pinned to agree about it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_classification_flat_keys_ui_parity.py",
+      "reason": "Discovered through the name route, on the NON_ fragment, and it is not a carve-out: these three values are the cases the shared parity table in src/ui/src/utils/__tests__/page-limit.fixtures.json cannot carry, because JSON has no spelling for Infinity or NaN. Registered rather than renamed, since renaming a constant to slip past discovery is the failure this registry exists to prevent and 'not an exemption at all' is a decision it is built to record. The closure is what makes the split safe and it is asserted rather than assumed, in test_no_float_spelling_is_unaccounted_for_by_both_case_sets: every member here is non-finite so none belongs in the table, nothing in the table is non-finite so none belongs here, and math.isfinite partitions float on exactly inf, -inf and nan, which is why three is all of them. No per-member fact is computed because there is none to compute -- which float spellings Python calls non-finite is a property of the language. What a reviewer should check instead is that the assertions are real: remove the math.isfinite guard from _is_page_limit and all three cases go red, which is how the guard was verified when it was written."
     }
   }
 }

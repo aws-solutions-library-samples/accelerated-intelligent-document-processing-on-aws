@@ -2393,10 +2393,14 @@ class FileShapeConfig(BaseModel):
         no effort control did exactly that with it. A splitting mode decides whether
         boundaries are detected at all, and every candidate answer is a different
         document structure. Second, **a bad value here is not reachable in stored
-        data**, because this validator already normalised on the way in, so nothing
-        could persist one — which is precisely the condition
+        data**, because the validator on this key has normalised on the way in since
+        v0.4.6 — in every release including v0.6.12, where the key was flat on
+        ``ClassificationConfig`` and ``save_configuration`` coerced the dict through
+        ``IDPConfig`` before writing it — so no save path in any shipped release could
+        persist an off-list value. That is precisely the condition
         :func:`normalise_reasoning_effort` and :meth:`parse_max_pages` do *not* meet,
-        and the reason they normalise.
+        and the reason they normalise: ``reasoning_effort`` had no validator at all,
+        and ``maxPagesForClassification``'s stored whatever it was given.
 
         What that costs is worth knowing: ``update_configuration`` validates through
         these same models at deploy time, so an unrecognised value in a hand-written
