@@ -106,7 +106,8 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - **Single-class document validation** - multi-class documents are not supported
 
 **Metering Data Processing**:
-- Context-prefixed key parsing (OCR/, Classification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
+- Context-prefixed key parsing (OCR/, Classification/, Segmentation/, SectionClassification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
+- All three classification contexts are summed into the one classification figure: `Classification/` carries the Bedrock tokens under `strategy: single_pass`, and `Segmentation/` and `SectionClassification/` carry them under `strategy: two_stage` (see [Which context the tokens arrive under](#which-context-the-tokens-arrive-under))
 - Token count aggregation from inputTokens, outputTokens, and totalTokens fields
 - Request count calculation: average requests per document from metering samples
 - Page count extraction from multiple sources:
@@ -290,6 +291,30 @@ Navigate to the Web UI and select the "Capacity Planning" section:
   }
 }
 ```
+
+#### Which context the tokens arrive under
+
+Classification is metered under a context named after the **stage**, not after
+the step, and `classification.strategy` decides which stages run. The split is
+not the same for Bedrock spend and for Lambda invocations, which is the part
+worth reading before you write a report that filters on a prefix:
+
+| Strategy | Bedrock token keys | Lambda keys |
+|---|---|---|
+| `single_pass` | `Classification/bedrock/<model>` | `Classification/lambda/requests`, `Classification/lambda/duration` |
+| `two_stage` | `Segmentation/bedrock/<model>` and `SectionClassification/bedrock/<model>` — **no** `Classification/bedrock/*` key at all | `Classification/lambda/requests`, `Classification/lambda/duration` |
+
+The Lambda keys stay under `Classification/` either way because one Lambda
+function runs both stages, and its invocation is metered under the step's name.
+So a report that filters on the `Classification/` prefix alone finds the Lambda
+cost of a two-stage run and none of its Bedrock cost, and reads as a
+classification step that invoked the model zero times. Sum all three prefixes,
+as Capacity Planning does.
+
+A two-stage run under a declared file shape
+(`classification.file_shape.sectionSplitting` of `disabled` or `page`) emits no
+`Segmentation/` keys at all, because the boundaries are asserted rather than
+detected and the segmentation call never runs.
 
 **Page Count Extraction Priority**:
 1. OCR Bedrock requests count (`metrics.requests`)

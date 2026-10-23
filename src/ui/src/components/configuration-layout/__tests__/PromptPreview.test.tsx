@@ -850,7 +850,7 @@ describe('PromptPreview placeholder scoping by step', () => {
 
   it('a segmentation step previews no class vocabulary and no examples', async () => {
     render(<PromptPreview formValues={configFor('two_stage')} />);
-    await showStep('Classification: segmentation \\(two stage\\)');
+    await showStep('Classification: segmentation \\(Two stage\\)');
 
     const body = await promptBody(/^Task Prompt \(~/);
     expect(body).not.toContain(A_DESCRIPTION);
@@ -879,7 +879,7 @@ describe('PromptPreview placeholder scoping by step', () => {
 
   it('a section-classification step previews no boundary-hints block either', async () => {
     render(<PromptPreview formValues={configFor('two_stage')} />);
-    await showStep('Classification: section classification \\(two stage\\)');
+    await showStep('Classification: section classification \\(Two stage\\)');
 
     const body = await promptBody(/^Task Prompt \(~/);
     expect(body).not.toContain('document-type-hints');

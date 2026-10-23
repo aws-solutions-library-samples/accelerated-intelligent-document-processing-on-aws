@@ -2506,6 +2506,13 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
+- **Pre-0.9 classification layout** - Warns when the file still uses the flat
+  classification keys, naming the ones it converted, so you can save the nested
+  form and keep it. A second warning appears for the one conversion that
+  **changes behaviour**: a `maxPagesForClassification` page limit combined with
+  boundary detection is converted to `sectionSplitting: disabled`, after which a
+  short multi-document file becomes one section where it used to be split. Both
+  are warnings, not errors — the file is valid and will run.
 - **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
 - **OpenAI GPT-6 Astra compatibility** - Errors if `us.openai.gpt-6-astra` / `global.openai.gpt-6-astra` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Astra rejects whole-PDF `document` blocks. Like Grok — and unlike its GPT-5.x stablemates — Astra **is** valid for agentic extraction, since it reaches Converse and emits `toolUse`. The agentic check keys on the bedrock-mantle route rather than the `openai.` prefix, so one OpenAI model passes it and the others do not. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).

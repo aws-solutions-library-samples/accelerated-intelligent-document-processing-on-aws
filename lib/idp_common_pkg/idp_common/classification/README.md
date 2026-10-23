@@ -13,8 +13,10 @@ This module provides document classification capabilities for the IDP Accelerato
 - **Optional regex-based classification for enhanced performance**
   - Document name regex matching when all pages should be classified as the same class
   - Page content regex matching for multi-modal page-level classification
-- **Valid-class enforcement with re-prompt/retry** (page-level) — rejects
-  out-of-vocabulary predictions and re-prompts the model with the allowed classes
+- **Valid-class enforcement with re-prompt/retry** on every call that assigns a
+  class — one stage at page *and* packet granularity, and two-stage section
+  classification — rejects out-of-vocabulary predictions and re-prompts the model
+  with the allowed classes
 - Direct integration with the Document data model
 - Support for both text and image content
 - Concurrent processing of multiple pages
@@ -203,7 +205,7 @@ and substitutes a descriptive marker for `{DOCUMENT_TEXT}` and
 
 ## Sequence Segmentation Approach
 
-The multimodal page-level classification method implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
+Page granularity implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
 
 ### How It Works
 
@@ -278,8 +280,11 @@ Two things this is **not** a workaround for, both measured: prompt-level wording
 
 Two OPTIONAL keys in the model's response are parsed alongside `class` and
 `document_boundary` ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
-Neither used to be read by anything, even though `confidence` was documented as
-supported and `classification_reason` is asked for by the **default** prompt.
+Both are read and persisted whenever the model returns them, whatever asked for
+them — the shipped `confidence.mode` composes the instruction, the **default**
+task prompt asks for `classification_reason`, and a hand-written prompt asking
+for either is honoured because the parser is not gated on the setting. The table
+below is where each one lands.
 
 | Key | Lands on | Persisted as |
 |-----|----------|--------------|
@@ -391,11 +396,24 @@ route work on it.
 |-------|----------|
 | `llm_determined` (default) | Group pages using the `document_boundary` signal described above |
 | `page` | One section per page — no same-type joining is ever possible |
-| `disabled` | One section spanning the whole document (class chosen by majority vote across pages) |
+| `disabled` | One section spanning the whole document (class chosen by a page-weighted vote across the segments that were detected) |
+
+The vote is cast by `_single_section_from_segments`, and it is **per page but
+over segments**: each segment carrying a configured class contributes
+`len(segment.page_ids)` votes, so a 5-page segment outweighs a 1-page one. That
+distinction is invisible at page granularity, where segments are mostly single
+pages, and decides the answer at packet granularity, where the call returns
+multi-page segments. A tie goes to the earliest segment carrying a tied class,
+and `segments[0].doc_class` is used only when no segment carries a configured
+class at all. ⚠️ A page whose own verdict was not the winning class has its
+confidence cleared, and a section's score is `None` if any of its pages is
+unscored — so one disagreeing page leaves the whole section without a
+confidence. A page that produced no verdict of its own inherits its segment's
+class *and* confidence, so silence does not count as disagreement.
 
 `file_shape.maxPagesForClassification` applies only under `disabled`. There,
-`_limit_pages_for_classification` classifies the first N pages and their majority
-class is applied to the whole file; a file at or under the limit is classified in
+`_limit_pages_for_classification` classifies the first N pages and the whole file
+takes the class that vote returns; a file at or under the limit is classified in
 full. Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only files longer than N while
 sectioning shorter ones normally.

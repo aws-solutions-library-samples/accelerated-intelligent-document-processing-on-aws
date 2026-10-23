@@ -134,6 +134,16 @@ Short key-value strings logged as MLflow params. These are filterable in the MLf
 
 Only parameters that exist in the configuration are logged — missing values are omitted, not set to empty strings. The exception is the two `classification.modality.*` flags, which log `infer` when unset, because an unset flag is a setting rather than an absent one. The classification parameter names are the same under either strategy, so runs can be compared on one axis; `classification.strategy` says which call they describe.
 
+⚠️ **Several classification settings are not logged, so two runs differing only
+in one of them are indistinguishable in the MLflow UI.** The list above is the
+whole of what is logged; the ones most likely to be the variable in an experiment
+and absent from it are `two_stage.section_classification.pages` and its `k`,
+`two_stage.segmentation.llm.boundary_hints`, the packet
+`window_pages`/`overlap_pages`, `page.contextPagesCount`, `file_shape.*` and the
+class-confidence block. If you are sweeping one of those, put the value in the
+run name or log it yourself — otherwise the comparison records identical
+parameters for runs that were not the same configuration.
+
 ### Artifacts
 
 Complex data structures logged as JSON files under the `metrics/` artifact path.
