@@ -106,17 +106,42 @@ export const DEFAULT_SECTION_SPLITTING = 'llm_determined';
  * distinction that matters there: an absent, null or blank value means "take the
  * default" and is NOT the same as an unrecognised one.
  */
+/**
+ * The `sectionSplitting` a configuration will end up with, read the way the hop
+ * reads it: ⚠️ **the FLAT key wins over the nested one.** That is the hop's own
+ * hybrid rule (`v08_to_v09.py`: "in a hybrid — flat and nested keys in one dict —
+ * the flat key wins"), where `_put` overwrites `file_shape.sectionSplitting` with
+ * the flat value. Both helpers below go through this, so they cannot disagree
+ * about precedence — two readers that did is the part most likely to be re-broken.
+ */
+const sectionSplittingOf = (cls: Record<string, unknown>): unknown => {
+  if ('sectionSplitting' in cls) return cls.sectionSplitting;
+  const nested = cls.file_shape && typeof cls.file_shape === 'object' ? (cls.file_shape as Record<string, unknown>) : undefined;
+  return nested && 'sectionSplitting' in nested ? nested.sectionSplitting : undefined;
+};
+
 const knownSectionSplitting = (raw: unknown): string | null => {
   if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_SECTION_SPLITTING;
   const text = String(raw).trim().toLowerCase();
   return (SECTION_SPLITTING_VALUES as readonly string[]).includes(text) ? text : null;
 };
 
-/** Whether a raw `maxPagesForClassification` really asks for the first N pages. */
+/**
+ * Whether a raw `maxPagesForClassification` really asks for the first N pages.
+ * Mirrors `_is_page_limit` in `v08_to_v09.py`, **including its number/string
+ * asymmetry**: a real number is truncated, so `2.5` is a two-page limit, while a
+ * string must already spell a whole number, because `int('2.5')` raises in Python.
+ * Stringifying first collapsed the two and left the dialog silent about an
+ * unquoted `2.5` that the migration does convert.
+ *
+ * The cases both sides must agree on are the shared table in
+ * `__tests__/page-limit.fixtures.json`.
+ */
 const isPageLimit = (raw: unknown): boolean => {
   // A boolean is not a page count, although `Number(true)` is 1 — the same trap
   // `_is_page_limit` guards in Python, where `bool` is a subclass of `int`.
   if (raw === undefined || raw === null || typeof raw === 'boolean') return false;
+  if (typeof raw === 'number') return Number.isFinite(raw) && Math.trunc(raw) > 0;
   const text = String(raw).trim().toUpperCase();
   if (text === '' || text === 'ALL') return false;
   const limit = Number(text);
@@ -138,7 +163,7 @@ export const pageLimitBecomesOneDocument = (config: unknown): boolean => {
   if (!classification || typeof classification !== 'object') return false;
   const cls = classification as Record<string, unknown>;
   if (!isPageLimit(cls.maxPagesForClassification)) return false;
-  const splitting = knownSectionSplitting(cls.sectionSplitting);
+  const splitting = knownSectionSplitting(sectionSplittingOf(cls));
   return splitting !== null && splitting !== 'disabled';
 };
 
@@ -151,8 +176,7 @@ export const unknownSectionSplittingIn = (config: unknown): string | null => {
   const classification = config && typeof config === 'object' ? (config as Record<string, unknown>).classification : undefined;
   if (!classification || typeof classification !== 'object') return null;
   const cls = classification as Record<string, unknown>;
-  const nested = cls.file_shape && typeof cls.file_shape === 'object' ? (cls.file_shape as Record<string, unknown>) : undefined;
-  const raw = nested && 'sectionSplitting' in nested ? nested.sectionSplitting : cls.sectionSplitting;
+  const raw = sectionSplittingOf(cls);
   if (raw === undefined) return null;
   return knownSectionSplitting(raw) === null ? String(raw) : null;
 };

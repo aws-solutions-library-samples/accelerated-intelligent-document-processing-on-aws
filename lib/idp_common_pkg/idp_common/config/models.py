@@ -19,6 +19,7 @@ Usage:
 """
 
 import difflib
+import math
 import re
 from functools import lru_cache
 from typing import (
@@ -2428,7 +2429,16 @@ class FileShapeConfig(BaseModel):
         ``sectionSplitting`` check and again by ``int()`` inside a bare ``except`` —
         so the editor showed a page limit that was never in force. ``'ALL'`` is what
         the runtime already does with such a value, so the stored value now says what
-        will happen, and the int/string asymmetry is gone (``-5`` and ``'-5'`` agree).
+        will happen.
+
+        The int/string asymmetry is **narrowed, not removed**: a negative limit now
+        agrees whichever way it is spelled (``-5`` and ``'-5'`` are both no limit),
+        and a fraction below one page is no limit either way. What still differs is
+        a usable fraction — a real number is truncated, so ``2.5`` is two pages,
+        while ``'2.5'`` is refused, because a string must already spell a whole
+        number. ``_is_page_limit`` mirrors that split, and so does the editor's
+        predicate; the cases all three must agree on are the shared table in
+        ``src/ui/src/utils/__tests__/page-limit.fixtures.json``.
 
         Normalising rather than raising is deliberate: unlike ``sectionSplitting``,
         today's validator *stores* an unusable value, so one may already sit in a
@@ -2438,6 +2448,12 @@ class FileShapeConfig(BaseModel):
         if v is None or (isinstance(v, str) and not v.strip()):
             return "ALL"
         if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+            return _unusable_page_limit(v)
+        if isinstance(v, float) and not math.isfinite(v):
+            # `int(inf)` raises OverflowError, which pydantic does not convert into
+            # a ValidationError — so a `.inf` in a YAML file failed the profile's
+            # load with a raw traceback, which is exactly what this validator
+            # normalises in order to avoid.
             return _unusable_page_limit(v)
         if isinstance(v, str):
             if v.strip().upper() == "ALL":

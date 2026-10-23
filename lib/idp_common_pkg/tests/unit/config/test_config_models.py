@@ -533,6 +533,12 @@ NO_PAGE_LIMIT_SPELLINGS = [
     # while the migration read it as a limit and took boundary detection with it,
     # which is the boolean trap in a second spelling.
     0.4,
+    # `int(inf)` raises OverflowError, which pydantic does not turn into a
+    # ValidationError, so this failed the profile's load with a raw traceback --
+    # the outcome this validator normalises in order to avoid.
+    float("inf"),
+    float("-inf"),
+    float("nan"),
 ]
 
 

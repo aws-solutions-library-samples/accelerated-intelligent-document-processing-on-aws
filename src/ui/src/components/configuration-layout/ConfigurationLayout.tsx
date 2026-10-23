@@ -185,6 +185,9 @@ const ConfigurationLayout = (): React.JSX.Element => {
 
   // Import as new version state
   const [importedConfigForNewVersion, setImportedConfigForNewVersion] = useState<Record<string, unknown> | null>(null);
+  // Derived once: the import dialog's warning condition and the value it shows
+  // must be the same answer, which two calls in one render cannot guarantee.
+  const unknownSectionSplitting = unknownSectionSplittingIn(importedConfigForNewVersion);
   const [newVersionName, setNewVersionName] = useState('');
   const [newVersionDescription, setNewVersionDescription] = useState('');
   const [importSource, setImportSource] = useState<string | null>(null); // Track import source: 'file', 'library', 'migration'
@@ -2907,9 +2910,9 @@ const ConfigurationLayout = (): React.JSX.Element => {
               . Download the profile afterwards to get a file in the current layout.
             </Alert>
           )}
-          {unknownSectionSplittingIn(importedConfigForNewVersion) !== null && (
+          {unknownSectionSplitting !== null && (
             <Alert type="warning" header="Section splitting value will be rejected">
-              This file sets section splitting to &quot;{unknownSectionSplittingIn(importedConfigForNewVersion)}&quot;, which is not one of{' '}
+              This file sets section splitting to &quot;{unknownSectionSplitting}&quot;, which is not one of{' '}
               {SECTION_SPLITTING_VALUES.join(', ')}. Saving it will be refused, because the value decides whether document boundaries are
               detected at all and choosing one for you would change where sections start. Correct it in the file, or clear it to use{' '}
               {DEFAULT_SECTION_SPLITTING}.

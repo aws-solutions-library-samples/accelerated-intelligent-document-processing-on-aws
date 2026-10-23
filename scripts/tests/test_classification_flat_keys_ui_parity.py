@@ -8,6 +8,7 @@ The editor tells a user importing an old file which keys will be converted
 the UI does not list would be converted with no notice.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -71,3 +72,39 @@ def test_this_gate_reads_the_arrays_rather_than_passing_on_an_empty_one():
             f"read no members from the UI's {name}, so the parity assertion over it "
             "would pass by comparing nothing"
         )
+
+
+#: The shared table, authored beside the TypeScript it is also read by. See its own
+#: `$comment` for why the cases live in one file rather than in two suites.
+_PAGE_LIMIT_FIXTURES = REPO / "src/ui/src/utils/__tests__/page-limit.fixtures.json"
+
+
+def _page_limit_cases() -> list[tuple]:
+    body = json.loads(_PAGE_LIMIT_FIXTURES.read_text())
+    cases = [(case["json"], case["limit"], case["why"]) for case in body["cases"]]
+    assert len(cases) >= 10, (
+        f"read only {len(cases)} cases from {_PAGE_LIMIT_FIXTURES.name}, which is "
+        "below the table it was written with — this check would pass by exercising "
+        "almost nothing"
+    )
+    return cases
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "expected", "why"), _page_limit_cases(), ids=lambda v: repr(v)[:24]
+)
+def test_the_page_limit_predicate_answers_the_shared_table(value, expected, why):
+    """⚠️ The two value lists agreeing is not the two predicates agreeing.
+
+    The assertions above compare `FLAT_KEYS` and `SECTION_SPLITTING_VALUES` by
+    reading the TypeScript with a regex, which cannot see a semantic divergence —
+    and one had already happened. The TypeScript stringified its input before
+    testing it, so an unquoted `2.5` answered false while `_is_page_limit`
+    truncates it to a two-page limit and the migration performs the conversion: the
+    import dialog said nothing and boundary detection went off. So the cases are
+    authored once and run on both sides, this being the Python half.
+    """
+    from idp_common.config.migrations.v08_to_v09 import _is_page_limit
+
+    assert _is_page_limit(value) is expected, why

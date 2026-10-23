@@ -11,6 +11,7 @@ import {
   SECTION_SPLITTING_VALUES,
   unknownSectionSplittingIn,
 } from '../classification-config';
+import pageLimitFixtures from './page-limit.fixtures.json';
 
 describe('classAssigningLlmPath', () => {
   it('is the one-stage call for single_pass, and by default', () => {
@@ -108,6 +109,25 @@ describe('pageLimitBecomesOneDocument', () => {
 
   it('is false for a boolean page limit, which is not a page count', () => {
     expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: true } })).toBe(false);
+  });
+});
+
+describe('isPageLimit, through pageLimitBecomesOneDocument', () => {
+  // The TypeScript half of the shared table. Its Python half is
+  // `test_the_page_limit_predicate_answers_the_shared_table` in
+  // `scripts/tests/test_classification_flat_keys_ui_parity.py`; the fixture's own
+  // `$comment` says why the cases are authored once rather than in two suites.
+  const fixtures = pageLimitFixtures as { cases: { json: unknown; limit: boolean; why: string }[] };
+
+  it('reads a table worth exercising', () => {
+    expect(fixtures.cases.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(fixtures.cases)('$why ($json)', ({ json, limit }) => {
+    // `llm_determined` is the shipped default, so a real limit means the
+    // conversion runs -- which makes this predicate the observable half of
+    // `isPageLimit`.
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: json } })).toBe(limit);
   });
 });
 
