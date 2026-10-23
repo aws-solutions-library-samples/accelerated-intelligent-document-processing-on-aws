@@ -205,7 +205,7 @@ and substitutes a descriptive marker for `{DOCUMENT_TEXT}` and
 
 ## Sequence Segmentation Approach
 
-The multimodal page-level classification method implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
+Page granularity implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
 
 ### How It Works
 
@@ -396,11 +396,24 @@ route work on it.
 |-------|----------|
 | `llm_determined` (default) | Group pages using the `document_boundary` signal described above |
 | `page` | One section per page — no same-type joining is ever possible |
-| `disabled` | One section spanning the whole document (class chosen by majority vote across pages) |
+| `disabled` | One section spanning the whole document (class chosen by a page-weighted vote across the segments that were detected) |
+
+The vote is cast by `_single_section_from_segments`, and it is **per page but
+over segments**: each segment carrying a configured class contributes
+`len(segment.page_ids)` votes, so a 5-page segment outweighs a 1-page one. That
+distinction is invisible at page granularity, where segments are mostly single
+pages, and decides the answer at packet granularity, where the call returns
+multi-page segments. A tie goes to the earliest segment carrying a tied class,
+and `segments[0].doc_class` is used only when no segment carries a configured
+class at all. ⚠️ A page whose own verdict was not the winning class has its
+confidence cleared, and a section's score is `None` if any of its pages is
+unscored — so one disagreeing page leaves the whole section without a
+confidence. A page that produced no verdict of its own inherits its segment's
+class *and* confidence, so silence does not count as disagreement.
 
 `file_shape.maxPagesForClassification` applies only under `disabled`. There,
-`_limit_pages_for_classification` classifies the first N pages and their majority
-class is applied to the whole file; a file at or under the limit is classified in
+`_limit_pages_for_classification` classifies the first N pages and the whole file
+takes the class that vote returns; a file at or under the limit is classified in
 full. Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only files longer than N while
 sectioning shorter ones normally.
