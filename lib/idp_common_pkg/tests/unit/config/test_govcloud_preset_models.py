@@ -39,6 +39,7 @@ import yaml
 
 from idp_common.bedrock.model_utils import REGION_PREFIXES
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.models import IDPConfig
 
 _CONFIG_LIBRARY = Path(__file__).resolve().parents[5] / "config_library"
 _PRESET_PATH = _CONFIG_LIBRARY / "unified/lending-package-sample-govcloud/config.yaml"
@@ -52,7 +53,9 @@ _PRICING_PATH = _CONFIG_LIBRARY / "pricing.yaml"
 #: tree can compute. Adding a model here widens what the gate accepts, so this
 #: allowlist is registered in ``scripts/tests/gate_exemptions.json`` with the basis
 #: for each member, and ``test_the_verified_list_is_exactly_what_the_preset_pins``
-#: keeps this set and the preset from drifting apart in either direction.
+#: keeps this set and the preset from drifting apart in either direction. Adding
+#: a model means editing this set AND the per-member reason in that registry entry
+#: (key ``...test_govcloud_preset_models.py::GOVCLOUD_ALLOWED_MODELS``).
 GOVCLOUD_ALLOWED_MODELS = frozenset(
     {
         "amazon.nova-pro-v1:0",
@@ -214,6 +217,41 @@ def test_every_merged_model_value_is_govcloud_verified():
         f"omits inherits the system default, and nothing rewrites it for a GovCloud "
         f"region. Pin a verified model for it in the preset. Do not add a model to "
         f"the verified list without a successful Converse call in us-gov-west-1."
+    )
+
+
+@pytest.mark.unit
+def test_the_validated_configuration_carries_the_same_models():
+    """What the runtime reads is the Pydantic model, not the merged dict.
+
+    The dict census above would not notice a pin the models drop (their default is
+    ``extra="ignore"``), so the merged preset is validated as ``IDPConfig`` and the
+    census is repeated over its dump. It must validate, it must still contain the
+    preset's pins, and it must name nothing outside the allowed set.
+    """
+    merged = merge_config_with_defaults(
+        _raw_preset(), pattern="pattern-2", validate=True
+    )
+    dumped = IDPConfig.model_validate(merged).model_dump(mode="json")
+    validated = _model_values(dumped)
+    assert validated, "the validated configuration yielded no model values"
+
+    lost = {
+        path: value
+        for path, value in _model_values(_raw_preset()).items()
+        if validated.get(path) != value
+    }
+    assert not lost, f"pins the validated configuration does not carry: {lost}"
+
+    offenders = {
+        path: value
+        for path, value in sorted(validated.items())
+        if value not in GOVCLOUD_ALLOWED_MODELS
+        and GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT.get(path) != value
+    }
+    assert not offenders, (
+        f"the validated GovCloud configuration names models outside the allowed "
+        f"set: {offenders}"
     )
 
 

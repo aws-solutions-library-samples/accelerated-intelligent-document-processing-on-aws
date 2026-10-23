@@ -220,8 +220,8 @@ validation). After the merge, every model setting names `amazon.nova-pro-v1:0`,
 with one exception.
 
 **Multi-Doc Discovery's embedding step is not available in GovCloud.** It needs
-a multimodal embedding model, and when the preset was last checked GovCloud
-offered only the text-only `amazon.titan-embed-text-v2:0`. The preset
+a multimodal embedding model, and when the preset was checked on 2026-07-17
+GovCloud offered only the text-only `amazon.titan-embed-text-v2:0`. The preset
 therefore leaves `discovery.multi_document.embedding_model_id` at the system
 default, `us.cohere.embed-v4:0`, and a Multi-Doc Discovery run fails at that
 step. This affects `--govcloud` deployments; `--headless` removes Multi-Doc
