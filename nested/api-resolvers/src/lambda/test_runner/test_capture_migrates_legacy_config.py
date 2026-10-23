@@ -109,7 +109,7 @@ def test_an_unstamped_configuration_is_captured_the_same_way_either_route(
     `ConfigurationManager.get_revision()` converts a revision on read, so a
     pinned revision arrives at the capture already stamped, while a profile head
     read straight from DynamoDB does not. Dropping the stamp for an unstamped
-    body could therefore only ever see the head path, which gave one
+    body could therefore only ever see the head path, which would give one
     configuration two captures — and run comparison a difference on that key
     between a run pinned to a revision and a run of the same configuration at the
     head.

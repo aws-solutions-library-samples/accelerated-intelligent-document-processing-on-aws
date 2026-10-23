@@ -2302,12 +2302,13 @@ def _migrated_run_config(config):
     rewritten. A body that cannot be migrated is returned as captured.
 
     The result carries the resulting ``config_format_version``, including for a
-    body captured without one. Stripping it instead made the key a function of
-    when the run was captured rather than of the configuration: the capture side
-    (``test_runner._current_format``) always stamps, so a run captured from an
-    unstamped configuration before that read back stripped while one captured
-    after keeps the stamp — two shapes for one configuration, and a difference
-    reported on the one key that says nothing about how documents are processed.
+    body captured without one. Stripping it instead would make the key a function
+    of when the run was captured rather than of the configuration: the capture
+    side (``test_runner._current_format``) always stamps, so a run captured from
+    an unstamped configuration would read back stripped here while one captured
+    once the strip was gone kept the stamp — two shapes for one configuration,
+    and a difference reported on the one key that says nothing about how
+    documents are processed.
     """
     if not isinstance(config, dict):
         return config

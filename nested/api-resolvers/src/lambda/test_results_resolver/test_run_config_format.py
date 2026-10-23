@@ -98,10 +98,9 @@ def test_an_unstamped_run_is_read_back_in_the_current_format(module, as_item):
     The stamp must not depend on when the run was captured.
 
     The capture side always stamps (``test_runner._current_format``), so stripping
-    the stamp for a capture that recorded none would leave a run captured from an
-    unstamped configuration before that change reading back stripped, and one
-    captured after keeping it — one configuration, two shapes, differing by
-    capture date.
+    the stamp here for a capture that recorded none would read back stripped while
+    a capture made once the strip was gone kept it — one configuration, two
+    shapes, differing by capture date.
     """
     capture = {"Config": {"notes": "x"}}
 

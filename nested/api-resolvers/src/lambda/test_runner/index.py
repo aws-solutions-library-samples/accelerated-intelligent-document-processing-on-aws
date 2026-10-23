@@ -559,12 +559,12 @@ def _current_format(body):
 
     The capture carries the resulting ``config_format_version``, including for a
     body that recorded none — the stamp then states the shape the capture is in,
-    which is the current one. It must not depend on where the body came from: a
-    pinned revision arrives here already converted, because
-    ``ConfigurationManager.get_revision()`` converts on read, while a profile head
-    read straight from DynamoDB does not. A rule that dropped the stamp for an
-    unstamped body could therefore see only the head path, and gave one
-    configuration two different captures according to how the run reached it —
+    which is the current one. It must not depend on where the body came from, and
+    the two routes here no longer look alike: ``ConfigurationManager.get_revision()``
+    converts on read, so a pinned revision arrives already stamped, while a profile
+    head read straight from DynamoDB does not. A rule that dropped the stamp for an
+    unstamped body would therefore be able to see only the head path, and would give
+    one configuration two different captures according to how the run reached it —
     one spurious difference in run comparison, on the one key that says nothing
     about how documents are processed.
     """
