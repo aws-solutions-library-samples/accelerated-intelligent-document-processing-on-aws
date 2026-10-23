@@ -1829,17 +1829,6 @@ class StackDeployer:
                 )
                 return results
 
-            # The distribution is what held the policy, so this is the first point
-            # at which it can be deleted. Outside the verification `try` on
-            # purpose: a failure here is not a distribution failure and must not
-            # skip the bucket phase. Idempotent: a policy already gone is skipped.
-            try:
-                self._delete_own_response_headers_policy(stack_identifier)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to clean up CloudFront Response Headers Policy: {e}"
-                )
-
         # Phase 4: S3 Buckets (LoggingBucket last)
         if retained["s3_buckets"]:
             # Separate LoggingBucket from others

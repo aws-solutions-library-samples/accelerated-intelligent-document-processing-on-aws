@@ -2247,13 +2247,16 @@ def test_a_live_stack_in_another_region_keeps_its_headers_policy(
 def test_this_stacks_own_headers_policy_is_deleted_with_its_etag(
     aws_credentials: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """The policy the stack's resource list records is deleted, carrying the ETag
-    read for that same policy — CloudFront refuses a wrong ETag exactly as it
-    refuses a missing one. Other IDP-shaped policies in the account are left."""
+    """Every policy the stack's resource list records is deleted, each carrying the
+    ETag read for that same policy — CloudFront refuses a wrong ETag exactly as it
+    refuses a missing one. Two owned policies with distinct ETags are what make a
+    single read hoisted out of the loop, or a constant, fail here. Other
+    IDP-shaped policies in the account are left."""
     stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
     policies = _HeadersPolicies(
         {
             "P-MINE": "S1-security-headers-policy",
+            "P-MINE-2": "S1-extra-headers-policy",
             "P-GONE": "GoneStack-security-headers-policy",
         }
     )
@@ -2261,13 +2264,20 @@ def test_this_stacks_own_headers_policy_is_deleted_with_its_etag(
     stub = _stub_stack_resources(
         deployer,
         stack_id,
-        [("AWS::SNS::Topic", "arn:aws:sns:topic"), (POLICY_TYPE, "P-MINE")],
+        [
+            ("AWS::SNS::Topic", "arn:aws:sns:topic"),
+            (POLICY_TYPE, "P-MINE"),
+            (POLICY_TYPE, "P-MINE-2"),
+        ],
     )
     policies.install(monkeypatch)
     with stub:
         deployer._delete_own_response_headers_policy(stack_id)
-    assert policies.deleted == [("P-MINE", "etag-for-P-MINE")]
-    assert policies.read == ["P-MINE"]
+    assert sorted(policies.deleted) == [
+        ("P-MINE", "etag-for-P-MINE"),
+        ("P-MINE-2", "etag-for-P-MINE-2"),
+    ]
+    assert sorted(policies.read) == ["P-MINE", "P-MINE-2"]
 
 
 def test_a_same_named_policy_this_stack_did_not_create_is_left_alone(
@@ -2349,59 +2359,6 @@ def test_an_unreadable_resource_list_deletes_no_policy(
         deployer._delete_own_response_headers_policy(stack_id)
     assert policies.deleted == []
     assert policies.read == []
-
-
-def test_force_delete_retries_the_policy_once_distributions_are_verified_gone(
-    aws_credentials: str, no_additional_cleanup: None, monkeypatch: pytest.MonkeyPatch
-):
-    """The distribution is what holds the policy, so the point at which the
-    retained-resource cleanup has verified it deleted is the first point at which
-    the policy can go. The retry must come after that verification, not before."""
-    order: list[str] = []
-    with mock_aws():
-        deployer = StackDeployer(region=REGION)
-        _create_stack(deployer, "S1", BUCKET_AND_FRIENDS)
-        monkeypatch.setattr(
-            deployer,
-            "_verify_cloudfront_distributions_deleted",
-            lambda _name: order.append("verified"),
-        )
-        monkeypatch.setattr(
-            deployer,
-            "_delete_own_response_headers_policy",
-            lambda identifier: order.append(f"policy:{identifier}"),
-        )
-        monkeypatch.setattr(
-            deployer,
-            "_empty_and_delete_bucket",
-            lambda _name: order.append("bucket"),
-        )
-        deployer.cleanup_retained_resources("S1")
-    assert order == ["verified", "policy:S1", "bucket"]
-
-
-def test_a_failed_policy_retry_does_not_skip_the_buckets(
-    aws_credentials: str, no_additional_cleanup: None, monkeypatch: pytest.MonkeyPatch
-):
-    """The retry runs after the distributions are verified gone. If it fails, that
-    is not a distribution failure: it must not be recorded as one, and it must not
-    stop the bucket phase the verification just cleared."""
-    deleted: list[str] = []
-    with mock_aws():
-        deployer = StackDeployer(region=REGION)
-        _create_stack(deployer, "S1", BUCKET_AND_FRIENDS)
-        monkeypatch.setattr(
-            deployer, "_verify_cloudfront_distributions_deleted", lambda _name: None
-        )
-
-        def explode(_identifier: str) -> None:
-            raise RuntimeError("NoCredentialsError")
-
-        monkeypatch.setattr(deployer, "_delete_own_response_headers_policy", explode)
-        monkeypatch.setattr(deployer, "_empty_and_delete_bucket", deleted.append)
-        results = deployer.cleanup_retained_resources("S1")
-    assert len(deleted) == 1
-    assert results["errors"] == []
 
 
 def _bda_client(

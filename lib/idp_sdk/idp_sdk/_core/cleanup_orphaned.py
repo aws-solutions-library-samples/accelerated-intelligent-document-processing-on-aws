@@ -81,9 +81,9 @@ class OrphanedResourceCleanup:
         self._active_stacks: Dict[str, Dict] = {}  # stack_name -> {id, region, status}
         self._deleted_stacks: Dict[str, Dict] = {}  # stack_name -> {id, region, status}
         self._discovery_complete = False
-        # stack_name -> skip reason ("" once confirmed gone everywhere); see
+        # stack_name -> (verdict, reason), ("", "") once confirmed gone; see
         # _still_present_elsewhere.
-        self._presence_elsewhere: Dict[str, str] = {}
+        self._presence_elsewhere: Dict[str, Tuple[str, str]] = {}
         self._cfn_clients: Dict[str, Any] = {}
 
         # Track "yes/no to all" decisions per resource type
@@ -253,8 +253,8 @@ class OrphanedResourceCleanup:
 
         return ("UNKNOWN", None)
 
-    def _still_present_elsewhere(self, stack_name: str) -> str:
-        """Why a DELETED stack's *global* resource must still be left alone, or "".
+    def _still_present_elsewhere(self, stack_name: str) -> Tuple[str, str]:
+        """Whether a DELETED stack's *global* resource must still be left alone.
 
         Discovery covers only the Regions it was given (the CLI's
         ``--check-stack-regions``), while CloudFront distributions, response headers policies, IAM
@@ -266,9 +266,12 @@ class OrphanedResourceCleanup:
         a DELETED verdict, every Region enabled for the account is asked whether
         a stack of that name still exists there.
 
-        Returns "" only when every enabled Region answers that it does not. Any
-        Region that cannot be read makes ownership unknown, and unknown means
-        leave it alone -- the same rule ``get_stack_state`` applies with UNKNOWN.
+        Returns ``(verdict, reason)``. ``("", "")`` only when every enabled
+        Region answers that no such stack exists. ``("present", reason)`` when
+        one does: a deliberate skip. ``("unknown", reason)`` when any Region
+        cannot be read: the resource is still left alone, but callers report it
+        as an error, because a missing permission here would otherwise turn
+        every global sweep into a silent no-op that reads as a clean account.
         """
         # Ask about the name discovery recorded, not the one parsed out of the
         # resource: S3 forces bucket names to lowercase, and get_stack_state
@@ -285,7 +288,7 @@ class OrphanedResourceCleanup:
         if stack_name in self._presence_elsewhere:
             return self._presence_elsewhere[stack_name]
 
-        reason = ""
+        verdict, reason = "", ""
         try:
             ec2 = self.session.client("ec2", region_name=self.region)
             # Without AllRegions this lists only the Regions enabled for the
@@ -293,6 +296,7 @@ class OrphanedResourceCleanup:
             regions = [r["RegionName"] for r in ec2.describe_regions()["Regions"]]
         except Exception as e:
             regions = []
+            verdict = "unknown"
             reason = f"could not list enabled Regions to confirm it is gone: {e}"
 
         for region in regions:
@@ -305,14 +309,15 @@ class OrphanedResourceCleanup:
             except Exception as e:
                 if "does not exist" in str(e):
                     continue
+                verdict = "unknown"
                 reason = f"could not confirm it is gone in {region}: {e}"
                 break
             if any(s.get("StackStatus") != "DELETE_COMPLETE" for s in stacks):
-                reason = f"still exists in {region}"
+                verdict, reason = "present", f"still exists in {region}"
                 break
 
-        self._presence_elsewhere[stack_name] = reason
-        return reason
+        self._presence_elsewhere[stack_name] = (verdict, reason)
+        return verdict, reason
 
     def extract_stack_name_from_comment(self, comment: str) -> str:
         """Extract stack name from CloudFront distribution comment."""
@@ -656,10 +661,15 @@ class OrphanedResourceCleanup:
                 state, stack_info = self.get_stack_state(stack_name)
 
                 if state == "DELETED":
-                    elsewhere = self._still_present_elsewhere(stack_name)
-                    if elsewhere:
+                    verdict, reason = self._still_present_elsewhere(stack_name)
+                    if verdict == "present":
                         results["skipped"].append(
-                            f"{distribution_id} (stack: {stack_name} - {elsewhere})"
+                            f"{distribution_id} (stack: {stack_name} - {reason})"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        results["errors"].append(
+                            f"Not deleted {distribution_id} (stack: {stack_name}): {reason}"
                         )
                         continue
 
@@ -945,10 +955,15 @@ class OrphanedResourceCleanup:
                 state, stack_info = self.get_stack_state(stack_name)
 
                 if state == "DELETED":
-                    elsewhere = self._still_present_elsewhere(stack_name)
-                    if elsewhere:
+                    verdict, reason = self._still_present_elsewhere(stack_name)
+                    if verdict == "present":
                         results["skipped"].append(
-                            f"{policy_name} (stack: {stack_name} - {elsewhere})"
+                            f"{policy_name} (stack: {stack_name} - {reason})"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        results["errors"].append(
+                            f"Not deleted {policy_name} (stack: {stack_name}): {reason}"
                         )
                         continue
 
@@ -1042,10 +1057,15 @@ class OrphanedResourceCleanup:
                     state, stack_info = self.get_stack_state(stack_name)
 
                     if state == "DELETED":
-                        elsewhere = self._still_present_elsewhere(stack_name)
-                        if elsewhere:
+                        verdict, reason = self._still_present_elsewhere(stack_name)
+                        if verdict == "present":
                             results["skipped"].append(
-                                f"{policy_name} (stack: {stack_name} - {elsewhere})"
+                                f"{policy_name} (stack: {stack_name} - {reason})"
+                            )
+                            continue
+                        if verdict == "unknown":
+                            results["errors"].append(
+                                f"Not deleted {policy_name} (stack: {stack_name}): {reason}"
                             )
                             continue
 
@@ -1193,10 +1213,15 @@ class OrphanedResourceCleanup:
                 if state == "DELETED":
                     # list_buckets is account-wide, so this sweep sees the buckets
                     # of a same-named stack in every Region.
-                    elsewhere = self._still_present_elsewhere(stack_name)
-                    if elsewhere:
+                    verdict, reason = self._still_present_elsewhere(stack_name)
+                    if verdict == "present":
                         results["skipped"].append(
-                            f"{bucket_name} (stack: {stack_name} - {elsewhere})"
+                            f"{bucket_name} (stack: {stack_name} - {reason})"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        results["errors"].append(
+                            f"Not deleted {bucket_name} (stack: {stack_name}): {reason}"
                         )
                         continue
 

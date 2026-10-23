@@ -1327,7 +1327,8 @@ def test_buckets_of_a_stack_live_in_an_unscanned_region_keep_their_documents(
 
 @pytest.mark.unit
 def test_unlisted_regions_mean_a_global_resource_is_left_alone(cleanup, monkeypatch):
-    """ "Cannot tell whether it is gone everywhere" must mean "leave it"."""
+    """ "Cannot tell whether it is gone everywhere" must mean "leave it", and be
+    reported as an error so the run does not look clean."""
     real_client = cleanup.session.client
 
     def client(service: str, *a: Any, **k: Any) -> Any:
@@ -1342,8 +1343,14 @@ def test_unlisted_regions_mean_a_global_resource_is_left_alone(cleanup, monkeypa
     results = cleanup.cleanup_cloudfront_policies(auto_approve=True)
 
     assert fake.deleted == []
-    assert len(results["skipped"]) == 1
-    assert "could not list enabled Regions" in results["skipped"][0]
+    # An error, not a skip: a denied DescribeRegions would otherwise leave every
+    # global resource in place while the command reported a clean account.
+    assert results["skipped"] == []
+    assert len(results["errors"]) == 1
+    assert results["errors"][0].startswith(
+        f"Not deleted {DEAD_STACK}-security-headers-policy (stack: {DEAD_STACK}): "
+        "could not list enabled Regions to confirm it is gone: "
+    )
 
 
 @pytest.mark.unit
@@ -1368,9 +1375,10 @@ def test_an_unreadable_region_means_a_global_resource_is_left_alone(
     results = cleanup.cleanup_cloudfront_policies(auto_approve=True)
 
     assert fake.deleted == []
-    assert results["skipped"] == [
-        f"{DEAD_STACK}-security-headers-policy (stack: {DEAD_STACK} - could not "
-        f"confirm it is gone in {UNSCANNED_REGION}: AccessDenied)"
+    assert results["skipped"] == []
+    assert results["errors"] == [
+        f"Not deleted {DEAD_STACK}-security-headers-policy (stack: {DEAD_STACK}): "
+        f"could not confirm it is gone in {UNSCANNED_REGION}: AccessDenied"
     ]
 
 
@@ -1387,8 +1395,8 @@ def test_the_region_check_is_made_once_per_stack(cleanup, monkeypatch):
         return real_client(service, *a, **k)
 
     monkeypatch.setattr(cleanup.session, "client", client)
-    assert cleanup._still_present_elsewhere(DEAD_STACK) == ""
-    assert cleanup._still_present_elsewhere(DEAD_STACK) == ""
+    assert cleanup._still_present_elsewhere(DEAD_STACK) == ("", "")
+    assert cleanup._still_present_elsewhere(DEAD_STACK) == ("", "")
     assert calls == ["ec2"]
 
 
