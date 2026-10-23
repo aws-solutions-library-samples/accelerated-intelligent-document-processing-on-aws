@@ -14,7 +14,16 @@ This directory contains the default-lending GovCloud configuration for the GenAI
 This configuration uses model IDs that are available in AWS GovCloud regions:
 - **Amazon Nova Pro**: `amazon.nova-pro-v1:0`
 - **Amazon Nova Lite**: `amazon.nova-lite-v1:0`
-- **Anthropic Claude Sonnet 4.5**: `anthropic.claude-sonnet-4-5-20250929-v1:0`
+- **Anthropic Claude Sonnet 4.5**: `us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`
+  (the GovCloud cross-region inference profile; the bare model ID does not
+  support on-demand invocation)
+
+Every model setting is pinned to one of these, including settings the system
+defaults would otherwise fill with commercial IDs: OCR's `bedrock` backend,
+schema-validation escalation and both rule-validation stages. The one
+exception is `discovery.multi_document.embedding_model_id`, which stays at the
+commercial system default because GovCloud has no multimodal embedding model;
+Multi-Doc Discovery's embedding step does not work in GovCloud.
 
 ## Validation Level
 

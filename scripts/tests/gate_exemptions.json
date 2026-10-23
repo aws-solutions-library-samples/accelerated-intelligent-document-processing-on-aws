@@ -3110,6 +3110,20 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py::GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "(dotted configuration path, exact model id) pair in the merged GovCloud preset",
+      "turnsOff": "the 'every merged model value is GovCloud-verified' check for one setting holding one specific value: discovery.multi_document.embedding_model_id = us.cohere.embed-v4:0. Any other value at that path, or that id at any other path, is still reported",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py",
+      "issues": [
+        1529
+      ],
+      "reason": "Whether a model exists in GovCloud is a fact about live Bedrock, not about this tree. Multi-Doc Discovery needs a multimodal embedding model, the preset's own comment records that GovCloud offered none when it was checked, the setting has no enable flag the preset could turn off, and pinning an id nobody has confirmed with a Converse call would contradict the preset header. So the preset leaves the system default in place and says so. test_each_exempt_value_is_still_needed fails when the merged value at the path is no longer the excused one, so the entry goes stale the moment the default or the preset changes rather than excusing whatever lands there next."
     }
   }
 }
