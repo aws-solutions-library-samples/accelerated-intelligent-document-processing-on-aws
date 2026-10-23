@@ -27,7 +27,11 @@ flowchart LR
 
 ## Supported Steps
 
-The LambdaHook option is available for the following pipeline steps in Pattern-1 and Pattern-2:
+The LambdaHook option is available for the following steps. The first four run
+only in **pipeline mode** — BDA mode performs OCR, classification and extraction
+inside Amazon Bedrock Data Automation, so those steps and their confidence pass
+are never reached and a hook configured on them never fires. **Summarization runs
+in both processing modes**, so a hook there applies to BDA mode as well:
 
 | Step | Config Field | Description |
 |------|-------------|-------------|

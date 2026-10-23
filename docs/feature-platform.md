@@ -381,7 +381,7 @@ flowchart LR
         InstallResolvers[feature-platform<br/>install-hook resolver Lambdas]
         InstalledDDB[(InstalledFeatures<br/>DDB table)]
         WebBucket[(WebUIBucket<br/>features/&lt;id&gt;/v&lt;ver&gt;/)]
-        FeatureBucket[(FeatureBucket<br/>catalog artifacts)]
+        ConfigBucket[(ConfigurationBucket<br/>catalog.json)]
     end
 
     subgraph FeatureStack [Feature Stack<br/>e.g. 'docs-by-status']
@@ -403,7 +403,7 @@ flowchart LR
     RestApi -- Cognito authorizer --> Dispatcher
     Dispatcher -- invoke by field --> UiResolvers
     UiResolvers --> InstalledDDB
-    UiResolvers --> FeatureBucket
+    UiResolvers -- GetObject catalog.json --> ConfigBucket
     UiResolvers -. only when endpoint set .-> ENT
     FCR -- direct Lambda invoke --> InstallResolvers
     InstallResolvers --> InstalledDDB
@@ -417,11 +417,12 @@ flowchart LR
 | Component | Lives in | Purpose |
 |-----------|----------|---------|
 | `FeaturePlatformStack` | nested stack from `feature-platform/main-stack-extensions/template.yaml` | Owns the `InstalledFeatures` DynamoDB table and the feature-platform resolver Lambdas. The six UI-facing fields are reached through the REST API dispatcher (`HttpApiDispatcherFunction` in `nested/api-resolvers/`), which the stack feeds by exporting each resolver's ARN; the six install-time fields are invoked directly by feature stacks via `lambda:InvokeFunction` on those same exported ARNs. |
-| `FeatureBucket` | main `template.yaml`, condition-gated on `EnableFeaturePlatform` | Holds the catalog of published features (CFN template + UI bundle + `feature.yaml` manifest per feature). Auto-created and pre-populated with the bundled sample feature unless `FeaturePlatformFeatureBucket` is supplied. |
+| Feature catalog | `catalog.json` in the host's **ConfigurationBucket** | Lists the published features. The main stack copies it there at deploy time, and `listCatalogFeatures` / `getFeatureLaunchUrl` each read it with a single `GetObject` — no bucket listing. The key is the `CatalogKey` parameter on the feature-platform stack, defaulting to `config_library/catalog.json`; pointing `ConfigurationBucketName` at nothing disables catalog-driven discovery. |
+| `FeatureBucket` | a **parameter on each feature's own stack**, not a resource in the main `template.yaml` | The bucket a launched feature stack reads its own artifacts from (CFN template, UMD UI bundle, any source zip) — the publisher's artifacts bucket for an open-source feature, the seller bucket for a marketplace one. `getFeatureLaunchUrl` pre-fills it in the quick-create URL alongside `MainStackName`; those two are the only parameters it sets. The artifact prefix and version are **baked into the published template** by the publisher rather than passed as parameters, because CloudFormation's Update wizard drops a newly added parameter. |
 | Pipeline hooks | `patterns/unified/` (`PipelineHooksDispatcherFunction` + `preprocessing` / `postprocessing` / `postHook` config) | Lets features inject Lambdas at the `preprocessing` and `postprocessing` points (which bracket the pipeline) plus five post-step extension points in between. Inert when no hooks are registered. |
 | Feature stack | standalone CFN template published by the author via `idp-feature-cli publish` | Creates the feature's own resources + registers into the main stack |
 
-### GraphQL surface
+### API surface
 
 | Operation | Auth | Purpose |
 |-----------|------|---------|
@@ -814,7 +815,7 @@ The default brings up:
 
 - the main IDP stack,
 - the `InstalledFeatures` DDB table + feature-platform Lambdas,
-- the `FeatureBucket` pre-loaded with the bundled sample feature.
+- `catalog.json` in the ConfigurationBucket, listing the bundled sample feature.
 
 ### Enabling the platform on an existing stack
 

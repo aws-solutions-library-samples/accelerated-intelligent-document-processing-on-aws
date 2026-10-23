@@ -7,19 +7,21 @@ SPDX-License-Identifier: MIT-0
 
 # Code Intelligence Agent
 
-The GenAIIDP solution includes a Code Intelligence Agent that provides intelligent codebase understanding and analysis capabilities through the [Agent Companion Chat](./agent-companion-chat.md). This agent enables developers and users to interactively explore, understand, and analyze complex codebases using natural language queries, making code comprehension and maintenance significantly more efficient.
+The GenAIIDP solution includes a Code Intelligence Agent that answers natural-language questions about **this accelerator's own source code** through the [Agent Companion Chat](./agent-companion-chat.md). It helps a developer or operator understand how the solution is built — its architecture, its modules, the way a document flows through it — without reading the repository themselves.
 
 ## Overview
 
-The Code Intelligence Agent is one of several specialized sub-agents available within the Agent Companion Chat's multi-agent orchestration system. When enabled, the orchestrator can route code-related questions to this agent, which provides comprehensive codebase analysis and understanding capabilities through:
+The Code Intelligence Agent is one of several specialized sub-agents available within the Agent Companion Chat's multi-agent orchestration system. When enabled, the orchestrator can route code-related questions to this agent.
 
-- **Intelligent Code Analysis**: Natural language queries about codebase structure, functionality, and architecture
-- **File System Management**: Efficient handling of large codebases with smart caching and filtering
-- **Conversation Memory**: Persistent chat sessions via the Agent Companion Chat's DynamoDB-backed conversation history
-- **Lambda Integration**: Serverless deployment with automatic codebase extraction and initialization
-- **Multi-Format Support**: Support for various file types including Python, JavaScript, Jupyter notebooks, and more
-- **Context-Aware Responses**: Deep technical analysis with accurate code references and examples
-- **Real-time Code Exploration**: Interactive exploration of codebase components and relationships
+The agent answers by querying the [DeepWiki](https://docs.devin.ai/work-with-devin/deepwiki-mcp) MCP server about one fixed, public GitHub repository: `aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws`. Both the server URL and the repository name are hardcoded in
+`lib/idp_common_pkg/idp_common/agents/code_intelligence/agent.py` and are not configurable.
+
+What that means in practice:
+
+- **The subject is the published accelerator, not your deployment.** The agent can explain how the extraction service is written; it cannot see your stack, your configuration, your documents, or any change you have made to your own copy of the code.
+- **No code is uploaded.** The agent sends a *question* to DeepWiki and receives prose back. It does not read, package, or transmit any file from your account or from your checkout.
+- **Queries leave your account.** DeepWiki is a third-party service. See the Security and Privacy section below.
+- **Conversation memory, streaming, and the UI are shared** with every other companion chat agent, so follow-up questions work the same way.
 
 ## How It Fits Into Agent Companion Chat
 
@@ -44,98 +46,71 @@ For full details on the Agent Companion Chat architecture, session management, s
 
 ## ⚠️ Security and Privacy
 
-**IMPORTANT: The Code Intelligence Agent uses third-party MCP (Model Context Protocol) servers (DeepWiki), which means your queries may be sent to external services not controlled by AWS or your organization.**
+**Enabling this agent sends the text of your questions to DeepWiki, a third-party MCP (Model Context Protocol) service that is not operated by AWS or by your organization.** Everything the agent returns comes from that service.
 
-- When Code Intelligence is **enabled**, queries routed to this agent may be sent to external services
-- Data sent to these services is subject to their privacy policies and terms of service
-- **Keep Code Intelligence disabled by default** unless you specifically need code assistance
-- **Do NOT share** sensitive information (credentials, account IDs, proprietary data, customer information) in queries when this agent is enabled
-- Use the Analytics Agent or Error Analyzer Agent for queries involving your actual system data — those agents operate entirely within your AWS account
+Where the data actually goes:
 
-For detailed security guidance and best practices, see the [Security and Privacy section](./agent-companion-chat.md#security-and-privacy) in the Agent Companion Chat documentation.
+| | |
+|---|---|
+| **Leaves your account** | The question the agent sends to DeepWiki. The orchestrator reformulates the user's message, but the outbound text is still derived from what the user typed. |
+| **Does not leave your account** | Your documents, extraction results, configuration, stack resources, logs, and your own copy of the source code. None of it is read or transmitted by this agent. |
+| **What DeepWiki answers about** | The public GitHub repository `aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws`, indexed by DeepWiki from its public contents. Your deployment is not part of that index. |
+| **Transport** | Unauthenticated Streamable HTTP to `https://mcp.deepwiki.com/mcp`. |
+
+So the exposure is the **query text**, not your data — which is exactly why the guidance below is about what you type:
+
+- **Keep Code Intelligence disabled by default** and enable it only while you need it.
+- **Do not put sensitive values in a question** — credentials, account IDs, resource ARNs, document ids, customer names, log excerpts, file contents. A question like "why did document `ABC123` fail?" carries an identifier out of your account even though no document is sent.
+- The agent's system prompt instructs it to refuse queries that look like they carry specific data or secrets, and to reformulate safe ones to be about code structure only. Treat that as a safety net, not a boundary: it is model-enforced, so it is best-effort.
+- **Use a different agent for questions about your own system.** The Analytics Agent and the [Error Analyzer](./error-analyzer.md) answer from your deployment's data and make no third-party calls.
+- Data sent to DeepWiki is subject to DeepWiki's own privacy policy and terms of service.
+
+For the shared security guidance that applies to every companion chat agent, see the [Security and Privacy section](./agent-companion-chat.md#security-and-privacy) in the Agent Companion Chat documentation.
 
 ## Key Features
 
-- **Natural Language Code Queries**: Ask questions about code functionality, architecture, and implementation details
-- **Intelligent File Discovery**: Automatic identification and analysis of relevant code files
-- **Codebase Overview Generation**: Comprehensive understanding of project structure and component relationships
-- **Multi-File Analysis**: Simultaneous analysis of multiple related files for comprehensive understanding
-- **Notebook Support**: Special handling for Jupyter notebooks with image removal and optimization
-- **Smart Caching**: File hashing and overview caching for improved performance
-- **Advanced Filtering**: Configurable ignore patterns to focus on relevant code
-- **Performance Optimization**: Sliding window conversation management and tool result optimization
+- **Natural Language Code Queries**: Ask questions about the accelerator's functionality, architecture, and implementation in plain English
+- **Repository-Wide Answers**: Responses are drawn from DeepWiki's index of the whole repository rather than from a file you have to name
+- **Structure Navigation**: The agent can read the repository's wiki structure to orient itself before answering
+- **Conversation Continuity**: Follow-up questions keep their context through the Agent Companion Chat's shared DynamoDB-backed memory
+- **Streaming Responses**: Answers arrive incrementally over the companion chat's streaming transport
+- **Query Guardrails**: A system prompt that instructs the agent to refuse questions carrying sensitive data before any outbound call
 
 ## Architecture
 
-The Code Intelligence Agent runs within the Agent Companion Chat's Lambda-based architecture. The shared `agent_chat_processor` Lambda function hosts the orchestrator and all sub-agents, including Code Intelligence. The system uses Lambda functions for serverless processing with codebase files stored in the Lambda's /tmp directory.
+The Code Intelligence Agent runs within the Agent Companion Chat's Lambda-based architecture. The shared `agent_chat_processor` Lambda function hosts the orchestrator and all sub-agents, including Code Intelligence. The agent itself holds no local copy of the repository: it is a Strands agent whose only tools are the ones the DeepWiki MCP server advertises, reached over an outbound HTTPS call from the Lambda.
 
 ![Architecture Diagram](../images/IDP-ChatHelperAgent.png)
 
 ### System Components
 
 1. **Agent Companion Chat Orchestrator**: Routes code-related queries to the Code Intelligence Agent
-2. **Code Intelligence Agent**: Processes queries using the Strands framework and specialized tools
-3. **Conversation History Management**: Shared DynamoDB-backed memory via `ChatMemoryTable` (last 20 turns)
-4. **Codebase File System**: Uses Lambda /tmp directory for codebase storage
+2. **Code Intelligence Agent**: A Strands agent created by `create_code_intelligence_agent`, backed by a Bedrock model and the DeepWiki MCP tools
+3. **DeepWiki MCP Server**: The external service that holds the repository index and answers the queries
+4. **Conversation History Management**: Shared DynamoDB-backed memory via `ChatMemoryTable` (last 20 turns)
 5. **Web UI Integration**: Accessed through the Agent Companion Chat interface with toggle control
 
 ### Agent Workflow
 
 1. **User Sends Message**: User submits a question in the Agent Companion Chat interface
 2. **Orchestrator Routing**: The orchestrator determines the query is code-related and routes to Code Intelligence Agent
-3. **Codebase Initialization**: System extracts and prepares codebase files in the Lambda environment
-4. **Context Loading**: Agent loads codebase overview and determines relevant files for analysis
-5. **Intelligent Analysis**: Agent processes the query using specialized tools and codebase understanding
+3. **MCP Connection**: The agent opens a Streamable HTTP connection to DeepWiki and discovers the tools the server offers
+4. **Guardrail Check**: The agent decides whether the query is safe to send — a question carrying identifiers, credentials, or data values is refused rather than forwarded
+5. **Query**: The agent calls `ask_question` (or `read_wiki_structure`) with the repository name, and DeepWiki answers from its index
 6. **Streaming Response**: Results stream back in real time over the Agent Companion Chat's streaming Lambda Function URL, which the browser reads directly (see [agent-companion-chat.md](./agent-companion-chat.md#real-time-streaming))
 7. **Conversation Continuity**: The response is stored in shared conversation memory for follow-up questions
 
-### Code Intelligence Workflow
-
-For codebase analysis queries, the Code Intelligence Agent follows this structured workflow:
-
-1. **Codebase Overview Loading**: Agent loads comprehensive codebase structure and file purposes using `load_codebase_overview_context`
-2. **Relevance Assessment**: Determines if specific file contents are needed beyond the overview context
-3. **Intelligent File Retrieval**: Retrieves relevant files in ranked order of importance using `read_multiple_files`
-4. **Multi-File Analysis**: Analyzes multiple related files simultaneously for comprehensive understanding
-5. **Context-Aware Response**: Provides technical responses with code examples, architectural insights, and implementation details
-6. **Conversation Continuity**: Maintains context for follow-up questions within the same chat session
-
-
 ## Available Tools
 
-The Code Intelligence Agent has access to specialized tools for comprehensive code analysis:
+The agent's tools are **not defined in this repository** — they are discovered from the DeepWiki MCP server at agent-creation time, so the authoritative list is whatever that server advertises. The system prompt permits two of them and forbids a third:
 
-### 1. Codebase Overview Context Tool
-- **Purpose**: Loads existing codebase overview with file purposes and relationships
-- **Usage**: Automatically called to understand project structure and component relationships
-- **Features**: 
-  - High-level overview mode for large codebases (300+ files)
-  - Detailed analysis mode for comprehensive understanding
-  - Cached results for improved performance
+| Tool | Status | What it does |
+|---|---|---|
+| `ask_question` | **Preferred.** The tool nearly every answer comes from. | Asks DeepWiki a natural-language question about the repository and returns prose. |
+| `read_wiki_structure` | Allowed, used occasionally. | Returns the repository's directory and file organization, so the agent can orient itself before asking. |
+| `read_wiki_contents` | **Forbidden** by the system prompt. | Would load whole wiki pages. It returns enough data to exhaust the agent's context and time out the Lambda, so the prompt instructs the agent never to call it. |
 
-### 2. Multi-File Reader Tool
-- **Purpose**: Efficiently reads multiple related files for comprehensive analysis
-- **Features**: 
-  - Character limit management to respect context windows
-  - Smart file prioritization and ranking
-  - Batch processing for improved performance
-  - Support for various file types and encodings
-
-### 3. Notebook Reader Tool
-- **Purpose**: Specialized handling of Jupyter notebooks
-- **Features**: 
-  - Automatic image removal for size optimization
-  - JSON structure preservation
-  - Size limit enforcement (2GB default)
-  - Content extraction and formatting
-
-### 4. File System Management Tools
-- **Purpose**: Comprehensive file system operations and caching
-- **Features**: 
-  - SHA256 hashing for change detection
-  - Intelligent ignore pattern matching
-  - Directory tree generation
-  - File collection with filtering
+Every call must carry a `repoName` parameter, which the system prompt pins to the accelerator's repository. The agent cannot be pointed at a different repository without a code change.
 
 ## Using Code Intelligence
 
@@ -160,7 +135,7 @@ The Code Intelligence Agent can answer various types of questions about your cod
 
 **Functionality and Implementation Questions:**
 - "How does the document processing pipeline work?"
-- "What are the different patterns supported by this system?"
+- "What processing modes does this system support?"
 - "Explain how the agent framework is implemented"
 - "How does the authentication and authorization work?"
 
@@ -181,7 +156,7 @@ The Code Intelligence Agent can answer various types of questions about your cod
 Here are some example questions you can ask about the IDP codebase:
 
 ```
-"Explain the difference between Pattern 1, Pattern 2, and Pattern 3 in this IDP system"
+"Explain the difference between BDA mode and pipeline mode, and what the use_bda flag controls"
 
 "How does the agent framework work and what agents are available?"
 
@@ -217,37 +192,21 @@ Each response includes:
 
 Responses stream in real-time through the Agent Companion Chat interface, so you can see results as they are generated.
 
-## File System Architecture
+## What the Agent Cannot Answer
 
-### Current Implementation (Lambda /tmp)
+Because the answers come from a third-party index of the published repository, several
+plausible-sounding questions are out of scope. Knowing which ones saves a confusing
+exchange:
 
-The Code Intelligence feature currently uses the Lambda function's `/tmp` directory for codebase storage:
-
-**Advantages:**
-- **Fast Access**: Direct file system access with minimal latency
-- **Simple Implementation**: No additional infrastructure required
-- **Cost Effective**: No additional storage costs beyond Lambda execution
-
-**Limitations:**
-- **Size Constraints**: Limited to 10GB total storage in `/tmp`
-- **Ephemeral Storage**: Files are lost when Lambda container is recycled
-- **Cold Start Impact**: Codebase extraction required on each cold start
-
-**Current Workflow:**
-1. **Initialization**: Codebase zip files are extracted to `/tmp/codebase` on Lambda startup
-2. **Processing**: Agent tools read files directly from the `/tmp` directory
-3. **Caching**: Overview and hash files are stored in `/tmp/output` for performance
-4. **Cleanup**: Temporary files are automatically cleaned up when Lambda container terminates
-
-### Future Implementation (EFS Integration)
-
-Planned migration to Amazon Elastic File System (EFS) for enhanced scalability:
-
-**Planned Advantages:**
-- **Persistent Storage**: Codebase files persist across Lambda invocations
-- **Larger Capacity**: Support for much larger codebases (petabyte scale)
-- **Shared Access**: Multiple Lambda instances can access the same codebase
-- **Faster Cold Starts**: No need to extract codebase on each cold start
+- **Your deployment.** Stack names, parameter values, which features you enabled, how
+  many documents you have processed. Ask the Analytics Agent.
+- **Your local changes.** The index covers the public repository, so a modification you
+  made in your own fork or checkout is invisible to it.
+- **Anything newer than the index.** DeepWiki refreshes on its own schedule, so an answer
+  may describe an earlier release than the one you deployed. Verify anything
+  version-sensitive against the repository itself or against `CHANGELOG.md`.
+- **Individual document or job failures.** Those live in your account. Use the
+  [Error Analyzer](./error-analyzer.md).
 
 ## Configuration
 
@@ -266,11 +225,12 @@ The Code Intelligence Agent shares infrastructure with the Agent Companion Chat:
 
 ### Code Intelligence-Specific Settings
 
-- **CODEBASE_DIR**: Root directory for codebase files
-- **OUTPUT_DIR**: Directory for generated outputs and cache
-- **CONTEXT_WINDOW_SIZE**: Maximum context window size in characters
-- **MAX_FILE_SIZE**: Maximum individual file size (2MB default)
-- **MAX_NOTEBOOK_SIZE**: Maximum notebook size (2GB default)
+**There are none.** `create_code_intelligence_agent` accepts a `config` argument and
+ignores it: the MCP endpoint, the transport, and the repository name are all literals in
+`lib/idp_common_pkg/idp_common/agents/code_intelligence/agent.py`, and the agent reads no
+environment variables of its own. The only settings that affect it are the Agent Companion
+Chat ones it inherits — the orchestrator's model, the conversation window, and the per-user
+toggle. Changing where the agent points, or what it is allowed to call, is a code change.
 
 ## Best Practices
 
@@ -308,17 +268,30 @@ The Code Intelligence Agent shares infrastructure with the Agent Companion Chat:
 - Check CloudWatch logs for the `agent_chat_processor` Lambda function
 - Verify Bedrock model access is enabled for your selected model
 
-**File Reading Errors:**
-- Verify codebase zip files are present in the expected location
-- Check file permissions and encoding issues
-- Monitor file size limits and context window constraints
-- Review ignore patterns to ensure relevant files are not excluded
+**Agent Creation Fails:**
+Agent creation opens the MCP connection and lists the server's tools, so a network or
+server problem surfaces as a failure to create the agent rather than as a bad answer. The
+log line to look for is `Connecting to DeepWiki MCP at ...`, followed either by
+`Discovered N tools from DeepWiki` or by `Failed to create Code Intelligence Agent`. Check:
 
-**Memory and Performance Issues:**
-- Monitor Lambda memory usage and increase if necessary
-- Check context window limits for large file analysis
-- Use high-level overview mode for codebases with 300+ files
-- Consider breaking complex queries into smaller, focused questions
+- **Outbound HTTPS from the Lambda.** The call to `https://mcp.deepwiki.com/mcp` must be
+  able to leave your account. If you placed the chat Lambda in a VPC, it needs a route to
+  the internet (NAT gateway) and any egress filtering must permit that host. A deployment
+  with no outbound internet access cannot run this agent at all.
+- **DeepWiki availability.** The service is external and unauthenticated; an outage or rate
+  limit there fails agent creation with nothing wrong on your side.
+
+**The Agent Refuses to Answer:**
+If the reply says it cannot send the query to an external service, the guardrail fired.
+Rephrase the question to be about code structure rather than about a specific document,
+identifier, account, or configuration value — or use the Analytics or Error Analyzer agent,
+which answer from your own data.
+
+**Answers Are Vague or Out of Date:**
+- Responses come from DeepWiki's index of the public repository, so they describe the
+  published accelerator, not your deployment or your local changes
+- Narrow the question to one component rather than asking for a whole-system summary
+- Verify anything version-sensitive against the repository itself
 
 ### Monitoring and Logging
 
@@ -338,8 +311,11 @@ The Code Intelligence Agent shares infrastructure costs with the Agent Companion
 
 1. **Enable Only When Needed**: Keep Code Intelligence disabled when not actively using it
 2. **Efficient Queries**: Ask focused questions to minimize processing time
-3. **Caching Utilization**: Leverage codebase overview caching to reduce repeated analysis
-4. **Session Management**: Start new chat sessions when switching topics to reduce context size
+3. **Session Management**: Start new chat sessions when switching topics to reduce context size
+
+DeepWiki itself adds no AWS charge — it is an external service reached over HTTPS — so the
+agent's cost is the Bedrock inference for the orchestrator and agent turns plus the shared
+Lambda and DynamoDB usage.
 
 For overall Agent Companion Chat cost details, see the [Cost Considerations section](./agent-companion-chat.md#cost-considerations) in the Agent Companion Chat documentation.
 

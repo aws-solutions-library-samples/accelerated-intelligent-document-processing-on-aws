@@ -179,10 +179,24 @@ JSON Schema is extended with custom AWS IDP fields:
 ### Attribute-Level Extensions
 
 - `x-aws-idp-evaluation-method` - Evaluation method for attribute comparison
-  - Valid values: `EXACT`, `NUMERIC_EXACT`, `FUZZY`, `LEVENSHTEIN`, `SEMANTIC`, `DATE`, `LLM`, `HUNGARIAN`
+  - Accepted values: `EXACT`, `NUMERIC_EXACT`, `FUZZY`, `LEVENSHTEIN`, `SEMANTIC`, `DATE`, `LLM`, `HUNGARIAN`
+  - ⚠️ Matched exactly and uppercase. `exact` is not `EXACT`, and any value not
+    on this list is accepted and then **silently ignored** — the field falls back
+    to a comparator inferred from its type and name, with nothing logged and
+    nothing reported by `idp-cli config-validate`. See
+    [evaluation.md](evaluation.md#attribute-specific-evaluation-methods).
 - `x-aws-idp-evaluation-method-config` - Optional comparator config passed through to the underlying comparator (used by `DATE`: `dayfirst`, `tolerance`, `range_mode`)
-- `x-aws-idp-confidence-threshold` - Confidence threshold (0.0 to 1.0)
+- `x-aws-idp-evaluation-threshold` - Per-field match threshold, conventionally 0.0 to 1.0
+- `x-aws-idp-evaluation-match-threshold` - Item-pairing threshold for `HUNGARIAN` on a structured array, conventionally 0.0 to 1.0
+- `x-aws-idp-confidence-threshold` - Confidence threshold, conventionally 0.0 to 1.0
 - `x-aws-idp-prompt-override` - Custom prompt for attribute extraction
+
+> ⚠️ **The 0.0–1.0 range on all three thresholds above is a convention, not a
+> constraint.** `50` and `-1` are both accepted by the configuration models and
+> by `idp-cli config-validate`. Writing a threshold as a percentage — `50` where
+> `0.5` was meant — makes every comparison for that field fall short, so the
+> field scores 0 on every document, which looks like an extraction failure rather
+> than a configuration error.
 
 ### List-Specific Extensions
 
@@ -237,18 +251,21 @@ classes:
 ### Configuration Templates
 
 Find JSON Schema templates in:
-- `config_library/unified/` - Pattern 2 examples (Bedrock)
+- `config_library/unified/` - the shipped configuration presets
 
 ## Validation Methods
 
-The solution supports these evaluation methods:
+`x-aws-idp-evaluation-method` accepts these eight values, and only in this exact
+uppercase spelling:
 
 ### Standard Methods
 
-- `EXACT` - Exact string match
-- `NUMERIC_EXACT` - Exact numeric match (handles different number formats)
-- `FUZZY` - Fuzzy string matching (Levenshtein distance)
+- `EXACT` - Exact string equality
+- `NUMERIC_EXACT` - Numeric comparison with a configurable tolerance (handles different number formats)
+- `FUZZY` - Fuzzy string matching
+- `LEVENSHTEIN` - String similarity by Levenshtein edit distance
 - `SEMANTIC` - Semantic similarity using embeddings
+- `DATE` - Format-insensitive date comparison, with year and range awareness. Tune it with `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`)
 
 ### Advanced Methods
 
@@ -256,6 +273,15 @@ The solution supports these evaluation methods:
   - Useful for address blocks, multi-field groups
   - Higher cost but more flexible
   - Requires evaluation configuration with LLM model
+- `HUNGARIAN` - Optimal item pairing for a structured array (an array of
+  objects), scored through the item fields' own comparators. It is the only
+  method for that field type, and the only one that uses
+  `x-aws-idp-evaluation-match-threshold` rather than
+  `x-aws-idp-evaluation-threshold`
+
+For which field types each method suits, and for what happens when a method and
+a field type do not match, see
+[evaluation.md](evaluation.md#method-compatibility-rules).
 
 ## Best Practices
 

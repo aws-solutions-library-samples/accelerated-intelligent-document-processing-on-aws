@@ -222,10 +222,17 @@ produce a usable class for one or more of the section's pages, so those pages ha
 no extraction schema and nothing was extracted from them. The codes and their
 remedies are tabulated in
 [Classification](./classification.md#pages-classification-could-not-classify).
-Briefly: `classification_failed` is an error worth investigating (check the
-ClassificationFunction log group, and endpoint health, model access and quota) and
-is reached on the SageMaker/UDOP backend — on Bedrock the equivalent failure
-propagates and fails the document instead. `classification_page_no_content` is a
+Briefly: `classification_failed` is an error worth investigating, but ⚠️ **a stack
+deployed from this repository does not produce it.** Every call site that raises it
+sits in the classification service's SageMaker path, which runs only when a library
+caller constructs `ClassificationService` with `backend="sagemaker"` and an
+endpoint name. The deployed solution creates no inference endpoint and leaves the
+backend at its `bedrock` default, so on a standard deployment this code is
+unreachable and the equivalent Bedrock failure propagates and fails the document
+instead. If you do see it, you are running the SageMaker backend against an
+endpoint you host yourself, and the remedy is about that endpoint — check its
+health, the model access and the quota, alongside the ClassificationFunction log
+group. `classification_page_no_content` is a
 warning meaning the page had **neither** usable OCR text **nor** a loadable page
 image; a blank page normally still has an image, so this points at missing page
 artifacts rather than at an empty page, and the OCR step is the place to look.
@@ -589,15 +596,23 @@ Verbose mode provides:
 
 ### Container-Based Lambda Deployment Issues
 
+Container packaging is not mode-specific. Every image-packaged function in the
+unified pattern stack — on the BDA branch and the pipeline branch alike — plus the
+image-packaged functions in the multi-doc-discovery stack are built by a single
+CodeBuild project (`DockerBuildProject`, named `<StackName>-docker-build`). One
+build builds them all; images are
+tagged with a content-based version (`IMAGE_VERSION`), so the tag changes only when
+content does, and that is what moves the Lambda functions onto a new image.
+
+⚠️ **Those images are built in CodeBuild during stack deployment, not on your
+machine.** Publishing runs no `docker` command and needs no local Docker daemon, no
+ECR login and no local disk headroom for images. So a Docker or ECR problem seen
+during a deployment is a problem in the CodeBuild build, and its log is where the
+error is — not your local environment.
+
 | Issue | Resolution |
 |-------|------------|
-| **Lambda package exceeds 250MB limit** | Pattern-2 uses container images automatically. For Pattern-1/3, consider reducing dependency size or switching to container images in a future update. |
-| **Docker daemon not running** | Start Docker Desktop or Docker service before running container deployment |
-| **ECR login failed** | Ensure AWS credentials have ECR permissions. The script will automatically handle ECR login |
-| **Container build fails** | Check Dockerfile syntax and ensure all referenced files exist |
-| **Image push timeout** | Check network connectivity and ECR repository permissions |
-
-**Container Deployment Behavior:**
-- Pattern-2 builds and pushes container images automatically when Pattern-2 changes are detected.
-- Ensure Docker Desktop/service is running and your AWS credentials have ECR permissions.
-- Use `--verbose` to see detailed build and push logs.
+| **Lambda package exceeds 250MB limit** | The large-dependency functions are already image-packaged, which raises the limit to the 10 GB image size. If a ZIP-packaged function hits this, move it to `PackageType: Image` rather than trimming dependencies. |
+| **Docker build or push fails during deployment** | Read the CodeBuild log for the project named `<StackName>-docker-build`. Check Dockerfile syntax and that all referenced files exist |
+| **Image push timeout, or ECR access denied in the build** | The build uses the CodeBuild service role, not your credentials. In VPC-secured mode confirm the ECR API, ECR Docker and S3 endpoints exist and that the build subnets have outbound access for base images — see [VPC Secured Mode](./vpc-secured-mode.md) |
+| **Docker daemon not running** | Only affects local Lambda testing (`sam local invoke`), not publishing. Start Docker Desktop or the Docker service before invoking a function locally |

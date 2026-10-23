@@ -31,9 +31,9 @@ https://github.com/user-attachments/assets/0bf14b62-99dc-4538-a015-d8b89fa2f1f0
 
 
 
-**Supported Patterns:**
-- Pattern 1: BDA processing with HITL review
-- Pattern 2: Textract + Bedrock processing with HITL review
+**Supported processing modes:** both.
+- BDA mode: Amazon Bedrock Data Automation processing with HITL review
+- Pipeline mode: Textract or LLM-based OCR + Bedrock processing with HITL review
 
 **Key Features:**
 - Built-in review portal within the GenAI-IDP Web UI

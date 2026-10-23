@@ -463,13 +463,16 @@ When you want all pages of a document to be classified the same way, document na
 
 ```yaml
 classes:
-  - name: Payslip
-    description: "Employee wage statement showing earnings and deductions"
-    document_name_regex: "(?i).*(payslip|paystub|salary|wage).*"
-    attributes:
-      - name: EmployeeName
-        description: "Name of the employee"
-        attributeType: simple
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Payslip
+    type: object
+    x-aws-idp-document-type: Payslip
+    description: Employee wage statement showing earnings and deductions
+    x-aws-idp-document-name-regex: "(?i).*(payslip|paystub|salary|wage).*"
+    properties:
+      EmployeeName:
+        type: string
+        description: Name of the employee
 ```
 
 **How it works:**
@@ -507,21 +510,37 @@ For multi-modal page-level classification, page content regex patterns can class
 
 ```yaml
 classes:
-  - name: Invoice
-    description: "Business invoice document"
-    document_page_content_regex: "(?i)(invoice\\s+number|bill\\s+to|amount\\s+due)"
-    attributes:
-      - name: InvoiceNumber
-        description: "Invoice number"
-        attributeType: simple
-  - name: Payslip
-    description: "Employee wage statement"  
-    document_page_content_regex: "(?i)(gross\\s+pay|net\\s+pay|employee\\s+id)"
-    attributes:
-      - name: EmployeeName
-        description: "Employee name"
-        attributeType: simple
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Invoice
+    type: object
+    x-aws-idp-document-type: Invoice
+    description: Business invoice document
+    x-aws-idp-document-page-content-regex: "(?i)(invoice\\s+number|bill\\s+to|amount\\s+due)"
+    properties:
+      InvoiceNumber:
+        type: string
+        description: Invoice number
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Payslip
+    type: object
+    x-aws-idp-document-type: Payslip
+    description: Employee wage statement
+    x-aws-idp-document-page-content-regex: "(?i)(gross\\s+pay|net\\s+pay|employee\\s+id)"
+    properties:
+      EmployeeName:
+        type: string
+        description: Employee name
 ```
+
+⚠️ **The class name and both regexes must be written as the `x-aws-idp-*` schema
+extension keys.** `ClassificationService` builds its document-type list from
+`x-aws-idp-document-type`, `x-aws-idp-document-name-regex` and
+`x-aws-idp-document-page-content-regex` only. `classes` is free-form, so a class
+written in the pre-JSON-Schema style — a bare `name:` plus
+`document_page_content_regex:` and an `attributes:` list — is stored and merged
+unchanged, with no validation error and no warning, and yields a document type
+whose name is the empty string and whose regexes are `None`. Nothing matches, and
+the only signal is that classification silently never takes the regex path.
 
 **How it works:**
 - Only applies to multi-modal page-level classification method
@@ -536,15 +555,18 @@ Both regex types are optional and can be used together:
 
 ```yaml
 classes:
-  - name: W2-Form
-    description: "W2 tax form with wage and tax information"
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: W2-Form
+    type: object
+    x-aws-idp-document-type: W2-Form
+    description: W2 tax form with wage and tax information
     # Both regex types can be specified
-    document_name_regex: "(?i).*w-?2.*"  # For single-class scenarios
-    document_page_content_regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)"  # For page-level
-    attributes:
-      - name: EmployerEIN
-        description: "Employer identification number"
-        attributeType: simple
+    x-aws-idp-document-name-regex: "(?i).*w-?2.*"  # For single-class scenarios
+    x-aws-idp-document-page-content-regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)"  # For page-level
+    properties:
+      EmployerEIN:
+        type: string
+        description: Employer identification number
 ```
 
 ### Performance Benefits

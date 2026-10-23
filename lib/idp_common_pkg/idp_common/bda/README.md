@@ -112,7 +112,7 @@ The module includes CloudFormation templates for creating BDA resources:
 
 ### Creating a BDA Project and Blueprint
 
-Use the provided CloudFormation template in `notebooks/bda/cfn/bda-project.yml`:
+Use the provided CloudFormation template in `notebooks/misc/bda/cfn/bda-project.yml`:
 
 ```bash
 # Deploy the CloudFormation stack
