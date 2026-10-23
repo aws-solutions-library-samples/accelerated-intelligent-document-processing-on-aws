@@ -447,6 +447,55 @@ class TestThePageLimit:
         with pytest.raises(Exception, match="sectionSplitting"):
             IDPConfig(classification=out["classification"])
 
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    def test_a_blank_section_splitting_still_takes_the_conversion(self, blank):
+        """⚠️ Unset is not a typo, and treating it as one drops the page limit.
+
+        A blank value means "take the default", which is `llm_determined` —
+        boundary detection on — so a page limit beside it is exactly the
+        combination the conversion exists for, and it must still become
+        `disabled` with the limit kept. Reading blank as unrecognised instead left
+        the blank to resolve to `llm_determined` and the page limit was then
+        silently ignored at run time: a limit the operator set, dropped with no
+        notice.
+        """
+        out = migrate_v08_to_v09(
+            {
+                "classification": {
+                    "maxPagesForClassification": "3",
+                    "sectionSplitting": blank,
+                }
+            }
+        )
+        shape = out["classification"]["file_shape"]
+        assert shape["sectionSplitting"] == "disabled"
+        assert (
+            IDPConfig(
+                classification=out["classification"]
+            ).classification.file_shape.maxPagesForClassification
+            == "3"
+        ), "the page limit must survive, or the conversion achieved nothing"
+
+    def test_the_two_cases_do_not_share_an_answer(self):
+        """The pair, asserted together: blank converts, a typo does not.
+
+        Stated as one assertion because the defect was that both went down the
+        same branch — each case passing on its own is what made that invisible.
+        """
+
+        def shape(value):
+            return migrate_v08_to_v09(
+                {
+                    "classification": {
+                        "maxPagesForClassification": "3",
+                        "sectionSplitting": value,
+                    }
+                }
+            )["classification"]["file_shape"]["sectionSplitting"]
+
+        assert shape("") == "disabled"
+        assert shape("bogus") == "bogus"
+
     def test_a_recognised_value_still_takes_the_page_limit_conversion(self):
         """The control for the test above: the documented conversion still happens."""
         out = migrate_v08_to_v09(

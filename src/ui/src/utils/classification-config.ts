@@ -91,21 +91,68 @@ export const flatClassificationKeysIn = (config: unknown): string[] => {
 };
 
 /**
+ * The three shapes a file can be declared to have. Mirrors
+ * `SECTION_SPLITTING_VALUES` in `lib/idp_common_pkg/idp_common/config/models.py`;
+ * `scripts/tests/test_classification_flat_keys_ui_parity.py` keeps the two in step.
+ */
+export const SECTION_SPLITTING_VALUES = ['llm_determined', 'disabled', 'page'] as const;
+
+/** What an unset `sectionSplitting` means: detect the boundaries. */
+export const DEFAULT_SECTION_SPLITTING = 'llm_determined';
+
+/**
+ * The recognised spelling of a raw stored `sectionSplitting`, or `null` when there
+ * is not one. Mirrors `_known_section_splitting` in `v08_to_v09.py`, including the
+ * distinction that matters there: an absent, null or blank value means "take the
+ * default" and is NOT the same as an unrecognised one.
+ */
+const knownSectionSplitting = (raw: unknown): string | null => {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_SECTION_SPLITTING;
+  const text = String(raw).trim().toLowerCase();
+  return (SECTION_SPLITTING_VALUES as readonly string[]).includes(text) ? text : null;
+};
+
+/** Whether a raw `maxPagesForClassification` really asks for the first N pages. */
+const isPageLimit = (raw: unknown): boolean => {
+  // A boolean is not a page count, although `Number(true)` is 1 — the same trap
+  // `_is_page_limit` guards in Python, where `bool` is a subclass of `int`.
+  if (raw === undefined || raw === null || typeof raw === 'boolean') return false;
+  const text = String(raw).trim().toUpperCase();
+  if (text === '' || text === 'ALL') return false;
+  const limit = Number(text);
+  return Number.isInteger(limit) && limit > 0;
+};
+
+/**
  * Whether converting this file turns boundary detection into "one document per
- * file": a page limit combined with any section splitting other than
+ * file": a page limit combined with a *recognised* section splitting other than
  * `disabled` (mirrors `conversion_notices` in `v08_to_v09.py`).
+ *
+ * An unrecognised value is deliberately not reported here. The conversion does not
+ * happen for one — the value is left for save-time validation, which refuses it —
+ * so promising a conversion would describe something the backend will not do. Use
+ * `unknownSectionSplittingIn` for that case.
  */
 export const pageLimitBecomesOneDocument = (config: unknown): boolean => {
   const classification = config && typeof config === 'object' ? (config as Record<string, unknown>).classification : undefined;
   if (!classification || typeof classification !== 'object') return false;
   const cls = classification as Record<string, unknown>;
-  const raw = cls.maxPagesForClassification;
-  if (raw === undefined || raw === null) return false;
-  const text = String(raw).trim().toUpperCase();
-  const limit = Number(text);
-  if (text === '' || text === 'ALL' || !Number.isInteger(limit) || limit <= 0) return false;
-  const splitting = String(cls.sectionSplitting ?? 'llm_determined')
-    .trim()
-    .toLowerCase();
-  return splitting !== 'disabled';
+  if (!isPageLimit(cls.maxPagesForClassification)) return false;
+  const splitting = knownSectionSplitting(cls.sectionSplitting);
+  return splitting !== null && splitting !== 'disabled';
+};
+
+/**
+ * The file's `sectionSplitting` value when it is not one the backend accepts, else
+ * `null`. Saving such a file is refused, so the import dialog says so rather than
+ * describing a conversion that will not run.
+ */
+export const unknownSectionSplittingIn = (config: unknown): string | null => {
+  const classification = config && typeof config === 'object' ? (config as Record<string, unknown>).classification : undefined;
+  if (!classification || typeof classification !== 'object') return null;
+  const cls = classification as Record<string, unknown>;
+  const nested = cls.file_shape && typeof cls.file_shape === 'object' ? (cls.file_shape as Record<string, unknown>) : undefined;
+  const raw = nested && 'sectionSplitting' in nested ? nested.sectionSplitting : cls.sectionSplitting;
+  if (raw === undefined) return null;
+  return knownSectionSplitting(raw) === null ? String(raw) : null;
 };

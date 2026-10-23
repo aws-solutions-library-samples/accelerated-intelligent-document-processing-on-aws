@@ -8,6 +8,8 @@ import {
   flatClassificationKeysIn,
   pageLimitBecomesOneDocument,
   setClassificationModel,
+  SECTION_SPLITTING_VALUES,
+  unknownSectionSplittingIn,
 } from '../classification-config';
 
 describe('classAssigningLlmPath', () => {
@@ -82,9 +84,44 @@ describe('pageLimitBecomesOneDocument', () => {
     expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: 2, sectionSplitting: 'page' } })).toBe(true);
   });
 
+  it('is true for a blank section splitting, which means take the default', () => {
+    // Unset is not unrecognised. The conversion still runs for a blank value, so
+    // the dialog must still announce it -- `_known_section_splitting` in
+    // `v08_to_v09.py` makes the same distinction, and collapsing the two there
+    // dropped the operator's page limit silently.
+    for (const blank of ['', '   ', null, undefined]) {
+      expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: '3', sectionSplitting: blank } })).toBe(true);
+    }
+  });
+
   it('is false without a limit or when the file is already one document', () => {
     expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: 'ALL' } })).toBe(false);
     expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: '3', sectionSplitting: 'disabled' } })).toBe(false);
     expect(pageLimitBecomesOneDocument({ classification: { model: 'm' } })).toBe(false);
+  });
+
+  it('is false for an unrecognised value, which is refused rather than converted', () => {
+    // Promising a conversion for a value the backend will reject describes
+    // something that will not happen; `unknownSectionSplittingIn` reports it.
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: '3', sectionSplitting: 'bogus' } })).toBe(false);
+  });
+
+  it('is false for a boolean page limit, which is not a page count', () => {
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: true } })).toBe(false);
+  });
+});
+
+describe('unknownSectionSplittingIn', () => {
+  it('names a value the backend will refuse', () => {
+    expect(unknownSectionSplittingIn({ classification: { sectionSplitting: 'bogus' } })).toBe('bogus');
+    expect(unknownSectionSplittingIn({ classification: { file_shape: { sectionSplitting: 'Bogus' } } })).toBe('Bogus');
+  });
+
+  it('is null for every value the backend accepts, and for an unset one', () => {
+    for (const value of [...SECTION_SPLITTING_VALUES, 'DISABLED', ' page ', '', '   ', null, undefined]) {
+      expect(unknownSectionSplittingIn({ classification: { sectionSplitting: value } })).toBeNull();
+    }
+    expect(unknownSectionSplittingIn({ classification: { model: 'm' } })).toBeNull();
+    expect(unknownSectionSplittingIn({})).toBeNull();
   });
 });

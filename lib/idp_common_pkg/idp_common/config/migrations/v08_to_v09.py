@@ -218,22 +218,31 @@ def _is_page_limit(value: Any) -> bool:
 
 
 def _known_section_splitting(value: Any) -> str | None:
-    """The recognised spelling of ``value``, or ``None`` if it is not one.
+    """The recognised spelling of ``value``, or ``None`` when there is not one.
 
     The page-limit conversion below has to decide "is this already ``disabled``?"
     about a *raw* stored value, before ``FileShapeConfig`` has seen it. Comparing the
     raw string meant an unrecognised value — a typo — was not ``disabled`` and so was
     rewritten to it, while the same typo without a page limit went to the validator
     and was reported there. One typo, opposite outcomes, decided by an unrelated key.
-    So: only a recognised value is compared, and anything else is passed through
-    untouched for the validator to rule on.
+    So an unrecognised value answers ``None`` and is passed through untouched for the
+    validator to rule on.
+
+    ⚠️ **Unset is not unrecognised, and collapsing the two drops a page limit the
+    operator set.** An absent, ``None`` or blank value means "take the default",
+    which is what the validator does with it — so it answers
+    ``DEFAULT_SECTION_SPLITTING`` here, and a blank value combined with a page limit
+    still converts to ``disabled`` and keeps the limit, as it did before any of this.
+    Answering ``None`` for a blank value instead skipped that conversion, left the
+    blank to resolve to ``llm_determined``, and the page limit was then silently
+    ignored at run time.
     """
     # Imported here rather than at module scope: the enum belongs to the model that
     # validates it, and `models` reaches this module (lazily) in the other direction.
-    from ..models import SECTION_SPLITTING_VALUES
+    from ..models import DEFAULT_SECTION_SPLITTING, SECTION_SPLITTING_VALUES
 
-    if value is None:
-        return None
+    if _is_unset(value):
+        return DEFAULT_SECTION_SPLITTING
     text = str(value).strip().lower()
     return text if text in SECTION_SPLITTING_VALUES else None
 

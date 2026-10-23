@@ -2319,8 +2319,13 @@ class TwoStageConfig(BaseModel):
 
 
 #: The three shapes a file can be declared to have. Shared with the migration, which
-#: has to recognise ``disabled`` in a raw stored value before this validator sees it.
+#: has to recognise ``disabled`` in a raw stored value before this validator sees it,
+#: and mirrored in ``src/ui/src/utils/classification-config.ts`` (kept in step by
+#: ``scripts/tests/test_classification_flat_keys_ui_parity.py``).
 SECTION_SPLITTING_VALUES = ("llm_determined", "disabled", "page")
+
+#: What an unset ``sectionSplitting`` means: detect the boundaries.
+DEFAULT_SECTION_SPLITTING = "llm_determined"
 
 
 def _unusable_page_limit(value: Any) -> str:
@@ -2378,13 +2383,13 @@ class FileShapeConfig(BaseModel):
         ''" line.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
-            return "llm_determined"
+            return DEFAULT_SECTION_SPLITTING
         v_str = str(v).strip().lower()
         if v_str not in SECTION_SPLITTING_VALUES:
             raise ValueError(
                 "classification.file_shape.sectionSplitting must be one of "
                 f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
-                f"llm_determined), got {v!r}"
+                f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
             )
         return v_str
 

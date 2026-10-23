@@ -27,3 +27,47 @@ def test_the_ui_lists_exactly_the_keys_the_migration_converts():
     ui_keys = set(re.findall(r"'(\w+)'", source[start:end]))
     # classificationMethod is converted by the hop before (v07_to_v08).
     assert ui_keys == set(FLAT_KEYS) | {"classificationMethod"}
+
+
+def _ts_const(source: str, name: str) -> set[str]:
+    """The string members of an exported `const <name> = [...] as const;` array."""
+    start = source.index(f"export const {name}")
+    end = source.index("] as const;", start)
+    return set(re.findall(r"'([\w.-]+)'", source[start:end]))
+
+
+@pytest.mark.unit
+def test_the_ui_knows_exactly_the_section_splitting_values_the_backend_accepts():
+    """The import dialog tells the user what will happen to their file.
+
+    ⚠️ **A value the backend accepts and the UI does not** makes the dialog warn
+    that a correct file will be refused. **A value the UI accepts and the backend
+    does not** is worse: the dialog promises the page-limit conversion for a value
+    that is in fact rejected on save, which is the state this gate was added for —
+    the TypeScript predicate's docstring claimed to mirror `v08_to_v09.py` while the
+    Python side had changed under it, and nothing failed.
+    """
+    from idp_common.config.models import (
+        DEFAULT_SECTION_SPLITTING,
+        SECTION_SPLITTING_VALUES,
+    )
+
+    source = UI_FILE.read_text()
+    assert _ts_const(source, "SECTION_SPLITTING_VALUES") == set(
+        SECTION_SPLITTING_VALUES
+    )
+    assert f"DEFAULT_SECTION_SPLITTING = '{DEFAULT_SECTION_SPLITTING}'" in source, (
+        "the UI's default section-splitting value is not the one the config layer "
+        f"substitutes for an unset one ({DEFAULT_SECTION_SPLITTING})"
+    )
+
+
+@pytest.mark.unit
+def test_this_gate_reads_the_arrays_rather_than_passing_on_an_empty_one():
+    """Guard the guard: both parity checks compare sets, so two empty sets agree."""
+    source = UI_FILE.read_text()
+    for name in ("FLAT_CLASSIFICATION_KEYS", "SECTION_SPLITTING_VALUES"):
+        assert _ts_const(source, name), (
+            f"read no members from the UI's {name}, so the parity assertion over it "
+            "would pass by comparing nothing"
+        )

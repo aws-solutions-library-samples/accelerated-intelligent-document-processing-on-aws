@@ -42,7 +42,13 @@ import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import { deepMerge } from '../../utils/configUtils';
 import { syncBdaIdp } from '../../graphql/generated';
 import { parseConfigurationData } from '../../graphql/awsjson-parsers';
-import { flatClassificationKeysIn, pageLimitBecomesOneDocument } from '../../utils/classification-config';
+import {
+  DEFAULT_SECTION_SPLITTING,
+  SECTION_SPLITTING_VALUES,
+  flatClassificationKeysIn,
+  pageLimitBecomesOneDocument,
+  unknownSectionSplittingIn,
+} from '../../utils/classification-config';
 
 const client = generateClient();
 const logger = new ConsoleLogger('ConfigurationLayout');
@@ -2899,6 +2905,14 @@ const ConfigurationLayout = (): React.JSX.Element => {
                 ? ' with one exception: its page limit is combined with boundary detection, so it is converted to one document per file, and a short file holding several documents becomes one section'
                 : ''}
               . Download the profile afterwards to get a file in the current layout.
+            </Alert>
+          )}
+          {unknownSectionSplittingIn(importedConfigForNewVersion) !== null && (
+            <Alert type="warning" header="Section splitting value will be rejected">
+              This file sets section splitting to &quot;{unknownSectionSplittingIn(importedConfigForNewVersion)}&quot;, which is not one of{' '}
+              {SECTION_SPLITTING_VALUES.join(', ')}. Saving it will be refused, because the value decides whether document boundaries are
+              detected at all and choosing one for you would change where sections start. Correct it in the file, or clear it to use{' '}
+              {DEFAULT_SECTION_SPLITTING}.
             </Alert>
           )}
 
