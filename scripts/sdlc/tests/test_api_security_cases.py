@@ -1614,6 +1614,35 @@ class TestInboxIdorSuiteEdges:
 # --------------------------------------------------------------------------- #
 # IDOR (2.1) — review queues: only the claimer acts on a claimed item
 # --------------------------------------------------------------------------- #
+def _load_dispatcher_validation():
+    """The dispatcher's real argument validator, loaded by path under its own name.
+
+    The fake below runs every call through it first, so a call missing an argument
+    the schema requires gets the same 400 the deployed dispatcher gives it, rather
+    than the 403 the check is waiting for.
+    """
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "nested/api-resolvers/src/lambda/http_api_dispatcher/validation.py"
+    )
+    spec = importlib.util.spec_from_file_location("_dispatcher_validation", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # The loader fails open: an unreadable spec becomes an empty one and every
+    # call validates, which would make this guard check nothing.
+    probed = {
+        "renewReviewLease",
+        "releaseReviewItem",
+        "saveReviewDraft",
+        "completeReviewItem",
+    }
+    missing = probed - set(mod._SPEC["fields"])
+    assert not missing, f"validation spec did not load, or lacks {sorted(missing)}"
+    return mod
+
+
+dispatcher_validation = _load_dispatcher_validation()
+
 REVIEW_KEY = "batch-1/claim.pdf"
 REVIEW_CYCLE = "cycle-1"
 _FORBIDDEN = (403, '{"errors":[{"errorType":"Forbidden"}]}')
@@ -1623,8 +1652,9 @@ class _FakeReviewApi:
     """An in-memory stand-in for the review-queue operations behind ``call_body``.
 
     Token ``"A"`` holds the claim, ``"B"`` is a fellow queue member and ``"C"`` is
-    not a member. By default it behaves like the real resolver; ``status``
-    overrides one ``(field, token)`` response to break one property.
+    not a member. By default it behaves like the real dispatcher and resolver —
+    argument validation first, then ownership; ``status`` overrides one
+    ``(field, token)`` response to break one property.
     """
 
     def __init__(self, **knobs):
@@ -1653,6 +1683,10 @@ class _FakeReviewApi:
         override = self.knobs.get("status", {}).get((field, token))
         if override is not None:
             return override
+        try:
+            dispatcher_validation.validate_arguments(field, args)
+        except ValueError as e:
+            return 400, json.dumps({"errors": [{"errorType": "BadRequest", "message": str(e)}]})
         if field == "getReviewItem":
             if token == "C":  # nosec B105 - fake test token id, not a credential
                 return _FORBIDDEN
@@ -1717,7 +1751,7 @@ class TestReviewQueueIdorSuite:
         item_args = {"objectKey": REVIEW_KEY, "cycleId": REVIEW_CYCLE}
         b_acts = {f: a for f, t, a in api.calls if t == "B" and f != "getReviewItem"}
         assert b_acts["renewReviewLease"] == item_args
-        assert b_acts["releaseReviewItem"] == item_args
+        assert b_acts["releaseReviewItem"] == {**item_args, "reason": "Out of time"}
         assert b_acts["completeReviewItem"] == item_args
         assert b_acts["saveReviewDraft"] == {
             **item_args,

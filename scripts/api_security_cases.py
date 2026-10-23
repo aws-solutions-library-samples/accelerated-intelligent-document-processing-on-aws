@@ -766,10 +766,11 @@ def _run_review_idor_checks(ctx, record, results, seeded, call_body):
         outcome="ERROR" if why else None,
     )
 
-    # 3. B can't act on A's claim.
+    # 3. B can't act on A's claim. Each call carries every argument the
+    # dispatcher requires, or it answers 400 before ownership is ever checked.
     for field, extra in (
         ("renewReviewLease", {}),
-        ("releaseReviewItem", {}),
+        ("releaseReviewItem", {"reason": "Out of time"}),
         ("saveReviewDraft", {"sectionId": "1", "data": "{}"}),
         ("completeReviewItem", {}),
     ):
