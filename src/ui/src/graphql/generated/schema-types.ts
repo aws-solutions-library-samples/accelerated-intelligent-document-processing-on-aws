@@ -2300,15 +2300,18 @@ export type ReviewEffortEstimate = {
   effortMinutesPerDoc?: Maybe<Scalars['Float']['output']>;
   estimateConfidence: Scalars['String']['output'];
   impliedCutoff?: Maybe<Scalars['Float']['output']>;
+  inspectedDocs?: Maybe<Scalars['Int']['output']>;
   qualityTier?: Maybe<Scalars['String']['output']>;
   qualityTierReason?: Maybe<Scalars['String']['output']>;
   recommendReviewAll: Scalars['Boolean']['output'];
   reliabilityTable: Array<ReliabilityBin>;
   residualError: Scalars['Float']['output'];
   sampledDocs?: Maybe<Scalars['Int']['output']>;
+  setDocs?: Maybe<Scalars['Int']['output']>;
   targetAccuracy: Scalars['Float']['output'];
   testSetId: Scalars['String']['output'];
   totalDocs: Scalars['Int']['output'];
+  wholeSetInspected?: Maybe<Scalars['Boolean']['output']>;
 };
 
 export type ReviewHistoryEntry = {
