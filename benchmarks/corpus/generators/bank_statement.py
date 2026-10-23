@@ -130,11 +130,14 @@ def _locate(page, spans):
     Clamping to the last span is the tempting answer and it is wrong: it keeps the
     span's total while letting the page number run past it, so the fourth page of a
     3-page final statement renders "Page 4 of 3" — the file quoting a total it does
-    not have, which is precisely the output this module exists to prevent. The real
-    build out-running the measuring pass is the way that happens, and the known
-    cause of it (the two passes laying out at different top margins) is fixed, so
-    this is a residual. A silent residual in a fixture generator is scored as a
-    model result, so it fails the build instead.
+    not have, which is precisely the output this module exists to prevent.
+
+    ⚠️ This catches only the direction where the real build produces MORE pages
+    than the measuring pass. The other direction resolves inside a span and is
+    therefore invisible here: with fewer real pages, a later copy's first page
+    falls inside the previous copy's span and is stamped with that copy's number
+    and total. :func:`_verify_measured_layout` is what closes that half, after the
+    build, by re-deriving the map from the real run.
     """
     for index, (first, pages) in enumerate(spans):
         if first <= page < first + pages:
@@ -144,6 +147,34 @@ def _locate(page, spans):
         f"{spans}: the real layout produced pages the measuring pass did not. "
         "Numbering this page would print a total the file does not have."
     )
+
+
+def _verify_measured_layout(spans, starts, total, documents):
+    """Refuse if the real build did not lay out the way the measuring pass did.
+
+    The footers are drawn from a map measured in an earlier pass, so everything
+    they say is conditional on the second pass agreeing with the first. One
+    comparison settles that for both directions, which is why it is a comparison
+    rather than a widened inequality: the markers are still in the story for the
+    real build, so they re-record as it runs, and re-deriving the map from those
+    recordings and the real page tally must reproduce the map the footers used.
+
+    More real pages than measured is already caught during the build by
+    :func:`_locate`, which meets a page no span covers. FEWER is the direction that
+    needs this: every page still resolves inside some span, so a later copy's first
+    page is quietly stamped with the previous copy's number and total — a document
+    asserting a boundary where it has none, which is the whole defect this module
+    is about, reached through the guard's blind side.
+    """
+    rebuilt = _page_spans(starts, total, documents) if starts else [(1, max(1, total))]
+    if rebuilt != spans:
+        raise RuntimeError(
+            f"the measured layout and the real one disagree: footers were drawn "
+            f"from page spans {spans}, and the build that wrote the file produced "
+            f"{rebuilt} ({total} page(s)). Every page number and total in the file "
+            "is therefore unreliable, so the fixture is refused rather than "
+            "shipped with a ground truth its pages may contradict."
+        )
 
 
 def _noise(s, seq, level):
@@ -474,6 +505,14 @@ def build(
         )
         canvas.restoreState()
 
+    # The page count of the build that actually WROTE the file, which is the half
+    # of the layout agreement the measuring pass cannot speak for. The markers are
+    # still in `story`, so they re-record into `copy_starts` as this build runs.
+    real = {"total": 0}
+
+    def _tally(canvas, _doc):
+        real["total"] = max(real["total"], canvas.getPageNumber())
+
     if paginate:
 
         def _footer(canvas, _doc):
@@ -484,7 +523,12 @@ def build(
             canvas.drawRightString(7.9 * inch, 0.32 * inch, f"Page {page} of {pages}")
             canvas.restoreState()
 
+        def _first(canvas, doc_):
+            _tally(canvas, doc_)
+            _footer(canvas, doc_)
+
         def _later(canvas, doc_):
+            _tally(canvas, doc_)
             _footer(canvas, doc_)
             if repeat_header:
                 _running_header(canvas, doc_)
@@ -497,8 +541,13 @@ def build(
             leftMargin=0.4 * inch,
             rightMargin=0.4 * inch,
         )
-        doc.build(story, onFirstPage=_footer, onLaterPages=_later)
+        doc.build(story, onFirstPage=_first, onLaterPages=_later)
     elif repeat_header:
+
+        def _later_header(canvas, doc_):
+            _tally(canvas, doc_)
+            _running_header(canvas, doc_)
+
         doc = SimpleDocTemplate(
             out,
             pagesize=letter,
@@ -507,9 +556,18 @@ def build(
             leftMargin=0.4 * inch,
             rightMargin=0.4 * inch,
         )
-        doc.build(story, onLaterPages=_running_header)
+        doc.build(story, onFirstPage=_tally, onLaterPages=_later_header)
     else:
         doc.build(story)
+
+    if spans:
+        # Everything the footers and the running header asserted was conditional on
+        # the second pass laying out like the first. Settle that before the truth
+        # file is written, so a disagreement is a build failure rather than a
+        # fixture whose pages and ground truth may contradict each other.
+        _verify_measured_layout(
+            spans, copy_starts if needs_page_map else {}, real["total"], documents
+        )
     truth = {
         "gen": "bank_statement",
         "repeat_header": bool(repeat_header),

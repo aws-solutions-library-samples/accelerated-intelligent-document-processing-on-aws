@@ -39,15 +39,14 @@ declared in ``lib/idp_common_pkg``'s ``test`` extra, so they are present whereve
 this registered root is collected, and both are imported plainly. A missing one is
 therefore an **error** naming it rather than a skip.
 
-That is the whole point rather than a detail. The first version of this file
-reached for its reader with ``pytest.importorskip``, which is the usual courtesy
-for an optional dependency and was the wrong instinct here: every page-reading case
-would have skipped in both CIs, the invariant would have been asserted nowhere that
-runs, and the job log of a suite proving nothing reads exactly like the log of one
-proving everything. ``benchmarks/tests/harness_import.py`` exists because that
-defect already shipped in this directory once, and the ``reportlab`` entry in the
-``test`` extra carries the same lesson: the remedy is to DECLARE the dependency,
-not to tolerate its absence.
+That is the whole point rather than a detail. ``pytest.importorskip`` is the usual
+courtesy for an optional dependency and is the wrong instinct here: every
+page-reading case would skip in both CIs, the invariant would be asserted nowhere
+that runs, and the job log of a suite proving nothing reads exactly like the log of
+one proving everything. It has happened in this directory before — see
+``harness_import.py`` and GitHub #1079. The remedy is to DECLARE the dependency,
+which is what the ``reportlab`` entry in the ``test`` extra records, not to
+tolerate its absence.
 
 ``pypdfium2`` is the extractor the generator itself uses, so reading with it adds no
 new PDF library to the tree. It extracts the pagination footer and the identity
@@ -351,3 +350,107 @@ class TestPageMapRefusesToGuess:
     def test_page_zero_raises_rather_than_counting_backwards(self, bank_statement):
         with pytest.raises(RuntimeError, match="outside every document copy"):
             bank_statement._locate(0, [(1, 3)])
+
+
+# --------------------------------------------------------------------------- #
+# The two layout passes have to agree, in both directions
+# --------------------------------------------------------------------------- #
+def _relayout_the_written_build(bank_statement, monkeypatch, margin):
+    """Make the build that WRITES the file lay out differently from the measuring one.
+
+    The two passes agree by construction today — same story, same page size, same
+    margins — so the disagreement has to be injected to be exercised at all. It is
+    injected at the margins, which is the shape the real cause had, and only on the
+    construction that writes the file: the generator builds three
+    ``SimpleDocTemplate`` objects per paginated multi-copy run, and the third is
+    the one whose output ships.
+
+    The construction count is asserted rather than assumed. Keyed on a count, this
+    helper would otherwise go silently inert the moment the generator built a
+    fourth template, leaving a green test that injects nothing — the same
+    absence-versus-failure shape the rest of this file is about.
+    """
+    import reportlab.lib.units
+
+    real = bank_statement.SimpleDocTemplate
+    calls = {"n": 0}
+
+    def counted(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            kwargs["topMargin"] = margin * reportlab.lib.units.inch
+            kwargs["bottomMargin"] = margin * reportlab.lib.units.inch
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bank_statement, "SimpleDocTemplate", counted)
+    return calls
+
+
+@pytest.mark.unit
+class TestTheTwoLayoutPassesMustAgree:
+    """A fixture whose footers were measured against a different layout is refused.
+
+    Both directions reach this, by different routes, and the quiet one is the
+    reason the check is a comparison rather than a wider bound on ``_locate``:
+
+    * MORE real pages than measured — a page falls outside every span, so
+      ``_locate`` raises during the build.
+    * FEWER real pages than measured — every page still resolves inside some span,
+      so nothing raises and a later copy's first page is stamped with the previous
+      copy's number and total. The file then asserts a boundary where it has none,
+      which is scored as a model failure.
+    """
+
+    def test_fewer_real_pages_than_measured_is_refused(
+        self, bank_statement, monkeypatch, tmp_path
+    ):
+        calls = _relayout_the_written_build(bank_statement, monkeypatch, margin=0.1)
+        with pytest.raises(RuntimeError, match="measured layout and the real one"):
+            bank_statement.build(
+                out=str(tmp_path / "fewer.pdf"), rows=100, documents=2, paginate=True
+            )
+        assert calls["n"] == 3, (
+            "the generator no longer builds three document templates, so this test "
+            "injected nothing into the build that writes the file"
+        )
+
+    def test_more_real_pages_than_measured_is_refused(
+        self, bank_statement, monkeypatch, tmp_path
+    ):
+        calls = _relayout_the_written_build(bank_statement, monkeypatch, margin=4.0)
+        with pytest.raises(RuntimeError, match="outside every document copy"):
+            bank_statement.build(
+                out=str(tmp_path / "more.pdf"), rows=100, documents=2, paginate=True
+            )
+        assert calls["n"] == 3
+
+    def test_an_agreeing_layout_is_accepted(self, bank_statement):
+        spans = [(1, 3), (4, 3)]
+        bank_statement._verify_measured_layout(spans, {0: 1, 1: 4}, 6, 2)
+
+    @pytest.mark.parametrize(
+        ("starts", "total", "note"),
+        [
+            ({0: 1, 1: 4}, 5, "the final copy came out a page shorter"),
+            ({0: 1, 1: 4}, 7, "the final copy came out a page longer"),
+            ({0: 1, 1: 3}, 6, "a copy started on a different page"),
+            ({0: 1, 1: 5}, 6, "a copy started later than measured"),
+        ],
+    )
+    def test_a_disagreeing_layout_is_refused(self, bank_statement, starts, total, note):
+        """Driven through the comparison's own inputs, to cover maps the margin
+        injection above cannot produce — a copy whose start page moves while the
+        total does not, in particular."""
+        with pytest.raises(RuntimeError, match="measured layout and the real one"):
+            bank_statement._verify_measured_layout([(1, 3), (4, 3)], starts, total, 2)
+
+    def test_a_single_copy_is_checked_on_its_total(self, bank_statement):
+        """``documents=1`` records no markers, so the total is the whole comparison.
+
+        It still matters: the one shipped paginated fixture is single-copy, and a
+        real build a page longer than the measuring pass would stamp every page
+        "of 3" on a 4-page file.
+        """
+        bank_statement._verify_measured_layout([(1, 3)], {}, 3, 1)
+        with pytest.raises(RuntimeError, match="measured layout and the real one"):
+            bank_statement._verify_measured_layout([(1, 3)], {}, 4, 1)
