@@ -1184,12 +1184,22 @@ def match_value_to_geometry(
     best_tier = min(tier for tier, *_ in candidates)
     best = [c for c in candidates if c[0] == best_tier]
 
-    # At EXACT tier the tie is about provenance rather than precision, so prefer the
-    # line carrying the value as extracted over a format-bridged rendering of it.
-    # Without this the tie-break below is positional, and collapsing a separator can
-    # promote a variant to EXACT alongside the verbatim hit: a ``"4-15-11"`` whose
-    # own line sits on page 2 is then grounded on page 1's ``"APR 15 2011"`` stamp,
-    # which reading order reaches first (#1520).
+    # At the best matching tier the tie is about provenance rather than precision, so
+    # prefer the line carrying the value as extracted over a format-bridged rendering
+    # of it. Without this the tie-break below is positional, and collapsing a
+    # separator can promote a variant to EXACT alongside the verbatim hit: a
+    # ``"4-15-11"`` whose own line sits on page 2 is then grounded on page 1's
+    # ``"APR 15 2011"`` stamp, which reading order reaches first (#1520).
+    #
+    # ⚠️ **Never when a row mapping is in play.** With ``occurrence_index`` set, row
+    # *i* is the *i*-th candidate in reading order, so the position in this list IS
+    # the row correspondence — and filtering by provenance destroys it. A column
+    # where one occurrence is rendered verbatim and the others only match through a
+    # variant then narrows to the single verbatim candidate, the ``len(best) == 1``
+    # return below fires, and **every row is handed the same box**; with several
+    # survivors, row *i* indexes a pool that no longer contains row *i*. Row order
+    # already disambiguates those rows, so the preference has nothing to add there —
+    # it exists for the scalar case, which passes no index.
     #
     # ⚠️ **Bounded by what it is NOT asked to decide.** For a number the primary
     # rendering is arbitrary — ``str(6.0)`` is ``"6.0"``, a substring of
@@ -1201,9 +1211,10 @@ def match_value_to_geometry(
     # token-boundary rule cost 73 account numbers the model had transcribed one digit
     # short, where the box was on the right field and the highlight is what would
     # have caught the error). It wants its own change and its own measurement.
-    verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
-    if verbatim_at_tier:
-        best = verbatim_at_tier
+    if occurrence_index is None:
+        verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
+        if verbatim_at_tier:
+            best = verbatim_at_tier
 
     if len(best) == 1:
         _, geometry, source, ocr_conf = best[0]

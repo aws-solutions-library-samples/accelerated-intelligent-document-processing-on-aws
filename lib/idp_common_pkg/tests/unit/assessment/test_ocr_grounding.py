@@ -1083,7 +1083,7 @@ class TestWeakPartialDemotion:
         all loses more than it saves.
 
         The fixture is chosen so that **only** the weak tier can produce this box:
-        16.9% coverage puts it under the floor, token overlap of 0.22 is below the
+        17.4% coverage puts it under the floor, token overlap of 0.22 is below the
         fuzzy threshold, and the length ratio means the Levenshtein ceiling skips
         it. If sub-floor fragments were rejected there would be no box at all, so
         this test reds under that change rather than passing either way.
@@ -1117,7 +1117,7 @@ class TestWeakPartialDemotion:
         assert geom["boundingBox"]["top"] == 0.44
 
     def test_a_correct_suffix_still_matches(self):
-        """Measured: an author line whose email suffix covers 51% of the value."""
+        """Measured: an author line whose email suffix covers 52.6% of the value."""
         pd = {1: _page([_line("menamul@kfupm.edu.sa", 0.3, 0.6)])}
         geom, _source, _ = g.match_value_to_geometry(
             "M. Enamul Hossain, menamul@kfupm.edu.sa", pd
@@ -1979,6 +1979,60 @@ class TestTheVerbatimPreferenceDoesNotCloseTheNumericHazard:
 
     def test_a_date_still_prefers_its_own_line_across_pages(self):
         """What the preference IS for, and all it claims."""
+        pd = {
+            1: _page([_line("APR 15 2011", 0.79, 0.13)]),
+            2: _page([_line("4-15-11", 0.75, 0.18)]),
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert source == "ocr"
+        assert geom["page"] == 2
+
+
+class TestRowOrderSurvivesMixedRendering:
+    """⚠️ The verbatim preference must never run while a row mapping is in play.
+
+    With ``occurrence_index`` set, row *i* is the *i*-th candidate in reading order,
+    so position in that list **is** the row correspondence. Filtering by provenance
+    destroys it: a column where one occurrence is rendered verbatim and the others
+    only match through a variant narrows to the single verbatim candidate, the
+    ``len(best) == 1`` return fires, and every row is handed the same box.
+
+    The all-verbatim and all-variant cases both pass either way, which is why this
+    needs its own fixture — and why the failure is invisible to a measurement that
+    reads moved boxes one at a time: three rows pointing at the same plausible line
+    each look right in isolation.
+    """
+
+    MIXED = [("06/30/14", 0.10), ("06/30/2014", 0.20), ("06/30/2014", 0.30)]
+
+    def _tops(self, lines, value, rows, hint=None):
+        pd = {1: _page([_line(t, 0.1, top) for t, top in lines])}
+        return [
+            round(
+                g.match_value_to_geometry(value, pd, None, i, hint)[0]["boundingBox"][
+                    "top"
+                ],
+                2,
+            )
+            for i in range(rows)
+        ]
+
+    def test_one_verbatim_and_two_variant_rows_get_three_distinct_boxes(self):
+        tops = self._tops(
+            self.MIXED, "06/30/14", 3, {"type": "string", "format": "date"}
+        )
+        assert tops == [0.10, 0.20, 0.30], (
+            "each row must map to its own occurrence in reading order"
+        )
+        assert len(set(tops)) == 3
+
+    def test_two_verbatim_and_one_variant_row_also_map_one_to_one(self):
+        lines = [("06/30/14", 0.10), ("06/30/14", 0.20), ("06/30/2014", 0.30)]
+        tops = self._tops(lines, "06/30/14", 3, {"type": "string", "format": "date"})
+        assert tops == [0.10, 0.20, 0.30]
+
+    def test_a_scalar_still_gets_the_preference(self):
+        """The preference exists for the no-index case and must survive there."""
         pd = {
             1: _page([_line("APR 15 2011", 0.79, 0.13)]),
             2: _page([_line("4-15-11", 0.75, 0.18)]),

@@ -320,3 +320,48 @@ class TestBothHalvesAgreeOnPopulatedness:
             assessment, extraction, geometry_mode="ocr_only", section_id="1"
         )
         assert "assessment_geometry_incomplete" not in _codes(issues)
+
+
+class TestADocumentWithNoOcrGeometry:
+    """⚠️ "Nothing matched" and "nothing was available to match" are different.
+
+    A document whose OCR backend emits no geometry never attempts a match, so every
+    one of its sections satisfies "no populated field carries a box". Reporting that
+    publishes ``root_cause="value could not be matched to OCR lines"`` about work
+    that never ran, on every section at once — and the cause is the document's OCR
+    backend, which an operator cannot act on per section. The measured 2% rate holds
+    where geometry IS available and does not bound this population.
+    """
+
+    def test_no_geometry_available_reports_nothing(self):
+        extraction = {"Language": "English", "Title": "Annual Report"}
+        assessment = {"Language": _scored(), "Title": _scored()}
+        _gaps, issues = audit_explainability(
+            assessment,
+            extraction,
+            geometry_mode="ocr_only",
+            section_id="1",
+            geometry_available=False,
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
+
+    def test_geometry_available_still_reports(self):
+        extraction = {"Language": "English", "Title": "Annual Report"}
+        assessment = {"Language": _scored(), "Title": _scored()}
+        _gaps, issues = audit_explainability(
+            assessment,
+            extraction,
+            geometry_mode="ocr_only",
+            section_id="1",
+            geometry_available=True,
+        )
+        assert "assessment_geometry_incomplete" in _codes(issues)
+
+    def test_an_unstated_caller_keeps_the_old_behaviour(self):
+        """``None`` means the caller did not say, so nothing changes for it."""
+        extraction = {"Language": "English"}
+        assessment = {"Language": _scored()}
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        assert "assessment_geometry_incomplete" in _codes(issues)

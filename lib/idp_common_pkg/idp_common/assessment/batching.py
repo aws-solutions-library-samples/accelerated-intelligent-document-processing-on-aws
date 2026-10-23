@@ -1824,6 +1824,7 @@ def audit_explainability(
     geometry_mode: str | None = None,
     section_id: str | None = None,
     ladder_issues: list[Any] | None = None,
+    geometry_available: bool | None = None,
 ) -> tuple[dict[str, list[int]], list[Any]]:
     """Verify every extracted value has correctly-structured explainability.
 
@@ -1846,7 +1847,10 @@ def audit_explainability(
       error, since geometry is advisory enrichment. The two halves of this rung ask
       different questions, for reasons measured at the emission site: **any**
       box-less list row reports, while a **scalar** field reports only when no
-      populated field in the section carries a box at all. Counting scalars happened
+      populated field in the section carries a box at all, and only when
+      ``geometry_available`` is not ``False`` — a document whose OCR backend emitted
+      no geometry never attempted a match, so every one of its sections would
+      otherwise report with a cause that did not apply. Counting scalars happened
       in neither half before (#1520), so the rung could not fire for a section whose
       fields are all scalars — which is most of them.
     - Confidence values are within [0, 1].
@@ -2035,7 +2039,21 @@ def audit_explainability(
     # and a note claiming nothing was located would be a plain false alarm there.
     geometry_total = row_geometry_total + scalar_geometry_total
     geometry_missing = missing_geometry_rows + missing_geometry_scalars
-    nothing_located = geometry_total > 0 and geometry_missing == geometry_total
+    # ⚠️ ``geometry_available=False`` means no page carried OCR geometry at all, so
+    # no match was ever attempted. Every section of such a document satisfies
+    # "nothing was located", and the rung would publish ``root_cause="value could
+    # not be matched to OCR lines"`` about work that never ran — on every section at
+    # once, which an operator cannot act on per section because the cause is the
+    # document's OCR backend. The 2% figure above is measured where geometry IS
+    # available and says nothing about this population, so the rung declines it
+    # rather than reporting it with a cause it cannot support. ``None`` means the
+    # caller did not say, and is treated as available so an existing caller keeps
+    # its behaviour.
+    nothing_located = (
+        geometry_available is not False
+        and geometry_total > 0
+        and geometry_missing == geometry_total
+    )
     if missing_geometry_rows or nothing_located:
         issues.append(
             ProcessingIssue(
@@ -2051,8 +2069,8 @@ def audit_explainability(
                 # `scripts/tests/test_info_code_ui_parity.py` reads this argument
                 # from source to check the code reports an absence and not a repair.
                 # A bare name defeats that reader — it fails loudly rather than
-                # passing vacuously, which is how this was caught — and a
-                # conditional expression keeps **both** messages in its view.
+                # passing vacuously — and a conditional expression keeps **both**
+                # messages in its view.
                 message=(
                     f"No scored field in this section has a bounding box under "
                     f"geometry.mode '{geometry_mode}' ({geometry_missing} leaf/leaves)."
@@ -2068,8 +2086,11 @@ def audit_explainability(
                 section_id=section_id,
                 details={
                     # Stays list-rows-only, which is what it counted before the
-                    # scalar half existed: a consumer reading it sees no change in
-                    # meaning. The new keys carry the rest.
+                    # scalar half existed, so its definition is unchanged. ⚠️ The
+                    # VALUE can be lower for identical input, because a row leaf
+                    # whose own value is empty is no longer counted — which is what
+                    # a consumer comparing runs across an upgrade will notice. The
+                    # new keys carry the rest.
                     "missing_geometry_leaves": missing_geometry_rows,
                     "missing_geometry_rows": missing_geometry_rows,
                     "row_leaves_wanting_geometry": row_geometry_total,

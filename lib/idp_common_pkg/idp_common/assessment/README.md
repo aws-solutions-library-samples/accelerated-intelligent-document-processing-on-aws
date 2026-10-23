@@ -465,8 +465,15 @@ field**, and the asymmetry is deliberate:
 
 | Shape | Reports when |
 |---|---|
-| List row | **any** scored row carries no box |
+| List row | **any** scored row holding a populated value carries no box |
 | Scalar / group field | **no populated field** in the section carries a box |
+
+Both halves test the **leaf's own** value, so a scored but empty cell counts for
+neither: an absent value has no place on the page for a box to sit, and a missing
+box is the correct outcome rather than a finding. ⚠️ That narrows the list half as
+well — a section whose only box-less scored leaves sit in empty cells reported
+before and is silent now. Neither half reports at all when no page carried OCR
+geometry, since no match was attempted there.
 
 The scalar side was counted in neither half before
 ([#1520](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1520)) —
