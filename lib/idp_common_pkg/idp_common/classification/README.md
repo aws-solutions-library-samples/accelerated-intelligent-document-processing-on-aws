@@ -155,6 +155,33 @@ classification call fails keeps `doc_class = None` and is reported — its
 boundaries are still good, and an invented class would propagate into extraction
 as though it had been decided.
 
+#### Which placeholders a stage is allowed to render
+
+The prefix saving is the whole justification for two-stage, so **segmentation
+renders `{CLASS_NAMES_AND_DESCRIPTIONS}`, `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
+and `{FEW_SHOT_EXAMPLES}` as empty**, whichever granularity it runs at and
+whatever `contextPagesCount` is set to. That is decided by the stage, in
+`_stage_withholds_class_vocabulary` and `_build_classification_substitutions`,
+rather than by the content builder that happens to render the prompt — the page
+builder, the context-page builder and the packet builder are each shared between
+single-pass, segmentation and section classification, so a per-builder answer is
+three answers. `boundary_hints: class_names` stays the one supported way to put
+class **names** into a segmentation prompt.
+
+Symmetrically, **`{BOUNDARY_HINTS}` renders as empty for every stage other than
+segmentation.** The setting lives under `two_stage.segmentation.llm` and so is
+inert under `strategy: single_pass`, but that subtree is readable either way;
+the block it produces ends "do NOT report a type, only where each document
+starts and ends", which is the one thing a single-pass or section-classification
+call exists to do.
+
+None of this is observable with the shipped prompts — the shipped segmentation
+prompts reference neither vocabulary placeholder, and the shipped one-stage
+prompts do not reference `{BOUNDARY_HINTS}` — so it matters for an edited
+prompt, which every one of these is. The UI's prompt preview
+(`PromptPreview.tsx`) models the same rules, so what it shows for a segmentation
+step is what the stage sends.
+
 ## Sequence Segmentation Approach
 
 The multimodal page-level classification method implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.

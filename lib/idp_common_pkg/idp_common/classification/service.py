@@ -1681,6 +1681,37 @@ class ClassificationService:
     def _file_shape(self):
         return self.config.classification.file_shape
 
+    # ── What a stage is allowed to put in its prefix ────────────────────────
+    # The prefix saving is the whole justification for two-stage, and it is a
+    # property of the STAGE rather than of the builder that happens to render
+    # the prompt: the page builders, the context builder and the packet builder
+    # are all shared between single-pass, Stage A and Stage B. So every one of
+    # them asks these two questions instead of each deciding for itself —
+    # which is how the guarantee came to hold on one of three paths.
+
+    def _stage_withholds_class_vocabulary(self, stage: str) -> bool:
+        """Whether ``stage`` must send no class vocabulary and no examples.
+
+        True for two-stage Stage A only. Finding where a document starts does
+        not depend on the class list, the descriptions, the schema attributes
+        or the few-shot examples, and at page granularity that prefix would be
+        paid once per page — which is the cost two-stage exists to remove.
+        ``boundary_hints: class_names`` stays the one supported way to put
+        class *names* into Stage A, and it is rendered separately.
+        """
+        return stage == self.STAGE_SEGMENTATION
+
+    def _few_shot_examples_content(self, stage: str) -> List[Dict[str, Any]]:
+        """The ``{FEW_SHOT_EXAMPLES}`` blocks for ``stage``.
+
+        Empty for Stage A. An example is a page shown together with its class,
+        so it is class vocabulary in the most expensive form there is — the
+        examples are usually the bulk of the prefix, and they carry images.
+        """
+        if self._stage_withholds_class_vocabulary(stage):
+            return []
+        return build_few_shot_examples_content(self.config)
+
     # ── Class validation, one source for every class-assigning path ─────────
     # Single-pass page, single-pass packet and Stage B all decide a class, and
     # all three read validation through these, so the settings cannot mean
@@ -1888,6 +1919,8 @@ class ClassificationService:
         self,
         document_text: str,
         class_names_and_descriptions: str,
+        stage: str = STAGE_CLASSIFICATION,
+        attributes_as_table: bool = False,
     ) -> Dict[str, str]:
         """
         Build the standard placeholder substitution dict for classification
@@ -1902,29 +1935,56 @@ class ClassificationService:
         but we still skip it when the active prompt template does not
         reference it, to keep logs/metrics clean.
 
+        **Every vocabulary placeholder is rendered here and nowhere else**, so
+        that "Stage A carries no class vocabulary" is decided once. Each of the
+        three content builders used to answer it separately and two of them
+        answered it differently, which left the guarantee holding on the page
+        path with no context pages and nowhere else.
+
         Args:
             document_text: Resolved document/page text to substitute.
             class_names_and_descriptions: The pre-formatted class listing
                 (either flat list or markdown table, depending on caller).
+            stage: Which call this prompt belongs to. Under
+                :data:`STAGE_SEGMENTATION` the class listing, the schema
+                attribute listing and the few-shot examples all render empty;
+                ``boundary_hints`` is the only vocabulary Stage A can carry.
+            attributes_as_table: Render the optional attribute listing as a
+                markdown table rather than the XML list, so the packet path
+                matches the class table it sits beside.
 
         Returns:
             Dictionary of placeholder name -> value.
         """
+        withhold = self._stage_withholds_class_vocabulary(stage)
+        attributes = (
+            self._format_classes_and_attributes_table()
+            if attributes_as_table
+            else self._format_classes_and_attributes_list()
+        )
         return {
             "DOCUMENT_TEXT": document_text,
-            "CLASS_NAMES_AND_DESCRIPTIONS": class_names_and_descriptions,
-            # Two-stage Stage A only. Renders empty under the default
-            # `boundary_hints: none`, which is the point: a boundary call that
-            # carries no class vocabulary is the prefix saving two-stage exists
-            # for. Included unconditionally because format_prompt substitutes
-            # only placeholders the template actually references.
-            "BOUNDARY_HINTS": self._format_boundary_hints(),
+            "CLASS_NAMES_AND_DESCRIPTIONS": (
+                "" if withhold else class_names_and_descriptions
+            ),
+            # Two-stage Stage A only, and empty for every other stage — the
+            # block tells the model to report boundaries and NOT a type, which
+            # is the one thing a single-pass or Stage B call must do. Renders
+            # empty for Stage A too under the default `boundary_hints: none`,
+            # which is the point: a boundary call that carries no class
+            # vocabulary is the prefix saving two-stage exists for. Included
+            # unconditionally because format_prompt substitutes only
+            # placeholders the template actually references.
+            "BOUNDARY_HINTS": self._format_boundary_hints(stage),
             # Opt-in placeholder: included unconditionally in the
             # substitutions dict because format_prompt only substitutes
             # placeholders that actually appear in the template, so this
-            # is cost-neutral for users who don't reference it.
+            # is cost-neutral for users who don't reference it. It renders the
+            # class names AND descriptions AND their schema attributes, so it
+            # is withheld from Stage A for the same reason the plain class
+            # listing is — more vocabulary, not less.
             "CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS": (
-                self._format_classes_and_attributes_list()
+                "" if withhold else attributes
             ),
         }
 
@@ -1934,6 +1994,7 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """
         Build content array, automatically deciding whether to use image placeholder processing.
@@ -1946,6 +2007,8 @@ class ClassificationService:
             document_text: The document text content
             class_names_and_descriptions: Formatted class names and descriptions
             image_content: Optional image content to insert (only used when {DOCUMENT_IMAGE} is present)
+            stage: Which call this prompt belongs to; decides whether the
+                vocabulary placeholders render at all.
 
         Returns:
             List of content items with text and image content properly ordered based on presence of placeholder
@@ -1956,6 +2019,7 @@ class ClassificationService:
                 document_text,
                 class_names_and_descriptions,
                 image_content,
+                stage=stage,
             )
         else:
             return self._build_content_without_image_placeholder(
@@ -1963,6 +2027,7 @@ class ClassificationService:
                 document_text,
                 class_names_and_descriptions,
                 image_content,
+                stage=stage,
             )
 
     def _build_content_with_image_placeholder(
@@ -1971,6 +2036,7 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """
         Build content array with image inserted at DOCUMENT_IMAGE placeholder if present.
@@ -1980,6 +2046,8 @@ class ClassificationService:
             document_text: The document text content
             class_names_and_descriptions: Formatted class names and descriptions
             image_content: Optional image content to insert
+            stage: Which call this prompt belongs to; decides whether the
+                vocabulary placeholders render at all.
 
         Returns:
             List of content items with text and image content properly ordered
@@ -1999,10 +2067,11 @@ class ClassificationService:
                     document_text,
                     class_names_and_descriptions,
                     image_content,
+                    stage=stage,
                 )
 
             substitutions = self._build_classification_substitutions(
-                document_text, class_names_and_descriptions
+                document_text, class_names_and_descriptions, stage=stage
             )
 
             # Process the parts before and after the image placeholder
@@ -2041,6 +2110,7 @@ class ClassificationService:
                 document_text,
                 class_names_and_descriptions,
                 image_content,
+                stage=stage,
             )
 
     def _build_content_without_image_placeholder(
@@ -2049,6 +2119,7 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """
         Build content array without DOCUMENT_IMAGE placeholder (standard processing).
@@ -2060,6 +2131,8 @@ class ClassificationService:
             document_text: The document text content
             class_names_and_descriptions: Formatted class names and descriptions
             image_content: Optional image content (not used when no placeholder is present)
+            stage: Which call this prompt belongs to; decides whether the
+                vocabulary placeholders render at all.
 
         Returns:
             List of content items with text content only (no image)
@@ -2068,7 +2141,7 @@ class ClassificationService:
         task_prompt = self._prepare_prompt_from_template(
             prompt_template,
             self._build_classification_substitutions(
-                document_text, class_names_and_descriptions
+                document_text, class_names_and_descriptions, stage=stage
             ),
             required_placeholders=[],
         )
@@ -2168,6 +2241,7 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """
         Build content array with support for optional FEW_SHOT_EXAMPLES and DOCUMENT_IMAGE placeholders.
@@ -2183,6 +2257,8 @@ class ClassificationService:
             document_text: The document text content
             class_names_and_descriptions: Formatted class names and descriptions
             image_content: Optional image content to insert
+            stage: Which call this prompt belongs to; decides whether the
+                vocabulary placeholders and the few-shot examples render.
 
         Returns:
             List of content items with text and image content properly ordered
@@ -2197,14 +2273,23 @@ class ClassificationService:
                 document_text,
                 class_names_and_descriptions,
                 image_content,
+                stage=stage,
             )
 
         # Process both parts
         before_examples_content = self._build_content_with_or_without_image_placeholder(
-            parts[0], document_text, class_names_and_descriptions, image_content
+            parts[0],
+            document_text,
+            class_names_and_descriptions,
+            image_content,
+            stage=stage,
         )
         after_examples_content = self._build_content_with_or_without_image_placeholder(
-            parts[1], document_text, class_names_and_descriptions, image_content
+            parts[1],
+            document_text,
+            class_names_and_descriptions,
+            image_content,
+            stage=stage,
         )
 
         # Build content array
@@ -2213,8 +2298,8 @@ class ClassificationService:
         # Add the part before examples
         content.extend(before_examples_content)
 
-        # Add few-shot examples from config
-        examples_content = build_few_shot_examples_content(self.config)
+        # Add few-shot examples from config (none for Stage A)
+        examples_content = self._few_shot_examples_content(stage)
         content.extend(examples_content)
 
         # Add the part after examples
@@ -2231,6 +2316,7 @@ class ClassificationService:
         image_content: Optional[bytes],
         before_images: List[bytes],
         after_images: List[bytes],
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """Build the request content for the ``contextPagesCount > 0`` path.
 
@@ -2255,6 +2341,11 @@ class ClassificationService:
         both questions. The only thing it does differently is attach the
         *labelled* context images via :meth:`_build_images_with_context` rather
         than the single current-page image.
+
+        ``stage`` is threaded through for the same reason it is on
+        :meth:`_build_content`: this builder serves single-pass page
+        classification **and** two-stage Stage A at page granularity with
+        ``contextPagesCount > 0``, and only Stage A withholds the vocabulary.
         """
         parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
 
@@ -2267,18 +2358,29 @@ class ClassificationService:
                 image_content,
                 before_images,
                 after_images,
+                stage=stage,
             )
 
         content: List[Dict[str, Any]] = []
         content.extend(
             self._build_context_content_segment(
-                parts[0], document_text, image_content, before_images, after_images
+                parts[0],
+                document_text,
+                image_content,
+                before_images,
+                after_images,
+                stage=stage,
             )
         )
-        content.extend(build_few_shot_examples_content(self.config))
+        content.extend(self._few_shot_examples_content(stage))
         content.extend(
             self._build_context_content_segment(
-                parts[1], document_text, image_content, before_images, after_images
+                parts[1],
+                document_text,
+                image_content,
+                before_images,
+                after_images,
+                stage=stage,
             )
         )
         return content
@@ -2290,6 +2392,7 @@ class ClassificationService:
         image_content: Optional[bytes],
         before_images: List[bytes],
         after_images: List[bytes],
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """Render one segment of a context-path prompt, inserting context images.
 
@@ -2303,7 +2406,7 @@ class ClassificationService:
         ``{FEW_SHOT_EXAMPLES}`` sits at one end of the template.
         """
         substitutions = self._build_classification_substitutions(
-            document_text, self._format_classes_list()
+            document_text, self._format_classes_list(), stage=stage
         )
 
         if "{DOCUMENT_IMAGE}" not in prompt_segment:
@@ -2481,6 +2584,7 @@ class ClassificationService:
                 image_content=image_content,
                 before_images=before_images or [],
                 after_images=after_images or [],
+                stage=config["stage"],
             )
 
             logger.info(
@@ -2493,6 +2597,7 @@ class ClassificationService:
                 text_content or "",
                 self._format_classes_list(),
                 image_content,
+                stage=config["stage"],
             )
 
         logger.info(f"Classifying page {page_id} with Bedrock")
@@ -4780,6 +4885,7 @@ class ClassificationService:
         task_prompt_template: str,
         paged_text: str,
         page_images: List[tuple[str, bytes]],
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """Build the request content for one packet call.
 
@@ -4789,21 +4895,30 @@ class ClassificationService:
         granularity existed this path sent one text block and nothing else: no
         images, and ``{FEW_SHOT_EXAMPLES}`` left in the prompt as a literal
         string, which is the same defect the context path had.
+
+        This one builder serves all three stages — single-pass packet
+        classification, two-stage Stage A at packet granularity and Stage B —
+        so ``stage`` is what decides whether the class vocabulary and the
+        examples render.
         """
         parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
 
         if len(parts) != 2:
             return self._build_packet_content_segment(
-                task_prompt_template, paged_text, page_images
+                task_prompt_template, paged_text, page_images, stage=stage
             )
 
         content: List[Dict[str, Any]] = []
         content.extend(
-            self._build_packet_content_segment(parts[0], paged_text, page_images)
+            self._build_packet_content_segment(
+                parts[0], paged_text, page_images, stage=stage
+            )
         )
-        content.extend(build_few_shot_examples_content(self.config))
+        content.extend(self._few_shot_examples_content(stage))
         content.extend(
-            self._build_packet_content_segment(parts[1], paged_text, page_images)
+            self._build_packet_content_segment(
+                parts[1], paged_text, page_images, stage=stage
+            )
         )
         return content
 
@@ -4812,6 +4927,7 @@ class ClassificationService:
         prompt_segment: str,
         paged_text: str,
         page_images: List[tuple[str, bytes]],
+        stage: str = STAGE_CLASSIFICATION,
     ) -> List[Dict[str, Any]]:
         """Render one segment of a packet prompt, inserting the page images.
 
@@ -4820,17 +4936,17 @@ class ClassificationService:
         unlabelled images in a 20-page request leave it counting attachments,
         and a miscount shifts every boundary it reports.
         """
-        substitutions = {
-            "DOCUMENT_TEXT": paged_text,
-            "CLASS_NAMES_AND_DESCRIPTIONS": self._format_classes_and_descriptions(),
-            "BOUNDARY_HINTS": self._format_boundary_hints(),
-            # The packet path uses the markdown-table variant of the optional
-            # schema-attribute placeholder so it matches the surrounding class
-            # table format.
-            "CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS": (
-                self._format_classes_and_attributes_table()
-            ),
-        }
+        # The packet path takes the markdown-table variant of the optional
+        # schema-attribute placeholder so it matches the surrounding class
+        # table format; everything else about the substitutions — including
+        # which of them a stage is allowed to carry — is decided in the one
+        # shared place.
+        substitutions = self._build_classification_substitutions(
+            paged_text,
+            self._format_classes_and_descriptions(),
+            stage=stage,
+            attributes_as_table=True,
+        )
 
         if "{DOCUMENT_IMAGE}" not in prompt_segment:
             rendered = self._prepare_prompt_from_template(
@@ -5154,7 +5270,13 @@ class ClassificationService:
         )
 
         content = self._build_packet_content(
-            config["task_prompt"], paged_text, page_images
+            config["task_prompt"],
+            paged_text,
+            page_images,
+            # This path is single-pass packet classification AND two-stage
+            # Stage A at packet granularity; the stage on the config dict is
+            # the same one that chose the prompt and the model.
+            stage=config["stage"],
         )
 
         logger.info(
@@ -5318,7 +5440,7 @@ class ClassificationService:
         """
         return self.packet_classify_document(document, forced_class=forced_class)
 
-    def _format_boundary_hints(self) -> str:
+    def _format_boundary_hints(self, stage: str) -> str:
         """Render ``{BOUNDARY_HINTS}`` for two-stage Stage A.
 
         Empty under the default ``boundary_hints: none``, and that is the point:
@@ -5327,7 +5449,18 @@ class ClassificationService:
         descriptions and not the few-shot examples, which are the bulk of the
         prefix — for the case where a boundary is marked by a form number or
         title the class names happen to mention.
+
+        ⚠️ **Empty for every stage other than segmentation, whatever the
+        setting says**, which is why ``stage`` has no default: the block ends
+        "do NOT report a type, only where each document starts and ends", and
+        that is the one thing a single-pass or Stage B call must do. The
+        setting lives in the ``two_stage`` subtree and so is inert under
+        ``strategy: single_pass`` — but the subtree is readable either way, so
+        a single-pass prompt referencing ``{BOUNDARY_HINTS}`` used to be given
+        the block from a subtree nothing else in that run reads.
         """
+        if stage != self.STAGE_SEGMENTATION:
+            return ""
         if (
             self.config.classification.two_stage.segmentation.llm.boundary_hints
             != "class_names"
@@ -5578,6 +5711,7 @@ class ClassificationService:
                     image_content=image_content,
                     before_images=context["before_images"],
                     after_images=context["after_images"],
+                    stage=config["stage"],
                 )
             else:
                 content = self._build_content(
@@ -5585,11 +5719,15 @@ class ClassificationService:
                     text_content or "",
                     # Stage A sends no vocabulary unless boundary_hints asks
                     # for the names, so the class listing is deliberately
-                    # empty here. A Stage A prompt that references
-                    # {CLASS_NAMES_AND_DESCRIPTIONS} anyway gets nothing
-                    # rather than silently reintroducing the prefix.
+                    # empty here. Passing the stage is what actually enforces
+                    # that — on this path and on the other two, which are
+                    # shared with single-pass and Stage B — so a Stage A
+                    # prompt referencing {CLASS_NAMES_AND_DESCRIPTIONS} or
+                    # {FEW_SHOT_EXAMPLES} gets nothing rather than silently
+                    # reintroducing the prefix.
                     "",
                     image_content,
+                    stage=config["stage"],
                 )
 
             result = self._invoke_bedrock_model(content=content, config=config)
@@ -5693,7 +5831,7 @@ class ClassificationService:
                 else []
             )
             content = self._build_packet_content(
-                config["task_prompt"], paged_text, page_images
+                config["task_prompt"], paged_text, page_images, stage=config["stage"]
             )
 
             doc_type, confidence, candidates, reason, call_metering = (

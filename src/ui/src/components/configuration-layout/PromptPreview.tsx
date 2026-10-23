@@ -1247,6 +1247,12 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         const hints = String(objAt(cls, 'two_stage', 'segmentation', 'llm').boundary_hints ?? 'none');
         subs.CLASS_NAMES_AND_DESCRIPTIONS = '';
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = '';
+        // Stage A sends no examples either, for the same reason and at a
+        // larger saving — an example is a page shown with its class, and it
+        // carries images. Set explicitly so the generic
+        // DOCUMENT_PLACEHOLDER_LABELS marker ("will be inserted here at
+        // runtime") does not promise content this stage never sends.
+        subs.FEW_SHOT_EXAMPLES = '';
         subs.BOUNDARY_HINTS =
           hints === 'class_names' && classes.length
             ? `<document-type-hints>\n${classes.map((c) => getClassId(c)).join(', ')}\n</document-type-hints>`
