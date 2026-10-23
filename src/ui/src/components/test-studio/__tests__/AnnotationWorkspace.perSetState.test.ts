@@ -46,7 +46,9 @@ const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
 describe('one workspace instance per test set', () => {
   it('remounts the queue page and the annotation screen when the set in the URL changes', () => {
     expect(pageBody('TestSetQueuePage')).toMatch(/<AnnotationWorkspace key=\{testSetId\} mode="queue" \/>/);
-    expect(pageBody('TestSetItemPage')).toMatch(/<AnnotationScreen key=\{`\$\{testSetId\}\/\$\{objectKey\}`\} kind="test-set" \/>/);
+    expect(pageBody('TestSetItemPage')).toMatch(
+      /<AnnotationScreen key=\{`\$\{testSetId\}\/\$\{objectKey\}`\} kind="test-set" onTestSet=\{onTestSet\} \/>/,
+    );
     // And the screen's own opened transition is dropped on a change of set or document.
     expect(ADAPTER).toMatch(/useEffect\(\(\) => \{\s*setQueue\(null\);\s*setOpenedDraft\(null\);/);
   });

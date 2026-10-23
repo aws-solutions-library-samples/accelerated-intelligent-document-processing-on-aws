@@ -100,6 +100,10 @@ from rbac_common import (  # noqa: E402
     template_group_names,
 )
 
+# Injected by the offline tests (scripts/sdlc/tests/test_api_security_cases.py).
+_sleep = time.sleep
+_monotonic = time.monotonic
+
 #: Every Cognito group `template.yaml` creates, which is the population the matrix
 #: has to report over: it reports a verdict per (operation, role) cell, so a role
 #: the deployment has and this list does not is a row of the policy that nothing
@@ -1112,6 +1116,13 @@ def _review_queue_table_name(ctx):
 
 REVIEW_IDOR_USERS = ("ReviewIdorA", "ReviewIdorB", "ReviewIdorC")
 
+# A warm review-queues resolver caches queue definitions for 30 s per container
+# (QueueDefStore ttl=30.0), so the seed waits past that before the matrix asserts
+# on user B's membership, polling B's getReviewItem with a bounded deadline.
+REVIEW_SEED_MIN_WAIT_S = 35.0
+REVIEW_SEED_DEADLINE_S = 90.0
+REVIEW_SEED_POLL_S = 5.0
+
 
 def _tracking_table_name(ctx):
     """Physical name of the stack's TrackingTable (cached on ctx)."""
@@ -1136,18 +1147,46 @@ def _tracking_table_name(ctx):
 def seed_review_item(ctx):
     """Seed the review-queue IDOR fixture (see run_review_queue_idor_suite).
 
-    Creates Annotators A, B (members by email of a temporary profile's
-    ``default`` queue) and C (not a member), the profile, a tracking row and a
-    queue item CLAIMED by A under a 30-minute lease. Returns the fixture dict, or
-    None when the stack has no HITLTableName output.
+    Creates Annotators A and B, members by the Eligible Annotators of a temporary
+    review queue definition, and C, who is not a member; a temporary profile; a
+    tracking row; and a queue item in that queue CLAIMED by A under a 30-minute
+    lease. Returns the fixture dict, or None when the stack has no HITLTableName
+    output. A seed that fails partway removes what it wrote and re-raises.
     """
     table = _review_queue_table_name(ctx)
     if not table:
         return None
+    try:
+        return _seed_review_item(ctx, table)
+    except Exception:
+        cleanup_review_item(ctx)
+        raise
+
+
+def _seed_review_item(ctx, table):
+    keys = sec.review_queue_keys()
     emails = {u: test_email(u) for u in REVIEW_IDOR_USERS}
     for user in REVIEW_IDOR_USERS:
         create_cognito_user(ctx, emails[user], "Annotator", TEST_PW)
     ctx["_review_idor_users"] = list(emails.values())
+
+    qid = f"rbac-idor-{secrets.token_hex(4)}"
+    ctx["_review_idor_queue"] = qid
+    qdef = {
+        **{k: {"S": v} for k, v in keys.qdef_key(qid).items()},
+        "QueueId": {"S": qid},
+        "Name": {"S": "RBAC IDOR (temporary)"},
+        "EligibleAnnotators": {
+            "L": [
+                {"S": emails["ReviewIdorA"].lower()},
+                {"S": emails["ReviewIdorB"].lower()},
+            ]
+        },
+        "Enabled": {"BOOL": False},
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws("dynamodb", "put-item", "--table-name", table, "--item", json.dumps(qdef), region=ctx["region"])
+    t0 = _monotonic()
 
     profile = f"rbac-review-idor-{secrets.token_hex(4)}"
     ctx["_review_idor_profile"] = profile
@@ -1157,7 +1196,7 @@ def seed_review_item(ctx):
 
     from idp_sdk import IDPClient
 
-    # The profile only scopes the seeded item; queues are system-wide.
+    # The profile only scopes the seeded item; membership is the queue definition's.
     config = {"hitl": {"enabled": True}}
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         yaml.safe_dump(config, f)
@@ -1180,7 +1219,7 @@ def seed_review_item(ctx):
         "DocKey": {"S": object_key},
         "CycleId": {"S": cycle_id},
         "Profile": {"S": profile},
-        "Queue": {"S": "default"},
+        "Queue": {"S": qid},
         "State": {"S": "CLAIMED"},
         "Version": {"N": "1"},
         "Priority": {"N": "50"},
@@ -1193,12 +1232,13 @@ def seed_review_item(ctx):
         "ClaimedAtMs": {"N": str(now_ms)},
         "LeaseExpiresAtMs": {"N": str(lease)},
         "LeaseMinutes": {"N": "30"},
-        "QueuePK": {"S": f"Q#{profile}#default"},
+        "QueuePK": {"S": keys.queue_partition(qid)},
         "QueueSK": {"S": f"{now_ms:013d}#{h16}"},
         "OwnerPK": {"S": f"R#{owner}"},
         "OwnerSK": {"S": f"{now_ms:013d}#{h16}"},
         "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
     }
+    ctx["_review_idor_key"] = object_key
     aws("dynamodb", "put-item", "--table-name", table, "--item", json.dumps(item), region=ctx["region"])
     tracking = _tracking_table_name(ctx)
     if tracking:
@@ -1212,20 +1252,51 @@ def seed_review_item(ctx):
             "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
         }
         aws("dynamodb", "put-item", "--table-name", tracking, "--item", json.dumps(row), region=ctx["region"])
-    ctx["_review_idor_key"] = object_key
+    tokens = {
+        "A": get_id_token(ctx, emails["ReviewIdorA"], TEST_PW),
+        "B": get_id_token(ctx, emails["ReviewIdorB"], TEST_PW),
+        "C": get_id_token(ctx, emails["ReviewIdorC"], TEST_PW),
+    }
+    _wait_for_queue_definition(ctx, object_key, tokens["B"], t0)
     return {
-        "tokens": {
-            "A": get_id_token(ctx, emails["ReviewIdorA"], TEST_PW),
-            "B": get_id_token(ctx, emails["ReviewIdorB"], TEST_PW),
-            "C": get_id_token(ctx, emails["ReviewIdorC"], TEST_PW),
-        },
+        "tokens": tokens,
         "object_key": object_key,
         "cycle_id": cycle_id,
+        "queue_id": qid,
     }
 
 
+def _wait_for_queue_definition(ctx, object_key, token_b, t0):
+    """Wait until every warm resolver container can see the new queue definition.
+
+    Polls B's getReviewItem until it answers 200 and REVIEW_SEED_MIN_WAIT_S has
+    passed since the put (the cache TTL bounds every container, not just the one
+    that answered). On the deadline it returns anyway, so the matrix records the
+    real result rather than the seed hiding it.
+    """
+    while True:
+        status, _ = call_body(
+            ctx["api_base"], "getReviewItem", {"objectKey": object_key}, token_b
+        )
+        elapsed = _monotonic() - t0
+        if status == 200 and elapsed >= REVIEW_SEED_MIN_WAIT_S:
+            return
+        if elapsed >= REVIEW_SEED_DEADLINE_S:
+            print(
+                "  (review seed: the queue-definition cache did not refresh within "
+                f"{REVIEW_SEED_DEADLINE_S:.0f}s; B's getReviewItem last answered {status})"
+            )
+            return
+        _sleep(REVIEW_SEED_POLL_S)
+
+
 def cleanup_review_item(ctx, seeded=None):
-    """Remove the review-queue IDOR fixture (best-effort, idempotent)."""
+    """Remove the review-queue IDOR fixture (best-effort, idempotent).
+
+    Order: the item, the tracking row, the queue definition, the profile, the
+    users. The queue definition is deleted directly, never with deleteReviewQueue,
+    which would move the item to Default.
+    """
     table = ctx.get("_review_table")
     key = ctx.get("_review_idor_key")
     if table and key:
@@ -1238,7 +1309,7 @@ def cleanup_review_item(ctx, seeded=None):
                 )
             except Exception as e:  # noqa: BLE001
                 print(f"  (review item cleanup error: {e})")
-    tracking = _tracking_table_name(ctx)
+    tracking = _tracking_table_name(ctx) if key else ""
     if tracking and key:
         try:
             aws(
@@ -1248,6 +1319,16 @@ def cleanup_review_item(ctx, seeded=None):
             )
         except Exception as e:  # noqa: BLE001
             print(f"  (tracking row cleanup error: {e})")
+    qid = ctx.get("_review_idor_queue")
+    if table and qid:
+        qkey = {k: {"S": v} for k, v in sec.review_queue_keys().qdef_key(qid).items()}
+        try:
+            aws(
+                "dynamodb", "delete-item", "--table-name", table, "--key",
+                json.dumps(qkey), region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review queue definition cleanup error: {e})")
     profile = ctx.get("_review_idor_profile")
     if profile:
         try:

@@ -12,6 +12,7 @@ from idp_common.docs_service import create_document_service
 
 # Import IDP Common modules
 from idp_common.models import Section, Status
+from idp_common.review_queues.regrouping import regroup_refusal
 from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -21,6 +22,14 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # Initialize AWS clients
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
+
+# Review queues: a document in review is regrouped only by its item's holder. None
+# when HITL_TABLE_NAME is unset; the store builds no client until it is used.
+_REVIEW_STORE = None
+if os.environ.get("HITL_TABLE_NAME"):
+    from idp_common.review_queues.store import create_review_store
+
+    _REVIEW_STORE = create_review_store()
 
 # Environment variables
 QUEUE_URL = os.environ.get("QUEUE_URL")
@@ -176,6 +185,18 @@ def _assert_annotator_scope(event, object_key):
         raise ResourceAccessDenied(str(e)) from e
 
 
+def _caller_key(event):
+    """The caller's owner key from verified claims, as a review claim records it."""
+    from idp_common.notifications.keys import recipient_key_from_claims
+
+    claims = (event.get("identity") or {}).get("claims") or {}
+    try:
+        return recipient_key_from_claims(claims)
+    except Exception:  # noqa: BLE001 — no identity: matches no holder
+        logger.warning("Rejecting regroup: no caller identity")
+        return ""
+
+
 def update_document_sections(event):
     """Re-group a processed document's pages, keeping its extracted values.
 
@@ -193,7 +214,8 @@ def update_document_sections(event):
 
     Refuses while the document is in flight. That is the one hazard a direct write
     introduces: processChanges is safe to call mid-run because it never writes, whereas
-    this would race the pipeline's own save.
+    this would race the pipeline's own save. A document waiting in a review queue is
+    not in flight, and is regrouped only by the holder of its review item.
     """
     args = event.get("arguments", {})
     object_key = args.get("objectKey")
@@ -232,7 +254,20 @@ def update_document_sections(event):
         }
 
     status = str(getattr(document.status, "value", document.status) or "").upper()
-    if status not in _EDITABLE_STATUSES:
+    # Regrouping is part of review: a document waiting in a review queue may be
+    # regrouped by the holder of its item. Nothing is running on it (phase 1 has ended
+    # and the finalize run hasn't started), and the finalize run reprocesses the
+    # tracked document, so the new grouping is the one it finishes with.
+    in_review = (
+        status == Status.HITL_IN_PROGRESS.value
+        and normalize_hitl_status(document.hitl_status).in_review
+    )
+    if in_review:
+        refusal = regroup_refusal(_REVIEW_STORE, object_key, _caller_key(event))
+        if refusal:
+            logger.warning("Rejecting updateDocumentSections on a document in review")
+            return {"success": False, "message": refusal, "processingJobId": None}
+    elif status not in _EDITABLE_STATUSES:
         return {
             "success": False,
             "message": (

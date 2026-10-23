@@ -39,9 +39,9 @@ def _stored_ids(defs):
 
 @pytest.mark.unit
 class TestSeeding:
-    def test_an_empty_stack_gets_only_a_disabled_default(self, defs):
+    def test_an_empty_stack_gets_only_an_enabled_default(self, defs):
         listed = defs.list()
-        assert [(d.id, d.enabled) for d in listed] == [(DEFAULT_QUEUE_ID, False)]
+        assert [(d.id, d.enabled) for d in listed] == [(DEFAULT_QUEUE_ID, True)]
         assert _stored_ids(defs) == [DEFAULT_QUEUE_ID]
 
     def test_default_is_reseeded_when_other_queues_exist(self, defs):
@@ -51,25 +51,17 @@ class TestSeeding:
         assert _stored_ids(defs) == ["claims", DEFAULT_QUEUE_ID]
 
     def test_an_existing_default_is_not_overwritten(self, defs):
-        defs.put(
-            QueueDefinition(
-                id=DEFAULT_QUEUE_ID, enabled=True, confidence_threshold=0.9
-            ),
-            create=True,
-        )
-        default = defs.get(DEFAULT_QUEUE_ID)
-        assert (default.enabled, default.confidence_threshold) == (True, 0.9)
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, enabled=False), create=True)
+        assert defs.get(DEFAULT_QUEUE_ID).enabled is False
 
     def test_new_fields_survive_an_update(self, defs):
         defs.list()
         defs.put(
-            QueueDefinition(
-                id=DEFAULT_QUEUE_ID, enabled=True, confidence_threshold=0.95
-            ),
+            QueueDefinition(id=DEFAULT_QUEUE_ID, enabled=False, priority=80),
             create=False,
         )
         default = defs.get(DEFAULT_QUEUE_ID)
-        assert (default.enabled, default.confidence_threshold) == (True, 0.95)
+        assert (default.enabled, default.priority) == (False, 80)
 
 
 @pytest.mark.unit

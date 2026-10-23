@@ -94,10 +94,10 @@ describe('SectionsPanel thumbnail deferral', () => {
 
     // The panel has rendered (so the absence below is not "nothing happened yet")
     // and asked for no presigned URL.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeDefined());
     expect(presignCalls()).toHaveLength(0);
 
-    await userEvent.click(screen.getByRole('button', { name: /Edit page grouping/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Edit Page Grouping/i }));
 
     await waitFor(() => expect(presignCalls()).toHaveLength(1));
     expect((presignCalls()[0][0] as { variables: { files: Array<{ s3Uri: string }> } }).variables.files.map((f) => f.s3Uri)).toEqual(
@@ -124,7 +124,7 @@ describe('SectionsPanel thumbnail deferral', () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /Edit page grouping/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Edit Page Grouping/i }));
 
     await waitFor(() => expect(screen.getByText(FILE_ACCESS_DENIED_MESSAGE)).toBeDefined());
     expect(screen.getByText('Page thumbnails unavailable')).toBeDefined();

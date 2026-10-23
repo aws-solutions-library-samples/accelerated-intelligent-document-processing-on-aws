@@ -78,7 +78,7 @@ const renderPanel = () =>
   );
 
 const openBoard = async () => {
-  await userEvent.click(screen.getByRole('button', { name: /Edit page grouping/i }));
+  await userEvent.click(screen.getByRole('button', { name: /Edit Page Grouping/i }));
 };
 
 const movePageTo = async (pageId: number, sectionId: string) => {
@@ -91,7 +91,7 @@ describe('SectionsPanel page regrouping', () => {
     renderPanel();
 
     // Both routes stay available; their labels carry the difference in consequence.
-    expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Edit Mode/i })).toBeInTheDocument();
   });
 

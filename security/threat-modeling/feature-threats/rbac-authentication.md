@@ -74,8 +74,8 @@ Authorization is enforced at multiple layers:
 > `scripts/api_rbac_expectations.yaml` entry for entry. `ddb_direct` is the one place
 > the dispatcher itself enforces groups, via its own `_REQUIRED_GROUPS` table.
 > Across all 163: 39 require `Admin`; 42 `Admin`+`Author`; 15
-> `Admin`+`Author`+`Viewer`; 10 `Admin`+`Author`+`Annotator`; 12
-> `Admin`+`Annotator`; 4
+> `Admin`+`Author`+`Viewer`; 10 `Admin`+`Author`+`Annotator`; 11
+> `Admin`+`Annotator`; 1 `Annotator`; 4
 > `Admin`+`Reviewer`+`Annotator`; 3 `Admin`+`Reviewer`; 1
 > `Admin`+`Author`+`Annotator`+`Viewer` (every group except `Reviewer`);
 > 2 are IAM-only (rejected for every Cognito caller); **27 require any assigned
