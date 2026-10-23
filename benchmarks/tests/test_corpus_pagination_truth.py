@@ -424,9 +424,65 @@ class TestTheTwoLayoutPassesMustAgree:
             )
         assert calls["n"] == 3
 
+    def test_a_copy_that_does_not_record_on_the_real_build_is_refused(
+        self, bank_statement, monkeypatch, tmp_path
+    ):
+        """The verification must read only what the REAL build recorded.
+
+        The markers overwrite and never clear, so if the dict still held the
+        measuring pass's values a copy whose marker did not draw would rebuild the
+        map the footers already used, and the comparison would agree with itself —
+        a check unable to observe one of its own failure modes, which is the shape
+        this module now refuses everywhere else. Each marker sits between a
+        ``PageBreak`` and real content, so in practice it draws; this drives the
+        case anyway, because "narrow in practice" is how a vacuous guard survives.
+
+        Four draws happen per two-copy paginated run — each marker once in the
+        measuring pass, once in the real one — so suppressing the fourth silences
+        the second copy on the real build alone.
+        """
+        real = bank_statement._CopyStart
+        state = {"draws": 0}
+
+        class StopsRecording(real):
+            def draw(self):
+                state["draws"] += 1
+                if state["draws"] <= 3:
+                    super().draw()
+
+        monkeypatch.setattr(bank_statement, "_CopyStart", StopsRecording)
+        with pytest.raises(RuntimeError, match="page map is incomplete"):
+            bank_statement.build(
+                out=str(tmp_path / "quiet.pdf"), rows=100, documents=2, paginate=True
+            )
+        assert state["draws"] == 4, (
+            "the marker is no longer drawn twice per copy, so this test did not "
+            f"silence the real build's second copy (saw {state['draws']} draws)"
+        )
+
+    def test_a_stale_measured_recording_cannot_satisfy_the_check(self, bank_statement):
+        """The same hole stated against the comparison directly.
+
+        A map carrying the measuring pass's value for a copy the real build did not
+        record is, by construction, the map the footers were drawn from — so it
+        agrees. The protection is that the caller empties the dict, which turns
+        this input into the incomplete map above rather than an agreeing one.
+        """
+        spans = [(1, 3), (4, 3)]
+        bank_statement._verify_measured_layout(spans, {0: 1, 1: 4}, 6, 2, per_copy=True)
+        with pytest.raises(RuntimeError, match="page map is incomplete"):
+            bank_statement._verify_measured_layout(spans, {0: 1}, 6, 2, per_copy=True)
+
+    def test_a_multi_copy_run_that_recorded_nothing_is_refused(self, bank_statement):
+        """Not read as a single-copy document, which would compare the wrong thing."""
+        with pytest.raises(RuntimeError, match="page map is incomplete"):
+            bank_statement._verify_measured_layout(
+                [(1, 3), (4, 3)], {}, 6, 2, per_copy=True
+            )
+
     def test_an_agreeing_layout_is_accepted(self, bank_statement):
         spans = [(1, 3), (4, 3)]
-        bank_statement._verify_measured_layout(spans, {0: 1, 1: 4}, 6, 2)
+        bank_statement._verify_measured_layout(spans, {0: 1, 1: 4}, 6, 2, per_copy=True)
 
     @pytest.mark.parametrize(
         ("starts", "total", "note"),
@@ -442,7 +498,9 @@ class TestTheTwoLayoutPassesMustAgree:
         injection above cannot produce — a copy whose start page moves while the
         total does not, in particular."""
         with pytest.raises(RuntimeError, match="measured layout and the real one"):
-            bank_statement._verify_measured_layout([(1, 3), (4, 3)], starts, total, 2)
+            bank_statement._verify_measured_layout(
+                [(1, 3), (4, 3)], starts, total, 2, per_copy=True
+            )
 
     def test_a_single_copy_is_checked_on_its_total(self, bank_statement):
         """``documents=1`` records no markers, so the total is the whole comparison.
@@ -451,6 +509,6 @@ class TestTheTwoLayoutPassesMustAgree:
         real build a page longer than the measuring pass would stamp every page
         "of 3" on a 4-page file.
         """
-        bank_statement._verify_measured_layout([(1, 3)], {}, 3, 1)
+        bank_statement._verify_measured_layout([(1, 3)], {}, 3, 1, per_copy=False)
         with pytest.raises(RuntimeError, match="measured layout and the real one"):
-            bank_statement._verify_measured_layout([(1, 3)], {}, 4, 1)
+            bank_statement._verify_measured_layout([(1, 3)], {}, 4, 1, per_copy=False)

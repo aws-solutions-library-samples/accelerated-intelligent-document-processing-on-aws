@@ -149,7 +149,7 @@ def _locate(page, spans):
     )
 
 
-def _verify_measured_layout(spans, starts, total, documents):
+def _verify_measured_layout(spans, starts, total, documents, *, per_copy):
     """Refuse if the real build did not lay out the way the measuring pass did.
 
     The footers are drawn from a map measured in an earlier pass, so everything
@@ -165,8 +165,19 @@ def _verify_measured_layout(spans, starts, total, documents):
     page is quietly stamped with the previous copy's number and total — a document
     asserting a boundary where it has none, which is the whole defect this module
     is about, reached through the guard's blind side.
+
+    ``starts`` must hold ONLY what the real build recorded. The caller clears the
+    dict between the passes for that reason: a marker that does not draw during the
+    real build leaves no entry, and :func:`_page_spans` then refuses an incomplete
+    map — whereas a surviving value from the measuring pass would reconstruct the
+    very map the footers already used and pass this comparison vacuously for that
+    copy. ``per_copy`` says whether markers were placed at all, so a run that
+    expected recordings and got none is refused as an incomplete map rather than
+    silently falling back to the single-copy reading.
     """
-    rebuilt = _page_spans(starts, total, documents) if starts else [(1, max(1, total))]
+    rebuilt = (
+        _page_spans(starts, total, documents) if per_copy else [(1, max(1, total))]
+    )
     if rebuilt != spans:
         raise RuntimeError(
             f"the measured layout and the real one disagree: footers were drawn "
@@ -508,6 +519,13 @@ def build(
     # The page count of the build that actually WROTE the file, which is the half
     # of the layout agreement the measuring pass cannot speak for. The markers are
     # still in `story`, so they re-record into `copy_starts` as this build runs.
+    #
+    # Emptied first, so what the verification reads is only what THIS build
+    # recorded. The markers overwrite and never clear, so a surviving measured
+    # value for a copy whose marker did not draw would rebuild the map the footers
+    # already used and agree with itself — a check that cannot observe one of its
+    # own failure modes. Cleared, that copy has no entry and is refused.
+    copy_starts.clear()
     real = {"total": 0}
 
     def _tally(canvas, _doc):
@@ -566,7 +584,11 @@ def build(
         # file is written, so a disagreement is a build failure rather than a
         # fixture whose pages and ground truth may contradict each other.
         _verify_measured_layout(
-            spans, copy_starts if needs_page_map else {}, real["total"], documents
+            spans,
+            copy_starts,
+            real["total"],
+            documents,
+            per_copy=needs_page_map,
         )
     truth = {
         "gen": "bank_statement",
