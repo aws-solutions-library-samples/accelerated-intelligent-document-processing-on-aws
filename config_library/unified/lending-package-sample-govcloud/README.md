@@ -92,7 +92,7 @@ Enhanced confidence assessment ensures high accuracy for financial data extracti
 
 ### Summarization Settings
 
-- **Model**: Anthropic Claude Sonnet 4.5 (`anthropic.claude-sonnet-4-5-20250929-v1:0`)
+- **Model**: Anthropic Claude Sonnet 4.5 (`us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`)
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
@@ -100,7 +100,7 @@ The summarization component creates structured summaries of lending documents wi
 
 ### Evaluation Settings
 
-- **Model**: Anthropic Claude Sonnet 4.5 (`anthropic.claude-sonnet-4-5-20250929-v1:0`)
+- **Model**: Anthropic Claude Sonnet 4.5 (`us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`)
 - **Temperature**: 0 (deterministic outputs)
 
 ## Sample Documents

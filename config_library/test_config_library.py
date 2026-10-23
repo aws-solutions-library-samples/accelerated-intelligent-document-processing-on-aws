@@ -144,13 +144,13 @@ class TestConfigFilesStructure:
 def _names_a_model(key) -> bool:
     """Is `key` a field whose value is a model identifier?
 
-    Matched by SUFFIX, not against the pair ("model", "model_id"). Two of the 71
+    Matched by SUFFIX, not against the pair ("model", "model_id"). Some
     model-bearing fields in this library are named neither — `escalation_model` and
-    `analysis_model_id`, both in `unified/lending-package-sample-govcloud/config.yaml`
-    — so an exact-pair predicate covers 69 of 71 and a private-account ARN written
-    into either one passes every check in this file. The suffix reaches all 71 and,
-    more to the point, reaches the next such field without anyone remembering to add
-    it.
+    `analysis_model_id`, in `unified/lending-package-sample-govcloud/config.yaml` —
+    so an exact-pair predicate misses them and a private-account ARN written into
+    one passes every check in this file. The suffix reaches them all and, more to the
+    point, reaches the next such field without anyone remembering to add it.
+    `test_every_model_bearing_key_in_the_tree_is_matched` derives the set.
     """
     return isinstance(key, str) and (key.endswith("model") or key.endswith("model_id"))
 
@@ -236,9 +236,9 @@ class TestNoAccountScopedModelArns:
         """No model-bearing field may sit outside the predicate's reach.
 
         Universe closure for the key rule, derived rather than authored. An exact
-        ("model", "model_id") predicate reached 69 of the 71 model-bearing fields in
-        this library, and a private-account ARN in either of the other two passed every
-        check in this file. So the universe is computed from the tree — every key whose
+        ("model", "model_id") predicate missed the model-bearing fields named
+        otherwise (`escalation_model`, `analysis_model_id`), and a private-account ARN
+        in one of those passed every check in this file. So the universe is computed from the tree — every key whose
         name ends in a model-ish word — and any member the predicate rejects fails here,
         which is what stops the rule narrowing back without the loss being visible.
         """

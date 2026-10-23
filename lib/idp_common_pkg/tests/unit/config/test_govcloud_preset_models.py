@@ -44,11 +44,12 @@ _CONFIG_LIBRARY = Path(__file__).resolve().parents[5] / "config_library"
 _PRESET_PATH = _CONFIG_LIBRARY / "unified/lending-package-sample-govcloud/config.yaml"
 _PRICING_PATH = _CONFIG_LIBRARY / "pricing.yaml"
 
-#: The models the preset's header records as confirmed by a real Converse call in
-#: us-gov-west-1. Written out rather than derived, because it is a statement about
-#: live Bedrock that nothing in this tree can compute; the header says not to add a
-#: model without that confirmation, and adding one here is the reviewed act that
-#: claims it. ``test_the_verified_list_is_exactly_what_the_preset_pins`` keeps this
+#: The GovCloud models the preset ships with, as listed in its README
+#: (``config_library/unified/lending-package-sample-govcloud/README.md``). The
+#: preset header states the rule they were admitted under: a model is added only
+#: after a real Converse call succeeds in us-gov-west-1. Written out rather than
+#: derived, because that is a statement about live Bedrock that nothing in this
+#: tree can compute, and adding a model here is the reviewed act that claims it. ``test_the_verified_list_is_exactly_what_the_preset_pins`` keeps this
 #: set and the preset from drifting apart in either direction.
 GOVCLOUD_VERIFIED_MODELS = frozenset(
     {

@@ -26,7 +26,8 @@ notes: "Lending package sample - processes payslips, driver licenses, bank check
 # embedding_model_id; see the note there.
 # lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py merges
 # this preset with the system defaults and fails on any model value outside
-# its GOVCLOUD_VERIFIED_MODELS, the models this header records as verified.
+# its GOVCLOUD_VERIFIED_MODELS (the models listed in this preset's
+# README, each admitted under the rule at the top of this file).
 
 ocr:
   # The backend stays the default, textract. model_id is read only when
