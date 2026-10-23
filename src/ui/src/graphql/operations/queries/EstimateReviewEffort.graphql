@@ -16,6 +16,7 @@ query EstimateReviewEffort($testSetId: String!, $targetAccuracy: Float, $configV
     sampledDocs
     inspectedDocs
     setDocs
+    wholeSetInspected
     impliedCutoff
     residualError
     baselineError

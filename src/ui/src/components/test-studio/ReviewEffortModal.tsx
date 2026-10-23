@@ -79,6 +79,7 @@ export interface ReviewEffortEstimate {
   sampledDocs?: number | null;
   inspectedDocs?: number | null;
   setDocs?: number | null;
+  wholeSetInspected?: boolean | null;
   impliedCutoff?: number | null;
   residualError: number;
   baselineError: number;
@@ -161,7 +162,15 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
   // that happened to hold only ground truth scales to zero while documents outside
   // it were never read: that state must neither claim the set is fully labelled nor
   // block the way to the queue, which lists every document.
-  const sampleWasPartial = estimate?.inspectedDocs != null && estimate?.setDocs != null && estimate.inspectedDocs < estimate.setDocs;
+  // Decided by the backend from the listing, not from inspectedDocs against setDocs:
+  // setDocs rests on a stored counter that can be stale or absent.
+  const sampleWasPartial = estimate?.wholeSetInspected === false;
+  // "200 of 500", or "the first 200" when the set's size is not known beyond the
+  // sample.
+  const sampleExtent =
+    estimate?.setDocs != null && estimate?.inspectedDocs != null && estimate.setDocs > estimate.inspectedDocs
+      ? `${estimate.inspectedDocs} of ${estimate.setDocs}`
+      : `the first ${estimate?.inspectedDocs ?? 0}`;
   const setIsFullyLabelled = nothingToReview && !sampleWasPartial;
 
   const [error, setError] = useState<string | null>(null);
@@ -253,7 +262,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
               : setIsFullyLabelled
                 ? `${testSetId} · no documents with draft labels`
                 : nothingToReview
-                  ? `${testSetId} · no draft labels among ${estimate.inspectedDocs} of ${estimate.setDocs} documents sampled`
+                  ? `${testSetId} · no draft labels among ${sampleExtent} documents sampled`
                   : `${testSetId} · ${estimate.totalDocs} document(s) with draft labels · choose how much to review`
           }
         >
@@ -291,9 +300,8 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
           )}
           {nothingToReview && sampleWasPartial && !isLoading && !error && (
             <Alert type="info" header="No draft labels in the sample">
-              The estimate read {estimate?.inspectedDocs} of this set&apos;s {estimate?.setDocs} documents and every one already carries
-              ground truth, so it finds nothing to review. The documents outside the sample were not read; continue to the annotation queue
-              to see them all.
+              The estimate read {sampleExtent} documents of this set and every one already carries ground truth, so it finds nothing to
+              review. The documents outside the sample were not read; continue to the annotation queue to see them all.
             </Alert>
           )}
 
@@ -478,7 +486,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                           ? ` · AUROC ${estimate.calibration.auroc.toFixed(3)}`
                           : ''}
                         {sampleWasPartial
-                          ? ` · sampled ${estimate.inspectedDocs} of ${estimate.setDocs} documents`
+                          ? ` · sampled ${sampleExtent} documents`
                           : estimate.sampledDocs !== null && estimate.sampledDocs !== undefined && estimate.sampledDocs < estimate.totalDocs
                             ? ` · sampled ${estimate.sampledDocs} of ${estimate.totalDocs} documents`
                             : ''}

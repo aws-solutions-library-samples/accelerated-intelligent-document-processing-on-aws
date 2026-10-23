@@ -1295,10 +1295,14 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   sampledDocs: Int
   # How many documents the sample read, ground truth included, and the set's size
   # it was scaled to. totalDocs applies the sample's reviewable fraction to
-  # setDocs, so a totalDocs of 0 describes the whole set only when inspectedDocs
-  # reaches setDocs.
+  # setDocs, so a totalDocs of 0 describes the whole set only when
+  # wholeSetInspected is true.
   inspectedDocs: Int
   setDocs: Int
+  # True only when the sample read the set's listing to its end. This, not
+  # inspectedDocs against setDocs, decides whether a totalDocs of 0 may be reported
+  # as the whole set: setDocs rests on a stored counter that can be stale.
+  wholeSetInspected: Boolean
   # Confidence value at the boundary of the reviewed set.
   impliedCutoff: Float
   residualError: Float!

@@ -10,8 +10,10 @@
  * beside that alert would all describe zero documents.
  *
  * The sample is capped and time-bounded, so a zero is a fact about the whole set
- * only when inspectedDocs reaches setDocs. Below that, the dialog must neither say
- * the set is fully labelled nor disable the way to the queue.
+ * only when wholeSetInspected says the listing was read to its end. Otherwise the
+ * dialog must neither say the set is fully labelled nor disable the way to the
+ * queue — and that is decided by the flag, not by inspectedDocs against setDocs,
+ * which rests on a stored counter that can be stale or absent.
  */
 
 import { render, screen, waitFor } from '@testing-library/react';
@@ -26,7 +28,7 @@ vi.mock('../../../graphql/generated', () => ({ estimateReviewEffort: 'estimateRe
 import ReviewEffortModal, { type ReviewEffortEstimate } from '../ReviewEffortModal';
 
 // Typed, so a field added to the estimate's interface fails here at compile time.
-const estimate = (totalDocs: number, inspectedDocs: number, setDocs: number): ReviewEffortEstimate => ({
+const estimate = (totalDocs: number, inspectedDocs: number, setDocs: number, wholeSetInspected: boolean): ReviewEffortEstimate => ({
   testSetId: 'docsplit',
   targetAccuracy: 99,
   curveSource: 'prior',
@@ -37,6 +39,7 @@ const estimate = (totalDocs: number, inspectedDocs: number, setDocs: number): Re
   sampledDocs: totalDocs,
   inspectedDocs,
   setDocs,
+  wholeSetInspected,
   impliedCutoff: null,
   residualError: 0,
   baselineError: 0,
@@ -59,8 +62,8 @@ const estimate = (totalDocs: number, inspectedDocs: number, setDocs: number): Re
   reliabilityTable: [],
 });
 
-const renderWith = async (totalDocs: number, inspectedDocs = 3, setDocs = 3) => {
-  graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs, inspectedDocs, setDocs) } });
+const renderWith = async (totalDocs: number, inspectedDocs = 3, setDocs = 3, wholeSetInspected = true) => {
+  graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs, inspectedDocs, setDocs, wholeSetInspected) } });
   render(<ReviewEffortModal visible testSetId="docsplit" onDismiss={() => {}} onContinue={() => {}} />);
   await waitFor(() => expect(graphql).toHaveBeenCalled());
   // The header gains its " · " detail only once the estimate has arrived.
@@ -89,12 +92,28 @@ describe('ReviewEffortModal with nothing to review', () => {
   it('does not call a partly sampled set fully labelled, and keeps the queue open', async () => {
     // 200 of 500 read, all ground truth: the estimate is zero, but 300 documents
     // were never read and may hold drafts.
-    await renderWith(0, 200, 500);
+    await renderWith(0, 200, 500, false);
     expect(screen.queryByText('Nothing to review')).toBeNull();
     expect(screen.getByText('No draft labels in the sample')).toBeTruthy();
     expect(screen.getByText('docsplit · no draft labels among 200 of 500 documents sampled')).toBeTruthy();
     expect(screen.queryByText('How much should annotators review?')).toBeNull();
     expect(continueDisabled()).toBe(false);
+  });
+
+  it('treats a capped sample of a set with no stored size as partial', async () => {
+    // No fileCount: the backend sizes the set by the sample, so setDocs equals
+    // inspectedDocs, and only the flag says the listing went further.
+    await renderWith(0, 200, 200, false);
+    expect(screen.queryByText('Nothing to review')).toBeNull();
+    expect(screen.getByText('docsplit · no draft labels among the first 200 documents sampled')).toBeTruthy();
+    expect(continueDisabled()).toBe(false);
+  });
+
+  it('believes a listing read to its end over a stale counter', async () => {
+    // fileCount says 10 but the listing ended after 3: the whole set was read.
+    await renderWith(0, 3, 10, true);
+    expect(screen.getByText('Nothing to review')).toBeTruthy();
+    expect(continueDisabled()).toBe(true);
   });
 
   it('still shows the estimate when there is something to review', async () => {
@@ -113,7 +132,7 @@ describe('ReviewEffortModal with nothing to review', () => {
   it('states the sample as documents read of the set, not of the reviewable estimate', async () => {
     // 4 of 500 read, 2 of them drafts: totalDocs is the scaled 250, which is not a
     // population anything was sampled from.
-    await renderWith(250, 4, 500);
+    await renderWith(250, 4, 500, false);
     expect(screen.getByText(/sampled 4 of 500 documents/)).toBeTruthy();
   });
 });

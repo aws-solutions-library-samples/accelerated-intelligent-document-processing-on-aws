@@ -2311,6 +2311,7 @@ export type ReviewEffortEstimate = {
   targetAccuracy: Scalars['Float']['output'];
   testSetId: Scalars['String']['output'];
   totalDocs: Scalars['Int']['output'];
+  wholeSetInspected?: Maybe<Scalars['Boolean']['output']>;
 };
 
 export type ReviewHistoryEntry = {

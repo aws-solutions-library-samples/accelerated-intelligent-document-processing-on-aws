@@ -3257,6 +3257,9 @@ class TestTestSetResolver:
 
         assert result["totalDocs"] == 30
         assert 1 <= result["sampledDocs"] < 30
+        # The cut page ends with no token, which must not read as the end of the
+        # listing (#1479): the rest of the set was never read.
+        assert result["wholeSetInspected"] is False
         assert result["docsToReview"] <= 30
         assert len(reads) <= budget + 16, (
             f"{len(reads)} of 120 sections read; reads continued past the budget"
@@ -6111,6 +6114,7 @@ class TestTestSetResolver:
         assert result["docsToReview"] <= 1
         # The whole set was read, so the figure needs no extrapolation caveat.
         assert (result["inspectedDocs"], result["setDocs"]) == (2, 2)
+        assert result["wholeSetInspected"] is True
 
     @staticmethod
     def _seed_labelled(s3, ground_truth=(), drafts=()):
@@ -6162,6 +6166,7 @@ class TestTestSetResolver:
         # The zero is extrapolated from 4 of 500, and the response says so: a
         # caller must not report the set as fully labelled from it.
         assert (result["inspectedDocs"], result["setDocs"]) == (4, 500)
+        assert result["wholeSetInspected"] is False
 
     def test_estimate_applies_the_samples_reviewable_fraction_to_the_set(
         self, labeling_env
@@ -6199,6 +6204,36 @@ class TestTestSetResolver:
         # Six inspected, three reviewable. Sizing the set by the three reviewable
         # ones and then taking the sample's half off them again would report 2.
         assert result["totalDocs"] == 3
+
+    def test_estimate_does_not_call_a_capped_sample_the_whole_set_without_a_size(
+        self, labeling_env, monkeypatch
+    ):
+        """With no fileCount the set is sized by the sample, so setDocs equals
+        inspectedDocs; only the listing can say the sample stopped short."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1")
+        self._seed_labelled(s3, ground_truth=[f"gt{i}.pdf" for i in range(3)])
+        monkeypatch.setattr(test_set_index, "MAX_DOCS_FOR_ESTIMATE", 2)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["totalDocs"] == 0
+        assert (result["inspectedDocs"], result["setDocs"]) == (2, 2)
+        assert result["wholeSetInspected"] is False
+
+    def test_estimate_never_sizes_the_set_below_what_it_read(self, labeling_env):
+        """A stale fileCount below the documents actually listed must not scale the
+        reviewable work down: the set holds at least what was read."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_labelled(s3, ground_truth=["gt0.pdf"], drafts=["d0.pdf", "d1.pdf"])
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        # 3 * 2/3, where scaling the stale 1 would give 1.
+        assert result["totalDocs"] == 2
+        assert result["setDocs"] == 3
+        assert result["wholeSetInspected"] is True
 
     @pytest.mark.parametrize(
         ("set_size", "inspected", "ground_truth", "expected"),

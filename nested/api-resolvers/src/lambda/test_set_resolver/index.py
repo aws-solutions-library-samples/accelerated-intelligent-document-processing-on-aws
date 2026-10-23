@@ -3387,12 +3387,14 @@ def estimate_review_effort(args):
         ground_truth_docs,
         alerts_per_doc,
         inspected_docs,
+        whole_set_inspected,
     ) = _collect_doc_confidences(test_set_id)
 
     # The set's real size, which may exceed the sample. Using the sample size as the
     # total understates the work, the effort and the audit pool by however far the
-    # set exceeds MAX_DOCS_FOR_ESTIMATE.
-    set_size = int(meta.get("fileCount", 0) or 0) or inspected_docs
+    # set exceeds MAX_DOCS_FOR_ESTIMATE. The stored counter can lag the set, and
+    # the set holds at least what was just read, so it never sizes below that.
+    set_size = max(int(meta.get("fileCount", 0) or 0), inspected_docs)
     total_docs = _reviewable_docs(set_size, inspected_docs, ground_truth_docs)
     sampled_docs = len(doc_confidences)
 
@@ -3439,10 +3441,15 @@ def estimate_review_effort(args):
     result["sampledDocs"] = sampled_docs
     # What the reviewable size was scaled from. A sample with no reviewable
     # document scales to zero, which is a statement about the whole set only when
-    # inspectedDocs reaches setDocs; below it, documents outside the sample were
-    # never read and a caller must not report the set as fully labelled (#1479).
+    # the sample read all of it; otherwise documents outside the sample were never
+    # read and a caller must not report the set as fully labelled (#1479).
     result["inspectedDocs"] = inspected_docs
     result["setDocs"] = set_size
+    # Whether the listing was read to its end. Decided by the listing rather than
+    # by inspectedDocs against setDocs, because setDocs rests on a stored counter
+    # that can be stale or absent, and a sample cut by the cap or the time budget
+    # must never read as the whole set.
+    result["wholeSetInspected"] = whole_set_inspected
     logger.info(
         f"estimateReviewEffort({test_set_id}, target={target_accuracy}): "
         f"{estimate.docs_to_review}/{total_docs} docs, "
@@ -3555,12 +3562,16 @@ def _collect_doc_confidences(test_set_id):
     ordering would not describe the work the user is about to do.
 
     Returns ``(confidences, fields_per_doc, pages_per_doc, ground_truth_docs,
-    alerts_per_doc, inspected_docs)``. The
+    alerts_per_doc, inspected_docs, whole_set_inspected)``. The
     two shape figures fall back to the module defaults when the baseline carries
     nothing to measure. ``ground_truth_docs`` counts inspected documents that already
     have ground truth and are therefore absent from ``confidences``.
     ``inspected_docs`` is how many documents the sample read, ground truth included:
     the denominator for scaling the sample's ground-truth fraction to the set.
+    ``whole_set_inspected`` is True only when the listing ended inside the time
+    budget. A page cut by the budget also ends with no token, so a listing that
+    finished after the budget passed is reported as partial: the safe direction,
+    since a partial sample is never called the whole set.
     """
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     documents = []
@@ -3590,6 +3601,8 @@ def _collect_doc_confidences(test_set_id):
                 "sample"
             )
             break
+
+    whole_set_inspected = not next_token and time.monotonic() <= deadline
 
     confidences = []
     alert_counts = []
@@ -3660,6 +3673,7 @@ def _collect_doc_confidences(test_set_id):
         ground_truth_docs,
         alerts_per_doc,
         len(documents),
+        whole_set_inspected,
     )
 
 
