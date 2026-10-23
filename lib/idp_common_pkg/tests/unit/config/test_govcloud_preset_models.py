@@ -25,7 +25,7 @@ model id by three independent routes, any one of which suffices:
 * it starts with a cross-region prefix from
   ``idp_common.bedrock.model_utils.REGION_PREFIXES``.
 
-Every such value must be in :data:`GOVCLOUD_VERIFIED_MODELS`, or be the one
+Every such value must be in :data:`GOVCLOUD_ALLOWED_MODELS`, or be the one
 residual :data:`GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT` records.
 """
 
@@ -49,9 +49,11 @@ _PRICING_PATH = _CONFIG_LIBRARY / "pricing.yaml"
 #: preset header states the rule they were admitted under: a model is added only
 #: after a real Converse call succeeds in us-gov-west-1. Written out rather than
 #: derived, because that is a statement about live Bedrock that nothing in this
-#: tree can compute, and adding a model here is the reviewed act that claims it. ``test_the_verified_list_is_exactly_what_the_preset_pins`` keeps this
-#: set and the preset from drifting apart in either direction.
-GOVCLOUD_VERIFIED_MODELS = frozenset(
+#: tree can compute. Adding a model here widens what the gate accepts, so this
+#: allowlist is registered in ``scripts/tests/gate_exemptions.json`` with the basis
+#: for each member, and ``test_the_verified_list_is_exactly_what_the_preset_pins``
+#: keeps this set and the preset from drifting apart in either direction.
+GOVCLOUD_ALLOWED_MODELS = frozenset(
     {
         "amazon.nova-pro-v1:0",
         "amazon.nova-lite-v1:0",
@@ -159,13 +161,13 @@ def test_every_merged_model_value_is_govcloud_verified():
     offenders = {
         path: value
         for path, value in sorted(_model_values(_merged_preset()).items())
-        if value not in GOVCLOUD_VERIFIED_MODELS
+        if value not in GOVCLOUD_ALLOWED_MODELS
         and GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT.get(path) != value
     }
     assert not offenders, (
         f"After merging {_PRESET_PATH.relative_to(_CONFIG_LIBRARY.parent)} with the "
         f"system defaults, these settings name a model outside the GovCloud-verified "
-        f"list {sorted(GOVCLOUD_VERIFIED_MODELS)}: {offenders}. A setting the preset "
+        f"list {sorted(GOVCLOUD_ALLOWED_MODELS)}: {offenders}. A setting the preset "
         f"omits inherits the system default, and nothing rewrites it for a GovCloud "
         f"region. Pin a verified model for it in the preset. Do not add a model to "
         f"the verified list without a successful Converse call in us-gov-west-1."
@@ -184,15 +186,15 @@ def test_each_exempt_value_is_still_needed(path):
         f"delete it (and the matching note in the preset) or re-read its reason "
         f"against the new value."
     )
-    assert excused not in GOVCLOUD_VERIFIED_MODELS
+    assert excused not in GOVCLOUD_ALLOWED_MODELS
 
 
 @pytest.mark.unit
 def test_the_verified_list_is_exactly_what_the_preset_pins():
     pinned = set(_model_values(_raw_preset()).values())
-    assert pinned == set(GOVCLOUD_VERIFIED_MODELS), (
-        f"The preset pins {sorted(pinned)}; GOVCLOUD_VERIFIED_MODELS lists "
-        f"{sorted(GOVCLOUD_VERIFIED_MODELS)}. A model pinned in the preset but not "
+    assert pinned == set(GOVCLOUD_ALLOWED_MODELS), (
+        f"The preset pins {sorted(pinned)}; GOVCLOUD_ALLOWED_MODELS lists "
+        f"{sorted(GOVCLOUD_ALLOWED_MODELS)}. A model pinned in the preset but not "
         f"listed here has not been recorded as verified; a model listed here but "
         f"no longer pinned should be removed so the list stays a statement about "
         f"what ships."

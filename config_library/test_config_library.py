@@ -238,9 +238,10 @@ class TestNoAccountScopedModelArns:
         Universe closure for the key rule, derived rather than authored. An exact
         ("model", "model_id") predicate missed the model-bearing fields named
         otherwise (`escalation_model`, `analysis_model_id`), and a private-account ARN
-        in one of those passed every check in this file. So the universe is computed from the tree — every key whose
-        name ends in a model-ish word — and any member the predicate rejects fails here,
-        which is what stops the rule narrowing back without the loss being visible.
+        in one of those passed every check in this file. So the universe is computed
+        from the tree — every key whose name ends in a model-ish word — and any member
+        the predicate rejects fails here, which is what stops the rule narrowing back
+        without the loss being visible.
         """
         key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
         found: dict[str, int] = {}
