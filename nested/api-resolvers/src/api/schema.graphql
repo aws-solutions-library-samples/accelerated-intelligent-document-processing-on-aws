@@ -1293,6 +1293,12 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   # sets, where the estimate extrapolates from a sample — surfaced so the UI can
   # say so instead of implying every document was inspected.
   sampledDocs: Int
+  # How many documents the sample read, ground truth included, and the set's size
+  # it was scaled to. totalDocs applies the sample's reviewable fraction to
+  # setDocs, so a totalDocs of 0 describes the whole set only when inspectedDocs
+  # reaches setDocs.
+  inspectedDocs: Int
+  setDocs: Int
   # Confidence value at the boundary of the reviewed set.
   impliedCutoff: Float
   residualError: Float!

@@ -6102,30 +6102,15 @@ class TestTestSetResolver:
         """Reviewing authored labels is not work the estimate should ask for."""
         table, s3 = labeling_env
         _seed_test_set(table, "ts1", fileCount=2)
-        for name in ("gt.pdf", "draft.pdf"):
-            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
-        s3.put_object(
-            Bucket="test-set-bucket",
-            Key="ts1/baseline/gt.pdf/sections/1/result.json",
-            Body=json.dumps({"inference_result": {"box_a": "authored"}}).encode(),
-        )
-        s3.put_object(
-            Bucket="test-set-bucket",
-            Key="ts1/baseline/draft.pdf/sections/1/result.json",
-            Body=json.dumps(
-                {
-                    "labelSource": "draft-machine",
-                    "explainability_info": [{"f": {"confidence": 0.5}}],
-                    "inference_result": {"f": "v"},
-                }
-            ).encode(),
-        )
+        self._seed_labelled(s3, ground_truth=["gt.pdf"], drafts=["draft.pdf"])
 
         result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
         # One of the two documents is authored ground truth, so only one is
         # reviewable — reporting 2 would bill the owner for finished work.
         assert result["totalDocs"] == 1
         assert result["docsToReview"] <= 1
+        # The whole set was read, so the figure needs no extrapolation caveat.
+        assert (result["inspectedDocs"], result["setDocs"]) == (2, 2)
 
     @staticmethod
     def _seed_labelled(s3, ground_truth=(), drafts=()):
@@ -6174,6 +6159,9 @@ class TestTestSetResolver:
         assert result["docsToReviewHigh"] == 0
         assert result["auditSampleSize"] == 0
         assert result["burndown"] == []
+        # The zero is extrapolated from 4 of 500, and the response says so: a
+        # caller must not report the set as fully labelled from it.
+        assert (result["inspectedDocs"], result["setDocs"]) == (4, 500)
 
     def test_estimate_applies_the_samples_reviewable_fraction_to_the_set(
         self, labeling_env

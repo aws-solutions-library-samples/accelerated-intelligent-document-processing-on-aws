@@ -8,6 +8,10 @@
  * ground truth (#1479). The dialog must then say there is nothing to review and
  * nothing else: a prior-trust banner, three priced strategies and a math section
  * beside that alert would all describe zero documents.
+ *
+ * The sample is capped and time-bounded, so a zero is a fact about the whole set
+ * only when inspectedDocs reaches setDocs. Below that, the dialog must neither say
+ * the set is fully labelled nor disable the way to the queue.
  */
 
 import { render, screen, waitFor } from '@testing-library/react';
@@ -22,7 +26,7 @@ vi.mock('../../../graphql/generated', () => ({ estimateReviewEffort: 'estimateRe
 import ReviewEffortModal, { type ReviewEffortEstimate } from '../ReviewEffortModal';
 
 // Typed, so a field added to the estimate's interface fails here at compile time.
-const estimate = (totalDocs: number): ReviewEffortEstimate => ({
+const estimate = (totalDocs: number, inspectedDocs: number, setDocs: number): ReviewEffortEstimate => ({
   testSetId: 'docsplit',
   targetAccuracy: 99,
   curveSource: 'prior',
@@ -31,6 +35,8 @@ const estimate = (totalDocs: number): ReviewEffortEstimate => ({
   docsToReviewHigh: totalDocs ? 2 : 0,
   totalDocs,
   sampledDocs: totalDocs,
+  inspectedDocs,
+  setDocs,
   impliedCutoff: null,
   residualError: 0,
   baselineError: 0,
@@ -53,11 +59,17 @@ const estimate = (totalDocs: number): ReviewEffortEstimate => ({
   reliabilityTable: [],
 });
 
-const renderWith = async (totalDocs: number) => {
-  graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs) } });
+const renderWith = async (totalDocs: number, inspectedDocs = 3, setDocs = 3) => {
+  graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs, inspectedDocs, setDocs) } });
   render(<ReviewEffortModal visible testSetId="docsplit" onDismiss={() => {}} onContinue={() => {}} />);
   await waitFor(() => expect(graphql).toHaveBeenCalled());
-  await screen.findByText(/with draft labels/);
+  // The header gains its " · " detail only once the estimate has arrived.
+  await screen.findByText(/^docsplit · /);
+};
+
+const continueDisabled = (): boolean => {
+  const button = screen.getByRole('button', { name: 'Continue to annotation' }) as HTMLButtonElement;
+  return button.disabled || button.getAttribute('aria-disabled') === 'true';
 };
 
 describe('ReviewEffortModal with nothing to review', () => {
@@ -71,6 +83,18 @@ describe('ReviewEffortModal with nothing to review', () => {
     expect(screen.queryByText(/Rough estimate/)).toBeNull();
     expect(screen.queryByText('How much should annotators review?')).toBeNull();
     expect(screen.queryByText(/Show the math/)).toBeNull();
+    expect(continueDisabled()).toBe(true);
+  });
+
+  it('does not call a partly sampled set fully labelled, and keeps the queue open', async () => {
+    // 200 of 500 read, all ground truth: the estimate is zero, but 300 documents
+    // were never read and may hold drafts.
+    await renderWith(0, 200, 500);
+    expect(screen.queryByText('Nothing to review')).toBeNull();
+    expect(screen.getByText('No draft labels in the sample')).toBeTruthy();
+    expect(screen.getByText('docsplit · no draft labels among 200 of 500 documents sampled')).toBeTruthy();
+    expect(screen.queryByText('How much should annotators review?')).toBeNull();
+    expect(continueDisabled()).toBe(false);
   });
 
   it('still shows the estimate when there is something to review', async () => {
@@ -82,5 +106,7 @@ describe('ReviewEffortModal with nothing to review', () => {
     expect(screen.getByText(/Rough estimate/)).toBeTruthy();
     expect(screen.getByText('How much should annotators review?')).toBeTruthy();
     expect(screen.getByText(/Show the math/)).toBeTruthy();
+    expect(screen.queryByText('No draft labels in the sample')).toBeNull();
+    expect(continueDisabled()).toBe(false);
   });
 });

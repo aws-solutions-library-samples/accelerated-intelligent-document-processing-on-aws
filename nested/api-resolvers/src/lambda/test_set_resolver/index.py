@@ -3437,6 +3437,12 @@ def estimate_review_effort(args):
     result["reliabilityTable"] = curve.reliability_table(prior)
     # Surfaced so a caller can say how much of the set was actually inspected.
     result["sampledDocs"] = sampled_docs
+    # What the reviewable size was scaled from. A sample with no reviewable
+    # document scales to zero, which is a statement about the whole set only when
+    # inspectedDocs reaches setDocs; below it, documents outside the sample were
+    # never read and a caller must not report the set as fully labelled (#1479).
+    result["inspectedDocs"] = inspected_docs
+    result["setDocs"] = set_size
     logger.info(
         f"estimateReviewEffort({test_set_id}, target={target_accuracy}): "
         f"{estimate.docs_to_review}/{total_docs} docs, "

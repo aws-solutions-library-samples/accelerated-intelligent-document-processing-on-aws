@@ -77,6 +77,8 @@ export interface ReviewEffortEstimate {
   docsToReviewHigh: number;
   totalDocs: number;
   sampledDocs?: number | null;
+  inspectedDocs?: number | null;
+  setDocs?: number | null;
   impliedCutoff?: number | null;
   residualError: number;
   baselineError: number;
@@ -154,6 +156,13 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
   // Distinct from "still loading" and from an error: a successful estimate over a
   // set with no draft labels left to review.
   const nothingToReview = Boolean(estimate) && (estimate?.totalDocs ?? 0) === 0;
+  // An empty estimate is a fact about the whole set only when the sample covered
+  // it. The estimate reads a capped, time-bounded sample and scales it, so a sample
+  // that happened to hold only ground truth scales to zero while documents outside
+  // it were never read: that state must neither claim the set is fully labelled nor
+  // block the way to the queue, which lists every document.
+  const sampleWasPartial = estimate?.inspectedDocs != null && estimate?.setDocs != null && estimate.inspectedDocs < estimate.setDocs;
+  const setIsFullyLabelled = nothingToReview && !sampleWasPartial;
 
   const [error, setError] = useState<string | null>(null);
 
@@ -241,9 +250,11 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
           description={
             !estimate
               ? testSetId
-              : nothingToReview
+              : setIsFullyLabelled
                 ? `${testSetId} · no documents with draft labels`
-                : `${testSetId} · ${estimate.totalDocs} document(s) with draft labels · choose how much to review`
+                : nothingToReview
+                  ? `${testSetId} · no draft labels among ${estimate.inspectedDocs} of ${estimate.setDocs} documents sampled`
+                  : `${testSetId} · ${estimate.totalDocs} document(s) with draft labels · choose how much to review`
           }
         >
           Set up team annotation
@@ -256,7 +267,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             <Button variant="link" onClick={onDismiss}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading || nothingToReview}>
+            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading || setIsFullyLabelled}>
               Continue to annotation
             </Button>
           </SpaceBetween>
@@ -272,10 +283,17 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
               "about 0 of 0 documents (0–0)", "Est. effort —", "Audit sample 0" —
               with Continue still enabled, next to a screen saying the set was fully
               labelled. Say the one true thing instead. */}
-          {nothingToReview && !isLoading && !error && (
+          {setIsFullyLabelled && !isLoading && !error && (
             <Alert type="success" header="Nothing to review">
               Every document in this set already carries ground truth, so there are no draft labels to check. Run a test to score a
               configuration against it, or add documents and generate draft labels for those.
+            </Alert>
+          )}
+          {nothingToReview && sampleWasPartial && !isLoading && !error && (
+            <Alert type="info" header="No draft labels in the sample">
+              The estimate read {estimate?.inspectedDocs} of this set&apos;s {estimate?.setDocs} documents and every one already carries
+              ground truth, so it finds nothing to review. The documents outside the sample were not read; continue to the annotation queue
+              to see them all.
             </Alert>
           )}
 
