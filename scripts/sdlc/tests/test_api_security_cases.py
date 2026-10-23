@@ -1628,6 +1628,16 @@ def _load_dispatcher_validation():
     spec = importlib.util.spec_from_file_location("_dispatcher_validation", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # The loader fails open: an unreadable spec becomes an empty one and every
+    # call validates, which would make this guard check nothing.
+    probed = {
+        "renewReviewLease",
+        "releaseReviewItem",
+        "saveReviewDraft",
+        "completeReviewItem",
+    }
+    missing = probed - set(mod._SPEC["fields"])
+    assert not missing, f"validation spec did not load, or lacks {sorted(missing)}"
     return mod
 
 
