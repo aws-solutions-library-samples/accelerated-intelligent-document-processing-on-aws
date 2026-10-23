@@ -9,8 +9,11 @@ specifier. "only answer when you are over 90% confident" raised
 ``TypeError: not enough arguments for format string`` on every document, and a
 prompt with no placeholders at all raised ``TypeError: %o format: an integer is
 required, not dict``. ``format_prompt`` is shared by classification, extraction,
-assessment, summarization, rule validation and chat, so the blast radius was
-every stage, and the only way for an operator to find out was a failed run.
+assessment, summarization, both rule-validation stages and the evaluation
+LLM-judge comparator, so the blast radius was every stage that templates a
+prompt, and the only way for an operator to find out was a failed run. (Chat is
+not among them: ``src/lambda/chat_with_document_processor`` hands its configured
+``system_prompt`` to Converse verbatim, templating nothing.)
 
 The escaping has to happen before the ``{KEY} -> %(KEY)s`` rewrite rather than
 after it, so these tests pin the two ends that ordering decides: a placeholder
@@ -76,6 +79,30 @@ def test_a_literal_percent_renders_as_a_literal_percent(template, expected):
     assert CLIENT.format_prompt(template, {"A": "x"}, required_placeholders=[]) == (
         expected
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        ("%%%", "%%"),
+        ("%%%%", "%%"),
+        ("50%%% off", "50%% off"),
+    ],
+)
+def test_an_odd_run_of_percents_pairs_left_to_right(template, expected):
+    """An odd-length run of ``%`` is paired from the left, and that is deliberate.
+
+    The escaping consumes an existing ``%%`` ahead of a bare ``%``, so ``%%%``
+    is read as one escaped pair followed by one bare ``%`` and renders ``%%``
+    rather than ``%``. There is no reading of a run like that which is right for
+    every author -- it is equally plausibly two literals or one literal and a
+    typo -- so the rule is simply stated and pinned here. Before this change
+    ``%%%`` raised ``TypeError``, and an output a reader can see beats a failed
+    document, but do not "fix" this to collapse the run without deciding what
+    the odd ``%`` was meant to be.
+    """
+    assert CLIENT.format_prompt(template, {}, required_placeholders=[]) == expected
 
 
 @pytest.mark.unit
