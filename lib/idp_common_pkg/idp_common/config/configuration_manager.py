@@ -919,15 +919,24 @@ class ConfigurationManager:
         return entries
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
-        """Full configuration recorded in one revision, or None if not retained."""
+        """
+        Full configuration recorded in one revision, or None if not retained.
+
+        In the current config format, like every other read of a stored
+        configuration: a revision cut before the 0.9 classification nesting is
+        stored flat, so returned raw it gives `config-download --config-revision
+        N` a different shape from `config-download` of the profile head and from
+        what Revision History shows for the same revision. The stored body is
+        never rewritten (`_read_revision_body`).
+        """
         return self._read_revision_body(profile, revision)
 
     def _read_revision_body(
         self, profile: str, revision: int
     ) -> Optional[Dict[str, Any]]:
         """
-        A revision's body, rebuilt from the profile head if it is the published
-        revision and its object has expired.
+        A revision's body in the current config format, rebuilt from the profile
+        head if it is the published revision and its object has expired.
 
         Revision bodies live in the Configuration bucket, whose lifecycle rule
         expires every object after DataRetentionInDays, while every new document is
@@ -935,11 +944,33 @@ class ConfigurationManager:
         published revision was cut more than DataRetentionInDays ago stops
         processing new documents. The head stands in only when it is provably that
         revision (`_head_is_revision`); any other missing body stays missing.
+
+        Both sources are migrated, so one revision number does not change shape
+        when its stored object expires: the head rebuild goes through
+        `ConfigurationRecord`/`IDPConfig` and is therefore already current, while a
+        stored body is in whatever format the release that cut it wrote.
+
+        Migrated **in memory only**, never written back. A revision is an immutable
+        record of the configuration that actually ran, which is why the pinned read
+        (`_load_revision_config`) migrates the same way.
         """
         body = self.revisions.get_body(profile, revision)
-        if body is not None or not self.revisions.enabled:
-            return body
-        return self._published_body_from_head(profile, int(revision))
+        if body is None and self.revisions.enabled:
+            body = self._published_body_from_head(profile, int(revision))
+        return self._migrated_body(body)
+
+    @staticmethod
+    def _migrated_body(
+        body: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """`body` in the current config format, leaving the stored object alone."""
+        if body is None:
+            return None
+        from copy import deepcopy
+
+        from .migrations import migrate_config
+
+        return migrate_config(deepcopy(body))
 
     def _published_body_from_head(
         self, profile: str, revision: int
