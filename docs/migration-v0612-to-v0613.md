@@ -211,6 +211,16 @@ a class cannot be decided. Extraction reads it from there too.
   Save As Default, `idp-cli config-upload`, and the stack's own presets and
   `CustomConfigPath` file on deploy.
 
+⚠️ On the deploy path the conversion also **validates**, so a hand-written
+`CustomConfigPath` file is refused there rather than corrected. The one setting
+this reaches is `classification.file_shape.sectionSplitting`, which accepts only
+`llm_determined`, `disabled` or `page`: an unrecognised value fails the stack
+operation, and on an update that is a rollback. Every other converted setting is
+normalised instead — a blank takes its default and an unusable page limit becomes
+`ALL` — because a value that cannot be read still has a safe reading, whereas an
+unrecognised splitting mode does not. See
+[Combinations refused when you save](classification.md#combinations-refused-when-you-save).
+
 The trigger is the presence of an old key, not the `config_format_version`
 stamp. A file that mixes old keys with new ones — for example a v0.6.12 file
 applied on top of a v0.6.13 one — has its old keys win, because they are the more
