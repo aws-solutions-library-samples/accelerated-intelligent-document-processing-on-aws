@@ -886,6 +886,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
 	cd nested/api-resolvers/src/lambda/test_runner && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running Test Studio results tests (captured-config format on both storage shapes)..."
+	@# Its own invocation: this directory defines a module named ``index`` too, so a
+	@# combined run collides with test_runner above on the basename.
+	cd nested/api-resolvers/src/lambda/test_results_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running the config-version scope suites for the six API resolvers that enforce it..."
 	@# The fail-closed UsersTable scope lookup: an absent `email` claim or a failed
 	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its

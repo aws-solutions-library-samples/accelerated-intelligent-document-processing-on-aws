@@ -316,6 +316,13 @@ class TestTheResultsResolverReadsBothStorageShapes:
         # below). Comparing here against the double-roundtripped shape
         # asserts the end-to-end invariant callers depend on.
         expected = json.loads(json.dumps(config, default=runner._json_default))
+        # The read also converts the captured body to the current config format,
+        # which for an already-current body writes the format stamp and nothing
+        # else. So the round-trip invariant this test is about — storage loses
+        # nothing — is equality with the CONVERTED capture. The conversion itself
+        # is covered in
+        # test_results_resolver/test_run_config_format.py.
+        expected["Config"] = results_resolver.migrate_config(expected["Config"])
         assert read_back == expected
 
     def test_captured_config_of_returns_decimal_symmetrically_across_storage_formats(
@@ -366,8 +373,15 @@ class TestTheResultsResolverReadsBothStorageShapes:
         table = results_resolver.dynamodb.Table.return_value
         table.get_item.return_value = {"Item": legacy}
 
+        # The inline body survives the read intact; the format stamp is added by
+        # the same conversion the compressed path gets, which is what keeps the
+        # two storage shapes comparable with each other.
         assert results_resolver._get_test_run_config("old") == {
-            "Config": {"notes": "x", "extraction": {"temperature": 0.5}}
+            "Config": {
+                "notes": "x",
+                "extraction": {"temperature": 0.5},
+                "config_format_version": "0.9",
+            }
         }
 
     def test_a_run_without_any_configuration_reads_as_empty(self, results_resolver):

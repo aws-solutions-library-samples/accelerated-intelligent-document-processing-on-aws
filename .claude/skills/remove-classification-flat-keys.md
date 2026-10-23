@@ -13,9 +13,10 @@ what lets an old **pinned revision** load.
 Two stored things can hold flat keys. ⚠️ **Both have to be checked, and the
 heads are the half that is easy to get wrong.**
 
-**A revision body is immutable.** It is converted in memory on every load
-(`ConfigurationManager._load_revision_config` → `IDPConfig(**body)`) and never
-rewritten, so a pre-0.9 body stays pre-0.9 for as long as it is retained.
+**A revision body is immutable.** It is converted in memory on every read
+(`ConfigurationManager._read_revision_body`, and again through
+`IDPConfig(**body)` on the pinned path — §2 names both) and never rewritten, so a
+pre-0.9 body stays pre-0.9 for as long as it is retained.
 
 **A profile head is not guaranteed to have converged either.** The only thing
 that moves a head onto the current shape by itself is the write-back in
@@ -71,8 +72,9 @@ for profile in manager.list_config_versions():
     # Its revision bodies.
     for entry in manager.list_revisions(name):
         # The STORED body, deliberately. `get_revision()` cannot see the stamp
-        # this audit is looking for: for an expired body it answers with the
-        # profile HEAD. `get_body()` is the raw reader.
+        # this audit is looking for: it converts on the way out, and for an
+        # expired body it answers with the profile HEAD. `get_body()` is the raw
+        # reader.
         body = manager.revisions.get_body(name, entry["revision"])
         if body is None:
             continue              # expired or pruned: nothing stored to convert
@@ -94,14 +96,12 @@ answer, and neither is the obvious one.**
   already. `revisions.get_body()` returns `None` there, which is the answer this
   census needs, because nothing is stored to convert.
 
-  `get_revision()` does not itself convert: it returns the stored shape. The
-  revision-history panel's conversion is applied by its own resolver
-  (`configuration_resolver/index.py`, which calls `migrate_config` on what
-  `get_revision` hands back), and `config-download --config-revision` applies
-  none. ⚠️ If a later release makes `_read_revision_body` convert on read, that
-  becomes a second and independent reason to use the raw reader — but the head
-  fallback above already requires it, so this check does not depend on which
-  release you are reading.
+  `get_revision()` **also converts** what it returns, because
+  `_read_revision_body` runs the chain on the way out (§2 names that site), so it
+  reports the current format for a stored body of any age. That is a second and
+  independent reason to use the raw reader here — but note the head fallback above
+  is on its own a complete argument, and it holds on every release, so this check
+  does not depend on which one you are reading.
 - For a **head**, do not substitute `get_raw_configuration()`. "Raw" there means
   "no Pydantic defaults", not "the stored bytes": it runs the migration chain to
   relocate keys and restamps `config_format_version`, so it reports the current
@@ -140,12 +140,36 @@ revision and the remedy (restore it under the last release that reads it, then
 save it again). Silently ignoring the keys is the failure this skill exists to
 avoid. Keep `FLAT_KEYS` itself — the refusal needs it.
 
+**Two sites convert a revision body, and the first is where the refusal has to be
+raised:**
+
+- **`ConfigurationManager._read_revision_body` → `_migrated_body`** converts every
+  revision on the way out of the manager, whichever of its two sources it came
+  from, and so covers *every* consumer: the pinned read, `restore_revision`,
+  `get_revision` behind `idp-cli config-download --config-revision`, the Revision
+  History and Compare views, and a test run's configuration capture. It calls
+  `migrate_config()` directly. Two things to deal with here. ⚠️ **It catches a
+  conversion failure and returns the body as stored**, so a refusal raised inside
+  `migrate_config()` would be swallowed at this site and the flat body served
+  anyway — the exact silent degradation this section exists to prevent. Remove
+  that `except` branch as part of the change. And `migrate_config()` is handed
+  neither the profile nor the revision number, so the message above cannot be
+  built inside the migration at all: raise it here, where both are in scope, or
+  thread them through.
+- **`_load_revision_config` → `IDPConfig(**body)`** converts again through the
+  model's before-validator. By the time it runs the body has already been through
+  the site above, so this one is a no-op on that path and the chain's idempotence
+  is what makes it harmless. It still matters for a body reaching `IDPConfig` from
+  anywhere else.
+
 ## 3. What to remove or change
 
 | Where | What |
 |---|---|
 | `config/migrations/v08_to_v09.py` | the conversion body; keep `FLAT_KEYS`, `TARGET_VERSION` and the refusal |
 | `config/migrations/v07_to_v08.py` | only reachable through flat keys; remove with it, keeping the chain's version stamping |
+| `config/configuration_manager.py` — `_read_revision_body` / `_migrated_body` | where a revision is converted for **every** consumer, and the only one holding the profile and revision number the §2 refusal must name. Raise there, and remove the swallow that returns an unconvertible body as stored |
+| `config/configuration_manager.py` — `_read_revision_body` / `_migrated_body` | where a revision is converted for **every** consumer, and the only site holding the profile and revision number §2's refusal must name. Raise there, and remove the `except` that returns an unconvertible body as stored |
 | `config/models.py` — `ClassificationConfig.migrate_flat_keys` | the before-validator that converts flat kwargs; make it refuse |
 | `config/merge_utils.py` — `_nested_classification` | the defensive conversion in the save-time validators |
 | `patterns/unified/src/mlflow_logger_function/index.py` — `_classification_view` | the flat-dict fallback branch |

@@ -556,11 +556,22 @@ def _current_format(body):
     Capturing a pre-0.9 profile or revision in its stored (flat classification)
     shape would make every moved setting compare as ``<missing>`` against a run
     captured in the nested shape, so the capture is normalised here.
+
+    The capture carries the resulting ``config_format_version``, including for a
+    body that recorded none — the stamp then states the shape the capture is in,
+    which is the current one. It must not depend on where the body came from, and
+    the two routes here no longer look alike: ``ConfigurationManager.get_revision()``
+    converts on read, so a pinned revision arrives already stamped, while a profile
+    head read straight from DynamoDB does not. A rule that dropped the stamp for an
+    unstamped body would therefore be able to see only the head path, and would give
+    one configuration two different captures according to how the run reached it —
+    one spurious difference in run comparison, on the one key that says nothing
+    about how documents are processed.
     """
     if not isinstance(body, dict) or not body:
         return body
     try:
-        migrated = migrate_config(copy.deepcopy(body))
+        return migrate_config(copy.deepcopy(body))
     except Exception:  # noqa: BLE001 — the capture is a record, not the run's config
         # The body was read; only its normalisation for later comparison failed.
         # Record it as stored rather than failing the test run over it.
@@ -570,11 +581,6 @@ def _current_format(body):
             exc_info=True,
         )
         return body
-    if "config_format_version" not in body:
-        # Normalise the shape only: a body that recorded no format version is
-        # not given one, so an already-current body is captured unchanged.
-        migrated.pop("config_format_version", None)
-    return migrated
 
 
 def _capture_config(config_table, config_version=None, config_revision=None):
