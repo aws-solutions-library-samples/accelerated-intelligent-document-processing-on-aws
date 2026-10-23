@@ -18,7 +18,6 @@ import gzip
 import importlib.util
 import json
 import sys
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -26,11 +25,21 @@ import pytest
 
 
 def _flat_capture():
-    """A capture in the pre-0.9 layout, as a release before the change wrote it."""
+    """A capture in the pre-0.9 layout, as a release before the change wrote it.
+
+    Deliberately carries no ``Decimal``. Production writes the compressed blob
+    with ``test_runner._json_default`` (which emits a JSON number) and reads it
+    back with ``parse_float=Decimal``; the helper below serialises more simply, so
+    a ``Decimal`` here would land in the fixture as a string and the fixture would
+    stop being the shape production stores. Decimal symmetry across the two
+    storage shapes is covered where it belongs, by
+    ``test_runner/test_captured_config_size.py::
+    TestTheResultsResolverReadsBothStorageShapes``.
+    """
     return {
         "Config": {
             "config_format_version": "0.8",
-            "classification": {"model": "flat-model", "temperature": Decimal("0")},
+            "classification": {"model": "flat-model", "temperature": 0},
         }
     }
 
@@ -52,7 +61,7 @@ def _compressed_item(capture):
     return {
         "_config_storage": "compressed",
         "_compressed_config": gzip.compress(
-            json.dumps(capture, default=str, separators=(",", ":")).encode("utf-8")
+            json.dumps(capture, separators=(",", ":")).encode("utf-8")
         ),
     }
 

@@ -1374,11 +1374,15 @@ def handle_get_profile_revision(manager, profile, revision):
     Full configuration recorded in one revision.
 
     Returned as a JSON string so the UI can feed it straight into the same
-    comparison view it uses for profiles. The body is migrated to the current
-    config format first — a revision cut before the 0.9 classification nesting
-    is stored flat, and compared raw against a current revision every moved
-    setting would show as missing on one side. The stored body is not
-    rewritten, and restore is unchanged.
+    comparison view it uses for profiles.
+
+    The conversion to the current config format is **the manager's**, in
+    `ConfigurationManager._read_revision_body` — that is the one authoritative
+    statement of where a revision changes shape, and it covers every consumer
+    rather than this view alone. The call below is defence in depth: it is
+    idempotent and returns the body unchanged for one already converted, and it
+    keeps this layer's own guarantee testable. The stored body is not rewritten,
+    and restore is unchanged.
     """
     try:
         config = manager.get_revision(profile, revision)

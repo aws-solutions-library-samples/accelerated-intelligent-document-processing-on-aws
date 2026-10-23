@@ -25,11 +25,14 @@ will have to be raised:
   from, and so covers *every* consumer: the pinned read, `restore_revision`,
   `get_revision` behind `idp-cli config-download --config-revision`, the Revision
   History and Compare views, and a test run's configuration capture. It calls
-  `migrate_config()` directly. ⚠️ **It also swallows a conversion failure** and
-  returns the body as stored, which a refusal must not be left behind — and
-  `migrate_config()` is handed neither the profile nor the revision number, so the
-  message §2 requires cannot be built inside the migration. Raise it here, where
-  both are in scope, or thread them through.
+  `migrate_config()` directly. Two things to deal with here. ⚠️ **It catches a
+  conversion failure and returns the body as stored**, so a refusal raised inside
+  `migrate_config()` would be swallowed at this site and the flat body would be
+  served anyway — the exact silent degradation §2 exists to prevent. Remove that
+  `except` branch as part of the change. And `migrate_config()` is handed neither
+  the profile nor the revision number, so the message §2 requires cannot be built
+  inside the migration at all: raise it here, where both are in scope, or thread
+  them through.
 - **`_load_revision_config` → `IDPConfig(**body)`** converts again through the
   model's before-validator. By the time it runs the body has already been through
   the site above, so this one is a no-op on that path and the chain's idempotence

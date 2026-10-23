@@ -969,24 +969,41 @@ class ConfigurationManager:
         A body the chain cannot convert is returned **as stored**, with a warning,
         rather than raising. The revision was read; only its normalisation failed,
         and every consumer of a converted body here is reading for the record, for
-        display or for download. The two other `migrate_config` call sites over a
-        stored configuration make the same choice
-        (`test_runner._current_format`, `test_results_resolver._migrated_run_config`),
-        and the test-runner one is reached through `get_revision`, so raising here
-        would fail a whole `startTestRun` over one unconvertible revision before
-        that call site could honour its own contract.
+        display or for download.
 
-        This cannot let a document run under an unconverted configuration: every
-        path that *executes* a configuration builds an `IDPConfig`
-        (`_load_revision_config`, `restore_revision`), whose validator calls the
-        same chain and raises on the same body. So the tolerance is confined to
-        paths that only ever show or record what a revision held.
+        What decides it is the cost of each answer. `_capture_config` in the test
+        runner reaches a pinned revision through `get_revision` and re-raises
+        anything it throws as "Could not read revision r<n>", so raising here
+        would fail a whole `startTestRun` over a body the caller only wanted to
+        record — and the two sites that convert a *captured run* configuration
+        (`test_runner._current_format` on the way in,
+        `test_results_resolver._migrated_run_config` on the way back out) both
+        record such a body as stored, so raising would also defeat a contract they
+        state. Tolerating it, on the other hand, cannot let a document run under
+        an unconverted configuration: every path that *executes* a configuration
+        builds an `IDPConfig` (`_load_revision_config`, `restore_revision`), whose
+        validator calls the same chain and raises on the same body. So the
+        tolerance is confined to paths that only ever show or record what a
+        revision held.
+
+        ⚠️ Do not read this as the house style for `migrate_config`: callers over a
+        stored configuration do both, and most of the ones outside the captured-run
+        pair propagate. `configuration_resolver.handle_get_profile_revision`
+        converts *this same body* a layer up and answers an error response. The
+        closest precedent for tolerating is
+        `update_configuration._migrated_or_original`, which does it in this shape
+        on the deploy-time write path.
         """
         if body is None:
             return None
         from copy import deepcopy
 
         from .migrations import migrate_config
+
+        # The deepcopy is belt-and-braces, not a guard against a known mutation:
+        # every hop in the chain already copies before it transforms and returns
+        # its input unchanged when it does not. Both of this function's callers
+        # pass a freshly deserialised body, so there is nothing to protect today.
 
         try:
             return migrate_config(deepcopy(body))
