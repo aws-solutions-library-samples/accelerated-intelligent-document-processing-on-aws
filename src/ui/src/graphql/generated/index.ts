@@ -561,6 +561,9 @@ export const estimateReviewEffort = /* GraphQL */ `
       docsToReviewHigh
       totalDocs
       sampledDocs
+      inspectedDocs
+      setDocs
+      wholeSetInspected
       impliedCutoff
       residualError
       baselineError
