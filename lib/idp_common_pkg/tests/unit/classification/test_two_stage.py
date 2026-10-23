@@ -58,6 +58,44 @@ LABEL_PROMPT = (
     "<document-image>\n{DOCUMENT_IMAGE}\n</document-image>\n"
 )
 
+#: A Stage A prompt that asks for everything Stage A is supposed to withhold.
+#: An operator can write this — the segmentation prompts are editable — so the
+#: guarantee has to hold against it rather than against the shipped prompt,
+#: which happens not to reference either placeholder and so makes the question
+#: unobservable.
+SEG_PROMPT_ASKING_FOR_VOCABULARY = (
+    "Where does each document start?\n{BOUNDARY_HINTS}\n"
+    "<document-types>\n{CLASS_NAMES_AND_DESCRIPTIONS}\n</document-types>\n"
+    "<document-types-with-attributes>\n"
+    "{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\n"
+    "</document-types-with-attributes>\n"
+    "<few-shot-examples>\n{FEW_SHOT_EXAMPLES}\n</few-shot-examples>\n"
+    "<document-ocr-data>\n{DOCUMENT_TEXT}\n</document-ocr-data>\n"
+)
+
+#: A single-pass page prompt that references ``{BOUNDARY_HINTS}``, which is a
+#: two-stage-only placeholder. Nothing stops an operator writing it.
+SINGLE_PASS_PROMPT_REFERENCING_HINTS = (
+    "Classify this page.\n{BOUNDARY_HINTS}\n"
+    "<document-types>\n{CLASS_NAMES_AND_DESCRIPTIONS}\n</document-types>\n"
+    "<document-ocr-data>\n{DOCUMENT_TEXT}\n</document-ocr-data>\n"
+)
+
+#: Substrings that say a request carries class vocabulary. The description text
+#: comes from ``_classes``, the example text from ``_classes(..., examples=True)``.
+A_CLASS_DESCRIPTION = "distinctive layout"
+A_FEW_SHOT_EXAMPLE = "EXAMPLE-PAGE-FOR"
+#: A schema attribute name, which appears only in the optional
+#: ``{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`` listing. That placeholder
+#: renders the class names AND descriptions AND their attributes, so it is more
+#: vocabulary than the plain listing, not less — and on the base tree it reached
+#: Stage A on every path including the one that withheld the plain listing.
+AN_ATTRIBUTE_NAME = "total_amount_due"
+#: The opening tag of the ``boundary_hints`` block, and the instruction inside
+#: it that a class-assigning call must never be given.
+HINTS_BLOCK_TAG = "<document-type-hints>"
+HINTS_BLOCK_INSTRUCTION = "do NOT report a type"
+
 
 def _png() -> bytes:
     from PIL import Image
@@ -67,18 +105,28 @@ def _png() -> bytes:
     return buffer.getvalue()
 
 
-def _classes(*names: str) -> List[Dict[str, Any]]:
-    return [
-        {
+def _classes(*names: str, examples: bool = False) -> List[Dict[str, Any]]:
+    schemas: List[Dict[str, Any]] = []
+    for name in names:
+        schema: Dict[str, Any] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": name,
             "x-aws-idp-document-type": name,
             "type": "object",
             "description": f"A {name} document with distinctive layout",
-            "properties": {},
+            "properties": {AN_ATTRIBUTE_NAME: {"type": "string"}},
         }
-        for name in names
-    ]
+        if examples:
+            # Text-only examples: no imagePath, so nothing reads S3 or the
+            # local filesystem while the example content is built.
+            schema["x-aws-idp-examples"] = [
+                {
+                    "name": f"{name}-example",
+                    "x-aws-idp-class-prompt": f"{A_FEW_SHOT_EXAMPLE} {name}",
+                }
+            ]
+        schemas.append(schema)
+    return schemas
 
 
 def _service(
@@ -86,6 +134,7 @@ def _service(
     granularity: str = "page",
     strategy: str = "two_stage",
     classes: Optional[List[str]] = None,
+    few_shot_examples: bool = False,
     segmentation: Optional[Dict[str, Any]] = None,
     labeling: Optional[Dict[str, Any]] = None,
     **classification: Any,
@@ -121,7 +170,9 @@ def _service(
     return ClassificationService(
         region="us-west-2",
         config={
-            "classes": _classes(*(classes or ["invoice", "receipt"])),
+            "classes": _classes(
+                *(classes or ["invoice", "receipt"]), examples=few_shot_examples
+            ),
             "classification": cfg,
         },
     )
@@ -329,14 +380,31 @@ class TestBoundaryHints:
         """⚠️ The property with no symptom if it breaks: reintroducing the
         vocabulary leaves two-stage working and costing what single-pass cost."""
         service = _service()
-        assert service._format_boundary_hints() == ""
+        assert (
+            service._format_boundary_hints(ClassificationService.STAGE_SEGMENTATION)
+            == ""
+        )
 
     def test_class_names_sends_names_only(self):
         service = _service(segmentation={"boundary_hints": "class_names"})
-        hints = service._format_boundary_hints()
+        hints = service._format_boundary_hints(ClassificationService.STAGE_SEGMENTATION)
         assert "invoice" in hints and "receipt" in hints
         # Not the descriptions, which are the bulk of the prefix.
-        assert "distinctive layout" not in hints
+        assert A_CLASS_DESCRIPTION not in hints
+
+    @pytest.mark.parametrize(
+        "stage",
+        [
+            ClassificationService.STAGE_CLASSIFICATION,
+            ClassificationService.STAGE_LABELING,
+        ],
+    )
+    def test_no_other_stage_can_render_the_hints_block(self, stage):
+        """The block ends "do NOT report a type, only where each document starts
+        and ends", which is the one thing a class-assigning call must do. So it
+        is scoped to the stage, not to the setting being present."""
+        service = _service(segmentation={"boundary_hints": "class_names"})
+        assert service._format_boundary_hints(stage) == ""
 
     def test_the_stage_a_request_carries_no_class_descriptions(self):
         service = _service(granularity="packet")
@@ -356,7 +424,269 @@ class TestBoundaryHints:
         assert stage_a
         for content in stage_a:
             text = "".join(b["text"] for b in content if "text" in b)
-            assert "distinctive layout" not in text
+            assert A_CLASS_DESCRIPTION not in text
+
+
+# --------------------------------------------------------------------------
+# The prefix saving is a property of the STAGE, not of the builder
+# --------------------------------------------------------------------------
+
+
+def _stage_a_text(service, document, router) -> str:
+    """Every text block of every Stage A request this run makes, concatenated."""
+    with (
+        patch("idp_common.s3.get_text_content", side_effect=_page_texts()),
+        patch("idp_common.image.prepare_image", return_value=_png()),
+        patch.object(service, "_invoke_bedrock_model", side_effect=router),
+    ):
+        service.two_stage_classify_document(document)
+
+    stage_a = [
+        content
+        for stage, content in router.calls
+        if stage == ClassificationService.STAGE_SEGMENTATION
+    ]
+    assert stage_a, "no Stage A call was made, so this proves nothing"
+    return "\n".join(b["text"] for content in stage_a for b in content if "text" in b)
+
+
+@pytest.mark.unit
+class TestStageAWithholdsTheVocabularyOnEveryPath:
+    """Stage A had three content builders, each withholding a different subset.
+
+    ``_segment_pages`` passed an empty class listing (page granularity with no
+    context pages); the context-page builder passed the full list and the packet
+    builder the full markdown table. All three rendered the schema attribute
+    listing in full and spliced every configured few-shot example in at
+    ``{FEW_SHOT_EXAMPLES}``, so the page/no-context path withheld the plain
+    class listing and nothing else, and no path delivered the guarantee the
+    strategy is sold on. The shipped segmentation prompts reference none of
+    those placeholders, so the leak was invisible until an operator edited a
+    prompt — and when it fired, two-stage still worked and simply cost what
+    single-pass cost, which is the failure mode with no symptom. The guarantee
+    now lives on the stage, so it holds at either granularity and any
+    ``contextPagesCount``.
+    """
+
+    @pytest.mark.parametrize("granularity", ["page", "packet"])
+    @pytest.mark.parametrize("context_pages", ["0", "1"])
+    def test_stage_a_sends_no_descriptions_and_no_examples(
+        self, granularity, context_pages
+    ):
+        service = _service(
+            granularity=granularity,
+            few_shot_examples=True,
+            contextPagesCount=context_pages,
+            segmentation={
+                "task_prompt": SEG_PROMPT_ASKING_FOR_VOCABULARY,
+                "packet": {
+                    "system_prompt": "stage A packet system",
+                    "task_prompt": SEG_PROMPT_ASKING_FOR_VOCABULARY,
+                },
+            },
+        )
+        router = _Router(
+            packet_segments=(
+                [{"ordinal_start_page": 1, "ordinal_end_page": 2}]
+                if granularity == "packet"
+                else None
+            ),
+            labels=["invoice", "receipt"],
+        )
+        text = _stage_a_text(service, _document(2), router)
+
+        assert A_CLASS_DESCRIPTION not in text
+        assert A_FEW_SHOT_EXAMPLE not in text
+        assert AN_ATTRIBUTE_NAME not in text
+
+    def test_the_examples_really_are_configured(self):
+        """The positive control. Without it the test above passes on a config
+        that has no examples to leak, which is how a parametrised inertness
+        test turns green by measuring nothing."""
+        service = _service(granularity="packet", few_shot_examples=True)
+        router = _Router(
+            packet_segments=[{"ordinal_start_page": 1, "ordinal_end_page": 2}],
+            labels=["invoice"],
+        )
+        with (
+            patch("idp_common.s3.get_text_content", side_effect=_page_texts()),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=router),
+        ):
+            service.two_stage_classify_document(_document(2))
+
+        stage_b = [
+            content
+            for stage, content in router.calls
+            if stage == ClassificationService.STAGE_LABELING
+        ]
+        assert stage_b
+        text = "\n".join(
+            b["text"] for content in stage_b for b in content if "text" in b
+        )
+        # Stage B is where the vocabulary and the examples belong, and the
+        # shipped Stage B prompt references both placeholders.
+        assert A_CLASS_DESCRIPTION in text
+        assert A_FEW_SHOT_EXAMPLE in text
+
+    def test_class_names_still_reach_stage_a_through_boundary_hints(self):
+        """The supported way to give Stage A class *names* must keep working —
+        withholding the vocabulary is about the two placeholders, not about the
+        hints block."""
+        service = _service(
+            granularity="packet",
+            few_shot_examples=True,
+            segmentation={
+                "boundary_hints": "class_names",
+                "task_prompt": SEG_PROMPT_ASKING_FOR_VOCABULARY,
+                "packet": {
+                    "system_prompt": "stage A packet system",
+                    "task_prompt": SEG_PROMPT_ASKING_FOR_VOCABULARY,
+                },
+            },
+        )
+        router = _Router(
+            packet_segments=[{"ordinal_start_page": 1, "ordinal_end_page": 2}],
+            labels=["invoice"],
+        )
+        text = _stage_a_text(service, _document(2), router)
+
+        assert HINTS_BLOCK_TAG in text
+        assert "invoice" in text and "receipt" in text
+        # Names only: still no descriptions, attributes or examples.
+        assert A_CLASS_DESCRIPTION not in text
+        assert A_FEW_SHOT_EXAMPLE not in text
+        assert AN_ATTRIBUTE_NAME not in text
+
+
+@pytest.mark.unit
+class TestBoundaryHintsDoNotLeakIntoSinglePass:
+    """``boundary_hints`` lives in the ``two_stage`` subtree, which is inert
+    under ``strategy: single_pass`` — but the subtree is readable either way, so
+    the value reached the substitution dict regardless of the strategy. A
+    single-pass page prompt referencing ``{BOUNDARY_HINTS}`` then received a
+    block instructing the model *not* to report a type, which is the one thing
+    that call exists to do.
+    """
+
+    def _run(self, service, document, router):
+        with (
+            patch("idp_common.s3.get_text_content", side_effect=_page_texts()),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=router),
+        ):
+            return service.classify_document(document)
+
+    def test_a_single_pass_page_prompt_renders_no_hints_block(self):
+        service = _service(
+            strategy="single_pass",
+            task_prompt=SINGLE_PASS_PROMPT_REFERENCING_HINTS,
+            segmentation={"boundary_hints": "class_names"},
+        )
+        router = _Router()
+        self._run(service, _document(2), router)
+
+        calls = [
+            content
+            for stage, content in router.calls
+            if stage == ClassificationService.STAGE_CLASSIFICATION
+        ]
+        assert calls
+        text = "\n".join(b["text"] for content in calls for b in content if "text" in b)
+        assert HINTS_BLOCK_TAG not in text
+        assert HINTS_BLOCK_INSTRUCTION not in text
+        # The class vocabulary a single-pass call legitimately needs is there,
+        # so this is not passing because the prompt rendered empty.
+        assert A_CLASS_DESCRIPTION in text
+
+    def test_a_single_pass_packet_prompt_renders_no_hints_block(self):
+        """The packet builder kept its own substitution dict, so it needs its
+        own assertion; the stage it is given is the one its resolved config
+        carries, which is how production reaches it."""
+        service = _service(
+            strategy="single_pass",
+            granularity="packet",
+            segmentation={"boundary_hints": "class_names"},
+            packet={
+                "system_prompt": "packet system",
+                "task_prompt": SINGLE_PASS_PROMPT_REFERENCING_HINTS,
+                "window_pages": "0",
+            },
+        )
+        config = service._get_classification_config()
+        content = service._build_packet_content(
+            config["task_prompt"], "page 1 text", [], stage=config["stage"]
+        )
+
+        text = "\n".join(b["text"] for b in content if "text" in b)
+        assert HINTS_BLOCK_TAG not in text
+        assert HINTS_BLOCK_INSTRUCTION not in text
+        assert A_CLASS_DESCRIPTION in text
+
+    def test_stage_b_renders_no_hints_block_either(self):
+        service = _service(
+            labeling={"task_prompt": SINGLE_PASS_PROMPT_REFERENCING_HINTS},
+            segmentation={"boundary_hints": "class_names"},
+        )
+        config = service._get_classification_config(
+            ClassificationService.STAGE_LABELING
+        )
+        content = service._build_packet_content(
+            config["task_prompt"], "page 1 text", [], stage=config["stage"]
+        )
+
+        text = "\n".join(b["text"] for b in content if "text" in b)
+        assert HINTS_BLOCK_TAG not in text
+        assert A_CLASS_DESCRIPTION in text
+
+
+@pytest.mark.unit
+class TestEveryContentBuilderDemandsItsStage:
+    """⚠️ The one way this defect can come back without a symptom.
+
+    A content builder that defaulted ``stage`` would hand the full vocabulary
+    to any new call site that forgot to pass one: no type error, no failing
+    test, and the only symptom a larger bill — which is the shape of the
+    original defect. So ``stage`` is keyword-only with no default on every
+    builder and on the substitution dict, and that is asserted from the
+    signatures rather than from a sample call, so a builder added later is
+    covered without this test being edited.
+    """
+
+    @staticmethod
+    def _builders():
+        import inspect
+
+        for name, member in inspect.getmembers(
+            ClassificationService, predicate=inspect.isfunction
+        ):
+            if not name.startswith("_build_"):
+                continue
+            parameter = inspect.signature(member).parameters.get("stage")
+            if parameter is not None:
+                yield name, parameter
+
+    def test_there_are_builders_to_check(self):
+        """Non-vacuity: a rename that moved every builder out of the
+        ``_build_*`` namespace would otherwise leave this class green and
+        checking nothing."""
+        assert list(self._builders())
+
+    def test_stage_is_keyword_only_and_required(self):
+        import inspect
+
+        offenders = {
+            name: (parameter.kind.description, parameter.default)
+            for name, parameter in self._builders()
+            if parameter.kind is not inspect.Parameter.KEYWORD_ONLY
+            or parameter.default is not inspect.Parameter.empty
+        }
+        assert not offenders, offenders
+
+    def test_omitting_the_stage_raises_rather_than_rendering_the_vocabulary(self):
+        service = _service(strategy="single_pass")
+        with pytest.raises(TypeError, match="stage"):
+            service._build_classification_substitutions("text", "classes")  # type: ignore[call-arg]
 
 
 # --------------------------------------------------------------------------
