@@ -65,7 +65,7 @@ If BDA's accuracy doesn't meet your requirements for your specific scenario or l
 
 ## Pattern 2
 
-> Pattern 2: OCR → Bedrock Classification (page-level or holistic) → Bedrock Extraction
+> Pattern 2: OCR → Bedrock Classification (one stage or two stage, at page or packet granularity) → Bedrock Extraction
 
 For this pattern, follow this structured implementation approach:
 

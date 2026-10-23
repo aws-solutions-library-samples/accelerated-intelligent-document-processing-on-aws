@@ -1061,7 +1061,7 @@ Resources:
               strategy:
                 type: string
                 title: Strategy
-                description: "'One stage': one call returns both the document boundaries and the classes — best for single-page files and short packets. 'Two stage': first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
+                description: "'One stage' (stored as strategy: single_pass): one call returns both the document boundaries and the classes — best for single-page files and short packets. 'Two stage' (stored as strategy: two_stage): first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
                 enum: ["single_pass", "two_stage"]
                 enumLabels: { single_pass: "One stage", two_stage: "Two stage" }
                 default: "single_pass"
@@ -1426,7 +1426,7 @@ Resources:
                 type: object
                 sectionLabel: Two stage
                 collapsible: false
-                description: "Segmentation finds where each document starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known file shape declares the shape, segmentation makes no calls. On a profile upgraded from v0.6.12, every call starts with the model and parameters it already had. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
+                description: "Segmentation finds where each document starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known file shape declares the shape, segmentation makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
                 order: 2
                 showWhen: [{ field: "strategy", value: "two_stage" }]
                 properties:
@@ -1441,7 +1441,7 @@ Resources:
                       method:
                         type: string
                         title: Segmentation method
-                        description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329))."
+                        description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
                         enum: ["llm"]
                         default: "llm"
                         order: 0
@@ -1729,7 +1729,7 @@ Resources:
                       method:
                         type: string
                         title: Section classification method
-                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329))."
+                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show 'embeddings', 'decision_model' and 'low_confidence' blocks with defaults: they belong to those planned methods and are ignored today."
                         enum: ["llm"]
                         default: "llm"
                         order: 0
