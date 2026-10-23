@@ -165,7 +165,18 @@ def test_an_unstamped_revision_is_captured_in_the_current_format(module, monkeyp
 @pytest.mark.unit
 def test_a_body_the_migration_cannot_convert_is_recorded_as_stored(module, monkeypatch):
     """The capture is a record for later comparison. A revision that was read
-    but cannot be normalised must not fail the test run."""
+    but cannot be normalised must not fail the test run.
+
+    ⚠️ This covers **this module's** half only, and the stub below is what makes
+    that worth saying. `ConfigurationManager.get_revision()` also converts, and
+    `_capture_config` re-raises anything it throws as a ValueError that fails the
+    run — so if the manager raised on an unconvertible body, the run would die
+    before `_current_format` was ever entered and this test would still pass. The
+    manager's half, that such a body comes back **as stored**, is pinned with a
+    real manager by
+    `tests/unit/config/test_config_revisions.py::TestRevisionBodyFormat::test_a_body_the_conversion_cannot_read_is_returned_as_stored`
+    in `idp_common`. The stub returns what a real manager returns for that case.
+    """
 
     def broken(_body):
         raise ValueError("cannot convert")
@@ -183,3 +194,28 @@ def test_a_body_the_migration_cannot_convert_is_recorded_as_stored(module, monke
     captured = module._capture_config("config-table", "lending", 5)
 
     assert captured["Config"]["classification"]["model"] == "flat-model"
+
+
+@pytest.mark.unit
+def test_a_revision_the_manager_cannot_read_fails_the_run(module, monkeypatch):
+    """
+    The boundary between the two behaviours above, written down.
+
+    A body that was *read* but not converted is recorded as stored. A revision
+    that could not be read at all fails `startTestRun` at submit, because the
+    pipeline refuses to process a pinned revision it cannot read and the run
+    would otherwise queue N documents that each fail later (#878).
+    """
+    manager = MagicMock()
+    manager.get_revision.side_effect = PermissionError("no s3:GetObject")
+    monkeypatch.setitem(
+        sys.modules,
+        "idp_common.config.configuration_manager",
+        MagicMock(
+            ConfigurationManager=MagicMock(return_value=manager),
+            EXPIRED_REVISION_REMEDY="remedy",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Could not read revision r5"):
+        module._capture_config("config-table", "lending", 5)

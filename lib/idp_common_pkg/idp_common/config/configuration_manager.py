@@ -963,14 +963,40 @@ class ConfigurationManager:
     def _migrated_body(
         body: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """`body` in the current config format, leaving the stored object alone."""
+        """
+        `body` in the current config format, leaving the stored object alone.
+
+        A body the chain cannot convert is returned **as stored**, with a warning,
+        rather than raising. The revision was read; only its normalisation failed,
+        and every consumer of a converted body here is reading for the record, for
+        display or for download. The two other `migrate_config` call sites over a
+        stored configuration make the same choice
+        (`test_runner._current_format`, `test_results_resolver._migrated_run_config`),
+        and the test-runner one is reached through `get_revision`, so raising here
+        would fail a whole `startTestRun` over one unconvertible revision before
+        that call site could honour its own contract.
+
+        This cannot let a document run under an unconverted configuration: every
+        path that *executes* a configuration builds an `IDPConfig`
+        (`_load_revision_config`, `restore_revision`), whose validator calls the
+        same chain and raises on the same body. So the tolerance is confined to
+        paths that only ever show or record what a revision held.
+        """
         if body is None:
             return None
         from copy import deepcopy
 
         from .migrations import migrate_config
 
-        return migrate_config(deepcopy(body))
+        try:
+            return migrate_config(deepcopy(body))
+        except Exception as e:  # noqa: BLE001 — a read must not fail on this
+            logger.warning(
+                f"Could not convert a stored configuration to the current format; "
+                f"returning it as stored: {e}",
+                exc_info=True,
+            )
+            return body
 
     def _published_body_from_head(
         self, profile: str, revision: int

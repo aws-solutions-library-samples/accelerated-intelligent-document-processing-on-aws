@@ -12,11 +12,29 @@ what lets an old **pinned revision** load.
 
 A profile head is converted and written back the first time 0.9 code resolves it,
 so heads stop carrying flat keys on their own. A **revision body is immutable**: it
-is converted in memory on every load (`ConfigurationManager._load_revision_config`
-→ `IDPConfig(**body)`) and never rewritten. Removing the conversion makes every
-pre-0.9 revision either fail validation or — worse — load with its classification
-settings silently replaced by defaults, so a test run or reprocess pinned to it
-would run under a configuration nobody chose.
+is converted in memory on every read and never rewritten. Removing the conversion
+makes every pre-0.9 revision either fail validation or — worse — load with its
+classification settings silently replaced by defaults, so a test run or reprocess
+pinned to it would run under a configuration nobody chose.
+
+Two sites convert a revision body, and the first is where the refusal §2 asks for
+will have to be raised:
+
+- **`ConfigurationManager._read_revision_body` → `_migrated_body`** converts every
+  revision on the way out of the manager, whichever of its two sources it came
+  from, and so covers *every* consumer: the pinned read, `restore_revision`,
+  `get_revision` behind `idp-cli config-download --config-revision`, the Revision
+  History and Compare views, and a test run's configuration capture. It calls
+  `migrate_config()` directly. ⚠️ **It also swallows a conversion failure** and
+  returns the body as stored, which a refusal must not be left behind — and
+  `migrate_config()` is handed neither the profile nor the revision number, so the
+  message §2 requires cannot be built inside the migration. Raise it here, where
+  both are in scope, or thread them through.
+- **`_load_revision_config` → `IDPConfig(**body)`** converts again through the
+  model's before-validator. By the time it runs the body has already been through
+  the site above, so this one is a no-op on that path and the chain's idempotence
+  is what makes it harmless. It still matters for a body reaching `IDPConfig` from
+  anywhere else.
 
 So, before anything else, establish that no deployment still retains a pre-0.9
 revision:
@@ -69,6 +87,7 @@ avoid. Keep `FLAT_KEYS` itself — the refusal needs it.
 |---|---|
 | `config/migrations/v08_to_v09.py` | the conversion body; keep `FLAT_KEYS`, `TARGET_VERSION` and the refusal |
 | `config/migrations/v07_to_v08.py` | only reachable through flat keys; remove with it, keeping the chain's version stamping |
+| `config/configuration_manager.py` — `_read_revision_body` / `_migrated_body` | where a revision is converted for **every** consumer, and the only one holding the profile and revision number the §2 refusal must name. Raise there, and remove the swallow that returns an unconvertible body as stored |
 | `config/models.py` — `ClassificationConfig.migrate_flat_keys` | the before-validator that converts flat kwargs; make it refuse |
 | `config/merge_utils.py` — `_nested_classification` | the defensive conversion in the save-time validators |
 | `patterns/unified/src/mlflow_logger_function/index.py` — `_classification_view` | the flat-dict fallback branch |

@@ -1219,6 +1219,36 @@ class TestRevisionBodyFormat:
 
         assert _stored_body("p", 1) == planted
 
+    def test_a_body_the_conversion_cannot_read_is_returned_as_stored(
+        self, monkeypatch, caplog
+    ):
+        """
+        The revision was read; only its normalisation for display or download
+        failed, so it is served as stored with a warning rather than raising.
+
+        What depends on this is a whole test run: `_capture_config` in the test
+        runner reaches a pinned revision through `get_revision` and re-raises any
+        failure as "Could not read revision r<n>", so raising here would fail
+        `startTestRun` over one unconvertible revision — and the capture's own
+        contract is to record such a body as stored.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        planted = _plant_pre_0_9_body("p", 1)
+
+        def refuse(_config):
+            raise ValueError("cannot convert")
+
+        monkeypatch.setattr(
+            "idp_common.config.migrations.migrate_config", refuse, raising=True
+        )
+        with caplog.at_level(logging.WARNING):
+            body = manager.get_revision("p", 1)
+
+        assert body == planted
+        assert "returning it as stored" in caplog.text
+
     def test_the_pinned_read_still_sees_the_recorded_configuration(self, monkeypatch):
         """
         Migrating on the way out must not change what a pinned document runs: the

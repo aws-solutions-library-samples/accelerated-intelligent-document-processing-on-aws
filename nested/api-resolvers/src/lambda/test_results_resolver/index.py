@@ -2300,6 +2300,14 @@ def _migrated_run_config(config):
     newer run would report every moved setting as ``<missing>`` on one side.
     Migrating on read normalises runs already stored; the stored item is not
     rewritten. A body that cannot be migrated is returned as captured.
+
+    The result carries the resulting ``config_format_version``, including for a
+    body captured without one. Stripping it instead made the key a function of
+    when the run was captured rather than of the configuration: the capture side
+    (``test_runner._current_format``) always stamps, so a run captured from an
+    unstamped configuration before that read back stripped while one captured
+    after keeps the stamp — two shapes for one configuration, and a difference
+    reported on the one key that says nothing about how documents are processed.
     """
     if not isinstance(config, dict):
         return config
@@ -2311,10 +2319,6 @@ def _migrated_run_config(config):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Could not migrate captured test run config: {e}")
         return config
-    if "config_format_version" not in body:
-        # Normalise the shape only: a body that recorded no format version is
-        # not given one, so it reads back exactly as captured when unchanged.
-        migrated.pop("config_format_version", None)
     return {**config, "Config": migrated}
 
 
