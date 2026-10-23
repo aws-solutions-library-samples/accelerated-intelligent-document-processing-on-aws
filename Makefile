@@ -1066,7 +1066,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make api-test STACK_NAME=<stack-name> [REGION=...])
 endif
 	@echo "Running dynamic API RBAC tests against stack $(STACK_NAME)..."
-	$(PYTHON) scripts/test_api_rbac.py \
+	$(RUN_FIRST_PARTY) scripts/test_api_rbac.py \
 	    --stack-name $(STACK_NAME) \
 	    $(if $(REGION),--region $(REGION),) \
 	    --report-dir $(if $(REPORT_DIR),$(REPORT_DIR),./scratch/api-test-results) \
@@ -1087,7 +1087,7 @@ stacktest-inbox: ## Inbox live check: posts through idp_common.notifications and
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=...])
 endif
-	$(PYTHON) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
+	$(RUN_FIRST_PARTY) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
 
 # Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
 # End-to-end review-queue check against a DEPLOYED stack: routes a sample document
