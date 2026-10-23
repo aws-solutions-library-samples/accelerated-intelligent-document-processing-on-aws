@@ -657,6 +657,22 @@ evaluation:
 
 You can also configure evaluation methods for specific document classes and attributes through the solution's configuration. The framework supports three types of attributes with different evaluation approaches:
 
+The accepted values of `x-aws-idp-evaluation-method` are `EXACT`,
+`NUMERIC_EXACT`, `FUZZY`, `LEVENSHTEIN`, `SEMANTIC`, `DATE`, `LLM` and
+`HUNGARIAN`.
+
+> ⚠️ **The value is matched exactly, uppercase, and anything else selects
+> automatic inference without saying so.** `exact` and `Exact` do not match
+> `EXACT`, and a value that is not on the list at all — a typo, or a method name
+> from some other tool — is not reported anywhere: not by the configuration
+> models, not by `idp-cli config-validate`, and not in the Evaluation Lambda's
+> log. The field simply falls through to the comparator the framework infers from
+> its type and name, so the evaluation runs, produces scores, and uses a
+> comparator you did not choose. Unlike an *incompatible* method (see
+> [Method Compatibility Rules](#method-compatibility-rules)), which at least logs
+> an `ERROR`, an unrecognised value leaves no trace at all. Use the
+> configuration editor's dropdown, which can only emit the spellings above.
+
 ### Simple Attributes
 
 Basic single-value extractions evaluated as individual fields:
@@ -784,6 +800,15 @@ vendor_name:
   x-aws-idp-evaluation-threshold: 0.85  # 85% similarity required
 ```
 
+> **The 0.0–1.0 range is a convention, not a constraint.** Nothing validates the
+> number: `50` and `-1` are both accepted by the configuration models, by
+> `idp-cli config-validate`, and by the mapper, which passes the value straight
+> through to the comparator as a float. A threshold written as a percentage —
+> `50` where `0.5` was meant — is the realistic mistake, and its symptom is that
+> *every* comparison for that field falls below the bar, so the field scores 0 on
+> every document. That reads like an extraction failure rather than a
+> configuration error, so check the threshold before investigating extraction.
+
 #### For Structured Arrays (List[Object] with HUNGARIAN):
 Use `x-aws-idp-evaluation-match-threshold` to control item pairing:
 
@@ -804,33 +829,66 @@ CityTaxes:
 **Why the distinction?**
 - **Regular threshold**: Applied to individual field comparisons
 - **Match threshold**: Applied to Hungarian algorithm's optimal item pairing logic
-- Using the wrong threshold type will result in a validation error
+
+**Using the wrong threshold type is not caught when the config is saved**, and
+the two directions fail differently:
+
+- `x-aws-idp-evaluation-match-threshold` on a field that is *not* a structured
+  array is accepted and then **silently dropped**. No log line is emitted, and
+  the field's comparator runs at its own built-in threshold instead of yours.
+- `x-aws-idp-evaluation-threshold` on a structured array raises an error **when
+  the evaluation runs**, not when the configuration is saved, so the Evaluation
+  step for that document fails rather than the config being rejected.
 
 **UI Behavior**:
 - When you select an array field with object items in the configuration UI
 - And choose HUNGARIAN method
 - The UI automatically shows "Match Threshold" instead of "Evaluation Threshold"
-- The system prevents you from using incompatible method-field combinations
+- The dropdown offers only the methods that suit the selected field type, so the
+  editor cannot produce an incompatible method/field combination. A config
+  written by hand, or submitted through the API or CLI, can — see
+  [Method Compatibility Rules](#method-compatibility-rules) for what happens then.
 
 ### Method Compatibility Rules
 
 Different evaluation methods work with different field types:
 
-| Method | Compatible Types | Requires |
+| Method | Compatible Types | Threshold |
 |--------|-----------------|----------|
 | EXACT | String, Number, Integer, Boolean | `evaluation-threshold` (optional) |
-| NUMERIC_EXACT | Number, Integer, String | `evaluation-threshold` (tolerance) |
-| FUZZY | String | `evaluation-threshold` (required) |
-| LEVENSHTEIN | String | `evaluation-threshold` (required) |
-| SEMANTIC | String, Object | `evaluation-threshold` (required) |
-| LLM | String, Object, Array | `evaluation-threshold` (required) |
-| HUNGARIAN | Array[Object] ONLY | `evaluation-match-threshold` (required) |
+| NUMERIC_EXACT | Number, Integer, String | `evaluation-threshold` (optional; acts as a tolerance) |
+| FUZZY | String | `evaluation-threshold` (optional) |
+| LEVENSHTEIN | String | `evaluation-threshold` (optional) |
+| SEMANTIC | String, Object | `evaluation-threshold` (optional) |
+| DATE | String | `evaluation-threshold` (optional); tune with `evaluation-method-config` |
+| LLM | String, Object, Array | `evaluation-threshold` (optional) |
+| HUNGARIAN | Array[Object] ONLY | `evaluation-match-threshold` (optional; defaults to 0.8) |
 
-**Validation**:
-- Backend validates method-type compatibility and raises clear errors for mismatches
-- UI filters available methods based on the selected field type
-- Cannot select HUNGARIAN for non-array fields
-- Cannot select other methods for structured arrays (must use HUNGARIAN)
+Every threshold above is optional. Omitting one is accepted and the comparator
+falls back to its own default — it is not reported as a missing required value.
+
+**How a mismatch is handled**:
+
+- The **configuration editor** filters the method dropdown by the selected field
+  type, so it will not let you pick HUNGARIAN for a non-array field, or another
+  method for a structured array.
+- A **config written by hand, or submitted through the API or the CLI, is
+  accepted anyway.** The configuration models take it, and `idp-cli
+  config-validate` reports it as valid.
+- The incompatibility is detected only **when the evaluation runs**, and the
+  finding is not fatal: the mismatch is written to the Evaluation Lambda's
+  CloudWatch log at `ERROR` level, the method is removed from the field, and
+  evaluation then **continues** and picks a comparator by inferring one from the
+  field's type and name. So the document is scored, the scores are reported
+  normally, and the comparator that produced them is not the one you configured.
+  A single `ERROR` line in the Lambda log is the only signal.
+- An **unrecognised** method value never reaches that check at all — see
+  [Attribute-Specific Evaluation Methods](#attribute-specific-evaluation-methods)
+  above for how the value itself is matched.
+
+Because a mismatch degrades silently rather than failing, prefer the
+configuration editor when choosing methods, and if you edit the schema directly,
+check the Evaluation Lambda log for `ERROR` lines after the first document.
 
 ## Attribute Processing and Evaluation
 

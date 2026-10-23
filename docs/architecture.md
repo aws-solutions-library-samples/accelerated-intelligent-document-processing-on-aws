@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT-0
    - Picks up messages in batches
    - Manages workflow concurrency using DynamoDB counter
    - Starts Step Functions executions
-4. Step Functions workflow runs the steps defined in the selected pattern to process the document and generate output in the Output S3 bucket
+4. Step Functions workflow runs the steps for the processing mode the `use_bda` configuration flag selects, generating output in the Output S3 bucket
 5. Workflow completion events update tracking and metrics
 
 ![Architecture Diagram](../images/IDP.UnifiedPatterns.drawio.png)
@@ -37,13 +37,13 @@ SPDX-License-Identifier: MIT-0
 
 ## Modular Design Overview
 
-The solution uses a modular architecture with nested CloudFormation stacks to support multiple document processing patterns while maintaining a common infrastructure for queueing, tracking, and monitoring. This design enables:
+The solution uses a modular architecture with nested CloudFormation stacks, keeping a common infrastructure for queueing, tracking, and monitoring separate from the processing workflow. This design enables:
 
-- Support for multiple processing patterns without duplicating core infrastructure
-- Easy addition of new processing patterns without modifying existing code
-- Centralized monitoring and management across all patterns
-- Pattern-specific optimizations and configurations
-- Optional features that can be enabled across all patterns:
+- Both processing modes sharing one set of core infrastructure, with no duplication between them
+- Processing changes confined to the pattern stack, leaving queueing, tracking and the Web UI untouched
+- Centralized monitoring and management across both modes
+- Per-mode configuration and tuning, held in configuration rather than in the template
+- Optional features that apply to both modes:
   - Document summarization (controlled by configuration `summarization.enabled` property)
     - This feature also enables the "Chat with Document" functionality
     - This feature does not use the Bedrock Knowledge Base but stores a full-text text file in S3
@@ -133,7 +133,7 @@ The unified pattern is deployed as a single nested stack (`PATTERNSTACK`) contai
 
 ## Integrated Monitoring
 
-The solution creates an integrated CloudWatch dashboard that combines metrics from both the main stack and the selected pattern stack:
+The solution creates an integrated CloudWatch dashboard that combines metrics from the main stack and the pattern stack:
 
 1. The main stack creates a dashboard with core metrics:
    - Queue performance
@@ -141,13 +141,19 @@ The solution creates an integrated CloudWatch dashboard that combines metrics fr
    - General error tracking
    - Resource utilization
 
-2. Each pattern stack creates its own dashboard with pattern-specific metrics:
+2. The pattern stack creates one dashboard covering both processing modes:
    - OCR performance
-   - Classification accuracy
+   - Classification metrics
    - Extraction stats
    - Model-specific metrics
+   - BDA API and job-execution metrics
 
-3. The `DashboardMerger` Lambda function combines these dashboards
+3. The `DashboardMerger` Lambda function combines these two dashboards
+
+Because both branches are always deployed, the widgets for both modes are always
+present; a mode you are not using reads as flat rather than as absent. See
+[monitoring.md](./monitoring.md#mode-specific-monitoring) for the per-mode widget
+groups.
 
 For detailed information about monitoring capabilities, see [monitoring.md](./monitoring.md).
 
@@ -207,12 +213,12 @@ For detailed information about the Web UI, its features, and usage, see [web-ui.
 
 ### Document Summarization
 
-When enabled via the configuration `summarization.enabled` property (default: true), the solution provides document summarization across all patterns:
+When enabled via the configuration `summarization.enabled` property (default: true), the solution provides document summarization in both processing modes:
 
-- All patterns use a dedicated summarization step with Bedrock models
+- Summarization is a dedicated step in the shared tail, using Bedrock models, so it runs the same way whichever mode produced the extraction
 - Summarization provides a concise overview of the document content
 - Results can be viewed in the Web UI and downloaded or printed
-- Configuration settings control summarization behavior per pattern
+- Configuration settings control summarization behavior
 
 ### Document Knowledge Base
 
@@ -246,7 +252,7 @@ For detailed information about the evaluation system, see [evaluation.md](./eval
 The solution supports optional Amazon Bedrock Guardrails integration:
 
 - Define content boundaries for Bedrock model outputs
-- Apply guardrails to all Bedrock model interactions across all patterns
+- Apply guardrails to all Bedrock model interactions in both processing modes
 - Support for all Guardrail policy types, including content filters, topic restrictions, PII detection, and [Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning.html) for formal verification of model outputs
 - Support for both DRAFT and versioned guardrails
 - Configuration parameters:

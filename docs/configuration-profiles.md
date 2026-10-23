@@ -334,8 +334,13 @@ does not stop the revision's body expiring `DataRetentionInDays` after it was cu
 The last **20** revisions per profile are retained by default, plus — regardless of
 that limit — the current revision, any labeled revision, and any revision pinned by
 a test run. Older unprotected revisions are pruned automatically as new ones are
-cut. The limit is set by the `CONFIG_REVISION_CAP` environment variable on the
-configuration resolver and the configuration custom-resource Lambda.
+cut. **That 20 is effectively fixed.** `ConfigRevisionStore` reads a
+`CONFIG_REVISION_CAP` environment variable and falls back to a built-in default of 20
+when it is absent — and no template in this repository sets it, so the fallback is what
+every deployment gets. The Lambdas that write revisions declare explicit
+`Environment.Variables` blocks that do not include it. Changing the cap means either
+adding the variable to those Lambdas in the template or passing `cap` to the store
+directly from your own code; it is not an operator-facing setting today.
 
 Revision bodies are stored in the Configuration bucket under
 `config_revisions/<profile>/<nnnnnn>.json.gz`, with a small metadata index in the

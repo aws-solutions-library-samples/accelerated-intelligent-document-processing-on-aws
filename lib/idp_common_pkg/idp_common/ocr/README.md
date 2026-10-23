@@ -238,7 +238,13 @@ The OCR service uses advanced memory optimization to prevent OutOfMemory errors 
 The DPI (dots per inch) setting controls the base resolution when extracting images from PDF pages. It is the setting that actually governs OCR fidelity — `target_width`/`target_height` can only shrink what `dpi` produced.
 
 - **Default**: 300 DPI (`DEFAULT_DPI` in `service.py`)
-- **Range**: 72-300 DPI
+- **Useful range**: 72-300 DPI. ⚠️ This is a **guideline, not a bound.**
+  `ImageConfig.dpi` is an unconstrained integer: `1200`, `71`, `0` and `-300` are
+  all accepted and arrive at `OcrService` intact. The 72-300 bound exists only in
+  the ConfigSchema that drives the Web UI config editor, so the UI slider honours
+  it and a config written by any other route does not. Note the asymmetry — the
+  *type* check is enforced, so a non-numeric `dpi` fails config validation
+  outright, which makes a clean load easy to read as a range check having passed
 - **Location**: `ocr.image.dpi` in the configuration
 - **Behavior**:
   - Only applies to PDF files (image files maintain their original resolution)

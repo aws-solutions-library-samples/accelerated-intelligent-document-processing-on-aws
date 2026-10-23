@@ -444,13 +444,18 @@ stronger model**:
 extraction:
   agentic:
     enabled: true
-    validation:
-      enabled: true
-      check_formats: true        # enforce JSON-Schema 'format' (ISO-8601 dates, etc.)
-      fail_action: escalate      # warn | escalate | reject
-      escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; blank = retry same model
-      min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
+  validation:                  # sits under `extraction`, not under `extraction.agentic`
+    enabled: true
+    check_formats: true        # enforce JSON-Schema 'format' (ISO-8601 dates, etc.)
+    fail_action: escalate      # warn | escalate | reject
+    escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; blank = retry same model
+    min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
 ```
+
+> `validation` is a sibling of `agentic`, not a child of it. A config that nests
+> it under `extraction.agentic` is relocated on load by the migration chain and
+> still works, so an older config needs no edit — but write new configs with the
+> nesting above, and move the block when you next touch an older one.
 
 - **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` records the result as not parsed, which makes the section's Processing Report read `FAILED` and raises the issue at error severity — it does not change the section's or the document's outcome, and it does not route the section to human review (HITL routing is driven by `hitl.confidence_threshold`, not by this).
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
@@ -486,6 +491,18 @@ extraction:
     shard_token_budget: 0         # 0 = AUTO-size from the model's context window (minus context_buffer)
     max_pages_per_shard: 5        # page ceiling per shard (timeout-critical; fixed default, not model-derived)
 ```
+
+> ⚠️ **Spell `runtime` exactly, because an unrecognised value silently selects
+> the runtime this setting exists to avoid.** The only values that select the
+> Step Functions runtime are `step_functions`, `stepfunctions` and `sfn` (case
+> and surrounding whitespace do not matter). *Anything* else — `step-functions`
+> with a hyphen being the easy mistake — falls through to `in_process` with
+> nothing logged and nothing reported by `idp-cli config-validate`. The result is
+> every shard running via asyncio inside one Lambda, bounded by its 900-second
+> limit, which is the failure `step_functions` is there to prevent. The symptom
+> is a timeout on a large section rather than a configuration error, so check
+> this value's spelling first. The environment variable `EXTRACTION_RUNTIME` is
+> read the same way when the config key is unset.
 
 - **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer`, minus an output reserve and an image reserve, **minus the estimated prompt overhead** for the class (system prompt, the task prompt with the schema rendered in, few-shot text, the tool schema and the Advanced-path restatement; the other agent tool specs are not counted; #775) — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically, and a prompt-heavy class shards smaller instead of failing at the window. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's column count and the geometry mode — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes, including `prompt_overhead_tokens`, are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
@@ -1282,6 +1299,18 @@ extraction:
     task_prompt: |
       # ... see prompt placeholders below
 ```
+
+> ⚠️ **`extraction.confidence.model` is not covered by the model-id check.**
+> `idp-cli config-validate` verifies the model named in `ocr.model_id`,
+> `classification`'s model fields, `extraction.model` and
+> `summarization.model` — it rejects a typo there, and a model that has reached
+> end of life. `extraction.confidence.model` is outside that set, and so are
+> `extraction.confidence.escalation_model` and
+> `extraction.validation.escalation_model`. A typo or a retired model id in any
+> of the three is reported as valid, and surfaces only at run time as a Bedrock
+> `ValidationException` on every document that reaches the pass concerned. Check
+> these values by hand against `config_library/pricing.yaml` when you change
+> them.
 
 **Behavior when disabled** (`enabled: false` or `mode: off`): the assessment
 Lambda is still invoked (minimal overhead) but returns immediately with logging

@@ -327,19 +327,10 @@ mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $ve
 
 Pass `discoveryType: "rules"` to route the upload to Policy Discovery instead of classes discovery.
 
-**Job Status Subscription:**
-```graphql
-subscription OnDiscoveryJobStatusChange($jobId: ID!) {
-  onDiscoveryJobStatusChange(jobId: $jobId) {
-    jobId
-    status
-    statusMessage
-    discoveredClassName
-    jobType
-    errorMessage
-  }
-}
-```
+**Reading job status:** poll `listDiscoveryJobs` and filter client-side for the
+job id. GraphQL subscriptions are not used — `onDiscoveryJobStatusChange` is
+still declared in the schema, but no GraphQL service evaluates it and it has no
+entry in the dispatcher's RBAC manifest.
 
 **Direct API Usage (idp_common):**
 ```python

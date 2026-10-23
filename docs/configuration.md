@@ -17,7 +17,7 @@ The web interface allows real-time configuration updates without stack redeploym
 
 - **Document Classes**: Define and modify document categories and their descriptions (using JSON Schema format). Choose from **35+ pre-built standard classes** (Invoice, Receipt, W-2, Bank Statement, etc.) or create custom classes from scratch.
 - **Extraction Attributes**: Configure fields to extract for each document class (defined as JSON Schema properties)
-- **Few Shot Examples**: Upload and configure example documents to improve accuracy (supported in Pattern 2)
+- **Few Shot Examples**: Upload and configure example documents to improve accuracy (pipeline mode only — BDA mode does not run the LLM classification and extraction calls they feed)
 - **Model Selection**: Choose between available Bedrock models for classification and extraction
   > **💡 Cost Attribution Tip:** You can replace standard model IDs with [Bedrock Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) ARNs to enable cost-allocation tagging (e.g., for MAP migration tracking). This is a configuration-only change — no code modifications required. See [Cost Attribution with Application Inference Profiles](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles) for step-by-step instructions.
   > **🤖 OpenAI GPT-6 Astra:** `us.openai.gpt-6-astra` (US regions) and `global.openai.gpt-6-astra` (every region, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, and chat. Astra runs on the standard Converse API (**not** the bedrock-mantle path the GPT-5.x models use), has a 1.05M context window with automatic prompt caching, and is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) instead of temperature/top_p, which it rejects. It is **not** supported for Discovery or Policy Discovery. Note input above 272K tokens bills at roughly double the rate recorded in `pricing.yaml`. See [OpenAI Models](./openai-models.md#gpt-6-astra-converse) for the full support matrix and caveats.
@@ -64,11 +64,11 @@ For comprehensive documentation, see [configuration-profiles.md](configuration-p
 - **Import Configuration**: Upload configuration files from your local machine OR import from the Configuration Library:
   - **From Local File**: Upload configuration files from your computer in JSON or YAML format with automatic format detection and validation
   - **From Configuration Library**: Browse and import pre-configured document processing workflows from the solution's built-in configuration library
-    - **Pattern-Filtered**: Only shows configurations compatible with your currently deployed pattern (Pattern 1, 2, or 3)
+    - **Library Scope**: Shows the configurations under `config_library/unified/`, which cover both processing modes
     - **Dual Format Support**: Automatically detects and imports both `config.yaml` and `config.json` formats
     - **README Preview**: View markdown-formatted documentation before importing to understand configuration purpose and features
     - **Format Indicators**: Visual badges show file format (YAML/JSON) and README availability
-    - **Library Contents**: Includes sample configurations like lending-package-sample, bank-statement-sample, rvl-cdip, criteria-validation, and more
+    - **Library Contents**: Includes sample configurations like lending-package-sample, bank-statement-sample and rvl-cdip
   - **Important**: Importing a configuration **replaces** your existing custom configuration entirely. Any prior customizations not included in the imported file will be reset to defaults. Export your current configuration first if you want to preserve it.
 
 Configuration changes are validated and applied immediately, with rollback capability if issues arise. See [web-ui.md](web-ui.md) for details on using the administration interface.
@@ -100,7 +100,7 @@ CustomConfigPath: "s3://my-bucket/custom-config/config.yaml"
 - **Override Default Configuration**: When specified, your custom configuration completely replaces the default pattern configuration
 - **S3 URI Format**: Accepts standard S3 URI format (e.g., `s3://my-bucket/custom-config/config.yaml`)
 - **Least-Privilege Security**: IAM permissions are conditionally granted only to the specific S3 bucket and object you specify
-- **All Patterns Supported**: Works with Pattern 1 (BDA), Pattern 2 (Textract + Bedrock), and Pattern 3 (Textract + UDOP + Bedrock)
+- **Both Processing Modes Supported**: Works whether the configuration selects BDA mode or pipeline mode (`use_bda`)
 
 **Security Benefits:**
 - Eliminates wildcard S3 permissions (`arn:aws:s3:::*/*`)
@@ -382,14 +382,36 @@ A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the
 right rate.
 
-**`config-validate` catches it before you deploy.** `idp-cli config-validate` and
-`idp-cli config-upload` (unless you pass `--no-validate`) reject a configuration
-that pins an end-of-life model, naming the date and the command that confirms it,
-rather than letting the failure appear part-way through a document. Loading a
-stored configuration that still names one is unaffected — the model fields are
-plain strings and nothing revalidates a stored config — so an existing deployment
-does not break on upgrade; it keeps failing at inference exactly as it already
-was, until you repoint the stage.
+**`config-validate` catches some of them before you deploy.** `idp-cli
+config-validate` and `idp-cli config-upload` (unless you pass `--no-validate`)
+reject a configuration that pins an end-of-life model, naming the date and the
+command that confirms it, rather than letting the failure appear part-way through a
+document. ⚠️ **The check reads a fixed list of model fields, not every model field
+in the configuration**, so read a clean run as covering those and nothing else:
+
+| Checked | Not checked |
+|---|---|
+| `ocr.model_id` | `extraction.confidence.model` |
+| the model of each call the **active** classification strategy makes (`classification.one_stage.llm.model`, or both `two_stage` calls) | `extraction.validation.escalation_model`, and the per-class `x-aws-idp-extraction-escalation-model` override |
+| `extraction.model` | the evaluation, rule-validation, discovery and chat models |
+| `summarization.model` | |
+
+A model on the right-hand column is accepted and fails at inference. The confidence
+model is the one worth checking by hand, since
+[Extraction & Confidence](extraction-and-confidence.md) documents a specific id for
+it. The list also still names `assessment.model`, which can never fire: the v0.5 →
+v0.6 migration removes the whole `assessment` block before the check runs.
+
+⚠️ **Only the CLI and SDK run this check.** `idp-cli config-validate`,
+`idp-cli config-upload` and the SDK's equivalent operation call it; the stack's own
+configuration loader does not. So a `CustomConfigPath` that pins a retired model
+deploys cleanly and surfaces per document as a Bedrock `ValidationException`. Run
+`idp-cli config-validate` against the file before you point a stack at it.
+
+Loading a stored configuration that still names a retired model is unaffected — the
+model fields are plain strings and nothing revalidates a stored config — so an
+existing deployment does not break on upgrade; it keeps failing at inference exactly
+as it already was, until you repoint the stage.
 
 **Upgrading a stack that selected a removed model.** `KnowledgeBaseModelId` is a
 CloudFormation parameter, so if your stack's current value is a model that this
@@ -558,7 +580,7 @@ score reaches the UI and what a `None` confidence means.
 
 - **Confidence and geometry moved under `extraction.*`** in v0.6: the former top-level `assessment.*` confidence settings are now `extraction.confidence.*`, and `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr` are now `extraction.geometry.mode`. HITL moved to the top-level `hitl.*` block.
 - **Migrate-on-read handles old configs automatically** — pre-v0.6 configurations are migrated transparently when loaded; **no manual edit is required**.
-- **Granular assessment is retired** and its config keys are a **no-op** (they validate but are ignored).
+- **Granular assessment is retired** and its config keys are a **no-op**. `extraction.confidence.granular` and the legacy `assessment.granular` are **dropped by the loader** — they are not validated against anything, so a typo inside them is not reported either. Nothing is lost by deleting them from a stored configuration.
 - **`list_batch_size`** is the knob for large lists; for large documents, Advanced (agentic) extraction is recommended.
 
 See [Granular Assessment Retirement](./migration-granular-retirement.md) for details.
@@ -623,19 +645,13 @@ Key parameters that can be configured during CloudFormation deployment:
 ### Integration and Tracing Parameters
 - `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
 - `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
-- `EnableECRImageScanning`: Enable automatic vulnerability scanning for Lambda container images in ECR for Patterns 1-3 (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
+- `EnableECRImageScanning`: Enable automatic vulnerability scanning for the pattern stack's Lambda container images in ECR (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
-### Pattern Selection
-- `IDPPattern`: Select processing pattern:
-  - Unified: Supports both BDA and Pipeline processing modes via `use_bda` flag
-
-### Pattern-Specific Parameters
+### Processing Parameters
 - **Configuration Preset**: `ConfigurationPreset` — Select from available presets (lending-package-sample, bank-statement-sample, etc.)
 - **Custom Model ARNs**: Optional custom fine-tuned classification/extraction model ARNs
 
 > **Note**: The processing mode (BDA vs Pipeline) is controlled by the `use_bda` flag in the configuration, not by deployment parameters. See the [architecture docs](./architecture.md) for details.
-
-- **Pattern 3 (Textract + UDOP + Bedrock)**
 
 ### Optional Features
 - `EvaluationBaselineBucketName`: Optional existing bucket for ground truth data
@@ -679,7 +695,7 @@ See [the cost considerations guide](./cost-calculator.md) for the cost drivers o
 
 ## Bedrock Guardrail Integration
 
-The solution supports Amazon Bedrock Guardrails for content safety and compliance across all patterns:
+The solution supports Amazon Bedrock Guardrails for content safety and compliance on every Bedrock call it makes:
 
 ### How Guardrails Work
 
@@ -697,9 +713,9 @@ Guardrails are configured with two CloudFormation parameters:
 - `BedrockGuardrailVersion`: The version of the guardrail to use (e.g., "DRAFT" or "1")
 
 This applies guardrails to all Bedrock model interactions, including:
-- Document extraction (all patterns)
-- Document summarization (all patterns) 
-- Document classification (Pattern 2 only)
+- Document extraction (both processing modes)
+- Document summarization (both processing modes)
+- Document classification (pipeline mode only)
 - Knowledge base queries (if enabled)
 
 ### Best Practices
@@ -1063,8 +1079,17 @@ Document class schemas support evaluation-specific extensions for fine-grained c
 
 - `x-aws-idp-evaluation-method`: Comparison method (EXACT, FUZZY, LEVENSHTEIN, NUMERIC_EXACT, SEMANTIC, DATE, LLM, HUNGARIAN)
 - `x-aws-idp-evaluation-method-config`: Optional comparator config (used by DATE: `dayfirst`, `tolerance`, `range_mode`)
-- `x-aws-idp-evaluation-threshold`: Minimum score to consider a match (0.0-1.0)
+- `x-aws-idp-evaluation-threshold`: Minimum score to consider a match. The scale is 0.0-1.0, so `0.9` means 90% similarity
 - `x-aws-idp-evaluation-weight`: Field importance for weighted scoring (default: 1.0, higher values = more important)
+
+⚠️ **The 0.0-1.0 range is not enforced, so write the fraction and not the
+percentage.** Nothing validates the value — `idp-cli config-validate` accepts `50`
+and `-1` without an error or a warning, and they reach the comparator as given.
+`50` is the mistake to watch for, because it reads as "50%": no comparison can
+score above 1.0, so the field never matches and scores 0 on **every** document.
+That looks exactly like an extraction failure on that field. If a single field
+reports 0 accuracy across a whole evaluation while its extracted values look
+right, check its threshold first.
 
 ### Example Configuration
 
@@ -1317,7 +1342,7 @@ emptied, so a prompt can refer to literal brace-wrapped text.
 
 ### Bedrock Prompt Caching
 
-The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. This feature is available across all patterns for classification, extraction, assessment, and summarization.
+The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. It applies to the classification, extraction, assessment and summarization calls.
 
 #### How It Works
 
@@ -1466,9 +1491,9 @@ the state says so. The view is in three places:
 
 For pricing details on cached tokens, see [cost-calculator.md](cost-calculator.md).
 
-## Regex-Based Classification (Pattern-2)
+## Regex-Based Classification (pipeline mode)
 
-Pattern-2 supports optional regex patterns in document class definitions for performance optimization and deterministic classification when patterns are known.
+Pipeline mode supports optional regex patterns in document class definitions for performance optimization and deterministic classification when patterns are known. BDA mode does not inherit the classification defaults these settings belong to, so they have no effect there.
 
 ### Configuration
 
@@ -1506,9 +1531,9 @@ The system logs INFO-level messages when regex patterns match, providing visibil
 
 For examples and demonstrations, see the `step2_classification_with_regex.ipynb` notebook.
 
-## OCR Backend Configuration (Pattern-2 and Pattern-3)
+## OCR Backend Configuration (pipeline mode)
 
-Patterns 2 and 3 support multiple OCR backend engines for flexible document processing:
+Pipeline mode supports multiple OCR backend engines for flexible document processing. BDA mode runs its own integrated OCR and does not inherit the `ocr` defaults, so these settings apply only when `use_bda` is false:
 
 ### Available Backends
 
@@ -1540,7 +1565,7 @@ ocr:
   bda_project_arn: null
 
   # For Bedrock backend:
-  bedrock_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   system_prompt: "You are an OCR expert..."
   task_prompt: "Extract all text from this document..."
 ```
@@ -1678,9 +1703,9 @@ signatures. Removing it costs nothing, since the feature was free to begin with.
 
 For more details on OCR configuration and feature selection, see the pattern-specific documentation.
 
-## Custom Prompt Lambda (Pattern-2 and Pattern-3)
+## Custom Prompt Lambda (pipeline mode)
 
-Patterns 2 and 3 support injection of custom business logic into the extraction process through a Lambda function.
+Pipeline mode supports injection of custom business logic into the extraction process through a Lambda function. The setting carries no mode guard of its own, but it is read only on the LLM extraction path, which BDA mode does not run — so setting it on a BDA-mode configuration has no effect.
 
 ### Configuration
 
@@ -1810,11 +1835,15 @@ extraction:
     target_width: ""     # Preserves original resolution
     target_height: ""    # Preserves original resolution
 
-assessment:
-  image:
-    target_width: ""     # No resizing applied
-    target_height: ""    # No resizing applied
+  confidence:
+    image:
+      target_width: ""   # No resizing applied
+      target_height: ""  # No resizing applied
 ```
+
+⚠️ The confidence-assessment image block is `extraction.confidence.image`. A
+top-level `assessment:` block is **removed outright** by the v0.5 → v0.6
+migration, with no warning, so dimensions written there are discarded silently.
 
 ### Custom Image Dimensions
 
@@ -1987,7 +2016,7 @@ classification:
 The solution provides additional configuration options through:
 
 - Configuration files in the `config_library` directory
-- Pattern-specific settings in each pattern's subdirectory
+- Preset configurations under `config_library/unified/`, one subdirectory each
 - Environment variables for Lambda functions
 - CloudWatch alarms and notification settings
 

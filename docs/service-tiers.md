@@ -76,12 +76,18 @@ classification:
 
 extraction:
   model: "us.amazon.nova-2-lite-v1:0:flex"  # Cost-effective extraction
-  # ... other settings
-
-assessment:
-  model: "us.amazon.nova-2-lite-v1:0"  # Standard tier (no suffix)
+  confidence:
+    model: "us.amazon.nova-2-lite-v1:0"     # Standard tier (no suffix)
   # ... other settings
 ```
+
+⚠️ **The confidence model lives under `extraction.confidence`, not in a top-level
+`assessment:` block.** A top-level `assessment:` key has no effect in any current
+config: a v0.5-shaped config has it rewritten into `extraction.confidence` /
+`extraction.geometry` / `hitl` and the block itself removed, and a config that is
+already v0.6-shaped has it ignored as an unknown key on load. Either way nothing warns
+you — a tier suffix written there is silently not applied, and the confidence calls run
+on whatever `extraction.confidence.model` resolves to.
 
 ⚠️ **Classification has one model field per call, so a tier suffix has to be
 applied to the call that runs.** The `one_stage.llm.model` above is read only
@@ -195,10 +201,9 @@ classification:
 extraction:
   model: "us.amazon.nova-2-lite-v1:0:flex"
   # Cost-effective extraction (can tolerate latency)
-
-assessment:
-  model: "us.amazon.nova-2-lite-v1:0"
-  # Standard tier for assessment
+  confidence:
+    model: "us.amazon.nova-2-lite-v1:0"
+    # Standard tier for the confidence pass
 ```
 
 Under `strategy: two_stage` the classification half becomes two decisions rather
@@ -240,10 +245,28 @@ Extracted service tier 'flex' from model ID. Using base model ID: us.amazon.nova
 
 ### Metrics
 
-CloudWatch metrics include service tier as a dimension, allowing you to:
-- Track usage by tier
-- Compare performance across tiers
-- Analyze cost by tier
+⚠️ **CloudWatch metrics do not carry the service tier.** The Bedrock client publishes
+its metrics (`BedrockRequestsTotal`, `InputTokens`, `BedrockRequestLatency` and the
+rest) with a name, a value and a unit only, so every one of them lands with an **empty
+dimension list**. There is no tier dimension to group or filter a CloudWatch graph by,
+and adding one would be a code change in `idp_common.bedrock.client`.
+
+**Use the reporting database instead — it does separate the tiers.** The tier suffix is
+deliberately kept in the metering key (`metering_model_id` collapses `:1m`, which names
+no separate price, but retains `:flex` and `:priority`, which do). That key becomes the
+`service_api` column of the metering table, so a tiered call is recorded against
+`bedrock/us.amazon.nova-2-lite-v1:0:flex` while a standard one is recorded against
+`bedrock/us.amazon.nova-2-lite-v1:0` — distinct rows, each priced from its own
+`config_library/pricing.yaml` entry. From there you can:
+
+- Track token usage by tier, by grouping on `service_api`
+- Attribute cost by tier, since each tier resolves its own rate card
+- Compare tiers over the same workload, by querying two `service_api` values
+
+Latency per tier is not in that table. The per-request figure is in the logs (and in
+`BedrockRequestLatency`, which is published without a tier dimension), so comparing tier
+latency means either reading the logs or running the two tiers as separate measured
+batches.
 
 ## Troubleshooting
 

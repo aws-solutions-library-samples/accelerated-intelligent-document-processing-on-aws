@@ -780,25 +780,29 @@ from the host — so it is a knob per stack, not one setting for the deployment.
 directions, so a seventh cannot join them silently and converting one forces its
 entry to be removed.
 
-## Pattern-Specific Monitoring
+## Mode-Specific Monitoring
 
-Each pattern includes additional monitoring tailored to its specific workflow:
+The unified pattern stack creates one dashboard covering both processing modes, and
+the `DashboardMerger` Lambda combines it with the main stack's dashboard. Both
+branches are always deployed, so the widgets for both are always present — which of
+them carries data depends on the `use_bda` configuration flag the documents were
+processed under. A mode you are not using reads as flat rather than as missing.
 
-### Pattern 1: Bedrock Data Automation (BDA)
-- BDA project execution metrics
-- API usage and throttling
-- Media processor performance
+**BDA mode** (`use_bda: true`) widgets cover the BDA API — *BDA API Request
+Status*, *BDA API Request Retries*, *BDA Job Executions* — plus duration,
+long-running-invocation and error widgets for *InvokeBDAFunction* and
+*ProcessResults*. The branch's completion-handling function has no widget of its
+own; its failures surface on the state machine and in its log group.
 
-### Pattern 2: Textract + Bedrock
-- Textract OCR performance
-- Bedrock model usage
-- Classification confidence distribution
-- Extraction completeness metrics
+**Pipeline mode** (`use_bda: false`, the default) widgets cover OCR throttling and
+errors, the Bedrock token, request-status, retry and latency series, and duration,
+long-running-invocation and error widgets per step for OCR, Classification,
+Extraction, Assessment and Summarization.
 
-### Pattern 3: Textract + UDOP + Bedrock
-- SageMaker endpoint performance
-- UDOP model latency and throughput
-- GPU utilization metrics
+Document and page throughput, Lambda concurrency throttles, Rule Validation and
+*Confidence Assessment Degraded* sit outside that split and report the same way in
+both modes. To see the widget list for the version you are running, open the
+dashboard rather than trusting this summary.
 
 ## Alarms the Stack Creates
 

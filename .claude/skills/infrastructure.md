@@ -306,7 +306,7 @@ Triggers that REQUIRE a doc update:
 - Removing/replacing a service (e.g. the UDOP SageMaker endpoint was removed; KB
   moved from OpenSearch domains → OpenSearch Serverless / S3 Vectors).
 - A new optional/conditional feature gated by a parameter (e.g. `EnableMCP` →
-  Bedrock AgentCore, `MlflowTrackingServerArn` → SageMaker MLflow).
+  Bedrock AgentCore, `MlflowTrackingURI` → SageMaker MLflow).
 
 How to re-audit quickly (run from repo root):
 ```bash
