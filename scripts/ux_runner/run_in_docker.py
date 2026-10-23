@@ -31,14 +31,15 @@ managed policy and users as CI does. It has three modes.
     ``scripts/sdlc/ai_ux_test_stories.py`` in the same image. Every run gets its
     own ``scratch/ux-docker/stories/<UTC time>-<run>/``, whose
     ``ux-test-stories/`` holds ``story-run.json``, ``results.json``,
-    ``flows/<story@persona>/`` and ``section.md``, and the terminal ends with one
-    line per flow: its verdict, the steps used of its budget and its
-    hesitations. By default a run is unattended and a **dry run** unless
-    ``--post``: one flow (``--story --as``), every persona of a story
-    (``--story``), what an MR's job would select (``--mr``, collected on the
-    host, its ``src/ui`` built in the credential-free container when the MR
-    changes it) or the nightly set (``--all``), in ``--jobs`` containers with a
-    network namespace each, whose shards ``--merge`` joins. ``--interactive``
+    ``flows/<story@persona>/``, ``section.md`` and ``report.html``, the run as one
+    page to open in a browser, and the terminal ends with one line per flow: its
+    verdict, the steps used of its budget and its hesitations. By default a run
+    is unattended and a **dry run** unless ``--post``: one flow (``--story
+    --as``), every persona of a story (``--story``), what an MR's job would
+    select (``--mr``, collected on the host, its ``src/ui`` built in the
+    credential-free container when the MR changes it) or the nightly set
+    (``--all``), in ``--jobs`` containers with a network namespace each, whose
+    shards ``--merge`` joins. ``--interactive``
     starts a fresh browser container, runs the pinned Claude TUI in it for you to
     watch and type to, stops the container when the session ends or
     ``flow_minutes`` pass, and judges the run. ``--pair`` starts the browser and
@@ -1001,6 +1002,7 @@ STORY_ARTIFACTS = "ux-test-stories"
 STORY_SHARDS = "shards"
 STORY_RUN_FILE = "story-run.json"
 STORY_RESULTS_FILE = "results.json"
+STORY_REPORT_FILE = "report.html"
 STORY_RUN_SCHEMA = "ux-test-stories/run"
 STORY_INPUTS_SCHEMA = "ux-test-stories/inputs"
 STORY_VERDICTS = (
@@ -1750,10 +1752,14 @@ def cost_line(summary: object) -> str | None:
 
 
 def report_story_run(artifacts: Path, *, echo: Callable[[str], None] = print) -> None:
-    """Name the run's section and videos, then one line per flow, then the cost."""
+    """Name the run's section, its report and its videos, then one line per flow,
+    then the cost."""
     section = artifacts / "section.md"
     if section.is_file():
         echo(f"section.md: {section}")
+    report = artifacts / STORY_REPORT_FILE
+    if report.is_file():
+        echo(f"report.html: {report}")
     if artifacts.is_dir():
         for video in sorted(artifacts.rglob("*.mp4")):
             echo(f"video:      {video}")

@@ -37,6 +37,7 @@ from __future__ import annotations
 import ast
 import base64
 import dataclasses
+import html
 import json
 import math
 import os
@@ -77,6 +78,7 @@ from ux_runner import (  # noqa: E402
     story_digest,
     story_prompt,
     story_relay,
+    story_report,
     story_section,
     story_verdict,
     tool_profiles,
@@ -2796,6 +2798,103 @@ def test_the_digest_compares_with_the_history_the_runtime_supplies(
     assert asked == [str(harness.tmp / "shards")]
     assert json.loads((out / "digest.json").read_text("utf-8"))["gaps"] == [11, 10]
     assert "History unavailable" not in (out / "digest.md").read_text("utf-8")
+
+
+# --- report.html, wherever a run directory is finished ------------------------------
+
+
+def _report(run_dir: Path) -> str:
+    return (run_dir / story_report.REPORT_FILE).read_text(encoding="utf-8")
+
+
+def _references(text: str) -> list[str]:
+    return re.findall(r'(?:src|href)="([^"]*)"', text)
+
+
+@pytest.mark.unit
+def test_a_run_writes_its_report_beside_its_results(harness: StoryHarness) -> None:
+    assert harness.main(*ONE_FLOW) == 0
+    text = _report(harness.artifacts)
+    assert text == story_report.render(
+        harness.artifacts,
+        catalogue=story_report.load_catalogue(runner.catalogue_path()),
+    )
+    policy = html.escape(story_report.CONTENT_SECURITY_POLICY, quote=True)
+    assert f'content="{policy}"' in text and "<script" not in text
+    assert 'id="flow-route-folder-to-profile--platform-admin"' in text
+    assert story_verdict.cost_text(harness.results()["summary"]) in text
+    files = [ref for ref in _references(text) if not ref.startswith("#")]
+    assert "flows/route-folder-to-profile@platform-admin/screens/001.jpg" in files
+    for ref in files:
+        assert (harness.artifacts / ref).is_file(), ref
+
+
+@pytest.mark.unit
+def test_judge_rewrites_the_report_and_check_writes_none(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert harness.main(*ONE_FLOW) == 0
+    report = harness.artifacts / story_report.REPORT_FILE
+    written = report.read_bytes()
+    report.unlink()
+    capsys.readouterr()
+    argv = ["--judge", str(harness.artifacts), "--check"]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert not report.exists() and _lines(capsys) == []
+    assert runner.main(argv[:2], harness.runtime()) == 0
+    assert report.read_bytes() == written and _lines(capsys) == []
+
+
+@pytest.mark.unit
+def test_merge_and_digest_write_the_merged_runs_report(harness: StoryHarness) -> None:
+    dirs = _shard_runs(harness)
+    for shard in dirs:
+        assert (shard / story_report.REPORT_FILE).is_file()
+    merged = harness.tmp / "merged" / "ux-test-stories"
+    argv = ["--merge", *map(str, dirs), "--out", str(merged)]
+    assert runner.main(argv, harness.runtime()) == 0
+    text = _report(merged)
+    for persona in ("new-analyst", "platform-admin"):
+        assert f'id="flow-route-folder-to-profile--{persona}"' in text
+        assert f"flows/route-folder-to-profile@{persona}/screens/001.jpg" in text
+    digest = harness.tmp / "digest"
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(digest)]
+    assert runner.main(argv, harness.runtime()) == 0
+    text = _report(digest)
+    assert 'id="flow-route-folder-to-profile--new-analyst"' in text
+    assert 'src="' not in text
+    assert "each shard's own artifacts, beside that shard's report.html" in text
+    for ref in _references(text):
+        assert ref.startswith("#") or (digest / ref).is_file(), ref
+
+
+@pytest.mark.unit
+def test_a_report_that_cannot_be_written_never_fails_the_run(
+    harness: StoryHarness,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(run_dir: Path, **kwargs: Any) -> str:
+        raise RuntimeError("page text that must not be printed")
+
+    monkeypatch.setattr(story_report, "render", broken)
+    assert harness.main(*ONE_FLOW) == 0
+    lines = _lines(capsys)
+    assert "WARNING: report.html was not written: RuntimeError" in lines
+    assert not [line for line in lines if "page text" in line]
+    assert lines[-1].startswith("DRY RUN: nothing posted")
+    assert harness.results()["flows"][0]["verdict"] == "done"
+    assert harness.section().startswith("<!-- ux-story: sha=")
+    assert not (harness.artifacts / story_report.REPORT_FILE).exists()
+    monkeypatch.undo()
+    target = harness.tmp / "elsewhere.html"
+    os.symlink(target, harness.artifacts / story_report.REPORT_FILE)
+    assert runner.main(["--judge", str(harness.artifacts)], harness.runtime()) == 0
+    assert _lines(capsys) == [
+        "WARNING: report.html was not written: report.html cannot be written: it "
+        "is a symbolic link, which is never followed"
+    ]
+    assert not target.exists()
 
 
 # --- the history the digest reads, and its Slack summary ---------------------------

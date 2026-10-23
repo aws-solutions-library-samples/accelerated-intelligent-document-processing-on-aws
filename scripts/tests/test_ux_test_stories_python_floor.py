@@ -21,6 +21,7 @@ GUARDED = (
     "scripts/ux_runner/stories.py",
     "scripts/ux_runner/changelog_select.py",
     "scripts/ux_runner/story_verdict.py",
+    "scripts/ux_runner/story_report.py",
     "scripts/sdlc/ai_ux_test_stories.py",
 )
 

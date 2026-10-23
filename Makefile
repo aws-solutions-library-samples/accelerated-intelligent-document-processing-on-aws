@@ -1701,12 +1701,15 @@ ai-ux-test-stories-search: ## What a first-time user finds in the published docs
 # commit. ai-ux-test-stories-pair starts the confined browser and prints the command
 # for a Claude session you start; PAIR=full opts into your whole session and
 # PAIR=keychain keeps a keychain sign-in. ai-ux-test-stories-judge re-judges a run
-# on the host with no Docker, rewriting results.json and section.md: CHECK=1 writes
-# nothing, SUMMARY=1 prints the table. RUN and REPLAY reach their recipes through
-# the environment, as Q does for the search target, so a path holding a quote or a
-# space arrives whole. AS is one of make's own variables (the assembler, `as` by
-# default), so it is read only when it is set on the command line.
-.PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge
+# on the host with no Docker, rewriting results.json, section.md and report.html:
+# CHECK=1 writes nothing, SUMMARY=1 prints the table. ai-ux-test-stories-report
+# writes report.html alone, for any run directory, a downloaded CI artifact
+# included, with the standard library only, and prints its path. RUN and REPLAY
+# reach their recipes through the environment, as Q does for the search target, so
+# a path holding a quote or a space arrives whole. AS is one of make's own variables
+# (the assembler, `as` by default), so it is read only when it is set on the
+# command line.
+.PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge ai-ux-test-stories-report
 
 ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run unless POST=1 (STORY=<id> [AS=] | MR=<iid> | ALL=1 [JOBS=n]; INTERACTIVE=1 [PORT=]; REPLAY=<dir>)
 	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories \
@@ -1729,12 +1732,16 @@ ai-ux-test-stories-pair: ## Start the confined browser for one flow and print th
 		$(if $(filter full,$(PAIR)),--pair-full) \
 		$(if $(filter keychain,$(PAIR)),--pair-keychain) $(EXTRA_ARGS)
 
-ai-ux-test-stories-judge: ## Re-judge a story run on the host, rewriting results.json and section.md (RUN=<dir holding story-run.json> required; CHECK=1 writes nothing; SUMMARY=1 prints the table; REJUDGE=1 judges a run of another JUDGEMENT_REVISION under this one)
+ai-ux-test-stories-judge: ## Re-judge a story run on the host, rewriting results.json, section.md and report.html (RUN=<dir holding story-run.json> required; CHECK=1 writes nothing; SUMMARY=1 prints the table; REJUDGE=1 judges a run of another JUDGEMENT_REVISION under this one)
 	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-judge RUN=<dir holding story-run.json> [CHECK=1] [SUMMARY=1] [REJUDGE=1]'; exit 2; }
 	@$(PYTHON) -B scripts/sdlc/ai_ux_test_stories.py --judge "$$RUN" \
 		$(if $(filter 1 true yes y on,$(CHECK)),--check) \
 		$(if $(filter 1 true yes y on,$(SUMMARY)),--summary) \
 		$(if $(filter 1 true yes y on,$(REJUDGE)),--rejudge)
+
+ai-ux-test-stories-report: ## Write report.html, a story run as one page to open in a browser, and print its path (RUN=<dir holding story-run.json> required)
+	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-report RUN=<dir holding story-run.json>'; exit 2; }
+	@$(PYTHON) -B scripts/ux_runner/story_report.py "$$RUN"
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common

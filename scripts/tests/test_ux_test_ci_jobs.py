@@ -1511,6 +1511,7 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
         "ai-ux-test-stories-list",
         "ai-ux-test-stories-local",
         "ai-ux-test-stories-pair",
+        "ai-ux-test-stories-report",
         "ai-ux-test-stories-search",
     ], targets
     for target in targets:
@@ -1754,6 +1755,22 @@ def test_the_judge_target_rejudges_through_the_orchestrator_with_the_run_whole()
     assert argv[-1] == "--rejudge"
     code, argv, _ = _recipe("ai-ux-test-stories-judge")
     assert code != 0 and argv[0].startswith("usage: make ai-ux-test-stories-judge")
+
+
+@pytest.mark.unit
+def test_the_report_target_writes_a_runs_report_with_the_run_whole() -> None:
+    """``make ai-ux-test-stories-report`` runs the report's own CLI, standard library
+    only, on any run directory, which arrives as one argument."""
+    path = '/tmp/a run\'s "dir" with spaces'  # nosec B108 - a string, never opened
+    code, argv, err = _recipe("ai-ux-test-stories-report", f"RUN={path}")
+    assert code == 0, err[-400:]
+    assert argv == ["-B", "scripts/ux_runner/story_report.py", path]
+    code, argv, err = _recipe("ai-ux-test-stories-report")
+    assert code != 0 and argv[0].startswith("usage: make ai-ux-test-stories-report")
+    code, argv, _ = _recipe(
+        "ai-ux-test-stories-report", environ={"RUN": "/tmp/from the environment"}
+    )
+    assert code == 0 and argv[-1] == "/tmp/from the environment"
 
 
 @pytest.mark.unit

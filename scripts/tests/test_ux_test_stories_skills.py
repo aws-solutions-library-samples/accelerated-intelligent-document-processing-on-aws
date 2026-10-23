@@ -55,6 +55,7 @@ SECRET_NAMES: tuple[str, ...] = (
 FREE_TEXT_FILES: tuple[str, ...] = (
     "results.json",
     "section.md",
+    "report.html",
     "report.md",
     "journal.jsonl",
     "screens/",
@@ -405,7 +406,14 @@ def test_the_session_reads_only_the_summary_table() -> None:
             ), line
     prose = check_markdown_links.strip_fences(section)
     assert "Do not read" in prose
-    for name in ("results.json", "section.md", "report.md", "journals", "screens"):
+    for name in (
+        "results.json",
+        "section.md",
+        "report.html",
+        "report.md",
+        "journals",
+        "screens",
+    ):
         assert name in prose, name
 
 
@@ -413,7 +421,7 @@ def test_the_session_reads_only_the_summary_table() -> None:
 def test_no_command_in_the_operator_skill_reads_a_runs_free_text() -> None:
     reader = re.compile(
         r"\b(?:cat|less|more|head|tail|jq|bat|type|Get-Content)\b[^|\n]*"
-        r"(?:results\.json|section\.md|report\.md|journal\.jsonl)"
+        r"(?:results\.json|section\.md|report\.html|report\.md|journal\.jsonl)"
     )
     offending = [
         line for line in _fenced_lines(_text(OPERATOR_SKILL)) if reader.search(line)
