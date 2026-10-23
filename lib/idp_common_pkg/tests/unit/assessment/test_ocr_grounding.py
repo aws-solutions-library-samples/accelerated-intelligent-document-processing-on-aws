@@ -1792,9 +1792,9 @@ class TestVerbatimBeatsFormatBridged:
 
         "Verbatim" is meaningful for a string and arbitrary for a number:
         ``str(6.0)`` is ``"6.0"``, which is a substring of ``"126.00"``. Preferring a
-        primary hit across tiers therefore ranks a SUBSTRING inside an unrelated
+        primary hit across tiers would therefore rank a SUBSTRING inside an unrelated
         amount above a variant that matched the right amount EXACTly, and the box
-        lands on the wrong figure. The realistic renderings of a number are its
+        would land on the wrong figure. A number's realistic renderings are its
         variants, not whichever form ``str`` happens to produce.
 
         What this pins is the **combination**, measured rather than assumed: the
@@ -1818,9 +1818,11 @@ class TestVerbatimBeatsFormatBridged:
     def test_a_verbatim_exact_on_a_later_page_beats_a_variant_on_an_earlier_one(self):
         """The tie-break is positional, so page order would otherwise decide it.
 
-        This is the case the exact-index fast path hid entirely: a variant hit there
-        used to suppress the full scan, so the page-2 line was never collected and
-        no preference could reach it.
+        The separator collapse is what creates this tie: page 1's ``Apr 15, 2011``
+        variant now normalizes equal to its OCR line, so both pages produce
+        EXACT-tier hits and reading order reaches page 1 first. Without the collapse
+        the variant's comma survives normalization, so page 2's verbatim hit is the
+        only candidate and there is nothing to disambiguate.
         """
         pd = {
             1: _page([_line("APR 15 2011", 0.79, 0.13)]),
@@ -1924,3 +1926,63 @@ class TestRowOrderWithVariantOnlyMatches:
             for occ in range(2)
         ]
         assert tops == [0.10, 0.15]
+
+
+class TestTheVerbatimPreferenceDoesNotCloseTheNumericHazard:
+    """What the preference is NOT asked to decide, pinned so a reader cannot over-read it.
+
+    For a number the primary rendering is arbitrary — ``str(6.0)`` is ``"6.0"``, a
+    substring of ``"126.00 total"`` — so below EXACT this preference can favour a
+    coincidence over the line that holds the value. That is a pre-existing defect in
+    numeric substring matching, not something this change introduces or fixes, and
+    two attempts to bound it from this side were each measured net-negative over an
+    18,177-section corpus. It is documented at the preference and left open.
+
+    These tests record the open behaviour rather than asserting it is correct, so
+    that closing the hazard shows up here as a deliberate change rather than as a
+    silent one.
+    """
+
+    def test_a_bare_number_still_matches_inside_a_longer_one(self):
+        """The open case. ``"75"`` has no business matching an 8-digit id, and does."""
+        pd = {1: _page([_line("08337510", 0.1, 0.10)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            75.0, pd, None, None, {"type": "number"}
+        )
+        assert geom is not None, "documents the hazard; see the class docstring"
+
+    def test_a_truncated_account_number_keeps_its_box(self):
+        """Why a token-boundary rule is not simply an improvement.
+
+        The model transcribed this nine of ten digits. The box is on the right field
+        and the highlight is what would let a reviewer catch the error, so rejecting
+        the match would remove the signal exactly where it is most useful — measured
+        at 73 such fields.
+        """
+        pd = {
+            1: _page(
+                [_line("\u2446604632435\u2446 9191333178 \u24483218\u2448", 0.1, 0.10)]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            919133317, pd, None, None, {"type": "number"}
+        )
+        assert geom is not None
+
+    def test_a_value_whose_cents_the_model_dropped_keeps_its_box(self):
+        """The same shape on money: ``"272243"`` against ``"272243.34"``."""
+        pd = {1: _page([_line("272243.34", 0.1, 0.10)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            272243, pd, None, None, {"type": "number"}
+        )
+        assert geom is not None
+
+    def test_a_date_still_prefers_its_own_line_across_pages(self):
+        """What the preference IS for, and all it claims."""
+        pd = {
+            1: _page([_line("APR 15 2011", 0.79, 0.13)]),
+            2: _page([_line("4-15-11", 0.75, 0.18)]),
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert source == "ocr"
+        assert geom["page"] == 2

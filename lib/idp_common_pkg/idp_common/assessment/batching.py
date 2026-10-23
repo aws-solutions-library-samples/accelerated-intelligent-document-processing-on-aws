@@ -1950,7 +1950,21 @@ def audit_explainability(
                     conf = leaf.get("confidence")
                     if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
                         out_of_range += 1
-                    if want_geometry and conf is not None:
+                # Geometry is counted per leaf against the leaf's OWN value, the same
+                # test the scalar half applies. Counting every scored row leaf
+                # regardless would make the two halves disagree: a list of scored but
+                # empty cells would be the section's only counted leaves, so
+                # ``nothing_located`` would hold and the note would say nothing was
+                # located about values that are not on the page — the false alarm the
+                # scalar threshold exists to avoid.
+                if want_geometry:
+                    for leaf, leaf_value in _scalar_leaf_values(
+                        assessed[i], data_val[i]
+                    ):
+                        if leaf.get("confidence") is None:
+                            continue
+                        if not _is_populated_value(leaf_value):
+                            continue
                         row_geometry_total += 1
                         if not _has_geometry(leaf):
                             missing_geometry_rows += 1

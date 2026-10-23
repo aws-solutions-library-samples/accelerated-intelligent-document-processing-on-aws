@@ -1184,21 +1184,23 @@ def match_value_to_geometry(
     best_tier = min(tier for tier, *_ in candidates)
     best = [c for c in candidates if c[0] == best_tier]
 
-    # Same tier, so the tie is about provenance rather than precision: prefer the
+    # At EXACT tier the tie is about provenance rather than precision, so prefer the
     # line carrying the value as extracted over a format-bridged rendering of it.
     # Without this the tie-break below is positional, and collapsing a separator can
-    # promote a variant to the same tier as the verbatim hit — measured as a
-    # ``"4-15-11"`` whose own line sits on page 2 being grounded on page 1's
-    # ``"APR 15 2011"`` stamp, which reading order reaches first (#1520).
+    # promote a variant to EXACT alongside the verbatim hit: a ``"4-15-11"`` whose
+    # own line sits on page 2 is then grounded on page 1's ``"APR 15 2011"`` stamp,
+    # which reading order reaches first (#1520).
     #
-    # ⚠️ **Same tier only.** Letting a verbatim hit beat a variant at a *worse* tier
-    # looks like the same principle and is not, because "verbatim" is meaningful for
-    # a string and arbitrary for a number: ``str(600.0)`` is ``"600.0"``, a substring
-    # of ``"600.00 NM"`` — and ``str(6.0)`` is a substring of ``"126.00"``. A
-    # cross-tier rule therefore ranked a primary SUBSTRING inside an unrelated amount
-    # above a variant that matched the right amount EXACTly, putting boxes on the
-    # wrong figure. The realistic renderings of a number are its variants, not
-    # whichever form Python's ``str`` happens to produce.
+    # ⚠️ **Bounded by what it is NOT asked to decide.** For a number the primary
+    # rendering is arbitrary — ``str(6.0)`` is ``"6.0"``, a substring of
+    # ``"126.00 total"`` — so below EXACT this preference can favour a coincidence
+    # over the line that holds the value. That hazard predates this change and is
+    # not closed here: a bare number matching inside a longer one is the real defect,
+    # and two attempts to bound it from this side were each measured as net-negative
+    # on an 18,177-section corpus (an EXACT-tier gate cost 15 correct rate boxes; a
+    # token-boundary rule cost 73 account numbers the model had transcribed one digit
+    # short, where the box was on the right field and the highlight is what would
+    # have caught the error). It wants its own change and its own measurement.
     verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
     if verbatim_at_tier:
         best = verbatim_at_tier

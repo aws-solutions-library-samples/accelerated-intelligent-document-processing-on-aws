@@ -273,3 +273,50 @@ class TestPopulatedIsAPropertyOfTheLeaf:
             assessment, extraction, geometry_mode="ocr_only", section_id="1"
         )
         assert "assessment_geometry_incomplete" not in _codes(issues)
+
+
+class TestBothHalvesAgreeOnPopulatedness:
+    """A row leaf is tested against its own value, exactly as a scalar leaf is.
+
+    Counting every scored row leaf regardless would make the halves disagree: a list
+    of scored but empty cells would be the section's only counted leaves, so
+    ``nothing_located`` would hold and the note would say nothing was located about
+    values that are not on the page. That is the false-alarm class the scalar
+    threshold exists to avoid, arriving through the other half.
+
+    ⚠️ This also quiets the **list** half for such a section, which it did report
+    before. That is the point rather than a side effect: an empty cell has no place
+    on the page for a box to sit, so a missing box is the correct outcome and not a
+    finding.
+    """
+
+    def test_a_list_of_scored_but_empty_cells_reports_nothing(self):
+        extraction = {"Items": [{"Name": ""}, {"Name": None}]}
+        assessment = {"Items": [{"Name": _scored()}, {"Name": _scored()}]}
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
+
+    def test_a_populated_box_less_row_still_reports(self):
+        """The guard must not disable the list half for real values."""
+        extraction = {"Items": [{"Name": "Widget"}, {"Name": ""}]}
+        assessment = {"Items": [{"Name": _scored()}, {"Name": _scored()}]}
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        issue = _issue(issues, "assessment_geometry_incomplete")
+        assert issue.details["missing_geometry_rows"] == 1
+        assert issue.details["row_leaves_wanting_geometry"] == 1
+
+    def test_empty_cells_cannot_make_nothing_located_true(self):
+        """A grounded scalar beside empty rows: the section located something."""
+        extraction = {"Items": [{"Name": ""}], "Title": "Annual Report"}
+        assessment = {
+            "Items": [{"Name": _scored()}],
+            "Title": _scored(GEOMETRY),
+        }
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
