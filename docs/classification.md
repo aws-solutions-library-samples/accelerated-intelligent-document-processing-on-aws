@@ -617,6 +617,12 @@ of what tells you where a document starts. Subject to the call's
 **Few-shot examples.** `{FEW_SHOT_EXAMPLES}` is filled from each class's
 `x-aws-idp-examples`, the same way the page-level path fills it.
 
+> ⚠️ **In a two-stage *segmentation* prompt this placeholder renders empty, at
+> either granularity.** Sending no examples is part of what makes the boundary
+> call cheap, so a segmentation template that references `{FEW_SHOT_EXAMPLES}`
+> gets nothing rather than an error. See
+> [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
+
 **Windowing.** A packet larger than one window is split into overlapping windows
 whose results are merged:
 
@@ -1459,6 +1465,16 @@ The placeholder is fully **opt-in**:
 - Power users with schema-rich domains (lending, healthcare, insurance)
   can drop `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` into a custom
   `task_prompt` to give the model the extra signal.
+
+> ⚠️ **In a two-stage *segmentation* prompt this placeholder renders empty**,
+> as `{CLASS_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` do: it carries
+> the class names, their descriptions *and* their attributes, which is more
+> vocabulary than the plain listing rather than less, and a boundary call that
+> carries none of it is the saving two-stage exists for. A segmentation
+> template referencing it gets nothing rather than an error;
+> `boundary_hints: class_names` is the supported way to put class **names**
+> into that call. See
+> [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
 
 ### Rendered output (page-level classification)
 
