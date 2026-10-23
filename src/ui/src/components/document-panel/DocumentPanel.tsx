@@ -776,8 +776,6 @@ export const DocumentPanel = ({
     isProfileReadable('default', versions, { allowedConfigVersions, loading: roleLoading }) ? 'default' : null,
   );
   // Fetch the specific configuration profile that was used to process this document (for flow viewer).
-  // Optimization: skip the extra API call when the document version is 'default' or unset,
-  // since useConfiguration() above already fetches the default config.
   const docConfigVersion = localItem?.configVersion || 'default';
   const needsSeparateVersionFetch = docConfigVersion !== 'default';
   const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : null);
