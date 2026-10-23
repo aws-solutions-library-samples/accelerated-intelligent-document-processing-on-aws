@@ -58,7 +58,8 @@ The main template handles all pattern-agnostic resources and infrastructure:
 
 - S3 Buckets (Input, Output, Working, Configuration, Evaluation Baseline)
 - SQS Queues and Dead Letter Queues
-- DynamoDB Tables (Execution Tracking, Concurrency, Configuration)
+- DynamoDB Tables (Execution Tracking, Concurrency, Configuration, and the Inbox
+  `NotificationsTable`)
 - Lambda Functions for:
   - Queue Processing
   - Queue Sending
@@ -66,6 +67,12 @@ The main template handles all pattern-agnostic resources and infrastructure:
   - Document Status Lookup
   - Evaluation
   - UI Integration and API Resolvers
+- The [Inbox](./web-ui.md#inbox) message store: `NotificationsTable` (one partition per
+  user, a sparse `UnreadIndex` for unread counts, DynamoDB TTL for retention), exported
+  to producers as the stack Output `NotificationsTableName`. Platform components post
+  through the `idp_common.notifications` service; the API resolvers stack's
+  Notifications resolver serves each user's own Inbox. Headless deployments omit the
+  table
 - CloudWatch Alarms and Dashboard
 - SNS Topics for Alerts
 - Web UI Infrastructure:
@@ -249,6 +256,35 @@ The solution supports optional Amazon Bedrock Guardrails integration:
   - Extraction operations
   - Summarization (when enabled)
   - Knowledge Base interactions (when enabled)
+
+### Malware Scanning on Ingest
+
+Bedrock Guardrails inspect the text sent to and returned by a model. They do not
+read the uploaded file, so they cannot detect a malicious PDF or Office document,
+whose payload is in the file's structure rather than its extracted text. A
+separate, optional control covers that: Amazon GuardDuty Malware Protection for
+S3 scans each upload, and the pipeline admits the document only once the verdict
+is clean.
+
+- Off by default. Enabled with the `MalwareScanning` parameter —
+  `CREATE_PLAN` has the stack create the GuardDuty protection plan, `GATE_ONLY`
+  gates on a plan a central security account manages.
+- The gate runs **before** the Step Functions execution starts, so a refused
+  document never reaches OCR, page rendering or Bedrock, and never occupies a
+  concurrency slot.
+- Three document statuses: `MALWARE_SCANNING` while the verdict is outstanding,
+  `QUARANTINED` for a detection, `MALWARE_SCAN_FAILED` when GuardDuty could
+  return no verdict and the policy fails closed.
+- The verdict is recorded on the document — scan status, result, threat name,
+  skip reasons, timestamp — and shown in the web UI on the document itself,
+  including on clean documents.
+- Policy lives in the configuration (`malware_scanning.on_unscannable`,
+  `malware_scanning.alert_on_block`) so it is versioned and editable in the
+  Visual Editor; the `AllowUnscannableDocuments` stack parameter is a ceiling
+  over it.
+
+For the full design, the operational detail and what the gate does **not** cover,
+see [malware-scanning.md](./malware-scanning.md).
 
 ### Post-Processing Lambda Hook
 

@@ -93,8 +93,8 @@ FIRST_PARTY_ROOTS := $(patsubst %/,%,$(dir \
 	$(wildcard $(FIRST_PARTY_CHECKOUT)/lib/*/pyproject.toml)))
 FIRST_PARTY_PYTHONPATH ?= $(subst $(_FIRST_PARTY_SPACE),:,$(strip $(FIRST_PARTY_ROOTS)))
 
-# Recursive (`=`, not `:=`) so $(PYTHON) resolves in whichever Makefile includes
-# this, at the point of use — the two including Makefiles derive it differently.
+# The pin as an `env`-style assignment, on its own, because the two wrappers below
+# need it and only one of them may strip the AWS environment.
 #
 # The caller's own PYTHONPATH is appended rather than dropped, so a pin a
 # developer set for some other reason still applies — after this one, which is the
@@ -102,6 +102,41 @@ FIRST_PARTY_PYTHONPATH ?= $(subst $(_FIRST_PARTY_SPACE),:,$(strip $(FIRST_PARTY_
 # suppresses the pin entirely, for the deliberate case of testing an installed
 # copy; the `$(if ...)` is what keeps that from exporting an empty PYTHONPATH,
 # whose first entry is the working directory.
-PYTEST_HERMETIC = $(HERMETIC_AWS) $(if $(FIRST_PARTY_PYTHONPATH),\
-	PYTHONPATH=$(FIRST_PARTY_PYTHONPATH)$${PYTHONPATH:+:$$PYTHONPATH}) \
-	$(PYTHON) -m pytest
+FIRST_PARTY_PIN = $(if $(FIRST_PARTY_PYTHONPATH),\
+	PYTHONPATH=$(FIRST_PARTY_PYTHONPATH)$${PYTHONPATH:+:$$PYTHONPATH})
+
+# Recursive (`=`, not `:=`) so $(PYTHON) resolves in whichever Makefile includes
+# this, at the point of use — the two including Makefiles derive it differently.
+PYTEST_HERMETIC = $(HERMETIC_AWS) $(FIRST_PARTY_PIN) $(PYTHON) -m pytest
+
+# The pin WITHOUT the stripping, for the one target that cannot use the wrapper
+# above: `make test-integration` calls real AWS, so HERMETIC_AWS would remove the
+# credentials and region those tests exist to use.
+#
+# That target was a bare `$(PYTHON) -m pytest`, which is correct about the
+# credentials and loses the pin along with them — so the suite that talks to real
+# infrastructure was the one free to measure whichever checkout `site-packages`
+# happened to point at. Measured on the machine this was written on, from
+# `lib/idp_common_pkg` with no ambient PYTHONPATH: `idp_sdk` and `idp_cli`
+# resolved out of a different checkout of this repository. The run reads green
+# while describing other code, which is #1094's whole shape; needing real
+# credentials is not a reason to also lose track of which tree is under test.
+#
+# `env` is spelled out here because, unlike $(HERMETIC_AWS), there is no `env` in
+# front of the assignment for it to attach to. The `$(if ...)` keeps
+# `FIRST_PARTY_PYTHONPATH=` from degenerating into a bare `env` with no arguments,
+# which prints the environment instead of running the interpreter.
+#
+# RUN_FIRST_PARTY is the same pin for a target that runs a *script* rather than
+# pytest. The live-stack checks need it for the reason above and are easy to miss
+# when auditing for #1094, because none of them is a pytest invocation and the
+# import that resolves to the wrong tree is **deferred**: `make api-test` reaches
+# `idp_common` only from inside two IDOR seed helpers in
+# `scripts/api_security_cases.py`, so an unpinned run starts, authenticates,
+# passes 1133 checks and only then reports `No module named
+# idp_common.notifications` — a module this checkout has. A startup-time
+# ImportError would have been obvious; "2 could not be run" at the end of a
+# green-looking log is not.
+RUN_FIRST_PARTY = $(if $(FIRST_PARTY_PIN),env $(FIRST_PARTY_PIN)) $(PYTHON)
+
+PYTEST_FIRST_PARTY = $(RUN_FIRST_PARTY) -m pytest

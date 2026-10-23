@@ -93,7 +93,7 @@ Environment:
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import boto3
@@ -125,29 +125,34 @@ _dynamodb = boto3.resource("dynamodb")
 _cfn = boto3.client("cloudformation")
 
 
-def _read_catalog_entry(feature_id: str) -> Optional[Dict[str, Any]]:
-    """Return the catalog.json entry for `feature_id`, or None if absent.
+def _read_catalog_entry(feature_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """``(entry, read_ok)`` for `feature_id` in catalog.json.
+
+    Two separate answers, because "the catalog does not list this feature" and
+    "the catalog could not be read" license different responses to the caller and
+    a single ``None`` cannot tell them apart. ``read_ok`` is False when the bucket
+    is unconfigured, the object is missing or unreadable, or the JSON does not
+    parse; True when the catalog was read and simply has no such entry.
 
     Single GetObject against ConfigurationBucket — never lists.
     """
     if not _CONFIGURATION_BUCKET:
-        return None
+        return None, False
     try:
         resp = _config_s3.get_object(Bucket=_CONFIGURATION_BUCKET, Key=_CATALOG_KEY)
         catalog = json.loads(resp["Body"].read().decode("utf-8"))
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "404", "NotFound"):
-            return None
-        logger.warning("Failed to read catalog: %s", exc)
-        return None
+        if code not in ("NoSuchKey", "404", "NotFound"):
+            logger.warning("Failed to read catalog: %s", exc)
+        return None, False
     except (BotoCoreError, ValueError) as exc:
         logger.warning("Bad catalog JSON: %s", exc)
-        return None
+        return None, False
     for entry in catalog.get("features") or []:
         if isinstance(entry, dict) and entry.get("featureId") == feature_id:
-            return entry
-    return None
+            return entry, True
+    return None, True
 
 
 def _customer_identifier(event: Dict[str, Any]) -> Optional[str]:
@@ -159,6 +164,26 @@ def _customer_identifier(event: Dict[str, Any]) -> Optional[str]:
         if headers.get(key):
             return headers[key]
     return _DEFAULT_CUSTOMER_IDENTIFIER or None
+
+
+class ResourceNotFound(Exception):
+    """The catalog was read and lists no feature with the id the caller named.
+
+    The API dispatcher maps this to HTTP 404 with ``errorType:
+    "ResourceNotFound"``, matching by class NAME out of the invoke response's
+    ``errorType`` — the exception object does not cross the ``lambda:Invoke``
+    boundary — so this local declaration gets the same mapping as the canonical
+    ``idp_common.api_adapter.ResourceNotFound``, which this Lambda cannot import
+    because it does not depend on ``idp_common``. ``AuthorizationError`` below is
+    declared locally for the same reason.
+
+    Distinct from :class:`FeatureNotAvailableInRegionError`, which means the
+    feature exists and is simply not published in this region — the UI renders
+    that one as "not available in <region>" rather than as a missing feature.
+
+    Keep the name in step with the dispatcher's; a rename here silently returns
+    this refusal to 500.
+    """
 
 
 class FeatureNotAvailableInRegionError(Exception):
@@ -476,8 +501,25 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         raise ValueError("featureId is required")
 
     # Discover whether this is an OSS or marketplace feature from the catalog.
-    # Absent entry → treat as OSS (back-compat with the FeatureBucket layout).
-    catalog_entry = _read_catalog_entry(feature_id) or {}
+    #
+    # A readable catalog with no entry for this id means the feature does not
+    # exist -> 404. This cannot fall through to the OSS branch: that branch takes
+    # `artifactBucket` and `artifactPrefix` FROM the entry, so with no entry it
+    # can never resolve a template and always raised "catalog entry is
+    # incomplete ... re-publish with a current idp-cli" — a 500 telling an admin
+    # to re-publish a feature that was never there, and the last cell the live
+    # RBAC suite could not draw a conclusion from (#1304).
+    #
+    # An UNREADABLE catalog keeps the 500 instead: with no catalog object, an
+    # unconfigured bucket or unparseable JSON, absence cannot be established, and
+    # reporting an infrastructure fault as a missing feature sends the reader
+    # after the wrong problem. That case still reaches the OSS branch below.
+    catalog_entry, catalog_read_ok = _read_catalog_entry(feature_id)
+    if catalog_entry is None and catalog_read_ok:
+        raise ResourceNotFound(
+            f"No feature {feature_id!r} in this deployment's extension catalog."
+        )
+    catalog_entry = catalog_entry or {}
     source = catalog_entry.get("source") or "oss"
 
     if source == "marketplace":

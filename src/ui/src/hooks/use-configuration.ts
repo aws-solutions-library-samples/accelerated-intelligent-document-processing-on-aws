@@ -1,12 +1,14 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useContext } from 'react';
 import { generateClient } from '../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getConfigVersion, updateConfiguration as updateConfigurationOp } from '../graphql/generated';
 import { deepMerge } from '../utils/configUtils';
 import { parseConfigurationData } from '../graphql/awsjson-parsers';
+import { AppContext } from '../contexts/app';
+import { describeApiError, isAuthorizationError } from './utils/graphql-error';
 
 const client = generateClient();
 const logger = new ConsoleLogger('useConfiguration');
@@ -224,6 +226,7 @@ const _getDiff = (oldConfig: Record<string, unknown>, newConfig: Record<string, 
 };
 
 const useConfiguration = (versionName: string = 'default'): UseConfigurationReturn => {
+  const appContext = useContext(AppContext);
   const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
   const [defaultConfig, setDefaultConfig] = useState<Record<string, unknown> | null>(null);
   const [customConfig, setCustomConfig] = useState<Record<string, unknown> | null>(null);
@@ -390,6 +393,10 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
 
       const response = result.data.updateConfiguration;
 
+      if (response?.success && response.warnings?.length) {
+        appContext?.setSuccessMessage(`Configuration saved. Note: ${response.warnings.join(' ')}`);
+      }
+
       if (!response?.success) {
         const errorMsg = response?.error?.message || 'Failed to update configuration';
         throw new Error(errorMsg);
@@ -403,6 +410,12 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
       return true;
     } catch (err: unknown) {
       logger.error('Error updating configuration for version', targetVersionName, ':', err);
+      // A refusal (for example, a non-Admin changing review queue settings) is a
+      // flash message; the editor stays so the user can undo the change.
+      if (isAuthorizationError(err) && appContext) {
+        appContext.setErrorMessage(describeApiError(err, 'save the configuration'));
+        return false;
+      }
       let errorMsg: string;
       if (err instanceof Error) {
         errorMsg = err.message;

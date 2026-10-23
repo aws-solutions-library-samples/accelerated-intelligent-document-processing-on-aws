@@ -59,11 +59,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Same shape as the offline gate's. Kept here rather than imported from a test
 # module: this is a script, and tests are not importable API.
 MODEL_ID = re.compile(
-    r"^(?:(?:us|eu|apac|global|us-gov)\.)?"
+    r"^(?:(?:us|eu|apac|ca|global|us-gov)\.)?"
     r"[a-z][a-z0-9-]+\."
     r"(?=[a-z0-9.:_-]*[a-z])[a-z0-9][a-z0-9.:_-]*$"
 )
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global|us-gov)\.")
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|ca|global|us-gov)\.")
 
 #: Trailing suffixes that select a service tier or a context window rather than a
 #: different model. ``GetFoundationModel`` does not accept them — it answers

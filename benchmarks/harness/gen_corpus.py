@@ -4,14 +4,24 @@
 Writes PDFs + <id>.truth.json into benchmarks/corpus/docs/ and a manifest.
 Deterministic: same matrix -> same bytes.
 
+The manifest it writes is tracked, so every path recorded in it is **relative to the
+repository root** and is resolved at read time against the manifest's own location.
+This used to record whatever absolute path the build produced on the machine that ran
+it, which left the committed file naming a sibling checkout (#1393); see
+``corpus_manifest.py`` for why the working case was the dangerous one.
+
 Usage: python3 benchmarks/harness/gen_corpus.py [--only <id,id>] [--series scaling]
 """
 
 import argparse
 import importlib.util
 import os
+import sys
 
 import yaml
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import corpus_manifest  # noqa: E402 - local sibling import needs the bootstrap above
 
 BENCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GENDIR = os.path.join(BENCH, "corpus", "generators")
@@ -60,15 +70,23 @@ def main():
             "tag": spec.get("tag"),
             "series": spec.get("series"),
         }
+        # In place, so the reviewed key order of the committed manifest survives a
+        # rebuild. ``out`` arrives absolute from the generator via ``**info``, which is
+        # why this relativizes the whole record rather than the two keys set above.
+        corpus_manifest.relativize_record(rec)
         manifest.append(rec)
         print(
             f"  {spec['id']:16s} gen={gen_name} pages={info.get('pages')} rows={info.get('rows', '-')}"
         )
-    man_path = os.path.join(BENCH, "corpus", "manifest.yaml")
-    # merge with existing manifest (don't clobber other-series entries)
+    man_path = corpus_manifest.MANIFEST_PATH
+    # merge with existing manifest (don't clobber other-series entries). Read through
+    # the validator: the records carried over are re-dumped verbatim, so a stale
+    # absolute path in one of them would survive a partial rebuild (`--only`,
+    # `--series`) and be committed again. allow_empty, because this writer is the thing
+    # that populates a manifest that has none.
     existing = {}
     if os.path.exists(man_path):
-        for r in (yaml.safe_load(open(man_path)) or {}).get("docs", []):
+        for r in corpus_manifest.load_raw(man_path, allow_empty=True):
             existing[r["id"]] = r
     for r in manifest:
         existing[r["id"]] = r

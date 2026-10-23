@@ -106,7 +106,7 @@ def _generate_full_config_item(num_classes: int, fields_per_class: int = 20) -> 
             "max_tokens": 4096,
             "system_prompt": "",
             "task_prompt": "",
-            "classificationMethod": "multimodalPageLevelClassification",
+            "granularity": "page",
             "sectionSplitting": "llm_determined",
         },
         "extraction": {

@@ -49,6 +49,7 @@ No AWS call is made: the table and S3 client are `MagicMock`s throughout.
 
 from __future__ import annotations
 
+from datetime import datetime
 from functools import lru_cache
 from unittest.mock import MagicMock
 
@@ -71,10 +72,20 @@ from idp_common.delete_documents import (
     delete_single_document,
     get_documents_by_batch,
     get_documents_by_pattern,
+    list_entry_names_document,
 )
 
 KEY = "batch-1/invoice.pdf"
 QUEUED = "2025-09-10T12:03:27.256164+00:00"
+
+#: How a double tells the module's two `query` calls apart. Both go through
+#: `_call_with_retry` with the same bound method, so the *arguments* are the only
+#: discriminator — and the shard query carries no `FilterExpression` any more, so
+#: `ProjectionExpression` is what is left. Named here so a shape change breaks one
+#: constant rather than silently disarming a test class; see
+#: `_table_whose_shard_query_faults`.
+_SHARD_QUERY_PROJECTION = "PK, SK, ObjectKey"
+_RUN_RECORD_PROJECTION = "PK, SK"
 
 #: The list-entry key the cascade computes from ``QUEUED`` — hour 12 falls in shard 03.
 #: Spelled out because several tests need to distinguish the row strategy 1 aimed at from
@@ -112,6 +123,34 @@ def _condition_parts(condition) -> list:
     for value in expression["values"]:
         parts.extend(_condition_parts(value))
     return parts
+
+
+class _ListingFailure:
+    """A paginator page that raises when the loop touches it.
+
+    ``paginate`` returns an iterator, so a page that must fail cannot simply be an
+    exception instance in the list — the loop would bind it and carry on. Raising from
+    ``get`` is what puts the fault inside the loop body, where the real one occurs.
+    """
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def get(self, *_args, **_kwargs):
+        raise RuntimeError(self._message)
+
+
+def _list_row(marker: str, pk: str = "list#2025-09-10#s#03") -> dict:
+    """A shard row that actually names ``KEY``, which the selection now requires.
+
+    These fixtures used to carry rows like ``{"SK": "a"}``. That was sound while the
+    selection was a server-side ``FilterExpression`` — anything the double returned was
+    a match by construction. It is a client-side predicate now
+    (``list_entry_names_document``, because the sort-key half cannot be a ``Query``
+    filter — #1366), so a row has to name the document or the assertions below would be
+    pinning that three non-matching rows are correctly ignored.
+    """
+    return {"PK": pk, "SK": f"ts#{marker}#id#{KEY}"}
 
 
 def _table() -> MagicMock:
@@ -279,15 +318,18 @@ class TestQueryShardForObjectKey:
         # A single-page test passes with the pagination loop deleted, and a truncated
         # result here means list entries survive the delete.
         table = _table()
+        pages = [_list_row("a"), _list_row("b"), _list_row("c")]
+        # A non-matching row on a later page, so this test sees the selection as well
+        # as the pagination: with every row matching, a branch that appended
+        # unconditionally would produce an identical result.
+        stranger = {"PK": "pk", "SK": "ts#z#id#someone/else.pdf"}
         table.query.side_effect = [
-            {"Items": [{"SK": "a"}], "LastEvaluatedKey": {"PK": "p"}},
-            {"Items": [{"SK": "b"}], "LastEvaluatedKey": {"PK": "p2"}},
-            {"Items": [{"SK": "c"}]},
+            {"Items": [pages[0]], "LastEvaluatedKey": {"PK": "p"}},
+            {"Items": [pages[1], stranger], "LastEvaluatedKey": {"PK": "p2"}},
+            {"Items": [pages[2]]},
         ]
         assert [i["SK"] for i in _query_shard_for_object_key(table, "pk", KEY)] == [
-            "a",
-            "b",
-            "c",
+            row["SK"] for row in pages
         ]
 
     def test_the_continuation_key_is_passed_back(self):
@@ -301,19 +343,137 @@ class TestQueryShardForObjectKey:
             "PK": "cursor"
         }
 
-    def test_the_filter_matches_both_the_attribute_and_the_sort_key(self):
-        # Two shapes exist in the table: older entries carry ObjectKey as an attribute,
-        # newer ones encode it in the SK as "#id#<key>". Matching only one leaves the
-        # other orphaned, which is why the filter is an OR.
+    def test_both_shapes_of_list_entry_are_selected(self):
+        """Two shapes exist in the table and both have to be found.
+
+        Older entries carry ``ObjectKey`` as an attribute; every entry encodes the key
+        in its sort key as ``ts#<timestamp>#id#<key>``. Matching only one shape leaves
+        the other orphaned in the document list.
+
+        ⚠️ **This asserts the selection, not the expression.** The previous version of
+        this test asserted that ``contains(SK, :obj_id)`` appeared in the call's
+        ``FilterExpression`` — and that is a string DynamoDB refuses, because a key
+        attribute is not allowed in a ``Query`` filter. The table here is a
+        ``MagicMock``, which accepts any expression, so the assertion held while the
+        shipped query raised ``ValidationException`` on every call and no list entry
+        was ever deleted (#1366). Replacing the mock with ``moto`` does not fix that:
+        measured on moto 5.1.8, moto accepts the same expression and returns filtered
+        items. Nothing short of a real endpoint can tell the two apart at run time, so
+        the string is guarded at source by
+        ``scripts/tests/test_dynamodb_query_filter_keys.py`` and what is asserted here
+        is the behaviour that string was supposed to produce.
+        """
+        by_attribute = {"PK": "pk", "SK": "ts#2026-01-01T00:00:00#id#elsewhere"}
+        by_attribute["ObjectKey"] = KEY
+        by_sort_key = {"PK": "pk", "SK": f"ts#2026-01-01T01:00:00#id#{KEY}"}
+        someone_else = {
+            "PK": "pk",
+            "SK": "ts#2026-01-01T02:00:00#id#other/doc.pdf",
+            "ObjectKey": "other/doc.pdf",
+        }
+        table = _table()
+        table.query.return_value = {"Items": [by_attribute, by_sort_key, someone_else]}
+
+        selected = _query_shard_for_object_key(table, "pk", KEY)
+
+        assert selected == [by_attribute, by_sort_key], (
+            "both shapes must be selected and another document's row must not be"
+        )
+
+    def test_a_prefix_sibling_is_never_selected_for_deletion(self):
+        """⚠️ Over-matching here deletes a **different document's** list row.
+
+        The object key is the terminal segment of the sort key, so a substring test
+        matched every document whose key merely starts with this one —
+        ``invoices/report.pdf`` selected ``invoices/report.pdf.bak`` and
+        ``invoices/report.pdf (1).pdf``, both ordinary names and both carrying their own
+        ``ObjectKey``. Every row this function returns is then deleted by key, so the
+        sibling disappeared from the document list while its tracking record and its S3
+        bytes survived: #1238's orphan, created by the cleanup meant to prevent it.
+
+        Asserted at this level rather than only on the predicate because this is the
+        function whose output feeds the delete, and because the same collision sat in a
+        *parity* matrix that compared the two implementations to each other — both
+        agreed, and both were wrong. Agreement is not correctness.
+        """
+        target = {"PK": "pk", "SK": f"ts#t1#id#{KEY}", "ObjectKey": KEY}
+        siblings = [
+            {"PK": "pk", "SK": f"ts#t2#id#{KEY}.bak", "ObjectKey": f"{KEY}.bak"},
+            {
+                "PK": "pk",
+                "SK": f"ts#t3#id#{KEY} (1).pdf",
+                "ObjectKey": f"{KEY} (1).pdf",
+            },
+        ]
+        table = _table()
+        table.query.return_value = {"Items": [target, *siblings]}
+
+        assert _query_shard_for_object_key(table, "pk", KEY) == [target], (
+            "a prefix sibling was selected for deletion"
+        )
+
+    def test_the_query_names_no_key_attribute_in_a_filter(self):
+        """The repair itself: the shard query carries no ``FilterExpression`` at all.
+
+        Stated as a property of the call rather than of a string, because the failure
+        this guards is "DynamoDB refuses the request", and the only filter it would
+        accept here is one that cannot express the sort-key half.
+        """
         table = _table()
         _query_shard_for_object_key(table, "pk", KEY)
         kwargs = table.query.call_args.kwargs
-        assert "ObjectKey = :obj_key" in kwargs["FilterExpression"]
-        assert "contains(SK, :obj_id)" in kwargs["FilterExpression"]
-        assert kwargs["ExpressionAttributeValues"] == {
-            ":obj_key": KEY,
-            ":obj_id": f"#id#{KEY}",
-        }
+        assert "FilterExpression" not in kwargs
+        assert kwargs["ProjectionExpression"] == "PK, SK, ObjectKey", (
+            "the three attributes the predicate and the delete read, and no more"
+        )
+
+    @pytest.mark.parametrize(
+        "entry, expected",
+        [
+            ({"ObjectKey": KEY}, True),
+            ({"SK": f"ts#2026-01-01T00:00:00#id#{KEY}"}, True),
+            (
+                {"ObjectKey": "other.pdf", "SK": "ts#2026-01-01T00:00:00#id#other.pdf"},
+                False,
+            ),
+            ({}, False),
+            ({"SK": None}, False),
+            ({"SK": 7}, False),
+            ({"ObjectKey": KEY, "SK": None}, True),
+            ({"SK": f"ts#2026-01-01T00:00:00#id#{KEY}.bak"}, False),
+            ({"SK": f"ts#2026-01-01T00:00:00#id#{KEY} (1).pdf"}, False),
+            ({"SK": f"ts#2026-01-01T00:00:00#id#prefix-{KEY}"}, False),
+            ({"SK": f"ts#2026-01-01T00:00:00#id#backup/{KEY}"}, False),
+            ({"SK": f"ts#2026-01-01T00:00:00#id#a#id#{KEY}"}, False),
+            ({"SK": "ts#2026-01-01T00:00:00#id#a#id#b", "ObjectKey": "a#id#b"}, False),
+            ({"SK": "ts#2026-01-01T00:00:00#id#no-match"}, False),
+        ],
+        ids=[
+            "attribute-match",
+            "sort-key-match",
+            "another-document",
+            "neither-attribute",
+            "null-sort-key",
+            "non-string-sort-key",
+            "attribute-wins-over-a-null-sort-key",
+            "a-right-extension-is-a-different-document",
+            "and-so-is-a-renamed-copy",
+            "a-left-extension-is-a-different-document",
+            "a-deeper-path-with-the-same-basename",
+            "a-key-containing-the-delimiter-is-not-the-target",
+            "and-that-document-is-not-selected-either",
+            "a-sort-key-naming-some-other-document",
+        ],
+    )
+    def test_the_selection_predicate(self, entry, expected):
+        """The predicate alone, including the shapes a malformed row arrives in.
+
+        A non-string ``SK`` cannot occur on this table, whose sort key is ``S``, but
+        ``f"#id#…" in 7`` is a ``TypeError`` rather than a miss — and this predicate
+        runs inside the loop that selects rows for deletion, so an exception here
+        aborts a delete rather than narrowing it.
+        """
+        assert list_entry_names_document(entry, KEY) is expected
 
     @pytest.mark.parametrize(
         "paginate, guard",
@@ -426,9 +586,7 @@ class TestDeleteListEntriesRobust:
         table = _table()
         # Exact delete misses, then the query finds one entry which deletes cleanly.
         table.delete_item.side_effect = [{}, {"Attributes": {"x": 1}}]
-        table.query.return_value = {
-            "Items": [{"PK": "list#2025-09-10#s#03", "SK": "ts#...#id#x"}]
-        }
+        table.query.return_value = {"Items": [_list_row("...")]}
         assert delete_list_entries_robust(table, KEY, {"QueuedTime": QUEUED}) is True
 
     def test_strategy_three_searches_the_adjacent_shards(self):
@@ -438,7 +596,8 @@ class TestDeleteListEntriesRobust:
         table.delete_item.side_effect = [{}, {"Attributes": {"x": 1}}]
         table.query.side_effect = [
             {"Items": []},  # computed shard: nothing
-            {"Items": [{"PK": "list#2025-09-10#s#02", "SK": "sk"}]},  # neighbour: hit
+            # neighbour: hit
+            {"Items": [_list_row("sk", pk="list#2025-09-10#s#02")]},
             {"Items": []},
         ]
         assert delete_list_entries_robust(table, KEY, {"QueuedTime": QUEUED}) is True
@@ -480,7 +639,7 @@ class TestDeleteListEntriesRobust:
             {},
             *(_modelled_error("DeleteItem", "ThrottlingException") for _ in range(4)),
         ]
-        table.query.return_value = {"Items": [{"PK": "p", "SK": "s"}]}
+        table.query.return_value = {"Items": [_list_row("s", pk="p")]}
         with pytest.raises(ClientError):
             delete_list_entries_robust(table, KEY, {"QueuedTime": QUEUED})
 
@@ -742,6 +901,227 @@ class TestDeleteSingleDocument:
         result = delete_single_document(KEY, _table(), s3, "in", "out")
         assert result["deleted"]["output_files"] == 2
 
+    def test_a_refused_purge_is_not_counted_as_a_deletion(self):
+        """``DeleteObjects`` answers **200** for a batch it refused entirely.
+
+        Per-key outcomes come back in an ``Errors`` array and the S3 service model
+        declares no exception for them — measured: ``DeleteObjects`` output members are
+        ``['Deleted', 'RequestCharged', 'Errors']`` and its modelled error list is
+        empty. So nothing raises, the retry ladder returns normally, and counting
+        ``len(batch)`` reported a wholly denied purge as a completed one.
+
+        That is the second half of #1366 and the more dangerous one: with the
+        enumeration permitted but the versioned delete refused — which is exactly what
+        granting ``s3:ListBucketVersions`` alone would produce, since SAM's
+        ``S3CrudPolicy`` carries neither versioned action — the document would be
+        delisted and reported deleted while every byte of its output stayed in the
+        bucket.
+        """
+        s3 = _s3([{"Versions": [{"Key": OUT1, "VersionId": "v1"}]}])
+        s3.delete_objects.return_value = {
+            "Errors": [
+                {
+                    "Key": OUT1,
+                    "VersionId": "v1",
+                    "Code": "AccessDenied",
+                    "Message": "Access Denied",
+                }
+            ]
+        }
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert result["success"] is False, "a refused purge was reported as a success"
+        assert result["deleted"]["output_files"] == 0
+        assert any("AccessDenied" in message for message in result["errors"]), (
+            f"the refusal did not reach the caller: {result['errors']}"
+        )
+        # ⚠️ **Which step failed is part of the answer, not decoration.** The two
+        # failures on this path leave different things behind — a list-entry failure
+        # keeps the tracking record and a purge failure does not — so both documentation
+        # tiers tell the reader to act on *which* step it was. A message that reported
+        # only the cause would make that undecidable.
+        assert any("from output bucket" in message for message in result["errors"]), (
+            f"the failing step is not identified: {result['errors']}"
+        )
+
+    def test_a_partly_refused_purge_counts_only_what_went(self):
+        """The count has to be what was deleted, not what was attempted.
+
+        ``Quiet=True`` suppresses the ``Deleted`` array, so the only way to know is
+        ``len(batch) - len(Errors)``; a report of "3 deleted" for a batch of three where
+        one was refused is the same miscount as the whole-batch case, just quieter.
+        """
+        versions = [
+            {"Key": f"{KEY}/sections/{i}.json", "VersionId": f"v{i}"} for i in range(3)
+        ]
+        s3 = _s3([{"Versions": versions}])
+        s3.delete_objects.return_value = {
+            "Errors": [
+                {
+                    "Key": versions[2]["Key"],
+                    "VersionId": "v2",
+                    "Code": "AccessDenied",
+                    "Message": "Access Denied",
+                }
+            ]
+        }
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert result["deleted"]["output_files"] == 2
+        assert result["success"] is False
+
+    def test_a_failed_document_record_delete_is_reported(self):
+        """The last step on the path, and the one with no test until now.
+
+        Every other step's failure handler is exercised somewhere in this file; this
+        one's was not, so the mutation that broke its error reporting went unnoticed.
+        It matters more than its position suggests: this is the delete that makes the
+        document disappear from the list, so a failure here is the case where the user
+        is told the document is gone and it is not.
+        """
+        table = _table()
+        table.get_item.return_value = {
+            "Item": {"PK": f"doc#{KEY}", "QueuedTime": QUEUED}
+        }
+        # The list-entry cascade succeeds, so the record delete is reached; only the
+        # final `delete_item` on the document record faults.
+        table.delete_item.side_effect = [
+            {"Attributes": {"x": 1}},  # strategy 1 removes the list entry
+            _modelled_error("DeleteItem", "AccessDeniedException"),
+        ]
+
+        result = delete_single_document(KEY, table, _s3(), "in", "out")
+
+        assert result["deleted"]["list_entries"] is True
+        assert result["deleted"]["document_record"] is False
+        assert result["success"] is False, (
+            "the document record was not deleted and the delete was reported as a "
+            "success"
+        )
+        assert any("AccessDenied" in message for message in result["errors"]), (
+            f"the cause did not reach the caller: {result['errors']}"
+        )
+
+    def test_a_refusal_does_not_abandon_the_remaining_versions(self):
+        """⚠️ Reporting the failure must not reclaim **less** than staying silent did.
+
+        The refusal is almost always a missing permission, identical for every
+        remaining key, so stopping at the first refused batch purges less and reports
+        no more. Measured on the shape that exposes it — 1,510 versions across two
+        listing pages, one key refused in the first 1,000-key batch — raising inside
+        the loop left 510 versions never attempted, where the code this replaces
+        purged all 1,510 (and called it a success). So the failures accumulate and the
+        raise happens after the last batch.
+
+        Asserted on the number of ``delete_objects`` calls, because the returned count
+        alone is produced with or without the remaining batches being attempted.
+        """
+        versions = [
+            {"Key": f"{KEY}/sections/{i}.json", "VersionId": f"v{i}"}
+            for i in range(1510)
+        ]
+        s3 = _s3([{"Versions": versions[:1000]}, {"Versions": versions[1000:]}])
+        refused = {
+            "Key": versions[0]["Key"],
+            "VersionId": "v0",
+            "Code": "AccessDenied",
+            "Message": "Access Denied",
+        }
+        s3.delete_objects.side_effect = [
+            {"Errors": [refused]},  # first 1000-key batch: one key refused
+            {},  # second batch, which must still be attempted
+        ]
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert s3.delete_objects.call_count == 2, (
+            "the batch after the refusal was never attempted"
+        )
+        assert result["deleted"]["output_files"] == 1509
+        assert result["success"] is False
+        assert any("AccessDenied" in message for message in result["errors"])
+
+    def test_refusals_already_seen_survive_a_later_listing_failure(self):
+        """⚠️ Accumulating is what makes losing them possible.
+
+        The immediate-raise form could not drop a refusal because it never got past
+        one. Holding them until the last batch means anything that fails afterwards —
+        the next listing page most obviously — would otherwise replace the refusal with
+        its own message, and the caller would be told the listing broke and never learn
+        that versions were denied.
+        """
+        s3 = MagicMock()
+        paginator = MagicMock()
+        # An explicit, finite page sequence whose second element raises. A bare
+        # `return_value` here would iterate for ever.
+        paginator.paginate.return_value = iter(
+            [
+                {"Versions": [{"Key": OUT1, "VersionId": "v1"}]},
+                _ListingFailure("page 2 of ListObjectVersions failed"),
+            ]
+        )
+        s3.get_paginator.return_value = paginator
+        s3.delete_objects.return_value = {
+            "Errors": [
+                {
+                    "Key": OUT1,
+                    "VersionId": "v1",
+                    "Code": "AccessDenied",
+                    "Message": "Access Denied",
+                }
+            ]
+        }
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert result["success"] is False
+        joined = " ".join(result["errors"])
+        assert "page 2" in joined, "the listing failure is not reported"
+        assert "AccessDenied" in joined, (
+            f"the refusal seen on page 1 was discarded: {result['errors']}"
+        )
+
+    def test_a_malformed_errors_array_cannot_produce_a_negative_count(self):
+        """The count is by key identity, not by subtraction.
+
+        ``len(batch) - len(Errors)`` goes negative when the array does not correspond
+        one-to-one with the batch — a duplicated or malformed entry is enough — and a
+        negative number of deleted objects is a report nobody can act on.
+        """
+        s3 = _s3([{"Versions": [{"Key": OUT1, "VersionId": "v1"}]}])
+        s3.delete_objects.return_value = {
+            "Errors": [
+                {"Key": OUT1, "VersionId": "v1", "Code": "AccessDenied"},
+                {"Key": OUT1, "VersionId": "v1", "Code": "AccessDenied"},
+                {"Key": "unrelated", "VersionId": "vX", "Code": "InternalError"},
+            ]
+        }
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert result["deleted"]["output_files"] == 0
+        assert result["deleted"]["output_files"] >= 0
+        assert result["success"] is False
+
+    def test_a_purge_with_no_refusals_is_unaffected(self):
+        """The ordinary case, asserted so the check above cannot be vacuous.
+
+        S3 omits ``Errors`` when nothing was refused. This reads membership rather than
+        ``.get()`` for the reason the pagination loops in this module do — a bare
+        ``MagicMock`` auto-creates a truthy value for any key — so the shape that must
+        keep working is "the key is absent".
+        """
+        s3 = _s3([{"Versions": [{"Key": OUT1, "VersionId": "v1"}]}])
+        s3.delete_objects.return_value = {"ResponseMetadata": {"HTTPStatusCode": 200}}
+
+        result = delete_single_document(KEY, _table(), s3, "in", "out")
+
+        assert result["deleted"]["output_files"] == 1
+        assert result["errors"] == []
+        assert result["success"] is True
+
     def test_a_sibling_sharing_the_key_as_a_byte_prefix_is_not_purged(self):
         """The assertion that matters: what the purge leaves alone (#1133).
 
@@ -869,6 +1249,67 @@ class TestDeleteSingleDocument:
         result = delete_single_document(KEY, _table(), _s3(), "in", "out")
         assert result["errors"] == []
         assert result["success"] is True
+
+
+@pytest.mark.unit
+class TestReviewQueuePurge:
+    """delete_single_document's optional review_store: the review partition is purged.
+
+    A document routed to a review queue owns an item, drafts and history in the review
+    store. Without the purge they outlive the document and a reviewer can claim a
+    document that no longer exists.
+    """
+
+    def test_the_review_partition_is_purged_and_counted(self):
+        store = MagicMock()
+        store.purge_document.return_value = 3
+        result = delete_single_document(
+            KEY, _table(), _s3(), "in", "out", review_store=store
+        )
+        store.purge_document.assert_called_once()
+        args, kwargs = store.purge_document.call_args
+        assert args == (KEY,)
+        # The timestamp is a timezone-aware ISO string, since the store compares it
+        # against claim expiry times written the same way.
+        assert datetime.fromisoformat(kwargs["now_iso"]).tzinfo is not None
+        assert result["deleted"]["review_items"] == 3
+        assert result["success"] is True
+
+    def test_without_a_review_store_nothing_is_purged(self):
+        result = delete_single_document(KEY, _table(), _s3(), "in", "out")
+        assert result["deleted"]["review_items"] == 0
+        assert result["success"] is True
+
+    def test_a_dry_run_does_not_purge_the_review_partition(self):
+        store = MagicMock()
+        delete_single_document(
+            KEY, _table(), _s3(), "in", "out", dry_run=True, review_store=store
+        )
+        store.purge_document.assert_not_called()
+
+    def test_a_purge_failure_is_reported_and_the_rest_of_the_cleanup_continues(self):
+        table = _table()
+        table.get_item.return_value = {"Item": {"PK": f"doc#{KEY}"}}
+        store = MagicMock()
+        store.purge_document.side_effect = RuntimeError("store down")
+        result = delete_single_document(
+            KEY, table, _s3(), "in", "out", review_store=store
+        )
+        assert result["success"] is False
+        assert result["errors"] == ["Error purging review queue items: store down"]
+        assert result["deleted"]["review_items"] == 0
+        assert result["deleted"]["document_record"] is True, (
+            "a review-store failure abandoned the tracking-record delete"
+        )
+
+    def test_the_batch_wrapper_passes_the_store_to_every_document(self):
+        store = MagicMock()
+        store.purge_document.return_value = 1
+        result = delete_documents(
+            ["a", "b"], _table(), _s3(), "in", "out", review_store=store
+        )
+        assert [c.args[0] for c in store.purge_document.call_args_list] == ["a", "b"]
+        assert [r["deleted"]["review_items"] for r in result["results"]] == [1, 1]
 
 
 @pytest.mark.unit
@@ -1522,9 +1963,26 @@ class TestAListEntryFaultIsNotReportedAsADeletedDocument:
         }
 
         def query(**kwargs):
-            if "FilterExpression" in kwargs:  # the shard query, not run records
+            # ⚠️ **This discriminator is load bearing, so it refuses to guess.** It used
+            # to read `"FilterExpression" in kwargs` — the shard query carried one and the
+            # run-record query did not. When the shard query stopped carrying a
+            # `FilterExpression` (it named the sort key, which DynamoDB refuses in a
+            # `Query` filter — #1366) that test became "no call faults at all", and every
+            # test in this class passed while asserting nothing: measured, 9 of them went
+            # green on a `success is False` that was now `True`. A double that stops
+            # recognising the call under test has to fail rather than fall through, which
+            # is why the `else` below raises instead of returning an empty page.
+            projection = kwargs.get("ProjectionExpression")
+            if projection == _SHARD_QUERY_PROJECTION:
                 raise failure
-            return {"Items": []}
+            if projection == _RUN_RECORD_PROJECTION:
+                return {"Items": []}
+            raise AssertionError(
+                "this double no longer recognises the query it is meant to fault; "
+                f"ProjectionExpression={projection!r}. Update "
+                "_SHARD_QUERY_PROJECTION / _RUN_RECORD_PROJECTION rather than letting "
+                "this class pass vacuously."
+            )
 
         # A callable side_effect raises on every call, so the retry ladder cannot run the
         # double out of responses — a list would end in `StopIteration` instead.

@@ -122,6 +122,7 @@ class Event:
     target: str | None = None
     under: str | None = None
     interactive: str | None = None
+    paused: bool | None = None
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> Event:
@@ -139,6 +140,7 @@ class Event:
             target=record.get("target"),
             under=record.get("under"),
             interactive=record.get("interactive"),
+            paused=record.get("paused"),
         )
 
 
@@ -210,7 +212,13 @@ def pause_intervals(events: Iterable[Event]) -> list[tuple[float, float]]:
 def apply_pauses(
     events: list[Event], frames: list[Frame]
 ) -> tuple[list[Event], list[Frame], float]:
-    """Drop paused frames and move marks made during a pause to its resume."""
+    """Drop paused frames and clicks, and move marks made during a pause to its resume.
+
+    A click counts as paused if the recorder flagged it so or it falls inside a
+    pause. The flag is what catches the last click of a recording finalized from
+    disk after the daemon died while paused: that pause ends at the last event, so
+    its window stops just short of the click.
+    """
     intervals = pause_intervals(events)
 
     def containing(t: float) -> tuple[float, float] | None:
@@ -223,6 +231,8 @@ def apply_pauses(
     moved: list[Event] = []
     for event in events:
         window = containing(event.t)
+        if event.type == "click" and (event.paused or window is not None):
+            continue
         if event.type == "mark" and window is not None:
             moved.append(replace(event, t=window[1]))
         else:

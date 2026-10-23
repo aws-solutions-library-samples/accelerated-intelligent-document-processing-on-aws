@@ -142,6 +142,7 @@ reporter = SaveReportingData(
 4. **Cost Calculation**: `estimated_cost = value × unit_cost` for each metering record
 5. **Miss Handling**: Three misses, and only one of them is free:
    - *Unit absent from an entry that exists, and **declared** non-chargeable for that service* → `$0.00`. The declaration is `idp_common.metering_units.NON_CHARGEABLE_METERING_UNITS`, one entry per `(service, unit)` pair, each naming the authority it comes from and what that source showed. **The population basis is that a unit appearing in no priced entry of AWS's published price list is treated as non-chargeable** — `totalTokens` and `requests` on Bedrock are there because no Bedrock usagetype names a total token count and every one of the 3,841 `On-demand Inference` products is priced in tokens, images or video and none per request. ⚠️ That step from *absent* to *free* is an accepted assumption, not something the price list states: a unit AWS charges for but publishes no dimension for would be classified as free here. The module's docstring carries the risk and the one partial bound measured against it.
+   - *One of the two **prompt-cache** units absent from a Bedrock entry* → decided **per pricing key**, not per service, by `idp_common.metering_units.EXPECTED_CACHE_UNIT_OMISSIONS`. Whether a cache read costs anything is a property of the model: AWS prices one at $0.625/MTok on Nova Premier and publishes no cache dimension at all for Claude 3 Haiku, in any of the 17 regions it serves it from. So a member of that register names the price-list model it was read against, and records whether AWS publishes a **non-zero** rate for the dimension. If it does not, the omission is `$0.00` — there is no rate for the zero to hide. If it does, the member is **not** shielded and the unit is reported: what justifies omitting a rate AWS publishes is that the model cannot meter the unit on this code path (absent from `bedrock.client.CACHEPOINT_SUPPORTED_MODELS`, and not an implicit cacher), and that premise is about this tree rather than about AWS, so it can go stale in one commit. Both halves are checked per member by `tests/unit/reporting/test_cache_unit_omission_basis.py`. The two cache units were declared at *service* scope until GitHub #1206, which priced a cache read at `$0.00` on eleven different models' behalf from one reason, nine of them with no recorded basis — and a cache unit absent from a Bedrock entry the register does not name is now reported, which is what makes a pricing row added later, or a user's own edited pricing table, visible rather than silently free.
    - *Unit absent from an entry that exists, and **not** declared* → **unpriced**, same as a missing entry. `bedrock.client.numeric_usage` forwards every numeric member of a Converse `usage` block into metering by design, so a field AWS adds arrives here without anyone adding it — and reading its absence from `pricing.yaml` as "free" priced a new billable dimension at exactly `$0.00`, in the cheap direction, with nothing to query for (GitHub #1212). A metered count of `0` is still `$0.00` whatever the unit: cost is `count × rate`, so there is no spend for a zero to hide.
    - *No entry for `service_api` at all* → **unpriced**: `_get_unit_cost` returns `None` and both `unit_cost` and `estimated_cost` are written as SQL `NULL`, with a `WARNING` naming the service. `SUM()` ignores NULLs exactly as it would zeros, so totals are unchanged, but the gap is queryable (`WHERE unit_cost IS NULL`) instead of masquerading as something free.
 
@@ -150,10 +151,24 @@ reporter = SaveReportingData(
    `tests/unit/reporting/test_non_chargeable_units.py`: every entry must currently
    shield a unit that some metering writer really produces and some shipped pricing
    entry really omits (a dead entry would pre-declare whatever next arrived under
-   that name), and the entry count is pinned. The four Bedrock entries are asserted
-   against a committed digest of the price list, re-derivable with
+   that name), and the entry count is pinned. The two `bedrock` entries, plus the
+   `lambda_hook` `totalTokens` entry that cites the same Bedrock price list, are asserted
+   against a committed digest of it, re-derivable with
    `python3 lib/idp_common_pkg/tests/unit/reporting/bedrock_price_list_digest.py --refresh`
    and re-checkable live with `CHECK_AWS_PRICE_LIST=1`.
+
+   `EXPECTED_CACHE_UNIT_OMISSIONS` is registered separately and ratcheted
+   differently: **universe closure** rather than a pinned count, because its member
+   set is *derived* from `config_library/pricing.yaml` and asserted equal in both
+   directions. A Bedrock entry that omits a cache rate without a registered basis
+   fails, and a member whose entry has since gained the rate fails too. That also
+   closes a gap the older, enum-derived guard had — `pricing.yaml` doubles as the
+   set of model ids configuration validation accepts, so three entries were
+   configurable while being named by no template enum and no shipped preset, and
+   nothing covered them. Its price-list half comes from a second digest over **both**
+   Bedrock offer files (Anthropic's models are published under
+   `AmazonBedrockFoundationModels` and everything else under `AmazonBedrock`):
+   `python3 lib/idp_common_pkg/tests/unit/reporting/bedrock_cache_dimension_digest.py --refresh`.
 
    **The benchmark harness follows the same split**, which is what keeps the two cost figures comparable rather than only the matching rule (GitHub #1146). `price_metering` returns a `Priced` whose `.total` is unavailable unless every entry priced; a metering key with no entry is named in the row's `cost_unpriced` and the row reports no cost, rather than a total below truth. The harness cannot write a queryable `NULL` per metering record the way a database column can, so it withholds the row's scalar `cost` instead — same rule, different granularity.
 

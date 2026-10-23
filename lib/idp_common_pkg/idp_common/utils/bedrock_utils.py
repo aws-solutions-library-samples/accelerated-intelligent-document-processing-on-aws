@@ -13,11 +13,32 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
+
+# The invocation deadline, the sleep clamp and the pre-attempt budget gate. They live
+# in a standard-library-only leaf module and are re-exported from here, because the
+# ladders that need them sit on both sides of an import boundary: the decorators
+# below, and the four ladders in ``bedrock/client.py`` / ``bedrock/openai_responses.py``,
+# which take the rule from the leaf rather than from here because importing this
+# package costs that cold start ``idp_common.config`` (measured in
+# ``idp_common.lambda_deadline``). One implementation is the point — the defect has
+# now appeared on four ladders, and a copied predicate is how the next one gets
+# missed. These names stay importable from here: handlers and tests already reach for
+# ``utils.bedrock_utils.set_lambda_deadline_epoch``. Two of the five are not used in
+# this module and carry a ``noqa`` rather than living in an ``__all__``: adding one to
+# a module that has never had one silently narrows ``import *`` to whatever that list
+# happens to hold on the day, and the next public name added here would be missing
+# from it.
+from idp_common.lambda_deadline import (
+    attempt_cannot_finish,
+    clamp_sleep_to_budgets,
+    get_lambda_deadline_epoch,
+    remaining_invocation_seconds,  # noqa: F401 - re-exported, unused here
+    set_lambda_deadline_epoch,  # noqa: F401 - re-exported, unused here
+)
 
 # Type stubs only. ``mypy-boto3-bedrock-runtime`` ships in the ``test`` and
 # ``agentic-extraction`` extras, NOT in lean Lambda extras like ``assessment`` —
@@ -50,12 +71,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 # --- Lambda wall-clock deadline -----------------------------------------------
-# Absolute epoch seconds by which the current Lambda invocation must finish, as a
-# ContextVar so the retry decorators can see it without every call site threading
-# it through. Set once per invocation from
-# ``context.get_remaining_time_in_millis()``; None outside Lambda (local, tests),
-# where every check below is a no-op and behaviour is unchanged.
-#
 # Why the decorators need it: a backoff ladder that does not know when its own
 # function will be killed can schedule a sleep longer than the whole invocation.
 # ``invoke_agent_with_retry`` was configured with ``max_delay=1800`` inside a
@@ -67,7 +82,8 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # allowance, which DOES end the ladder (see ``_backoff_or_none``). Near the wall the
 # attempts themselves are what consume the clock, so continuing can end in a real
 # Lambda timeout — and those attempts may still succeed, which is worth more than a
-# marginally earlier raise.
+# marginally earlier raise. The one exception is an attempt whose own measured cost
+# no longer fits, which ``attempt_cannot_finish`` refuses to begin.
 #
 # Which failure mode is preferable is a property of the state machine, and it has
 # moved: ``Sandbox.Timedout``/``Lambda.Unknown``/``States.Timeout`` are down to
@@ -81,71 +97,13 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # decides this — what decides it is whether the remaining time is better spent on
 # attempts (the deadline case) or handed to a ladder with more of it (the allowance
 # case).
-_LAMBDA_DEADLINE_EPOCH: ContextVar[float | None] = ContextVar(
-    "idp_lambda_deadline_epoch", default=None
-)
-
-# Seconds of the remaining budget left unspent when clamping, so a sleep does not
-# end exactly at the wall with no room for the attempt that follows it. This is a
-# floor on usefulness, not a guarantee: an agent call can legitimately take minutes
-# (up to ``timeout_budget.AGENT_READ_TIMEOUT_SECONDS``), so no reserve can promise
-# the next attempt completes.
-_DEADLINE_RESERVE_SECONDS = 30.0
-
+#
 # The shard invocation's time budget — how long one Bedrock request may stall,
 # how much backoff this ladder may spend, and the function's Lambda ceiling —
 # lives in ``idp_common.timeout_budget``, because those numbers are only correct
 # relative to each other and ``extraction.runtime`` needs them at import time
 # without pulling in this package (#1014). The decorators below enforce the
 # backoff half of it; see that module for the whole inequality.
-
-
-def set_lambda_deadline_epoch(deadline_epoch: float | None) -> None:
-    """Record when the current Lambda invocation must finish (epoch seconds).
-
-    Note for callers: a ContextVar does NOT propagate into threads
-    (``ThreadPoolExecutor``, ``loop.run_in_executor``). It DOES propagate through
-    ``asyncio.run``, ``create_task``/``gather`` and ``asyncio.to_thread``, which
-    covers the agentic fan-out. Publish it again inside any thread-pool worker that
-    needs it, or hand the worker ``contextvars.copy_context().run``.
-    """
-    _LAMBDA_DEADLINE_EPOCH.set(deadline_epoch)
-
-
-def get_lambda_deadline_epoch() -> float | None:
-    """The current invocation's deadline, or None when unknown."""
-    return _LAMBDA_DEADLINE_EPOCH.get()
-
-
-def clamp_sleep_to_budgets(
-    sleep_time: float,
-    total_slept: float = 0.0,
-    max_total_delay: float | None = None,
-    reserve: float | None = None,
-) -> float:
-    """Shorten ``sleep_time`` to fit the cumulative and wall-clock budgets.
-
-    Returns the seconds to actually sleep, never negative and never longer than
-    requested. Both bounds only ever SHORTEN a sleep:
-
-    - **cumulative** — ``max_total_delay`` caps total time spent asleep across all
-      attempts, because a per-sleep cap alone still permits 50 x 60s.
-    - **wall-clock** — what remains of this Lambda invocation, minus ``reserve``.
-
-    A return of 0.0 means "no time left to back off". Nothing here raises; what the
-    caller does with it depends on WHICH bound produced it, and
-    :func:`_backoff_or_none` is where that is decided — a spent cumulative allowance
-    ends the ladder, a tight deadline keeps trying with no sleep.
-    """
-    if reserve is None:
-        reserve = _DEADLINE_RESERVE_SECONDS
-    allowed = sleep_time
-    if max_total_delay is not None:
-        allowed = min(allowed, max_total_delay - total_slept)
-    deadline = get_lambda_deadline_epoch()
-    if deadline is not None:
-        allowed = min(allowed, deadline - time.time() - reserve)
-    return max(0.0, min(sleep_time, allowed))
 
 
 def _clamped_or_log(
@@ -179,87 +137,19 @@ def _clamped_or_log(
     return allowed
 
 
-def _attempt_cannot_finish(
-    last_attempt_seconds: float | None,
-    func_name: str,
-) -> bool:
-    """Whether another attempt the size of the last one cannot finish in time.
-
-    The question is asked with the PREVIOUS attempt's measured duration rather than
-    against a constant, which is what makes it self-calibrating: the caller does not
-    have to tell this module how long a request may take, and the answer covers
-    whatever the attempt actually spends — a stalled stream waiting out its read
-    timeout, the non-streamed confidence call that runs inside the same invocation,
-    or both. A ladder of cheap attempts (a throttle refused in milliseconds) is
-    never stopped by it, which is the case the wall-clock bound deliberately keeps
-    retrying.
-
-    What it prevents is the one shape that cannot end well. An attempt that has just
-    spent 600 seconds stalling, started again with 200 seconds of the invocation
-    left, cannot succeed and cannot even fail cleanly: the Lambda is killed first,
-    Step Functions reports ``Sandbox.Timedout``, and since #917 that is
-    ``MaxAttempts: 1`` on every Lambda task — so the blip a retry would have cleared
-    becomes the failure that is NOT retried, and ``ExtractionShardMap``, which
-    tolerates no shard failures, discards the siblings that had already succeeded.
-    Raising instead surfaces the underlying error, which the handlers wrap as
-    ``TransientError`` (``raise_if_transient``) and ``ExtractionStep`` /
-    ``ShardExtractionStep`` retry eight times with a state-machine budget of
-    21,600s. Returning in time is therefore worth more than one more attempt that
-    provably cannot complete.
-
-    ⚠️ ``_DEADLINE_RESERVE_SECONDS`` is deliberately NOT subtracted here, and that is
-    the difference between this and :func:`clamp_sleep_to_budgets`. The reserve exists
-    so a SLEEP does not end exactly at the wall; applying it to this comparison would
-    make a zero-cost attempt "not fit" in the last 30 seconds of an invocation and so
-    stop the ladder on proximity after all — which is exactly the behaviour the
-    wall-clock bound is documented not to have, and what
-    ``test_the_deadline_still_only_shortens_and_does_not_stop`` pins. An attempt that
-    costs nothing always fits. The margin for the unwind comes from the size of the
-    attempt being refused: what makes this fire is an attempt expensive enough that
-    skipping it leaves real time behind, which is the same property that makes it
-    unaffordable.
-
-    This is what lets the read timeouts be sized for the work rather than for the
-    arithmetic. Making the constants sum to fit inside one invocation forced the
-    agentic read timeout below a gap that real generations exhibit — the Nuveen
-    agentic extraction stalls longer than 180s between stream events, so every
-    attempt timed out and the ladder spent the whole 900s making five of them
-    (#1310). Bounding the LADDER instead leaves one stall's worth of margin and
-    still ends the invocation with a retryable name.
-    """
-    if last_attempt_seconds is None:
-        return False
-    deadline = get_lambda_deadline_epoch()
-    if deadline is None:
-        return False
-    remaining = deadline - time.time()
-    if remaining >= last_attempt_seconds:
-        return False
-    logger.warning(
-        "Stopping %s retries: the last attempt took %.0fs and only %.0fs of this "
-        "invocation remain, so another one cannot finish. Raising instead of being "
-        "killed on the wall clock — a raised transient error is retried by the "
-        "caller, a Lambda timeout is classified deterministic and is not.",
-        func_name,
-        last_attempt_seconds,
-        max(0.0, remaining),
-    )
-    return True
-
-
 def _backoff_or_none(
     sleep_time: float,
     total_slept: float,
     max_total_delay: float | None,
     func_name: str,
-    last_attempt_seconds: float | None = None,
+    worst_attempt_seconds: float | None = None,
 ) -> float | None:
     """Seconds to sleep before the next attempt, or ``None`` to stop retrying.
 
     ``None`` is returned for two conditions, both of which mean the next attempt is
     not worth making: the **cumulative** allowance ``max_total_delay`` is spent, or
-    the remaining invocation cannot accommodate another attempt the size of the last
-    one (:func:`_attempt_cannot_finish`).
+    the remaining invocation cannot accommodate another attempt the size of the
+    costliest one measured (:func:`~idp_common.lambda_deadline.attempt_cannot_finish`).
 
     On the allowance: past that point every remaining attempt goes out
     with no delay at all, and an unbacked-off retry against a service that is asking
@@ -298,9 +188,10 @@ def _backoff_or_none(
     keep passing because their attempts cost nothing. What DOES stop the ladder is an
     attempt whose own measured duration no longer fits in what remains, where
     "continuing may still succeed" is not true: it cannot even return. That is the
-    one case :func:`_attempt_cannot_finish` removes, and only that one.
+    one case :func:`~idp_common.lambda_deadline.attempt_cannot_finish` removes,
+    and only that one.
     """
-    if _attempt_cannot_finish(last_attempt_seconds, func_name):
+    if attempt_cannot_finish(worst_attempt_seconds, func_name):
         return None
     if max_total_delay is not None and total_slept >= max_total_delay:
         logger.warning(
@@ -421,6 +312,82 @@ def is_input_token_overflow(error: BaseException) -> bool:
     return False
 
 
+#: ``stopReason`` values that mean the model stopped because it ran out of OUTPUT
+#: budget rather than because it finished answering.
+#:
+#: Two of the three are reachable today and the third is defensive; be precise
+#: about which, because the set decides what counts as data loss:
+#:
+#: * ``max_tokens`` — Bedrock Converse.
+#: * ``incomplete`` — what ``bedrock.openai_responses.translate_response`` puts in
+#:   ``stopReason``, which is the Responses API's ``status`` verbatim.
+#: * ``max_output_tokens`` — the Responses API's own ``incomplete_details.reason``
+#:   spelling for the same condition. **Nothing in this repository writes it into
+#:   ``stopReason``**: the adapter maps ``status``, and the reason is read
+#:   separately by ``_incomplete_reason``. It is kept so a response that surfaces
+#:   the reason directly is matched rather than read as a clean stop, which is the
+#:   safe direction for a completeness signal — but it is not evidence that the
+#:   adapter maps it, and no test can drive it end to end.
+OUTPUT_TRUNCATION_STOP_REASONS = ("max_tokens", "max_output_tokens", "incomplete")
+
+
+def is_output_token_truncation(response: object) -> bool:
+    """True if ``response`` says the model hit its OUTPUT token ceiling.
+
+    The opposite direction from :func:`is_input_token_overflow`, which reads an
+    *exception*: this reads a **successful** response that is nonetheless short.
+    That is the dangerous shape, because nothing raises — the call returns 200, the
+    text is well formed as far as it goes, and a list that stopped in the middle is
+    indistinguishable from a list that was always that long.
+
+    Accepts either the metering-wrapped envelope ``idp_common.bedrock.invoke_model``
+    returns (``{"response": ..., "metering": ...}``) or the bare Converse response,
+    because callers hold one or the other and a matcher that silently answers
+    ``False`` for the wrong shape is worse than no matcher.
+
+    Against the three inline copies this replaced it is a **strict widening**, not
+    an exact equivalent, on one shape: ``{"response": None, "stopReason": ...}``
+    answered ``False`` there (the ``isinstance`` guard rejected ``None`` and the
+    comparison never reached the envelope) and answers ``True`` here. ``invoke_model``
+    does not produce that shape, so nothing changes in practice; it is called a
+    widening rather than a no-op because the direction matters — the new answer is
+    the one that reports a truncation.
+
+    ⚠️ A ``False`` here is **not** evidence that the output is complete. A model
+    that abbreviates a long list on its own stops with ``end_turn`` and a
+    syntactically complete answer; measured on a 17-page, 800-row statement, the
+    short runs used ~2.3k output tokens where the complete runs on the same model
+    used ~38.5k, so no ceiling was involved (#1361). Row-level completeness is
+    judged separately — see ``ExtractionService._build_extraction_issues``.
+    """
+    if not isinstance(response, dict):
+        return False
+    raw = response.get("response", response)
+    if not isinstance(raw, dict):
+        raw = response
+    return raw.get("stopReason") in OUTPUT_TRUNCATION_STOP_REASONS
+
+
+def is_max_tokens_agent_error(error: BaseException) -> bool:
+    """True if ``error`` is Strands' hard failure on an output-truncated turn.
+
+    The *exception* counterpart of :func:`is_output_token_truncation`, which reads a
+    response. Strands raises ``MaxTokensReachedException`` when a model stops with
+    ``stopReason == "max_tokens"`` mid-agent-loop, and deliberately lets it bubble
+    up rather than wrapping it — so every caller that runs an agent loop has to
+    recognise it, and a copied predicate is how one of them gets missed.
+
+    Matched on type name and message text rather than by importing the Strands
+    exception type, mirroring ``extraction.agentic_idp._is_context_overflow_error``:
+    this module is imported by Lambda functions whose extras do not include the
+    agentic stack, so an ``import strands`` here would make it unimportable there.
+    """
+    if "maxtokensreached" in type(error).__name__.lower():
+        return True
+    msg = str(error).lower()
+    return "max_tokens limit" in msg or "due to max_tokens" in msg
+
+
 # Default retryable error codes (matched against ClientError codes and exception
 # messages).
 #
@@ -511,17 +478,21 @@ def async_exponential_backoff_retry[T, **P](
                     },
                 )
 
-            # How long the attempt that just failed took, so the ladder can refuse to
-            # begin one that provably cannot finish inside this invocation. Measured
-            # rather than assumed: see _attempt_cannot_finish.
-            last_attempt_seconds: float | None = None
+            # The COSTLIEST attempt measured so far, so the ladder can refuse to begin
+            # one that provably cannot finish inside this invocation. The worst rather
+            # than the last: a cheap throttle between two 600s stalls would otherwise
+            # reset the comparison and re-license an attempt that cannot return.
+            # Measured rather than assumed: see lambda_deadline.attempt_cannot_finish.
+            worst_attempt_seconds: float | None = None
 
             for attempt in range(max_retries):
                 attempt_started = time.time()
                 try:
                     return await func(*args, **kwargs)
                 except botocore.exceptions.ClientError as e:
-                    last_attempt_seconds = time.time() - attempt_started
+                    worst_attempt_seconds = max(
+                        worst_attempt_seconds or 0.0, time.time() - attempt_started
+                    )
                     error_code = e.response.get("Error", {}).get("Code")
 
                     # For EventStreamError (subclass of ClientError), the error code
@@ -556,7 +527,7 @@ def async_exponential_backoff_retry[T, **P](
                         total_slept,
                         max_total_delay,
                         func.__name__,
-                        last_attempt_seconds,
+                        worst_attempt_seconds,
                     )
                     if backoff is None:
                         raise
@@ -568,7 +539,9 @@ def async_exponential_backoff_retry[T, **P](
                     total_slept += backoff
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
-                    last_attempt_seconds = time.time() - attempt_started
+                    worst_attempt_seconds = max(
+                        worst_attempt_seconds or 0.0, time.time() - attempt_started
+                    )
                     # An image rejection is deterministic: the same request will be
                     # rejected identically every time, so retrying it only spends
                     # the backoff budget. The ClientError branch above already
@@ -607,7 +580,7 @@ def async_exponential_backoff_retry[T, **P](
                             total_slept,
                             max_total_delay,
                             func.__name__,
-                            last_attempt_seconds,
+                            worst_attempt_seconds,
                         )
                         if backoff is None:
                             raise
@@ -729,15 +702,17 @@ def exponential_backoff_retry[T, **P](
                     )
 
             # See the async decorator: the ladder refuses to begin an attempt the
-            # size of the one that just failed when the invocation cannot hold it.
-            last_attempt_seconds: float | None = None
+            # size of the costliest one measured when the invocation cannot hold it.
+            worst_attempt_seconds: float | None = None
 
             for attempt in range(max_retries):
                 attempt_started = time.time()
                 try:
                     return func(*args, **kwargs)
                 except botocore.exceptions.ClientError as e:
-                    last_attempt_seconds = time.time() - attempt_started
+                    worst_attempt_seconds = max(
+                        worst_attempt_seconds or 0.0, time.time() - attempt_started
+                    )
                     error_code = e.response.get("Error", {}).get("Code")
 
                     # Log bedrock invocation details for all errors
@@ -767,7 +742,7 @@ def exponential_backoff_retry[T, **P](
                         total_slept,
                         max_total_delay,
                         func.__name__,
-                        last_attempt_seconds,
+                        worst_attempt_seconds,
                     )
                     if backoff is None:
                         raise
@@ -820,7 +795,7 @@ class BedrockClientWrapper:
         >>> wrapper = BedrockClientWrapper(bedrock_client, max_retries=3)
         >>> # Use invoke_model with automatic retries
         >>> response = wrapper.invoke_model(
-        ...     modelId="anthropic.claude-3-sonnet-20240229-v1:0",
+        ...     modelId="us.anthropic.claude-sonnet-4-6",
         ...     body=json.dumps(
         ...         {
         ...             "messages": [{"role": "user", "content": "Hello"}],
@@ -830,7 +805,7 @@ class BedrockClientWrapper:
         ... )
         >>> # Use converse API with automatic retries
         >>> response = wrapper.converse(
-        ...     modelId="anthropic.claude-3-sonnet-20240229-v1:0",
+        ...     modelId="us.anthropic.claude-sonnet-4-6",
         ...     messages=[{"role": "user", "content": [{"text": "Hello"}]}],
         ... )
     """

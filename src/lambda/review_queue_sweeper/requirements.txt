@@ -1,0 +1,2 @@
+# idp_common provided by Lambda Layer 1 (base)
+# Layer 1 includes: core + docs_service + image

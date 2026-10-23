@@ -1,0 +1,1 @@
+# idp_common provided by Lambda Layer 1 (base)

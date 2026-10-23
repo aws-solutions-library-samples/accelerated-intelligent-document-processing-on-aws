@@ -18,7 +18,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
 | **Amazon S3** | Stores input documents, processed outputs, and web UI assets | ✓ | ✓ |
-| **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency | ✓ | ✓ |
+| **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency, stores each user's [Inbox](./web-ui.md#inbox) messages (`NotificationsTable`), and holds HITL review queues, assignments and Test Studio queue summaries (`HITLTable`) | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
 | **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
@@ -59,6 +59,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **AWS X-Ray** | Distributed tracing for the Lambda functions and state machines, controlled by `EnableXRayTracing` (default `true`). Traced functions need `xray:PutTraceSegments` / `xray:PutTelemetryRecords`: SAM attaches its X-Ray managed policy to any execution role it generates, and the roles declared explicitly in the templates carry `AWSXrayWriteOnlyAccess`. Billed per trace recorded — see [monitoring.md](./monitoring.md#x-ray-tracing), which also covers what `EnableXRayTracing=false` does not reach | — | ✓ |
 | **AWS SNS** | Delivers operational alerts and notifications | ✓ | ✓ |
 | **AWS KMS** | Manages encryption keys for secure data storage | ✓ | ✓ |
+| **Amazon GuardDuty** | Optional Malware Protection for S3 on the input bucket, gating document ingest on a clean scan verdict. Only when `MalwareScanning` is not `DISABLED`; with `CREATE_PLAN` the stack creates the protection plan (needing GuardDuty permissions at deploy time), with `GATE_ONLY` it creates nothing and reads verdicts from a plan managed elsewhere. See [malware-scanning.md](./malware-scanning.md) | ✓ | ✓ |
 
 ### Analytics & Reporting
 
@@ -229,9 +230,10 @@ The solution creates various IAM roles to run different components of the system
 
 #### Web UI & API Roles
 * **API Dispatcher Role** (the single Lambda behind `POST /op/{field}`, which fans a request out to the per-field resolver Lambdas and serves the DynamoDB-direct fields in process):
-  * `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`
-  * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`
-  * `lambda:InvokeFunction` (only the resolver functions in its field → function map)
+  * SAM `DynamoDBCrudPolicy` on the Tracking, Discovery Tracking and Agent tables, for the DynamoDB-direct fields it serves itself
+  * `kms:Decrypt`, `kms:GenerateDataKey` on the customer-managed key that encrypts those tables
+  * `lambda:InvokeFunction` on the stack's resolver functions (by function-name prefix) and the main-stack resolver ARNs in its field → function map
+  * `ssm:GetParameter` on the stack's field → function map parameter, read at cold start
 
 * **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
@@ -244,10 +246,21 @@ The solution creates various IAM roles to run different components of the system
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
 
+* **Notifications Resolver Role** (API resolver Lambda that serves each user's own [Inbox](./web-ui.md#inbox)):
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
+* **Inbox producers** (none in this release). A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
+  * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
+  * read access to the Configuration table (for retention and the per-user cap)
+  * `cognito-idp:ListUsersInGroup` on the user pool, only when it posts to Cognito groups
+  * `cloudwatch:PutMetricData`
+  * KMS use of the customer-managed key that encrypts the table
+
 * **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
   * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.
-  * `s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input and Output buckets, plus `kms:Decrypt` on the customer-managed key. This is the browser reading document bytes with the signed-in user's own credentials — the file viewer, the page thumbnails, the page-image viewer and the document export all sign S3 GETs client-side. ⚠️ A single `authenticated` role is attached with no `RoleMappings`, so **every** signed-in user holds this regardless of Cognito group, with no resolver in the path to apply one. The buckets partitioned **per user** — Configuration (configuration-profile revisions) and Test Set — are deliberately **absent**, because no IAM grant on one shared role can express `allowedConfigVersions` or `allowedTestSets`; those objects are served only through `getFileContents` / `getFilePresignedUrl`, which check the key against the caller's scope. Narrowing what remains is [issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033); see [RBAC](./rbac.md) for the boundary this leaves.
-  * `ssm:GetParameter` (for settings — the UI reads its runtime settings blob, which includes the stack's bucket names, directly from Parameter Store)
+  * **No S3 and no KMS.** This role grants **nothing** on the Input and Output buckets, and **no** `s3:GetObject`, `s3:GetObjectVersion` or `s3:ListBucket` on any bucket in the deployment ([issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)). ⚠️ A single `authenticated` role is attached with **no `RoleMappings`**, so every signed-in user holds exactly this role regardless of Cognito group — including a user in no group, which self-signup produces — with no resolver in the path to apply a group check, a per-document check or a per-user scope check. That is why the document read path runs through `getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls` instead: the browser asks the backend for a presigned URL and the resolver applies the dispatcher's group floor, a bucket allow-list, the per-user key scope on the Configuration and Test Set buckets, and the owning document's `ConfigVersion` against the caller's `allowedConfigVersions` on the Input and Output ones. The KMS grant went with the S3 one — a presigned URL minted by the resolver is decrypted under the resolver's role, which holds its own grant on the key. See [RBAC](./rbac.md) for what the per-document check does and does not close.
+  * `ssm:GetParameter` (for settings — the UI reads its runtime settings blob, which includes the stack's bucket names, directly from Parameter Store. ⚠️ The names being readable is not a grant: with no S3 action on this role there is no bucket those names open)
 
 * **Knowledge Base Query Role**:
   * `bedrock:InvokeModel`
@@ -338,6 +351,16 @@ The solution creates various IAM roles to run different components of the system
   * `ecr:*` (push/scan container images), `cloudfront:CreateInvalidation` (UI)
   * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
   * `ec2:*` networking actions (when deploying into a VPC)
+
+* **Malware Scan Role** (optional malware scanning, `MalwareScanning: CREATE_PLAN`) — assumed by `malware-protection-plan.guardduty.<url-suffix>`, never by a Lambda:
+  * `s3:GetObject`, `s3:GetObjectVersion` on the input bucket's objects — reading what it scans.
+  * `s3:PutObjectTagging`, `GetObjectTagging`, `PutObjectVersionTagging`, `GetObjectVersionTagging` on the same — writing the `GuardDutyMalwareScanStatus` verdict onto the object.
+  * `s3:PutObject` on the single key `malware-protection-resource-validation-object`, GuardDuty's write probe — **not** the bucket, so a scanner cannot modify the documents it scans.
+  * `s3:ListBucket`, `s3:GetBucketNotification`, `s3:PutBucketNotification` on the bucket itself — ownership check, and asserting that EventBridge notifications are on.
+  * `events:PutRule`/`DeleteRule`/`PutTargets`/`RemoveTargets`/`DescribeRule`/`ListTargetsByRule`, scoped to `rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*` and conditioned on `events:ManagedBy` — GuardDuty manages its own object-notification rule.
+  * `kms:Decrypt`, `kms:GenerateDataKey` on the stack's customer-managed key, conditioned on `kms:ViaService: s3.<region>.<url-suffix>`. ⚠️ **Required, not optional:** the input bucket is SSE-KMS, so without this every scan returns `ACCESS_DENIED` and — failing closed — every document is refused.
+  * No wildcard resource in any statement, asserted by `scripts/tests/test_malware_scanning_template.py`.
+  * Accepts `PermissionsBoundaryArn` and attaches it when set.
 
 * **AgentCore Gateway Execution Role** (optional MCP integration, `EnableMCP: true`):
   * `lambda:InvokeFunction` (MCP handler)

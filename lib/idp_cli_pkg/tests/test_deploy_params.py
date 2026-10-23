@@ -396,7 +396,7 @@ class TestEnableHitlIsNoLongerAStackParameter:
         )
         assert result.exit_code == 1, result.output
         assert "no longer a stack parameter" in result.output
-        assert "Assessment & HITL Configuration" in result.output
+        assert "Human-in-the-Loop (HITL) Review" in result.output
 
     def test_build_parameters_does_not_accept_it_at_all(self):
         import inspect

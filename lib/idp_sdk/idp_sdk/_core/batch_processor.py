@@ -949,6 +949,10 @@ class BatchProcessor:
                 if "all" not in file_types:
                     if not any(f"/{file_type}/" in s3_key for file_type in file_types):
                         continue
+                # Review drafts are a reviewer's work in progress, not results;
+                # only the review status object is part of a download.
+                if "/review/" in s3_key and not s3_key.endswith("/review/status.json"):
+                    continue
 
                 files_to_download.append(s3_key)
 

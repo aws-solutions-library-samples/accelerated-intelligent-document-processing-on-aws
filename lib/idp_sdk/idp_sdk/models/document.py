@@ -8,7 +8,44 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import DocumentState, RerunStep
+from idp_common.review_queues.statuses import ReviewStatus
+
+from .base import DocumentBucket, DocumentState, RerunStep
+
+
+class ReviewInfo(BaseModel):
+    """A document's review-queue status (HITL review queues).
+
+    ``status`` is ``in_review`` until a reviewer finishes, then ``complete`` or
+    ``rejected``; the same value as ``<document>/review/status.json``.
+    """
+
+    status: ReviewStatus = Field(description="in_review, complete or rejected")
+    queue: Optional[str] = Field(default=None, description="Review queue")
+    cycle_id: Optional[str] = Field(default=None, description="Review cycle id")
+    status_uri: Optional[str] = Field(
+        default=None, description="S3 URI of the review status object"
+    )
+    reviewed_by: Optional[str] = Field(default=None, description="Reviewer email")
+    disposed_at: Optional[str] = Field(
+        default=None, description="When the reviewer completed or rejected it"
+    )
+    reject_reason: Optional[str] = Field(default=None, description="Reject reason")
+
+    @classmethod
+    def from_lookup(cls, review: Optional[Dict[str, Any]]) -> Optional["ReviewInfo"]:
+        """Build from the lookup function's ``review`` block (camelCase)."""
+        if not review or not review.get("status"):
+            return None
+        return cls(
+            status=review["status"],
+            queue=review.get("queue"),
+            cycle_id=review.get("cycleId"),
+            status_uri=review.get("statusUri"),
+            reviewed_by=review.get("reviewedBy"),
+            disposed_at=review.get("disposedAt"),
+            reject_reason=review.get("rejectReason"),
+        )
 
 
 class DocumentStatus(BaseModel):
@@ -30,6 +67,31 @@ class DocumentStatus(BaseModel):
         default=None, description="Number of extracted sections"
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    #: The progress bucket the producer sorted this document into, when the
+    #: producer knows something `status` alone does not say.
+    #:
+    #: `classify_document_state` is total over `DocumentState`, so for almost
+    #: every document a consumer can derive the bucket from `status` and get the
+    #: same answer. `NOT_FOUND` is the exception: within
+    #: `NOT_FOUND_GRACE_SECONDS` of a batch's submission it means "the
+    #: QueueSender row has not landed yet", which is `QUEUED`, and past that
+    #: window it means "there will never be a row", which is `FAILED`. Only a
+    #: producer holding the batch's submission time can tell those apart, so it
+    #: records its verdict here rather than leaving each consumer to re-derive a
+    #: bucket from a status that cannot express the difference.
+    #:
+    #: `None` means the producer expressed no opinion; derive the bucket from
+    #: `status` in that case.
+    bucket: Optional[DocumentBucket] = Field(
+        default=None, description="Progress bucket assigned by the producer"
+    )
+    #: Review-queue status; None when the document was never routed to a queue.
+    review: Optional[ReviewInfo] = Field(
+        default=None, description="Review-queue status of the document"
+    )
+    review_status: Optional[ReviewStatus] = Field(
+        default=None, description="in_review, complete or rejected (review queues)"
+    )
 
 
 class DocumentUploadResult(BaseModel):

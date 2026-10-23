@@ -18,8 +18,8 @@ Protects the system from cascading failures when Bedrock services are degraded o
                    ▼                                          │
               ┌──────────┐                                    │
               │   OPEN   │ ◄──── Alarm during HALF_OPEN       │
-              │ (reject) │                                    │
-              └────┬─────┘                                    │
+              │ (reject) │ ◄──── No probe closed the breaker  │
+              └────┬─────┘       within the probe window      │
                    │                                          │
                    │ Recovery timeout expires                 │
                    │ OR Alarm returns to OK                   │
@@ -64,14 +64,30 @@ Protects the system from cascading failures when Bedrock services are degraded o
 |-------|----------|
 | **CLOSED** | Normal operation. All requests processed. |
 | **OPEN** | Bedrock unavailable. Messages return to SQS for retry. |
-| **HALF_OPEN** | Testing recovery. Limited traffic allowed through. |
+| **HALF_OPEN** | Testing recovery. The Queue Processor admits a bounded number of probes (5 per 60 s, claimed with a conditional write on this record) and returns everything else to SQS. See [docs/circuit-breaker.md](../../../docs/circuit-breaker.md). |
 
 ## Triggers
 
 - **CLOSED → OPEN**: CloudWatch Alarm fires (Bedrock throttling/errors)
 - **OPEN → HALF_OPEN**: Recovery timeout expires (default 5 min) or alarm clears
 - **HALF_OPEN → CLOSED**: Probe traffic succeeds, alarm stays OK
-- **HALF_OPEN → OPEN**: New alarm during recovery testing
+- **HALF_OPEN → OPEN**: No probe closed the breaker within the probe window
+  (`HALF_OPEN_TIMEOUT_SECONDS`, evaluated by the scheduled health check), or a
+  new alarm arrives during recovery testing
+
+The probe-window transition is what keeps HALF_OPEN a window rather than a
+resting state. Leaving HALF_OPEN for CLOSED needs a workflow to *succeed*, and
+the alarm handler needs a fresh transition into `ALARM`, which CloudWatch does
+not deliver while the alarm is already in `ALARM` — so without it a sustained
+outage settles in HALF_OPEN, never re-times the recovery timeout, and leaves
+every refused document on the queue's 60-second visibility timeout instead of
+the recovery timeout the Queue Processor pushes an OPEN refusal out to.
+
+The episode start is recorded on the breaker record as `half_open_at` by every
+transition into HALF_OPEN. A HALF_OPEN record that carries none — written
+before the attribute existed — is stamped with the current time on the first
+health check rather than being treated as infinitely old, so an upgrade cannot
+reopen a breaker that is probing healthily; the cost is one evaluation cycle.
 
 ## Alarm Threshold
 
@@ -99,6 +115,15 @@ These are CloudFormation stack parameters configurable at deployment time.
 | `RECOVERY_TIMEOUT_SECONDS` | 300 | Seconds before OPEN → HALF_OPEN |
 | `ERROR_HANDLER_ARN` | (none) | Optional Lambda for custom handling |
 | `METRIC_NAMESPACE` | GENAIDP | CloudWatch metrics namespace |
+
+`HALF_OPEN_TIMEOUT_SECONDS` — how long a HALF_OPEN episode may run before it
+returns to OPEN — is a module constant rather than an environment variable or a
+stack parameter. It is `max(900, RECOVERY_TIMEOUT_SECONDS)`, so the one knob an
+operator already has for how patient the breaker should be sets this too.
+**Do not shorten the 900-second floor without reading the comment at the
+constant**: `workflow_tracker` only closes the breaker if the state is still
+HALF_OPEN when a probe finishes, so a window shorter than a probe workflow can
+never close the breaker at all.
 
 ## Manual Operations
 

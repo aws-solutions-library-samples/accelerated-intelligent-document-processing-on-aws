@@ -22,15 +22,45 @@ from idp_sdk.models import (
     BatchProcessResult,
     BatchReprocessResult,
     BatchStatus,
+    DocumentBucket,
     DocumentDeletionResult,
     DocumentsAbortedResult,
     DocumentStatus,
     ExecutionsStoppedResult,
     RerunStep,
+    ReviewInfo,
     StopWorkflowsResult,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _batch_started_at(batch_info: Dict) -> Optional[datetime]:
+    """Return when a batch was submitted, from its stored metadata.
+
+    `BatchProcessor._process_documents` writes `timestamp` as
+    `datetime.now(timezone.utc).isoformat()`, so the happy path is one
+    `fromisoformat` call. The progress monitor uses the result to decide whether
+    a document with no tracking row yet is still in flight, so an unparseable or
+    absent value must degrade to `None` -- meaning "assume it has settled",
+    which is the behaviour that predates the grace window -- rather than raise
+    and take a status query down with it.
+
+    Args:
+        batch_info: Batch metadata as stored by the batch processor.
+
+    Returns:
+        The submission time, or None when the metadata does not carry a usable one.
+    """
+    raw = batch_info.get("timestamp")
+    if not isinstance(raw, str):
+        return None
+    try:
+        # `Z` is valid ISO 8601 but `fromisoformat` only accepts it from 3.11.
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.debug("Batch metadata timestamp is not ISO 8601: %r", raw)
+        return None
 
 
 class BatchOperation:
@@ -530,7 +560,13 @@ class BatchOperation:
         monitor = ProgressMonitor(
             stack_name=name, resources=processor.resources, region=self._client._region
         )
-        status_data = monitor.get_batch_status(document_ids)
+        # The submission time is what lets the monitor tell a document whose
+        # QueueSender row has not landed yet from one that will never have a row.
+        # Without it every poll in the first seconds after an upload reports the
+        # batch complete-and-failed; see NOT_FOUND_GRACE_SECONDS.
+        status_data = monitor.get_batch_status(
+            document_ids, batch_started_at=_batch_started_at(batch_info)
+        )
         stats = monitor.calculate_statistics(status_data)
 
         documents = []
@@ -552,6 +588,17 @@ class BatchOperation:
                         num_pages=doc.get("num_pages"),
                         num_sections=doc.get("num_sections"),
                         error=doc.get("error"),
+                        review=ReviewInfo.from_lookup(doc.get("review")),
+                        review_status=(doc.get("review") or {}).get("status"),
+                        # The bucket the monitor chose, carried on the document
+                        # rather than left implicit in the aggregate counts. For
+                        # a NOT_FOUND document inside the grace window it is the
+                        # only record that the monitor read it as queued: its
+                        # `status` still says NOT_FOUND, which any consumer
+                        # re-deriving a bucket reads as a failure, so the counts
+                        # here and the counts a consumer computes would disagree
+                        # about the same document.
+                        bucket=DocumentBucket(category),
                     )
                 )
 
@@ -635,7 +682,8 @@ class BatchOperation:
 
         types_list = file_types or ["all"]
         if "all" in types_list:
-            types_list = ["pages", "sections", "summary", "evaluation"]
+            # "review" brings <document>/review/status.json (review queues).
+            types_list = ["pages", "sections", "summary", "evaluation", "review"]
 
         result = processor.download_batch_results(
             batch_id=batch_id, output_dir=output_dir, file_types=types_list
@@ -821,6 +869,9 @@ class BatchOperation:
         dynamodb = boto3.resource("dynamodb", region_name=self._client._region)
         tracking_table = dynamodb.Table(documents_table_name)
         s3_client = boto3.client("s3", region_name=self._client._region)
+        from idp_sdk.operations.document import _review_store
+
+        review_store = _review_store(resources, self._client._region)
 
         try:
             if pattern:
@@ -854,6 +905,7 @@ class BatchOperation:
                 output_bucket=output_bucket,
                 dry_run=dry_run,
                 continue_on_error=continue_on_error,
+                review_store=review_store,
             )
 
             single_results = [
@@ -1083,6 +1135,26 @@ class BatchOperation:
                 status = "QUEUED"
             elif status_data.get("failed"):
                 status = "FAILED"
+            # A rejected document (review queues) sits in the failed bucket but
+            # has results; report it as REJECTED, never collapsed to FAILED.
+            entries = [
+                d
+                for bucket in status_data.values()
+                if isinstance(bucket, list)
+                for d in bucket
+            ]
+            if any(
+                d.get("status") == "REJECTED" for d in entries if isinstance(d, dict)
+            ):
+                status = "REJECTED"
+            review = next(
+                (
+                    d.get("review")
+                    for d in entries
+                    if isinstance(d, dict) and d.get("review")
+                ),
+                None,
+            )
 
             # Try to get results.json from S3
             document_class = None
@@ -1090,7 +1162,7 @@ class BatchOperation:
             confidence = None
             page_count = None
 
-            if status == "COMPLETED":
+            if status in ("COMPLETED", "REJECTED"):
                 try:
                     s3_key = f"{doc_id}/sections/{section_id}/result.json"
                     response = s3_client.get_object(Bucket=output_bucket, Key=s3_key)
@@ -1151,6 +1223,8 @@ class BatchOperation:
                 "confidence": confidence,
                 "page_count": page_count,
                 "status": status,
+                # in_review / complete / rejected (review queues); None if never routed.
+                "review_status": (review or {}).get("status"),
             }
         except Exception as e:
             logger.warning(f"Error retrieving metadata for {doc_id}: {e}")

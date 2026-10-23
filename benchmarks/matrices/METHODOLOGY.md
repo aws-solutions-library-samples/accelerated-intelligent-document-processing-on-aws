@@ -29,6 +29,29 @@ that would break reproducibility) so a regenerated corpus is byte-comparable.
 > configuration — as `cell_accuracy` was here, exactly 0.500 for all 19 cells — suspect the
 > document before the product.
 
+> ⚠️ **The corpus manifest names paths relative to the repository root, and must.**
+> `corpus/manifest.yaml` is tracked and records a `pdf`, `truth` and `out` path per
+> document. Those paths are relative and are resolved at read time against the
+> manifest's own location (`harness/corpus_manifest.py`), so the manifest cannot name a
+> checkout other than the one holding it. It used to record absolute paths — whatever
+> `gen_corpus.py` produced on the machine that last ran it — and the committed copy
+> therefore named a sibling checkout, every path of it
+> ([#1393](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1393)).
+>
+> The case to worry about is the one that **works**. Where two checkouts sit side by
+> side, a consumer resolves those paths, reads documents and ground truth out of the
+> other tree, and produces a grid that is internally consistent, plausible, and about
+> code that was never run — and nothing in the output records which tree it came from,
+> so the result is not attributable to the commit it was run at. A machine without that
+> directory fails immediately and misleads nobody. An absolute path, a `~` or `$VAR`
+> path that becomes absolute on expansion, and a relative path that climbs out with
+> `..` are all refused rather than resolved, and a resolved path this checkout does not
+> hold is an error rather than a fallback: `corpus/docs/` is gitignored and
+> deterministically regenerable, so the remedy is always `python3
+> benchmarks/harness/gen_corpus.py`. Check the committed file with
+> `python3 benchmarks/harness/corpus_manifest.py --check`;
+> `benchmarks/tests/test_corpus_manifest_paths.py` asserts it on every PR.
+
 ### B. Reference (real, labeled)
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
@@ -242,15 +265,96 @@ Every run is scored on SEVEN dimensions:
 | Dimension | Definition |
 |-----------|------------|
 | **success/fail** | ObjectStatus COMPLETED vs FAILED; failure phase + Bedrock error class captured (e.g. `ValidationException: Input too long`). |
-| **completeness** | Synthetic: distinct `SEQ` recovered ÷ GT count (recall); truncation point = longest contiguous prefix; dup/gap counts. Reference: parse-failure rate. |
+| **completeness** | Synthetic: distinct truth rows recovered ÷ GT count (recall); truncation point = longest contiguous prefix; dup/gap counts; the four identifier figures below. Reference: parse-failure rate. |
 | **accuracy** | Synthetic: field-exact match rate on scalar fields + per-row cell match on list fields (keyed by SEQ). Reference: stack `evaluation/results.json` `weighted_overall_score`. |
 | **confidence calibration** | Two instruments, and the second answers the question the first cannot. Distributional: mean confidence, %below-threshold (alert rate), and — where a match flag exists — separation = mean(conf\|correct) − mean(conf\|incorrect). Per-cell, on the synthetic corpus only: each confidence leaf is joined to the cell it scores through `flatten_confidences`' field path and the row's `SEQ` tag, giving true `(confidence, correct)` pairs from which `idp_common.evaluation.ConfidenceCurve` computes **ECE** (calibration) and **AUROC** (discrimination), alongside an unbinned AUROC and a Brier score computed locally from the stored value tally and squared-error sum (asserted equal to Stickler's `AUROCMetric` / `BrierScoreMetric` in `benchmarks/tests/`, but not computed by them — that is what keeps the `[evaluation]` extra off the scoring path). Over-confidence on wrong values is a calibration regression even if accuracy holds — and a score that is well calibrated can still rank at chance, which only AUROC sees. |
-| **confidence coverage** | `scored_rows / expected_rows` per document and per field, computed by the same `audit_explainability` rule the `assessment_coverage_incomplete` guard fires on. Distinct from the row above: it counts rows with NO confidence, where the row above describes the scores that exist. Undefined (`None`), not 1.0, for a document with no list attribute. |
+| **confidence coverage** | `scored_rows / expected_rows` per document and per field, computed by the same `audit_explainability` rule the `assessment_coverage_incomplete` guard fires on. Distinct from the row above: it counts rows with NO confidence, where the row above describes the scores that exist. Undefined (`None`), not 1.0, for a document with no list attribute. Both the unscored rows and the expected rows are recorded per field (`conf_unscored_by_field`, `conf_rows_expected_by_field`), because the guard's fraction divides by the section-wide row total — so a short attribute that is wholly unscored beside a large scored one sits below it, and under 10 rows below the guard's absolute ceiling as well, while the numerator alone cannot be read for it. |
 | **latency** | Wall-clock from doc WorkflowStartTime→CompletionTime; also per-phase where available. |
 | **token use** | Per-phase, per-model, per-unit (input/output/cacheRead/cacheWrite/requests) from the doc `Metering` map. |
 | **cost** | Metering priced with `config_library/pricing.yaml` (longest-suffix key match), broken out by phase (OCR/Extraction/Assessment/Summarization/Lambda). |
 
 Scoring is **resolver-free** (reads S3 + DDB directly) so it works on any stack version.
+
+### ⚠️ A count of identifiers is not a count of rows
+
+`completeness_recall` is **distinct truth rows recovered ÷ truth rows**, and the only
+thing that makes a returned row identifiable is the `SEQnnnnn` tag in one of its
+cells. So the metric is only a completeness figure while that tag is readable, and on
+one OCR backend it is not: `bedrock_llm` duplicates the leading zero of a fixed-width
+identifier on the pages it corrupts, so `SEQ00042` comes back as `SEQ000042`. Matched
+against a pattern that wants exactly five digits, that reads as `int("00004") == 4`
+and lands on row 4 — a row already present. The distinct count falls by one with **no
+row anywhere missing**, and so does the recall.
+
+Row identity is therefore **canonicalised against the truth file's own id set**
+(`lib.canonical_seq`). The truth file carries every id the document contains, so this
+is a join and not an inference: `int("000042")` *is* truth row 42. A digit inserted
+anywhere other than the front leaves a value in no truth set, and one deletion is
+then undone every way it could have been made — but the repair is taken only when
+exactly one candidate names a truth row. Ambiguity is counted, never resolved by
+proximity: a wrong id would be joined to another row's cell truth and reported as a
+value error, which is worse than an unmeasured row.
+
+Four figures sit beside the row count on every scored run and in `summary.csv`, so
+the distinction is readable off the artifact rather than reasoned about:
+
+| Key | Reads |
+|---|---|
+| `rows_tagged` | identifiers seen, repaired or not — "did the rows come back" |
+| `rows_id_repaired` | how many needed canonicalising. **A finding about the OCR backend, not about completeness** |
+| `rows_id_unresolved` | identifiers naming no truth row: the one genuinely unmeasured bucket |
+| `unverified_row_shortfall` | why this run's shortfall must not be read as row loss, or null |
+
+Per cell, `n_rows_id_repaired` and `n_unverified_row_shortfall` carry the same thing
+into `cell_stats`, and `--compare` appends `NOT ROW LOSS` to a `completeness_recall`
+finding whose runs carry it. **That last one is the part to read**, because the figure
+a release A/B quotes is a cell mean and the defect's whole shape is a single run
+inside one dragging it down.
+
+`--compare` reads that count from the **rows** on both sides, never from a stored
+`cell_stats` block, and the baseline side is why. Every `cell_stats` block committed
+here was written before the counter existed, so the block answers 0 for every
+baseline available — the side that carries the defect — and the next release's recall
+move would read as a plain improvement with nothing saying the older figure was an
+instrument artifact. The verdict is recoverable from an old row because `rows_truth`,
+`rows_extracted` and `dups` have always been on it.
+
+`unverified_row_shortfall` is the discriminator, and it is a shape argument rather
+than a threshold. Truncation drops a contiguous tail, so the rows that come back are
+distinct: `dups` is 0 and `truncation_prefix` is near the kept count. Identifier
+collapse is the opposite — a tag arrives for every row and two of them read as one
+id, so each unit of shortfall is paid for by a unit of `dups`. `dups` **at or above**
+the shortfall cannot be truncation whatever else it is, and that comparison is the
+whole of the argument.
+
+⚠️ **`truncation_prefix` corroborates it on the common shape and is not part of it.**
+On the 105 committed rows carrying this signature the prefix is 5 rows or fewer on 91
+of them, which is what a collapse scattered through the document looks like — but it
+reaches 1,072 of the 1,599 rows recovered on `scale_1600`, a run that returned 1,698
+identifiers for 1,600 truth rows and so carries genuine duplication as well. A small
+prefix is therefore evidence when it is there and says nothing when it is not.
+
+Each excuse is bounded by the shortfall it can account for. `dups` pays one unit per
+duplicated identifier and an unresolved tag one unit per unattributable row, so the
+two are summed and compared against the shortfall once; a shortfall larger than that
+sum is unexplained and this says nothing about it. Unbounded, one hallucinated tag
+would annotate an arbitrarily large completeness regression as not-row-loss, which is
+this reading's mirror image.
+
+The cost of not making that distinction is on the record. `small_narrow` scored 62/100
+rows and recall 0.620 with `dups: 38` and `truncation_prefix: 5` on a run that
+returned all 100 — the *same* figure on every run of four consecutive releases,
+because the corpus and the corruption are both deterministic — and it was read as a
+fresh product regression each time
+([#1500](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1500)).
+`benchmarks/tests/test_row_identity_collapse.py` re-derives that population from the
+committed grids on every run and asserts the current scorer does not reproduce it.
+
+**The committed grids are not rescored.** `benchmarks/results/` is the audit trail and
+a metric change applies from the next grid; a `bedrock_llm` arm's recall in an older
+grid is recoverable from the row itself, since `rows_extracted + dups` is how many
+identifiers came back and `conf_rows_expected` is a SEQ-free count of the rows behind
+them.
 
 ### An instrument only exists where the truth file declares it
 
@@ -270,7 +374,33 @@ blind spot before it was closed.
 
 - **A `None` metric is "not measured", never "fine".** Before reporting "no effect",
   check that the instrument that would have shown the effect was populated — the
-  aggregate prints `cells_compared` alongside `cell_accuracy` for exactly this.
+  aggregate prints `cells_compared` alongside `cell_accuracy`, in both the JSON and
+  the CSV, for exactly this.
+- **An ABSENT metric has a third reading the rule above does not cover: "does not
+  apply to this row".** The two scorers emit disjoint accuracy families, so every
+  exact-key metric is absent on a reference row and `weighted_accuracy` is absent on
+  a synthetic one, and neither absence says anything about the run. Read
+  `scored_against` on the row before reading its accuracy at all: `exact_truth` means
+  the exact-key family is the measurement, `stack_evaluation` means
+  `weighted_accuracy` and `class_accuracy` are, and `exact_truth_unavailable` spells
+  out which. Per cell, `n_scored_exact_truth` and `n_scored_stack_evaluation` are the
+  denominators the corresponding `_stats` `n`s belong to — in `core` a 141-run cell
+  splits 21 / 120, so **both** accuracy `n`s look thinned against `n_success` and
+  neither is. A mean taken across the two families is a mean over no observations,
+  which prints as `nan`; that is a property of the column read and not of the runs
+  ([#1364](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1364)).
+
+  The same split now applies *within* the exact-key family, per document rather than
+  per scorer. `cell_accuracy` and `cells_compared` are absent on a synthetic row whose
+  document has no list attribute, with `cell_truth_unavailable` naming
+  `scalar_accuracy` and `typed_accuracy` as the instruments that do apply
+  ([#1497](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1497)),
+  and `typed_accuracy` / `typed_fields` are absent on one whose truth declares no
+  typed scalars, with `typed_truth_unavailable`
+  ([#1490](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1490)).
+  So the first rule above keeps its exact meaning: a **null** `cell_accuracy` is a run
+  that returned none of a list it was supposed to return, and `cells_compared` is `0`
+  beside it rather than blank.
 - **Scoring is retroactive.** It re-reads S3 and DynamoDB, so adding truth or a metric
   lets an already-completed run be re-scored with no new spend. Prefer that to a re-run.
 

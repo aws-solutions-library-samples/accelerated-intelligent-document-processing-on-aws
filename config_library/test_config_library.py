@@ -144,13 +144,13 @@ class TestConfigFilesStructure:
 def _names_a_model(key) -> bool:
     """Is `key` a field whose value is a model identifier?
 
-    Matched by SUFFIX, not against the pair ("model", "model_id"). Two of the 71
+    Matched by SUFFIX, not against the pair ("model", "model_id"). Some
     model-bearing fields in this library are named neither — `escalation_model` and
-    `analysis_model_id`, both in `unified/lending-package-sample-govcloud/config.yaml`
-    — so an exact-pair predicate covers 69 of 71 and a private-account ARN written
-    into either one passes every check in this file. The suffix reaches all 71 and,
-    more to the point, reaches the next such field without anyone remembering to add
-    it.
+    `analysis_model_id`, in `unified/lending-package-sample-govcloud/config.yaml` —
+    so an exact-pair predicate misses them and a private-account ARN written into
+    one passes every check in this file. The suffix reaches them all and, more to the
+    point, reaches the next such field without anyone remembering to add it.
+    `test_every_model_bearing_key_in_the_tree_is_matched` derives the set.
     """
     return isinstance(key, str) and (key.endswith("model") or key.endswith("model_id"))
 
@@ -236,11 +236,12 @@ class TestNoAccountScopedModelArns:
         """No model-bearing field may sit outside the predicate's reach.
 
         Universe closure for the key rule, derived rather than authored. An exact
-        ("model", "model_id") predicate reached 69 of the 71 model-bearing fields in
-        this library, and a private-account ARN in either of the other two passed every
-        check in this file. So the universe is computed from the tree — every key whose
-        name ends in a model-ish word — and any member the predicate rejects fails here,
-        which is what stops the rule narrowing back without the loss being visible.
+        ("model", "model_id") predicate missed the model-bearing fields named
+        otherwise (`escalation_model`, `analysis_model_id`), and a private-account ARN
+        in one of those passed every check in this file. So the universe is computed
+        from the tree — every key whose name ends in a model-ish word — and any member
+        the predicate rejects fails here, which is what stops the rule narrowing back
+        without the loss being visible.
         """
         key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
         found: dict[str, int] = {}
@@ -402,7 +403,8 @@ def _realkie_fcc_section_splitting(relative_path: str):
     parsed = yaml.safe_load(
         (CONFIG_LIBRARY_ROOT / relative_path).read_text(encoding="utf-8")
     )
-    return (parsed.get("classification") or {}).get("sectionSplitting")
+    classification = parsed.get("classification") or {}
+    return (classification.get("file_shape") or {}).get("sectionSplitting")
 
 
 class TestRealkieFccSectionSplitting:
@@ -418,7 +420,7 @@ class TestRealkieFccSectionSplitting:
     declare ``disabled``.
 
     The deploy-time preset, ``unified/realkie-fcc-verified/config.yaml``, does not
-    set ``classification.sectionSplitting``. A stack deployed with
+    set ``classification.file_shape.sectionSplitting``. A stack deployed with
     ``ConfigurationPreset=realkie-fcc-verified`` and no ``CustomConfigPath``
     rebuilds its ``default`` profile from that file on every update, ``default`` is
     usually the active profile, and an imported or newly uploaded profile is built
@@ -430,7 +432,7 @@ class TestRealkieFccSectionSplitting:
     def test_declares_whole_document_sections(self, relative_path: str):
         splitting = _realkie_fcc_section_splitting(relative_path)
         assert splitting == "disabled", (
-            f"{relative_path} sets classification.sectionSplitting to "
+            f"{relative_path} sets classification.file_shape.sectionSplitting to "
             f"{splitting!r}. Every file in this test set is one invoice, so it needs "
             f"'disabled' (one section over every page). Anything else lets page-level "
             f"classification split an invoice, and an unrecognised value is coerced "
@@ -440,7 +442,7 @@ class TestRealkieFccSectionSplitting:
     def test_the_deploy_time_preset_leaves_section_splitting_unset(self):
         splitting = _realkie_fcc_section_splitting(REALKIE_FCC_DEPLOY_TIME_PRESET)
         assert splitting is None, (
-            f"{REALKIE_FCC_DEPLOY_TIME_PRESET} sets classification.sectionSplitting "
+            f"{REALKIE_FCC_DEPLOY_TIME_PRESET} sets classification.file_shape.sectionSplitting "
             f"to {splitting!r}. A stack deployed with this preset rebuilds its "
             f"`default` profile from this file on every update, so the value would "
             f"change that stack's `default` on upgrade, and every profile created "

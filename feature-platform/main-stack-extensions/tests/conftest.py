@@ -38,19 +38,46 @@ if (_GATE_DIR / "first_party_provenance.py").is_file():
         sys.path.pop(0)
 
 
+#: Modules each lambda ships its OWN copy of, which must be evicted alongside `index`.
+#:
+#: ⚠️ **Evicting `index` alone leaves every lambda but the first importing the first
+#: one's helper**, because `index.py` does a bare `from log_sanitizer import ...` and
+#: the first copy imported stays in `sys.modules` under that unqualified name for the
+#: life of the process. Eight byte-identical copies of `log_sanitizer.py` are tracked,
+#: one per lambda, and only the copy that happened to load first was ever executed.
+#:
+#: That made the tree's per-file coverage a function of **how many xdist workers ran**,
+#: since the number of copies measured is the number of processes and which copy each
+#: gets is its own partition's first lambda. Measured over this suite: `-n 2` and
+#: `-n 4` measure ONE copy, `-n 8` and `-n 16` measure two. The baseline was recorded
+#: under `-n auto`, so a run at a lower worker count reports the other copy as a file
+#: "recorded but not mentioned" — a confident-looking loss in a file whose own suite is
+#: green, which is the single hardest coverage finding to disbelieve.
+#:
+#: The copies being identical today is what kept it harmless. It is not a guarantee:
+#: `sanitize_event_for_logging` is what keeps request payloads out of the logs, and a
+#: divergence in seven of the eight copies would have been invisible to every test
+#: here, because no test ever imported them.
+PER_LAMBDA_HELPERS = ("log_sanitizer",)
+
+
 def _load_module(module_dir: Path, module_alias: str):
     """Load `<module_dir>/index.py` as `module_alias`, forcing a fresh import.
 
     Each lambda is written as a flat `index.py`, so we add its directory to
     `sys.path` just long enough to import, then remove it again. Using
-    `module_alias` keeps the 4 modules from colliding on `index`.
+    `module_alias` keeps the modules from colliding on `index`.
+
+    The eviction covers `index` **and** every name in :data:`PER_LAMBDA_HELPERS`, so
+    each lambda executes the helper copy that ships beside it rather than inheriting
+    the first one loaded. See that constant for what went wrong without it.
     """
     sys.path.insert(0, str(module_dir))
     try:
         if module_alias in sys.modules:
             del sys.modules[module_alias]
-        if "index" in sys.modules:
-            del sys.modules["index"]
+        for name in ("index", *PER_LAMBDA_HELPERS):
+            sys.modules.pop(name, None)
         mod = importlib.import_module("index")
         sys.modules[module_alias] = mod
         return mod

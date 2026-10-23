@@ -12,6 +12,11 @@ comment above it. Both are quiet when they miss. Both have missed:
   passed. One letter of aperture.
 * ``NOT_A_PRESET``, ``NOT_AN_IDP_CONFIG`` and ``READ_ELSEWHERE`` were matched by
   nothing, by name or by prose, and became discoverable only when they were renamed.
+* ``CODES_NOT_IN_RESULT_JSON`` was matched by nothing either, two fragments later: the
+  vocabulary held ``NOT_A`` and ``NON_`` and no bare ``NOT_``, so the plainest spelling
+  of "members a gate does not reach" fell between them. Same ending -- it became
+  discoverable when it was renamed. ``NOT_IN_`` closes that shape and
+  ``test_a_set_named_for_what_a_gate_does_not_reach_is_discovered_by_name`` pins it.
 
 The remedy is not "make the lists longer" on its own, because a longer list has the
 same property: nothing anywhere asks whether an entry on it can fire. So the meta-
@@ -302,6 +307,95 @@ def test_an_underscore_bearing_fragment_does_not_match_loosely(fragment: str) ->
     )
 
 
+def test_a_set_named_for_what_a_gate_does_not_reach_is_discovered_by_name() -> None:
+    """``X_NOT_IN_Y`` is an exemption shape, and the NAME route has to reach it.
+
+    Measured before ``NOT_IN_`` existed: a constant spelled ``CODES_NOT_IN_RESULT_JSON``
+    was discovered by neither route on any of the three surfaces -- not by name, because
+    none of the 28 fragments matched it, and not by prose, because the comment above it
+    used none of the four recognised phrasings. So a set of things a gate deliberately
+    does not reach could be added with nothing asking for a judgement about it, and the
+    one that was only became visible because a person renamed it.
+
+    The name here is deliberately NOT the generated :func:`_probe_name` shape. The
+    parametrised probes above prove the fragment *can* fire; this proves it fires on the
+    spelling somebody actually wrote, which is the claim worth pinning -- a vocabulary
+    tested only against names the test builds is tested against itself.
+    """
+    name = "CODES_NOT_IN_RESULT_JSON"
+    _assert_attributable("NOT_IN_", name)
+    found = _discover(
+        {
+            # The comment carries no EXEMPTION_PROSE phrase, so a hit cannot come from
+            # the prose route and the assertion is about the name route alone.
+            "scripts/probe.py": f"# The result JSON omits these.\n{name} = {{'a'}}\n",
+            "Makefile": f"{name} = a b\n",
+            "scripts/probe.sh": f"#!/bin/sh\n{name.lower()}=1\n",
+        }
+    )
+    for rel, spelling in (
+        ("scripts/probe.py", name),
+        ("Makefile", name),
+        ("scripts/probe.sh", name.lower()),
+    ):
+        assert f"{rel}::{spelling}" in found, (
+            f"a set named {spelling} in {rel} -- members a gate does not reach -- is "
+            f"not discovered, so it could be added with no registry entry and nothing "
+            f"would ask. Found: {sorted(found)}"
+        )
+    assert found[f"scripts/probe.py::{name}"].via == "name", (
+        f"{name} was discovered via "
+        f"{found[f'scripts/probe.py::{name}'].via!r} rather than by name, so the prose "
+        "route is carrying it and the name route's reach is still untested."
+    )
+
+
+def test_the_negative_assertion_family_is_not_read_as_an_exemption() -> None:
+    """Why the fragment is ``NOT_IN_`` and not a bare ``NOT_``.
+
+    A bare ``NOT_`` reaches the shape above and also the family that says what a check
+    must *not* do, which is an assertion rather than a carve-out. Swept over this tree
+    it discovers five surfaces and four are that family: two fixture tables spelled
+    ``..._THAT_MUST_NOT_TRIP``, a ``_NOT_CALLS`` fixture, and a function-local
+    ``not_run``. The widening direction is not free -- the registry's remedy for a
+    discovered surface is an authored judgement, and four judgements on noise for one
+    point of reach is how a reviewer learns to rubber-stamp it.
+
+    The boundary therefore lives here rather than only in a comment: widening the
+    vocabulary until these three are discovered arrives as a failure with the
+    measurement to read, instead of as four fixture entries nobody questioned.
+
+    Note which guard this is *not*. ``_matches_name``'s polarity guard rejects a word
+    read inside its own inversion (``ALLOW`` inside ``DISALLOWED``); none of these is
+    an inversion of anything, and extending that guard to cover them would be a
+    denylist of today's tree -- it narrows discovery globally, so a genuine carve-out
+    whose name happened to contain one of the guard words would stop being found.
+    """
+    names = ("SHAPES_THAT_MUST_NOT_TRIP", "MODULE_LEVEL_NOT_CALLS", "CANNOT_PARSE_ROWS")
+    for name in names:
+        assert not exemption_discovery._matches_name(name), (
+            f"{name} is matched by the NAME vocabulary. It states what a check must "
+            "not do, which is an assertion and not a carve-out; registering one is a "
+            "judgement with nothing to decide. If this is a deliberate widening, the "
+            "sweep in exemption_discovery.NAME_VOCABULARY's comment is what to read "
+            "and update first."
+        )
+    found = _discover(
+        {
+            "scripts/probe.py": "".join(f"{name} = {{'a'}}\n" for name in names),
+            "Makefile": "".join(f"{name} = a b\n" for name in names),
+            "scripts/probe.sh": "#!/bin/sh\n"
+            + "".join(f"{name.lower()}=1\n" for name in names),
+        }
+    )
+    assert not found, (
+        "the negative-assertion family is discovered on at least one surface: "
+        f"{sorted(found)}. _text_pattern builds the Make and shell patterns from the "
+        "same vocabulary, so a divergence here means those two surfaces are broader "
+        "than _matches_name."
+    )
+
+
 def test_the_polarity_guards_still_reject_what_they_are_for() -> None:
     """``DISALLOWED`` is not an allowlist, and a swallowed-failure fixture is not one.
 
@@ -349,3 +443,115 @@ def test_both_routes_find_something_in_this_repository() -> None:
             f"{by_route}. That route has stopped working; the total floor in "
             "test_gate_exemption_registry.py cannot see this."
         )
+
+
+@pytest.mark.parametrize("fragment", exemption_discovery.NAME_VOCABULARY)
+def test_a_name_fragment_matches_at_the_START_of_a_make_or_shell_variable(
+    fragment: str,
+) -> None:
+    """The fragment at position zero, which is how one of these is usually spelled.
+
+    ``_probe_name`` builds ``PROBE_<fragment>_SET``, so every other probe in this module
+    puts the fragment in the middle -- and the Make and shell patterns consumed their
+    first character with a class before looking for the fragment, so the natural spellings
+    (``SKIP_TESTS``, ``ALLOWED_BUCKETS``, ``EXEMPT_PATHS``) matched on neither surface
+    while the Python route matched them all. A vocabulary exercised only against names the
+    test builds is exercised against itself, which is the caveat this module's docstring
+    states and the hole it had.
+    """
+    name = f"{fragment}PROBE_SET"
+    _assert_attributable(fragment, name)
+    assert exemption_discovery._matches_name(name), (
+        f"{name} is not matched by the Python route either, so it is not a probe for "
+        f"{fragment!r} at the leading position -- pick a spelling that route accepts."
+    )
+    found = _discover(
+        {
+            "Makefile": f"{name} = a b\n",
+            "scripts/probe.sh": f"#!/bin/sh\n{name.lower()}=1\n",
+        }
+    )
+    for rel, spelling in (("Makefile", name), ("scripts/probe.sh", name.lower())):
+        assert f"{rel}::{spelling}" in found, (
+            f"{spelling} in {rel} puts {fragment!r} at the start of the variable name and "
+            f"is not discovered, while the Python route matches it -- the two surfaces "
+            f"have diverged. Check the lookahead in exemption_discovery._text_pattern. "
+            f"Found: {sorted(found)}"
+        )
+
+
+def test_a_make_variable_and_a_shell_variable_outside_their_old_globs_are_found() -> (
+    None
+):
+    """``TEXT_SOURCES`` paired the Make pattern with a bare, wildcard-less ``Makefile``.
+
+    A git pathspec with no wildcard matches one path, so that entry reached the repository
+    root file and nothing else -- while five Makefiles and two shell scripts live elsewhere
+    in this tree, several of them beside the Lambda handlers they build. A ``SKIP_TESTS``
+    in one of those was as invisible to the registry as if the surface had never been
+    listed, and the Makefile is the surface this module's own docstring opens with.
+    """
+    found = _discover(
+        {
+            "src/lambda/chat_stream_processor/Makefile": "SKIPPED_TARGETS = a b\n",
+            "src/lambda/chat_stream_processor/run.sh": "#!/bin/sh\nexempt_paths=1\n",
+            "nested/api-resolvers/build.mk": "IGNORED_SOURCES := x\n",
+        }
+    )
+    for rel, name in (
+        ("src/lambda/chat_stream_processor/Makefile", "SKIPPED_TARGETS"),
+        ("src/lambda/chat_stream_processor/run.sh", "exempt_paths"),
+        ("nested/api-resolvers/build.mk", "IGNORED_SOURCES"),
+    ):
+        assert f"{rel}::{name}" in found, (
+            f"{name} in {rel} is not discovered, so a Make or shell carve-out outside the "
+            f"repository root needs no registry entry. Found: {sorted(found)}"
+        )
+
+
+def test_a_shell_exemption_inside_a_function_is_discovered() -> None:
+    """Indented, and with each of the four declarators.
+
+    The shell pattern was anchored at column zero with no declarator, so none of these was
+    reachable -- and a shell exemption variable inside a function is always indented, which
+    makes that the common case rather than an edge one.
+    """
+    source = (
+        "#!/bin/sh\n"
+        "run() {\n"
+        "  skip_paths=1\n"
+        "  export exempt_roots=2\n"
+        "  local allow_hosts=3\n"
+        "  readonly ignored_rules=4\n"
+        "  declare -a suppressed_ids=5\n"
+        "}\n"
+    )
+    found = _discover({"scripts/probe.sh": source})
+    for name in (
+        "skip_paths",
+        "exempt_roots",
+        "allow_hosts",
+        "ignored_rules",
+        "suppressed_ids",
+    ):
+        assert f"scripts/probe.sh::{name}" in found, (
+            f"{name} inside a shell function is not discovered, so a shell carve-out "
+            f"needs no registry entry unless it happens to sit at column zero. Found: "
+            f"{sorted(found)}"
+        )
+
+
+def test_an_assignment_inside_a_makefile_recipe_is_not_a_make_variable() -> None:
+    """The other side of that decision, so it cannot be widened away by accident.
+
+    A recipe line is tab-indented and its assignments are shell. Reporting one as a Make
+    variable is a false positive, and the registry's remedy for a discovered surface is an
+    authored judgement -- so a registry that asks for judgements on noise is the cost.
+    Measured on this repository's own Makefile: allowing leading whitespace on the Make
+    pattern discovers a ``SKIP=0`` inside a recipe.
+    """
+    found = _discover({"Makefile": "target:\n\tSKIP=0; echo $$SKIP\n"})
+    assert not found, (
+        "a shell assignment inside a Makefile recipe is discovered as a Make variable: "
+        f"{sorted(found)}"
+    )

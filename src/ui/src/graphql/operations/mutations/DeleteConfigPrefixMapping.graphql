@@ -1,0 +1,10 @@
+mutation DeleteConfigPrefixMapping($prefix: String!) {
+  deleteConfigPrefixMapping(prefix: $prefix) {
+    success
+    message
+    error {
+      type
+      message
+    }
+  }
+}

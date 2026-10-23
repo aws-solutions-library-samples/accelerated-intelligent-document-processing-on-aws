@@ -62,19 +62,34 @@ This configuration demonstrates all three attribute types supported by the GenAI
 
 ### Classification Settings
 
-- **Model**: Amazon Nova Pro
-- **Method**: Text-based holistic classification
+This preset defines **classes only** — it carries no `classification:` block, so
+every classification setting comes from the system defaults
+(`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`):
+
+- **Granularity**: page — one call per page, with a `start`/`continue` boundary
+  verdict per page that is folded into sections
+- **Modality**: text and images (the default task prompt carries both
+  `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`)
+- **Model**: Amazon Nova 2 Lite
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
-The classification component analyzes the entire document package to identify bank statement sections and page boundaries.
+A multi-statement packet is therefore segmented from the per-page boundary
+signal. To have the model see the whole packet in one call instead — which is
+also what makes classification cost scale with documents rather than pages — set
+`classification.one_stage.granularity: packet`. A packet longer than
+`classification.one_stage.packet.window_pages` (20 by default) is then split into
+overlapping windows and merged, which keeps a request under the 20-image-block
+threshold above which Bedrock downscales every image to 2,000 px. Keep
+`window_pages` at or below 20 while images are on, and no smaller than your
+longest single document.
 
 ### Extraction Settings
 
-- **Model**: Amazon Nova Pro  
-- **Temperature**: 0 (deterministic outputs)
-- **Top-k**: 5
-- **Document Image Support**: Uses `{DOCUMENT_IMAGE}` placeholder for multimodal extraction
+Likewise no `extraction:` block, so extraction uses the system defaults
+(`base-extraction.yaml`): **Claude Sonnet 5**, temperature 0, top-k 5, with the
+`{DOCUMENT_IMAGE}` placeholder in the default task prompt so every page image of
+a section is sent alongside its text.
 
 The extraction component processes each bank statement section to extract structured data including nested address information and transaction lists.
 

@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -14,7 +15,16 @@ from botocore.exceptions import ClientError
 from idp_common.config.configuration_manager import (
     ConfigurationManager,  # type: ignore[import-untyped]
 )
+from idp_common.config.flags import flag_is_true
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.migrations import migrate_config
+
+# One definition of "strip the cross-region profile prefix", shared with the
+# retired-model registry rather than re-spelled here. That module's prefix list is
+# itself held to agree with bedrock.model_utils.REGION_PREFIXES by
+# tests/unit/bedrock/test_region_prefix_parity.py, so a new geo prefix reaches
+# this handler too.
+from idp_common.config.retired_models import base_model_id as _base_model_id
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from pydantic import ValidationError
 
@@ -88,7 +98,7 @@ MODEL_MAPPINGS = {
     # it, and this mapping is what rewrites such a config onto a working model
     # when the stack is deployed in an EU region. Dropping the row would leave
     # that stack pointing at a dead model.
-    "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-6",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
     # Retired source -> LIVE target. Claude 3 Haiku reached end of life in both
     # regions, so mapping it onto its EU twin rewrote a stored config from one dead
@@ -102,16 +112,42 @@ MODEL_MAPPINGS = {
     # There is no ":1m" pair to add: 1M is this model's default window.
     "us.anthropic.claude-haiku-5-5": "eu.anthropic.claude-haiku-5-5",
     # Retired source -> LIVE target, as above: both 3.5 and 3.7 Sonnet are
-    # end-of-life, so the EU twin was no better than the US original.
-    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-sonnet-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
+    # end-of-life, so the EU twin was no better than the US original. Sonnet 4.6
+    # rather than Sonnet 4.5, which moved to LEGACY on 2026-10-08: a rescue row
+    # exists to land a stranded configuration on a model with a future, and a
+    # LEGACY model takes no further Service Quota increases.
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-sonnet-4-6",
+    # Sonnet 4 reached end of life on 2026-10-14 in both regions, so its EU twin
+    # is no better than the US original — same shape as the 3.5/3.7 rows above.
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-6",
+    # Same model in both regions, and still invocable while LEGACY, so this row
+    # is correct in both directions and stays.
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-sonnet-4-6": "eu.anthropic.claude-sonnet-4-6",
     "us.anthropic.claude-sonnet-4-6:1m": "eu.anthropic.claude-sonnet-4-6:1m",
-    "us.anthropic.claude-opus-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-opus-4-1-20250805-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-opus-4-5-20251101-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Sonnet 5 has an EU geo profile and is in the EU enums, but had no row here,
+    # so an EU deployment whose stored config named it kept a `us.` id that is
+    # not callable there — and it is the default extraction model in
+    # system_defaults/base-extraction.yaml.
+    "us.anthropic.claude-sonnet-5": "eu.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-sonnet-5:1m": "eu.anthropic.claude-sonnet-5:1m",
+    # Sonnet 5.5 maps to its own EU geo profile, so this row is safe in BOTH
+    # directions — get_model_mapping walks this dict backwards for a US target, and
+    # the reverse of this row returns the US Sonnet 5.5 profile rather than moving a
+    # user onto a different model (the hazard documented at the bottom of this dict).
+    # There is no ":1m" pair to add: 1M is this model's default window and
+    # "us.anthropic.claude-sonnet-5-5:1m" is not an id Bedrock accepts.
+    "us.anthropic.claude-sonnet-5-5": "eu.anthropic.claude-sonnet-5-5",
+    # Opus 4 is end-of-life and Opus 4.1 is LEGACY; neither has an EU profile, so
+    # both are rescue rows. Opus 4.5 is the Opus-class EU model, which keeps a
+    # stranded Opus configuration on an Opus rather than silently demoting it to
+    # a Sonnet.
+    "us.anthropic.claude-opus-4-20250514-v1:0": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
+    "us.anthropic.claude-opus-4-1-20250805-v1:0": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
+    # Opus 4.5 DOES have an EU twin. It was mapped onto a Sonnet, which quietly
+    # changed model class for every EU deployment that chose it.
+    "us.anthropic.claude-opus-4-5-20251101-v1:0": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
     "us.anthropic.claude-opus-4-6-v1": "eu.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-opus-4-6-v1:1m": "eu.anthropic.claude-opus-4-6-v1:1m",
     "us.anthropic.claude-opus-4-7": "eu.anthropic.claude-opus-4-7",
@@ -122,9 +158,10 @@ MODEL_MAPPINGS = {
     "us.anthropic.claude-opus-5:1m": "eu.anthropic.claude-opus-5:1m",
     "us.anthropic.claude-opus-5-5": "eu.anthropic.claude-opus-5-5",
     "us.anthropic.claude-opus-5-5:1m": "eu.anthropic.claude-opus-5-5:1m",
-    # Third-party models (US-only, no EU equivalent - fall back to themselves)
-    "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Third-party models with no EU profile at all, so these are rescue rows onto
+    # the Active Sonnet rather than a mapping to an equivalent.
+    "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-6",
+    "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-6",
     # NOT MAPPED, deliberately: OpenAI GPT-6 Astra and xAI Grok.
     #
     # Both have no eu. profile but a global. one that IS callable from the EU, so
@@ -139,6 +176,67 @@ MODEL_MAPPINGS = {
     # worse than the gap it closes. Fixing this properly needs a
     # direction-aware mapping, not another row here.
 }
+
+# Canada (ca-*) swaps for the shipped defaults that are not callable from
+# ca-central-1. A SEPARATE table on purpose: get_model_mapping(..., "us") walks
+# MODEL_MAPPINGS backwards over its twin rows, so a Canada row placed there would
+# rewrite a US deployment's stored id as well. This table is a one-way lookup and
+# is never reversed. The consequence: a stored ca. id stays as it is when the
+# configuration is redeployed into a US or EU region, and a stored eu. id in a
+# Canada stack is not rewritten. The picklists hide both, but a stored value stays
+# until someone edits it.
+CA_MODEL_MAPPINGS = {
+    # Twin: the Canada geo profile of the same model, processed in Canada.
+    "us.amazon.nova-lite-v1:0": "ca.amazon.nova-lite-v1:0",
+    # Rescue: Nova Pro has no inference profile in ca-central-1. Nova 2 Lite is the
+    # catalog's current Nova default for OCR, classification and evaluation, and
+    # is multimodal and cheaper.
+    "us.amazon.nova-pro-v1:0": "us.amazon.nova-2-lite-v1:0",
+    # Cohere Embed v4 is reachable from Canada only through its global. profile.
+    "us.cohere.embed-v4:0": "global.cohere.embed-v4:0",
+}
+
+# Shipped ids with no inference profile and no in-region hosting in ca-central-1
+# (verified 2026-10-11 with `aws bedrock list-inference-profiles --region
+# ca-central-1 --type-equals SYSTEM_DEFINED` and `list-foundation-models`, and
+# re-checked 2026-10-14 for Claude Sonnet 5.5 — see below). The
+# CA_MODEL_MAPPINGS sources are swapped away from; the rest are simply not
+# offered. us.xai.grok-4.6 has a profile in ca-central-1, so it is not listed.
+# The GPT-5.x bedrock-mantle ids are handled by _is_us_only below.
+#
+# ⚠️ A model ABSENT from this set is offered in a Canada deployment, because
+# filter_models_by_region keeps every `us.`-prefixed id unless it is _is_us_only or
+# listed here. So an absence is a positive claim about live Bedrock availability and
+# needs the two commands above run, not an assumption — an id that is unavailable
+# there and unlisted here reaches a user as an inference-time failure from a
+# picklist entry.
+#
+# Claude Sonnet 5.5 is deliberately absent, and it is the claim most recently
+# checked: on 2026-10-14 `list-inference-profiles --region ca-central-1
+# --type-equals SYSTEM_DEFINED` returned both `us.anthropic.claude-sonnet-5-5` and
+# `global.anthropic.claude-sonnet-5-5` as ACTIVE, and `list-foundation-models
+# --region ca-central-1` returned `anthropic.claude-sonnet-5-5` ACTIVE as well — so
+# it is reachable from Canada all three ways and needs no entry and no
+# CA_MODEL_MAPPINGS swap. This paragraph exists because the verification date above
+# predates the model, which makes the set's silence about it unreadable otherwise.
+CA_UNAVAILABLE_MODELS = {
+    "us.amazon.nova-lite-v1:0",
+    "us.amazon.nova-pro-v1:0",
+    "us.cohere.embed-v4:0",
+    "global.amazon.nova-pro-v1:0",
+    "us.meta.llama4-maverick-17b-instruct-v1:0",
+    "us.meta.llama4-scout-17b-instruct-v1:0",
+    "qwen.qwen3-vl-235b-a22b",
+    "google.gemma-3-27b-it",
+    "nvidia.nemotron-nano-12b-v2",
+}
+
+
+def _is_geo_scoped(model_id: str) -> bool:
+    """True for a geo inference-profile id (us., eu., ca., apac., ...); False for
+    global. and unprefixed ids. Uses the shared prefix rule, so a new geo prefix
+    reaches this filter too."""
+    return _base_model_id(model_id) != model_id and not model_id.startswith("global.")
 
 
 def get_current_region() -> str:
@@ -160,16 +258,45 @@ def is_us_region(region: str) -> bool:
     return region.startswith("us-")
 
 
+def is_ca_region(region: str) -> bool:
+    """Check if the region is a Canada region"""
+    return region.startswith("ca-")
+
+
 def get_model_mapping(model_id: str, target_region_type: str) -> str:
-    """Get the equivalent model for the target region type"""
+    """Get the equivalent model for the target region type.
+
+    The EU direction is a plain lookup. The US direction walks the table
+    backwards, and must consider only the rows that name the SAME foundation
+    model on both sides. The Canada direction is a plain lookup in the separate
+    ``CA_MODEL_MAPPINGS``, which is never walked backwards.
+
+    ``MODEL_MAPPINGS`` holds two kinds of row. A *twin* row maps a model onto its
+    own profile in the other region, and reversing it is correct. A *rescue* row
+    maps a retired or EU-unavailable model onto a different, live EU model so a
+    stored configuration that names the dead one still runs; reversing such a row
+    is never right, because it moves a working configuration onto an unrelated
+    model. A plain walk in insertion order could not tell them apart and returned
+    whichever row came first, which was a rescue row in two cases:
+    ``eu.anthropic.claude-haiku-4-5-20251001-v1:0`` resolved to end-of-life Claude
+    3 Haiku and ``eu.anthropic.claude-sonnet-4-5-20250929-v1:0`` to end-of-life
+    Nova Premier. So a redeploy from an EU region to a US one moved the stack onto
+    a model Bedrock no longer serves.
+
+    With no twin row, the id is returned unchanged — the same answer the old walk
+    gave for a model absent from the table entirely, and better than a guess.
+    """
     if target_region_type == "eu":
         return MODEL_MAPPINGS.get(model_id, model_id)
     elif target_region_type == "us":
-        # Reverse mapping for US
         for us_model, eu_model in MODEL_MAPPINGS.items():
-            if model_id == eu_model:
+            if model_id == eu_model and _base_model_id(us_model) == _base_model_id(
+                eu_model
+            ):
                 return us_model
         return model_id
+    elif target_region_type == "ca":
+        return CA_MODEL_MAPPINGS.get(model_id, model_id)
     return model_id
 
 
@@ -207,10 +334,15 @@ def filter_models_by_region(data: Any, region_type: str) -> Any:
         filtered_data = {}
         for key, value in data.items():
             if isinstance(value, list) and any(
-                isinstance(item, str) and ("us." in item or "eu." in item)
+                isinstance(item, str)
+                and ("us." in item or "eu." in item or "ca." in item)
                 for item in value
             ):
-                # This is a model list - filter it
+                # This is a model list - filter it. `ca.` is in the test so a list
+                # whose only geo ids are Canada ones is still recognised: without
+                # it such a list skips filtering entirely and a US or EU stack is
+                # offered a `ca.` id it cannot call. Every shipped picklist also
+                # carries `us.` ids, so this changes no current output.
                 filtered_list = []
                 for item in value:
                     if isinstance(item, str):
@@ -219,20 +351,26 @@ def filter_models_by_region(data: Any, region_type: str) -> Any:
                             filtered_list.append(item)
                         # Include models that match the region type or are region-agnostic
                         elif region_type == "us":
-                            # Include US models and non-region-specific models, exclude EU models
-                            if item.startswith("us.") or (
-                                not item.startswith("eu.")
-                                and not item.startswith("us.")
-                            ):
+                            # Include US models and non-region-specific models, exclude other geo prefixes.
+                            # GovCloud (us-gov-*) stacks resolve to this region type, so us-gov. ids stay.
+                            if item.startswith(
+                                ("us.", "us-gov.")
+                            ) or not _is_geo_scoped(item):
                                 filtered_list.append(item)
                         elif region_type == "eu":
                             # Exclude US-only models (e.g., openai.gpt-5.*) that have no EU availability
                             if _is_us_only(item):
                                 continue
-                            # Include EU models and non-region-specific models, exclude US models
-                            if item.startswith("eu.") or (
-                                not item.startswith("eu.")
-                                and not item.startswith("us.")
+                            # Include EU models and non-region-specific models, exclude other geo prefixes
+                            if item.startswith("eu.") or not _is_geo_scoped(item):
+                                filtered_list.append(item)
+                        elif region_type == "ca":
+                            # Exclude US-only models and ids with no profile in ca-central-1
+                            if _is_us_only(item) or item in CA_UNAVAILABLE_MODELS:
+                                continue
+                            # Include US, Canada and non-region-specific models, exclude other geo prefixes
+                            if item.startswith(("us.", "ca.")) or not _is_geo_scoped(
+                                item
                             ):
                                 filtered_list.append(item)
                         else:
@@ -261,7 +399,16 @@ def swap_model_ids(data: Any, region_type: str) -> Any:
                 # Never swap special model values
                 swapped_data[key] = value
             elif isinstance(value, str) and ("us." in value or "eu." in value):
-                # This is a model ID - check if it needs swapping
+                # This is a model ID - check if it needs swapping.
+                #
+                # `ca.` is deliberately NOT in this test, unlike the picklist
+                # filter above. Every arm below rewrites a stored id INTO the
+                # deploying region's geo, and none of them starts from a `ca.` id:
+                # CA_MODEL_MAPPINGS is one-way, so get_model_mapping(ca_id, "us")
+                # and (ca_id, "eu") both return the id unchanged by design — see
+                # that table's comment. A `ca.` arm here would be unreachable
+                # code, and widening the test alone would only walk `ca.` values
+                # that then match no arm.
                 if region_type == "us" and value.startswith("eu."):
                     new_model = get_model_mapping(value, "us")
                     if new_model != value:
@@ -271,6 +418,11 @@ def swap_model_ids(data: Any, region_type: str) -> Any:
                     new_model = get_model_mapping(value, "eu")
                     if new_model != value:
                         logger.info(f"Swapped US model {value} to EU model {new_model}")
+                    swapped_data[key] = new_model
+                elif region_type == "ca" and value.startswith("us."):
+                    new_model = get_model_mapping(value, "ca")
+                    if new_model != value:
+                        logger.info(f"Swapped US model {value} to CA model {new_model}")
                     swapped_data[key] = new_model
                 else:
                     swapped_data[key] = value
@@ -292,16 +444,53 @@ def detect_pattern_from_config(config: Dict[str, Any]) -> str:
     Returns:
         Pattern name (pattern-1 or pattern-2)
     """
-    # Check classification method
-    classification_method = config.get("classification", {}).get(
-        "classificationMethod", ""
-    )
-
-    if classification_method == "bda":
+    # BDA mode is `use_bda`, which is the flag the pipeline itself branches on.
+    # This used to sniff `classification.classificationMethod == "bda"` — a THIRD
+    # value that key never legitimately held (its enum was
+    # multimodalPageLevel/textbasedHolistic) and that nothing in the product
+    # wrote. It was removed in config format 0.8 and is migrated away on read,
+    # so a sniff for it now matches nothing.
+    #
+    # ⚠️ Read through `flag_is_true`, not plain truthiness: a YAML, DynamoDB or
+    # UI round-trip can deliver this flag as the string "false", which is truthy,
+    # and the wrong answer here merges a pipeline configuration onto the BDA
+    # defaults.
+    if flag_is_true(config.get("use_bda")):
         return "pattern-1"
-    else:
-        # Default to pattern-2 (most common - Textract + Bedrock LLM)
-        return "pattern-2"
+    # Default to pattern-2 (most common - Textract + Bedrock LLM)
+    return "pattern-2"
+
+
+def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) -> None:
+    """Write the stack's custom/fine-tuned model ARNs into a merged config.
+
+    ``CustomClassificationModelARN`` replaces the model of the call that assigns
+    the class under the active strategy — ``one_stage.llm`` for a single pass,
+    ``two_stage.section_classification.llm`` for two stages. Segmentation keeps
+    its own model: it only finds boundaries, which is not what a classification
+    model was trained to do. ``CustomExtractionModelARN`` replaces
+    ``extraction.model``. An empty or absent ARN changes nothing.
+    """
+    from idp_common.config.models import class_assigning_llm_path
+
+    classification_arn = str(properties.get("CustomClassificationModelARN") or "")
+    if classification_arn.strip() and isinstance(config.get("classification"), dict):
+        classification = config["classification"]
+        path = class_assigning_llm_path(classification)
+        node = classification
+        for key in path:
+            if not isinstance(node.get(key), dict):
+                node[key] = {}
+            node = node[key]
+        node["model"] = classification_arn
+        logger.info(
+            "Updated classification.%s.model to: %s", ".".join(path), classification_arn
+        )
+
+    extraction_arn = str(properties.get("CustomExtractionModelARN") or "")
+    if extraction_arn.strip() and isinstance(config.get("extraction"), dict):
+        config["extraction"]["model"] = extraction_arn
+        logger.info("Updated extraction model to: %s", extraction_arn)
 
 
 def merge_custom_with_defaults(
@@ -343,13 +532,28 @@ def merge_custom_with_defaults(
         return merged
 
     except FileNotFoundError as e:
-        # System defaults not available in Lambda - return config as-is
+        # System defaults not available in Lambda - return config unmerged
         logger.warning(f"System defaults not available, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
     except Exception as e:
-        # Any other error - log and return original config
+        # Any other error - log and return original config, unmerged
         logger.warning(f"Error merging with defaults, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
+
+
+def _migrated_or_original(config: Dict[str, Any]) -> Dict[str, Any]:
+    """``config`` in the current format, for the paths that skip the merge.
+
+    The merge migrates a legacy config; returning the raw one instead leaves flat
+    ``classification`` keys in place, and ``apply_custom_model_arns`` then writes
+    the custom model into a nested block beside them — a flat/nested hybrid in
+    which the flat model wins on the next read and the ARN is lost.
+    """
+    try:
+        return migrate_config(copy.deepcopy(config))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not migrate the unmerged config, using it as-is: {e}")
+        return config
 
 
 def save_configuration_bypass_manager(
@@ -640,6 +844,8 @@ def handler(event: Dict[str, Any], context: Any) -> None:
             if is_eu_region(current_region)
             else "us"
             if is_us_region(current_region)
+            else "ca"
+            if is_ca_region(current_region)
             else "other"
         )
         logger.info(f"Detected region: {current_region}, region type: {region_type}")
@@ -664,7 +870,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
             if "Schema" in properties:
                 resolved_schema = resolve_content(properties["Schema"])
                 # Filter models based on region
-                if region_type in ["us", "eu"]:
+                if region_type in ["us", "eu", "ca"]:
                     resolved_schema = filter_models_by_region(
                         resolved_schema, region_type
                     )
@@ -682,31 +888,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
 
                 # Apply custom model ARNs if provided
                 if isinstance(resolved_default, dict):
-                    # Replace classification model if CustomClassificationModelARN is provided and not empty
-                    if (
-                        "CustomClassificationModelARN" in properties
-                        and properties["CustomClassificationModelARN"].strip()
-                    ):
-                        if "classification" in resolved_default:
-                            resolved_default["classification"]["model"] = properties[
-                                "CustomClassificationModelARN"
-                            ]
-                            logger.info(
-                                f"Updated classification model to: {properties['CustomClassificationModelARN']}"
-                            )
-
-                    # Replace extraction model if CustomExtractionModelARN is provided and not empty
-                    if (
-                        "CustomExtractionModelARN" in properties
-                        and properties["CustomExtractionModelARN"].strip()
-                    ):
-                        if "extraction" in resolved_default:
-                            resolved_default["extraction"]["model"] = properties[
-                                "CustomExtractionModelARN"
-                            ]
-                            logger.info(
-                                f"Updated extraction model to: {properties['CustomExtractionModelARN']}"
-                            )
+                    apply_custom_model_arns(resolved_default, properties)
 
                 configurations["Config#default#System Default"] = resolved_default
 
@@ -810,7 +992,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                         continue
 
             # Apply region-specific model swapping to all configurations at once
-            if region_type in ["us", "eu"] and configurations:
+            if region_type in ["us", "eu", "ca"] and configurations:
                 configurations = swap_model_ids(configurations, region_type)
                 logger.info(
                     f"Applied model swapping for {region_type} region to all configurations"

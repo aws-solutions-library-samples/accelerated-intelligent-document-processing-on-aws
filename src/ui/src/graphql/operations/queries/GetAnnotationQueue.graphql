@@ -1,9 +1,15 @@
 query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Boolean) {
   getAnnotationQueue(testSetId: $testSetId, limit: $limit, includeCompleted: $includeCompleted) {
     testSetId
+    name
+    claimLeaseMinutes
+    skipReasons
+    summaryStatus
+    summaryCount
     totalDocs
     inspectedDocs
     reviewedDocs
+    completedDocs
     remainingDocs
     claimedByOthers
     nextObjectKey
@@ -29,8 +35,13 @@ query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Bo
         documentClass
         pageIndices
       }
+      assignedTo
+      assignedAt
+      reviewedSections
+      skipped
       claimedBy
       claimedByMe
+      leaseExpiresAt
       reviewStatus
       reviewed
       available

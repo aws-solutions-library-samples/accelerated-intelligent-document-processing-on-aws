@@ -360,7 +360,6 @@ Parameters:
       - "global.amazon.nova-2-lite-v1:0"
       - "global.amazon.nova-2-lite-v1:0:priority"
       - "global.amazon.nova-2-lite-v1:0:flex"
-      - "us.anthropic.claude-sonnet-4-20250514-v1:0"
       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "us.anthropic.claude-sonnet-5"
       - "eu.amazon.nova-lite-v1:0"
@@ -368,8 +367,8 @@ Parameters:
       - "eu.amazon.nova-2-lite-v1:0"
       - "eu.amazon.nova-2-lite-v1:0:priority"
       - "eu.amazon.nova-2-lite-v1:0:flex"
-      - "eu.anthropic.claude-sonnet-4-20250514-v1:0"
       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      - "ca.amazon.nova-lite-v1:0"
       - "qwen.qwen3-vl-235b-a22b"
       - "global.amazon.nova-2-lite-v1:0"
       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -385,7 +384,7 @@ Parameters:
       - "amazon.nova-lite-v1:0"
       - "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
-    Description: Model to use for optional Document Knowledge Base. Model access MUST be enabled in Amazon Bedrock. Note - not every listed model is available in all EU regions. GovCloud deployments must use one of the GovCloud-verified entries above (amazon.nova-pro-v1:0, amazon.nova-lite-v1:0, or us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0) — the commercial default is overridden automatically by the --govcloud template transform.
+    Description: Model to use for optional Document Knowledge Base. Model access MUST be enabled in Amazon Bedrock. Note - not every listed model is available in all EU regions. Canada deployments left at the default use ca.amazon.nova-lite-v1:0 automatically, because the default has no inference profile there; an explicit choice is passed through unchanged and must be callable from the stack's region. GovCloud deployments must use one of the GovCloud-verified entries above (amazon.nova-pro-v1:0, amazon.nova-lite-v1:0, or us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0) — the commercial default is overridden automatically by the --govcloud template transform.
 
   # Optional - Post processing Lambda hook
   PostProcessingLambdaHookFunctionArn:
@@ -410,6 +409,42 @@ Parameters:
     AllowedPattern: "^(|(([1-9][0-9]{0,7})|(DRAFT)))$"
     Description: >
       If you provided a Bedrock Guardrail Id above, provide the corresponding Guardrail version here (e.g. DRAFT|1|2|...).
+
+  # Optional malware scanning of uploaded documents, via Amazon GuardDuty
+  # Malware Protection for S3. Default DISABLED: every existing deployment keeps
+  # today's ingest behaviour unchanged.
+  MalwareScanning:
+    Type: String
+    Default: "DISABLED"
+    AllowedValues:
+      - "DISABLED"
+      - "GATE_ONLY"
+      - "CREATE_PLAN"
+    Description: >
+      Hold each uploaded document at ingest until Amazon GuardDuty Malware Protection
+      for S3 reports it clean. DISABLED (default): no scanning, documents process
+      immediately. CREATE_PLAN: this stack creates the GuardDuty Malware Protection
+      plan and the IAM role it assumes, and gates on the result - needs GuardDuty
+      permissions at deploy time, and uses one of the 25 protected buckets allowed per
+      account per Region. GATE_ONLY: gate on scan results from a plan somebody else
+      manages (a central security account), creating no GuardDuty resources here. A
+      document that is infected, or that GuardDuty cannot scan, never starts a
+      workflow.
+
+  AllowUnscannableDocuments:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "false"
+      - "true"
+    Description: >
+      Whether a document GuardDuty could not scan (password-protected file, over the
+      100 GB / 100k-file / 100-level quotas, SSE-C encrypted, scan error) may still be
+      processed. false (default) fails closed: such a document stops in
+      MALWARE_SCAN_FAILED. This is a CEILING on the per-configuration
+      malware_scanning.on_unscannable setting, which is editable from the web UI -
+      setting that to "allow" has no effect unless this is also true. Ignored when
+      MalwareScanning is DISABLED.
 
   # Optional Cross-Account Bedrock (Hub Account) Configuration
   BedrockHubRoleArn:
@@ -445,8 +480,19 @@ Parameters:
   MaxConcurrentWorkflows:
     Type: Number
     Default: 100
-    Description: Maximum number of concurrent workflow executions allowed
+    Description: >-
+      Maximum number of concurrent workflow executions allowed. The queue
+      processor admits a document only while the concurrency counter is below
+      this value, so it is the deployment's throughput ceiling and, because the
+      dominant cost here is per-document inference, its spend-rate ceiling too.
+      The upper bound of 10000 is a typo guard, not a capacity opinion: it is two
+      orders of magnitude above the default and far above what the pipeline can
+      sustain in a default account (each workflow holds several concurrent Lambda
+      invocations, and the account-level Lambda concurrency limit starts at
+      1000), so it rejects a slipped digit at submit time while leaving every
+      realistic value available.
     MinValue: 1
+    MaxValue: 10000
 
   DataRetentionInDays:
     Type: Number
@@ -774,7 +820,8 @@ Parameters:
       used for the "update available" check shown in the Web UI Deployment
       Info section. Leave empty to disable the check (default for headless
       / private-network deployments). For the public release, point this at
-      the regional aws-ml-blog bucket — e.g. aws-ml-blog-us-west-2.
+      that Region's release bucket — e.g. aws-ml-blog-us-west-2, or
+      aws-bigdata-blog-replica-ca-central-1 in Canada.
 
   PublicArtifactsPrefix:
     Type: String
@@ -1248,6 +1295,14 @@ Conditions:
       !Not [ !Equals [ !Ref BedrockGuardrailVersion, "" ] ],
     ]
 
+  # Malware scanning. Two conditions, because the two questions are separate:
+  # whether to gate ingest on a verdict, and whether this stack owns the GuardDuty
+  # plan producing it. GATE_ONLY answers yes to the first and no to the second.
+  MalwareScanningEnabled:
+    !Not [ !Equals [ !Ref MalwareScanning, "DISABLED" ] ]
+  MalwareScanningCreatePlan:
+    !Equals [ !Ref MalwareScanning, "CREATE_PLAN" ]
+
   HasBedrockHubRole:
     !Not [ !Equals [ !Ref BedrockHubRoleArn, "" ] ]
   HasBedrockHubRoleExternalId:
@@ -1273,6 +1328,15 @@ Conditions:
   ShouldCreateDocumentKnowledgeBase:
     !Equals [ !Ref DocumentKnowledgeBase, "BEDROCK_KNOWLEDGE_BASE (Create)" ]
   ShouldUseDocumentKnowledgeBase: !Condition ShouldCreateDocumentKnowledgeBase
+  # Canada stacks left at the KnowledgeBaseModelId default pass the Canada geo
+  # profile of Nova Lite to the API stack: the default, us.amazon.nova-pro-v1:0,
+  # has no inference profile in Canada, so RetrieveAndGenerate fails there. An
+  # explicit choice is passed through unchanged.
+  UseCanadaKnowledgeBaseModel: !And
+    - !Or
+      - !Equals [ !Ref "AWS::Region", "ca-central-1" ]
+      - !Equals [ !Ref "AWS::Region", "ca-west-1" ]
+    - !Equals [ !Ref KnowledgeBaseModelId, "us.amazon.nova-pro-v1:0" ]
   DocumentSectionsCrawlerScheduleEnabled:
     !Not [ !Equals [ !Ref DocumentSectionsCrawlerFrequency, "Manual" ] ]
   HasPermissionsBoundary: !Not [ !Equals [ !Ref PermissionsBoundaryArn, "" ] ]
@@ -1451,6 +1515,11 @@ Metadata:
           - BedrockGuardrailId
           - BedrockGuardrailVersion
       - Label:
+          default: "Malware Scanning"
+        Parameters:
+          - MalwareScanning
+          - AllowUnscannableDocuments
+      - Label:
           default: "Cross-Account Bedrock (Hub Account)"
         Parameters:
           - BedrockHubRoleArn
@@ -1608,6 +1677,10 @@ Metadata:
         default: "Bedrock Guardrail Id"
       BedrockGuardrailVersion:
         default: "Bedrock Guardrail Version"
+      MalwareScanning:
+        default: "Malware Scanning"
+      AllowUnscannableDocuments:
+        default: "Process Documents GuardDuty Cannot Scan"
       BedrockHubRoleArn:
         default: "Bedrock Hub-Account Role ARN"
       BedrockHubRoleExternalId:
@@ -2832,6 +2905,7 @@ Resources:
         WorkingBucket: !Ref WorkingBucket
         OutputBucket: !Ref OutputBucket
         TrackingTable: !Ref TrackingTable
+        HITLTableName: !Ref HITLTable
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
@@ -2937,6 +3011,8 @@ Resources:
         AgentTableName: !Ref AgentTable
         ChatMessagesTableName: !Ref ChatMessagesTable
         ChatSessionsTableName: !Ref ChatSessionsTable
+        NotificationsTableName: !Ref NotificationsTable
+        HITLTableName: !Ref HITLTable
         IdHelperChatMemoryTableName: !Ref IdHelperChatMemoryTable
         DiscoveryTrackingTableName: !Ref DiscoveryTrackingTable
 
@@ -2994,7 +3070,10 @@ Resources:
         HasGuardrailConfig: !If [HasGuardrailConfig, "true", "false"]
         BedrockGuardrailId: !Ref BedrockGuardrailId
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
-        KnowledgeBaseModelId: !Ref KnowledgeBaseModelId
+        KnowledgeBaseModelId: !If
+          - UseCanadaKnowledgeBaseModel
+          - "ca.amazon.nova-lite-v1:0"
+          - !Ref KnowledgeBaseModelId
         ShouldCreateEvaluationBaselineBucket: !If [ShouldCreateEvaluationBaselineBucket, "true", "false"]
         ShouldCreateReportingBucket: !If [ShouldCreateReportingBucket, "true", "false"]
                 
@@ -4431,6 +4510,13 @@ Resources:
     UpdateReplacePolicy: Retain
     DeletionPolicy: RetainExceptOnCreate
     Properties:
+      # Review queues: consumers trigger on <document>/review/status.json (the
+      # review status contract, idp_common/review_queues/README.md). Only two
+      # rules here match aws.s3, both filtered to other buckets, so this can't
+      # loop into queue_sender.
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders:
@@ -4691,6 +4777,82 @@ Resources:
               Type: int
             - Name: config_version
               Type: string
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+  # Review queues (idp_common.review_queues): one row per document routed to a
+  # review queue, overwritten as its review status changes (latest wins).
+  DocumentReviewsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "document_reviews"
+        Description: "Table for HITL review-queue status per document"
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/document_reviews/date=${date}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/document_reviews/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: document_id
+              Type: string
+            - Name: cycle_id
+              Type: string
+            - Name: review_status
+              Type: string
+            - Name: disposition
+              Type: string
+            - Name: profile
+              Type: string
+            - Name: queue
+              Type: string
+            - Name: reviewer
+              Type: string
+            - Name: reviewed_at
+              Type: timestamp
+            - Name: enqueued_at
+              Type: timestamp
+            - Name: reason_count
+              Type: int
+            - Name: top_reason_kind
+              Type: string
+            - Name: reject_reason
+              Type: string
+            - Name: escalated
+              Type: boolean
+            - Name: machine_run_id
+              Type: string
+            - Name: final_run_id
+              Type: string
+            - Name: timestamp
+              Type: timestamp
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -7524,6 +7686,13 @@ Resources:
           - ShouldUseDocumentKnowledgeBase
           - True
           - False
+        # Published for an operator reading the settings parameter, and for a
+        # future UI surface. ⚠️ Nothing in src/ui/ consumes it today: the UI
+        # resolves "is this document scanned?" from the document's own verdict
+        # fields, rendering nothing when there are none, so it needs no
+        # stack-level flag to disambiguate. Do not read the presence of this key
+        # as evidence that the UI is reading it.
+        MalwareScanning: !Ref MalwareScanning
         # Runtime-resolved values for APIRESOLVERSTACK decoupling
         # CloudWatch log groups moved here to decouple Agent Lambda functions from Pattern stacks
         CloudWatchLogGroups: !Join
@@ -7700,14 +7869,44 @@ Resources:
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIG_TABLE: !Ref ConfigurationTable
-          # Namespace for the ``StaleOutputPurgeFailed`` telemetry metric
-          # (issue #719). Matches every other IDP Lambda's convention:
-          # stack-name isolates per-deployment.
+          # Namespace for this Lambda's telemetry: ``StaleOutputPurgeFailed``
+          # (issue #719) and the five prefix-mapping metrics
+          # (``PrefixMappingApplied``, ``Conflict``, ``Rejected``,
+          # ``LookupFailed``, ``Unresolvable``), three of which are alarmed.
+          # Matches every other IDP Lambda's convention: stack-name isolates
+          # per-deployment.
           METRIC_NAMESPACE: !Ref AWS::StackName
+          # Malware-scanning ingest gate. DISABLED leaves this function on
+          # exactly the path it has always taken.
+          MALWARE_SCANNING: !Ref MalwareScanning
+          # Ceiling on the per-configuration malware_scanning.on_unscannable
+          # policy, which is editable from the web UI. Both must agree before an
+          # unscannable document is admitted.
+          ALLOW_UNSCANNABLE: !Ref AllowUnscannableDocuments
+          # Needed to tell a verdict for THIS stack's bucket from one for a
+          # neighbouring plan in the same account.
+          INPUT_BUCKET: !Ref InputBucket
+          ALERTS_TOPIC_ARN: !Ref AlertsTopic
+          # A refusal that is the LAST file in a /Jobs batch to go terminal has
+          # to produce results.zip, and this function cannot: it is 128 MB with
+          # a 30 s timeout and no get/put on the output bucket, because it is
+          # invoked once per upload. JobTracker carries 3008 MB, 900 s, 5 GB of
+          # ephemeral storage and S3CrudPolicy for exactly this, so the gate
+          # hands the job to it asynchronously instead. Conditional because
+          # JobTracker is: with no Jobs API there are no jobs/ documents.
+          JOB_TRACKER_FUNCTION_NAME:
+            !If [DeployApiGateway, !Ref JobTracker, ""]
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
+        # A quarantined or unscannable document is announced on the same topic as
+        # every alarm in this template, so an operator who already subscribed for
+        # alarms receives malware detections without extra setup.
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref AlertsTopic
         - SQSSendMessagePolicy:
             QueueName: !GetAtt DocumentQueue.QueueName
         - DynamoDBReadPolicy:
@@ -7730,10 +7929,14 @@ Resources:
               Action:
                 - s3:DeleteObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
-        # Issue #719: emit ``StaleOutputPurgeFailed`` on partial-purge
-        # failure so operators can alarm on the metric rather than
-        # scraping ERROR logs. Matches the pattern in
-        # queue_processor._put_drift_sample. Fire-and-forget — the emit
+        # Emit this Lambda's metrics so operators can alarm on them rather
+        # than scraping ERROR logs: ``StaleOutputPurgeFailed`` on
+        # partial-purge failure (issue #719), and the five prefix-mapping
+        # metrics, of which ``PrefixMappingLookupFailed``,
+        # ``PrefixMappingUnresolvable`` and ``PrefixMappingRejected`` are
+        # alarmed. Six metrics through one namespace-conditioned grant, so
+        # narrowing this statement affects all of them. Matches the pattern
+        # in queue_processor._put_drift_sample. Fire-and-forget — every emit
         # is wrapped in its own try/except so telemetry can't affect
         # document ingest.
         - Statement:
@@ -7753,6 +7956,17 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # Hand a /Jobs batch this gate completed to JobTracker for zipping. One
+        # function, one action — deliberately NOT the output-bucket get/put that
+        # would let this function build the zip itself, which is the grant that
+        # would also require sizing the per-upload ingest path at 3008 MB/900 s.
+        - !If
+          - DeployApiGateway
+          - Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt JobTracker.Arn
+          - !Ref AWS::NoValue
       Events:
         S3Event:
           Type: CloudWatchEvent
@@ -7772,6 +7986,518 @@ Resources:
     Properties:
       KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
       RetentionInDays: !Ref LogRetentionDays
+
+  ##########################################################################
+  # Malware scanning of uploaded documents (GuardDuty Malware Protection for S3)
+  #
+  # The gate itself lives in QueueSender above, which handles both the
+  # Object Created event and the GuardDuty verdict. These resources only make
+  # the verdict happen and arrive:
+  #
+  #   * MalwareScanRole + MalwareProtectionPlan — CREATE_PLAN only. GATE_ONLY
+  #     exists for accounts where a security team owns GuardDuty centrally; the
+  #     gate reads EventBridge, which delivers regardless of who created the plan.
+  #   * MalwareScanResultRule — routes the verdict to QueueSender.
+  #
+  # Gating here rather than inside the Step Functions workflow is deliberate: a
+  # refused document never starts an execution, so it never occupies a
+  # concurrency slot and its bytes never reach OCR, page rendering or Bedrock.
+  ##########################################################################
+
+  MalwareScanRole:
+    Condition: MalwareScanningCreatePlan
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "Every statement is scoped to the InputBucket, the CMK, or the GuardDuty-managed rule name prefix; no wildcard resources"
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "malware-protection-plan.guardduty.${AWS::URLSuffix}"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GuardDutyMalwareProtectionForInputBucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # GuardDuty creates and manages its own EventBridge rule to learn
+              # about new objects. The name prefix is fixed by the service, and
+              # the ManagedBy condition means these grants are usable only by
+              # GuardDuty acting on its own rule.
+              - Sid: AllowManagedRuleToSendS3EventsToGuardDuty
+                Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*"
+                Condition:
+                  StringLike:
+                    "events:ManagedBy": !Sub "malware-protection-plan.guardduty.${AWS::URLSuffix}"
+              - Sid: AllowGuardDutyToMonitorEventBridgeManagedRule
+                Effect: Allow
+                Action:
+                  - events:DescribeRule
+                  - events:ListTargetsByRule
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*"
+              # Tagging is what records the verdict ON the object, which is how an
+              # operator inspecting the bucket can tell an infected file from a
+              # clean one without consulting the UI.
+              - Sid: AllowPostScanTag
+                Effect: Allow
+                Action:
+                  - s3:PutObjectTagging
+                  - s3:GetObjectTagging
+                  - s3:PutObjectVersionTagging
+                  - s3:GetObjectVersionTagging
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
+              # The bucket already has EventBridgeEnabled: true set by this
+              # template; GuardDuty asserts it for itself. Both actions are on the
+              # bucket, not its objects.
+              - Sid: AllowEnableS3EventBridgeEvents
+                Effect: Allow
+                Action:
+                  - s3:PutBucketNotification
+                  - s3:GetBucketNotification
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}"
+              # The permission probe GuardDuty writes to prove it can PUT. Scoped
+              # to that one key — the plan has no reason to write anything else,
+              # and QueueSender skips this key so it never becomes a document.
+              - Sid: AllowPutValidationObject
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/malware-protection-resource-validation-object"
+              - Sid: AllowCheckBucketOwnership
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}"
+              - Sid: AllowMalwareScan
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
+              # REQUIRED, not optional: the input bucket is SSE-KMS with the
+              # stack's customer-managed key, so without this every scan comes
+              # back ACCESS_DENIED / UNAUTHORIZED_TO_GET_OBJECT — which, failing
+              # closed, would refuse every document uploaded.
+              #
+              # No key-policy change is needed to go with it. The key's
+              # "Enable IAM User Permissions" statement delegates to IAM for
+              # in-account principals, and GuardDuty acts as this role, which is
+              # in-account. Do not add a service-principal statement for
+              # guardduty to the key policy "to make this work" — it is not what
+              # is being used.
+              - Sid: AllowDecryptForMalwareScan
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+                Condition:
+                  StringLike:
+                    "kms:ViaService": !Sub "s3.${AWS::Region}.${AWS::URLSuffix}"
+
+  MalwareProtectionPlan:
+    Condition: MalwareScanningCreatePlan
+    Type: AWS::GuardDuty::MalwareProtectionPlan
+    Properties:
+      Role: !GetAtt MalwareScanRole.Arn
+      ProtectedResource:
+        S3Bucket:
+          # Whole bucket, no ObjectPrefixes: every object that lands here is a
+          # document the pipeline will read, so there is no subset to scan.
+          BucketName: !Ref InputBucket
+      Actions:
+        Tagging:
+          Status: ENABLED
+      Tags:
+        - Key: "idp:plane"
+          Value: "data"
+
+  # Where a verdict goes when EventBridge cannot deliver it.
+  #
+  # Without this, an exhausted retry is dropped silently and its document waits
+  # in MALWARE_SCANNING for ever — the exact shape of silent stall the gate
+  # exists to avoid, one layer out. A DLQ turns it into a message an operator can
+  # inspect and an alarm can count.
+  MalwareScanVerdictDLQ:
+    Condition: MalwareScanningEnabled
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+      VisibilityTimeout: 30
+      # Longer than the other DLQs here (4 days). A dropped verdict is the only
+      # record that a document was ever scanned, and the document itself sits in
+      # the input bucket under DataRetentionInDays — so the evidence should
+      # outlive a long weekend plus an on-call handover.
+      MessageRetentionPeriod: 1209600 # 14 days, the SQS maximum
+
+  MalwareScanVerdictDLQPolicy:
+    Condition: MalwareScanningEnabled
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref MalwareScanVerdictDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt MalwareScanVerdictDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+          # EventBridge writes the undeliverable event here. Scoped to this one
+          # rule, so no other rule in the account can use this queue as its DLQ.
+          - Sid: AllowEventBridgeToSendFailedVerdicts
+            Effect: Allow
+            Principal:
+              Service: !Sub "events.${AWS::URLSuffix}"
+            Action: "sqs:SendMessage"
+            Resource: !GetAtt MalwareScanVerdictDLQ.Arn
+            Condition:
+              ArnEquals:
+                "aws:SourceArn": !GetAtt MalwareScanResultRule.Arn
+
+  MalwareScanResultRule:
+    Condition: MalwareScanningEnabled
+    Type: AWS::Events::Rule
+    Properties:
+      Description: !Sub "Routes GuardDuty malware verdicts for ${InputBucket} to the ${AWS::StackName} ingest gate"
+      EventPattern:
+        source:
+          - aws.guardduty
+        detail-type:
+          - "GuardDuty Malware Protection Object Scan Result"
+        detail:
+          s3ObjectDetails:
+            bucketName:
+              - !Ref InputBucket
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt QueueSender.Arn
+          Id: QueueSenderMalwareGate
+          # Load-bearing, not boilerplate. A verdict can in principle arrive
+          # before the Object Created event that creates the document row, and
+          # the gate raises in that case rather than creating the row itself
+          # (which would race the upload path into overwriting a terminal status).
+          # These retries are what turn that race into a short delay.
+          #
+          # MaximumEventAgeInSeconds is set as well, and it is the half that
+          # actually bounds the race: EventBridge's backoff between attempts is
+          # not documented, so three attempts could all land inside a second,
+          # which is no use against an ingest event that has not arrived yet.
+          # Giving the event 15 minutes of life lets the retries spread.
+          RetryPolicy:
+            MaximumRetryAttempts: 5
+            MaximumEventAgeInSeconds: 900
+          DeadLetterConfig:
+            Arn: !GetAtt MalwareScanVerdictDLQ.Arn
+
+  QueueSenderMalwareScanPermission:
+    Condition: MalwareScanningEnabled
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref QueueSender
+      Principal: !Sub "events.${AWS::URLSuffix}"
+      SourceArn: !GetAtt MalwareScanResultRule.Arn
+
+  # A detection is an incident, so it alarms rather than only appearing on a
+  # dashboard. The gate already publishes a per-document SNS message naming the
+  # threat; this alarm is what reaches anyone subscribed for alarms only.
+  #
+  # No OKActions: "no malware was found in the last five minutes" is not news,
+  # and a recovery notification after every detection would train the recipient
+  # to ignore the pair.
+  MalwareScanThreatsFoundAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-threats-found"
+      AlarmDescription: >-
+        Amazon GuardDuty found malware in a document uploaded to this stack's
+        input bucket. The document was NOT processed and is quarantined with
+        status QUARANTINED; the file itself remains in the input bucket, tagged
+        GuardDutyMalwareScanStatus=THREATS_FOUND. Find it by its QUARANTINED
+        status in the web UI's document list, then OPEN it - the threat name is
+        on the document's own page, in its malware-scan alert and detail field,
+        not in the list - then review and delete the object.
+      Namespace: !Ref AWS::StackName
+      MetricName: MalwareScanThreatsFound
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # A verdict EventBridge could not deliver. Unlike the two alarms either side of
+  # it, this one is about the gate's own plumbing rather than about a document:
+  # the document is fine, nobody has decided anything about it, and it is stuck.
+  # OKActions, matching the other DLQ-depth alarms here, because "the queue is
+  # empty again" is the information an operator is waiting for.
+  MalwareScanVerdictDLQAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-verdict-dlq-depth"
+      AlarmDescription: >-
+        A GuardDuty malware verdict could not be delivered to the ingest gate
+        after every retry. The document it describes is stuck in MALWARE_SCANNING
+        and will never process: nothing has decided whether it is safe. Read the
+        message off the dead-letter queue for the bucket, key and version, check
+        the QueueSender log for why the invocation failed, then either re-upload
+        the document or re-drive the verdict.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MalwareScanVerdictDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # ⚠️ The one stall nothing else here can see.
+  #
+  # Every other malware alarm fires on something being DECIDED. The failure where
+  # GuardDuty never answers at all produces no decision and therefore no metric:
+  # a plan deleted, a GATE_ONLY stack pointed at a plan that does not cover this
+  # bucket, GuardDuty disabled in the Region, or the plan's IAM role broken at the
+  # other end. In that state every upload stops in MALWARE_SCANNING, ingest halts
+  # completely, and the verdict/threat/unscannable series all read zero — on a
+  # gate that fails closed, the loudest possible failure with the quietest signal.
+  #
+  # Detected by comparing two series rather than watching one: documents HELD at
+  # the gate against verdicts APPLIED. Both are published by the gate itself, so
+  # "uploads are arriving and nothing is being decided" becomes a value instead of
+  # an absence. IF() rather than a subtraction threshold because the two do not
+  # balance inside any window — a document held near the end of one is applied in
+  # the next — so what is asserted is the categorical case: held > 0 with applied
+  # at zero for a whole hour.
+  MalwareScanNoVerdictsAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-no-verdicts"
+      AlarmDescription: >-
+        Documents are being held at the malware-scanning gate and NO GuardDuty
+        verdict has been applied for an hour, so document ingest has stopped. The
+        gate fails closed, so nothing is being processed and nothing is failing
+        either. Check that the Malware Protection plan still exists and is ACTIVE
+        and still covers this stack's input bucket (aws guardduty
+        list-malware-protection-plans, then get-malware-protection-plan); that
+        GuardDuty is still enabled in this Region; and, in GATE_ONLY mode, that
+        the centrally managed plan targets this bucket and its role can read the
+        bucket's KMS key. Setting MalwareScanning=DISABLED restores ingest for NEW
+        uploads without scanning - but it is NOT retroactive and it removes this
+        alarm along with the rest of the gate: documents already sitting at
+        MALWARE_SCANNING stay there, the UI keeps polling them because that status
+        is not terminal, and any /Jobs batch holding one stays IN_PROGRESS. Drain
+        them first, or re-upload them afterwards; see docs/malware-scanning.md.
+      Metrics:
+        - Id: held
+          MetricStat:
+            Metric:
+              Namespace: !Ref AWS::StackName
+              MetricName: MalwareScanHeld
+            Period: 3600
+            Stat: Sum
+          ReturnData: false
+        - Id: applied
+          MetricStat:
+            Metric:
+              Namespace: !Ref AWS::StackName
+              MetricName: MalwareScanVerdictApplied
+            Period: 3600
+            Stat: Sum
+          ReturnData: false
+        - Id: stalled
+          Expression: "IF(FILL(applied, 0) < 1 AND FILL(held, 0) > 0, 1, 0)"
+          Label: Uploads held with no verdict applied
+          ReturnData: true
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # notBreaching so an idle stack reads OK rather than INSUFFICIENT_DATA —
+      # consistent with every other alarm in this template, and here it is also
+      # correct: no uploads means nothing is being held.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # A verdict that reached the gate and was deliberately NOT applied, leaving its
+  # document waiting. Two causes, summed because the operator question is the
+  # same one ("is anything stuck at the gate?") and the logs say which:
+  #   * Superseded — the key was re-uploaded mid-scan, so this verdict describes
+  #     bytes no longer in the bucket. Self-healing: the newer upload's own
+  #     verdict decides. A few are normal on a stack where people replace files.
+  #   * Before-ingest — the verdict outran the upload event and the retries were
+  #     exhausted. Not self-healing.
+  # Sustained non-zero means documents are accumulating in MALWARE_SCANNING.
+  MalwareScanVerdictUnappliedAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-verdicts-unapplied"
+      AlarmDescription: >-
+        GuardDuty malware verdicts are reaching this stack and not being applied,
+        so documents are accumulating in MALWARE_SCANNING without a decision. A
+        few superseded verdicts are normal where the same filename is re-uploaded
+        while a scan is in flight. A sustained rate is not: check the QueueSender
+        log, which names the cause per document as either superseded (the key was
+        re-uploaded) or arrived-before-ingest (the verdict outran the upload
+        event).
+      Metrics:
+        - Id: superseded
+          MetricStat:
+            Metric:
+              Namespace: !Ref AWS::StackName
+              MetricName: MalwareScanVerdictSuperseded
+            Period: 900
+            Stat: Sum
+          ReturnData: false
+        - Id: beforeingest
+          MetricStat:
+            Metric:
+              Namespace: !Ref AWS::StackName
+              MetricName: MalwareScanVerdictBeforeIngest
+            Period: 900
+            Stat: Sum
+          ReturnData: false
+        # FILL(..., 0) so a window in which one metric was never published still
+        # produces a number. Without it the expression returns no data whenever
+        # either metric is absent — which is the usual case, since these are
+        # exception paths — and the alarm would sit in INSUFFICIENT_DATA instead
+        # of watching the other one.
+        - Id: unapplied
+          Expression: "FILL(superseded, 0) + FILL(beforeingest, 0)"
+          Label: Verdicts not applied
+          ReturnData: true
+      EvaluationPeriods: 1
+      Threshold: 4
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Every document is refused for want of a verdict. Distinct from the alarm
+  # above because the operator action is different: raise a quota, re-upload an
+  # unprotected copy, or fix the GuardDuty role — not an incident response.
+  MalwareScanUnscannableAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-unscannable-documents"
+      AlarmDescription: >-
+        Documents are being refused because Amazon GuardDuty could not scan them
+        (status MALWARE_SCAN_FAILED). Common causes are password-protected files
+        and objects over the GuardDuty quotas; a sudden run of them can also mean
+        the GuardDuty IAM role lost access to the input bucket's KMS key, in
+        which case EVERY upload is refused. Check a refused document in the web
+        UI for the specific reason.
+      Namespace: !Ref AWS::StackName
+      MetricName: MalwareScanUnscannableBlocked
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 4
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # A refusing verdict reached a document that had already left the gate without
+  # that refusal being recorded — so the file was processed with nothing having
+  # decided it was safe. Threshold zero: one occurrence is one document through
+  # the pipeline unscanned, which is the single thing this feature exists to
+  # prevent. Deliberately NOT folded into the verdicts-unapplied alarm, whose
+  # members (superseded, before-ingest) are routine and thresholded at 4; this
+  # one is never routine.
+  MalwareScanUnappliedRefusalAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-unapplied-refusal"
+      AlarmDescription: >-
+        A malware verdict REFUSED a document that had already left the
+        malware-scanning gate, so the refusal could not be applied where it was
+        expected and was applied late instead. This means something moved the
+        document out of MALWARE_SCANNING before a verdict existed and it was
+        processed unscanned - its OCR output and any Bedrock calls happened before
+        the file was known to be infected. The document has now been set to
+        QUARANTINED or MALWARE_SCAN_FAILED and an alert published. Investigate how
+        it left the gate: Reprocess refuses that status, so reaching this means a
+        new path does not. Check the QueueSender log group for 'was never
+        applied', which names the document and the status the row was in.
+      Namespace: !Ref AWS::StackName
+      MetricName: MalwareScanVerdictUnappliedRefusal
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # The gate could not mark a refused /Jobs file terminal, or could not hand the
+  # completed batch to JobTracker for zipping. Threshold zero, because this is
+  # the ONE silent-stall route the gate adds: both call sites deliberately
+  # swallow their exception (the refusal is already persisted, and raising would
+  # re-deliver the verdict, which then takes the duplicate path and returns
+  # early), so the batch keeps reporting IN_PROGRESS from
+  # api_handler.compute_job_status with nothing else reporting a fault. Recovery
+  # depends on a duplicate GuardDuty verdict that may never arrive. Every other
+  # metric here records a decision; this one records a decision that could not be
+  # written down, which is why it cannot be left to a rate threshold.
+  MalwareScanJobFinalizeFailedAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-job-finalize-failed"
+      AlarmDescription: >-
+        A document refused by the malware gate belonged to a /Jobs API batch, and
+        the gate could not record it as terminal or could not hand the finished
+        batch to JobTracker to build results.zip. The refusal itself held - the
+        file was NOT processed - but GET /jobs/<id> will answer IN_PROGRESS
+        indefinitely for that batch, because the job tracker only hears about
+        documents that ran a workflow. Check the QueueSender log group for
+        'Failed to finalize job file' or 'Could not delegate results for job',
+        which name the job id. If JOB_TRACKER_FUNCTION_NAME is unset the stack
+        was deployed without the Jobs API, which is a misconfiguration when
+        jobs/ documents exist.
+      Namespace: !Ref AWS::StackName
+      MetricName: MalwareScanJobFinalizeFailed
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
 
   QueueProcessor:
     Type: AWS::Serverless::Function
@@ -8014,7 +8740,53 @@ Resources:
           CIRCUIT_BREAKER_ENABLED: !If [CircuitBreakerEnabledCondition, "true", "false"]
           CIRCUIT_BREAKER_MANAGER_ARN: !If [CircuitBreakerEnabledCondition, !GetAtt CircuitBreakerManagerFunction.Arn, ""]
           ALERTS_TOPIC_ARN: !If [CircuitBreakerEnabledCondition, !Ref AlertsTopic, ""]
+          # Review queues: activate an item when phase 1 ends, finalize it when
+          # the finalize run ends, and post the "items waiting" Inbox notice.
+          HITL_TABLE_NAME: !Ref HITLTable
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTable
+          USER_POOL_ID: !Ref UserPool
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
       Policies:
+        # Review queues: item activation and finalize writes (HITLTable).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt HITLTable.Arn
+                - !Sub "${HITLTable.Arn}/index/*"
+        # Inbox producer grants (idp_common/notifications/README.md, Producer IAM):
+        # the "items waiting" notice goes to the queue's member groups.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt NotificationsTable.Arn
+                - !Sub "${NotificationsTable.Arn}/index/UnreadIndex"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                # Scan: the queue directory lists configuration profiles.
+                - dynamodb:Scan
+              Resource: !GetAtt ConfigurationTable.Arn
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+              Resource: !GetAtt UserPool.Arn
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
@@ -8843,7 +9615,7 @@ Resources:
   ConcurrencyCounterUnderflowAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow tracker tried to release a concurrency slot that was not held (the counter was already 0). The decrement is refused rather than driving the counter negative, so admission control is intact — but a duplicate release means the same terminal execution was processed twice, or the counter was edited out from under the tracker. Check the WorkflowTracker logs for 'Concurrency counter was already 0' and correlate with WorkflowTrackerDLQAlarm and EventBridge redeliveries of WorkflowStateChangeRule."
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} tried to release a concurrency slot that was not held (the counter was not above 0). TWO functions publish this metric, so check both: the WorkflowTracker, on the terminal-event decrement, for 'Concurrency counter was already 0'; and the QueueProcessor, on a compensating hand-back after a duplicate message or a failed StartExecution, for 'Counter decrement refused'. The decrement is refused rather than driving the counter negative, so admission control is intact. Causes: a terminal event or an SQS message processed twice; the counter item edited out or never initialised, which stops admission entirely; or a RECONCILED line just before, which is benign and needs no action. See docs/monitoring.md for how to tell them apart."
       MetricName: ConcurrencyCounterUnderflow
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -8854,6 +9626,31 @@ Resources:
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       # Published only when the floor trips, so "no data" means it never did.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Issue #1358: the two compensating hand-backs in the queue processor catch and
+  # log a failed counter write and carry on, which is correct -- the execution
+  # exists, or the message is being retried -- but it is also what turned a
+  # ValidationException on EVERY decrement into a silent slot leak rather than an
+  # error. ConcurrencyCounterUnderflow covers the write that was REFUSED; this one
+  # covers the write that RAISED, which is the only remaining way for a hand-back
+  # to be lost with nothing moving that anyone is watching.
+  ConcurrencyDecrementFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} compensating concurrency hand-back could not be written. The QueueProcessor logs 'Failed to decrement counter' and continues by design, so without this the slot is leaked with no error anywhere -- each occurrence raises the counter permanently relative to the work actually running, and enough of them stop admission entirely. Read the exception in the QueueProcessor logs: a ValidationException means the request itself is malformed and EVERY hand-back is failing, a throttle or 5xx means retry pressure on the ConcurrencyTable. Correlate with ConcurrencyCounterDriftAlarm, which fires later on the same underlying leak."
+      MetricName: ConcurrencyCounterUpdateFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      # First occurrence: one lost hand-back is one leaked slot, and the defect
+      # this exists for failed every single time rather than intermittently.
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on a failure, so "no data" means there has not been one.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -8906,6 +9703,76 @@ Resources:
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       # Published only on failure, so "no data" means "every purge succeeded".
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # A config prefix mapping assigns a Configuration Profile to everything landing
+  # under an S3 prefix. That decision is made at ingest and is then invisible in
+  # the document's own result -- the document succeeds, reports success, and
+  # carries extraction from whatever configuration was actually applied -- so the
+  # two ways it can go wrong need metrics and alarms rather than log lines. Same
+  # shape as StaleOutputPurgeFailedAlarm above.
+  #
+  # The first two alarm on the FIRST occurrence: each one means documents are
+  # running under something other than what an administrator configured, and
+  # neither has a self-healing path. The third is different in kind -- a refusing
+  # mapping doing its job publishes it -- so it alarms on sustained volume instead.
+  PrefixMappingLookupFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not read its configuration prefix mappings. Resolution FAILS OPEN by design: the document runs under the profile its upload named, or the active one. While this lasts every 'Refuse the conflict' mapping is bypassed and every mapped prefix reads as unmapped, so documents may run under the wrong configuration without saying so. Three Lambdas publish it and all three log 'Could not read the configuration prefix mappings'; one of them, UploadResolver, is the authorization case. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/monitoring.md for the emitters and what each window means."
+      MetricName: PrefixMappingLookupFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on failure, so "no data" means every lookup succeeded.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  PrefixMappingUnresolvableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} configuration prefix mapping names a Configuration Profile that is not resolvable at routing time. The document still processes -- under the profile its upload named, or the active one -- so nothing fails, but every document arriving at that prefix runs under a configuration nobody chose for it. A PRUNED pinned revision is a different condition and is not seen here; such a document fails later, when the configuration is loaded. Creating a mapping refuses an absent profile and deleting a profile refuses while a mapping names it, so reaching this means the profile went by another route. Fix or delete the mapping at Configuration > Prefix Mappings. Emitters log 'Stale prefix mapping for'; see docs/monitoring.md."
+      MetricName: PrefixMappingUnresolvable
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Not a fault signal: a refusing mapping doing its job publishes this. Alarm on
+  # it to notice a producer persistently submitting to a prefix it is not
+  # configured for -- a wiring problem at the producer rather than here. Every
+  # refused document appears in the UI as Failed with the reason on it, so no
+  # investigation has to start from this metric alone. Hence a threshold above
+  # zero and two periods: one refusal is the feature working.
+  PrefixMappingRejectedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} is repeatedly refusing documents at ingest because of a configuration prefix mapping in 'Refuse the conflict' mode. One refusal is the mapping working as configured; a sustained stream of them means a producer is submitting to a prefix whose mapping it does not satisfy, and those documents are not being processed at all. Each refused document is visible in the UI as Failed with the reason on it. Check Configuration > Prefix Mappings for the prefix involved, and the producer's config-version metadata."
+      MetricName: PrefixMappingRejected
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      # Threshold 5 over TWO periods, deliberately unlike the other two alarms
+      # here (threshold 0 over one). Those two fire on the first occurrence
+      # because each means documents ran under something other than what was
+      # configured. A refusal is the opposite: it is the control working as the
+      # administrator asked, so one of them is not news. What IS news is a
+      # producer persistently submitting to a prefix it does not satisfy, which
+      # is a sustained rate rather than an event -- so this alarms on volume.
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -9190,6 +10057,171 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: !Sub "events.${AWS::URLSuffix}"
       SourceArn: !GetAtt CircuitBreakerHealthCheckRule.Arn
+
+  ##########################################################################
+  # Review queue sweeper (idp_common.review_queues.sweeper): lease expiry and
+  # warnings, finalize heal (resend / retry / replay), registry member refresh.
+  ##########################################################################
+  ReviewQueueSweeperFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  ReviewQueueSweeperFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "cloudwatch:PutMetricData takes no resource-level permissions; it is scoped by namespace condition"
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: a scheduled sweep that runs again in 5 minutes"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names and settings - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      CodeUri: src/lambda/review_queue_sweeper/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Description: Review queue sweeper - lease expiry and warnings, finalize heal, registry refresh
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+      VpcConfig: !If
+        - DeployInVPC
+        - SubnetIds: !Ref PrivateSubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroupId
+        - !If
+          - UsePrivateApi
+          - SubnetIds: !Ref LambdaSubnetIds
+            SecurityGroupIds:
+              - !Ref LambdaVpcSecurityGroup
+          - !Ref AWS::NoValue
+      LoggingConfig:
+        LogGroup: !Ref ReviewQueueSweeperFunctionLogGroup
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref AWS::StackName
+          METRIC_NAMESPACE: !Ref AWS::StackName
+          HITL_TABLE_NAME: !Ref HITLTable
+          DOCUMENT_TRACKING_MODE: "dynamodb"
+          TRACKING_TABLE: !Ref TrackingTable
+          WORKFLOW_TRACKER_FUNCTION_NAME: !Ref WorkflowTracker
+          STATE_MACHINE_ARN: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+          QUEUE_URL: !Ref DocumentQueue
+          WORKING_BUCKET: !Ref WorkingBucket
+          INPUT_BUCKET: !Ref InputBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt HITLTable.Arn
+                - !Sub "${HITLTable.Arn}/index/*"
+            # Tracking row: existence check, finalize message body, withdraw.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt TrackingTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                # Scan: the queue directory lists configuration profiles.
+                - dynamodb:Scan
+              Resource: !GetAtt ConfigurationTable.Arn
+            - Effect: Allow
+              Action:
+                - states:DescribeExecution
+              Resource: !Sub
+                - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${StateMachineName}:*"
+                - StateMachineName: !GetAtt PATTERNSTACK.Outputs.StateMachineName
+            # Replay a lost terminal event to the WorkflowTracker.
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt WorkflowTracker.Arn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt DocumentQueue.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "${WorkingBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub "${OutputBucket.Arn}/*/review/status.json"
+            # Inbox producer grants (lease notices go to one user; no Cognito).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt NotificationsTable.Arn
+                - !Sub "${NotificationsTable.Arn}/index/UnreadIndex"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
+
+  ReviewQueueSweepRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Review queue sweeper (lease expiry, finalize heal, registry refresh)
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: ReviewQueueSweeper
+          Arn: !GetAtt ReviewQueueSweeperFunction.Arn
+          Input: '{"source": "scheduled"}'
+
+  ReviewQueueSweepPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReviewQueueSweeperFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub "events.${AWS::URLSuffix}"
+      SourceArn: !GetAtt ReviewQueueSweepRule.Arn
 
   # This dasboard is merged with dashboard created by the pattern stack to create an overall dashboard
   MainTemplateSubsetDashboard:
@@ -9501,6 +10533,115 @@ Resources:
                 }
               },
               {
+                "type": "metric",
+                "x": 0,
+                "y": 48,
+                "width": 12,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "MalwareScanClean",
+                      {
+                        "stat": "Sum",
+                        "label": "Clean"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanThreatsFound",
+                      {
+                        "stat": "Sum",
+                        "label": "Threats found"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanUnscannableBlocked",
+                      {
+                        "stat": "Sum",
+                        "label": "Unscannable - blocked"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanUnscannableAllowed",
+                      {
+                        "stat": "Sum",
+                        "label": "Unscannable - admitted"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictBeforeIngest",
+                      {
+                        "stat": "Sum",
+                        "label": "Verdict before ingest (retried)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictDuplicate",
+                      {
+                        "stat": "Sum",
+                        "label": "Duplicate verdict (ignored)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictSuperseded",
+                      {
+                        "stat": "Sum",
+                        "label": "Superseded verdict (key re-uploaded)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanHeld",
+                      {
+                        "stat": "Sum",
+                        "label": "Held at the gate"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictApplied",
+                      {
+                        "stat": "Sum",
+                        "label": "Verdicts applied"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanJobFinalizeFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Jobs-API finalize failed"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictUnappliedRefusal",
+                      {
+                        "stat": "Sum",
+                        "label": "Refusal applied late (processed unscanned)"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Malware Scanning (ingest gate) - empty unless the MalwareScanning parameter is set; it is DISABLED by default",
+                  "view": "timeSeries",
+                  "stacked": false,
+                  "period": 300,
+                  "yAxis": {
+                    "left": {
+                      "label": "Documents"
+                    }
+                  }
+                }
+              },
+              {
                 "type": "log",
                 "x": 0,
                 "y": 12,
@@ -9607,6 +10748,14 @@ Resources:
                     ],
                     [
                       ".",
+                      "ConcurrencyCounterUpdateFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Hand-backs lost (the counter write raised; each one leaks a slot)"
+                      }
+                    ],
+                    [
+                      ".",
                       "ConcurrencyDecrementSuppressed",
                       {
                         "stat": "Sum",
@@ -9669,6 +10818,63 @@ Resources:
                   "region": "${AWS::Region}",
                   "title": "Stale Output Purge Failures — affected keys (ingest path; for the Reprocess path see the ReprocessDocumentResolver log group)",
                   "view": "table"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 48,
+                "width": 24,
+                "height": 6,
+                "properties": {
+                  "metrics": [
+                    [
+                      {
+                        "expression": "SUM(SEARCH('{${AWS::StackName},Prefix} MetricName=\"PrefixMappingApplied\"', 'Sum'))",
+                        "label": "A mapping matched the key",
+                        "id": "pmApplied"
+                      }
+                    ],
+                    [
+                      {
+                        "expression": "SUM(SEARCH('{${AWS::StackName},Winner} MetricName=\"PrefixMappingConflict\"', 'Sum'))",
+                        "label": "Mapping disagreed with the upload",
+                        "id": "pmConflict"
+                      }
+                    ],
+                    [
+                      "${AWS::StackName}",
+                      "PrefixMappingRejected",
+                      {
+                        "stat": "Sum",
+                        "label": "Refused at ingest",
+                        "color": "#d13212"
+                      }
+                    ],
+                    [
+                      ".",
+                      "PrefixMappingUnresolvable",
+                      {
+                        "stat": "Sum",
+                        "label": "Mapping names a deleted profile",
+                        "color": "#ff7f0e"
+                      }
+                    ],
+                    [
+                      ".",
+                      "PrefixMappingLookupFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Mapping set unreadable — fell open",
+                        "color": "#d13212"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Configuration Prefix Mappings ('unreadable' and 'stale' are faults: documents ran under something other than what was configured and nothing else says so. 'Refused' is the feature working unless it is sustained)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "stat": "Sum"
                 }
               },
               {
@@ -10806,6 +12012,132 @@ Resources:
         KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
 
   ##########################################################################
+  # DynamoDB Table for each user's Inbox messages and preferences
+  # (idp_common.notifications)
+  ##########################################################################
+
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: UnreadPK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # Final from day one: DynamoDB rejects changes to an existing GSI's keys or
+        # projection on stack update. Sparse: UnreadPK exists only while unread.
+        - IndexName: UnreadIndex
+          KeySchema:
+            - AttributeName: UnreadPK
+              KeyType: HASH
+            - AttributeName: SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - ExpiresAfter
+              - Type
+              - Severity
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAfter
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  # HITL review queues (idp_common.review_queues): one queue item per document in
+  # review, its drafts and history, per-reviewer claim counters and the queue
+  # registry. See lib/idp_common_pkg/idp_common/review_queues/README.md.
+  HITLTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: QueuePK
+          AttributeType: S
+        - AttributeName: QueueSK
+          AttributeType: S
+        - AttributeName: OpenPK
+          AttributeType: S
+        - AttributeName: OwnerPK
+          AttributeType: S
+        - AttributeName: OwnerSK
+          AttributeType: S
+        - AttributeName: SweepPK
+          AttributeType: S
+        - AttributeName: SweepSK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # Final from day one: DynamoDB rejects changes to an existing GSI's keys or
+        # projection on stack update. All four are sparse.
+        # QueueIndex: every OPEN or CLAIMED item of a queue, oldest first.
+        - IndexName: QueueIndex
+          KeySchema:
+            - AttributeName: QueuePK
+              KeyType: HASH
+            - AttributeName: QueueSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # OpenIndex: the claimable (OPEN) items of a queue, oldest first.
+        - IndexName: OpenIndex
+          KeySchema:
+            - AttributeName: OpenPK
+              KeyType: HASH
+            - AttributeName: QueueSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # OwnerIndex: a reviewer's CLAIMED items (My Work), in claim order.
+        - IndexName: OwnerIndex
+          KeySchema:
+            - AttributeName: OwnerPK
+              KeyType: HASH
+            - AttributeName: OwnerSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # SweepIndex: items the sweeper must look at, by due time, in four shards.
+        - IndexName: SweepIndex
+          KeySchema:
+            - AttributeName: SweepPK
+              KeyType: HASH
+            - AttributeName: SweepSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAfter
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  ##########################################################################
   # Lambda Functions for Agent Chat Session Management
   ##########################################################################
 
@@ -10916,9 +12248,75 @@ Resources:
           MEDIUM_COMPLEXITY_MULTIPLIER: "1.5"
           # Token calculation
           MIN_TOKENS_PER_REQUEST: "500"
-          # Bedrock model quota codes (TPM and RPM)
-          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-59759B4A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
-          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-559DCC33","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
+          # Bedrock model quota codes (TPM and RPM).
+          #
+          # ⚠️ A step model missing from BOTH maps is a hard failure, not a
+          # degraded estimate: calculate_capacity raises
+          # ValueError("TPM quota not available for model ...") for any configured
+          # model _lookup_quota misses, so Capacity Planning errors out rather than
+          # omitting a row. The maps are an incomplete subset of the picklists
+          # (Opus 5, Opus 5.5, Sonnet 4.6, Fable 5, Haiku 5.5, every openai.gpt-5.x
+          # id and every eu. id other than claude-sonnet-5-5 are absent), so that
+          # failure is reachable today
+          # for models other than the ones listed here — tracked separately rather
+          # than closed here.
+          #
+          # `eu.anthropic.claude-sonnet-5-5` IS present, and that is not a stand-in:
+          # Service Quotas codes are global identifiers whose VALUE is per-region, and
+          # L-94A31E46 "Cross-region model inference tokens per minute for Anthropic
+          # Claude Sonnet 5.5" is the same code in us-east-1, eu-west-1 and
+          # eu-central-1 (checked in all three on 2026-10-14), each returning that
+          # region's own limit. The name says "Cross-region" without naming a geo —
+          # the geo is whichever one the caller's region belongs to — and
+          # calculate_capacity builds its client as `boto3.client("service-quotas")`
+          # with no region override, so an EU stack's Lambda reads the EU value. This
+          # closes the eu. gap for THIS model only; the other absent ids above still
+          # need their own codes looked up. One consequence for a reader of the
+          # Capacity Planning tables: because the two keys carry the same code, the
+          # us. and eu. Sonnet 5.5 rows display the SAME number in any single-Region
+          # stack. That is the quota the Region actually has, not two measurements
+          # that happen to agree.
+          #
+          # ⚠️ Claude Sonnet 5.5 is in BOTH maps on purpose, and it is the one id
+          # where omitting it from the RPM map is WORSE than it looks. The RPM
+          # builder matches with `clean_mapping_key in clean_model_id`
+          # (generate_rpm_quota_codes), and "us.anthropic.claude-sonnet-5" is a
+          # substring of "us.anthropic.claude-sonnet-5-5" — so an absent Sonnet 5.5
+          # entry silently binds it to SONNET 5's quota code instead of raising, the
+          # way Haiku 5.5 (which has no substring parent) correctly does. An
+          # explicit entry is what stops a different model's number being used.
+          #
+          # ⚠️ A code added here must resolve in EVERY Region the stack is deployed
+          # to, and the blast radius is not one row: get_simple_quotas fetches every
+          # entry in both maps with get_service_quota and re-raises any
+          # non-throttling error, so one code that does not exist in the stack's
+          # Region fails the whole Capacity Planning response for every model. The
+          # two Sonnet 5.5 codes were therefore checked in more than the one Region
+          # they were read from — both resolve, at 6,000,000, in us-east-1,
+          # us-west-2, eu-west-1, eu-central-1, eu-west-2, ap-southeast-2 and
+          # ca-central-1 (2026-10-14). ca-west-1 is UNMEASURED: this account cannot
+          # reach it, and the same call fails identically there for the pre-existing
+          # Sonnet 5 code L-D4FBCF4E, so nothing about these rows is special to it.
+          # That gap sits inside one the repository already records rather than
+          # beside it: docs/canada-region-model-support.md states that ca-west-1 gets
+          # ca-central-1's handling and has not been validated, and lists four
+          # picklist ids that a live check on 2026-10-13 found uncallable there. A
+          # ca-west-1 deployment is the configuration to verify these codes from.
+          #
+          # TPM codes read live from Service Quotas in us-east-1 on 2026-10-14:
+          # L-94A31E46 "Cross-region model inference tokens per minute for Anthropic
+          # Claude Sonnet 5.5" and L-31AB82D0 for the global. profile, both
+          # defaulting to 6,000,000 — the same default as Sonnet 5's pair.
+          # AWS publishes NO requests-per-minute quota for Claude Sonnet 5.5, and
+          # none for Sonnet 5 either, which is why the Sonnet 5 row in the RPM map
+          # carries a tokens-per-minute code. Sonnet 5.5 follows that existing
+          # convention rather than inventing a second one; the value is as
+          # approximate as Sonnet 5's and is now at least attributed to the right
+          # model. ⚠️ So when reading Capacity Planning output: the RPM figure for
+          # EITHER Sonnet is derived from a tokens-per-minute quota and is
+          # approximate for both. The TPM figures are exact.
+          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
+          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
       Policies:
         - Statement:
             - Effect: Allow
@@ -12388,75 +13786,66 @@ Resources:
                   - lambda:InvokeFunction
                   - lambda:InvokeFunctionUrl
                 Resource: !GetAtt ChatStreamProcessorFunction.Arn
-        # What the BROWSER may read with the signed-in user's own credentials.
+        # ⚠️ **The browser gets no S3 grant, and that is the point.** There is
+        # deliberately no `S3` policy on this role. Do not add one back without
+        # reading the next four paragraphs; `scripts/tests/test_browser_s3_grants.py`
+        # fails if an S3 statement appears here under any policy name.
         #
         # Every authenticated user assumes this one role — `CognitoIdentityPoolSetRole`
         # declares no `RoleMappings`, so Cognito group membership plays no part in
-        # which role is assumed. Whatever is listed here is therefore readable by
-        # every signed-in user irrespective of group, with no resolver in the path and
-        # so with no group check, no per-document check and no scope check available to
-        # apply. That makes this list, not the API surface, the boundary for anything
-        # it names.
+        # which role is assumed. Anything this role could read would therefore be
+        # readable by every signed-in user irrespective of group, including one in no
+        # group at all, with no resolver in the path — so with no group check, no
+        # per-document check and no per-user scope check available to apply to it.
+        # That is why the policy, and not the API surface, was the boundary for
+        # everything it named.
         #
-        # It names the Input and Output buckets because the UI genuinely signs those
-        # GETs in the browser: `use-page-thumbnails` and `PageImageViewer` fetch
-        # `page.ImageUri` (Output), `FileViewer` defaults to `presignVia: 'client'`
-        # against `settings.InputBucket`, and `presignForExport` signs client-side
-        # for exactly those two and routes every other bucket to the resolver.
-        # Narrowing those is the document-bucket half of this, which needs the read
-        # path redesigned rather than the grant trimmed
+        # It named the Input and Output buckets until the document read path moved
+        # behind a resolver
         # ([#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
+        # Those two buckets hold every uploaded source document and every document's
+        # extracted output, page images and OCR text, so `s3:GetObject` on them was
+        # "read any document's bytes by key, as any signed-in account" — measured end
+        # to end against a live stack, not inferred. The UI now asks
+        # `getFilePresignedUrl` and `getFilePresignedUrls` for its URLs instead, which
+        # puts three server-side controls in front of every document byte: the
+        # dispatcher's field-level group floor, the resolver's bucket allow-list, and
+        # `document_scope`, which matches the owning document's `ConfigVersion`
+        # against the caller's `allowedConfigVersions`. The batch field exists so that
+        # costs one resolver call per document view rather than one per page.
         #
         # It does NOT name the Configuration bucket, and must not. That bucket holds
         # `config_revisions/<profile>/<nnnnnn>.json.gz` — every configuration
         # profile's full revision history, prompts and few-shot examples included —
         # and which profiles a user may see is their `allowedConfigVersions`, a
-        # per-user boundary no IAM grant on this shared role can express. Granted
-        # here it was also `s3:ListBucket`, so the profile names did not have to be
-        # known in advance.
+        # per-user boundary no IAM grant on this shared role can express. While it was
+        # named here the grant still carried `s3:ListBucket`, so the profile names did
+        # not have to be known in advance either.
         #
-        # No UI code path reads it. What that rests on is the **call sites**, not on
-        # the bucket name being unavailable: the browser holds no S3 API client at all
-        # (only `S3RequestPresigner`, at four call sites, every one of which resolves
-        # to the Input or Output bucket — and `presignForExport` refuses outright to
-        # client-sign anything else). ⚠️ The name IS available to the browser: it is
-        # one key of the settings blob the UI fetches from Parameter Store with these
-        # same credentials. So this grant's absence is what bounds the reach, and
-        # `scripts/tests/test_browser_s3_grants.py` is what keeps it absent.
+        # ⚠️ What keeps all of this closed is the absence of the grant, not the
+        # absence of a call site. The browser holds no S3 API client at all (its only
+        # S3 dependency is `@aws-sdk/s3-request-presigner`, which signs a GET), but the
+        # bucket names ARE available to it — they are keys of the settings blob the UI
+        # fetches from Parameter Store with these same credentials — and the signed-in
+        # user holds the credentials and can call whatever the role allows. A grant
+        # here is reachable whether or not anything in `src/ui` reaches for it.
         #
-        # The Configuration-bucket content the UI does display — bundled samples under
+        # The Configuration-bucket content the UI displays — bundled samples under
         # `samples/`, the config library, profile bodies — is served by
         # `getSampleDocumentUrl`, `getConfigurationLibraryFile` and
-        # `getConfigVersion`, each of which applies the caller's scope. The reads that
-        # remain go through `getFileContents` / `getFilePresignedUrl`, where
-        # `key_scope` enforces the same axis on the key.
-        - PolicyName: S3
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - "s3:GetObject"
-                  # s3:GetObjectVersion is required for the browser to fetch a
-                  # specific object version via a client-presigned URL
-                  # (?versionId=...) — used to view a past document version's
-                  # page images. Without it, versioned image loads get
-                  # AccessDenied and render blank.
-                  - "s3:GetObjectVersion"
-                  - "s3:ListBucket"
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}"
-                  - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}"
-                  - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
-              - Effect: Allow
-                Action:
-                  - kms:Encrypt
-                  - kms:Decrypt
-                  - kms:ReEncrypt*
-                  - kms:GenerateDataKey*
-                  - kms:DescribeKey
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # `getConfigVersion`, each of which applies the caller's scope. Everything
+        # else goes through `getFileContents` / `getFilePresignedUrl` /
+        # `getFilePresignedUrls`, where `key_scope` enforces the per-user axis on the
+        # key and `document_scope` the per-document one.
+        #
+        # The KMS statement went with the S3 one. It granted `kms:Decrypt` and four
+        # siblings on the stack's CMK, and its only purpose was to let a
+        # client-presigned GET decrypt an SSE-KMS object: the browser has no KMS
+        # client, no write path (this role was never granted `s3:PutObject`), and the
+        # one other thing it reads with these credentials — `SettingsParameter` — is a
+        # plain `AWS::SSM::Parameter` of `Type: String`, not a SecureString, so it
+        # needs no key. Presigned URLs minted by the resolver are decrypted under the
+        # RESOLVER's role, which holds its own grant on the same key.
         - PolicyName: ParameterStore
           PolicyDocument:
             Version: 2012-10-17
@@ -12821,6 +14210,9 @@ Resources:
             - !Ref EvaluationBaselineBucket
             - !Ref EvaluationBaselineBucketName
           TRACKING_TABLE: !Ref TrackingTable
+          # Each copy, and each "summarize" message, writes the set's document
+          # summaries (TSDOC# items) the Test Studio queue page reads.
+          HITL_TABLE_NAME: !Ref HITLTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
@@ -12833,6 +14225,15 @@ Resources:
               - !Ref EvaluationBaselineBucketName
         - S3CrudPolicy:
             BucketName: !Ref TestSetBucket
+        # Test Studio document summaries (TSDOC# items), kept in step with the labels.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt HITLTable.Arn
         - Statement:
             - Effect: Allow
               Action:
@@ -14361,7 +15762,10 @@ Resources:
         Variables:
           USER_POOL_ID: !Ref UserPool
           ADMIN_GROUP: !Ref AdminGroup
+          AUTHOR_GROUP: !Ref AuthorGroup
           REVIEWER_GROUP: !Ref ReviewerGroup
+          ANNOTATOR_GROUP: !Ref AnnotatorGroup
+          VIEWER_GROUP: !Ref ViewerGroup
       LoggingConfig:
         LogGroup: !Ref UserSyncFunctionLogGroup
       Policies:
@@ -14431,6 +15835,9 @@ Resources:
           # Annotator scope: review operations verify the document's test set is
           # in the caller's allowedTestSets, which is stored on the user record.
           USERS_TABLE_NAME: !Ref UsersTable
+          # A Test Studio save is accepted only from the document's assignee
+          # (TSDOC# item), and completing the document ends the assignment.
+          HITL_TABLE_NAME: !Ref HITLTable
       LoggingConfig:
         LogGroup: !Ref CompleteSectionReviewFunctionLogGroup
       Policies:
@@ -14455,6 +15862,15 @@ Resources:
               Resource:
                 - !GetAtt UsersTable.Arn
                 - !Sub "${UsersTable.Arn}/index/*"
+        # Test Studio assignment check and completion on the document's TSDOC# item,
+        # and the set's assigned-document recount (Query).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+              Resource: !GetAtt HITLTable.Arn
         - Statement:
             - Effect: Allow
               Action:
@@ -15386,3 +16802,18 @@ Outputs:
       without an Export cannot collide, and unlike the export it is readable from
       `describe-stacks` in every configuration.
     Value: !Ref TrackingTable
+  HITLTableName:
+    Description: >-
+      Name of the DynamoDB table holding HITL review queue items, drafts, history
+      and claim counters (idp_common.review_queues). Lambdas read it through their
+      HITL_TABLE_NAME environment variable. A plain Output with no
+      `Export`, readable from `describe-stacks`.
+    Value: !Ref HITLTable
+
+  NotificationsTableName:
+    Description: >-
+      Name of the DynamoDB table holding each user's Inbox messages and
+      preferences (idp_common.notifications). A Lambda that posts Inbox messages
+      reads it through its NOTIFICATIONS_TABLE_NAME environment variable. A plain
+      Output with no `Export`, readable from `describe-stacks`.
+    Value: !Ref NotificationsTable

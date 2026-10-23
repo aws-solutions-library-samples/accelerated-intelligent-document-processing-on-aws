@@ -33,6 +33,38 @@ The solution automatically creates an integrated dashboard that displays:
 
 ![Throughput Metrics Dashboard](../images/Dashboard2.png)
 
+### Malware Scanning (ingest gate)
+
+Present on every deployment, and flat unless `MalwareScanning` is enabled — the
+metrics are only emitted by the ingest gate. All are in the stack's own namespace
+(`<StackName>`). No count is quoted here: the number is what went stale last
+time, and `scripts/tests/test_malware_scanning_template.py` derives the set from
+the gate's own `_put_metric` call sites and fails if any of them is missing from
+the dashboard widget.
+
+| Metric | Meaning |
+|---|---|
+| `MalwareScanHeld` | A document was parked at the gate awaiting a verdict |
+| `MalwareScanVerdictApplied` | A verdict was acted on, whichever way it went |
+| `MalwareScanClean` | Admitted after a clean GuardDuty scan |
+| `MalwareScanThreatsFound` | A detection; the document was quarantined and never processed |
+| `MalwareScanUnscannableBlocked` | Refused because no verdict was obtainable |
+| `MalwareScanUnscannableAllowed` | Admitted *without* a verdict, under the configured policy — worth watching, because these documents were not scanned |
+| `MalwareScanVerdictSuperseded` | The key was re-uploaded mid-scan, so the verdict described bytes no longer in the bucket and was discarded. Self-healing: the newer upload's own verdict decides |
+| `MalwareScanVerdictBeforeIngest` | A verdict outran the upload event and the delivery was retried. A few are normal; a sustained rate means verdicts are beating EventBridge |
+| `MalwareScanVerdictDuplicate` | GuardDuty re-delivered a verdict already applied. Expected — delivery is at-least-once — and harmless |
+| `MalwareScanJobFinalizeFailed` | A refused `/Jobs` API document could not be marked terminal in its job, so that batch may hang |
+
+The first two exist for the one failure the rest are blind to. Every other metric
+is published when something is *decided*, so if GuardDuty never answers at all —
+plan deleted, `GATE_ONLY` pointed at a plan that does not cover this bucket,
+GuardDuty disabled in the Region — ingest halts while all of them read zero.
+Comparing held against applied turns that into a value rather than an absence,
+which is what `<stack>-malware-no-verdicts` alarms on.
+
+See [malware-scanning.md](./malware-scanning.md) for what each outcome means and
+what to do about it.
+
 ### Error Tracking
 
 - **Workflow Failures**: Step Function execution failures with error categorization
@@ -93,7 +125,7 @@ The over-admission is therefore bounded to roughly one generation of documents
 rather than lasting forever — which is why the guards and the repair below matter
 for cost and for predictable capacity rather than for recoverability.
 
-Four metrics in the stack's own namespace (`<StackName>`) make all of this
+These metrics in the stack's own namespace (`<StackName>`) make all of this
 visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
@@ -104,9 +136,15 @@ visible, all on the **Workflow Concurrency Counter** widget:
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
 - **`ConcurrencyCounterUnderflow`** — a decrement that was refused because the
-  counter was already at zero. Nothing else reports this: the counter and the
-  document both end up correct, so without this metric a duplicate release is
-  invisible.
+  counter was not above zero. Nothing else reports this: the counter and the
+  document both end up correct, so without this metric a release of a slot that
+  was never held is invisible. ⚠️ **Two functions publish it, so a search of one
+  log group is not an answer.** The **workflow tracker** publishes it from the
+  terminal-event decrement and logs `Concurrency counter was already 0`; the
+  **queue processor** publishes it from a compensating hand-back — after a
+  duplicate message, or a `StartExecution` that failed — and logs `Counter
+  decrement refused`. Both are floored on the same condition, so both can trip
+  it, and the alarm below does not distinguish them.
 - **`ConcurrencyDecrementSuppressed`** — a terminal event whose slot had already
   been released, recognised by its `dec#<executionArn>` marker and skipped. This
   is the guard working, not a fault, so it has **no alarm**: EventBridge
@@ -116,8 +154,17 @@ visible, all on the **Workflow Concurrency Counter** widget:
   is the only signal that terminal events are being redelivered at all — a rising
   count alongside `WorkflowTrackerDLQAlarm` or tracker errors says the tracker is
   failing *after* it releases the slot.
+- **`ConcurrencyCounterUpdateFailed`** — a compensating hand-back that could not
+  be written at all, because the `UpdateItem` **raised**. Distinct from
+  `ConcurrencyCounterUnderflow`, which is the write DynamoDB *refused*: this one
+  is the write that errored. The queue processor logs the exception and carries
+  on by design — the execution exists, or the message is being retried. It does
+  log, at ERROR with a traceback: grep the QueueProcessor log group for
+  `Failed to decrement counter`. What issue #1358 lacked was not the log line but
+  a **datapoint**, so nothing an operator was watching moved while the counter
+  climbed. Each datapoint here is one leaked slot.
 
-Four alarms publish to `AlertsTopic`:
+These alarms publish to `AlertsTopic`:
 
 - **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
   fires on the *symptom*, once slots are already being held wrongly.
@@ -125,9 +172,34 @@ Four alarms publish to `AlertsTopic`:
   dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
   so an event it could not process is a slot that was never released, and it
   alarms on the first message rather than waiting for drift to accumulate.
-- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement. The floor
-  already prevented the damage, so this is a *correctness* signal: something
-  released a slot twice, and the reason is worth finding.
+- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement, from either
+  publisher. The floor already prevented the damage, so this is a *correctness*
+  signal: something released a slot it did not hold, and the reason is worth
+  finding. Check **both** log groups for the two fragments above — a duplicate
+  terminal event and a duplicate SQS message produce the same metric. One cause is
+  benign and worth ruling out first: a downward reconciliation
+  landing between a queue-processor increment and its hand-back makes that
+  hand-back a double release, because the correction is computed from the
+  executions actually running and so excludes the slot about to be handed back.
+  Look for a `RECONCILED` line in the QueueProcessor logs immediately before. It
+  needs the stack to be at its ceiling (reconciliation runs only on a refused
+  increment), so it is rare, and nothing is wrong afterwards. ⚠️ **A missing
+  counter item is the opposite of benign and reaches the same alarm.**
+  `active_count > 0` is also false when the `workflow_counter` item or its
+  `active_count` attribute does not exist, so the refusal looks identical. That
+  state should be unreachable: `InitializeConcurrencyTableCustomResource` writes
+  the item at `0` on stack create, and a compensating hand-back always follows a
+  *successful* increment, whose own `active_count < MaxConcurrentWorkflows`
+  condition would already have refused against a missing attribute. So if you
+  see it, the item was deleted or the initialiser never ran — check that the item
+  exists before reading anything else here, because a stack in that state admits
+  nothing at all.
+- **`ConcurrencyDecrementFailedAlarm`** — any hand-back the counter write
+  raised on. Fires on the first occurrence, because one lost hand-back is one
+  leaked slot and the defect it exists for failed on *every* attempt rather than
+  intermittently. Read the exception in the QueueProcessor logs: a
+  `ValidationException` means the request is malformed and every hand-back is
+  failing; a throttle or 5xx means retry pressure on the concurrency table.
 - **`ConcurrencyCounterNegativeAlarm`** — the counter observed below zero. This
   should be unreachable now that the decrement is floored; if it fires, the
   counter is being written by something that bypasses the floor.
@@ -149,6 +221,18 @@ different directions:
   on the value observed, and never to a value below zero. So a negative counter is
   corrected within one admitted document rather than needing the queue to be at
   its ceiling first.
+
+**The one case none of this covers**, stated so a green dashboard is not
+over-read: the same reconciliation race one unit higher. If the counter is at 2
+rather than 1 when the hand-back lands, the write succeeds and leaves the counter
+one *below* the truth, which over-admits by one slot. Nothing reports that —
+`ConcurrencyCounterNegativeAlarm` needs a value below zero,
+`ConcurrencyCounterDrift` is claimed-minus-running and alarms upward only, and
+reconciliation itself never raises the counter except from a negative. Unlike the
+tracker's decrement, a compensating hand-back carries no `dec#<executionArn>`
+marker, so a repeat release cannot be recognised as a repeat; it is only *refused*
+when the counter happens to be at zero already. The residual is bounded at one
+slot per occurrence and self-corrects on the next completion that does decrement.
 
 The repair publishes the pre-repair **negative** value — not the value the counter
 reads after the increment — before it writes, so `ConcurrencyCounterNegativeAlarm`
@@ -221,6 +305,102 @@ S3 error.
 byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
 scratch.
 
+### Configuration Prefix Mappings
+
+A [config prefix mapping](configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
+assigns a Configuration Profile to everything arriving under an S3 prefix. Because
+that decision happens at ingest and is then invisible in the document's own result,
+it is instrumented: five metrics in the stack's own namespace (`<StackName>`). Three of them have **more than one emitter** — the queue sender on upload ingest and the reprocess resolver on a re-run — publishing into the same namespace with the same dimension schema, so one alarm covers both paths; `PrefixMappingLookupFailed` has a **third**, the upload resolver, for the reason below. `PrefixMappingRejected` and `PrefixMappingConflict` are ingest-only, because a reprocess carries no upload metadata to conflict with.
+
+| Metric | Published when | Dimensions |
+|---|---|---|
+| `PrefixMappingApplied` | A mapping **matched** the object's key | `Prefix` |
+| `PrefixMappingConflict` | A mapping and the upload's own metadata disagreed, and one of them won | `Winner` (`prefix-mapping` or `metadata`) |
+| `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document at ingest | none |
+| `PrefixMappingLookupFailed` | The mapping set could not be read | none |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists | none |
+
+All five publish only on the event, so no data means it has not happened.
+
+⚠️ **Two of these do not mean quite what their names suggest, and both differences
+matter when you build a graph on them.** `PrefixMappingApplied` is published whenever a
+mapping *matched the key* — which includes the case where the conflict mode handed the
+decision to the upload's own metadata, and the case where the mapped profile turned out
+to be missing. So it counts documents a mapping was consulted for, not documents a
+mapping decided. For the latter, subtract both `PrefixMappingConflict` filtered to
+`Winner=metadata` and `PrefixMappingUnresolvable`. And `PrefixMappingConflict` is published
+only when the document *proceeded*: a refusal returns before it, so a refused document
+publishes `PrefixMappingRejected` alone and appears in neither of the other two. Summing
+conflicts to count disagreements therefore undercounts by exactly the refusals.
+
+**Three of the five are alarmed**, with different thresholds for different reasons.
+`PrefixMappingLookupFailed` and `PrefixMappingUnresolvable` alarm on the **first**
+occurrence: both mean documents are being processed under something *other* than what an
+admin configured, and neither is visible anywhere else — the documents succeed, report
+success, and carry extraction from the wrong configuration. This is the same shape as
+the stale-output purge above, a quiet failure whose only signal has to be a metric,
+because the document's own status is green. `PrefixMappingRejected` alarms on **volume**
+instead, covered below.
+
+`PrefixMappingLookupFailed` is quiet by construction, because resolution deliberately
+**fails open**. Halting document ingest for a whole deployment when a *routing* table
+cannot be read is worse than processing under the active profile, which is what every
+one of those documents did before mappings existed. The cost of that choice is that
+during such a window every "Refuse the conflict" mapping is bypassed, which is exactly
+why the metric is alarmed rather than only logged. The most common cause is a KMS or
+table-policy change denying `dynamodb:GetItem` on the `ConfigurationTable` to the queue
+sender's role — check that before assuming a transient DynamoDB error.
+
+⚠️ **One of this metric's three emitters is an authorization signal, not just an
+availability one.** The upload resolver reads the mapping set to decide whether the
+caller may write to the destination at all, and the queue sender reads it again seconds
+later to assign the configuration. If the first read fails and the second succeeds, the
+upload was scope-checked against a destination that looked *unmapped* — so it resolved
+to the caller's own profile, in scope — and was then assigned the mapping's profile at
+ingest, which can place a scope-restricted user's document under a profile outside their
+scope. Nothing is wrong with the mapping and nothing fails; the document simply ends up
+somewhere the check would have refused. A `PrefixMappingLookupFailed` whose log line
+came from the upload resolver is therefore worth reviewing against the documents that
+arrived in the same window, which the `ConfigSource` and `ConfigMappingPrefix` fields on
+each tracking row make answerable.
+
+The **other** direction of the same window is closed rather than monitored, and the
+reason is worth knowing because it explains an upload refusal that looks unnecessary.
+If the upload resolver's read succeeds and the queue sender's fails, the document is
+assigned from its own upload metadata instead of from the mapping — so a profile the
+caller *named* becomes the one that applies, even where a mapping would have overridden
+it. A scope-restricted caller is therefore refused for naming a profile outside their
+scope **even when a mapping was going to win**, which is why such an upload gets a 403
+rather than silently having its choice overridden. Nothing is emitted for it, because
+nothing degraded: the refusal is the control working.
+
+`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
+been deleted. The document still processes — under the profile its upload named, or the
+active one — and the log line names which mapping is stale.
+`putConfigPrefixMapping` refuses a mapping naming something that does not exist, so this
+is always a *later* deletion rather than a typo at creation.
+
+⚠️ **It does not cover a missing revision**, and nothing else does either. The
+existence check at ingest is on the profile; a revision the mapping *pins* is passed
+through without being looked for. A mapping pinned to a revision that has since been
+deleted, or whose stored body has passed its `DataRetentionInDays` expiry, therefore
+publishes no metric at ingest — the document is stamped with that revision number and
+then **fails** later, when the configuration is loaded, which at least means it is not
+silently processed under something else. The pin protects a revision from history
+pruning, not from an explicit `deleteConfigProfileRevision` (which refuses only a
+profile's *current* revision) and not from body expiry, so both routes are reachable. If
+your mappings pin revisions, audit them against the profile's revision history rather
+than expecting this alarm to catch it.
+
+`PrefixMappingRejected` is alarmed too, but it is not a fault signal: a refusing
+mapping doing its job publishes it. Hence a threshold above zero — more than five
+refusals in each of two consecutive five-minute periods — rather than the
+first-occurrence thresholds above. Alarm on it to notice that a producer is
+persistently submitting to a prefix it is not configured for, which is a wiring problem
+at the producer rather than in this deployment. Each refused document appears in the
+UI as **Failed** with the reason on it, so no investigation starts from the metric
+alone.
+
 ### Confidence Assessment Degraded
 
 Confidence assessment is an *enrichment* pass: extraction has already run,
@@ -278,19 +458,22 @@ and two of the three causes report nothing here:
   `extraction_class_not_configured` issue from the Extraction step.
 
 ⚠️ **That last case is not always rare, and which configuration you run decides
-it.** On the default `multimodalPageLevelClassification` with
-`enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
-coerced to `invalidClassFallback`, so it becomes the silent `unclassified` case
-above and the count really is bounded by configuration edits. Two other supported
-configurations store the model's invented class name verbatim —
-`textbasedHolisticClassification`, which has no enforcement loop at all, and
-`multimodalPageLevelClassification` with `enforceValidClasses: false` — and there
-the rate follows model output rather than operator action. Small, cheap
-classification models are the most prone to those predictions. On either of those
-paths expect data points proportional to throughput, and use
-`ConfidenceUnavailableThreshold` to set the volume at which it is worth paging;
-better still, define the classes the model keeps reaching for, or turn enforcement
-on. The report itself is correct either way — the section holds no data — so the
+it.** With `enforceValidClasses` on (the default) — it lives in each
+class-assigning call's `validation` block, at
+`classification.one_stage.llm.validation.enforceValidClasses` and
+`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+— every call that
+assigns a class — one stage at page or packet granularity, and two-stage section
+classification — re-prompts on an out-of-vocabulary prediction and then assigns
+`fallback_class`, so it becomes the silent `unclassified` case above and the count
+really is bounded by configuration edits. With `enforceValidClasses: false` the
+model's invented class name is stored verbatim, and there the rate follows model
+output rather than operator action. Small, cheap classification models are the most
+prone to those predictions. On that path expect data points proportional to
+throughput, and use `ConfidenceUnavailableThreshold` to set the volume at which it
+is worth paging; better still, define the classes the model keeps reaching for, or
+turn enforcement on. See
+[Enforcing a Valid Class Vocabulary](./classification.md#enforcing-a-valid-class-vocabulary-validation--retry). The report itself is correct either way — the section holds no data — so the
 parameter, not a carve-out, is the right lever.
 
 The first two report nothing at all, exactly as an
@@ -364,7 +547,7 @@ was missing. The six causes worth checking first:
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
 | No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
-| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification method and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
+| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification strategy and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
 | The same code, with a `root_cause` saying none of the section's pages are present in the document | The section lists page IDs the document does not contain, so there was no page text or image to assess against. Before this was detected the pass ran anyway and returned scores derived from nothing | Check the Classification step's section boundaries and the OCR step's page list. A warning-severity `assessment_pages_missing` (no metric) marks the partial case, where only some pages were absent |
 
 **What is lost while it is firing:** the affected sections have no confidence
@@ -647,13 +830,22 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 `INSUFFICIENT_DATA` makes a **broken** alarm indistinguishable from a quiet one
 (see the `WorkflowErrorsAlarm` note below).
 
+Most of them send no recovery notification — the majority set only
+`AlarmActions`, so returning to `OK` is silent. The ones that *do* notify on
+recovery are the DLQ-depth alarms plus the reporting-rollup, circuit-breaker and
+malware-no-verdicts alarms, where "it is draining again" or "Bedrock is healthy
+again" is itself the information an operator is waiting for. For a count-of-events
+alarm there is no such moment: recovery just means the five-minute window moved
+on.
+
 | Alarm | Fires when | Topic | Tuned by |
 |---|---|---|---|
 | `WorkflowErrorsAlarm` | Failed Step Functions executions ≥ threshold in 5 min | `AlertsTopic` | `ErrorThreshold` (default `1`) |
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
-| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was already 0 — a slot released twice | `AlertsTopic` | — |
+| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was not above 0 — a slot released that was not held, either a terminal event processed twice (workflow tracker) or a compensating hand-back with nothing to hand back (queue processor) | `AlertsTopic` | — |
+| `ConcurrencyDecrementFailedAlarm` | Any compensating hand-back whose counter write **raised** rather than being refused — logged at ERROR (`Failed to decrement counter`) and continued by design, so each occurrence is one leaked slot that until now moved no metric | `AlertsTopic` | — |
 | `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
@@ -665,6 +857,13 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript within 15 min — sustained write contention on one job record, or reads that keep failing. These messages are gone | `AlertsTopic` | — |
 | `AgentTranscriptDrainIncompleteAlarm` | Ten or more transcript writes left unfinished within 15 min when the agents that queued them closed. Distinct from the row above: these writes were not cancelled and often complete on the next thaw, so the transcript may be late rather than incomplete | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
+| `<stack>-malware-threats-found` | Amazon GuardDuty found malware in any uploaded document within 5 min. Created only when `MalwareScanning` is not `DISABLED` | `AlertsTopic` | Threshold is fixed at ≥ 1 — one infected upload is an incident |
+| `<stack>-malware-unscannable-documents` | More than four documents refused for want of a scan verdict within 15 min. Created only when `MalwareScanning` is not `DISABLED` | `AlertsTopic` | Threshold is fixed at > 4 |
+| `<stack>-malware-verdict-dlq-depth` | Any verdict EventBridge could not deliver after every retry. The document it describes is stuck with nothing having decided it is safe | `AlertsTopic` | Threshold is fixed at > 0 |
+| `<stack>-malware-verdicts-unapplied` | More than four verdicts reached the gate and were not applied within 15 min — superseded, or outran their ingest event | `AlertsTopic` | Threshold is fixed at > 4 |
+| `<stack>-malware-no-verdicts` | Documents held at the gate with **no** verdict applied for an hour: ingest has stopped. The only signal for GuardDuty not answering at all | `AlertsTopic` | Threshold is fixed at > 0 |
+| `<stack>-malware-unapplied-refusal` | A refusing verdict arrived for a document that had already left the gate, so it was processed unscanned. The refusal is applied anyway rather than dismissed as a repeat delivery | `AlertsTopic` | Threshold is fixed at ≥ 1 — one occurrence is one document through the pipeline with nothing having decided it was safe |
+| `<stack>-malware-job-finalize-failed` | A refused document belonged to a `/Jobs` batch and the gate could not mark it terminal, or could not hand the finished batch on to be zipped. The batch answers `IN_PROGRESS` indefinitely | `AlertsTopic` | Threshold is fixed at ≥ 1 — the gate swallows this error by design, so the metric is the only signal and one occurrence is one permanently stalled batch |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
 `AlertsTopic` carries the display name **Workflow Alerts**.
@@ -1212,6 +1411,21 @@ Monitor resource usage and costs:
 - **Lambda Execution Time**: Monitor function duration and memory usage
 - **S3 Storage**: Track storage growth over time
 - **Data Transfer**: Monitor network costs between services
+
+### `DocumentEstimatedCost` — the one cost signal the stack emits itself
+
+`DocumentEstimatedCost`, and its companion `UnpricedMeteringRows`, are emitted
+per completed document into the stack's own metric namespace, carrying the cost
+already written to that document's metering rows. `Sum` over a period is spend in
+that period, which is the shape a spend alarm wants; `Average` is cost per
+document. Neither metric carries dimensions, for a reason worth reading before
+adding one.
+
+**It reports and does not enforce.** Nothing throttles, queues or stops
+processing when spend rises, and the stack creates no spend alarm and no budget —
+both are yours to set up. The dimension reasoning, how to scope a budget (which
+is less obvious than it looks) and a method for choosing its amount are in
+[Cost Considerations](cost-calculator.md#documentestimatedcost--a-cloudwatch-metric-you-can-alarm-on).
 
 ## Custom Dashboard Creation
 

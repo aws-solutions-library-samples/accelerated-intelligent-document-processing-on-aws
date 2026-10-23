@@ -5,7 +5,7 @@ import boto3
 import json
 import os
 import logging
-from idp_common.models import Document, Status
+from idp_common.models import POST_PROCESSING_SUPPRESSED_STATUSES, Document, Status
 from typing import Dict, Any
 
 logger = logging.getLogger()
@@ -120,21 +120,28 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         # prevent, and the workflow tracker is about to delete it. The status
         # lives inside detail.output (invisible to an EventBridge pattern), so
         # the check has to happen here. The redacted copy is processed as its own
-        # document and fires this hook normally.
-        superseded_status = Status.REDACTED_SUPERSEDED.value
-        if isinstance(document_data, dict) and document_data.get('status') == superseded_status:
+        # document and fires this hook normally. The same applies to phase 1 of
+        # a review-queue document (HITL_IN_PROGRESS: the finalize run fires the
+        # hook) and to a rejected document (REJECTED: no usable result).
+        suppressed = {s.value for s in POST_PROCESSING_SUPPRESSED_STATUSES}
+        wrapper_status = document_data.get('status') if isinstance(document_data, dict) else None
+        if wrapper_status in suppressed:
             logger.info(
-                "Skipping custom post-processor: document status is %s "
-                "(a preprocessing hook superseded it with a redacted copy)",
-                superseded_status,
+                "Skipping custom post-processor: document status is %s",
+                wrapper_status,
+            )
+            message = (
+                'Skipped custom post-processor for superseded document'
+                if wrapper_status == Status.REDACTED_SUPERSEDED.value
+                else f'Skipped custom post-processor for {wrapper_status} document'
             )
             return {
                 'statusCode': 200,
                 'body': json.dumps({
-                    'message': 'Skipped custom post-processor for superseded document',
+                    'message': message,
                     'customProcessorArn': CUSTOM_POST_PROCESSOR_ARN,
                     'skipped': True,
-                    'reason': superseded_status,
+                    'reason': wrapper_status,
                 })
             }
 

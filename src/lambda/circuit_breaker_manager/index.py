@@ -13,11 +13,25 @@ DynamoDB Schema (in ConcurrencyTable):
     "counter_id": "circuit_breaker",
     "state": "CLOSED" | "OPEN" | "HALF_OPEN",
     "opened_at": "ISO8601 timestamp",
+    "half_open_at": "ISO8601 timestamp",
     "last_checked_at": "ISO8601 timestamp",
     "failure_count": number,
     "recovery_attempts": number,
     "last_error": "error message"
 }
+
+``half_open_at`` is when the current HALF_OPEN episode began, written by every
+transition into HALF_OPEN and read only by ``handle_health_check`` to decide
+whether the episode has run out of time (see ``HALF_OPEN_TIMEOUT_SECONDS``).
+It is not projected by the API resolver, so it is inert to the UI.
+
+Two further attributes live on the same item and are NOT written here:
+``half_open_probes`` and ``half_open_probe_window``, the queue processor's
+bounded HALF_OPEN probe budget (``src/lambda/queue_processor/index.py``). They
+are safe to ignore. ``update_circuit_breaker_state`` writes only the attributes
+it is passed, so it never clobbers them, and the window number is monotonic, so
+a budget left behind by a previous half-open episode is replaced rather than
+inherited.
 """
 
 import json
@@ -52,6 +66,31 @@ CIRCUIT_BREAKER_ID = "circuit_breaker"
 STATE_CLOSED = "CLOSED"
 STATE_OPEN = "OPEN"
 STATE_HALF_OPEN = "HALF_OPEN"
+
+# How long a HALF_OPEN episode may run without a probe closing the breaker
+# before the health check returns it to OPEN (issue #1437). A module constant
+# rather than a stack parameter: the one knob an operator already has for how
+# patient the breaker should be is CircuitBreakerRecoveryTimeoutSeconds, and
+# this floors itself on that, so a deliberately patient breaker gets an equally
+# patient probe window without a second number to reconcile with the first.
+#
+# WARNING: the window must comfortably exceed the time a probe workflow takes
+# end to end, and the reason is not latency but correctness:
+# ``workflow_tracker.notify_circuit_breaker_success`` only closes the breaker
+# if the state is STILL HALF_OPEN when the probe finishes. Reopening does not
+# abort anything in flight, but it does mean a probe that succeeds after the
+# episode has ended closes nothing. So a window shorter than a workflow can
+# never close the breaker at all, and the breaker would oscillate for the life
+# of the deployment rather than for the life of the outage - worse than the
+# settled HALF_OPEN this transition exists to fix.
+#
+# 900 s is the per-step Lambda ceiling in this stack, and the figure
+# docs/circuit-breaker.md cites for how long an execution hangs under a Bedrock
+# outage before failing, so a probe admitted at the start of an episode has a
+# full step's worth of room. It is also three ticks of the 5-minute health-check
+# schedule that evaluates this, which bounds the schedule's overshoot to a third
+# of the window rather than doubling it the way a 300 s window would.
+HALF_OPEN_TIMEOUT_SECONDS = max(900, RECOVERY_TIMEOUT)
 
 concurrency_table = dynamodb.Table(CONCURRENCY_TABLE)
 
@@ -94,6 +133,24 @@ def update_circuit_breaker_state(
     current persisted state matching it. Concurrent writers losing the race
     get ConditionalCheckFailedException swallowed and return False.
 
+    Most of the expression values below are supplied in one branch and referenced
+    by a clause appended in that same branch. Keep every pair together: DynamoDB
+    refuses the **whole** request when it carries an ``ExpressionAttributeValues``
+    key no expression mentions, so hoisting one of these assignments out of its
+    branch turns every call on the other path into one that has never succeeded.
+    That is issue #1358 in ``queue_processor.update_counter``, where the caller
+    swallowed the failure and leaked a concurrency slot per occurrence. Here the
+    ValidationException propagates and fails the invocation instead, so the cost
+    is a transition that never lands rather than a silent one — a breaker stuck
+    in its current state until somebody reads the Lambda's error metric.
+
+    ``scripts/tests/test_dynamodb_unused_expression_values.py`` reads that pairing
+    out of the source tree-wide, but it cannot read this function: the expression
+    and its values are assembled into local names and only then built into a
+    request, which no source reading can pair without following data flow (#1466).
+    ``test_update_expression_pairing.py`` beside this file covers it instead, by
+    issuing every request this signature can produce against an expression engine.
+
     Returns:
         True if the update was applied, False if the conditional check failed.
     """
@@ -117,6 +174,17 @@ def update_circuit_breaker_state(
         # Clear the outage timestamp so the UI details panel doesn't show a
         # stale "Opened at" after the breaker has fully recovered.
         remove_exprs.append("opened_at")
+    if new_state == STATE_HALF_OPEN:
+        # Stamped here rather than at the three call sites that transition into
+        # HALF_OPEN (health check, alarm OK, manual probe) so that the episode
+        # start is a property of the state, not of each caller remembering.
+        # handle_health_check times the probe window from it.
+        set_exprs.append("half_open_at = :half_open_at")
+        expr_values[":half_open_at"] = timestamp
+    else:
+        # Leaving HALF_OPEN ends the episode. Removing a nonexistent attribute
+        # is a no-op in DynamoDB, so this needs no guard.
+        remove_exprs.append("half_open_at")
     if last_error:
         set_exprs.append("last_error = :err")
         expr_values[":err"] = last_error
@@ -359,7 +427,82 @@ def handle_health_check() -> None:
                 )
 
     elif current_state == STATE_HALF_OPEN:
-        logger.info("Circuit breaker in HALF_OPEN, allowing probe traffic")
+        handle_half_open_timeout(current)
+
+
+def handle_half_open_timeout(current: dict) -> None:
+    """Return a HALF_OPEN breaker to OPEN if no probe has closed it in time.
+
+    HALF_OPEN -> OPEN (issue #1437). Without it the only automatic exit from
+    HALF_OPEN is forward to CLOSED, which needs a workflow to *succeed*: the
+    alarm's ALARM branch needs a fresh transition into ALARM, which CloudWatch
+    does not deliver while the alarm is already in ALARM, and nothing else
+    writes OPEN but the manual pause. So HALF_OPEN was where a sustained outage
+    settled rather than a window it passed through, and the recovery timeout
+    was never re-timed.
+
+    Elapsed time is the signal because it is the only one available here: the
+    manager learns about probe *successes* through
+    ``workflow_tracker.notify_circuit_breaker_success`` and there is no
+    corresponding failure path, and the health check already runs on a
+    five-minute schedule, so no new wiring is needed to evaluate it.
+
+    Reopening matters beyond the state label. A refused document in OPEN has
+    its SQS visibility pushed out to the recovery timeout by the queue
+    processor's ``extend_visibility_for_outage``, whereas a refused probe in
+    HALF_OPEN deliberately keeps ``DocumentQueue``'s 60 s visibility, so a
+    settled HALF_OPEN spends the same 500 redrive deliveries several times
+    faster than a paused OPEN does.
+    """
+    half_open_at = current.get("half_open_at")
+    if not half_open_at:
+        # A record that entered HALF_OPEN before this attribute existed. The
+        # absence is read as "the episode starts now", not as the epoch: the
+        # epoch reading reopens every already-half-open breaker on the first
+        # evaluation after deploy, including one that is probing healthily,
+        # whereas this direction costs one evaluation cycle, once per record.
+        # Conditional, so it cannot resurrect HALF_OPEN over a concurrent
+        # transition. Nothing about the state changes, so nothing is announced.
+        update_circuit_breaker_state(STATE_HALF_OPEN, expected_state=STATE_HALF_OPEN)
+        logger.info(
+            "Circuit breaker in HALF_OPEN with no recorded episode start - "
+            f"stamping it now; the {HALF_OPEN_TIMEOUT_SECONDS}s probe window "
+            "is timed from this check"
+        )
+        return
+
+    started = datetime.fromisoformat(half_open_at.replace("Z", "+00:00"))
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+
+    if elapsed < HALF_OPEN_TIMEOUT_SECONDS:
+        logger.info(
+            "Circuit breaker in HALF_OPEN, allowing probe traffic: "
+            f"{elapsed}s / {HALF_OPEN_TIMEOUT_SECONDS}s of the probe window used"
+        )
+        return
+
+    reason = (
+        f"No probe closed the circuit breaker within {HALF_OPEN_TIMEOUT_SECONDS}s "
+        "of entering HALF_OPEN"
+    )
+    # failure_count and recovery_attempts are both left alone: the first counts
+    # outages the alarm detected, the second is incremented by the OPEN ->
+    # HALF_OPEN transition that starts the next episode. Incrementing either
+    # here would make it a function of how long the outage lasted.
+    applied = update_circuit_breaker_state(
+        STATE_OPEN, last_error=reason, expected_state=STATE_HALF_OPEN
+    )
+    if not applied:
+        return
+    # Same fan-out as the OPEN -> HALF_OPEN transition above, and deliberately
+    # NOT invoke_error_handler: during a long outage this transition recurs
+    # every HALF_OPEN_TIMEOUT_SECONDS + RECOVERY_TIMEOUT, and the optional
+    # customer handler is documented as being invoked when the circuit opens on
+    # a detected outage, not on a timer. The SNS notification still goes out.
+    publish_notification(STATE_OPEN, reason)
+    put_metric("CircuitBreakerOpened", 1)
+    publish_to_appsync(get_circuit_breaker_state())
+    logger.info(f"Circuit breaker REOPENED after {elapsed}s in HALF_OPEN")
 
 
 def _handle_action(event: dict) -> dict:

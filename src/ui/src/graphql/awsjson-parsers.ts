@@ -18,6 +18,7 @@ import type {
   ConfigSettingValues,
   ConfigurationData,
   PricingData,
+  NonChargeableUnits,
   ModelConfigLimitsData,
   StepFunctionStepPayload,
   BedrockModelsQuota,
@@ -144,6 +145,19 @@ export function parseConfigurationData(json: unknown): ConfigurationData | null 
 
 export function parsePricingData(json: unknown): PricingData | null {
   return safeParse<PricingData | null>(json, null);
+}
+
+/**
+ * Per pricing key, the units the backend declares non-chargeable.
+ *
+ * The fallback is `{}` — "no declarations reached us" — and that is the strict
+ * direction rather than the convenient one: `pricing.ts` resolves a unit no
+ * declaration names to unpriced, so a deployment whose resolver predates this
+ * field, or a pricing fetch that failed, shows the gap instead of a confident
+ * $0.00.
+ */
+export function parseNonChargeableUnits(json: unknown): NonChargeableUnits {
+  return safeParse<NonChargeableUnits>(json, {});
 }
 
 export function parseModelConfigLimitsData(json: unknown): ModelConfigLimitsData | null {

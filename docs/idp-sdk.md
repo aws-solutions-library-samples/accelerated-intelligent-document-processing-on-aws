@@ -428,6 +428,28 @@ Get processing status for all documents in a batch.
 
 **Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `success_rate`, and `all_complete`
 
+⚠️ **`all_complete` is the only correct thing to poll on.** It is
+`completed + failed == total`, and it is what accounts for a document that has
+been accepted but has no tracking row yet — the row is written asynchronously by
+the queue sender, so for the first 60 seconds of a batch such a document is
+reported under `queued` rather than `failed`. Re-deriving completeness from the
+counters (for example, stopping as soon as `completed > 0 or failed > 0`) stops
+early on a batch that has not started, which is the defect
+[#1338](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1338)
+fixed. Past that window a document with no row is reported as failed with
+`Document not found in tracking table`; `IDP_NOT_FOUND_GRACE_SECONDS` sets the
+window.
+
+⚠️ **Read a document's progress bucket from `doc.bucket`, not from
+`doc.status`.** `NOT_FOUND` is the one status whose bucket is not a function of
+the status: inside the window it means "queued", past it "failed", and the
+status string is the same either way, so code that derives a bucket from the
+status counts an in-flight document as a failure. `bucket` is one of `queued`,
+`running`, `completed` or `failed`, and `get_status` sets it on every document
+it returns. It is `Optional`, because `DocumentStatus` has other producers that
+record no bucket; fall back to `idp_sdk.classify_document_state(doc.status)`
+when it is `None`.
+
 ```python
 status = client.batch.get_status(batch_id="batch-20250123-123456")
 
@@ -1256,7 +1278,7 @@ Remove residual AWS resources left behind from deleted IDP stacks. Identifies or
 **Parameters:**
 - `dry_run` (bool, optional): Preview changes without making them (default: False)
 - `auto_approve` (bool, optional): Auto-approve all deletions (default: False)
-- `regions` (list[str], optional): AWS regions to check (default: us-east-1, us-west-2, eu-central-1)
+- `regions` (list[str], optional): AWS regions to check (default: the `IDP_REGIONS` list in `lib/idp_sdk/idp_sdk/_core/cleanup_orphaned.py`)
 - `profile` (str, optional): AWS profile name (default: None)
 
 **Returns:** `OrphanedResourceCleanupResult` with `results` (dict), `has_errors`, and `has_disabled`

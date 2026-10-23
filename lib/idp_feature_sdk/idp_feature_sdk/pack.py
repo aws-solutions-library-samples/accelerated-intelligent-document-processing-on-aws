@@ -624,6 +624,24 @@ def _partition(region: str) -> str:
         return "aws"
 
 
+def _partition_for_client(client: Any) -> str:
+    """ARN partition for the region ``client`` was built for.
+
+    Answered from botocore's bundled endpoint data, so it costs no API call and
+    needs no IAM permission. The alternative — reading the partition out of a
+    ``sts:GetCallerIdentity`` caller ARN — has to reach the network to learn
+    something the region already determines, and a caller who cannot reach STS
+    (no credentials, no egress, or the permission denied) gets the commercial
+    partition by default, which is wrong in exactly the two partitions where the
+    answer is not ``aws``.
+
+    ``client`` may be any object with a botocore ``meta``; one without is treated
+    as region-unknown and falls through to ``_partition``'s own default.
+    """
+    region = getattr(getattr(client, "meta", None), "region_name", None) or ""
+    return _partition(region)
+
+
 def _enforce_ssl_statement(bucket: str, region: str) -> Dict[str, Any]:
     """Deny every principal all S3 actions on ``bucket`` over plain HTTP."""
     bucket_arn = f"arn:{_partition(region)}:s3:::{bucket}"
@@ -929,15 +947,10 @@ def apply_public_artifacts_policy(
             f"--bucket-basename pointing at a bucket where you control the BPA."
         )
 
-    # Set or merge the public-prefix bucket policy.
-    try:
-        caller_arn = boto3.client("sts").get_caller_identity().get("Arn")
-        partition = (caller_arn or "arn:aws:").split(":")[
-            1
-        ] or "aws"  # arn-partition-ok: fallback used only to PARSE the partition out
-    except Exception:  # noqa: BLE001
-        partition = "aws"
-    desired = _pack_public_bucket_policy(bucket, partition)
+    # Set or merge the public-prefix bucket policy. The partition comes from the
+    # region `s3` was built for, the same way `_enforce_ssl_statement` resolves
+    # it, so writing a policy needs no second service and no second credential.
+    desired = _pack_public_bucket_policy(bucket, _partition_for_client(s3))
     try:
         existing_resp = s3.get_bucket_policy(Bucket=bucket)
         existing = json.loads(existing_resp["Policy"])

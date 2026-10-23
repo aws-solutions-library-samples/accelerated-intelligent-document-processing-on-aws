@@ -396,107 +396,169 @@ properties:
 
 ## Classification Prompt Customization
 
-### TextBasedHolisticClassification (rvl-cdip)
+### Packet granularity (`one_stage.granularity: packet`)
 
 This approach analyzes entire document packages to identify logical document boundaries.
+Its prompts live at `classification.one_stage.packet.system_prompt` and
+`classification.one_stage.packet.task_prompt`. No preset in `config_library/unified/`
+sets packet granularity; set `classification.one_stage.granularity: packet` to use it.
+See [Classification](./classification.md#packet-granularity-one-call-per-packet).
 
 #### Key Components
 
 **System Prompt Design:**
 ```yaml
-system_prompt: >-
-  You are a document classification expert who can analyze and classify multiple documents 
-  and their page boundaries within a document package from various domains. Your task is to 
-  determine the document type based on its content and structure, using the provided document 
-  type definitions. Your output must be valid JSON according to the requested format.
+classification:
+  one_stage:
+    packet:
+      system_prompt: >-
+        You are a document classification expert who can analyze and classify multiple documents
+        and their page boundaries within a document package from various domains. Your task is to
+        determine the document type based on its content and structure, using the provided document
+        type definitions. Your output must be valid JSON according to the requested format.
 ```
 
 **Task Prompt Structure:**
 ```yaml
-task_prompt: >-
-  <task-description>
-  You are a document classification system. Your task is to analyze a document package 
-  containing multiple pages and identify distinct document segments, classifying each 
-  segment according to the predefined document types provided below.
-  </task-description>
+classification:
+  one_stage:
+    packet:
+      task_prompt: >-
+        <task-description>
+        You are a document classification system. Your task is to analyze a document package
+        containing multiple pages and identify distinct document segments, classifying each
+        segment according to the predefined document types provided below.
+        </task-description>
 
-  <document-types>
-  {CLASS_NAMES_AND_DESCRIPTIONS}
-  </document-types>
+        <document-types>
+        {CLASS_NAMES_AND_DESCRIPTIONS}
+        </document-types>
 
-  <document-boundary-rules>
-  Rules for determining document boundaries:
-  - Content continuity: Pages with continuing paragraphs, numbered sections, or ongoing narratives belong to the same document
-  - Visual consistency: Similar layouts, headers, footers, and styling indicate pages belong together
-  - Logical structure: Documents typically have clear beginning, middle, and end sections
-  - New document indicators: Title pages, cover sheets, or significantly different subject matter signal a new document
-  </document-boundary-rules>
+        <document-boundary-rules>
+        Rules for determining document boundaries:
+        - Content continuity: Pages with continuing paragraphs, numbered sections, or ongoing narratives belong to the same document
+        - Visual consistency: Similar layouts, headers, footers, and styling indicate pages belong together
+        - Logical structure: Documents typically have clear beginning, middle, and end sections
+        - New document indicators: Title pages, cover sheets, or significantly different subject matter signal a new document
+        - Repeated table column headings do NOT start a new document; they are printed on every page of a long table
+        - Two copies of the same form filed back to back are TWO documents
+        </document-boundary-rules>
 
-  <<CACHEPOINT>>
+        <output-format>
+        Report page numbers exactly as they are labelled in the packet below, where the first page shown is page 1.
+        {
+          "segments": [
+            {
+              "ordinal_start_page": "<first page of this document>",
+              "ordinal_end_page": "<last page of this document>",
+              "type": "exact_document_type_from_list",
+              "reason": "the boundary and classification evidence for this range"
+            }
+          ]
+        }
+        </output-format>
 
-  <document-text>
-  {DOCUMENT_TEXT}
-  </document-text>
+        <<CACHEPOINT>>
+
+        <document-text>
+        {DOCUMENT_TEXT}
+        </document-text>
+
+        <document-images>
+        {DOCUMENT_IMAGE}
+        </document-images>
 ```
 
 **Key Features:**
 - Structured XML-like tags for organization
 - Clear boundary detection rules
 - Cache checkpoint placement for optimization
-- Specific output format requirements
+- An `<output-format>` asking for the `segments` array the packet parser reads —
+  `ordinal_start_page`, `ordinal_end_page` and `type` are the keys it needs, and
+  a packet prompt that asks for a single class instead cannot be parsed
+- Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`. An unset
+  `one_stage.llm.modality.images` is inferred from this prompt, so omitting the
+  image placeholder makes the call text-only without saying so
 
-### MultimodalPageLevelClassification (lending-package-sample)
+### Page granularity (`one_stage.granularity: page`, the default)
 
 This approach classifies individual pages using both visual and textual information.
+Its prompts live at `classification.one_stage.page.system_prompt` and
+`classification.one_stage.page.task_prompt`. It is the default, so presets that carry
+no classification block of their own, such as `lending-package-sample` and `rvl-cdip`,
+run this way.
 
 #### Key Components
 
 **System Prompt Design:**
 ```yaml
-system_prompt: >-
-  You are a multimodal document classification expert that analyzes business documents using 
-  both visual layout and textual content. Your task is to classify single-page documents into 
-  predefined categories based on their structural patterns, visual features, and text content. 
-  Your output must be valid JSON according to the requested format.
+classification:
+  one_stage:
+    page:
+      system_prompt: >-
+        You are a multimodal document classification expert that analyzes business documents using
+        both visual layout and textual content. Your task is to classify single-page documents into
+        predefined categories based on their structural patterns, visual features, and text content.
+        Your output must be valid JSON according to the requested format.
 ```
 
 **Task Prompt with Image Integration:**
 ```yaml
-task_prompt: >-
-  <task-description>
-  Analyze the provided document using both its visual layout and textual content to determine 
-  its document type. You must classify it into exactly one of the predefined categories.
-  </task-description>
+classification:
+  one_stage:
+    page:
+      task_prompt: >-
+        <task-description>
+        Analyze the provided document using both its visual layout and textual content to determine
+        its document type, and whether this page begins a new document or continues the previous one.
+        </task-description>
 
-  <document-types>
-  {CLASS_NAMES_AND_DESCRIPTIONS}
-  </document-types>
+        <document-types>
+        {CLASS_NAMES_AND_DESCRIPTIONS}
+        </document-types>
 
-  <classification-instructions>
-  Follow these steps to classify the document:
-  1. Examine the visual layout: headers, logos, formatting, structure, and visual organization
-  2. Analyze the textual content: key phrases, terminology, purpose, and information type
-  3. Identify distinctive features that match the document type descriptions
-  4. Consider both visual and textual evidence together to determine the best match
-  5. CRITICAL: Only use document types explicitly listed in the <document-types> section
-  </classification-instructions>
+        <classification-instructions>
+        Follow these steps to classify the document:
+        1. Examine the visual layout: headers, logos, formatting, structure, and visual organization
+        2. Analyze the textual content: key phrases, terminology, purpose, and information type
+        3. Identify distinctive features that match the document type descriptions
+        4. Decide the document_boundary: "start" only if this page carries the document's opening
+           identity block (title or form name, issuer, addressee, date or period, reference numbers),
+           or pagination indicating a first page; otherwise "continue"
+        5. Consider both visual and textual evidence together to determine the best match
+        6. CRITICAL: Only use document types explicitly listed in the <document-types> section
+        </classification-instructions>
 
-  <<CACHEPOINT>>
+        <output-format>
+        {
+          "classification_reason": "the visual and textual evidence for this class and this boundary verdict",
+          "class": "exact_document_type_from_list",
+          "document_boundary": "start or continue"
+        }
+        </output-format>
 
-  <document-ocr-data>
-  {DOCUMENT_TEXT}
-  </document-ocr-data>
+        <<CACHEPOINT>>
 
-  <document-image>
-  {DOCUMENT_IMAGE}
-  </document-image>
+        <document-ocr-data>
+        {DOCUMENT_TEXT}
+        </document-ocr-data>
+
+        <document-image>
+        {DOCUMENT_IMAGE}
+        </document-image>
 ```
 
 **Key Features:**
 - Multi-modal analysis (visual + textual)
 - Step-by-step classification process
-- Image placement control with {DOCUMENT_IMAGE}
+- Image placement control with `{DOCUMENT_IMAGE}` — and both placeholders
+  present, since an unset `one_stage.llm.modality` flag is inferred from this
+  prompt
 - Strict constraint on using only defined document types
+- An `<output-format>` asking for `document_boundary` as well as `class`. That
+  verdict is what `classification.file_shape.sectionSplitting: llm_determined`
+  — the default — groups pages into sections with, so a page prompt that returns
+  only a class leaves every page looking like the start of a new document
 
 ## Extraction Prompt Customization
 
@@ -837,19 +899,21 @@ Few-shot examples are automatically integrated using the `{FEW_SHOT_EXAMPLES}` p
 **Classification with Few-Shot Examples:**
 ```yaml
 classification:
-  task_prompt: |
-    Classify this document into exactly one of these categories:
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document into exactly one of these categories:
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
+        <few_shot_examples>
+        {FEW_SHOT_EXAMPLES}
+        </few_shot_examples>
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    <document_content>
-    {DOCUMENT_TEXT}
-    </document_content>
+        <document_content>
+        {DOCUMENT_TEXT}
+        </document_content>
 ```
 
 **Extraction with Few-Shot Examples:**
@@ -958,6 +1022,18 @@ For models supporting cache checkpoints:
 
 ## LLM Inference Parameters
 
+⚠️ **The snippets in this section show values, not paths.** Each parameter lives
+inside the model block of the call that uses it, and classification has three of
+them: `classification.one_stage.llm`,
+`classification.two_stage.segmentation.llm` and
+`classification.two_stage.section_classification.llm`. There is no
+`classification.temperature`. Writing one anyway is not an error — it is a
+pre-0.9 flat key, so it is converted on read and **copied into all three call
+blocks**, which means a flat parameter silently retunes the two calls you were
+not thinking about. Write the nested path of the call you mean. The same holds
+for `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image` and `modality`.
+The classification calls ship `temperature: 0.0`, `top_p: 0.0` and `top_k: 5`.
+
 ### Temperature Settings
 
 **Classification (Deterministic):**
@@ -982,9 +1058,9 @@ temperature: 0.0  # Still deterministic for consistent summaries
 
 ### Top-p and Top-k Configuration
 
-**Balanced Configuration:**
+**Balanced Configuration** (what classification ships):
 ```yaml
-top_p: 0.1    # Focus on most likely tokens
+top_p: 0.0    # Take the most likely token
 top_k: 5      # Consider top 5 candidates
 ```
 
@@ -1121,18 +1197,49 @@ The assessment feature implements several cost optimization techniques:
 
 ## Configuration Architecture Overview
 
-The IDP accelerator supports two primary processing patterns, each with distinct configuration optimization strategies:
+### Strategy comes first, then granularity
 
-### Pattern Comparison
+Pipeline-mode classification makes a different *set* of model calls depending on
+`classification.strategy`, and only then a different *number* of them depending
+on granularity. Decide the strategy first, because it decides which block every
+other classification setting has to go in:
 
-| Aspect | Holistic Classification | Page-Level Classification |
+| `classification.strategy` | Configuration editor label | What it does |
+|---|---|---|
+| `single_pass` (default) | **One stage** | One call per page, or per packet, returns the boundaries and the classes together |
+| `two_stage` | **Two stage** | A boundary pass that is sent no class vocabulary, then one call per detected section to classify that section |
+
+The stored value is `single_pass` or `two_stage`. *One stage* and *Two stage* are
+the labels the configuration editor's form view shows; in its YAML or JSON view,
+and in a file you upload, write the stored value — the form labels are not
+accepted as values.
+[Classification](./classification.md#choosing-granularity-modality-and-strategy)
+has the full comparison and the cost argument.
+
+**Granularity is then read from the chosen strategy's own block.** Under
+`single_pass` it is `classification.one_stage.granularity`; under `two_stage` it
+is `classification.two_stage.segmentation.llm.granularity`, and
+`one_stage.granularity` is not read at all. The same applies to the page and
+packet settings underneath each — `contextPagesCount`, `window_pages`,
+`overlap_pages` and the prompts exist in both blocks, and only the active
+strategy's copy is read.
+
+### Granularity Comparison
+
+| Aspect | Packet granularity | Page granularity (default) |
 |--------|------------------------|---------------------------|
-| **Primary Use Case** | Multi-document packages | Single-page documents |
-| **Input Data** | OCR text + document images | Document images only |
-| **Processing Method** | Document boundary detection | Independent page analysis |
-| **Example Config** | `rvl-cdip` | `lending-package-sample` |
+| **Primary Use Case** | Multi-document packages where boundaries need the whole packet in view | Single documents and packets alike (the default) |
+| **Input Data** | OCR text + page images (subject to `one_stage.llm.modality`) | OCR text + page image (subject to `one_stage.llm.modality`) |
+| **Processing Method** | One call per packet (or window of `window_pages` pages) returning segments | One call per page returning a class and a start/continue boundary marker |
+| **Example Config** | None shipped; set `one_stage.granularity: packet` | `lending-package-sample`, `rvl-cdip` |
 | **Configuration Complexity** | Higher (boundary rules) | Lower (direct classification) |
-| **Output Format** | Segmented page ranges | Single classification |
+| **Output Format** | Segmented page ranges | Per-page class and boundary marker |
+
+The paths in that table are the `single_pass` ones. Under `two_stage`, read
+`classification.two_stage.segmentation.llm.…` for each of them — that is the
+call that reads pages — and note that the class no longer comes from it: the
+boundary pass returns page ranges only, and
+`classification.two_stage.section_classification` classifies each range.
 
 ### Configuration Structure
 
@@ -1223,18 +1330,29 @@ task_prompt: |
 
 The services support configurable image dimensions for optimal performance:
 
-#### New Default Behavior (Preserves Original Resolution)
+#### Image dimensions default to the original resolution
 
-**Important Change**: Empty strings or unspecified image dimensions now preserve the original document resolution for maximum processing accuracy:
+An empty string, or an absent dimension, sends the image at the resolution OCR
+produced, which is what gives the best processing accuracy. That is the shipped
+setting:
 
 ```yaml
 classification:
-  model: us.amazon.nova-pro-v1:0
-  # Image processing settings - preserves original resolution
-  image:
-    target_width: ""     # Empty string = no resizing (recommended)
-    target_height: ""    # Empty string = no resizing (recommended)
+  one_stage:
+    llm:
+      model: us.amazon.nova-2-lite-v1:0
+      # Image processing settings - preserves original resolution
+      image:
+        target_width: ""     # Empty string = no resizing (recommended)
+        target_height: ""    # Empty string = no resizing (recommended)
 ```
+
+Under `strategy: two_stage` the equivalent blocks are
+`classification.two_stage.segmentation.llm.image` and
+`classification.two_stage.section_classification.llm.image`; the `one_stage`
+block above is not read. A classification call's `image` block honours only
+`target_width` and `target_height` — `dpi` and `preprocessing` validate there and
+do nothing, because they are OCR-stage settings and belong under `ocr.image`.
 
 #### Custom Image Dimensions
 
@@ -1243,15 +1361,19 @@ Configure specific dimensions when performance optimization is needed:
 ```yaml
 # For high-accuracy processing with controlled dimensions
 classification:
-  image:
-    target_width: "1200"   # Resize to 1200 pixels wide
-    target_height: "1600"  # Resize to 1600 pixels tall
+  one_stage:
+    llm:
+      image:
+        target_width: "1200"   # Resize to 1200 pixels wide
+        target_height: "1600"  # Resize to 1600 pixels tall
 
 # For fast processing with lower resolution
 classification:
-  image:
-    target_width: "600"    # Smaller for faster processing
-    target_height: "800"   # Maintains reasonable quality
+  one_stage:
+    llm:
+      image:
+        target_width: "600"    # Smaller for faster processing
+        target_height: "800"   # Maintains reasonable quality
 ```
 
 #### Image Resizing Features
@@ -1267,7 +1389,13 @@ classification:
 For documents with multiple pages, the system provides comprehensive image support:
 
 - **Automatic Pagination**: Images are processed in page order
-- **No Image Limits**: All document pages are processed following Bedrock API removal of image count restrictions
+- **No cap on page count**: there is no limit on how many pages a document may
+  have. There is, however, a consequence to how many images one *request*
+  carries: above 20 image blocks in a single Bedrock request every image in it is
+  downscaled to 2,000 px. That is why `classification.one_stage.packet.window_pages`
+  ships at 20 — raising it buys fewer calls at the price of resolution on all of
+  them. Separately, a single image fails outright above 3.75 MiB stored or
+  8,000 px on a side
 - **Info Logging**: System logs image counts for monitoring purposes
 - **Comprehensive Processing**: Documents of any length are fully processed
 
@@ -1467,7 +1595,7 @@ Pattern 2 supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR back
 ```yaml
 ocr:
   backend: "bedrock"  # Options: "textract", "bedrock", "none"
-  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  model_id: "us.anthropic.claude-sonnet-4-6"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
   
@@ -1480,74 +1608,23 @@ ocr:
 
 #### Supported Vision-Capable Models
 
-Configure from these supported models:
+The authoritative list is the **Model** dropdown under OCR in the configuration
+editor, which is generated from the `ocr.model_id` enum in
+`patterns/unified/template.yaml`. It spans the `us.`, `eu.` and `global.`
+Claude and Nova families plus `qwen.qwen3-vl-235b-a22b`, Grok and the OpenAI
+models, and includes the `:priority` and `:flex` Nova tiers. It is not
+reproduced here, because a copy of a picklist goes stale silently — which is
+what had happened to the list this paragraph replaced.
 
-- `us.amazon.nova-lite-v1:0`
-- `us.amazon.nova-pro-v1:0`
-- `us.amazon.nova-2-lite-v1:0`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `us.anthropic.claude-haiku-5-5`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-20250514-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-6`
-- `us.anthropic.claude-sonnet-4-6:1m`
-- `us.anthropic.claude-opus-4-5-20251101-v1:0`
-- `us.anthropic.claude-opus-4-1-20250805-v1:0`
-- `us.anthropic.claude-opus-4-5-20251101-v1:0`
-- `us.anthropic.claude-opus-4-6-v1`
-- `us.anthropic.claude-opus-4-6-v1:1m`
-- `us.anthropic.claude-opus-4-7`
-- `us.anthropic.claude-opus-4-7:1m`
-- `us.anthropic.claude-opus-4-8`
-- `us.anthropic.claude-opus-4-8:1m`
-- `us.anthropic.claude-opus-5`
-- `us.anthropic.claude-opus-5:1m`
-- `us.anthropic.claude-opus-5-5`
-- `us.anthropic.claude-opus-5-5:1m`
-- `eu.amazon.nova-lite-v1:0`
-- `eu.amazon.nova-pro-v1:0`
-- `eu.amazon.nova-2-lite-v1:0`
-- `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `eu.anthropic.claude-haiku-5-5`
-- `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-20250514-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-6`
-- `eu.anthropic.claude-sonnet-4-6:1m`
-- `eu.anthropic.claude-opus-4-5-20251101-v1:0`
-- `eu.anthropic.claude-opus-4-6-v1`
-- `eu.anthropic.claude-opus-4-6-v1:1m`
-- `eu.anthropic.claude-opus-4-7`
-- `eu.anthropic.claude-opus-4-7:1m`
-- `eu.anthropic.claude-opus-4-8`
-- `eu.anthropic.claude-opus-4-8:1m`
-- `eu.anthropic.claude-opus-5`
-- `eu.anthropic.claude-opus-5:1m`
-- `eu.anthropic.claude-opus-5-5`
-- `eu.anthropic.claude-opus-5-5:1m`
-- `qwen.qwen3-vl-235b-a22b`
-- `global.amazon.nova-2-lite-v1:0`
-- `global.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `global.anthropic.claude-haiku-5-5`
-- `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `global.anthropic.claude-sonnet-4-6`
-- `global.anthropic.claude-sonnet-4-6:1m`
-- `global.anthropic.claude-opus-4-5-20251101-v1:0`
-- `global.anthropic.claude-opus-4-6-v1`
-- `global.anthropic.claude-opus-4-6-v1:1m`
-- `global.anthropic.claude-opus-4-7`
-- `global.anthropic.claude-opus-4-7:1m`
-- `global.anthropic.claude-opus-4-8`
-- `global.anthropic.claude-opus-4-8:1m`
-- `global.anthropic.claude-opus-5`
-- `global.anthropic.claude-opus-5:1m`
-- `global.anthropic.claude-opus-5-5`
-- `global.anthropic.claude-opus-5-5:1m`
+Commonly used choices:
+
+- `us.amazon.nova-lite-v1:0` — cheapest; adequate for clean, text-heavy scans
+- `us.amazon.nova-pro-v1:0` — better on mixed layouts
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` — fast Claude option
+- `us.anthropic.claude-sonnet-4-6` — strongest on handwriting and dense tables
+- `qwen.qwen3-vl-235b-a22b` — vision-language alternative
+
+Select `LambdaHook` instead of a model to route OCR to your own Lambda function.
 
 #### When to Configure Bedrock OCR
 
@@ -1742,14 +1819,22 @@ properties:
 
 ### Prompt Templates
 
-**Classification Template:**
+**Classification Template** (one stage, page granularity — under
+`strategy: two_stage` the equivalents are
+`classification.two_stage.segmentation.llm.page.*` for the boundary pass and
+`classification.two_stage.section_classification.llm.*` for the class pass):
 ```yaml
-system_prompt: "Classification expert with domain knowledge"
-task_prompt: >-
-  <instructions>Clear classification steps</instructions>
-  <document-types>{CLASS_NAMES_AND_DESCRIPTIONS}</document-types>
-  <<CACHEPOINT>>
-  <document-content>{DOCUMENT_TEXT}</document-content>
+classification:
+  one_stage:
+    page:
+      system_prompt: "Classification expert with domain knowledge"
+      task_prompt: >-
+        <instructions>Clear classification steps, including when a page is a document's first page</instructions>
+        <document-types>{CLASS_NAMES_AND_DESCRIPTIONS}</document-types>
+        <output-format>{"class": "...", "document_boundary": "start or continue"}</output-format>
+        <<CACHEPOINT>>
+        <document-content>{DOCUMENT_TEXT}</document-content>
+        <document-image>{DOCUMENT_IMAGE}</document-image>
 ```
 
 **Extraction Template:**

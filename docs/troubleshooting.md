@@ -107,25 +107,42 @@ so such a class still cannot be fully assessed; what it now gets is an actionabl
 message naming the real cause.
 
 ⚠️ If your symptom is instead **the document stuck in `ASSESSING` with the Assessment
-Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**
-— the symptom originally reported on #894 — note that this guard is not known to fix
-it. The cause of that timeout has not been established: the same-model retry rung
-already stopped on no progress before this change, and the ladder's wall-clock
-deadline guard was already in place in the release where the timeouts were observed.
-The one gap in that guard has since been closed (#958): every recovery call now
-checks the remaining Lambda time before it is made, not just further bisections and
-whole escalation rounds, so a run that would previously have spent its entire budget
-on partially-successful retries now stops at the last call that fits and keeps
-everything it recovered. When that happens with rows still unscored the section
-reports `assessment_incomplete` (error) with the time budget named in its message —
-**not** `assessment_deadline_reached`, which is reserved for the case where recovery
-was cut short and every row ended up scored anyway; `deadline_reached` is also set in
-`metadata.assessment_batch_split_stats`. Whether any of this was the cause of the
-reported timeouts is still unknown. Attach your Assessment Lambda log (the per-call timings
-and `stopReason` lines) to #894. Until #894 is fixed, either point that class at a large-output-cap confidence model
+Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**,
+the guard above is not what addresses it. **Every dispatch in the confidence pass
+consults the remaining invocation time (#1488):** per batch in the sequential loop,
+before the cache-warming batch, and before each wave of the concurrent fan-out,
+alongside the recovery ladder's own per-chunk check (#958). A dispatch the
+remaining time cannot hold is refused rather than started, so a 1,200-row list —
+roughly 48 model calls at the shipped 25-row ceiling — now stops at the last batch
+that fits instead of running into the wall. That matters because **a Lambda killed
+on the wall clock raises no Python exception**, so the degrade path that exists for
+a failed confidence pass never ran and Step Functions discarded a document whose
+extraction had already succeeded and been persisted.
+
+When a stop leaves rows unscored the section reports `assessment_incomplete`
+(error) with the time budget named in its message, and the unscored rows carry a
+per-row reason naming the time budget too — **not**
+`assessment_deadline_reached`, which is reserved for the case where recovery was
+cut short and every row ended up scored anyway. `deadline_reached` is also set in
+`metadata.assessment_batch_split_stats`, whose `batch_count` there counts the
+batches that were dispatched. Only a trailing suffix of batches is ever skipped,
+never one in the middle. The remedies the message names are more Assessment
+function time, a higher `extraction.agentic.max_concurrent_batches` so the same
+rows cost fewer waves, or smaller sections; *lowering*
+`extraction.confidence.list_batch_size` makes a stop **more** likely, because it
+buys smaller calls by making more of them.
+
+Two things that will still produce this symptom. **An out-of-memory kill is
+equally exception-free and nothing above bounds memory** — read the kill reason in
+the function's log rather than assuming the wall clock. And the multi-instance
+sizing bug #894 reports is a different route: its wrapper makes the batch sizer
+measure the outer row, so it derives a batch size far too large and the pass makes
+*few* big calls rather than many small ones, which is not the shape #1488
+bounds. For that class, either point it at a large-output-cap confidence model
 (`extraction.confidence.escalation_model`, or the per-class
 `x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
-class rather than a field inside a multi-instance instance.
+class rather than a field inside a multi-instance instance; attach your Assessment
+Lambda log (the per-call timings and `stopReason` lines) to #894.
 
 **`ValidationException: Input is too long for requested model.` from the Assessment
 step.** This is deterministic — retrying sends the identical oversized request — and
@@ -176,14 +193,18 @@ exist in the configuration the document was processed under, so there was no sch
 to extract against and the section holds no data. Three causes: a class renamed or
 deleted while documents were in flight; an old document reprocessed under a
 configuration that no longer defines its class; or the classifier returned a class
-outside the configured vocabulary on a path that does not enforce one —
-`textbasedHolisticClassification`, which has no enforcement loop, or
-`multimodalPageLevelClassification` with `enforceValidClasses: false`. Add the class
-to the configuration, reclassify the document under the current one, or turn
-enforcement on. The same section also carries
+outside the configured vocabulary with `enforceValidClasses: false`, which
+stores the model's class verbatim. That setting lives inside the `validation`
+block of each call that assigns a class —
+`classification.one_stage.llm.validation.enforceValidClasses` and
+`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+— and there is no `classification.enforceValidClasses`. With enforcement on (the
+default), page and packet granularity and two-stage section classification all
+re-prompt and then assign `fallback_class` instead. Add the class to the configuration, reclassify the document
+under the current one, or turn enforcement on. The same section also carries
 `assessment_skipped_confidence_unavailable`, because it has no confidence scores
-either — so on those two non-enforcing paths these arrive at a rate set by model
-output rather than by configuration edits, and
+either — so with enforcement off these arrive at a rate set by model output rather
+than by configuration edits, and
 [`ConfidenceUnavailableThreshold`](./monitoring.md#confidence-assessment-degraded)
 is what you tune if the alarm is too sensitive for your corpus.
 
@@ -209,18 +230,31 @@ warning meaning the page had **neither** usable OCR text **nor** a loadable page
 image; a blank page normally still has an image, so this points at missing page
 artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
-was outside the configured vocabulary and was coerced to `invalidClassFallback` —
+was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
-three you are most likely to see. These are recorded on the
-`multimodalPageLevelClassification` path only.
+three you are most likely to see. These are recorded only at one-stage page
+granularity; packet granularity and two stage still re-prompt and assign
+`fallback_class`, but record no issue for it.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit
-`assessment_coverage_incomplete` — a warning past 5% of rows unscored, an error at
-25% or more **and** at least 10 unscored rows (a proportion alone would make one
-unscored row in a four-row list an error) — carrying the expected/scored/unscored
-counts and a per-field breakdown. The extracted values themselves are unaffected;
-treat it as "do not trust this section's confidence surface as a whole". It is
+`assessment_coverage_incomplete` — a warning at 5% of rows unscored or more, or at
+10 or more unscored rows in absolute terms, whichever comes first (a proportion alone
+leaves a silent band that grows with the document: 39 rows at 800, 159 at 3,200), an
+error at 25% or more **and** at least 10 unscored rows (a proportion alone would make
+one unscored row in a four-row list an error) — carrying the expected/scored/unscored
+counts and a per-field breakdown.
+
+The extracted values themselves are unaffected, and **which of the two warning rungs
+spoke decides how to read it.** The message says which. One that opens *"Only N of M
+extracted list row(s) (X%) carry a confidence score"* is the 5% fraction, and means
+"do not trust this section's confidence surface as a whole". One that opens with the
+**unscored row count** — *"N of M extracted list row(s) carry no confidence score …
+that is only X% of the section"* — is the absolute rung on a shortfall under 5%: the
+section's confidence surface is still broadly intact, and what needs attention is
+those N rows specifically, so read the per-field breakdown and check them
+individually rather than discounting the section. A message opening *"None of the M"*
+is the error case, where the section has no confidence surface at all. It is
 suppressed when the self-healing ladder already reported an error for the same
 section (`assessment_incomplete`, `assessment_row_too_large`,
 `assessment_schema_mismatch`), because that issue describes the same unscored rows
@@ -237,6 +271,33 @@ issue's `details`: `expected_rows`, `scored_rows`, `unscored_rows`,
 `unscored_fraction`. The ratios are for reading; the rung itself is decided on the
 exact integer division, so a `details` value of `0.05` is not by itself proof the
 warning threshold was met.
+
+**A field shows a value with no confidence and no bounding box.** The confidence
+model can return well-formed JSON that simply omits some of the fields it was asked
+about — a small model answering about a ten-field form may come back carrying only
+the first three keys. This is not a truncation, so none of the batch-splitting
+machinery above applies and nothing in the response looks wrong. Because one
+per-field object carries confidence, threshold and geometry together, all three go
+missing at once: the value is extracted and correct, but it has no score, so no
+threshold can be breached, no confidence alert is raised, it never reaches HITL
+review, and the viewer cannot draw a box for it.
+
+The pipeline now re-asks for exactly those fields with a second, narrower call, and
+whatever that does not recover is reported as `assessment_fields_unscored` — a
+**warning** naming the fields, or an **error** when no populated field in the
+section carries a score at all. `details` gives `unscored_fields`,
+`populated_fields` and `scored_fields`, and the recovery itself is visible in the
+section's `assessment_batch_split_stats` as `scalar_retry_calls`,
+`fields_recovered_by_retry` and `unrecoverable_fields`.
+
+Two things worth knowing. Fields whose extracted value is empty are **not**
+counted — they need no confidence, so a sparsely-populated form does not report a
+shortfall for them. And this issue is deliberately *not* suppressed by a
+`assessment_incomplete` on the same section: that one is about unscored list
+**rows**, these are different values, so seeing both is two findings rather than one
+counted twice. If `unrecoverable_fields` is persistently non-zero, the durable fix
+is a stronger confidence model — `assessment.model` — since the cause is a model
+answering short rather than a budget it ran out of.
 
 ### Web UI Access Issues
 

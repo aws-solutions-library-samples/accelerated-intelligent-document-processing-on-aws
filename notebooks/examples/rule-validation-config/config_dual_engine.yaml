@@ -4,28 +4,49 @@
 # ============================================================================
 # Classification (minimal — single doc type for testing)
 # ============================================================================
-classificationMethod: textbasedHolisticClassification
 classification:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
-  temperature: "0"
-  top_p: "0"
-  top_k: "20"
-  max_tokens: "4096"
-  system_prompt: |
-    You are a document classifier. Classify each page of the document.
-  task_prompt: |
-    Classify the following document pages. Each page belongs to one class.
-    Available classes: invoice
-    
-    {DOCUMENT_TEXT}
-    
-    Return JSON: {"pages": [{"page_id": "1", "classification": "invoice", "confidence": 0.99}]}
+  # No `one_stage.granularity` here on purpose, so this runs at the default
+  # page granularity. The task prompt below asks for a `pages` array that
+  # neither the page nor the packet parser reads, and the notebook using this
+  # file does not classify, so the classification settings are placeholders.
+  one_stage:
+    llm:
+      model: us.anthropic.claude-sonnet-4-6
+      temperature: '0'
+      top_p: '0'
+      top_k: '20'
+      max_tokens: '4096'
+    page:
+      system_prompt: |
+        You are a document classifier. Classify each page of the document.
+      task_prompt: |
+        Classify the following document pages. Each page belongs to one class.
+        Available classes: invoice
+
+        {DOCUMENT_TEXT}
+
+        Return JSON: {"pages": [{"page_id": "1", "classification": "invoice", "confidence": 0.99}]}
+  two_stage:
+    segmentation:
+      llm:
+        model: us.anthropic.claude-sonnet-4-6
+        temperature: '0'
+        top_p: '0'
+        top_k: '20'
+        max_tokens: '4096'
+    section_classification:
+      llm:
+        model: us.anthropic.claude-sonnet-4-6
+        temperature: '0'
+        top_p: '0'
+        top_k: '20'
+        max_tokens: '4096'
 
 # ============================================================================
 # Extraction (simple invoice fields)
 # ============================================================================
 extraction:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model: us.anthropic.claude-sonnet-4-6
   temperature: "0"
   top_p: "0"
   top_k: "20"
@@ -54,7 +75,7 @@ rule_validation:
     Information Not Found: No relevant data exists in the document content.
   extraction_results: null
   fact_extraction:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are a Document Fact Extraction Specialist responsible for identifying
       and extracting factual evidence relevant to rule validation.
@@ -87,7 +108,7 @@ rule_validation:
     top_k: 20
     max_tokens: 4096
   rule_validation_orchestrator:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are a Compliance Validation Specialist. Review extracted evidence
       and make a compliance recommendation for the given rule.
@@ -123,7 +144,7 @@ rule_validation:
 
   # Z3 engine: rule translation (NL → SMT-LIB RuleJSON)
   z3_rule_translator:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are an expert at translating business rules into formal SMT-LIB constraints for the Z3 theorem prover.
 

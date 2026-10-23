@@ -566,8 +566,27 @@ The Discovery module supports comprehensive configuration through the deployment
 - `us.amazon.nova-pro-v1:0` - Balanced performance and accuracy (recommended)
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` - Fast processing
 - `us.anthropic.claude-haiku-5-5` - Fastest and cheapest; first Haiku with reasoning effort
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - High accuracy
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - Latest capabilities
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - High accuracy, but an AWS
+  Health notice puts it in legacy with end of life on 2027-04-08
+- `us.anthropic.claude-sonnet-4-6` - High accuracy, Active
+- `us.anthropic.claude-sonnet-5` - Latest capabilities
+- `us.anthropic.claude-sonnet-5-5` - 1M default context window and the cheapest
+  cache reads of any Claude here. **Not available for Multi-Document Discovery
+  cluster analysis** — see the note below
+
+> **⚠️ Two Claude models are not available for Multi-Document Discovery cluster
+> analysis**, although both work for every other Discovery mode: **Claude Opus
+> 5.5** and **Claude Sonnet 5.5**. Cluster analysis
+> (`discovery.multi_document.analysis_model_id`) is the one path that asks the agent
+> framework for structured output, and the framework retries with a **forced** tool
+> call when the model answers in prose instead of calling the tool — which is a
+> normal outcome, not an error. Both models reject a forced `toolChoice` with a 400,
+> so they would appear to work and then lose one cluster's analysis whenever the
+> retry happened to be needed. They are therefore absent from that one picklist, and
+> `idp-cli config-validate` rejects a hand-edited config that names either, since a
+> config can name a model the picklist does not list. Claude **Sonnet 5**, **Opus 5**
+> and **Haiku 5.5** all accept forcing and are offered — the restriction is per model
+> id, not per family.
 
 > **⚠️ OpenAI GPT-5.x is NOT supported for Discovery.** Discovery ingests whole
 > PDFs as Bedrock `document` content blocks, which the OpenAI Responses API

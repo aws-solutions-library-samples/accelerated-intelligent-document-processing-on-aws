@@ -16,12 +16,16 @@ import type { TableProps } from '@cloudscape-design/components';
 import { isBaselineAvailable, type ExportScope } from '../document-panel/document-export';
 
 import { TableHeader } from '../common/table';
-import { DOCUMENTS_PATH, testRunResultsHref } from '../../routes/constants';
+import { DOCUMENTS_PATH, reviewItemHref, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
+import { isQueueManaged } from '../common/review-status';
+import { renderObjectStatus } from '../common/object-status-renderer';
+import { MALWARE_REFUSED_STATUSES, MALWARE_SCANNING_STATUS } from '../common/malware-scan';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
+import { ABORTABLE_STATUSES } from '../common/document-statuses';
 
 export type { ConfigVersion };
 
@@ -179,9 +183,14 @@ const TEST_RUN_COLUMN: TableProps.ColumnDefinition<MappedDocument> = {
   width: 260,
 };
 
+/**
+ * `canWorkReviewQueues` links a queued document's In Review status to its queue item,
+ * the same destination as the document page's Review button.
+ */
 export const COLUMN_DEFINITIONS_MAIN = (
   versions: ConfigVersion[] = [],
   documentView: DocumentView = 'PRODUCTION',
+  canWorkReviewQueues = false,
 ): TableProps.ColumnDefinition<MappedDocument>[] => [
   {
     id: KEY_COLUMN_ID,
@@ -200,7 +209,7 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'objectStatus',
     header: 'Status',
-    cell: (item) => item.objectStatus,
+    cell: (item) => renderObjectStatus(item.objectStatus),
     sortingField: 'objectStatus',
     width: 150,
   },
@@ -265,7 +274,7 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'hitlStatus',
     header: 'Review Status',
-    cell: (item) => renderHitlStatus(item),
+    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? reviewItemHref(item.objectKey) : undefined),
     sortingField: 'hitlStatus',
     width: 150,
   },
@@ -434,21 +443,6 @@ export const PERIODS_TO_LOAD_STORAGE_KEY = 'periodsToLoad';
 // local storage key to persist custom date range
 export const CUSTOM_DATE_RANGE_STORAGE_KEY = 'customDateRange';
 
-// Statuses that can be aborted
-const ABORTABLE_STATUSES = [
-  'QUEUED',
-  'RUNNING',
-  'PREPROCESSING',
-  'OCR',
-  'CLASSIFYING',
-  'EXTRACTING',
-  'ASSESSING',
-  'POSTPROCESSING',
-  'HITL_IN_PROGRESS',
-  'SUMMARIZING',
-  'EVALUATING',
-];
-
 /**
  * Switches the list between the two submission partitions. A two-state control
  * rather than a "show test documents too" toggle because the backend has no
@@ -530,9 +524,30 @@ export const DocumentsCommonHeader = ({
   // Check if any selected items can be aborted
   const hasAbortableItems = selectedItems.some((item) => ABORTABLE_STATUSES.includes(item.objectStatus));
   // Check if any selected items can be claimed (pending HITL and not owned)
-  const hasClaimableItems = selectedItems.some((item) => item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner);
+  // A queued document is claimed from its queue item, so it never counts here.
+  const hasClaimableItems = selectedItems.some(
+    (item) => item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner && !isQueueManaged(item.hitlStatus),
+  );
   // Check if any selected items can be released (has review owner and HITL not completed)
-  const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted);
+  const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
+  // Reprocess re-queues a document directly, bypassing the malware-scanning
+  // ingest gate — the refused file is still in the input bucket, so reprocessing
+  // a quarantined document would push it into OCR and Bedrock. The resolver
+  // refuses it server-side; disabling the button here is so a reviewer finds out
+  // before clicking rather than from an error. ANY refused document in the
+  // selection disables it, because reprocess acts on the whole selection.
+  const refusedSelection = selectedItems.filter((item) => MALWARE_REFUSED_STATUSES.includes((item.objectStatus || '').toUpperCase()));
+  // Held at the gate, awaiting a verdict. Blocked for a different reason than a
+  // refusal and so worded differently: this one clears by itself in a minute or
+  // two, whereas a refusal needs the file deleted or replaced. Reprocessing one
+  // of these would run it through OCR and Bedrock with no verdict.
+  const scanningSelection = selectedItems.filter((item) => (item.objectStatus || '').toUpperCase() === MALWARE_SCANNING_STATUS);
+  const reprocessDisabledReason =
+    refusedSelection.length > 0
+      ? `${refusedSelection.length} selected document(s) were refused by malware scanning and cannot be reprocessed. Delete them, or re-upload an unprotected copy of a file GuardDuty could not read.`
+      : scanningSelection.length > 0
+        ? `${scanningSelection.length} selected document(s) are still being scanned for malware. Reprocess is available once the scan verdict arrives.`
+        : null;
 
   const downloadMenuItems = buildDownloadMenuItems(
     selectedItems,
@@ -592,11 +607,11 @@ export const DocumentsCommonHeader = ({
             </span>
           )}
           {onReprocess && (
-            <span title={destructiveDisabledReason || 'Reprocess selected documents'}>
+            <span title={destructiveDisabledReason || reprocessDisabledReason || 'Reprocess selected documents'}>
               <Button
                 iconName="redo"
                 variant="normal"
-                disabled={!!destructiveDisabledReason || !hasSelectedItems}
+                disabled={!!destructiveDisabledReason || !!reprocessDisabledReason || !hasSelectedItems}
                 onClick={onReprocess}
                 ariaLabel="Reprocess"
               />

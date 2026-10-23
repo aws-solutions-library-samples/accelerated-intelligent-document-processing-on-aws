@@ -107,7 +107,7 @@ extraction:
 > `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
+> 5.5 / Sonnet 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
 > (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
@@ -117,7 +117,8 @@ extraction:
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
 > Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
 > Haiku 5.5 is the first Haiku that accepts effort, and its own default is
-> `medium` rather than `high`.
+> `medium` rather than `high`. Sonnet 5.5's own default is `high`, the ordinary
+> one — so "it is a 5.5 model" does not predict the default either.
 
 ### Advanced (agentic) extraction
 
@@ -146,7 +147,7 @@ per shard.
 extraction:
   agentic:
     enabled: true             # Advanced mode
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: us.anthropic.claude-sonnet-5
 ```
 
 #### Supported models for agentic extraction
@@ -154,9 +155,12 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
-- **Anthropic Claude Opus** models (for highest accuracy requirements)
+  - `us.anthropic.claude-sonnet-5` — the shipped extraction default
+  - `us.anthropic.claude-sonnet-4-6` — best balance of speed and cost
+  - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — still selectable, but an AWS
+    Health notice puts it in legacy with end of life on 2027-04-08
+- **Anthropic Claude Opus** models (for highest accuracy requirements), e.g.
+  `us.anthropic.claude-opus-5`
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
@@ -203,7 +207,7 @@ Agentic extraction requires models with tool-use support:
 > |---|---|---|
 > | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
 > | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
-> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5, Haiku 5.5) | none — `` `top_k` is deprecated for this model `` | — |
+> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5, Sonnet 5.5, Haiku 5.5) | none — `` `top_k` is deprecated for this model `` | — |
 > | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
 > | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
 >
@@ -549,7 +553,7 @@ classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     $id: complex-financial-form
     x-aws-idp-document-type: complex-financial-form
-    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-4-20250514-v1:0  # Override!
+    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-5  # Override!
     type: object
     properties:
       account_number:
@@ -806,8 +810,8 @@ carries few enough pages that the clamp engages only at about **101 pages**; at
 `max_concurrent_batches: 5` it is about 51, at 2 about 21, and with sharding off
 (`max_concurrent_batches: 1`) it is 11. Because `max_concurrent_batches` caps the
 number of shards as well as the parallelism, *raising* it makes each request smaller
-and the threshold higher. Holistic classification, which sends a whole packet in one
-request, is affected on the same >20-image rule.
+and the threshold higher. Classification at packet granularity is affected on the same >20-image rule,
+which is why `classification.one_stage.packet.window_pages` ships at 20.
 
 Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5,
 Opus 5.5 and Sonnet 5 it is about 20% below the resolution they would otherwise use,
@@ -885,11 +889,25 @@ may instead emit a worse value that fits the schema, so this is not a free
 accuracy win and it is not yet proven on real corpora. Measure completeness and
 field accuracy on your own documents before enabling it.
 
-**When it is skipped automatically.** Not every route can carry a tool
-configuration. Models reached through a custom Lambda hook and the GPT-5.x
-(Responses API) route fall back to the prompt, and the reason is recorded — so a
+**When it is skipped automatically.** Two different things can make forcing
+unavailable, and both fall back to the prompt with the reason recorded — so a
 before/after comparison can tell "forcing changed nothing" from "forcing never
 ran", which are very different results.
+
+- **The route carries no tool configuration at all**: models reached through a
+  custom Lambda hook, and the GPT-5.x (Responses API) route.
+- **The model carries a tool configuration but rejects a *forced* choice**:
+  **Claude Opus 5.5** and **Claude Sonnet 5.5**. Both answer `toolChoice: auto`
+  with a `toolUse` block and both return a 400 for `{"any": {}}` and
+  `{"tool": {...}}` (`tool_choice: type "tool" and "any" are not supported for this
+  model`), so schema enforcement is simply not available on them and the prose
+  schema is used instead.
+
+⚠️ **This is per model id, not per family.** Claude **Sonnet 5** and **Opus 5**
+both accept a forced choice, as does **Haiku 5.5** — so switching from Sonnet 5 to
+Sonnet 5.5 silently turns schema enforcement off, and `metadata.forced_tool.skipped`
+is where that shows up. Check it before reading a Sonnet 5 → Sonnet 5.5 comparison
+as a model difference.
 
 **A fixed failure to know about.** Before this fix, a *group* attribute whose name
 contains a space (`Account Holder Address` — normal in human-authored classes,
@@ -1426,7 +1444,7 @@ extraction:
 >    extraction:
 >      confidence:
 >        escalation_enabled: true
->        escalation_model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+>        escalation_model: "us.anthropic.claude-sonnet-5:1m"
 >        max_escalation_rounds: 2
 >    ```
 >
@@ -1461,20 +1479,25 @@ extraction:
 >    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
 >    #894 (an Assessment Lambda hitting its 900 s limit three times,
 >    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
->    extraction) is **not explained by this loop**, so treat it as still open: the
->    same-model retry rung already stopped on no progress before this change, and the
->    ladder's wall-clock deadline guard was already in place in the release where
->    those timeouts were observed. The single gap in that guard has since been closed
->    (#958): every recovery call — retry and escalation alike — now checks the
->    Lambda's remaining time before it is made, as further bisections already did, so
->    a run that would have spent its whole budget on partially-successful retry
->    rounds stops at the last call that fits and keeps every row it recovered. With
->    rows still unscored the section reports `assessment_incomplete` naming the time
->    budget (the `assessment_deadline_reached` warning is for a run that was cut
->    short and scored every row regardless). That was the most concrete lead on the
->    timeout, but it is not confirmed as its cause. Until #894 is fixed, score such a class
->    with a large-output-cap confidence model (`escalation_model`), or split the inner
->    list into its own class.
+>    extraction) is **not explained by this loop**. What bounds the wall clock is a
+>    separate guard that now covers **every** dispatch the pass makes: each batch of
+>    the sequential loop, the cache-warming batch, each wave of the concurrent
+>    fan-out (#1488) and every recovery call, retry and escalation alike (#958), as
+>    further bisections already did. A dispatch the remaining invocation time cannot
+>    hold is refused rather than started, which is what keeps a long list — 48 model
+>    calls for 1,200 rows at the shipped 25-row ceiling — from running into the
+>    900 s wall; a Lambda killed there raises no Python exception, so the degrade
+>    path never ran and the document was discarded with its already-persisted
+>    extraction. With rows still unscored the section reports
+>    `assessment_incomplete` naming the time budget, and those rows carry a per-row
+>    reason naming it too (the `assessment_deadline_reached` warning is for a run
+>    that was cut short and scored every row regardless). ⚠️ Two routes to this
+>    symptom are **not** covered: an out-of-memory kill, which is equally
+>    exception-free and which nothing here bounds, and the sizing bug itself —
+>    a wrongly large batch size makes the pass issue few big calls rather than many
+>    small ones, which is not the shape a per-dispatch guard refuses. Until #894 is
+>    fixed, score such a class with a large-output-cap confidence model
+>    (`escalation_model`), or split the inner list into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
@@ -1489,6 +1512,7 @@ extraction:
 > recorded as a structured **processing issue** on the section — `severity`
 > (error / warning / info), `code` (e.g. `assessment_incomplete`,
 > `assessment_row_too_large`, `assessment_coverage_incomplete`,
+> `assessment_fields_unscored`,
 > `assessment_recovered_with_retries`, `assessment_deadline_reached`), a
 > user-facing `message`, and a technical `root_cause`. These are persisted to
 > DynamoDB and shown in the Web UI: a **Status** column on the document's Sections
@@ -1542,10 +1566,14 @@ extraction:
 > reports them, where the remedy is. A section whose *named* class is missing from
 > the configuration is **not** an exception and does publish: the section was
 > expected to hold data and holds none. How often that arrives depends on your
-> classification configuration — on the default it needs a configuration edit, but
-> `textbasedHolisticClassification` and `enforceValidClasses: false` both store an
-> out-of-vocabulary prediction verbatim, so there the rate follows model output and
-> `ConfidenceUnavailableThreshold` is the lever.
+> classification configuration — with `enforceValidClasses` on (the
+> default) every call that assigns a class re-prompts and then assigns
+> `fallback_class`, so it needs a configuration edit, but `enforceValidClasses:
+> false` stores an out-of-vocabulary prediction verbatim, so there the rate follows
+> model output and `ConfidenceUnavailableThreshold` is the lever. The setting sits
+> in each class-assigning call's own `validation` block
+> (`classification.one_stage.llm.validation.enforceValidClasses`, and
+> `classification.two_stage.section_classification.llm.validation.enforceValidClasses`).
 > `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
@@ -1585,12 +1613,17 @@ group attributes and list items recursively.
 
 `extraction.geometry.mode` controls where field bounding boxes come from:
 
-| `geometry.mode` | Source of boxes | Notes |
+A box locates an **extracted value** on the page, so a field the model returned
+nothing for is never located — under any mode. That accounts for most missing
+boxes in practice, and the viewers now say so per field (see
+[What the viewers show](#what-the-viewers-show)).
+
+| `geometry.mode` | Source of boxes | When to choose it |
 |---|---|---|
-| **`ocr_only`** *(default)* | Real OCR lines only | Model is **not** asked for boxes; cheapest and most accurate |
-| **`llm_grounded`** | LLM estimates, grounded in OCR | Model emits boxes; service replaces them with real OCR boxes where the value matches |
-| **`llm`** | LLM estimates as-is | Escape hatch; no grounding |
-| **`off`** | None | No geometry produced |
+| **`ocr_only`** *(default)* | Real OCR lines only | Almost always. The model is **not** asked for boxes, so no added prompt tokens, and OCR boxes beat LLM-estimated ones |
+| **`llm_grounded`** | LLM estimates, corrected against OCR | When values are not present verbatim in the OCR text — reformatted dates, figures read off a chart — so `ocr_only` matches too little |
+| **`llm`** | LLM estimates as-is | ⚠️ **Discouraged.** Same prompt and cost as `llm_grounded`, then skips the correction, so it is never the better of the two. Retained for existing configurations |
+| **`off`** | None | No geometry produced. The viewers stop offering to locate fields and say why, scoped to the section rather than blaming the document or the mode |
 
 ```yaml
 extraction:
@@ -1603,6 +1636,46 @@ extraction:
 > **v0.6 rename.** The LLM-box modes were previously `llm_with_ocr_grounding` /
 > `llm_only`, and the legacy `assessment.ground_geometry_in_ocr: false` maps to
 > `llm`. Old configs are migrated on read.
+
+### What the viewers show
+
+Wherever extracted fields are displayed — the document viewer, the human-review
+editor, Test Studio's ground-truth editor and the evaluation-correction table —
+each field carries one of two controls, so you can tell before clicking whether
+that field can be located on the page image. Neither is about the value, which is
+displayed either way — they are about whether its *position* is known:
+
+| control | meaning |
+|---|---|
+| 🔍 **Highlight _field_ on the page image** | The field has a bounding box. Activating it outlines the value on the page image. |
+| ⓘ **Why _field_ has no bounding box** | The explanation names which of the four causes applies, since they have different remedies. |
+
+The causes, which have different remedies:
+
+- **No value was extracted.** There is nothing to locate. This is the common case,
+  and it is not a geometry problem — if the field should have a value, the thing to
+  look at is the extraction prompt or the document.
+- **No confidence or bounding-box data was recorded for the field.** The assessment
+  step covered some of the section's fields and not this one, so nothing was ever
+  looked for. Checking the value against the page cannot reveal this, which is why
+  it is stated separately: a packet section displaying ten fields with entries for
+  three is an ordinary shape.
+- **A value that could not be matched to anything on the page.** The field *does*
+  carry assessment data, and matching found nothing. Under `ocr_only` that means
+  the value is not present verbatim in the OCR text, which happens when extraction
+  canonicalizes it (a reformatted date) or infers it from elsewhere. `llm_grounded`
+  is the mode that addresses this class.
+- **No field in the section has one.** The cause is shared by every row rather
+  than being about any one value. ⚠️ It is reported about the **section**, not the
+  document or the configuration: one section of a packet can come back with no
+  boxes while its siblings have them under the same `geometry.mode`, so neither
+  can be concluded from the viewer.
+
+A section also states its coverage up front — *"6 of 10 fields have a bounding
+box"* — so the split is visible without hovering every row. The denominator is the
+fields the section **displays**, which is not always the number the assessment
+recorded data for: a field with no entry still has a row, still carries a control,
+and still counts.
 
 ### `ocr_only` (default) — OCR grounding via `pageData.json`
 
@@ -1618,6 +1691,15 @@ advisory).
 **Repeated values are disambiguated by row order** — when the same value appears
 on multiple rows (e.g. a repeated amount in a table), the i-th assessed list item
 maps to the i-th occurrence in reading order.
+
+**A line resembling the whole value beats a fragment of it.** Matching is tiered,
+and a line that is only a short *piece* of the value — one word of a sentence, one
+figure from a specification — is ranked **last**, below the fuzzy and
+character-similarity passes. It is still used when nothing better is found, so a
+value split across several OCR lines keeps a box; it just no longer outranks a line
+that resembles the value as a whole. Without that ordering, a value whose OCR text
+carried a single misread character could be matched to an unrelated column header
+that happened to share one word with it, and the box would land on the header.
 
 **Format-aware matching.** Extraction often canonicalizes a value to a schema
 format that differs from how it appears in the document (a date extracted as
@@ -1701,7 +1783,7 @@ S3 and matches each extracted value to an OCR line.
 For each assessed leaf field, the service:
 
 1. Loads `pageData.json` for the section's pages via `Page.ocr_page_data_uri` (older documents without this artifact are skipped — see fallback).
-2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **single-line fragment** → **token-overlap fuzzy** (Jaccard ≥ 0.6).
+2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **fragment covering at least half the value** → **token-overlap fuzzy** (Jaccard ≥ 0.6) → **character similarity** (≥ 0.8) → **fragment covering less than half the value** (last).
 3. **Disambiguates repeated values spatially** (for `llm_grounded`): all candidates are collected and the one whose box center is nearest the LLM-estimated box is chosen. Without a usable LLM reference box, an ambiguous match keeps the LLM box rather than risk attaching the wrong row's geometry.
 4. On a confident match, **replaces** the field's `geometry` with the real OCR box and adds provenance keys.
 
@@ -1722,7 +1804,7 @@ For each assessed leaf field, the service:
 }
 ```
 
-- **`geometry_source`** — `"ocr"` (grounded in a real OCR line), `"ocr-paragraph"` (grounded in a paragraph-level box shared by sibling lines, as the Mistral hook produces), `"ocr-normalized"` / `"ocr-fuzzy"` (format-bridged / Levenshtein matches), or `"llm"` (kept the LLM-estimated box).
+- **`geometry_source`** — `"ocr"` (grounded in a real OCR line), `"ocr-paragraph"` (grounded in a paragraph-level box shared by sibling lines, as the Mistral hook produces), `"ocr-normalized"` / `"ocr-fuzzy"` (format-bridged / Levenshtein matches), `"ocr-weak"` (the matched line covers less than half the value — the weakest evidence of location, used only when nothing better matched, so treat the highlight as approximate), or `"llm"` (kept the LLM-estimated box).
 - **`ocr_confidence`** — the matched OCR line's confidence (0–1), when available. **Informational only**; the LLM `confidence`/`confidence_reason` are never overwritten, so HITL triggering and threshold alerts are unaffected.
 
 **Safe fallback (backward compatibility).** Grounding degrades to exactly the
@@ -1746,12 +1828,24 @@ HITL is configured under the top-level `hitl` block in v0.6:
 hitl:
   enabled: true
   confidence_threshold: 0.85   # fields below this are flagged for review
+  notifications:
+    retention_days: 30         # 1-365: days an Inbox message is kept
+    max_per_user: 50           # 1-200: Inbox messages kept per user
 ```
 
 Human review integrates confidence scores and geometry so reviewers see exactly
 which fields need attention and where they appear on the page. For the full
 workflow, the review UI, and Amazon A2I integration, see
 [Human Review](human-review.md).
+
+`hitl.notifications` sets how long [Inbox](web-ui.md#inbox) messages are kept and how
+many each user keeps. It is read from the **active** configuration profile, cached
+for about 60 seconds, applies to messages written after a change, and applies
+whether or not `hitl.enabled` is set. When a user goes over the cap, expired
+messages are removed first, then the oldest read ones, and the oldest unread one
+only when every message is unread. See
+[Inbox message retention](configuration.md#inbox-message-retention) for the full
+reference.
 
 ---
 
@@ -2001,6 +2095,7 @@ extraction:
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
+- `us.anthropic.claude-sonnet-5-5`
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
 
@@ -2143,7 +2238,7 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Four signals are raised as processing
+So it must be detected structurally. The signals below are raised as processing
 issues — reaching the document list's **Processing Issues** column, the
 **Processing Report** tab and the tracking table's sparse
 `HasProcessingIssues` attribute — on **both** Simple and Advanced modes:
@@ -2151,11 +2246,61 @@ issues — reaching the document list's **Processing Issues** column, the
 | Code | Severity | Fires when |
 |---|---|---|
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
+| `extraction_list_field_not_a_list` | **error**, always (`row_shortfall_action` does not govern it) | A field the schema declares as an **array came back as something else** — a string carrying content, a number, a bool, or an object. None of that field's rows reaches confidence scoring, evaluation or any other consumer of the result. ⚠️ **A blank value is deliberately not this code**: `""` says what `[]` says — there were no rows — and a genuinely empty section is legitimate, so a blank joins `extraction_incomplete` at `warning` instead. Covers declared arrays at the top level **and one level into an array of instances** (`outer[].inner`), which is the same traversal the row-count checks use and is a shape shipped presets declare; two levels down is not reached. The shape that motivated it is a model **declining inside the field** rather than failing: measured on a 400-row statement, `Transactions` came back as the string *"The statement contains 400 transactions (SEQ00000 to SEQ00399). They are too many to list in full here without risking errors, so this field is not populated."* The value the model returned is carried in the issue's `details.returned_values` (truncated to 300 characters) with its type in `details.returned_types`, because that sentence is the only record of **why** it declined. ⚠️ **Nothing else in this table can see it.** `extraction_incomplete` tests for absent, null or empty and a string is none of those; all three OCR-grounded checks compare a row **count** and there is no list to count, with full evidence present; the confidence coverage walk correctly reports no denominator. Full-schema validation does report it — as `extraction_validation_failed`, but only when `extraction.validation.enabled` is true and at `warning` severity with a message that reads the same for a total loss as for a reformatted date, and value coercion sees it and correctly refuses (cross-family coercion is forbidden by design) while emitting no issue and being gated on its own toggle. This check reads the class schema against the extracted fields, so **it needs neither toggle**. It is the one code here that is not an estimate: a declared type and a returned value leave nothing to infer, which is why it is `error` and not `warning`. **It does not fail the section** — the result is kept and the processing report reads `COMPLETED WITH ERRORS`; `row_shortfall_action` deliberately does not reach it, so a deployment already on `fail` does not start failing runs that complete today. **What to do:** on the traditional path, switch the class to Advanced (agentic) extraction, which the message recommends; a model that declines on a long list in prose generally completes it through the agentic table path. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
 | `extraction_rows_below_ocr_estimate` | warning (**error** under `row_shortfall_action: fail`, which is then the only one of these that changes the document's status — see below) | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a table of a *different* width, a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. ⚠️ Matching is on width **only**, and matched tables are summed over the whole section: a table of the *same* width that has nothing to do with the list — a two-column Daily Balance table beside a two-property account summary — is counted as evidence about it. The check needs OCR that emits Markdown tables: Textract with the `TABLES` feature, or BDA. **That is the shipped default** (`ocr.features: [TABLES, LAYOUT, SIGNATURES]`), so the check is live on every shipped preset except the two `ocr-benchmark` ones, which set LAYOUT only; a config that removes `TABLES` has no pipe tables and the check is inert. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
+| `extraction_partial_row_shortfall` | warning, **always** (`row_shortfall_action` does not govern it — see below) | A list of objects returned **fewer rows than the matched OCR tables actually hold** — by more than their reprinted column headings can explain — but **not fewer than half**, so `extraction_rows_below_ocr_estimate` above does not fire. It is the same evidence, the same width matching, the same group sum and the same `maxItems` ceiling as that check, read against the OCR's **data**-row count instead of half the heading-inflated one. ⚠️ **It exists because the half ratio went silent well before half.** On a 17-page 800-row statement the matched evidence is 817 rows, of which 17 are the heading reprinted once per page, and half of 817 is 408.5: an extraction returning **409 of the 800 rows — 48.9% of the document lost** — crossed no bar, carried no processing issue, and its own processing report read `Status: SUCCESS`. The half ratio is a *multiplicative* slack standing in for an *additive* imprecision, so it was about 24x the inflation it was chosen to absorb at 17 pages and the factor grows with the page count. **The residual tolerance is a row gap, not a ratio:** a shortfall smaller than 30 rows is still not reported, so up to **29 rows** can go missing silently — but 29 whatever the document's size, where before the silent band was 408 rows at 800 and 1,600 at 3,200. ⚠️ It inherits the same width-only attribution, and that can only ever *inflate* the evidence, so a firing is a shortfall to **confirm** rather than a certain loss; the issue's `details` carry `ocr_matched_table_rows`, `ocr_heading_rows`, `ocr_estimated_rows` (the bar) and `missing_rows` so the arithmetic is auditable without re-reading the OCR. It needs the same table-emitting OCR, and on a section whose matched evidence is under 60 rows the two bars meet, so no document that small produces it. |
+| `extraction_output_truncated` | warning (both modes — see below) | The model's response **stopped before it finished**, so the result holds only the part that was emitted and every list in it is a prefix. The one certain signal in this table — the others are estimates. It comes from the response's own `stopReason` — Bedrock Converse's `max_tokens`, or the `incomplete` that the OpenAI Responses adapter carries over from that API's `status` — or from the JSON repair reader finding an unterminated structure. It needs neither OCR nor a list, so it is the one completeness signal that is live on a LAYOUT-only OCR configuration. ⚠️ Its absence is **not** evidence that the output is complete: a model that abbreviates a long list on its own stops with `end_turn` and a syntactically complete answer, and that is the shape measured on an 800-row statement, where the short runs spent about 2.3k extraction output tokens against the complete runs' 38.5k on the same model — no ceiling was reached. `extraction_rows_below_ocr_estimate` is what covers that case. Both can fire on one section and neither suppresses the other: this one names the cause, that one counts the rows. Severity is `warning` unconditionally — `row_shortfall_action` governs `extraction_rows_below_ocr_estimate` only. **Advanced mode reaches this** by its own route: a shard whose agent turn is cut off at the output ceiling keeps the extraction its tool calls had already committed and validated, and records the truncation, instead of failing the section — which is what it used to do, discarding rows that were complete. That matters most under `confidence.mode: integrated`, where the turn that overruns is the per-field confidence one AFTER the data is safe. Two bounds: only an output-ceiling stop is kept this way (any other agent failure still fails the section), and only an extraction the class schema accepts — an empty result is never invented. Confidence for such a section is scored by the standalone Assessment step instead, so it is complete rather than partial. |
+| `extraction_row_count_unverified` | info, **always** (`row_shortfall_action` does not govern it) | The two OCR-grounded checks above **did not run** for a list field. Both need OCR tables whose column count **equals** the item schema's property count, and when the section's text holds fewer than 30 such rows neither can say anything either way — at zero matched rows neither is merely quiet, both are structurally unable to fire. Until this code existed that produced exactly what their running and finding nothing produces: no issue, and a processing report reading `Status: SUCCESS`. It fires when a list of objects came back with **30 or more rows** while the matched evidence is under that floor. ⚠️ **It is a statement about the evidence, never about the result** — the row count is *unverified*, equally consistent with a complete list — which is also why it is `info`: two ordinary configurations reach it with nothing wrong, an item schema carrying a property the rendered table does not have (a derived `Balance`) and an OCR configuration that emits no Markdown tables, so at `warning` their reports would move from `SUCCESS` to `COMPLETED WITH WARNINGS` for a condition the operator may have chosen. The `details` tell the two causes apart: `ocr_table_widths` holds every table width found in the section, so `[]` means no table was recognised while `[4]` against `item_property_count: 3` means the evidence is present and the wrong shape. **To restore the checks:** use an OCR backend that renders tables (Textract with the `TABLES` feature, or BDA) and give the item schema one property per rendered column. |
 
-A fifth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+⚠️ **Two of those signals depend on the OCR backend, and the dependency is not
+visible from the extraction configuration.** `extraction_rows_below_ocr_estimate`
+and `extraction_partial_row_shortfall` both count rows in the section's OCR text,
+in Markdown tables whose column count equals the item schema's property count.
+Textract with the `TABLES` feature and BDA render tables in that form. The
+`bedrock` OCR backend asks a model to transcribe the page and renders whatever
+Markdown it returns, so the table may arrive without leading pipes, with an extra
+column, with a row-number column added, or as a bulleted list — all of which sum
+to **zero** matched rows, at which point neither check is applicable. Choosing
+that backend therefore removes two of the completeness signals, and
+`extraction_row_count_unverified` is what says so on the affected sections.
+`extraction_incomplete`, `extraction_list_truncated`, `extraction_sparse` and
+`extraction_output_truncated` read the extraction result rather than the OCR
+text, so they are unaffected by the backend.
+
+⚠️ **`info` severity keeps the report's status line, but it is not invisible, and
+on such a backend `extraction_row_count_unverified` will be common.** Two UI
+surfaces count issues without reading severity, so an `info` issue moves them
+exactly as a warning would: the section's status indicator goes from **OK** to the
+neutral info label **Info** (the same label `extraction_sparse` gets — **Auto-recovered**
+is reserved for the one `info` code that reports an actual repair,
+`assessment_recovered_with_retries`), and the document list's **Processing Issues**
+count becomes non-zero. Both happen
+on every section holding a 30-or-more-row object list, including sections where
+nothing is wrong — which is the trade for being able to tell "could not check"
+from "checked and found complete" at all.
+
+⚠️ **A default deployment does see this, and carrying Textract's `TABLES` feature is
+not enough to avoid it.** The evidence is matched on column width, so what decides
+whether the check is reachable is whether the rendered table is **exactly as wide as
+the list item's property count** — not whether a table was rendered at all. An item
+schema with a derived or document-level property has one column more than the table
+and matches nothing. Measured on a live stack running the shipped
+`lending-package-sample` preset (Textract with `LAYOUT`, `TABLES` and `SIGNATURES`):
+`bank-statement-multipage.pdf` extracted 68 rows for a 5-property
+`transaction_details`, the section's OCR text rendered tables **2 and 3 columns
+wide**, and the issue fired with `ocr_matched_table_rows: 0` on a list that looks
+complete. `details["ocr_table_widths"]` is what tells that case apart from "no table
+was recognised": `[2, 3]` against `item_property_count: 5` means the evidence is
+present and the wrong shape.
+
+So the configurations where it applies are **any** where an item schema's property
+count differs from the rendered table width — which includes shipped presets — plus
+the two `ocr-benchmark` presets, which set `LAYOUT` only, and a `bedrock` backend,
+which renders its own Markdown and can produce a shape the match rejects.
+
+One further issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
 
 | Code | Severity | Fires when |
@@ -2185,6 +2330,16 @@ sections that fail under `fail` are exactly the ones that warn under `warn`. And
 it is not Simple-mode-only: the check and the outcome are shared by both modes,
 because a truncated Advanced section tells the same lie. Advanced mode shards, so
 it reaches this far less often.
+
+⚠️ **It governs `extraction_rows_below_ocr_estimate` and nothing else.** The
+sibling `extraction_partial_row_shortfall`, which covers the band between "fewer
+rows than the OCR tables hold" and "fewer than half of them", is `warning`
+severity under **both** values and is not reachable by this knob. That is
+deliberate rather than an omission: a deployment that set `fail` chose it against
+the half-ratio bar, and widening the knob to the new band would start failing
+documents that complete today. Whether a *materially* short extraction ought to
+fail at some bar other than a half is an open product question; what the new code
+changes is only whether the loss is **reported**.
 
 ##### Where a failed section shows up
 
@@ -2446,6 +2601,14 @@ so 43 of 800 is reported with no `minItems` set at all. What neither signal can 
 distinguish a list that returns 10 of 1,200 rows *from a document whose OCR shows only
 10 table rows* from a document that genuinely has 10: with no evidence of the missing
 rows, nothing is detectable.
+
+One case is detectable without any of them, and `extraction_output_truncated` is how:
+when the response itself stopped before it finished — the model reported the output
+ceiling, or the text did not parse and the repair reader found an unterminated
+structure — the result is known to be a prefix regardless of what the OCR shows or
+what the schema declares. That is the only certain completeness signal here; a model
+that abbreviates on its own reports a clean stop, which is why the estimates above
+still carry the rest of the work.
 
 For corpora where large tables are expected — in practice anything beyond ~400 rows
 or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through

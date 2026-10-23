@@ -15,6 +15,7 @@ The security properties under test:
 """
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -80,6 +81,26 @@ class TestHappyPath:
         assert result["success"] is True
         assert '"notes": "hello"' in result["config"] or '"notes":"hello"' in result["config"]
 
+    def test_a_pre_0_9_revision_is_returned_in_the_current_format(self, manager):
+        """A revision cut before 0.9 holds flat classification keys; returned raw,
+        comparing it with a current revision shows every moved setting missing."""
+        stored = {
+            "config_format_version": "0.8",
+            "classification": {"model": "flat-model", "temperature": 0.0},
+        }
+        manager.get_revision.return_value = stored
+        result = index.handler(
+            _event("getConfigProfileRevision", {"profileName": "lending", "revision": 1}), None
+        )
+        assert result["success"] is True
+        config = json.loads(result["config"])
+        assert config["config_format_version"] == "0.9"
+        assert "model" not in config["classification"]
+        assert config["classification"]["one_stage"]["llm"]["model"] == "flat-model"
+        # The stored body itself is not rewritten.
+        assert stored["classification"] == {"model": "flat-model", "temperature": 0.0}
+        manager.restore_revision.assert_not_called()
+
     def test_restore_reports_the_new_revision(self, manager):
         result = index.handler(
             _event(
@@ -92,9 +113,11 @@ class TestHappyPath:
         )
         assert result["success"] is True
         assert result["revision"] == 3
-        manager.restore_revision.assert_called_once_with(
-            "lending", 1, created_by="author@example.com"
-        )
+        manager.restore_revision.assert_called_once()
+        args, kwargs = manager.restore_revision.call_args
+        assert args == ("lending", 1)
+        assert kwargs["created_by"] == "author@example.com"
+        assert kwargs["write_guard"] is None
 
     def test_label_passes_label_and_notes_through(self, manager):
         result = index.handler(

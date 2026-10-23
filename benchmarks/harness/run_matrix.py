@@ -157,14 +157,25 @@ def resolve_stack(stack):
 def register_testset(stack, res, doc_id, pdf_path):
     """Upload PDF + put a testset# metadata row (idempotent). True on success.
 
-    The metadata row asserts `status: READY` and `fileCount: 1`, so it must not
-    be written unless the object really landed. It used to be written
+    The metadata row asserts `status: COMPLETED` and `fileCount: 1`, so it must
+    not be written unless the object really landed. It used to be written
     unconditionally with the `aws s3 cp` result discarded — not even bound to a
     name — which produced a test set advertising a document that is not there.
     That is worse than a failed launch: the runner accepts the set and returns a
     run id, but `run_complete` needs at least one document to finish, so the
     drain loop spins for the whole --timeout-min and the cell is scored as if the
     document had been measured.
+
+    ⚠️ `status` must be a value the test-set API itself writes. This row bypasses
+    the API and lands in the tracking table directly, so it inherits none of the
+    API's status vocabulary — and every consumer reads `status` as a position in
+    that lifecycle. It used to say `READY`, which the API never writes: the
+    lifecycle is QUEUED -> UPDATING/COPYING -> COMPLETED/FAILED. Test Studio's
+    set list read the unrecognised value as "still being written" and disabled
+    every `bench-*` row — unselectable, so undeletable, with no link to its
+    detail page — and polled the list every 3s for as long as one existed. The
+    set really is complete the moment the copy above succeeds, so that is what
+    the row says.
     """
     tsb = res["testset_bucket"]
     key = f"bench-{doc_id}/input/{os.path.basename(pdf_path)}"
@@ -186,7 +197,7 @@ def register_testset(stack, res, doc_id, pdf_path):
         "name": {"S": f"bench-{doc_id}"},
         "filePattern": {"S": f"bench-{doc_id}/input/"},
         "fileCount": {"N": "1"},
-        "status": {"S": "READY"},
+        "status": {"S": "COMPLETED"},
         "createdAt": {"S": now},
         "InitialEventTime": {"S": now},
     }
@@ -194,23 +205,75 @@ def register_testset(stack, res, doc_id, pdf_path):
     return True
 
 
+_COMPAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compat")
+
+
+def prepare_native_configs(cells, release):
+    """Build and check the configs a native upload writes, before anything is uploaded.
+
+    Returns ``(prepared, problems)``: ``prepared`` maps each config version to the
+    dict to upload, and ``problems`` lists every reason a version cannot be run on
+    ``release`` (a git tag such as ``v0.6.12``). The caller must stop on any problem.
+
+    Each config is the cell's file with the pre-0.9 flat classification keys added
+    (``compat/classification_flat.py``), so the previous release reads the cell's
+    classification settings instead of dropping the nested blocks and running its
+    code defaults. The current reader resolves the same file to the same single-pass
+    classification, because a flat key wins over a nested one, so one file still
+    serves both sides of the A/B. Then each config is checked against ``release``'s
+    own models (``compat/release_model_check.py``): any ``classification`` key that
+    release would drop, or any flat setting it resolves to a different value, is a
+    problem rather than a warning, because a dropped setting does not fail the run —
+    it produces a complete set of numbers for a configuration that never ran.
+    """
+    if _COMPAT not in sys.path:
+        sys.path.insert(0, _COMPAT)
+    import classification_flat
+    import release_model_check
+
+    lib_root = release_model_check.extract_release_lib(release)
+    prepared, problems = {}, []
+    for c in {cc["version"]: cc for cc in cells}.values():
+        with open(c["path"]) as fh:
+            cfg = yaml.safe_load(fh)
+        try:
+            compat, notes = classification_flat.with_flat_classification(cfg)
+        except classification_flat.CompatError as exc:
+            problems.append(f"{c['version']}: {exc}")
+            continue
+        for note in notes:
+            print(f"  !! {c['version']} on {release}: {note}")
+        for err in release_model_check.check_config(compat, lib_root):
+            problems.append(f"{c['version']}: {err}")
+        prepared[c["version"]] = compat
+    return prepared, problems
+
+
 def upload_config(stack, version, path, res=None, native=False):
     """Upload a config version. Default path uses idp-cli (which migrates the
-    config to v0.6 storage). `native=True` writes the config VERBATIM to the
-    ConfigurationTable (compat/native_upload), bypassing the forced v0.5->v0.6
-    migration — REQUIRED for v0.5.16 stacks, whose assessment step reads a
-    top-level `assessment` block that the migration would drop."""
-    if native:
-        import yaml as _yaml
-
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "compat"))
+    config to the current storage format). With ``native`` — the mapping returned
+    by :func:`prepare_native_configs` — the prepared dict for ``version`` is
+    written VERBATIM to the ConfigurationTable (compat/native_upload), bypassing
+    idp-cli's migration. REQUIRED for older stacks: v0.5.16's assessment step reads
+    a top-level `assessment` block that the migration would drop, and a release
+    that predates config format 0.9 needs the flat classification keys."""
+    if native is not False:
+        # Any value but the default False means native mode was asked for, so an
+        # empty mapping is refused rather than falling through to idp-cli.
+        if not isinstance(native, dict) or version not in native:
+            raise ValueError(
+                f"native upload of {version} needs the config prepared by "
+                f"prepare_native_configs; refusing to write an unchecked file"
+            )
+        if _COMPAT not in sys.path:
+            sys.path.insert(0, _COMPAT)
         import native_upload
 
         try:
             native_upload.upload(
                 res["config_table"],
                 version,
-                _yaml.safe_load(open(path)),
+                native[version],
                 region=lib.REGION,
                 profile=os.environ.get("AWS_PROFILE", "default"),
             )
@@ -688,7 +751,17 @@ def main():
         "--native-upload",
         action="store_true",
         help="Write configs verbatim to the ConfigurationTable (bypass idp-cli's "
-        "v0.5->v0.6 migration). REQUIRED for v0.5.16 stacks.",
+        "migration), with the pre-0.9 flat classification keys added. REQUIRED for "
+        "older stacks. Needs --validate-against-release.",
+    )
+    ap.add_argument(
+        "--validate-against-release",
+        metavar="TAG",
+        default=None,
+        help="git tag of the OLDEST release this run's configs go to (e.g. v0.6.12). "
+        "Every config is checked against that release's own models before anything "
+        "is uploaded, and the run stops if any classification setting would be "
+        "dropped or resolved differently. Required with --native-upload.",
     )
     ap.add_argument(
         "--no-reference",
@@ -710,6 +783,14 @@ def main():
         "Use >=5 for reliable cost-variance comparison of agentic cells.",
     )
     a = ap.parse_args()
+    if a.native_upload and not a.validate_against_release:
+        ap.error(
+            "--native-upload needs --validate-against-release <tag> (the previous "
+            "release, e.g. v0.6.12): a native upload exists to reach an older "
+            "release, and that release silently drops settings it does not know."
+        )
+    if a.validate_against_release and not a.native_upload:
+        ap.error("--validate-against-release applies to --native-upload only")
 
     res = resolve_stack(a.stack)
     print("stack resources:", json.dumps(res, indent=2))
@@ -826,6 +907,27 @@ def main():
             f"docs this suite names), or check the doc id for a typo."
         )
 
+    # A native upload goes to an older release, so every config is converted and
+    # checked against that release's models HERE — before any test set is
+    # registered or any config uploaded — and the run stops on any problem.
+    native_configs = False
+    if a.native_upload:
+        all_cells = cells + [c for p in ref_launchable.values() for c in p["cells"]]
+        native_configs, problems = prepare_native_configs(
+            all_cells, a.validate_against_release
+        )
+        if problems:
+            sys.exit(
+                f"{len(problems)} problem(s) running these configs on "
+                f"{a.validate_against_release}; nothing has been uploaded or "
+                f"launched:\n  " + "\n  ".join(problems)
+            )
+        print(
+            f"  {len(native_configs)} config(s) checked against "
+            f"{a.validate_against_release}'s models: every classification setting "
+            f"is read there"
+        )
+
     # The directory name carries the suite and a random suffix, and creation is
     # NOT idempotent, because a stamp resolved to the second is not unique and
     # sharing this directory silently destroys results. `runmap.json` is rewritten
@@ -876,7 +978,7 @@ def main():
     # before every launch — see assert_stack_unchanged.
     stack_expected = assert_stack_quiesced(a.stack)
     failed_versions = set(
-        upload_all_configs(a.stack, cells + ref_cells, res=res, native=a.native_upload)
+        upload_all_configs(a.stack, cells + ref_cells, res=res, native=native_configs)
     )
 
     # A cell whose configuration did not land must not run: it would measure

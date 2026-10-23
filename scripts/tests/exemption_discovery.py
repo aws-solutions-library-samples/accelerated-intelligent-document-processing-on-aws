@@ -154,6 +154,36 @@ NAME_VOCABULARY = (
     "UNCOVERED",
     # Named for what the members are, not for what the gate does with them.
     "NOT_A",
+    # ``X_NOT_IN_Y`` is the other half of that family: a set whose members are absent
+    # from something the gate reads, which is one of the plainest ways to name a thing
+    # a check deliberately does not cover. Nothing here reached it. A constant spelled
+    # ``CODES_NOT_IN_RESULT_JSON`` was found by NEITHER route -- not by name, because
+    # none of the fragments matched, and not by prose, because its comment used none of
+    # the four recognised phrasings -- and it became discoverable only when it was
+    # renamed to carry ``EXCLU``. A carve-out whose registration depends on somebody
+    # renaming it is not registered.
+    #
+    # ``NOT_IN_`` rather than a bare ``NOT_``, decided on a sweep of the tree rather
+    # than on taste. The objection a bare ``NOT_`` invites is the wrong one: the
+    # trailing underscore already excludes ``NOTE_``, ``NOTHING_`` and ``NOTIFY_``,
+    # since none of those contains ``NOT_``. What it actually reaches is the negative-
+    # ASSERTION family, which is not an exemption family at all. Measured over this
+    # tree, a bare ``NOT_`` discovers five surfaces and four of them are that: two
+    # fixture tables spelled ``..._THAT_MUST_NOT_TRIP``, a ``_NOT_CALLS`` fixture, and
+    # a function-local ``not_run``. ``NOT_IN_`` discovers one. Four authored judgements
+    # on noise bought for one point of real reach is the trade this file's own
+    # ``_text_pattern`` docstring refuses: the registry's remedy for a discovered
+    # surface is a written judgement, and one that asks for judgements on noise trains
+    # people to rubber-stamp it.
+    #
+    # Neither this fragment nor ``NOT_A`` shadows the other -- neither string contains
+    # the other -- so both stay, each carrying reach the other does not
+    # (``NOT_A_PRESET`` and ``NOT_AN_IDP_CONFIG``; ``PATHS_NOT_IN_MANIFEST``). That is
+    # the second reason a bare ``NOT_`` was not taken: it subsumes ``NOT_A`` entirely,
+    # so taking it means deleting ``NOT_A`` as well, and a shadowed fragment left in
+    # place is dead while looking alive. The attribution assertion in
+    # ``test_exemption_discovery.py`` is what makes that visible either way.
+    "NOT_IN_",
     # ``NON_`` is the same semantic family as ``NOT_A`` one prefix apart, and leaving it
     # out while adding ``NOT_A`` would have been the ``EXCLU``-not-``EXCLUD`` mistake
     # again. It is the widest fragment here -- it finds required-key sets and orderings
@@ -198,17 +228,56 @@ def _text_pattern(case: str) -> str:
     A false positive here is not harmless: the registry's remedy is to write a judgement
     for it, and a registry that asks for judgements on noise trains people to rubber-stamp
     it.
+
+    ⚠️ **The first character is matched by a lookahead, not consumed.** Written as
+    ``[A-Z][A-Z0-9_]*(?:ALT)``, the leading class ate character one and the fragment could
+    then only match from position two onwards -- so a Make or shell variable whose name
+    *begins* with a vocabulary fragment was matched by neither text surface, while the
+    Python route matched all of them. ``SKIP_TESTS``, ``ALLOWED_BUCKETS``,
+    ``EXEMPT_PATHS`` and ``IGNORE_DIRS`` are all that shape, and all four are the most
+    natural way to spell one of these. It survived because the per-fragment probes build
+    their names as ``PROBE_<fragment>_SET``, which puts the fragment in the middle every
+    time: a vocabulary exercised only against names the test builds is exercised against
+    itself. The lookahead keeps the one thing the class was there for -- a name cannot
+    start with a digit -- while letting the fragment sit at position zero. This was a
+    divergence between the surfaces rather than a deliberate narrowing, and the
+    ``_matches_name`` parity case below is what now pins the two together in both
+    directions. Measured over this tree: one further variable.
     """
     alternation = "|".join(NAME_VOCABULARY)
     if case == "upper":
-        return rf"^([A-Z][A-Z0-9_]*(?:{alternation})[A-Z0-9_]*)\s*[:?+]?="
-    return rf"^([a-zA-Z_][a-zA-Z0-9_]*(?:{alternation.lower()})[a-zA-Z0-9_]*)="
+        # Column zero, deliberately: in a Makefile an indented line is a RECIPE, and the
+        # assignments in one are shell. Allowing leading whitespace here was measured to
+        # discover a `SKIP=0` inside a recipe on line 502 of this repo's Makefile, which is
+        # a shell local reported as a Make variable -- a false positive, and the direction
+        # this module treats as the harmful one.
+        return rf"^((?=[A-Z_])[A-Z0-9_]*(?:{alternation})[A-Z0-9_]*)\s*[:?+]?="
+    # The shell surface is the opposite case. An exemption variable inside a function is
+    # always indented, and `export`, `local`, `readonly` and `declare -a` are the ordinary
+    # ways to spell one; anchored at column zero with no declarator, none of those was
+    # reachable, so the surface was narrower than the sentence describing it. Measured over
+    # this tree: zero further surfaces, so the whole of it is reach.
+    return (
+        rf"^[ \t]*(?:export|local|readonly|declare(?:[ \t]+-[a-zA-Z]+)*)?[ \t]*"
+        rf"((?=[a-zA-Z_])[a-zA-Z0-9_]*(?:{alternation.lower()})[a-zA-Z0-9_]*)="
+    )
 
 
 TEXT_SOURCES: tuple[tuple[str, str], ...] = (
-    ("Makefile", _text_pattern("upper")),
-    ("make/*.mk", _text_pattern("upper")),
-    ("scripts/*.sh", _text_pattern("lower")),
+    # Every Makefile, every include and every shell script, wherever it sits. These were
+    # ``Makefile``, ``make/*.mk`` and ``scripts/*.sh``, and the first of those is the
+    # defect: a bare ``Makefile`` carries no wildcard, so ``git ls-files`` matched the
+    # repo-root file ALONE. Five Makefiles and two shell scripts live elsewhere in this
+    # tree -- several of them beside the Lambda handlers they build -- and a Make variable
+    # named ``SKIP_TESTS`` in one of them was as invisible to this registry as if the
+    # surface had not been listed at all. The Makefile is the surface whose omission this
+    # module's own docstring opens with, which is what makes a narrower reach than the
+    # stated one worth fixing here rather than noting. Measured over this tree: widening
+    # all three discovers exactly the three root-Makefile variables it already did, so the
+    # whole of it is reach.
+    ("*Makefile", _text_pattern("upper")),
+    ("*.mk", _text_pattern("upper")),
+    ("*.sh", _text_pattern("lower")),
     # Linter and type-checker configuration is an exemption surface too: `extend-exclude`
     # decides which files ruff never sees, which is a path exemption by another name.
     ("pyrightconfig.json", r'^\s*"(exclude|ignore)"\s*:'),

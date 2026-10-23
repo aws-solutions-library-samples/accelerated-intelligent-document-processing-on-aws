@@ -43,9 +43,11 @@ copies — read the scope before trusting a green run:
   requirement that fails today for reasons predating this file. The web UI mirrors
   the product's gate, so its universe is the **product table** — equal sets. The
   three benchmark tools are only ever pointed at models the benchmark runs, so
-  theirs is the **Claude ids on a** ``config_matrix.yaml`` **axis**, six families
-  today out of the product's thirteen. The nine families on neither get
-  agreement-only treatment.
+  theirs is the **Claude ids on a** ``config_matrix.yaml`` **axis**, a strict subset
+  of the product table. The families on neither get agreement-only treatment.
+  No count is quoted: both universes are derived at run time and both move whenever
+  a model or an axis is added, and the two figures that used to sit here had each
+  drifted by the time anyone read them.
 
 The numbers themselves are not restated here — this file would then be a sixth copy.
 """
@@ -247,9 +249,11 @@ class TestEveryBenchmarkedModelIsCovered:
     minimum for the arm it was added to run.
 
     Scope note, because a green run here says less than it looks like: this universe
-    is six Claude families today against the product table's thirteen, and it is the
-    right universe for these three tools and the WRONG one for the web UI. The UI is
-    covered against the product table in ``TestTheUiTableCoversEveryFamily`` above.
+    is a strict SUBSET of the product table — the right universe for these three
+    tools and the WRONG one for the web UI, which is covered against the product
+    table in ``TestTheUiTableCoversEveryFamily`` above. Both sets are derived here
+    rather than counted, so to see the sizes, read them off a run instead of this
+    docstring.
     """
 
     @staticmethod

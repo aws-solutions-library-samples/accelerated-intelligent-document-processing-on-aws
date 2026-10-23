@@ -12,6 +12,7 @@ dispatcher code.
 """
 
 import importlib.util
+import json
 import socket
 import ssl
 import sys
@@ -1170,3 +1171,909 @@ def test_a_genuinely_closed_port_80_still_passes(monkeypatch):
     outcome, _ = sec._http_probe("host.example.invalid")
 
     assert outcome == sec.REFUSED
+
+
+# --------------------------------------------------------------------------- #
+# Inbox IDOR (2.1) — User B cannot read, mark or delete User A's Inbox messages
+# --------------------------------------------------------------------------- #
+INBOX_OWNER = "test-rbac-admin@example.invalid"
+
+
+class _FakeInboxApi:
+    """An in-memory stand-in for the Inbox operations behind ``call_body``.
+
+    Token ``"a"`` is the owner (Admin) and ``"b"`` is User B. By default it
+    behaves like the real resolver: every key comes from the caller, so User B
+    sees an empty partition, gets 404 for the owner's ids and 400 for a bad
+    cursor or an unknown argument. Each knob breaks one of those properties.
+    """
+
+    def __init__(self, **knobs):
+        self.messages = {}  # id -> {"title": str, "read": bool}
+        self.knobs = knobs
+        self.calls = []
+        self.cleaned = []
+
+    # -- harness hooks ------------------------------------------------------
+    def seed(self, notification_id, marker):
+        if self.knobs.get("seed_raises"):
+            raise RuntimeError("put-item failed")
+        if self.knobs.get("no_table"):
+            return None
+        self.messages[notification_id] = {"title": marker, "read": False}
+        return INBOX_OWNER
+
+    def cleanup(self, notification_id):
+        self.cleaned.append(notification_id)
+        self.messages.pop(notification_id, None)
+
+    # -- the API --------------------------------------------------------------
+    def _items(self):
+        return [
+            {"id": i, "title": m["title"], "read": m["read"]}
+            for i, m in self.messages.items()
+        ]
+
+    def _page(self, items):
+        unread = sum(1 for i in items if not i["read"])
+        return 200, json.dumps(
+            {"items": items, "nextToken": None, "unreadCount": unread}
+        )
+
+    def __call__(self, api_base, field, args, token):
+        self.calls.append((field, token, dict(args)))
+        override = self.knobs.get("status", {}).get((field, token, _case(args)))
+        if override is not None:
+            return override
+        owner = token == "a"  # nosec B105 - fake test token id, not a credential
+        if field == "listInboxMessages":
+            if "userId" in args and not self.knobs.get("accept_user_id"):
+                return 400, '{"errors":[{"errorType":"BadRequest"}]}'
+            if "nextToken" in args:
+                try:
+                    sec.notification_keys().decode_cursor(args["nextToken"])
+                except ValueError:
+                    if not self.knobs.get("accept_bad_cursor"):
+                        return 400, '{"errors":[{"errorType":"BadRequest"}]}'
+                if not owner and self.knobs.get("cursor_leak"):
+                    return self._page(self._items())
+                return self._page([])
+            if owner:
+                if self.knobs.get("owner_hidden"):
+                    return self._page([])
+                return self._page(self._items())
+            return self._page(self._items() if self.knobs.get("list_leak") else [])
+        if field == "markInboxMessages":
+            if owner or self.knobs.get("mark_leak"):
+                for i in args["ids"]:
+                    if i in self.messages:
+                        self.messages[i]["read"] = args["read"]
+                return 200, '{"updated":1,"notFoundIds":[],"unreadCount":0}'
+            return 404, '{"errors":[{"errorType":"ResourceNotFound"}]}'
+        if field == "deleteInboxMessages":
+            if owner or self.knobs.get("delete_leak"):
+                for i in args["ids"]:
+                    self.messages.pop(i, None)
+                return 200, '{"updated":1,"notFoundIds":[],"unreadCount":0}'
+            return 404, '{"errors":[{"errorType":"ResourceNotFound"}]}'
+        return 200, "{}"
+
+
+def _case(args):
+    """A short key naming which variant of a call this is, for status overrides."""
+    if "userId" in args:
+        return "userId"
+    if "nextToken" in args:
+        return "cursor"
+    return "plain"
+
+
+def _run_inbox(api, tokens=None):
+    rec = _Recorder()
+    results = []
+    sec.run_inbox_idor_suite(
+        CTX,
+        rec,
+        results,
+        tokens if tokens is not None else {"Admin": "a", "userB": "b"},
+        seed_fn=api.seed,
+        call_body=api,
+        cleanup_fn=api.cleanup,
+    )
+    return rec, results
+
+
+INBOX_PRINCIPALS = [
+    "inbox-owner(positive control)",
+    "userB(lists inbox)",
+    "userB(marks A's message)",
+    "inbox-owner(still unread)",
+    "userB(deletes A's message)",
+    "inbox-owner(still exists)",
+    "userB(cursor at A's id)",
+    "userB(invalid nextToken)",
+    "userB(unknown userId arg)",
+]
+
+
+def _outcome_of(rec, principal):
+    rows = [r for r in rec.rows if r["principal"] == principal]
+    assert len(rows) == 1, f"expected one row for {principal}, got {rows}"
+    return rows[0]["outcome"]
+
+
+class TestInboxIdorSuite:
+    def test_a_resolver_that_scopes_by_caller_passes_every_check(self):
+        api = _FakeInboxApi()
+
+        rec, results = _run_inbox(api)
+
+        assert [r["principal"] for r in rec.rows] == INBOX_PRINCIPALS
+        assert {r["outcome"] for r in rec.rows} == {"PASS"}
+        assert all(r["passed"] is True for r in rec.rows)
+        assert harness.hard_failures(results) == []
+
+    def test_the_seeded_item_is_cleaned_up_after_the_run(self):
+        api = _FakeInboxApi()
+
+        _run_inbox(api)
+
+        assert len(api.cleaned) == 1
+        assert api.messages == {}
+
+    def test_the_probes_target_the_seeded_id_and_a_cursor_naming_it(self):
+        api = _FakeInboxApi()
+
+        _run_inbox(api)
+
+        seeded_id = api.cleaned[0]
+        b_calls = [c for c in api.calls if c[1] == "b"]
+        mark = next(c for c in b_calls if c[0] == "markInboxMessages")
+        assert mark[2] == {"ids": [seeded_id], "read": True}
+        cursor_call = next(
+            c for c in b_calls if c[2].get("nextToken") not in (None, "not-a-valid-cursor")
+        )
+        decoded = sec.notification_keys().decode_cursor(cursor_call[2]["nextToken"])
+        assert decoded == seeded_id
+
+    def test_user_b_seeing_the_owner_message_in_their_list_is_a_fail(self):
+        api = _FakeInboxApi(list_leak=True)
+
+        rec, results = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(lists inbox)") == "FAIL"
+        assert "PRESENT (LEAK)" in next(
+            r["detail"] for r in rec.rows if r["principal"] == "userB(lists inbox)"
+        )
+        assert "ERROR" not in {r["outcome"] for r in rec.rows}
+        assert harness.hard_failures(results)
+
+    def test_user_b_marking_the_owner_message_is_a_fail_twice(self):
+        api = _FakeInboxApi(mark_leak=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(marks A's message)") == "FAIL"
+        assert _outcome_of(rec, "inbox-owner(still unread)") == "FAIL"
+
+    def test_user_b_deleting_the_owner_message_is_a_fail_twice(self):
+        api = _FakeInboxApi(delete_leak=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(deletes A's message)") == "FAIL"
+        assert _outcome_of(rec, "inbox-owner(still exists)") == "FAIL"
+
+    def test_a_cursor_that_reaches_the_owner_partition_is_a_fail(self):
+        api = _FakeInboxApi(cursor_leak=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(cursor at A's id)") == "FAIL"
+        assert _outcome_of(rec, "userB(lists inbox)") == "PASS"
+
+    def test_an_accepted_invalid_cursor_is_a_fail(self):
+        api = _FakeInboxApi(accept_bad_cursor=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(invalid nextToken)") == "FAIL"
+
+    def test_an_accepted_user_id_argument_is_a_fail(self):
+        api = _FakeInboxApi(accept_user_id=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(unknown userId arg)") == "FAIL"
+
+    def test_a_failed_positive_control_is_an_error_and_runs_no_leak_check(self):
+        api = _FakeInboxApi(owner_hidden=True)
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "inbox-owner(positive control)"
+        assert rec.rows[0]["passed"] is False
+        assert not [c for c in api.calls if c[1] == "b"], (
+            "User B was probed although the owner could not see the seed"
+        )
+        assert harness.hard_failures(results) == rec.rows
+        assert len(api.cleaned) == 1
+
+    def test_a_missing_table_output_is_a_skip_not_a_pass(self):
+        api = _FakeInboxApi(no_table=True)
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert rec.rows[0]["passed"] is False
+        assert "NotificationsTableName" in rec.rows[0]["detail"]
+        assert api.calls == []
+        assert harness.hard_failures(results) == []
+
+    def test_a_seed_that_raises_is_an_error(self):
+        api = _FakeInboxApi(seed_raises=True)
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert harness.hard_failures(results) == rec.rows
+
+    def test_missing_preconditions_skip(self):
+        api = _FakeInboxApi()
+
+        rec, _ = _run_inbox(api, tokens={"Admin": "a"})
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert rec.rows[0]["passed"] is False
+        assert api.calls == []
+        assert api.cleaned == []
+
+    def test_a_mutation_probe_that_did_not_complete_is_an_error_not_a_pass(self):
+        api = _FakeInboxApi(
+            status={
+                ("markInboxMessages", "b", "plain"): (0, "<request error: timeout>"),
+                ("deleteInboxMessages", "b", "plain"): (502, "Bad Gateway"),
+            }
+        )
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(marks A's message)") == "ERROR"
+        assert _outcome_of(rec, "userB(deletes A's message)") == "ERROR"
+        assert _outcome_of(rec, "inbox-owner(still unread)") == "PASS"
+
+    def test_a_list_probe_that_did_not_complete_is_an_error(self):
+        api = _FakeInboxApi(
+            status={("listInboxMessages", "b", "plain"): (0, "<request error: x>")}
+        )
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(lists inbox)") == "ERROR"
+
+    def test_a_refused_user_b_list_is_a_fail_not_a_pass(self):
+        # An over-denial is not non-disclosure: User B's own Inbox must be served.
+        api = _FakeInboxApi(
+            status={("listInboxMessages", "b", "plain"): (403, '{"errors":[]}')}
+        )
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(lists inbox)") == "FAIL"
+
+    def test_the_four_outcomes_stay_distinct(self):
+        observed = {}
+        for name, knobs in {
+            "pass": {},
+            "fail": {"list_leak": True},
+            "error": {"owner_hidden": True},
+            "skip": {"no_table": True},
+        }.items():
+            rec, results = _run_inbox(_FakeInboxApi(**knobs))
+            outcomes = {r["outcome"] for r in rec.rows}
+            observed[name] = outcomes
+            blocking = bool(harness.hard_failures(results))
+            assert blocking is (name in ("fail", "error")), name
+            for row in rec.rows:
+                assert row["passed"] is (row["outcome"] == "PASS")
+
+        assert observed["pass"] == {"PASS"}
+        assert "FAIL" in observed["fail"] and "ERROR" not in observed["fail"]
+        assert observed["error"] == {"ERROR"}
+        assert observed["skip"] == {"SKIP"}
+
+
+class _FakeAwsCli:
+    """Records ``aws(...)`` calls made by the harness's Inbox seeding helpers."""
+
+    def __init__(self, table_output):
+        self.table_output = table_output
+        self.calls = []
+
+    def __call__(self, *args, region=None):
+        self.calls.append(args)
+        if args[:2] == ("cloudformation", "describe-stacks"):
+            return self.table_output
+        return None
+
+    def items_written(self):
+        return [
+            json.loads(a[a.index("--item") + 1])
+            for a in self.calls
+            if a[:2] == ("dynamodb", "put-item")
+        ]
+
+
+class TestInboxSeeding:
+    def _ctx(self):
+        return {"stack": "IDP1", "region": "us-west-2"}
+
+    def test_a_stack_without_the_output_seeds_nothing(self, monkeypatch):
+        fake = _FakeAwsCli("None")
+        monkeypatch.setattr(harness, "aws", fake)
+
+        owner = harness.seed_inbox_message(self._ctx(), "0" * 25, "m")
+
+        assert owner is None
+        assert fake.items_written() == []
+
+    def test_the_seeded_item_uses_the_service_layout(self, monkeypatch):
+        fake = _FakeAwsCli("IDP1-NotificationsTable-ABC")
+        monkeypatch.setattr(harness, "aws", fake)
+        keys = sec.notification_keys()
+        nid = keys.new_notification_id()
+        ctx = self._ctx()
+
+        owner = harness.seed_inbox_message(ctx, nid, "MARK")
+
+        assert owner == "test-rbac-admin@example.invalid"
+        (item,) = fake.items_written()
+        assert item["PK"] == {"S": keys.partition_key(owner)}
+        assert item["SK"] == {"S": keys.message_sk(nid)}
+        assert item["UnreadPK"] == item["PK"]
+        assert item["Title"] == {"S": "MARK"}
+        assert int(item["ExpiresAfter"]["N"]) > 0
+        assert "ReadAt" not in item
+
+    def test_cleanup_deletes_exactly_the_seeded_key(self, monkeypatch):
+        fake = _FakeAwsCli("IDP1-NotificationsTable-ABC")
+        monkeypatch.setattr(harness, "aws", fake)
+        keys = sec.notification_keys()
+        nid = keys.new_notification_id()
+        ctx = self._ctx()
+        harness.seed_inbox_message(ctx, nid, "MARK")
+
+        harness.cleanup_seeded_inbox_messages(ctx)
+
+        deletes = [a for a in fake.calls if a[:2] == ("dynamodb", "delete-item")]
+        assert len(deletes) == 1
+        key = json.loads(deletes[0][deletes[0].index("--key") + 1])
+        assert key == {
+            "PK": {"S": keys.partition_key("test-rbac-admin@example.invalid")},
+            "SK": {"S": keys.message_sk(nid)},
+        }
+
+
+class TestInboxIdorSuiteEdges:
+    def test_an_unloadable_key_module_is_an_error_and_seeds_nothing(self, monkeypatch):
+        def broken():
+            raise ImportError("No module named 'idp_common'")
+
+        monkeypatch.setattr(sec, "notification_keys", broken)
+        api = _FakeInboxApi()
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "inbox-idor-seed"
+        assert "ImportError" in rec.rows[0]["detail"]
+        assert api.messages == {} and api.calls == []
+        assert harness.hard_failures(results) == rec.rows
+
+    def test_a_cleanup_that_raises_does_not_discard_the_results(self):
+        api = _FakeInboxApi()
+
+        def cleanup(notification_id):
+            raise RuntimeError("delete-item throttled")
+
+        rec = _Recorder()
+        results = []
+        sec.run_inbox_idor_suite(
+            CTX,
+            rec,
+            results,
+            {"Admin": "a", "userB": "b"},
+            seed_fn=api.seed,
+            call_body=api,
+            cleanup_fn=cleanup,
+        )
+
+        assert [r["principal"] for r in rec.rows] == INBOX_PRINCIPALS
+        assert {r["outcome"] for r in rec.rows} == {"PASS"}
+
+    @pytest.mark.parametrize(
+        ("response", "reason"),
+        [
+            ((403, '{"errors":[]}'), "owner list answered 403"),
+            ((200, '{"unexpected": true}'), "owner list body has no items array"),
+        ],
+    )
+    def test_an_owner_list_that_cannot_show_the_seed_fails_the_control(
+        self, response, reason
+    ):
+        api = _FakeInboxApi(status={("listInboxMessages", "a", "plain"): response})
+
+        rec, _ = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert reason in rec.rows[0]["detail"]
+        assert not [c for c in api.calls if c[1] == "b"]
+
+
+# --------------------------------------------------------------------------- #
+# IDOR (2.1) — review queues: only the claimer acts on a claimed item
+# --------------------------------------------------------------------------- #
+def _load_dispatcher_validation():
+    """The dispatcher's real argument validator, loaded by path under its own name.
+
+    The fake below runs every call through it first, so a call missing an argument
+    the schema requires gets the same 400 the deployed dispatcher gives it, rather
+    than the 403 the check is waiting for.
+    """
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "nested/api-resolvers/src/lambda/http_api_dispatcher/validation.py"
+    )
+    spec = importlib.util.spec_from_file_location("_dispatcher_validation", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # The loader fails open: an unreadable spec becomes an empty one and every
+    # call validates, which would make this guard check nothing.
+    probed = {
+        "renewReviewLease",
+        "releaseReviewItem",
+        "saveReviewDraft",
+        "completeReviewItem",
+    }
+    missing = probed - set(mod._SPEC["fields"])
+    assert not missing, f"validation spec did not load, or lacks {sorted(missing)}"
+    return mod
+
+
+dispatcher_validation = _load_dispatcher_validation()
+
+REVIEW_KEY = "batch-1/claim.pdf"
+REVIEW_CYCLE = "cycle-1"
+_FORBIDDEN = (403, '{"errors":[{"errorType":"Forbidden"}]}')
+
+
+class _FakeReviewApi:
+    """An in-memory stand-in for the review-queue operations behind ``call_body``.
+
+    Token ``"A"`` holds the claim, ``"B"`` is a fellow queue member and ``"C"`` is
+    not a member. By default it behaves like the real dispatcher and resolver —
+    argument validation first, then ownership; ``status`` overrides one
+    ``(field, token)`` response to break one property.
+    """
+
+    def __init__(self, **knobs):
+        self.knobs = knobs
+        self.calls = []
+        self.cleaned = []
+
+    def seed(self):
+        if self.knobs.get("seed_raises"):
+            raise RuntimeError("put-item failed")
+        if self.knobs.get("no_table"):
+            return None
+        return {
+            "tokens": {"A": "A", "B": "B", "C": "C"},
+            "object_key": REVIEW_KEY,
+            "cycle_id": REVIEW_CYCLE,
+        }
+
+    def cleanup(self, seeded):
+        if self.knobs.get("cleanup_raises"):
+            raise RuntimeError("cleanup failed")
+        self.cleaned.append(seeded)
+
+    def __call__(self, api_base, field, args, token):
+        self.calls.append((field, token, dict(args)))
+        override = self.knobs.get("status", {}).get((field, token))
+        if override is not None:
+            return override
+        try:
+            dispatcher_validation.validate_arguments(field, args)
+        except ValueError as e:
+            return 400, json.dumps({"errors": [{"errorType": "BadRequest", "message": str(e)}]})
+        if field == "getReviewItem":
+            if token == "C":  # nosec B105 - fake test token id, not a credential
+                return _FORBIDDEN
+            return 200, json.dumps({"objectKey": args["objectKey"]})
+        if field == "listMyReviewWork":
+            mine = [{"objectKey": REVIEW_KEY}] if token == "A" else []  # nosec B105
+            return 200, json.dumps({"items": mine, "nextToken": None})
+        # Every other operation acts on the claim, which only A holds, and A is
+        # never asked to: B and C are refused.
+        return _FORBIDDEN
+
+
+def _run_review(api, seed=True, call=True):
+    rec = _Recorder()
+    results = []
+    sec.run_review_queue_idor_suite(
+        CTX,
+        rec,
+        results,
+        seed_fn=api.seed if seed else None,
+        call_body=api if call else None,
+        cleanup_fn=api.cleanup,
+    )
+    return rec, results
+
+
+REVIEW_ROWS = [
+    ("getReviewItem", "review-claimer(positive control)"),
+    ("getReviewItem", "member-B(preview)"),
+    ("renewReviewLease", "member-B(acts on A's claim)"),
+    ("releaseReviewItem", "member-B(acts on A's claim)"),
+    ("saveReviewDraft", "member-B(acts on A's claim)"),
+    ("completeReviewItem", "member-B(acts on A's claim)"),
+    ("listMyReviewWork", "member-B(My Work)"),
+    ("getReviewItem", "non-member-C"),
+    ("claimReviewItem", "non-member-C"),
+]
+
+
+def _review_outcome(rec, op, principal):
+    rows = [r for r in rec.rows if r["op"] == op and r["principal"] == principal]
+    assert len(rows) == 1, f"expected one row for {op}/{principal}, got {rows}"
+    return rows[0]["outcome"]
+
+
+class TestReviewQueueIdorSuite:
+    def test_a_resolver_that_enforces_the_claim_passes_every_check(self):
+        api = _FakeReviewApi()
+
+        rec, results = _run_review(api)
+
+        assert [(r["op"], r["principal"]) for r in rec.rows] == REVIEW_ROWS
+        assert {r["outcome"] for r in rec.rows} == {"PASS"}
+        assert harness.hard_failures(results) == []
+        assert api.cleaned == [api.seed()]
+
+    def test_the_probes_name_the_seeded_item_with_each_callers_token(self):
+        api = _FakeReviewApi()
+
+        _run_review(api)
+
+        item_args = {"objectKey": REVIEW_KEY, "cycleId": REVIEW_CYCLE}
+        b_acts = {f: a for f, t, a in api.calls if t == "B" and f != "getReviewItem"}
+        assert b_acts["renewReviewLease"] == item_args
+        assert b_acts["releaseReviewItem"] == {**item_args, "reason": "Out of time"}
+        assert b_acts["completeReviewItem"] == item_args
+        assert b_acts["saveReviewDraft"] == {
+            **item_args,
+            "sectionId": "1",
+            "data": "{}",
+        }
+        c_calls = {f: a for f, t, a in api.calls if t == "C"}
+        assert c_calls == {
+            "getReviewItem": {"objectKey": REVIEW_KEY},
+            "claimReviewItem": item_args,
+        }
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "renewReviewLease",
+            "releaseReviewItem",
+            "saveReviewDraft",
+            "completeReviewItem",
+        ],
+    )
+    def test_a_member_acting_on_another_members_claim_is_a_fail(self, field):
+        api = _FakeReviewApi(status={(field, "B"): (200, "{}")})
+
+        rec, results = _run_review(api)
+
+        assert _review_outcome(rec, field, "member-B(acts on A's claim)") == "FAIL"
+        others = [r for r in rec.rows if r["op"] != field]
+        assert {r["outcome"] for r in others} == {"PASS"}
+        assert harness.hard_failures(results)
+
+    @pytest.mark.parametrize(
+        ("op", "token", "principal"),
+        [
+            ("releaseReviewItem", "B", "member-B(acts on A's claim)"),
+            ("claimReviewItem", "C", "non-member-C"),
+        ],
+    )
+    def test_a_refusal_with_any_status_but_403_is_a_fail(self, op, token, principal):
+        """The suite asserts the authorization refusal itself: a 404 or a 400
+        may come from a validation step that ran before the ownership check, so
+        it does not show the claim was enforced."""
+        api = _FakeReviewApi(status={(op, token): (404, '{"errors":[]}')})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, op, principal) == "FAIL"
+
+    def test_a_member_refused_a_preview_is_a_fail(self):
+        api = _FakeReviewApi(status={("getReviewItem", "B"): _FORBIDDEN})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "getReviewItem", "member-B(preview)") == "FAIL"
+
+    def test_the_claim_appearing_in_another_members_work_is_a_fail(self):
+        leaked = (200, json.dumps({"items": [{"objectKey": REVIEW_KEY}]}))
+        api = _FakeReviewApi(status={("listMyReviewWork", "B"): leaked})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "listMyReviewWork", "member-B(My Work)") == "FAIL"
+
+    def test_a_non_member_served_the_item_is_a_fail(self):
+        api = _FakeReviewApi(status={("getReviewItem", "C"): (200, "{}")})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "getReviewItem", "non-member-C") == "FAIL"
+        assert _review_outcome(rec, "claimReviewItem", "non-member-C") == "PASS"
+
+    def test_a_refusal_that_echoes_the_item_key_is_a_fail(self):
+        echo = (403, json.dumps({"errors": [{"message": f"{REVIEW_KEY} is claimed"}]}))
+        api = _FakeReviewApi(status={("claimReviewItem", "C"): echo})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "claimReviewItem", "non-member-C") == "FAIL"
+
+    def test_a_member_act_that_did_not_complete_is_an_error_not_a_pass(self):
+        api = _FakeReviewApi(
+            status={
+                ("renewReviewLease", "B"): (0, "<request error: timeout>"),
+                ("listMyReviewWork", "B"): (502, "Bad Gateway"),
+                ("getReviewItem", "B"): (0, "<request error: reset>"),
+            }
+        )
+
+        rec, results = _run_review(api)
+
+        acts = "member-B(acts on A's claim)"
+        assert _review_outcome(rec, "renewReviewLease", acts) == "ERROR"
+        assert _review_outcome(rec, "releaseReviewItem", acts) == "PASS"
+        assert _review_outcome(rec, "listMyReviewWork", "member-B(My Work)") == "ERROR"
+        assert _review_outcome(rec, "getReviewItem", "member-B(preview)") == "ERROR"
+        assert harness.hard_failures(results)
+
+    @pytest.mark.parametrize(
+        ("status", "reason"),
+        [
+            ({("listMyReviewWork", "A"): (200, '{"items": []}')}, "item listed: False"),
+            ({("listMyReviewWork", "A"): (200, "not json")}, "item listed: False"),
+            ({("getReviewItem", "A"): (0, "<request error: x>")}, "did not complete"),
+            ({("getReviewItem", "A"): _FORBIDDEN}, "claimer preview 403"),
+        ],
+        ids=["not-in-my-work", "unreadable-my-work", "timeout", "claimer-refused"],
+    )
+    def test_a_failed_positive_control_is_an_error_and_runs_no_leak_check(
+        self, status, reason
+    ):
+        api = _FakeReviewApi(status=status)
+
+        rec, results = _run_review(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "review-claimer(positive control)"
+        assert reason in rec.rows[0]["detail"]
+        assert not [c for c in api.calls if c[1] != "A"]
+        assert harness.hard_failures(results) == rec.rows
+        assert len(api.cleaned) == 1
+
+    def test_a_missing_table_output_is_a_skip_and_cleans_nothing(self):
+        api = _FakeReviewApi(no_table=True)
+
+        rec, results = _run_review(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert "HITLTableName" in rec.rows[0]["detail"]
+        assert api.calls == [] and api.cleaned == []
+        assert harness.hard_failures(results) == []
+
+    def test_a_seed_that_raises_is_an_error(self):
+        api = _FakeReviewApi(seed_raises=True)
+
+        rec, results = _run_review(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "review-idor-seed"
+        assert "RuntimeError" in rec.rows[0]["detail"]
+        assert api.calls == [] and api.cleaned == []
+        assert harness.hard_failures(results) == rec.rows
+
+    @pytest.mark.parametrize(("seed", "call"), [(False, True), (True, False)])
+    def test_missing_preconditions_skip(self, seed, call):
+        api = _FakeReviewApi()
+
+        rec, results = _run_review(api, seed=seed, call=call)
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert rec.rows[0]["principal"] == "review-idor"
+        assert api.calls == [] and api.cleaned == []
+        assert harness.hard_failures(results) == []
+
+    def test_a_cleanup_that_raises_does_not_discard_the_results(self):
+        api = _FakeReviewApi(cleanup_raises=True)
+
+        rec, results = _run_review(api)
+
+        assert [(r["op"], r["principal"]) for r in rec.rows] == REVIEW_ROWS
+        assert harness.hard_failures(results) == []
+
+
+class TestReviewPageKeys:
+    def test_object_keys_are_read_and_non_dict_items_ignored(self):
+        body = json.dumps({"items": [{"objectKey": "a"}, "junk", {"objectKey": "b"}]})
+
+        assert sec._review_page_keys(body) == ["a", "b"]
+
+    @pytest.mark.parametrize("body", [None, "", "not json", "[]", '{"items": {}}'])
+    def test_an_unreadable_page_is_none(self, body):
+        assert sec._review_page_keys(body) is None
+
+
+class _FakeReviewAws(_FakeAwsCli):
+    """``aws(...)`` for the review seed: snapshots ctx at the queue-definition put."""
+
+    def __init__(self, ctx, fail_item_put=False):
+        super().__init__("IDP1-HITLTable-ABC")
+        self.ctx = ctx
+        self.fail_item_put = fail_item_put
+        self.ctx_at_qdef_put = None
+
+    def __call__(self, *args, region=None):
+        if args[:2] == ("dynamodb", "put-item"):
+            item = json.loads(args[args.index("--item") + 1])
+            if item["PK"] == {"S": "QDEF"}:
+                self.ctx_at_qdef_put = dict(self.ctx)
+            elif item["SK"] == {"S": "ITEM"} and self.fail_item_put:
+                self.calls.append(args)
+                raise RuntimeError("put-item failed")
+        return super().__call__(*args, region=region)
+
+    def deleted_keys(self):
+        return [
+            json.loads(a[a.index("--key") + 1])
+            for a in self.calls
+            if a[:2] == ("dynamodb", "delete-item")
+        ]
+
+
+class TestReviewSeeding:
+    """seed_review_item writes a real queue definition and waits past its cache."""
+
+    def _setup(self, monkeypatch, statuses=None, fail_item_put=False):
+        import types
+
+        ctx = {"stack": "IDP1", "region": "us-west-2", **CTX}
+        fake = _FakeReviewAws(ctx, fail_item_put=fail_item_put)
+        monkeypatch.setattr(harness, "aws", fake)
+        monkeypatch.setattr(harness, "create_cognito_user", lambda *a, **k: None)
+        monkeypatch.setattr(harness, "delete_cognito_user", lambda *a, **k: None)
+        letters = {harness.test_email(u): u[-1] for u in harness.REVIEW_IDOR_USERS}
+        monkeypatch.setattr(
+            harness, "get_id_token", lambda ctx, email, pw: letters[email]
+        )
+        calls = []
+        script = list(statuses or [403])
+
+        def call_body(api_base, field, args, token):
+            calls.append((field, args, token))
+            status = script.pop(0) if len(script) > 1 else script[0]
+            return status, "{}" if status == 200 else ""
+
+        monkeypatch.setattr(harness, "call_body", call_body)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(harness, "_monotonic", lambda: clock["t"])
+
+        def sleep(s):
+            clock["t"] += s
+
+        monkeypatch.setattr(harness, "_sleep", sleep)
+        stub = types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                upload=lambda *a, **k: types.SimpleNamespace(success=True),
+                delete=lambda *a, **k: None,
+            )
+        )
+        sdk = types.ModuleType("idp_sdk")
+        sdk.IDPClient = lambda *a, **k: stub
+        monkeypatch.setitem(sys.modules, "idp_sdk", sdk)
+        return ctx, fake, calls, clock
+
+    def _emails(self):
+        return {u: harness.test_email(u).lower() for u in harness.REVIEW_IDOR_USERS}
+
+    def test_the_first_put_is_the_queue_definition_listing_a_and_b(self, monkeypatch):
+        ctx, fake, _, _ = self._setup(monkeypatch, statuses=[403, 200])
+
+        harness.seed_review_item(ctx)
+
+        qdef = fake.items_written()[0]
+        assert qdef["PK"] == {"S": "QDEF"}
+        emails = self._emails()
+        listed = [e["S"] for e in qdef["EligibleAnnotators"]["L"]]
+        assert listed == [emails["ReviewIdorA"], emails["ReviewIdorB"]]
+        assert emails["ReviewIdorC"] not in listed
+        assert fake.ctx_at_qdef_put["_review_idor_queue"] == qdef["QueueId"]["S"]
+
+    def test_the_item_is_in_the_seeded_queue(self, monkeypatch):
+        ctx, fake, _, _ = self._setup(monkeypatch, statuses=[200])
+
+        seeded = harness.seed_review_item(ctx)
+
+        qid = seeded["queue_id"]
+        item = next(i for i in fake.items_written() if i["SK"] == {"S": "ITEM"})
+        assert item["Queue"] == {"S": qid}
+        assert item["QueuePK"] == {"S": sec.review_queue_keys().queue_partition(qid)}
+
+    def test_the_seed_polls_b_until_past_the_cache_ttl(self, monkeypatch):
+        ctx, _, calls, clock = self._setup(monkeypatch, statuses=[403, 200])
+
+        harness.seed_review_item(ctx)
+
+        assert calls and all(c[0] == "getReviewItem" and c[2] == "B" for c in calls)
+        assert clock["t"] - 1000.0 >= harness.REVIEW_SEED_MIN_WAIT_S
+
+    def test_the_seed_returns_at_the_deadline_without_raising(self, monkeypatch):
+        ctx, _, _, clock = self._setup(monkeypatch, statuses=[403])
+
+        seeded = harness.seed_review_item(ctx)
+
+        assert seeded["queue_id"]
+        assert clock["t"] - 1000.0 >= harness.REVIEW_SEED_DEADLINE_S
+
+    def test_cleanup_deletes_the_item_before_the_queue_definition(self, monkeypatch):
+        ctx, fake, calls, _ = self._setup(monkeypatch, statuses=[200])
+        seeded = harness.seed_review_item(ctx)
+
+        harness.cleanup_review_item(ctx, seeded)
+
+        deleted = fake.deleted_keys()
+        item_at = deleted.index({"PK": {"S": f"DOC#{seeded['object_key']}"}, "SK": {"S": "ITEM"}})
+        qdef_at = deleted.index(
+            {"PK": {"S": "QDEF"}, "SK": {"S": f"Q#{seeded['queue_id']}"}}
+        )
+        assert item_at < qdef_at
+        assert not any(c[0] == "deleteReviewQueue" for c in calls)
+
+    def test_a_failed_item_put_reraises_and_removes_the_queue_definition(
+        self, monkeypatch
+    ):
+        ctx, fake, _, _ = self._setup(monkeypatch, fail_item_put=True)
+
+        with pytest.raises(RuntimeError, match="put-item failed"):
+            harness.seed_review_item(ctx)
+
+        qid = ctx["_review_idor_queue"]
+        assert {"PK": {"S": "QDEF"}, "SK": {"S": f"Q#{qid}"}} in fake.deleted_keys()
+
+    def test_the_written_definition_loads_and_admits_b(self, monkeypatch):
+        from boto3.dynamodb.types import TypeDeserializer
+
+        from idp_common.review_queues.queue_defs import QueueDefinition
+
+        ctx, fake, _, _ = self._setup(monkeypatch, statuses=[200])
+        harness.seed_review_item(ctx)
+
+        raw = fake.items_written()[0]
+        deser = TypeDeserializer()
+        definition = QueueDefinition.from_item(
+            {k: deser.deserialize(v) for k, v in raw.items()}
+        )
+        emails = self._emails()
+        assert definition.allows(emails["ReviewIdorB"])
+        assert not definition.allows(emails["ReviewIdorC"])

@@ -15,8 +15,16 @@ chain via ``migrate_config`` rather than picking a single step.
 
 from .v05_to_v06 import migrate_v05_to_v06
 from .v06_to_v07 import migrate_v06_to_v07
+from .v07_to_v08 import migrate_v07_to_v08
+from .v08_to_v09 import migrate_v08_to_v09
 
-__all__ = ["migrate_config", "migrate_v05_to_v06", "migrate_v06_to_v07"]
+__all__ = [
+    "migrate_config",
+    "migrate_v05_to_v06",
+    "migrate_v06_to_v07",
+    "migrate_v07_to_v08",
+    "migrate_v08_to_v09",
+]
 
 
 def migrate_config(config):
@@ -27,4 +35,6 @@ def migrate_config(config):
     behind. Each step is itself idempotent and a no-op when not needed, so this
     is safe to call on every read.
     """
-    return migrate_v06_to_v07(migrate_v05_to_v06(config))
+    return migrate_v08_to_v09(
+        migrate_v07_to_v08(migrate_v06_to_v07(migrate_v05_to_v06(config)))
+    )

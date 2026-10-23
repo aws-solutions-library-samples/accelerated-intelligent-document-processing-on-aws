@@ -1,0 +1,181 @@
+{
+ "create_metadata_file_calls": [
+  [
+   [
+    "s3://out/folder/inv.pdf/sections/1/result.json",
+    "invoice",
+    "section"
+   ],
+   {}
+  ],
+  [
+   [
+    "s3://out/folder/inv.pdf/sections/2/result.json",
+    "invoice",
+    "section"
+   ],
+   {}
+  ]
+ ],
+ "response": {
+  "document": {
+   "completion_time": null,
+   "confidence_alert_count": 0,
+   "config_assignment_error": null,
+   "config_mapping_prefix": null,
+   "config_revision": null,
+   "config_source": null,
+   "config_version": "default",
+   "errors": [],
+   "evaluation_report_uri": null,
+   "evaluation_results_uri": null,
+   "evaluation_status": null,
+   "forced_document_class": null,
+   "id": "folder/inv.pdf",
+   "initial_event_time": null,
+   "input_bucket": "in",
+   "input_key": "folder/inv.pdf",
+   "metering": {
+    "bedrock/extraction": {
+     "inputTokens": 30
+    }
+   },
+   "num_pages": 2,
+   "output_bucket": "out",
+   "pages": {},
+   "queued_time": null,
+   "sections": [
+    {
+     "classification": "invoice",
+     "confidence_threshold_alerts": [],
+     "extraction_result_uri": "s3://out/folder/inv.pdf/sections/1/result.json",
+     "page_ids": [
+      "1"
+     ],
+     "section_id": "1"
+    },
+    {
+     "classification": "invoice",
+     "confidence_threshold_alerts": [],
+     "extraction_result_uri": "s3://out/folder/inv.pdf/sections/2/result.json",
+     "page_ids": [
+      "2"
+     ],
+     "section_id": "2"
+    }
+   ],
+   "start_time": null,
+   "status": "POSTPROCESSING",
+   "submission_source": null,
+   "summary_report_uri": null,
+   "test_set_id": null,
+   "trace_id": null,
+   "workflow_execution_arn": null
+  },
+  "hitl_triggered": false,
+  "rule_validation_enabled": false
+ },
+ "update_document_calls": [
+  {
+   "document": {
+    "completion_time": null,
+    "confidence_alert_count": 0,
+    "config_assignment_error": null,
+    "config_mapping_prefix": null,
+    "config_revision": null,
+    "config_source": null,
+    "config_version": "default",
+    "errors": [],
+    "evaluation_report_uri": null,
+    "evaluation_results_uri": null,
+    "evaluation_status": null,
+    "forced_document_class": null,
+    "id": "folder/inv.pdf",
+    "initial_event_time": null,
+    "input_bucket": "in",
+    "input_key": "folder/inv.pdf",
+    "metering": {},
+    "num_pages": 2,
+    "output_bucket": "out",
+    "pages": {},
+    "queued_time": null,
+    "sections": [],
+    "start_time": null,
+    "status": "POSTPROCESSING",
+    "submission_source": null,
+    "summary_report_uri": null,
+    "test_set_id": null,
+    "trace_id": null,
+    "workflow_execution_arn": null
+   },
+   "hitl": {
+    "sections_completed": null,
+    "sections_pending": null,
+    "status": null,
+    "triggered": false
+   }
+  },
+  {
+   "document": {
+    "completion_time": null,
+    "confidence_alert_count": 0,
+    "config_assignment_error": null,
+    "config_mapping_prefix": null,
+    "config_revision": null,
+    "config_source": null,
+    "config_version": "default",
+    "errors": [],
+    "evaluation_report_uri": null,
+    "evaluation_results_uri": null,
+    "evaluation_status": null,
+    "forced_document_class": null,
+    "id": "folder/inv.pdf",
+    "initial_event_time": null,
+    "input_bucket": "in",
+    "input_key": "folder/inv.pdf",
+    "metering": {
+     "bedrock/extraction": {
+      "inputTokens": 30
+     }
+    },
+    "num_pages": 2,
+    "output_bucket": "out",
+    "pages": {},
+    "queued_time": null,
+    "sections": [
+     {
+      "classification": "invoice",
+      "confidence_threshold_alerts": [],
+      "extraction_result_uri": "s3://out/folder/inv.pdf/sections/1/result.json",
+      "page_ids": [
+       "1"
+      ],
+      "section_id": "1"
+     },
+     {
+      "classification": "invoice",
+      "confidence_threshold_alerts": [],
+      "extraction_result_uri": "s3://out/folder/inv.pdf/sections/2/result.json",
+      "page_ids": [
+       "2"
+      ],
+      "section_id": "2"
+     }
+    ],
+    "start_time": null,
+    "status": "POSTPROCESSING",
+    "submission_source": null,
+    "summary_report_uri": null,
+    "test_set_id": null,
+    "trace_id": null,
+    "workflow_execution_arn": null
+   },
+   "hitl": {
+    "sections_completed": null,
+    "sections_pending": null,
+    "status": null,
+    "triggered": false
+   }
+  }
+ ]
+}

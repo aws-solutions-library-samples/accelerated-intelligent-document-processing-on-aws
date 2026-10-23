@@ -18,6 +18,7 @@ from idp_common import assessment, get_config, s3
 # cause and miss the other.
 from idp_common.assessment.degradation import degrade_section_to_no_confidence
 from idp_common.docs_service import create_document_service
+from idp_common.lambda_deadline import set_lambda_deadline_epoch
 from idp_common.models import Document, Status
 from idp_common.utils import (
     calculate_lambda_metering,
@@ -329,6 +330,12 @@ def _handle(event, context):
         deadline_epoch = time.time() + (context.get_remaining_time_in_millis() / 1000.0)
     except Exception:  # noqa: BLE001 - context may be absent in local/test runs
         deadline_epoch = None
+    # Publish it for the Bedrock retry ladders as well, not only for the escalation
+    # ladder threaded below. The two are independent: this one keeps a ladder in
+    # ``bedrock/client.py`` from beginning a 300-second request with less than that
+    # left, which is the exposure the extraction handlers already close. No-op when
+    # the deadline is unknown.
+    set_lambda_deadline_epoch(deadline_epoch)
 
     try:
         updated_document = assessment_service.process_document_section(

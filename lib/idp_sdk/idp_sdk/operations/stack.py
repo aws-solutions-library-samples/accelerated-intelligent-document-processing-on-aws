@@ -626,7 +626,7 @@ class StackOperation:
             dry_run: Preview changes without making them (default: False)
             auto_approve: Auto-approve all deletions, skipping confirmations (default: False)
             regions: AWS regions to check for deleted IDP stacks
-                     (default: us-east-1, us-west-2, eu-central-1)
+                     (default: ``cleanup_orphaned.IDP_REGIONS``)
             profile: AWS profile name to use (default: None, uses default credential chain)
 
         Returns:

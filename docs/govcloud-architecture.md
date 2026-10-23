@@ -116,8 +116,8 @@ modality in Standard Output Configuration`.
 `ShouldCreateBDAOCRProject` — the `aws` partition only. Outside it the project
 is not created, `BDA_OCR_PROJECT_ARN` is empty, and the OCR service raises a
 clear error *only if* `ocr.backend` is actually set to `bda`. Use
-`ocr.backend: textract` — the built-in default; the GovCloud preset sets no
-`ocr:` key, so the default applies. See
+`ocr.backend: textract` — the built-in default; the GovCloud preset leaves
+`ocr.backend` unset, so the default applies. See
 [the deployment guide](./govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend).
 
 ## What `--headless` Removes
@@ -206,10 +206,17 @@ policy, so CloudFormation creates the role happily and a statement dropped in
 error only surfaces later as an access-denied at runtime, in the partition you
 deployed to.
 
-Note what is **not** touched. `CognitoAuthorizedRole`'s `S3` inline policy —
-`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the input and output
-buckets, plus its KMS statement — survives both transforms unchanged, so a GovCloud
-deployment gives the authenticated role exactly the same S3 reach as a commercial one.
+Note what is **not** touched, and how little is left to touch on this particular
+role. `CognitoAuthorizedRole` carries two inline policies and no S3 or KMS
+statement of any kind — the browser reads document bytes through
+`getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls` rather than with
+its own credentials, so there is **nothing** on the input and output buckets for a
+transform to keep or drop, and **no** `s3:GetObject` anywhere on it. `--headless`
+leaves both policies alone. `--govcloud` drops `ChatStreamInvoke` in full (above),
+which leaves `ParameterStore` — `ssm:GetParameter` on the one settings parameter —
+as the whole of what the authenticated role can do on GovCloud. The S3 reach a
+GovCloud deployment gives that role is therefore identical to a commercial one's for
+the same reason in both partitions: there is none.
 
 So each transform reports every statement it drops, at `INFO`, naming the
 resource (for a role's inline policy, `<RoleLogicalId>.<PolicyName>`), the count

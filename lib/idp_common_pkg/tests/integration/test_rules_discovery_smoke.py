@@ -1,14 +1,36 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""
-Smoke test: run RulesDiscovery with the current defaults in
+"""Smoke test: run RulesDiscovery with the shipped defaults in
 base-rule-discovery.yaml against the medicare_respiratory_pa_packet.pdf
-sample and assert the extracted rules pass shape validation.
+sample and assert a real model's extracted rules reach the rule-validation
+runtime intact.
 
 This test is marked 'integration' because it actually calls Bedrock. Skip
 it in CI unless AWS_REGION and Bedrock access are available; the
 TestClient sets up its own session.
+
+Where the assertions live: the config loading and the consumability check are in
+``tests.unit.discovery.rule_discovery_contract``, shared with
+``tests/unit/discovery/test_rule_discovery_shipped_defaults.py``, which runs the
+same sequence offline with Bedrock stubbed. The two tiers therefore make the
+same claim about the same artifact and differ only in whether the model is real,
+so a break in the path itself surfaces in ``make test`` instead of only in the
+nightly that holds credentials. What is left here, and only here, is the part
+that needs a model: that a real policy PDF yields a useful *number* of real
+rules.
+
+That split exists because this test used to be unsatisfiable. It checked the
+result of ``discovery_rules_from_document_local`` — the persisted
+``policy_classes`` shape, keyed on ``x-aws-idp-policy-type`` — with
+``_validate_rules_response``, which validates raw LLM output keyed on
+``x-aws-idp-rule-type``. No model output could satisfy that, so the two
+"independent reproductions" recorded in
+[#1305](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1305)
+were reproductions of this assertion rather than of a defect in the defaults. It
+also assigned raw YAML values onto an already-constructed model, which bypasses
+pydantic's ``mode="before"`` validators and sent ``max_tokens=""`` to Bedrock;
+``rule_discovery_contract`` records both.
 
 Run with:
     pytest -m integration lib/idp_common_pkg/tests/integration/test_rules_discovery_smoke.py -s
@@ -40,44 +62,17 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
 
-from idp_common.config.models import IDPConfig
 from idp_common.discovery.rules_discovery import RulesDiscovery
+from tests.unit.discovery.rule_discovery_contract import (
+    assert_discovered_rules_are_runtime_consumable,
+    load_shipped_rule_discovery_config,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3].parent
-DEFAULT_CFG_YAML = (
-    REPO_ROOT
-    / "lib"
-    / "idp_common_pkg"
-    / "idp_common"
-    / "config"
-    / "system_defaults"
-    / "base-rule-discovery.yaml"
-)
 SAMPLE_PDF = (
     REPO_ROOT / "samples" / "rule-validation" / "medicare_respiratory_pa_packet.pdf"
 )
-
-
-def _load_defaults_into_config() -> IDPConfig:
-    """Build an IDPConfig populated only from base-rule-discovery.yaml defaults."""
-    raw = yaml.safe_load(DEFAULT_CFG_YAML.read_text())
-    cfg = IDPConfig()
-    # Apply each default onto the pydantic model. The YAML uses string-typed
-    # numeric fields (matching the CFN schema presentation format); the
-    # RuleDiscoveryConfig field validators coerce them.
-    rules = raw["discovery"]["rules"]
-    cfg.discovery.rules.model = rules["model"]
-    cfg.discovery.rules.temperature = rules["temperature"]
-    cfg.discovery.rules.top_p = rules["top_p"]
-    cfg.discovery.rules.top_k = rules["top_k"]
-    cfg.discovery.rules.max_tokens = rules["max_tokens"]
-    cfg.discovery.rules.system_prompt = rules["system_prompt"]
-    cfg.discovery.rules.task_prompt = rules["task_prompt"]
-    cfg.discovery.rules.agentic.enabled = rules["agentic"]["enabled"]
-    cfg.discovery.rules.agentic.review_agent = rules["agentic"]["review_agent"]
-    return cfg
 
 
 @pytest.mark.integration
@@ -85,7 +80,7 @@ def test_rules_discovery_with_defaults_against_medicare_sample():
     """Confirm base-rule-discovery.yaml defaults produce valid rules for a real
     medicare PA packet sample."""
     assert SAMPLE_PDF.exists(), f"Sample PDF missing: {SAMPLE_PDF}"
-    cfg = _load_defaults_into_config()
+    cfg = load_shipped_rule_discovery_config()
 
     # Bypass DynamoDB config load by passing config directly. input_bucket /
     # input_prefix are required by the constructor but unused by the
@@ -101,18 +96,14 @@ def test_rules_discovery_with_defaults_against_medicare_sample():
 
     assert result["status"] == "SUCCESS", f"Unexpected status: {result.get('status')}"
     rules = result["rules"]
-    assert isinstance(rules, list) and len(rules) >= 1, (
-        "Expected at least one rule class"
-    )
 
-    # The flat task_prompt produces a single rule_class containing all rules.
-    # Validate shape via the same helper the production path uses.
-    ok, err = discovery._validate_rules_response(rules)
-    assert ok, f"Extracted rules failed shape validation: {err}"
+    # Same contract the offline tier asserts: every discovered rule must survive
+    # into what RuleValidationService would actually evaluate.
+    total_rules = assert_discovered_rules_are_runtime_consumable(rules, cfg)
 
-    # Sanity: medicare policy manuals typically yield dozens of rules;
-    # anything under 10 suggests the prompt or model defaults regressed.
-    total_rules = sum(len(rc.get("rule_properties", {})) for rc in rules)
+    # The model-dependent half, which is why this tier exists. Medicare policy
+    # manuals typically yield dozens of rules; anything under 10 suggests the
+    # prompt or model defaults regressed.
     print(
         f"\nSmoke test result: {len(rules)} rule class(es), {total_rules} total rules"
     )

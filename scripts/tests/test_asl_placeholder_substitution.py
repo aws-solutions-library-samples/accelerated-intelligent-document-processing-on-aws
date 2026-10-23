@@ -69,6 +69,10 @@ _SKIP_DIRS = frozenset(
         # to match the sibling gates by test_repo_walk_guards_prune_local_work.py.
         "scratch",
         ".claude",
+        # The advisory reviewer's `.ai-review/base/` is the same thing one layer
+        # on: a whole copy of the merge-base tree, written by this repository's own
+        # tooling. Kept in step with the sibling gates.
+        ".ai-review",
     }
 )
 

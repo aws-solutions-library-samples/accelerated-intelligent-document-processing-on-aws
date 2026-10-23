@@ -20,10 +20,13 @@ SRT_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = SRT_DIR.parent.parent
 sys.path.insert(0, str(SRT_DIR))
 
+import ci_paths  # noqa: E402
 from ci_paths import (  # noqa: E402
     _normalize,
     is_gating_status,
     is_in_ci_checkout,
+    is_test_only_path,
+    packaged_source_dirs,
     partition_by_ci_visibility,
     tracked_files,
 )
@@ -306,3 +309,427 @@ class TestTheRegionItRecords:
         mod = self._setup_module()
         assert mod.aws_cli_profile_has_region("hasregion") is True
         assert mod.aws_cli_profile_has_region("bare") is False
+
+
+class TestPackagedSourceDirsFromAContainerBuild:
+    """A `PackageType: Image` function's source tree reaches the packaged set.
+
+    Such a function declares no `CodeUri` — its template carries an `ImageUri` naming
+    an ECR tag — so the directory it is built from is read from the buildspec its
+    CodeBuild project points at. Before that, 15 of the 16 source trees under
+    `patterns/unified/src/` were absent from the packaged set, which is the premise
+    that makes `is_test_only_path`'s test-shape heuristic safe (#1389).
+
+    Each case builds a throwaway repository rather than asserting against this one,
+    so the failure modes that matter — a buildspec that cannot be found, one that
+    cannot be parsed, PyYAML absent — are reachable at all. None of them exists in
+    this tree, and a guard nothing can reach is a guard nobody has measured.
+    """
+
+    TEMPLATE = (
+        "AWSTemplateFormatVersion: '2010-09-09'\n"
+        "Resources:\n"
+        "  DockerBuildProject:\n"
+        "    Type: AWS::CodeBuild::Project\n"
+        "    Properties:\n"
+        "      Source:\n"
+        "        Type: S3\n"
+        "        BuildSpec: {spec}\n"
+    )
+
+    #: The `-` before `export` is the point: these are YAML list items, so a pattern
+    #: anchored to leading whitespace followed by `export` matches none of them and
+    #: reports zero, which reads exactly like the key being absent.
+    BUILDSPEC = (
+        "version: 0.2\n"
+        "phases:\n"
+        "  build:\n"
+        "    commands:\n"
+        '      - echo "Building..."\n'
+        '      - export FUNCTION_ocr="src/ocr_function"\n'
+    )
+
+    @staticmethod
+    def _repo(root, files, dirs=(), untracked=()):
+        """A git repository holding `files`, with everything staged but `untracked`."""
+        for rel, body in files.items():
+            path = Path(root, rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        for rel in dirs:
+            Path(root, rel).mkdir(parents=True, exist_ok=True)
+            Path(root, rel, "index.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q", str(root)], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "add", "-A"], cwd=str(root), check=True, capture_output=True
+        )
+        for rel in untracked:
+            path = Path(root, rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(files.get(rel, "version: 0.2\n"), encoding="utf-8")
+        return root
+
+    def test_a_tree_named_only_by_the_buildspec_is_packaged(self, tmp_path):
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset({"src/ocr_function"})
+
+    def test_the_tree_then_keeps_a_test_shaped_file_inside_it_gating(self, tmp_path):
+        """The behaviour the packaged set exists to produce, end to end."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function",),
+        )
+        packaged = packaged_source_dirs(tmp_path)
+        assert not is_test_only_path("src/ocr_function/test_index.py", packaged)
+        assert is_test_only_path("tests/unit/test_index.py", packaged)
+
+    def test_a_bare_buildspec_name_resolves_beside_its_template(self, tmp_path):
+        """A CodeBuild source zip whose root is the extension's own directory.
+
+        Both spellings are live in this repository: the unified pattern names
+        `patterns/unified/buildspec.yml`, repository-relative, while the data
+        generator names a bare `buildspec.yml` sitting beside its template. Reading
+        only the first makes the second unresolvable, which fails the whole answer
+        closed and blinds the demotion for every finding in the repository.
+        """
+        self._repo(
+            tmp_path,
+            {
+                "ext/template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "ext/buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("ext/src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset({"ext/src/ocr_function"})
+
+    def test_an_inline_buildspec_contributes_nothing_and_is_a_known_answer(
+        self, tmp_path
+    ):
+        """`BuildSpec: |` is a document, not a path, so there is nothing to resolve.
+
+        Three templates here use that form. Reading the block-scalar introducer as a
+        filename would make every one of them an unresolvable buildspec, and the
+        answer would be None — every finding in the repository gating — rather than a
+        set.
+        """
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": (
+                    "AWSTemplateFormatVersion: '2010-09-09'\n"
+                    "Resources:\n"
+                    "  DockerBuildProject:\n"
+                    "    Type: AWS::CodeBuild::Project\n"
+                    "    Properties:\n"
+                    "      Source:\n"
+                    "        BuildSpec: |\n"
+                    "          version: 0.2\n"
+                    "          phases:\n"
+                    "            build:\n"
+                    "              commands:\n"
+                    "                - docker build -t x .\n"
+                )
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_a_computed_buildspec_path_is_a_known_answer_too(self, tmp_path):
+        """A `!Sub` names no file on disk, so there is nothing to fail to read."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(
+                    spec='!Sub "${Prefix}/buildspec.yml"'
+                )
+            },
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_a_buildspec_this_checkout_does_not_have_is_unknown(self, tmp_path, capsys):
+        """Fail closed: the trees its images ship would otherwise be unknowable."""
+        self._repo(
+            tmp_path,
+            {"template.yaml": self.TEMPLATE.format(spec="no-such-buildspec.yml")},
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) is None
+        assert "no-such-buildspec.yml" in capsys.readouterr().out
+
+    def test_an_untracked_buildspec_is_unknown(self, tmp_path, capsys):
+        """CI checks out tracked files only, so an untracked one is not there.
+
+        Reading it anyway would put directories in the packaged set locally that CI
+        cannot derive, and the local and CI answers would differ silently.
+        """
+        self._repo(
+            tmp_path,
+            {"template.yaml": self.TEMPLATE.format(spec="buildspec.yml")},
+            dirs=("src/ocr_function",),
+            untracked=("buildspec.yml",),
+        )
+        assert packaged_source_dirs(tmp_path) is None
+        assert "not a tracked file" in capsys.readouterr().out
+
+    def test_an_unparseable_buildspec_is_unknown(self, tmp_path, capsys):
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": "phases:\n  build:\n   commands:\n  - [unclosed\n",
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) is None
+        assert "could not parse" in capsys.readouterr().out
+
+    def test_a_missing_yaml_library_refuses_rather_than_answering_at_all(
+        self, tmp_path, monkeypatch
+    ):
+        """A missing parser is a setup fault, so it is neither answer this returns.
+
+        It used to be None, the same "cannot tell" answer an unreadable buildspec
+        gets, which is correct for the tree and wrong for the environment: the gate
+        then reported every identifier-name finding in test code as a gating HIGH
+        and exited 1, which is what a real regression looks like (#1428). The whole
+        failure class is covered in `test_scan_dependencies.py`; this case stays
+        here because the answers of this function belong together.
+        """
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function",),
+        )
+        monkeypatch.setattr(ci_paths, "_yaml_module", lambda: None)
+        with pytest.raises(ci_paths.ScanDependencyError, match="PyYAML"):
+            packaged_source_dirs(tmp_path)
+
+    def test_a_commented_out_export_is_not_read_as_a_live_one(self, tmp_path):
+        """What parsing the loaded YAML buys over scanning the raw lines."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": (
+                    "version: 0.2\n"
+                    "phases:\n"
+                    "  build:\n"
+                    "    commands:\n"
+                    '      # - export FUNCTION_ocr="src/ocr_function"\n'
+                    '      - echo "nothing to build"\n'
+                ),
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_an_export_assembled_from_another_variable_adds_nothing(self, tmp_path):
+        """And is not a failure: the answer is a set, just without that tree in it."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": (
+                    "version: 0.2\n"
+                    "phases:\n"
+                    "  build:\n"
+                    "    commands:\n"
+                    '      - export FUNCTION_ocr="${BASE}/src/ocr_function"\n'
+                ),
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_an_export_naming_a_directory_that_is_not_there_adds_nothing(
+        self, tmp_path
+    ):
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_the_buildspec_route_adds_to_the_template_route(self, tmp_path):
+        """Both packaging types in one template, which is the shape on this tree."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": (
+                    self.TEMPLATE.format(spec="buildspec.yml") + "  HookFunction:\n"
+                    "    Type: AWS::Serverless::Function\n"
+                    "    Properties:\n"
+                    "      CodeUri: src/hooks_function\n"
+                ),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function", "src/hooks_function"),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset(
+            {"src/ocr_function", "src/hooks_function"}
+        )
+
+    def test_the_real_unified_buildspec_yields_every_tree_it_names(self):
+        """Against this repository, so the parse is measured on the live spelling.
+
+        The number is derived from the file rather than written here: every
+        `export FUNCTION_` line in the buildspec the unified pattern's build project
+        points at has to come back as a directory.
+        """
+        buildspec = PROJECT_ROOT / "patterns" / "unified" / "buildspec.yml"
+        declared = {
+            match.group("path")
+            for match in ci_paths._FUNCTION_EXPORT_RE.finditer(
+                buildspec.read_text(encoding="utf-8")
+            )
+        }
+        assert len(declared) >= 10, f"only {len(declared)} exports found: {declared}"
+
+        found = ci_paths._function_source_dirs(
+            PROJECT_ROOT,
+            "patterns/unified/buildspec.yml",
+            buildspec.read_text(encoding="utf-8"),
+        )
+        assert found == declared, (
+            "the parse did not return every tree the buildspec names. Missing: "
+            f"{sorted(declared - (found or set()))}"
+        )
+
+    def test_a_quoted_buildspec_path_resolves(self, tmp_path):
+        """YAML permits quoting a scalar, and the quotes are not part of the path.
+
+        Reading them as part of it makes the file unresolvable, which fails the whole
+        answer closed — every finding in the repository gating, for a template that
+        is perfectly well formed.
+        """
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec='"buildspec.yml"'),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset({"src/ocr_function"})
+
+    def test_a_buildspec_path_built_from_a_parameter_is_a_known_answer(self, tmp_path):
+        """``BuildSpec: ${Thing}/buildspec.yml`` names no file in this checkout.
+
+        Treating it as a path to look for would make it a buildspec that cannot be
+        found, and the answer None rather than a set.
+        """
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="${Prefix}/buildspec.yml"),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function",),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_an_export_naming_a_file_rather_than_a_directory_adds_nothing(
+        self, tmp_path
+    ):
+        """What goes in the set is a directory; a file in it would never match."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": (
+                    "version: 0.2\n"
+                    "phases:\n"
+                    "  build:\n"
+                    "    commands:\n"
+                    '      - export FUNCTION_ocr="src/handler.py"\n'
+                ),
+                "src/handler.py": "x = 1\n",
+            },
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset()
+
+    def test_two_buildspecs_in_one_template_both_contribute(self, tmp_path):
+        """The per-buildspec results accumulate rather than replacing one another.
+
+        No template here declares two today, which is exactly why this is driven
+        synthetically: the difference between accumulating and overwriting is
+        invisible against a tree where every template has one.
+        """
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": (
+                    self.TEMPLATE.format(spec="buildspec-a.yml") + "  SecondProject:\n"
+                    "    Type: AWS::CodeBuild::Project\n"
+                    "    Properties:\n"
+                    "      Source:\n"
+                    "        BuildSpec: buildspec-b.yml\n"
+                ),
+                "buildspec-a.yml": self.BUILDSPEC,
+                "buildspec-b.yml": self.BUILDSPEC.replace(
+                    "src/ocr_function", "src/classification_function"
+                ),
+            },
+            dirs=("src/ocr_function", "src/classification_function"),
+        )
+        assert packaged_source_dirs(tmp_path) == frozenset(
+            {"src/ocr_function", "src/classification_function"}
+        )
+
+    def test_a_buildspec_that_cannot_be_read_is_unknown(self, tmp_path, capsys):
+        """Present and tracked but unreadable — a third way of not knowing."""
+        self._repo(
+            tmp_path,
+            {
+                "template.yaml": self.TEMPLATE.format(spec="buildspec.yml"),
+                "buildspec.yml": self.BUILDSPEC,
+            },
+            dirs=("src/ocr_function",),
+        )
+        spec = Path(tmp_path, "buildspec.yml")
+        spec.chmod(0o000)
+        try:
+            if spec.read_bytes() is not None:  # pragma: no cover - running as root
+                pytest.skip(
+                    "this process can read a 0o000 file, so OSError is unreachable"
+                )
+        except OSError:
+            pass
+        assert packaged_source_dirs(tmp_path) is None
+        assert "could not read" in capsys.readouterr().out
+        spec.chmod(0o644)
+
+    def test_the_two_candidate_paths_are_deduplicated_and_never_none(self):
+        """A path that escapes the repository root yields nothing, not a ``None`` entry.
+
+        Both halves are structural rather than hypothetical: the two candidates are
+        identical whenever the base is the repository root, and ``_repo_relative``
+        answers ``None`` for a value that climbs out of the tree. Either leaking into
+        the list makes the caller index a path built from ``None``.
+        """
+        assert ci_paths._resolve_candidates("buildspec.yml", "") == ["buildspec.yml"]
+        assert ci_paths._resolve_candidates("buildspec.yml", "ext") == [
+            "buildspec.yml",
+            "ext/buildspec.yml",
+        ]
+        assert ci_paths._resolve_candidates("../../escape.yml", "") == []
+        assert None not in ci_paths._resolve_candidates("../x.yml", "ext")

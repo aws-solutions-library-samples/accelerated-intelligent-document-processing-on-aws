@@ -339,8 +339,9 @@ idp-cli deploy [OPTIONS]
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
 - `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
   setting rather than a stack parameter (the `EnableHITL` parameter was removed in
-  v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
-  Configuration**, or in the config YAML passed to `--custom-config`. The flag is
+  v0.4.11) — enable it in the Web UI under **Configuration → Human-in-the-Loop
+  (HITL) Review (Optional)**, or set `hitl.enabled` in the config YAML passed to
+  `--custom-config`. The flag is
   still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
   new pair starts at a comma or whitespace followed by `key=` (so a space-separated
@@ -644,8 +645,8 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 2. **Additional Resource Cleanup Phase** (happens with `--wait` on all deletions and always with `--force-delete-all`): Removes stack-specific resources not tracked by CloudFormation:
    - CloudWatch Log Groups (Lambda functions, Glue crawlers)
    - AppSync APIs and their log groups (only ever present in stacks created before AppSync was removed; current stacks create none)
-   - CloudFront distributions (two-phase cleanup - initiates disable, takes 15-20 minutes to propagate globally)
-   - CloudFront Response Headers Policies (from previously deleted stacks)
+   - This stack's own CloudFront distributions, identified from the stack's resource list rather than by their comment, which carries only the stack name and so is shared by a same-named stack in another Region. A distribution has to be disabled, and finish deploying (15-20 minutes), before it can be deleted, so each pass moves it one step: an enabled one is disabled, a disabled and deployed one is deleted, and one still deploying is left with a message to re-run. Other stacks' distributions, including disabled orphans, are `remove-deleted-stack-resources`'s job
+   - This stack's own CloudFront Response Headers Policy, identified from the stack's resource list rather than by name. No other stack's policy is touched: CloudFront is global, so the account's policy list includes those of IDP stacks in every Region, and sweeping orphans out of it is `remove-deleted-stack-resources`'s job. A policy is usually already gone, because CloudFormation deletes it with the stack; one left by a failed stack deletion cannot be deleted until its distribution has finished deleting (15-20 minutes after it is disabled), and the CLI logs that and says to re-run rather than reporting a failure
    - IAM custom policies and permissions boundaries
    - CloudWatch Logs resource policies
 3. **Retained Resource Cleanup Phase** (only with `--force-delete-all`): Deletes remaining resources in order:
@@ -662,7 +663,8 @@ from one that deleted cleanly.
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
-- CloudFront response header policies (custom)
+- This stack's own CloudFront distributions, one step per pass: disabled if enabled, deleted once disabled and deployed
+- This stack's own CloudFront response headers policy, once its distribution is gone
 - CloudWatch Logs resource policies (stack-specific)
 - AppSync log groups (pre-migration stacks only)
 - Additional log groups containing stack name
@@ -911,6 +913,25 @@ idp-cli run-inference [OPTIONS]
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
+
+**A document shows as Queued before it has a tracking row.**
+
+A document's tracking row is not written by the upload. The upload puts the
+object in the input bucket, and EventBridge then invokes the queue sender, which
+writes the row — asynchronously, so for the first seconds of a batch the status
+lookup has no record of a document that is about to process normally.
+
+Monitoring reports such a document as **Queued** for up to 60 seconds after the
+batch was submitted. Past that it is reported as failed, with
+`Document not found in tracking table`, which at that point means the document
+really did not reach the pipeline — check the input bucket's EventBridge
+notifications and the queue sender's logs. Set `IDP_NOT_FOUND_GRACE_SECONDS` to
+widen or narrow the window.
+
+⚠️ **This does not apply to [`status`](#status) for a single document**, which
+answers immediately: a document id that is not in the table is reported missing
+straight away rather than after a minute, so a typo or a document whose data
+retention has elapsed does not look like a slow query.
 
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:
@@ -1203,11 +1224,18 @@ The command returns exit codes for scripting:
 - `1` - Document(s) failed
 - `2` - Document(s) still processing, or the outcome could not be established
 
-⚠️ **`--wait` and the polled table form now derive their code from the same place.** A
+⚠️ **`--wait`, the polled table form and `--format json` all derive their code from the
+same place.** A
 batch that finished with failures exits `1` whether you polled it or waited on it; it
-used to exit `0` when waited on. (`--format json` is a third implementation of the rule
-and still disagrees with both on two document states — see the `CHANGELOG` entry for
-#1230.) Before this change `--wait` exited `0` on
+used to exit `0` when waited on. For a single document the code comes from the progress
+bucket the SDK put it in, so the three forms cannot disagree about it. They did for four
+document statuses — a redacted-and-superseded original, a document with no tracking row
+past the window in which one could still arrive, and the two the malware gate refuses —
+because `--format json` matched the status *string* against `COMPLETED`, `FAILED` and
+`ABORTED` and answered `2` for anything else. Those four are terminal, and `2` is this
+CLI's code for "still processing", so a script waiting for the code to stop being `2`
+waited forever. Before this change
+`--wait` exited `0` on
 that batch while the poll exited `1`, which meant `idp-cli status --wait && deploy`
 proceeded after a batch in which every document failed. If you have a script that
 relied on `--wait` always exiting `0`, it will now stop on a failed batch — that is
@@ -1264,19 +1292,31 @@ fi
 
 ```bash
 #!/bin/bash
-# Poll document status in script
+# Poll document status in script.
+#
+# Branch on `.exit_code`, not on `.status`. The code is 0 done, 1 failed, 2 not
+# established yet, and it is decided from the progress bucket — so it covers every
+# way a document can finish, including the terminal ones whose status string is
+# neither COMPLETED nor FAILED (a redacted copy superseding the original, a refusal
+# at the malware gate, a document that never acquired a tracking row). A loop
+# comparing `.status` against those two literals never exits on any of them.
 while true; do
   status=$(idp-cli status --stack-name prod --document-id batch-001/invoice.pdf --format json)
-  state=$(echo "$status" | jq -r '.status')
-  
-  if [ "$state" = "COMPLETED" ]; then
+  code=$(echo "$status" | jq -r '.exit_code')
+
+  if [ "$code" = "0" ]; then
     echo "Processing complete!"
     break
-  elif [ "$state" = "FAILED" ]; then
-    echo "Processing failed!"
+  elif [ "$code" = "1" ]; then
+    # `error` is always present on a failure but can be an empty string: the
+    # reason is the pipeline's, and some terminal states record none. jq's `//`
+    # falls back on null and false only, so test for emptiness in the shell.
+    reason=$(echo "$status" | jq -r '.error // ""')
+    [ -n "$reason" ] || reason="no reason recorded"
+    echo "Processing failed: $(echo "$status" | jq -r '.status') — $reason"
     exit 1
   fi
-  
+
   sleep 5
 done
 ```
@@ -2334,10 +2374,11 @@ idp-cli remove-deleted-stack-resources [OPTIONS]
 
 This command safely identifies and removes ONLY resources belonging to IDP stacks that have been deleted:
 
-1. **Multi-region Stack Discovery** - Scans CloudFormation in multiple regions (us-east-1, us-west-2, eu-central-1 by default)
+1. **Multi-region Stack Discovery** - Scans CloudFormation in multiple regions. ⚠️ The CLI's own default is `us-east-1,us-west-2,eu-central-1` only — narrower than the SDK's `IDP_REGIONS` list, which `discover_idp_stacks` falls back to when called directly — so a stack deployed anywhere else, **`ca-central-1` included**, is not scanned unless you name it in `--check-stack-regions`
 2. **IDP Stack Identification** - Identifies IDP stacks by their Description ("AWS GenAI IDP Accelerator") or naming patterns (IDP-*, PATTERN1/2/3)
 3. **Active Stack Protection** - Tracks both ACTIVE and DELETED stacks; resources from active stacks are NEVER touched
 4. **Safe Cleanup** - Only targets resources belonging to stacks in DELETE_COMPLETE state
+5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is left in place and reported under **Errors** with the reason, and the command exits 1. A resource left because its stack still exists in another Region is a deliberate skip: it is recorded in the SDK result's `skipped` list and listed under **Skipped** in the CLI summary
 
 **Safety Features:**
 - Resources from ACTIVE stacks are protected and skipped
@@ -2362,7 +2403,9 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 - `--profile`: AWS profile to use
 - `--dry-run`: Preview changes without making them **(RECOMMENDED first step)**
 - `--yes`, `-y`: Auto-approve all deletions (skip confirmations)
-- `--check-stack-regions`: Comma-separated regions to check for stacks (default: us-east-1,us-west-2,eu-central-1)
+- `--check-stack-regions`: Comma-separated regions to check for stacks (default: `us-east-1,us-west-2,eu-central-1`). Pass `ca-central-1` explicitly to sweep a Canada deployment
+
+**Permissions:** besides delete permissions for the resources it cleans, the global resource check needs `ec2:DescribeRegions` and `cloudformation:DescribeStacks` in every enabled Region. A `DescribeStacks` grant scoped to one Region counts as missing for the others. Without them, every CloudFront distribution, response headers policy, IAM policy and S3 bucket is left in place and reported as an error, and the command exits 1.
 
 **Examples:**
 
@@ -2459,11 +2502,18 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - `classification.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.one_stage.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
+- **Pre-0.9 classification layout** - Warns when the file still uses the flat
+  classification keys, naming the ones it converted, so you can save the nested
+  form and keep it. A second warning appears for the one conversion that
+  **changes behaviour**: a `maxPagesForClassification` page limit combined with
+  boundary detection is converted to `sectionSplitting: disabled`, after which a
+  short multi-document file becomes one section where it used to be split. Both
+  are warnings, not errors — the file is valid and will run.
 - **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
 - **OpenAI GPT-6 Astra compatibility** - Errors if `us.openai.gpt-6-astra` / `global.openai.gpt-6-astra` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Astra rejects whole-PDF `document` blocks. Like Grok — and unlike its GPT-5.x stablemates — Astra **is** valid for agentic extraction, since it reaches Converse and emits `toolUse`. The agentic check keys on the bedrock-mantle route rather than the `openai.` prefix, so one OpenAI model passes it and the others do not. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
@@ -2511,7 +2561,7 @@ idp-cli config-download [OPTIONS]
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
 - `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
-- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration
+- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration. The file is written in the current configuration format whichever release cut the revision, so it has the same shape as a download of the profile's current configuration ([Revision History](configuration-profiles.md#revision-history))
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2947,7 +2997,7 @@ idp-cli test-compare \
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs
-- Shows nested config paths (e.g., `classification.model`, `extraction.temperature`)
+- Shows nested config paths (e.g., `classification.one_stage.llm.model`, `extraction.temperature`)
 - Highlights values that differ across test runs
 
 **Requirements:**

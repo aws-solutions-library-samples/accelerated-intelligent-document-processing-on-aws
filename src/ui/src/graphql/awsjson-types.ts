@@ -226,6 +226,22 @@ export interface PricingData {
   [key: string]: unknown;
 }
 
+/**
+ * Parsed `PricingResponse.nonChargeableUnits`: per pricing key, the metering
+ * units the BACKEND declares free, so a consumer never has to decide what a
+ * pricing entry omitting a unit means.
+ *
+ * The declarations live in `idp_common.metering_units` and are expanded per
+ * pricing key by `declared_free_units`, which is the one place their two scopes
+ * (per service, and per exact key for the prompt-cache units) are known. An
+ * absent or unparseable payload means "no declarations", which resolves an
+ * omitted unit to unpriced rather than to $0.00 — the direction that shows the
+ * gap. See `components/document-panel/pricing.ts`.
+ */
+export interface NonChargeableUnits {
+  [pricingKey: string]: string[];
+}
+
 /** Parsed model config limits from ModelConfigLimitsResponse AWSJSON fields */
 export interface ModelConfigLimitsData {
   model_limits?: Array<{

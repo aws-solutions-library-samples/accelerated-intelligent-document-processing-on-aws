@@ -28,6 +28,8 @@ The IDP Common library provides these main modules:
 - **[Agents](agents/README.md)**: Conversational AI agent framework
 - **[Model Finetuning](model_finetuning/README.md)**: Nova fine-tuning utilities
 - **[DynamoDB](dynamodb/README.md)**: Document tracking and HITL state management
+- **[Review queues](review_queues/README.md)**: HITL review queues — routing for both modes, claims and leases, drafts, dispositions, durable finalize, the sweeper and the `review/status.json` status contract
+- **[Notifications](notifications/README.md)**: Host Inbox messages — `notify()` to users or Cognito groups, with dedupe, idempotency, muting, retention and a per-user cap
 - **[Image](image/README.md)**: Image resizing and format conversion
 - **[S3](s3/README.md)**: S3 read/write utilities
 - **[Utils](utils/README.md)**: Common utility functions
@@ -203,6 +205,7 @@ The document processing status is represented by the `Status` enum:
 ```python
 class Status(Enum):
     """Document processing status."""
+    MALWARE_SCANNING = "MALWARE_SCANNING"                   # Held at the ingest gate awaiting a GuardDuty verdict
     QUEUED = "QUEUED"                                       # Initial state
     RUNNING = "RUNNING"                                     # Workflow started
     PREPROCESSING = "PREPROCESSING"                         # Preprocessing hook running (e.g. PII redaction)
@@ -220,7 +223,18 @@ class Status(Enum):
     FAILED = "FAILED"                                       # Processing failed
     ABORTED = "ABORTED"                                     # User cancelled
     REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"             # Original superseded by its redacted copy
+    QUARANTINED = "QUARANTINED"                             # Malware found at the ingest gate; never processed
+    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"             # No malware verdict obtainable; refused (fail-closed)
 ```
+
+The malware statuses are reachable only when the `MalwareScanning` stack parameter
+is not `DISABLED`. A `QUARANTINED` or `MALWARE_SCAN_FAILED` document has no pages,
+no sections and no workflow execution; the verdict travels on the document's
+`malware_scan_status` / `malware_scan_result` / `malware_scan_threat` /
+`malware_scan_reasons` / `malware_scan_time` fields rather than as a
+`ProcessingIssue`, which is a Section field and so has nowhere to attach on a
+document that never reached classification. See
+[malware-scanning.md](../../../docs/malware-scanning.md).
 
 ## 📦 Document Compression for Large Documents
 

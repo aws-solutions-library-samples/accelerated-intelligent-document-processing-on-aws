@@ -205,12 +205,41 @@ Three things to know before using it:
   Within that level the shallowest candidate wins if it is alone there, and a tie
   declines: `enabled` is declared at eight places one level under `extraction`, so
   `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
-  and declines rather than answering with `classification.model`. Failing that, a
+  and declines rather than answering with `summarization.model`. Failing that, a
   close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
   than none: it sends the author to edit something correct. A list step is spelled
   `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
   mapping subtree gets findings but no suggestions, because a suggestion there would
   have to invent a key name.
+
+### `system_defaults/` and the models must describe the same settings
+
+The project rule is that `system_defaults/` is the canonical list of settings, so
+the YAML is where an operator, the configuration editor and an agent reading the
+bundled source all discover what can be set. That makes two kinds of divergence
+possible, and for classification both had shipped:
+
+- **A field with no entry in the YAML** is a live setting nobody can find. Two were
+  live on all three classification calls and absent from
+  `base-classification.yaml`, so the only way to learn they existed was to read
+  `models.py`.
+- **A key in the YAML the models do not define** is dropped during validation (see
+  above), so editing it does nothing — and the same is true of a key the *service*
+  cannot read at that path, which is how the section-classification call came to
+  ship a kilobyte of per-segment confidence prompt it never consults.
+
+A third divergence is quieter than either: **a value in the YAML that differs from
+the model's field default**. The YAML wins on a normal load, so nothing shows until
+a field is *cleared* — and then that one call falls back to the code's opinion
+instead of the value the rest of the profile is running. A cleared model field used
+to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
+profile did not use.
+
+`tests/unit/config/test_classification_defaults_parity.py` asserts all three for
+classification, with its exemptions registered in
+`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
+should eventually cover every section; `base-extraction.yaml` and its models are not
+compared yet.
 
 ## Files
 
@@ -457,6 +486,19 @@ Two deliberate choices:
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
+- **A revision is returned in the current config format.** A revision cut before a
+  format change was stored in the shape of the release that cut it, so
+  `_read_revision_body()` converts it on the way out, through the same
+  `migrate_config()` chain every other read of a stored configuration uses. Both of
+  its sources are converted — the stored body and, below, the rebuild from the head
+  — so one revision number does not change shape when its stored body expires. The
+  conversion is **in memory only; the stored body is never rewritten**, because a
+  revision is an immutable record of the configuration that actually ran. Callers
+  that construct an `IDPConfig` from the result (`_load_revision_config()`,
+  `restore_revision()`) convert again through its validator, which is a no-op: the
+  chain is idempotent. What depends on this is shape agreement between the surfaces
+  that serve one revision — `get_revision()` behind `idp-cli config-download
+  --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.
@@ -584,6 +626,131 @@ from the value the same configuration hashes to now. The curve keys are unaffect
 (they are recomputed from the captured body, never read from the index), but
 anything that compares *stored* index fingerprints must treat a mismatch on a
 pre-normalization revision as "unknown" rather than "changed".
+
+## Config prefix mappings — `prefix_mappings.py`
+
+An S3 prefix in the Input bucket to a Configuration Profile, so the *destination*
+decides the configuration rather than every producer having to stamp
+`x-amz-meta-config-version`. User-facing guide:
+[docs/configuration-profiles.md](../../../../docs/configuration-profiles.md).
+
+Two halves, deliberately separate, and the split is what makes the rule testable:
+
+| Half | What it is |
+|---|---|
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
+
+Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
+in four separate deploy artifacts (`queue_sender`, the reprocess resolver, the upload
+resolver, the configuration resolver's dry run), and a resolution rule that drifts
+between call sites is the defect that module's docstring was written about.
+
+### Four properties to preserve
+
+**One `GetItem`, strongly consistent, no cache.** The mapping set is read for *every
+document queued*. A filtered `Scan` on that path is how issue #599 silently processed
+documents under the wrong configuration — see the comment in
+`src/lambda/queue_sender/index.py`. `ConsistentRead=True` is what makes "an admin
+change takes effect immediately" true rather than aspirational; a TTL cache saves
+almost nothing against one small item and buys the worst admin experience available
+(a mapping that looks saved and does not apply, for an interval nothing explains).
+
+**`MAX_MAPPINGS` (200) is enforced at write time**, and so is a length bound on every
+per-entry field. All of them are in **UTF-8 bytes**, which is the unit the item-size
+arithmetic beside the constants is in: counting characters would let a 500-character CJK
+description occupy 2000 bytes, so each bound would read as satisfied while the aggregate
+item went over. The three fields an admin types — `prefix`, `configProfile`,
+`description` — are **refused** with a message naming the field and its limit
+(`description_rejection_reason`); the two actor strings are **truncated**
+(`_truncate_bytes` in `normalize_entry`), because they are claims from the caller's token
+rather than typed input and refusing a write over the length of an identity the caller
+did not choose would be unactionable. `normalize_entry` also runs on *read*, so the
+truncation covers entries written before the refusal existed or by a direct table write.
+`revisions.py` needs no such guard because
+`DEFAULT_REVISION_CAP` bounds its list. Nothing bounds this one, and the aggregate item
+is on the ingest path, so overflowing DynamoDB's 400 KB item limit would be an ingest
+outage rather than a failed admin write — a `ValidationException` at entry 201 would
+land on every queued document, not on the admin who caused it.
+
+⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
+`unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
+revision as given, with no lookup. So a mapping whose profile has been deleted falls
+back and is reported, while a mapping whose pinned *revision* has been deleted or has
+expired resolves cleanly at ingest and raises in
+`ConfigurationManager._load_revision_config` downstream. That is the intended trade —
+the per-document cost of a second lookup against a failure that surfaces loudly anyway —
+but it means `PrefixMappingUnresolvable` cannot be read as "the mapping still resolves".
+
+⚠️ **`_read_item` re-raises a `ClientError`, and must keep doing so.** This is the one
+place the store must *not* copy `ConfigRevisionStore._read_index_item`, which logs and
+returns `{}`. That is harmless there because every mutation it feeds returns `None`
+when its target revision is absent, so nothing is written. Here a `put` appends
+unconditionally — so swallowing a throttle would turn one admin's write into "the
+mapping list is now exactly this one entry", silently deleting every other mapping,
+and report success. Read failures are handled by the **caller**, which knows whether
+it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+⚠️ **A revision carried across a profile change reads a configuration nobody asked
+for.** Revision numbers are per profile, so when the resolved profile differs from the
+one the metadata named, the revision must come from the mapping or be cleared — never
+inherited. `queue_processor` will not correct it either, because its backfill only
+fires when the revision is absent.
+
+### Where it fails open, and why that is a deliberate departure
+
+If the mapping index cannot be read, resolution falls through to previous behaviour and
+the caller emits `PrefixMappingLookupFailed`. `config_scope` argues that "cannot
+evaluate" must never read as "allow" on a visibility boundary, and that argument does
+apply — failing open means a transient DynamoDB error bypasses every `reject` mapping
+in the deployment. It is still the right call, because the alternative is halting
+document ingest for the whole deployment when a *routing* table is unreadable, and
+every one of those objects processed under the active profile before this feature
+existed. The metric is alarmed so the window is visible rather than silent.
+
+Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
+read fails closed. They answer different questions — an unreadable mapping means a
+destination is unmapped, an unresolvable scope means the caller cannot be placed.
+
+### Scope
+
+`resolve_config_assignment` takes `allowed_profiles` and reports `scope_denied`; it
+does not refuse, because what a refusal should look like differs between a presigned
+POST and a reprocess. Pass `None` from `queue_sender`, which handles an S3 event and
+has no caller to scope.
+
+The check is on the **resolved** profile, and that is the only form that works: there
+are two routes to choosing a profile — naming one in upload metadata, and choosing a
+prefix a mapping governs — and checking the request covers one of them.
+
+⚠️ **The subject is every profile the answer could *disclose*, not the one it
+selected.** Two outcomes name a profile while `assignment.profile` is something else
+entirely: a **rejection** resolves to no profile at all, yet its `reason` names the
+mapped profile and its pinned revision; and **metadata precedence** resolves to the
+caller's own profile, in scope by construction, while its `reason` explains that it beat
+the mapping's — naming it. A guard predicated on `assignment.profile` skips both, and
+each hands a scoped caller the name of a profile outside their scope one key at a time,
+through an operation Author and Viewer can both call. So `scope_denied` is decided over
+the union of the resolved profile and the *matched* mapping's profile.
+
+**On denial, nothing that could describe a profile survives — including
+`mapping_prefix`.** Not the profile, not the revision (a pinned number is an attribute
+of a profile the caller cannot see), not `reason`, and not the prefix. The prefix is the
+one that looks like the caller's own input and is not: the caller supplied a **key**, and
+the prefix is the mapping that governs it, so answering `a/b/c/d/x.pdf` with `a/b/`
+discloses where the boundary sits — a refinement of the input, and one probe at a time it
+walks out the routing policy `listConfigPrefixMappings` is Admin-only to protect. What
+survives is the actionable part: the destination is not theirs.
+
+### The revision travels with the profile it belongs to
+
+A caller-supplied `revision` means nothing against a profile the caller did not name, so
+a mapping supplies **both or neither** — the reprocess resolver honours a `revision`
+argument only where the *profile* came from the caller (`SOURCE_EXPLICIT_REQUEST`) or
+from the document's own pin (`SOURCE_DOCUMENT_PIN`), and never carries one onto a
+mapping-supplied profile. That is the same hazard `resolve_config_assignment` guards
+internally when it clears the metadata's revision on a profile change, and passing one
+through at the call site would reintroduce it there.
 
 ## Rollback-safe DynamoDB serialization
 

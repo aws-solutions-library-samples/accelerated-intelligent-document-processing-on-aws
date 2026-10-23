@@ -34,10 +34,12 @@ classes:
         description: "Field description"
 ```
 
-**Override only what differs from defaults.** For example, to change the classification method:
+**Override only what differs from defaults.** For example, to classify a whole
+packet in one call instead of one call per page:
 ```yaml
 classification:
-  classificationMethod: textbasedHolisticClassification
+  one_stage:
+    granularity: packet
 ```
 
 ## OCR Backend Selection
@@ -79,7 +81,7 @@ See the main [README.md](../README.md) for more detailed instructions on creatin
 
 | Configuration | Description | Special Features |
 |---------------|-------------|------------------|
-| [bank-statement-sample](./bank-statement-sample/) | Bank statement processing with transaction extraction | Text-based holistic classification, large-list confidence batching |
+| [bank-statement-sample](./bank-statement-sample/) | Bank statement processing with transaction extraction | Large-list confidence batching (classification uses the system defaults: one stage, page granularity) |
 | [docsplit](./docsplit/) | DocSplit document classification benchmark (16 classes) | Based on RVL-CDIP |
 | [healthcare-multisection-package](./healthcare-multisection-package/) | Healthcare multi-section document processing | Multi-section document support |
 | [lending-package-sample](./lending-package-sample/) | Lending package processing (payslips, IDs, bank checks, W2s) | 6 document classes |

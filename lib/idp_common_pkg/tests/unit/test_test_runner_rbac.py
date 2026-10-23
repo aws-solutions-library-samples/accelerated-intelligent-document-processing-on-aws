@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+from idp_common.api_adapter import ResourceNotFound
+
 # Mock environment variables and dependencies before importing
 with patch.dict(
     os.environ,
@@ -491,13 +493,55 @@ class TestTestRunnerRBAC:
 
     @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
     def test_send_test_run_to_review_missing_run_raises(self):
+        """A test run id nothing knows is ``ResourceNotFound`` -> 404, not 400.
+
+        It raised ``ValueError`` (400 ``BadRequest``) until #1304, which made the
+        same resource answer 404 through ``test_set_resolver``. The argument is
+        well-formed; what it names does not exist, and the dispatcher picks the
+        status from the exception's class name.
+        """
         from unittest.mock import MagicMock
 
         table = MagicMock()
         table.get_item.return_value = {}
         with patch.object(test_runner_index.dynamodb, "Table", return_value=table):
-            with pytest.raises(ValueError, match="Test run 'ghost' not found"):
+            with pytest.raises(ResourceNotFound, match="Test run 'ghost' not found"):
                 test_runner_index.send_test_run_to_review({"testRunId": "ghost"})
+
+    def test_a_missing_test_set_is_not_found_rather_than_a_bad_request(self):
+        """``startTestRun`` against a nonexistent test set answers 404.
+
+        The companion to the case above, and the one the review of #1304 caught:
+        ``test_set_resolver`` was converted while ``startTestRun`` kept raising
+        ``ValueError``, so the *same* test set id answered 400 through one
+        operation and 404 through the other.
+        """
+        with (
+            patch.object(test_runner_index, "_get_test_set", return_value=None),
+            patch.dict(
+                os.environ,
+                {"TRACKING_TABLE": "test-table", "CONFIG_TABLE": "test-config-table"},
+            ),
+        ):
+            with pytest.raises(ResourceNotFound, match="ghost-set"):
+                test_runner_index.handler(
+                    {
+                        "info": {"fieldName": "startTestRun"},
+                        "arguments": {"input": {"testSetId": "ghost-set"}},
+                        "identity": _ADMIN_IDENTITY,
+                    },
+                    None,
+                )
+
+    def test_a_missing_config_profile_is_not_found_rather_than_a_bad_request(self):
+        """``_require_profile`` answers 404 for a profile head that is not there."""
+        from unittest.mock import MagicMock
+
+        table = MagicMock()
+        table.get_item.return_value = {}
+        with patch.object(test_runner_index.dynamodb, "Table", return_value=table):
+            with pytest.raises(ResourceNotFound, match="ghost-profile"):
+                test_runner_index._require_profile("test-config-table", "ghost-profile")
 
     def test_handler_refuses_an_empty_test_set(self):
         """A set with no documents cannot be run, and nothing is queued for it."""

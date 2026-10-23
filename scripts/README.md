@@ -43,6 +43,8 @@ See [sdlc/cfn/README.md](sdlc/cfn/README.md) for CloudFormation templates.
 | `test_api_rbac.py` | Live RBAC/auth/arg-mapping test of the REST API across all Cognito roles | `python scripts/test_api_rbac.py --stack-name <stack> --region <region>` |
 | `ux_test_session.py` | Web URL and throwaway Cognito user for a browser UX review (see `.claude/skills/ux-test.md`) | `python scripts/ux_test_session.py url <stack> --region <region>` |
 | `ux_recorder.py` | Record a UX review or a product demo as a narrated, captioned mp4 (sidecar to the ux-test and product-demo skills; see below) | `python scripts/ux_recorder.py start --stack <stack> --persona Admin --url-contains cloudfront` |
+| `ux_recorder_mcp.py` | The recorder's mark, note, pause and resume as a stdio MCP server, the only recorder control the unattended MR UX test's model holds (see `ux_runner/` below) | `python3 -I -B scripts/ux_recorder_mcp.py --out <recorder out dir>` |
+| `ux_test_proxy.py` | The MR UX test browser's egress proxy: serves the MR's UI build and tunnels only to the review stack's own hosts (see `ux_runner/` below) | `python3 -I -B scripts/ux_test_proxy.py --rules <rules.json> --build-dir src/ui/build` |
 | `demo_storyboards.yaml` | Confirmed product-demo storyboards, so a demo can be re-recorded on a later release (see `.claude/skills/product-demo.md`) | — |
 | `generate_govcloud_template.py` | Generate GovCloud-compatible template (**deprecated** — use `idp-cli publish --headless`) | `idp-cli publish --source-dir . --region <region> --headless` |
 
@@ -63,7 +65,8 @@ clamped, paused stretches dropped, each mark's frame held while the voice starts
 speed-ups capped at 3×, a settle before the next chapter), adds title and end
 cards, and encodes one mp4 plus `review.srt`, `segments.json` and a chapter table
 in `review.md`. Every click is logged with its coordinates and the element under
-the pointer; `render` draws each click as a ring on the last frame before it and
+the pointer, except one made while paused, which is logged with neither and is
+never drawn or listed; `render` draws each click as a ring on the last frame before it and
 holds that frame briefly (the page changes too fast for a live marker to be seen
 on the right screen), prints the click table, and flags clicks that hit nothing
 interactive, which is how a mis-aimed automation click is told apart from a UI bug.
@@ -89,10 +92,37 @@ Everything else — marks, pauses, click markers, pacing, captions — is shared
 
 Output lives under `scratch/ux-recordings/<stack>-<timestamp>/` (demos:
 `demo-<title>-<timestamp>/`; gitignored):
-recordings of a live stack show real documents and are never committed. Polly
-receives only the narration text. Stdlib plus boto3/Pillow at render time; the
+recordings of a live stack show real documents and are never committed. Nor is
+anything else in the session directory: it also holds the tab's address and title,
+and a click log (`events.jsonl`, `timeline.json`) that labels clicks with text from
+the page, as the Privacy section of
+[`ux-test.md`](../.claude/skills/ux-test.md#privacy) describes. Polly receives only
+the narration text. Stdlib plus boto3/Pillow at render time; the
 WebSocket client is vendored in `ux_recorder_cdp.py` rather than adding a
 dependency. Unit tests: `scripts/tests/test_ux_recorder.py`.
+
+### MR UX test runner (`ux_runner/`)
+
+The pieces of the unattended UX test of a merge request's web UI, which
+`sdlc/ai_ux_test.py` wires together: the confined headless Chrome and its managed
+policy, the egress proxy, sign-in over DevTools, the recorder control, the model
+session's tool and environment allowlists, the note composition, and the pinned
+toolchain (`install.sh`, from which the Docker image is also built).
+
+In CI it is the advisory `ai_ux_test` job, which runs on non-Draft MRs to `develop`
+that change `src/ui/` and appends its findings and a narrated video to the
+automated code-review note. Locally it runs in Docker, with no local Chrome needed:
+
+```bash
+make ai-ux-test-local MR=<iid>            # the CI-equivalent test, as a dry run
+make ai-ux-browser STACK=<stack>          # only the confined browser, DevTools on 127.0.0.1:9222
+py scripts\ux_runner\run_in_docker.py review --mr <iid>    # Windows, without make
+```
+
+The unattended contract is [`ux-test-ci.md`](../.claude/skills/ux-test-ci.md).
+Unit tests: `scripts/tests/test_ux_runner_*.py`, `test_ux_test_proxy.py`,
+`test_ux_recorder_mcp.py`, `test_ai_ux_test.py` and, for the two CI jobs' shape,
+`test_ux_test_ci_jobs.py`.
 
 ### Model Limit Discovery (`discover_model_limits.py`)
 
@@ -107,7 +137,7 @@ python scripts/discover_model_limits.py
 
 # Test specific models only
 python scripts/discover_model_limits.py \
-    --models "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    --models "us.anthropic.claude-sonnet-4-6"
 
 # Verbose mode
 python scripts/discover_model_limits.py --verbose
@@ -126,7 +156,7 @@ python scripts/discover_model_limits.py --verbose
 
 **Requirements:** AWS credentials with Bedrock `InvokeModel` permissions
 
-**See also:** [`idp-cli config-validate`](../docs/idp-cli.md#config-validate), which checks a configuration's `classification.max_tokens` and `summarization.max_tokens` against the verified limits this script writes
+**See also:** [`idp-cli config-validate`](../docs/idp-cli.md#config-validate), which checks the `max_tokens` of each classification call and `summarization.max_tokens` against the verified limits this script writes
 
 ### API RBAC / Auth Test (`test_api_rbac.py`)
 

@@ -60,8 +60,9 @@ nested worktree would get in.
 
 A NOTE ON THE LINTER VERSION
 ---------------------------
-Every number recorded here is a property of a ``ruff`` version. Both CI systems
-pin the same one (asserted by ``scripts/tests/test_ci_gate_parity.py``), and the
+Every number recorded here is a property of a ``ruff`` version. The pin is
+``RUFF_VERSION`` in the ``Makefile``, which both CI systems and ``make setup``
+install (asserted by ``scripts/tests/test_ci_gate_parity.py``), and the
 failure output names the pin when the locally installed ``ruff`` differs, because
 version skew and a real regression look identical in a count comparison. The
 baseline was verified to be identical under the pinned version and the newest
@@ -210,17 +211,32 @@ def _ruff() -> str:
 
 
 def _ci_ruff_pin() -> str | None:
-    """The ruff version CI installs, read from the workflow that installs it.
+    """The pinned ruff version, read from ``RUFF_VERSION`` in the ``Makefile``.
 
     A finding count is a property of a linter version, so this gate's verdict is
-    too. If the running ruff is not the one CI pins, a mismatch here is far more
+    too. If the running ruff is not the pinned one, a mismatch here is far more
     likely to be that than a real change, and the failure output says so rather
     than leaving it to be guessed.
+
+    ⚠️ **Read the Makefile, not a CI config.** This used to read
+    ``.github/workflows/developer-tests.yml``, where the pin lived when it was
+    written. The pin has since moved into the ``.github/actions/python-env``
+    composite action, so the lookup returned ``None`` and the version-skew note
+    below could never print — on a host running a different ruff from the pinned
+    one, the gate reported a count mismatch with no hint as to why, which is
+    exactly the guess it exists to prevent (issue #1381). ``RUFF_VERSION`` in the
+    ``Makefile`` is the single source of truth and both CI configs mirror it, a
+    correspondence ``scripts/tests/test_ci_gate_parity.py`` asserts, so reading
+    it from there cannot go stale by a pin moving between CI files again.
     """
-    workflow = REPO_ROOT / ".github" / "workflows" / "developer-tests.yml"
-    if not workflow.is_file():
+    makefile = REPO_ROOT / "Makefile"
+    if not makefile.is_file():
         return None
-    match = re.search(r"ruff==([0-9][0-9A-Za-z.\-]*)", workflow.read_text())
+    match = re.search(
+        r"^RUFF_VERSION\s*:?=\s*([0-9][0-9A-Za-z.\-]*)",
+        makefile.read_text(),
+        re.MULTILINE,
+    )
     return match.group(1) if match else None
 
 

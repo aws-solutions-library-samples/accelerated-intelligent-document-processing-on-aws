@@ -14,6 +14,27 @@ import boto3
 from botocore.exceptions import ClientError
 from log_sanitizer import sanitize_event_for_logging
 
+
+class ResourceAccessDenied(PermissionError):
+    """A refusal by a per-object control rather than by the caller's group.
+
+    Declared locally because this Lambda's package does not carry ``idp_common``;
+    the canonical class is ``idp_common.api_adapter.ResourceAccessDenied`` and the
+    dispatcher recognises either by class NAME, since a resolver reached through
+    ``lambda:Invoke`` surfaces its exception as the ``errorType`` string and the
+    class object never crosses that boundary. (``ResourceNotFound`` and
+    ``AuthorizationError`` are already declared this way elsewhere in the tree.)
+
+    Still a ``PermissionError``, so the client sees exactly what it saw before:
+    403, ``errorType: "Unauthorized"``, same message. What it adds is
+    ``errors[0].authzControl: "resource"``, which is how a consumer tells "refused
+    because of their group" from "group was fine, this session is not theirs" —
+    two opposite verdicts that arrived in one indistinguishable response and made
+    the live RBAC matrix report this check working as a group-check failure
+    (issue #1308).
+    """
+
+
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -159,7 +180,13 @@ def handler(event, context):
                     f"Rejecting getChatMessages: user={user_id} does not own "
                     f"session={session_id}"
                 )
-                raise PermissionError("Unauthorized: session not found for this user.")
+                # Per-object: the caller holds a group this operation admits and
+                # this SESSION is not theirs. The refusal above — no resolvable
+                # caller identity at all — is not about the object, so it keeps the
+                # unattributed class and the strict reading that goes with it.
+                raise ResourceAccessDenied(
+                    "Unauthorized: session not found for this user."
+                )
         else:
             logger.warning(
                 "ENFORCE_CHAT_SESSION_OWNERSHIP is disabled. Skipping "

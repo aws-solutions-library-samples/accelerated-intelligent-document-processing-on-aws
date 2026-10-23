@@ -318,8 +318,15 @@ class TestRefusalsAreDistinguishableFromFaults:
             index.handler(_event(field, f"s3://{OTHER_BUCKET}/secret.json"), None)
 
         # The dispatcher matches on the class name, and falls back to a message
-        # starting "Unauthorized"/"Forbidden". Both must hold.
-        assert type(excinfo.value).__name__ == "PermissionError"
+        # starting "Unauthorized"/"Forbidden". Both must hold — and the class is
+        # the narrower claim: `ResourceAccessDenied` is what tells a consumer this
+        # was a refusal of the OBJECT the caller named rather than of their GROUP,
+        # which arrives as the same 403 `Unauthorized` (issue #1308). It subclasses
+        # `PermissionError`, so every mapping that keyed on that still applies, and
+        # the message prefix means even a dispatcher predating the class answers
+        # 403 rather than 500.
+        assert type(excinfo.value).__name__ == "ResourceAccessDenied"
+        assert isinstance(excinfo.value, PermissionError)
         assert str(excinfo.value).startswith("Unauthorized")
 
     def test_the_refusal_does_not_disclose_the_bucket_or_the_allow_list(

@@ -85,7 +85,12 @@ def _list_valued_fields(data_format: type[BaseModel]) -> set[str]:
 # Special metering keys that are NOT additive token counters and must not be
 # summed across shards. ``_table_parsing_stats`` carries quality metrics (rates,
 # averages) merged with their own semantics in ``_merge_table_parsing_stats``.
-_NON_ADDITIVE_METERING_KEYS = frozenset({"_table_parsing_stats"})
+# ``_output_truncated`` is a bool (one shard's agent run was cut off at the
+# model's output ceiling, #1363) and is merged as a logical OR: a section is
+# truncated if ANY of its shards was. Both are listed here because the additive
+# branch below does ``dict(mv)`` and then sums the inner items — which raises on
+# a bool and produces nonsense on a rate.
+_NON_ADDITIVE_METERING_KEYS = frozenset({"_table_parsing_stats", "_output_truncated"})
 
 
 def _merge_table_parsing_stats(
@@ -155,6 +160,8 @@ def _accumulate_metering(
                 merged_metering[mk] = _merge_table_parsing_stats(
                     merged_metering.get(mk) or {}, mv
                 )
+            elif mk == "_output_truncated":
+                merged_metering[mk] = bool(merged_metering.get(mk)) or bool(mv)
             continue
         if mk not in merged_metering:
             merged_metering[mk] = dict(mv)
@@ -880,19 +887,75 @@ def collate_shard_assessments(
     """Pull per-shard ``_shard_assessment`` off the responses and collate them.
 
     Returns ``(merged_assessment, merged_alerts)`` page-ordered, or ``None`` when
-    no shard produced an assessment (integrated-assessment disabled). Shared by
-    the in-process and SFN merge paths so collation has one implementation.
+    there is no assessment to collate. Shared by the in-process and SFN merge
+    paths so collation has one implementation.
+
+    ⚠️ **It refuses to collate a gap.** :func:`merge_assessment_dicts`
+    concatenates the list-field assessments of the shards that HAVE one, in page
+    order, and nothing pads for a shard that has none — so if a middle shard went
+    unassessed while its neighbours did not, the later shards' per-row confidence
+    lands on the earlier shard's data rows. ``reconcile_assessment_to_data``
+    cannot repair that: it only truncates or pads at the TAIL, so the lengths
+    agree and every row in between is confidently wrong. Emitting it is also
+    self-perpetuating, because the standalone Assessment step skips a section
+    that already carries ``explainability_info``.
+
+    So when any shard that contributed list rows produced no assessment, this
+    returns ``None``: the section writes no ``explainability_info`` and the
+    standalone Assessment step scores it whole, with its own batching. That costs
+    one assessment pass on a section whose inline confidence was incomplete
+    anyway, and it is the only outcome that is both complete and index-aligned.
+    A shard with no assessment and no list rows shifts nothing and is ignored.
     """
-    shard_assessments = [
-        resp["_shard_assessment"]
-        for _data, resp in results
-        if isinstance(resp, dict) and resp.get("_shard_assessment") is not None
-    ]
+    list_fields = _list_valued_fields(data_format)
+    shard_assessments: list[dict[str, Any]] = []
+    unassessed_rows = 0
+    for data, resp in results:
+        sa = resp.get("_shard_assessment") if isinstance(resp, dict) else None
+        if sa is not None:
+            shard_assessments.append(sa)
+            continue
+        unassessed_rows += _shard_list_row_count(data)
     if not shard_assessments:
         return None
+    if unassessed_rows:
+        logger.warning(
+            "Discarding the partial per-shard confidence assessment: %d of %d "
+            "shard(s) produced none while contributing %d list row(s), and "
+            "concatenating only the rest would attribute confidence (and bounding "
+            "boxes) to the wrong rows. The section will be scored by the "
+            "standalone Assessment step instead.",
+            len(results) - len(shard_assessments),
+            len(results),
+            unassessed_rows,
+        )
+        return None
     shard_assessments.sort(key=lambda s: s.get("page_start", 0))
-    list_fields = _list_valued_fields(data_format)
     return merge_assessment_dicts(shard_assessments, list_fields)
+
+
+def _shard_list_row_count(data: Any) -> int:
+    """Rows this shard contributes to the merged lists.
+
+    Zero means the shard occupies no index in any merged list, so its missing
+    assessment cannot shift another shard's rows. ``data`` is the shard's
+    ``data_format`` instance (both merge callers hold one); a plain dict is
+    accepted too.
+
+    It counts every field whose **value** is a list, deliberately rather than the
+    declared ``_list_valued_fields`` set, because that is the rule
+    :func:`merge_assessment_dicts` concatenates by — ``key in list_fields or
+    isinstance(value, list)``. Anything that rule would concatenate can shift, so
+    anything it would concatenate has to be counted here; the declared set is the
+    narrower of the two and would leave the difference unguarded. A declared list
+    field a shard left ``None`` contributes no rows either way.
+    """
+    if data is None:
+        return 0
+    values = data if isinstance(data, dict) else getattr(data, "__dict__", {}) or {}
+    if not isinstance(values, dict):
+        return 0
+    return sum(len(rows) for rows in values.values() if isinstance(rows, list))
 
 
 def _aggregate_shard_split_stats(

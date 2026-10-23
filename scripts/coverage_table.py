@@ -15,8 +15,8 @@ visible in the same view rather than needing a separate run of the ratchet.
 Reads a Cobertura XML report; it does not run the tests. `make coverage` runs `idp_common`'s
 suite first, and `make coverage-all` runs every tree. Which tree is tabulated comes from
 `--tree`, whose choices are the registry in `check_coverage_debt.py` rather than a second
-list — there are nine measured trees, and a table that could only ever show one of them
-would report the other eight as having no coverage at all.
+list — every measured tree has an entry there, and a table that could only ever show
+one of them would report the rest as having no coverage at all.
 """
 
 from __future__ import annotations

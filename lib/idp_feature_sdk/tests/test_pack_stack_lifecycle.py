@@ -39,12 +39,15 @@ anonymous read.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest import mock
 
 import boto3
 import pytest
 from moto import mock_aws
 from rich.console import Console
 
+from idp_feature_sdk import pack as pack_module
 from idp_feature_sdk.pack import (
     _describe_one,
     _first_failure_reason,
@@ -1124,3 +1127,87 @@ class _S3Exceptions:
     def from_code(self, code: str):
         assert code == "NoSuchBucketPolicy"
         return _NoSuchBucketPolicy
+
+
+# ---------------------------------------------------------------------------
+# Where the public policy's ARN partition comes from
+# ---------------------------------------------------------------------------
+
+
+class _PolicyCapturingS3:
+    """Accepts the whole `apply_public_artifacts_policy` sequence and keeps the
+    policy document, reporting whatever region it is constructed with the way a
+    botocore client reports its own."""
+
+    exceptions = _S3Exceptions()
+
+    def __init__(self, region: str) -> None:
+        self.meta = SimpleNamespace(region_name=region)
+        self.policy: dict | None = None
+
+    def put_public_access_block(self, **_kw):
+        return {}
+
+    def get_public_access_block(self, **_kw):
+        return {"PublicAccessBlockConfiguration": {}}
+
+    def get_bucket_policy(self, **_kw):
+        raise _NoSuchBucketPolicy()
+
+    def put_bucket_policy(self, **kw):
+        self.policy = json.loads(kw["Policy"])
+
+
+@pytest.mark.parametrize(
+    ("region", "partition"),
+    [
+        ("us-east-1", "aws"),
+        ("us-gov-west-1", "aws-us-gov"),
+        ("cn-north-1", "aws-cn"),
+    ],
+)
+def test_the_public_policy_partition_follows_the_buckets_own_region(
+    region: str, partition: str
+) -> None:
+    """The bucket is in exactly one partition and its region says which, so that
+    is where the ARNs in its policy come from.
+
+    Deriving it from a `sts:GetCallerIdentity` caller ARN instead answers the
+    same question over the network, and every way that call can fail — no
+    credentials, no egress, `sts:GetCallerIdentity` denied — lands on the
+    commercial partition, which is correct in the one partition where the
+    fallback never mattered and wrong in both where it did. A GovCloud bucket
+    would get `arn:aws:s3:::...` and a policy that grants nothing.
+    """
+    s3 = _PolicyCapturingS3(region)
+    apply_public_artifacts_policy(s3, _BUCKET, console=_console())
+
+    resources = s3.policy["Statement"][0]["Resource"]
+    assert resources, "the policy named no resources at all"
+    assert all(r.startswith(f"arn:{partition}:s3:::{_BUCKET}/") for r in resources), (
+        resources
+    )
+
+
+def test_writing_the_public_policy_builds_no_aws_client_of_its_own() -> None:
+    """The caller hands in the S3 client; the function must not reach for a
+    second one.
+
+    A bare `boto3.client(...)` resolves credentials from the module-global
+    `boto3.DEFAULT_SESSION`, which no caller passed in and no test fixture can
+    see — so a unit test handing this function a stub signs a request to a real
+    endpoint with whatever the machine happens to have, and which key that is
+    depends on what else ran first in the same process. Nothing the function
+    needs here is worth that: the partition is a property of the region it was
+    given.
+    """
+    built: list = []
+
+    with mock.patch.object(
+        pack_module.boto3, "client", side_effect=lambda *a, **k: built.append(a or k)
+    ):
+        s3 = _PolicyCapturingS3("us-east-1")
+        apply_public_artifacts_policy(s3, _BUCKET, console=_console())
+
+    assert built == [], f"built {len(built)} client(s) of its own: {built}"
+    assert s3.policy is not None, "the policy was never written"

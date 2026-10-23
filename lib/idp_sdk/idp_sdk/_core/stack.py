@@ -1036,7 +1036,10 @@ class StackDeployer:
 
                 # Clean up additional stack-specific resources after stack deletion completes
                 logger.info("Cleaning up additional stack-specific resources...")
-                self._cleanup_additional_resources(stack_name)
+                # The stack ID, not the name: once the stack is DELETE_COMPLETE
+                # CloudFormation answers for it only by ID, and the cleanup reads
+                # the deleted stack's resource list to establish what it owned.
+                self._cleanup_additional_resources(stack_id)
 
             return result
 
@@ -1927,6 +1930,186 @@ class StackDeployer:
             logger.error(f"Error deleting bucket {bucket_name}: {e}")
             raise
 
+    def _owned_resource_ids(
+        self, stack_identifier: str, resource_type: str
+    ) -> Optional[List[str]]:
+        """Physical ids of the resources of ``resource_type`` this stack created.
+
+        Read from the stack's own resource list, which CloudFormation keeps for a
+        deleted stack when it is addressed by stack ID. Returns ``None`` when the
+        list cannot be read, which callers must treat as "ownership unknown" and
+        not as "owns nothing that matters".
+        """
+        try:
+            paginator = self.cfn.get_paginator("list_stack_resources")
+            owned: List[str] = []
+            for page in paginator.paginate(StackName=stack_identifier):
+                for resource in page.get("StackResourceSummaries", []):
+                    if resource.get("ResourceType") == resource_type and resource.get(
+                        "PhysicalResourceId"
+                    ):
+                        owned.append(resource["PhysicalResourceId"])
+            return owned
+        except Exception as e:
+            logger.info(
+                f"Could not read the resources of {stack_identifier} to find its "
+                f"{resource_type} resources ({e}); touching none. "
+                "`idp-cli remove-deleted-stack-resources` sweeps orphaned CloudFront "
+                "resources once the stack is DELETE_COMPLETE."
+            )
+            return None
+
+    def _owned_response_headers_policy_ids(
+        self, stack_identifier: str
+    ) -> Optional[List[str]]:
+        """Physical ids of the response headers policies this stack created."""
+        return self._owned_resource_ids(
+            stack_identifier, "AWS::CloudFront::ResponseHeadersPolicy"
+        )
+
+    def _disable_or_delete_own_distributions(self, stack_identifier: str) -> None:
+        """Advance this stack's CloudFront distributions, and no other, toward deletion.
+
+        CloudFront is global and a distribution's only link to its stack is the
+        ``Web app cloudfront distribution <stack>`` comment, which carries the
+        stack's *name*. Matching on it reached other deployments in two ways: any
+        disabled IDP distribution in the account was deleted, whichever stack
+        owned it, and a same-named stack in another Region had its live
+        distribution disabled. Ownership is therefore read from this stack's
+        resource list, as for its response headers policy (#1533); orphans of
+        other stacks belong to ``idp-cli remove-deleted-stack-resources``, which
+        confirms the owner is gone in every enabled Region first.
+
+        A distribution has to be disabled and finish deploying (15-20 minutes)
+        before it can be deleted, so a single pass can only move it one step:
+        enabled -> disable it; disabled and deployed -> delete it; disabled and
+        still in progress -> say to re-run. After a clean ``DELETE_COMPLETE``
+        CloudFormation has already deleted it and there is nothing to do.
+        """
+        owned = self._owned_resource_ids(
+            stack_identifier, "AWS::CloudFront::Distribution"
+        )
+        # None (unknown, already logged) and [] both mean touch nothing; neither
+        # may fall back to matching on the comment.
+        if not owned:
+            return
+
+        cloudfront_client = boto3.client("cloudfront", region_name=self.region)
+        for distribution_id in owned:
+            try:
+                response = cloudfront_client.get_distribution(Id=distribution_id)
+            except Exception as e:
+                if "NoSuchDistribution" in str(e):
+                    # CloudFormation already deleted it -- the normal case.
+                    continue
+                logger.warning(
+                    f"Failed to read CloudFront distribution {distribution_id}: {e}"
+                )
+                continue
+
+            etag = response["ETag"]
+            distribution = response.get("Distribution", {})
+            config = distribution.get("DistributionConfig", {})
+            try:
+                if config.get("Enabled", False):
+                    logger.info(
+                        f"Disabling distribution for future cleanup: {distribution_id}"
+                    )
+                    config["Enabled"] = False
+                    cloudfront_client.update_distribution(
+                        Id=distribution_id, DistributionConfig=config, IfMatch=etag
+                    )
+                elif distribution.get("Status") == "Deployed":
+                    logger.info(f"Deleting disabled distribution: {distribution_id}")
+                    cloudfront_client.delete_distribution(
+                        Id=distribution_id, IfMatch=etag
+                    )
+                else:
+                    logger.info(
+                        f"CloudFront distribution {distribution_id} is disabled but "
+                        "still deploying (15-20 minutes). Re-run this delete, or run "
+                        "`idp-cli remove-deleted-stack-resources`, once it has."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to clean up CloudFront distribution {distribution_id}: {e}"
+                )
+
+    def _delete_own_response_headers_policy(self, stack_identifier: str) -> None:
+        """Delete the response headers policy this stack created, and no other.
+
+        CloudFront is global, so listing the account's response headers policies
+        returns those of every IDP stack in every Region. This used to sweep that
+        list, deciding each owner's liveness with ``self.cfn`` -- a client bound to
+        *this* stack's Region -- so a live stack elsewhere read as missing and its
+        policy's deletion was attempted; only CloudFront's
+        ``ResponseHeadersPolicyInUse`` stopped it (#1533). Account-wide orphan
+        sweeping belongs to ``idp-cli remove-deleted-stack-resources``, which
+        discovers stacks across Regions.
+
+        Ownership is read from the stack's resource list rather than inferred from
+        the ``<stack>-security-headers-policy`` name, because a same-named stack in
+        another Region can hold that name while this one, deployed without
+        CloudFront hosting, created no policy at all.
+
+        After a clean ``DELETE_COMPLETE`` CloudFormation has already deleted the
+        policy and this finds nothing to do. It matters when the stack deletion
+        failed and left the policy behind, and then the policy cannot be deleted
+        until its distribution is: disabling one takes 15-20 minutes and deletion
+        only follows that, so ``ResponseHeadersPolicyInUse`` is the expected answer
+        on the first pass and is logged with what to do next rather than as a
+        failure.
+        """
+        owned = self._owned_response_headers_policy_ids(stack_identifier)
+        # None (unknown, already logged by the callee) and [] (this stack created
+        # no policy) both mean delete nothing; neither may fall back to a name.
+        if not owned:
+            return
+
+        # CloudFront is global, but the client still needs a Region to sign with.
+        cloudfront_client = boto3.client("cloudfront", region_name=self.region)
+        for policy_id in owned:
+            try:
+                response = cloudfront_client.get_response_headers_policy(Id=policy_id)
+            except Exception as e:
+                if "NoSuchResponseHeadersPolicy" in str(e):
+                    # CloudFormation already deleted it -- the normal case.
+                    continue
+                logger.warning(
+                    f"Failed to read CloudFront Response Headers Policy {policy_id}: {e}"
+                )
+                continue
+
+            policy_name = (
+                response.get("ResponseHeadersPolicy", {})
+                .get("ResponseHeadersPolicyConfig", {})
+                .get("Name", policy_id)
+            )
+            try:
+                # IfMatch is REQUIRED by CloudFront; omitting it fails with
+                # InvalidIfMatchVersion, and the ETag is only available from a
+                # read of this same policy.
+                cloudfront_client.delete_response_headers_policy(
+                    Id=policy_id, IfMatch=response["ETag"]
+                )
+                logger.info(
+                    f"Deleted CloudFront Response Headers Policy: {policy_name}"
+                )
+            except Exception as e:
+                if "ResponseHeadersPolicyInUse" in str(e):
+                    logger.info(
+                        f"CloudFront Response Headers Policy {policy_name} is still "
+                        "attached to this stack's distribution, which must finish "
+                        "deleting first (15-20 minutes after it is disabled); it was "
+                        "not deleted. Re-run this delete, or run `idp-cli "
+                        "remove-deleted-stack-resources` once the stack is "
+                        "DELETE_COMPLETE."
+                    )
+                else:
+                    logger.warning(
+                        f"Failed to delete CloudFront policy {policy_name}: {e}"
+                    )
+
     def _cleanup_additional_resources(self, stack_identifier: str) -> None:
         """Clean up additional resources not tracked by CloudFormation"""
         import json
@@ -2047,170 +2230,19 @@ class StackDeployer:
                     f"Failed to delete stack-specific resource policies: {e}"
                 )
 
-            # Clean up CloudFront Distributions
+            # Clean up this stack's CloudFront distributions -- and only this
+            # stack's. See _disable_or_delete_own_distributions for why the
+            # account-wide comment match that used to live here was removed.
             try:
-                cloudfront_client = boto3.client("cloudfront")
-                response = cloudfront_client.list_distributions()
-
-                # Phase 1: Delete previously disabled distributions from any stack
-                for distribution in response.get("DistributionList", {}).get(
-                    "Items", []
-                ):
-                    comment = distribution.get("Comment", "")
-                    if comment.startswith("Web app cloudfront distribution "):
-                        distribution_id = distribution["Id"]
-
-                        # Check if it's disabled and ready for deletion
-                        if distribution.get(
-                            "Status"
-                        ) == "Deployed" and not distribution.get("Enabled", True):
-                            config_response = cloudfront_client.get_distribution(
-                                Id=distribution_id
-                            )
-                            etag = config_response["ETag"]
-
-                            logger.info(
-                                f"Deleting previously disabled distribution: {distribution_id}"
-                            )
-                            cloudfront_client.delete_distribution(
-                                Id=distribution_id, IfMatch=etag
-                            )
-
-                # Phase 2: Disable current stack's distribution for future cleanup
-                for distribution in response.get("DistributionList", {}).get(
-                    "Items", []
-                ):
-                    comment = distribution.get("Comment", "")
-                    if comment == f"Web app cloudfront distribution {stack_name}":
-                        distribution_id = distribution["Id"]
-                        logger.info(f"Found CloudFront distribution: {distribution_id}")
-
-                        # Get current config with ETag
-                        config_response = cloudfront_client.get_distribution(
-                            Id=distribution_id
-                        )
-                        etag = config_response["ETag"]
-                        config = config_response["Distribution"]["DistributionConfig"]
-
-                        if config.get("Enabled", False):
-                            logger.info(
-                                f"Disabling distribution for future cleanup: {distribution_id}"
-                            )
-                            config["Enabled"] = False
-                            cloudfront_client.update_distribution(
-                                Id=distribution_id,
-                                DistributionConfig=config,
-                                IfMatch=etag,
-                            )
-                        else:
-                            # Already disabled, delete immediately
-                            logger.info(
-                                f"Deleting already disabled distribution: {distribution_id}"
-                            )
-                            cloudfront_client.delete_distribution(
-                                Id=distribution_id, IfMatch=etag
-                            )
-
+                self._disable_or_delete_own_distributions(stack_identifier)
             except Exception as e:
                 logger.warning(f"Failed to cleanup CloudFront distributions: {e}")
 
-            # Clean up CloudFront Response Headers Policies
+            # Clean up this stack's CloudFront Response Headers Policy -- and only
+            # this stack's. See _delete_own_response_headers_policy for why the
+            # account-wide sweep that used to live here was removed (#1533).
             try:
-                cloudfront_client = boto3.client("cloudfront")
-                response = cloudfront_client.list_response_headers_policies()
-
-                # Helper function to check stack state
-                def get_stack_state(check_stack_name: str) -> str:
-                    """Get stack state: 'ACTIVE', 'MISSING', or 'INCONSISTENT'"""
-                    try:
-                        cf_response = self.cfn.describe_stacks(
-                            StackName=check_stack_name
-                        )
-                        stacks = cf_response.get("Stacks", [])
-
-                        if not stacks:
-                            return "MISSING"
-                        else:
-                            stack_status = stacks[0].get("StackStatus", "")
-                            if stack_status in [
-                                "CREATE_COMPLETE",
-                                "UPDATE_COMPLETE",
-                                "UPDATE_ROLLBACK_COMPLETE",
-                            ]:
-                                return "ACTIVE"
-                            elif stack_status in [
-                                "DELETE_COMPLETE",
-                                "DELETE_FAILED",
-                                "CREATE_FAILED",
-                                "ROLLBACK_COMPLETE",
-                                "ROLLBACK_FAILED",
-                                "UPDATE_ROLLBACK_FAILED",
-                            ]:
-                                return "INCONSISTENT"
-                            else:
-                                # In progress states - consider active for safety
-                                return "ACTIVE"
-
-                    except self.cfn.exceptions.ClientError as e:
-                        if "does not exist" in str(e):
-                            return "MISSING"
-                        else:
-                            # Unknown error - be conservative
-                            return "ACTIVE"
-                    except Exception:
-                        # Unknown error - be conservative
-                        return "ACTIVE"
-
-                def is_resource_orphaned(check_stack_name: str) -> bool:
-                    """Check if resource is orphaned based on stack state"""
-                    if not check_stack_name:
-                        return False  # Can't determine - be safe
-
-                    state = get_stack_state(check_stack_name)
-                    return state in ["MISSING", "INCONSISTENT"]
-
-                # Delete policies from orphaned stacks only
-                for policy in response.get("ResponseHeadersPolicyList", {}).get(
-                    "Items", []
-                ):
-                    if policy["Type"] == "custom":
-                        policy_name = policy["ResponseHeadersPolicy"][
-                            "ResponseHeadersPolicyConfig"
-                        ]["Name"]
-                        policy_id = policy["ResponseHeadersPolicy"]["Id"]
-
-                        # Check if it's an IDP policy
-                        if policy_name.endswith("-security-headers-policy"):
-                            # Extract stack name from policy name
-                            policy_stack_name = policy_name.replace(
-                                "-security-headers-policy", ""
-                            )
-
-                            # Skip current stack's policy (can't delete while distribution exists)
-                            if policy_stack_name == stack_name:
-                                logger.info(
-                                    f"Skipping current stack's policy: {policy_name}"
-                                )
-                                continue
-
-                            # Only delete if from orphaned stack
-                            if is_resource_orphaned(policy_stack_name):
-                                try:
-                                    cloudfront_client.delete_response_headers_policy(
-                                        Id=policy_id
-                                    )
-                                    logger.info(
-                                        f"Deleted orphaned CloudFront Response Headers Policy: {policy_name} (stack: {policy_stack_name})"
-                                    )
-                                except Exception as policy_error:
-                                    logger.warning(
-                                        f"Failed to delete CloudFront policy {policy_name}: {policy_error}"
-                                    )
-                            else:
-                                logger.info(
-                                    f"Skipping active stack's policy: {policy_name} (stack: {policy_stack_name})"
-                                )
-
+                self._delete_own_response_headers_policy(stack_identifier)
             except Exception as e:
                 logger.warning(f"Failed to cleanup CloudFront policies: {e}")
 
@@ -2478,15 +2510,24 @@ def upload_local_config(
 
             # Auto-detect pattern if not provided
             if not pattern:
-                # Try to detect from config content
-                classification_method = user_config.get("classification", {}).get(
-                    "classificationMethod", ""
+                # BDA mode is `use_bda`, which is the flag the pipeline itself
+                # branches on. This used to sniff
+                # `classification.classificationMethod == "bda"` — a THIRD value
+                # that key never legitimately held (its enum was
+                # multimodalPageLevel/textbasedHolistic) and that nothing in the
+                # product wrote. It was removed in config format 0.8 and is
+                # migrated away on read, so a sniff for it now matches nothing.
+                # ⚠️ Read through `flag_is_true`, not plain truthiness: a
+                # YAML, DynamoDB or UI round-trip can deliver this flag as the
+                # string "false", which is truthy, and the wrong answer here
+                # merges a pipeline configuration onto the BDA defaults.
+                from idp_common.config.flags import flag_is_true
+
+                pattern = (
+                    "pattern-1"
+                    if flag_is_true(user_config.get("use_bda"))
+                    else "pattern-2"
                 )
-                if classification_method == "bda":
-                    pattern = "pattern-1"
-                else:
-                    # Default to pattern-2 (most common)
-                    pattern = "pattern-2"
                 logger.info(f"Auto-detected pattern: {pattern}")
 
             logger.info(f"Merging user config with {pattern} system defaults...")

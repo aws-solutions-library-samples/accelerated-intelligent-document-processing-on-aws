@@ -79,6 +79,8 @@ from botocore.exceptions import (
 )
 from botocore.httpsession import URLLib3Session
 
+from idp_common.lambda_deadline import attempt_cannot_finish
+
 from .model_utils import get_model_max_output_tokens
 from .session import get_bedrock_session
 
@@ -1180,6 +1182,10 @@ def invoke_responses_api(
 
     request_start_time = time.time()
     last_error: Optional[str] = None
+    # The costliest attempt measured so far, which is what the invocation budget gate
+    # is asked about -- not the last one. A cheap 429 between two slow ones would
+    # otherwise reset the comparison and re-license an attempt that cannot finish.
+    worst_attempt_seconds = 0.0
 
     for retry_count in range(max_retries):
         try:
@@ -1252,7 +1258,21 @@ def invoke_responses_api(
                         f"bedrock-mantle request failed after {max_retries} "
                         f"attempts: {last_error}"
                     )
-                backoff = client._calculate_backoff(retry_count)
+                backoff = client._backoff_within_invocation(retry_count)
+                # Same ladder, same invocation, same rule as the Converse path: do
+                # not begin an attempt the remaining invocation cannot hold. The
+                # failure is reported exactly as the exhausted ladder reports it, so
+                # the guard changes how many attempts are made and nothing else.
+                worst_attempt_seconds = max(worst_attempt_seconds, duration)
+                if attempt_cannot_finish(
+                    worst_attempt_seconds + backoff, "bedrock-mantle"
+                ):
+                    client._put_metric("BedrockRequestsFailed", 1)
+                    client._put_metric("BedrockRetryAbandonedOutOfTime", 1)
+                    raise RuntimeError(
+                        f"bedrock-mantle request failed after {retry_count + 1} "
+                        f"attempts: {last_error}"
+                    )
                 logger.warning(
                     "bedrock-mantle %s (attempt %d/%d). Retrying in %.2fs.",
                     last_error,
@@ -1296,7 +1316,21 @@ def invoke_responses_api(
                     f"bedrock-mantle request failed after {max_retries} "
                     f"attempts: {last_error}"
                 ) from e
-            backoff = client._calculate_backoff(retry_count)
+            backoff = client._backoff_within_invocation(retry_count)
+            # A read timeout here costs the client's whole read timeout, so this is
+            # the branch that fills an invocation. ``from e`` is what makes the
+            # failure classifiable as transient (``is_transient_error`` follows
+            # ``__cause__`` only), which is the whole point of returning early.
+            worst_attempt_seconds = max(
+                worst_attempt_seconds, time.time() - attempt_start
+            )
+            if attempt_cannot_finish(worst_attempt_seconds + backoff, "bedrock-mantle"):
+                client._put_metric("BedrockRequestsFailed", 1)
+                client._put_metric("BedrockRetryAbandonedOutOfTime", 1)
+                raise RuntimeError(
+                    f"bedrock-mantle request failed after {retry_count + 1} "
+                    f"attempts: {last_error}"
+                ) from e
             logger.warning(
                 "bedrock-mantle connection error %s (attempt %d/%d). "
                 "Retrying in %.2fs.",

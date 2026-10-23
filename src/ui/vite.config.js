@@ -51,7 +51,11 @@ export default defineConfig(({ mode }) => ({
         // Manual chunking for better code splitting
         manualChunks: {
           'aws-amplify': ['aws-amplify', '@aws-amplify/ui-react'],
-          'aws-sdk': ['@aws-sdk/client-ssm', '@aws-sdk/client-cognito-identity', '@aws-sdk/s3-request-presigner'],
+          // `@aws-sdk/s3-request-presigner` used to be listed here. Nothing imports
+          // it any more — the browser no longer signs S3 URLs (issue #1033) — and a
+          // manualChunks entry pulls its target into the graph whether or not the
+          // app reaches it, so leaving it named would keep shipping the presigner.
+          'aws-sdk': ['@aws-sdk/client-ssm', '@aws-sdk/client-cognito-identity'],
           cloudscape: ['@cloudscape-design/components', '@cloudscape-design/global-styles'],
           chart: ['chart.js', 'react-chartjs-2'],
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
@@ -109,7 +113,18 @@ export default defineConfig(({ mode }) => ({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
-    include: ['src/**/*.test.{ts,tsx}'],
+    // Every extension Vitest's own `defaultInclude` accepts
+    // (`**/*.{test,spec}.?(c|m)[jt]s?(x)`), written as braces because that is
+    // the syntax `scripts/tests/test_ui_test_discovery.py` can resolve without
+    // Node. This was `src/**/*.test.{ts,tsx}`: two extensions, so a test written
+    // as `Foo.test.jsx` — a file the eslint script lints and tsc reads — was
+    // never collected, and `npx vitest run` exited 0 without mentioning it. That
+    // gate asserts every test-named file under src/ui is matched by what is
+    // configured here, so narrowing this list fails it rather than quietly
+    // dropping suites.
+    include: [
+      'src/**/*.{test,spec}.{js,jsx,ts,tsx,cjs,cjsx,cts,ctsx,mjs,mjsx,mts,mtsx}',
+    ],
     // Above vitest's 5s default, for CI runner variance rather than to license
     // slow tests. Rendering a Cloudscape table in jsdom costs hundreds of
     // milliseconds, and the shared CI runner has been observed ~5x slower than a

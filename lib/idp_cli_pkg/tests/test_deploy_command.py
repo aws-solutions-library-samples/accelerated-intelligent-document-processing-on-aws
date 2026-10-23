@@ -696,7 +696,7 @@ class TestRefusals:
             )
         assert result.exit_code == 1, result.output
         assert "no longer a stack parameter" in result.output
-        assert "Assessment & HITL Configuration" in result.output
+        assert "Human-in-the-Loop (HITL) Review" in result.output
         assert api_calls.of("CreateStack") == []
 
     def test_enable_hitl_false_is_still_accepted_and_submits_no_parameter(
@@ -753,7 +753,7 @@ class TestRefusals:
     def test_an_unsupported_region_without_a_template_url_is_refused(
         self, api_calls, extra, expected
     ):
-        """Published templates exist in three regions only.
+        """Published templates exist only in the regions ``TEMPLATE_URLS`` lists.
 
         There is no template to deploy in ``ap-south-1``, so each of the three
         paths that would otherwise reach for ``TEMPLATE_URLS`` raises instead,
@@ -1825,7 +1825,7 @@ class TestPreBuiltVariantTemplates:
 
         ``cli.py`` lints against the deploy region only when it starts with
         ``us-gov-``, and that branch is unreachable from this path: the region
-        must be one of the three in ``TEMPLATE_URLS``, none of which is a
+        must be one of the regions in ``TEMPLATE_URLS``, none of which is a
         GovCloud region.
         """
         from idp_sdk.operations.publish import DEFAULT_GOVCLOUD_LINT_REGION

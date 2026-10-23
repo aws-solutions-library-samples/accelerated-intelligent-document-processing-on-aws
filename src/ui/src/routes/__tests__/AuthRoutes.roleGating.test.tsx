@@ -51,8 +51,11 @@ vi.mock('../DocumentsAnalyticsRoutes', () => ({ default: () => <div /> }));
 vi.mock('../TestStudioRoutes', () => ({ default: () => <div /> }));
 vi.mock('../AgentChatRoutes', () => ({ default: () => <div /> }));
 vi.mock('../FeaturesRoutes', () => ({ default: () => <div /> }));
+vi.mock('../InboxRoutes', () => ({ default: () => null }));
 vi.mock('../../pages/WelcomePage', () => ({ default: () => <div>welcome</div> }));
 vi.mock('../../components/agent-chat/QuickStartWidget', () => ({ default: () => <div /> }));
+// The provider polls the API on mount; the role branches do not need it.
+vi.mock('../../contexts/inbox', () => ({ InboxProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 
 vi.mock('react-router-dom', () => ({
   Routes: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,

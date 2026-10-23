@@ -441,10 +441,20 @@ class TestConflictRetry:
         assert [m["role"] for m in written] == ["other-writer", "user"]
 
     def test_the_retry_is_bounded_rather_than_looping_forever(self):
+        # The backoff is patched, not served. These are the only two tests here
+        # that drive the ladder to exhaustion, so they are the only two that pay
+        # for all fourteen jittered draws in real time -- and neither asserts a
+        # duration, so what that bought was wall clock (#1380). The two tests
+        # below that DO assert the interval patch it for the same reason and
+        # assert the drawn value instead.
         instance, table = _logger()
         table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
-        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
         assert table.update_item.call_count == _MAX_APPEND_ATTEMPTS
+        # Every conflict attempt but the last backs off, which is the shape the
+        # jitter tests assert the value of.
+        assert sleep.call_count == _MAX_APPEND_ATTEMPTS - 1
 
     def test_exhausting_the_retries_reports_the_message_it_dropped(self, caplog):
         # Dropping one message is the right trade against overwriting the whole
@@ -454,7 +464,7 @@ class TestConflictRetry:
 
         instance, table = _logger()
         table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.ERROR), patch(f"{MODULE}.time.sleep"):
             instance.log_message_async("job-1", "user-1", {"role": "user"})
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
         assert any("job-1" in m and "not persisted" in m for m in errors)
@@ -847,9 +857,14 @@ class TestWriteFailuresAreSwallowed:
         ],
     )
     def test_a_client_error_on_the_write_does_not_propagate(self, code):
+        # The conflict code drives the retry ladder to exhaustion, so the
+        # backoff is patched here too rather than served -- what this test
+        # asserts is that nothing propagates, not how long the ladder takes
+        # (#1380).
         instance, table = _logger()
         table.update_item.side_effect = _client_error(code)
-        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        with patch(f"{MODULE}.time.sleep"):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
 
     def test_an_unexpected_error_on_the_write_does_not_propagate(self):
         instance, table = _logger()

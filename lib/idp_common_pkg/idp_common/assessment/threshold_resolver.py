@@ -22,42 +22,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def find_class_schema(doc_class: str, classes: Any) -> dict[str, Any] | None:
-    """Look up a document class's JSON Schema by ``x-aws-idp-document-type``.
-
-    Shared by every caller that needs a class schema from a ``classes`` list —
-    the standalone assessment service and the BDA processresults Lambda both
-    route through here so the lookup (and its guards) cannot drift between them.
-
-    Args:
-        doc_class: The document class name (e.g. ``"w2"``). Matched
-            case-insensitively.
-        classes: The config's ``classes`` list (each entry a JSON Schema dict).
-            Tolerates ``None`` and non-dict entries.
-
-    Returns:
-        The matching class schema, or ``None`` when there is no match.
-
-    Note:
-        Entries whose ``x-aws-idp-document-type`` is not a string are skipped.
-        Legacy→schema migration sets that key to the boolean ``True`` as a
-        marker (see ``config/migration.py``), and calling ``.lower()`` on it
-        would raise ``AttributeError`` — which on the BDA HITL path is not
-        wrapped and would fail the whole segment.
-    """
-    from idp_common.config.schema_constants import X_AWS_IDP_DOCUMENT_TYPE
-
-    if not doc_class:
-        return None
-    for schema in classes or []:
-        if not isinstance(schema, dict):
-            continue
-        declared = schema.get(X_AWS_IDP_DOCUMENT_TYPE, "")
-        if isinstance(declared, str) and declared.lower() == doc_class.lower():
-            return schema
-    return None
-
-
 def resolve_array_item_thresholds(
     prop_schema: dict[str, Any],
     class_schema: dict[str, Any],

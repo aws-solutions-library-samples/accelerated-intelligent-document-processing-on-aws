@@ -60,7 +60,8 @@ USAGE
   ... --setup-only | --no-teardown | --teardown-only
 
 Requires: awscli v2 on PATH; credentials with Cognito admin + CloudFormation read
-+ DynamoDB read/write on the UsersTable (the deploy account creds are enough).
++ DynamoDB read/write on the UsersTable, AgentTable and NotificationsTable (the
+deploy account creds are enough).
 """
 
 import argparse
@@ -88,6 +89,7 @@ import api_security_cases as sec  # noqa: E402
 from rbac_common import (  # noqa: E402
     AWS_BIN,
     aws,
+    cognito_groups_for_user,
     create_cognito_user,
     delete_cognito_user,
     enable_admin_auth,
@@ -95,9 +97,46 @@ from rbac_common import (  # noqa: E402
     global_sign_out,
     resolve_stack,
     restore_auth_flows,
+    template_group_names,
 )
 
-ROLES = ["Admin", "Author", "Viewer", "Reviewer"]
+# Injected by the offline tests (scripts/sdlc/tests/test_api_security_cases.py).
+_sleep = time.sleep
+_monotonic = time.monotonic
+
+#: Every Cognito group `template.yaml` creates, which is the population the matrix
+#: has to report over: it reports a verdict per (operation, role) cell, so a role
+#: the deployment has and this list does not is a row of the policy that nothing
+#: drives while the report reads complete.
+#:
+#: `Annotator` was the missing one, and it is the role whose access is scoped PER
+#: OBJECT (`allowedTestSets` — the only such role), so the seven test-set
+#: operations that admit it had no live cell at all. See `_seed_annotator_scope`
+#: for why driving it needs a scope seeded first. Issue #1065.
+#: Read from template.yaml (Admin first), so a new role joins the live matrix
+#: without editing a list here.
+ROLES = template_group_names()
+#: A caller holding NO Cognito group. Not a role and deliberately not in `ROLES`:
+#: no `AWS::Cognito::UserPoolGroup` has this name, which is the whole point — every
+#: group-restricted policy must refuse it, `ANY_GROUP` must refuse it (that is what
+#: the sentinel exists to say), `IAM_ONLY` must refuse it, and the 8 `ANY`
+#: operations must admit it, since they consult authentication only.
+#:
+#: It is a principal the deployment really produces rather than a synthetic one:
+#: with `AllowedSignUpEmailDomain` set the user pool permits self-service sign-up,
+#: so anyone at that domain can register and hold a valid token with an empty
+#: `cognito:groups` claim, and a half-finished onboarding leaves the same account
+#: behind. `classify()` needs no new branch for it — a name no group list contains
+#: takes the "disallowed role" arm, where the assertion is "refused", which is the
+#: polarity this harness is already built around.
+NO_GROUP = "NoGroup"
+#: Every principal the group matrix drives, in report order. The role users plus the
+#: groupless one; the unauthenticated cell is driven separately inside the matrix.
+MATRIX_PRINCIPALS = [*ROLES, NO_GROUP]
+#: Named because this role needs setup no other role needs — a seeded
+#: `allowedTestSets` row — so the seeding and the matrix must agree on the spelling.
+ANNOTATOR_ROLE = "Annotator"
+assert ANNOTATOR_ROLE in ROLES, "the Annotator row is seeded but never driven"
 # A second, independent user for indirect-object-reference (IDOR) tests: proves
 # User B cannot reach User A's data. Created as an Author (a normal, non-admin
 # authenticated user).
@@ -141,8 +180,105 @@ def load_expectations():
     with EXPECTATIONS_PATH.open() as fh:
         spec = yaml.safe_load(fh)
     ops = spec["operations"]
+    _reject_unknown_operation_keys(ops)
     _resolve_any_group(ops)
+    _check_object_scoped_roles(ops)
     return ops, (spec.get("known_gaps") or {})
+
+
+def _check_object_scoped_roles(ops):
+    """``object_scoped_roles:`` must name a principal the operation ADMITS.
+
+    The key inverts a cell's assertion from "the group floor let this caller
+    through" to "the group floor let this caller through and a per-object control
+    then refused the object" (see :func:`classify_object_scoped`). Both readings
+    require the field-level policy to admit the role. Named on a role the policy
+    *excludes*, the cell would assert that the group floor is NOT what refuses a
+    caller the group floor exists to refuse — the exact inversion of the property,
+    scored as a pass. Fatal before the first request, since no response can tell
+    the two apart afterwards.
+    """
+    bad = []
+    for field, cfg in ops.items():
+        declared = cfg.get("object_scoped_roles") or []
+        if not declared:
+            continue
+        if not isinstance(declared, list):
+            bad.append(f"{field}: object_scoped_roles must be a list, got {declared!r}")
+            continue
+        groups = cfg.get("groups")
+        for role in declared:
+            if role not in MATRIX_PRINCIPALS:
+                bad.append(
+                    f"{field}: object_scoped_roles names '{role}', which is not a "
+                    f"principal the matrix drives ({MATRIX_PRINCIPALS})"
+                )
+            elif not isinstance(groups, list) or role not in groups:
+                bad.append(
+                    f"{field}: object_scoped_roles names '{role}', but the "
+                    f"operation's policy is {groups!r}, which does not admit it — "
+                    "the cell would assert the opposite of the group floor's job"
+                )
+    if not bad:
+        return
+    for line in bad:
+        print(f"ERROR: {line}", file=sys.stderr)
+    sys.exit(2)
+
+
+#: Every key an operation entry may declare. The scanner already enforces this for
+#: the `function_url_endpoints:` section, with the reason spelled out there: each key
+#: is read by name, so a misspelling makes the setting VANISH rather than misfire,
+#: and `residual_gapp:` for `residual_gap:` was measured leaving that scan at zero
+#: failures while quietly dropping a gap from the register.
+#:
+#: The `operations:` section had no such check, and it carries keys that invert a
+#: cell's expected polarity — `object_scoped_roles` and `skip_allowed` both do — so a
+#: typo there turns an assertion into a different assertion with nothing printed.
+#: Fatal rather than a warning: this runs before any request, and continuing would
+#: report verdicts the file did not ask for.
+OPERATION_ENTRY_KEYS = frozenset(
+    {
+        "alias_of",
+        "args",
+        "conditional",
+        "enforced_in",
+        "groups",
+        "kind",
+        "known_gap",
+        "note",
+        "object_scoped_roles",
+        "ownership",
+        # Read by scan_api_rbac.py rather than here (documented intentional drift
+        # between the code's group set and the schema directive's). No operation
+        # declares it today, which is exactly why it has to be listed: a key only
+        # the other consumer reads is the one this check would otherwise reject.
+        "schema_groups",
+        "scope_checked",
+        "scope_enforced_in",
+        "scope_filtered",
+        "skip_allowed",
+    }
+)
+
+
+def _reject_unknown_operation_keys(ops):
+    """Fail before the first request if an operation declares a key nothing reads."""
+    bad = {
+        field: sorted(set(cfg) - OPERATION_ENTRY_KEYS)
+        for field, cfg in ops.items()
+        if isinstance(cfg, dict) and set(cfg) - OPERATION_ENTRY_KEYS
+    }
+    if not bad:
+        return
+    for field, keys in sorted(bad.items()):
+        print(
+            f"ERROR: {field} declares unknown key(s) {keys} in "
+            f"{EXPECTATIONS_PATH.name} — a key read by name is silently ignored "
+            f"when it is misspelled (known: {sorted(OPERATION_ENTRY_KEYS)})",
+            file=sys.stderr,
+        )
+    sys.exit(2)
 
 
 def _resolve_any_group(ops):
@@ -192,20 +328,165 @@ def _resolve_any_group(ops):
     print(f"  {ANY_GROUP} resolves to {names}")
 
 
-def setup_users(ctx):
+def setup_users(ctx, ops=None):
     for role in ROLES:
         create_cognito_user(ctx, test_email(role), role, TEST_PW)
+    # A caller in NO group. `group=None` is what skips the add-to-group call; the
+    # membership is read back below, because "created" and "in no group" are two
+    # separate Cognito API calls and this principal's entire value is the second.
+    create_cognito_user(ctx, test_email(NO_GROUP), None, TEST_PW)
     # Scoped user: an Author in Cognito, restricted via UsersTable.
     create_cognito_user(ctx, test_email(SCOPED), "Author", TEST_PW)
     # Second independent user (Author) for IDOR tests — a distinct Cognito sub so
     # "User B cannot reach User A's data" is a real cross-identity check.
     create_cognito_user(ctx, test_email(USER_B), "Author", TEST_PW)
+    _verify_group_memberships(ctx)
     _seed_scoped_user(ctx)
+    _seed_annotator_scope(ctx, ops)
     enable_admin_auth(ctx)
     print(
         f"Created test users: {', '.join(test_email(r) for r in ROLES)}, "
+        f"{test_email(NO_GROUP)} (no group), "
         f"{test_email(SCOPED)} (scoped to [{SCOPE_VERSION}])"
     )
+
+
+def _verify_group_memberships(ctx):
+    """Read every matrix principal's group membership back out of the pool.
+
+    The matrix reports a verdict per (operation, role) cell and names the role in
+    every row, so the one assumption it cannot afford is that a user is in the group
+    its name says. ``admin-add-user-to-group`` is a separate call from
+    ``admin-create-user`` and this harness tolerates a pre-existing user, so a
+    leftover account from an interrupted run — or a groupless user that quietly
+    acquired a group — would have the whole row reported under the wrong role.
+
+    The groupless principal is the one that matters most, and it fails in the
+    direction that is otherwise invisible: a ``NoGroup`` user holding, say,
+    ``Viewer`` is refused by nothing it should be refused by, every
+    ``ANY_GROUP`` cell reads as correctly admitted, and the run is green while
+    asserting the opposite of what it claims.
+
+    Fatal, not a warning. Continuing would publish a matrix whose row labels are
+    wrong, which is worse than not running.
+    """
+    wrong = []
+    for role in ROLES:
+        held = cognito_groups_for_user(ctx, test_email(role))
+        if held != [role]:
+            wrong.append(f"{role} user holds {held or 'no group'}, expected ['{role}']")
+    held = cognito_groups_for_user(ctx, test_email(NO_GROUP))
+    if held:
+        wrong.append(f"{NO_GROUP} user holds {held}, expected no group at all")
+    if wrong:
+        print("ERROR: test-user group membership is not what the matrix assumes:")
+        for line in wrong:
+            print(f"  {line}")
+        raise RuntimeError(
+            "test-user group membership does not match the matrix's row labels"
+        )
+    print(f"  group membership verified for {', '.join(MATRIX_PRINCIPALS)}")
+
+
+def test_set_ids_in_play(ops):
+    """Every ``testSetId`` the matrix will send, from the expectations file.
+
+    Derived rather than written down, so the Annotator's seeded scope is exactly the
+    set of ids the requests name. Writing the ids here instead would leave the scope
+    and the arguments free to drift: change an operation's ``testSetId`` in the YAML
+    and the seeded Annotator stops being scoped to the set it addresses, which turns
+    seven cells from "the group floor admitted this caller" into "a per-object
+    control refused the object" with no diff anywhere near the seeding.
+
+    Reads nested ``input:`` maps too, because four of these operations take their id
+    inside one.
+    """
+    found = set()
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "testSetId" and isinstance(value, str) and value:
+                    found.add(value)
+                else:
+                    _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    for cfg in (ops or {}).values():
+        _walk((cfg or {}).get("args"))
+    return sorted(found)
+
+
+def _seed_annotator_scope(ctx, ops):
+    """Give the Annotator an ``allowedTestSets`` covering the ids the matrix sends.
+
+    ``assert_can_access_test_set`` requires an **explicit** scope for an Annotator —
+    an Annotator with none is denied everything rather than granted everything — so
+    an unseeded Annotator is refused by a PER-OBJECT control on all seven test-set
+    operations it is admitted to. Those cells exist to assert that the group floor
+    admits the role; a per-object refusal means they measured something else, which
+    `classify()` correctly scores as a cell that did not run (#1308).
+
+    The remedy #1308 prescribes is to give the operation an argument the per-object
+    control admits, so the group floor is what answers. Here the argument is fixed
+    (a test-set id that does not exist, shared with every other role's cell) and the
+    scope is the movable half, so this seeds the scope instead: the Annotator is
+    assigned exactly the ids the requests name. The sets still do not exist, so each
+    operation then answers its own 404 — the same conclusive not-found Admin and
+    Author get, and the same cell semantics as every other role.
+
+    This does NOT make the per-object control untested: `allowedTestSets` enforcement
+    is asserted directly in `lib/idp_common_pkg/tests/unit/test_testset_scope.py`, and
+    the three review operations keep driving it live through `object_scoped_roles`,
+    where the refusal is the expected answer.
+
+    ⚠️ The row carries no ``allowedConfigVersions``. Adding one would scope this
+    caller on a second, unrelated axis and turn its `getConfigVersion` cell into a
+    config-scope assertion; absence means "unrestricted" there, which is what every
+    ordinary user has.
+    """
+    if not ctx.get("users_table"):
+        print("WARN: UsersTable not found — Annotator test-set scope not seeded.")
+        return
+    ids = test_set_ids_in_play(ops)
+    if not ids:
+        print("WARN: no testSetId in the expectations file — nothing to scope to.")
+        return
+    uid = f"rbac-test-annotator-{uuid.uuid4()}"
+    email = test_email(ANNOTATOR_ROLE)
+    item = {
+        "PK": {"S": f"USER#{uid}"},
+        "SK": {"S": f"USER#{uid}"},
+        "userId": {"S": uid},
+        "email": {"S": email},
+        "persona": {"S": ANNOTATOR_ROLE},
+        "status": {"S": "active"},
+        "allowedTestSets": {"L": [{"S": i} for i in ids]},
+    }
+    sub = _cognito_sub(ctx, email)
+    if sub:
+        # Recorded so the row matches what user_management writes. No SUB# pointer
+        # is written: `get_allowed_test_sets` resolves through EmailIndex only, and a
+        # pointer carries no `allowedTestSets`, so an emailless pointer would be
+        # litter and an email-bearing one could be returned in the row's place.
+        item["cognitoSub"] = {"S": sub}
+    # Key recorded BEFORE the write, so a put that fails halfway still leaves
+    # teardown something to delete. This is a live stack's own table.
+    ctx["_annotator_scope_keys"] = [
+        {"PK": {"S": f"USER#{uid}"}, "SK": {"S": f"USER#{uid}"}}
+    ]
+    aws(
+        "dynamodb",
+        "put-item",
+        "--table-name",
+        ctx["users_table"],
+        "--item",
+        json.dumps(item),
+        region=ctx["region"],
+    )
+    print(f"  Annotator row USER#{uid} scoped to {ids}")
 
 
 def _cognito_sub(ctx, email):
@@ -308,13 +589,17 @@ def _seed_scoped_user(ctx):
     )
 
 
-def _recover_scoped_user_keys(ctx):
-    """Re-derive the scoped user's item keys from the table itself.
+def _recover_seeded_user_keys(ctx, email, *, with_pointer):
+    """Re-derive a seeded user's item keys from the table itself.
 
     ``--teardown-only`` (and a rerun after a killed process) gets a fresh ctx, so
-    nothing recorded what ``_seed_scoped_user`` wrote. The row is still findable by
-    the one thing that does not change between runs — the scoped user's email — and
-    it records the ``userId`` and the ``cognitoSub`` the two keys are built from.
+    nothing recorded what the seeding wrote. The row is still findable by the one
+    thing that does not change between runs — the seeded user's email — and it
+    records the ``userId`` and the ``cognitoSub`` the keys are built from.
+
+    ``with_pointer`` says whether this seeding also wrote a ``SUB#`` pointer. The
+    scoped user's does and the Annotator's does not, and asking for a pointer that
+    was never written would report a delete that removed nothing.
 
     Best effort: returns [] on any failure, since this runs in a teardown path.
     """
@@ -329,11 +614,11 @@ def _recover_scoped_user_keys(ctx):
             "--key-condition-expression",
             "email = :e",
             "--expression-attribute-values",
-            json.dumps({":e": {"S": test_email(SCOPED)}}),
+            json.dumps({":e": {"S": email}}),
             region=ctx["region"],
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"WARN: could not look up the scoped row to delete it: {exc}")
+        print(f"WARN: could not look up the seeded row for {email} to delete it: {exc}")
         return []
     keys = []
     for row in (resp or {}).get("Items") or []:
@@ -341,39 +626,78 @@ def _recover_scoped_user_keys(ctx):
         if uid:
             keys.append({"PK": {"S": f"USER#{uid}"}, "SK": {"S": f"USER#{uid}"}})
         sub = (row.get("cognitoSub") or {}).get("S")
-        if sub:
+        if sub and with_pointer:
             keys.append({"PK": {"S": f"SUB#{sub}"}, "SK": {"S": f"SUB#{sub}"}})
     return keys
 
 
+#: Every seeded UsersTable row this harness writes, and the ctx key it is recorded
+#: under. Teardown reads these first, because a recorded key works even when
+#: EmailIndex cannot be read; the sweep below is what catches everything else.
+_SEEDED_USER_ROWS = (
+    ("_scoped_user_keys", SCOPED),
+    ("_annotator_scope_keys", ANNOTATOR_ROLE),
+)
+
+#: Every address this harness owns. Teardown has to remove a UsersTable row for
+#: ALL of them, not only for the two it seeds, because **the matrix itself writes
+#: rows for the rest**: ``listUsers[Admin]`` runs ``sync_cognito_users_to_dynamodb``,
+#: which creates a row for every Cognito user then in the pool, and
+#: ``createUser[Admin]`` writes one directly. Deleting the Cognito user does not
+#: remove the row.
+#:
+#: Measured on a live stack rather than reasoned about: a run left rows for
+#: `admin`, `author`, `viewer`, `reviewer`, `userb`, `createusertarget` and the new
+#: groupless principal behind, four of them dated nearly a month earlier — so this
+#: has been accumulating one set per run in a shared account. The sweep is by
+#: ADDRESS rather than by a `test-rbac-` prefix scan, so it can only ever reach
+#: rows for principals named here.
+_OWNED_ADDRESS_ROLES = (*MATRIX_PRINCIPALS, SCOPED, USER_B, CREATED)
+
+
 def teardown_users(ctx):
-    for role in [*ROLES, SCOPED, USER_B, CREATED]:
+    # Every principal the matrix drives — including the groupless one, whose whole
+    # value is that it holds no group, and which is therefore the account a shared
+    # pool least wants left behind — plus the three the suites create.
+    for role in _OWNED_ADDRESS_ROLES:
         delete_cognito_user(ctx, test_email(role))
-    # Both items the seeding wrote: the USER# row and its SUB# pointer. Deleting
-    # only the row would leave a pointer in the live stack's UsersTable naming a row
-    # that no longer exists — harmless to the lookup, which falls through to the
-    # email leg, but still our litter in a shared account.
-    keys = ctx.get("_scoped_user_keys") or []
-    if ctx.get("users_table"):
-        if not keys:
-            keys = _recover_scoped_user_keys(ctx)
-        for key in keys:
-            subprocess.run(
-                [
-                    AWS_BIN,
-                    "dynamodb",
-                    "delete-item",
-                    "--table-name",
-                    ctx["users_table"],
-                    "--key",
-                    json.dumps(key),
-                    "--region",
-                    ctx["region"],
-                ],
-                capture_output=True,
-                text=True,
-            )
-    print(f"Deleted test users and {len(keys)} scoped UsersTable item(s).")
+    if not ctx.get("users_table"):
+        print("Deleted test users (no UsersTable resolved, so no rows swept).")
+        return
+    # Keys are collected before any delete, and de-duplicated, so the printed count
+    # is the number of distinct items aimed at rather than the number of calls.
+    keys = []
+    for ctx_key, _role in _SEEDED_USER_ROWS:
+        keys += ctx.get(ctx_key) or []
+    for role in _OWNED_ADDRESS_ROLES:
+        # `with_pointer=True` for every address: a swept row records a `cognitoSub`
+        # only if something wrote one, and deleting a key that does not exist is a
+        # DynamoDB no-op. Asking for it conditionally would mean knowing which
+        # writer produced each row, which teardown cannot know.
+        keys += _recover_seeded_user_keys(
+            ctx, test_email(role), with_pointer=True
+        )
+    unique = []
+    for key in keys:
+        if key not in unique:
+            unique.append(key)
+    for key in unique:
+        subprocess.run(
+            [
+                AWS_BIN,
+                "dynamodb",
+                "delete-item",
+                "--table-name",
+                ctx["users_table"],
+                "--key",
+                json.dumps(key),
+                "--region",
+                ctx["region"],
+            ],
+            capture_output=True,
+            text=True,
+        )
+    print(f"Deleted test users and {len(unique)} UsersTable item(s).")
 
 
 def get_token(ctx, role):
@@ -397,11 +721,118 @@ UNREADABLE_BODY = "__unreadable_body__"
 # hangs the harness forever instead of being reported.
 REQUEST_TIMEOUT_SECONDS = 45
 
+# ----------------------------------------------------------------------------
+# WHICH CONTROL REFUSED
+# ----------------------------------------------------------------------------
+# Every authorization refusal this API makes arrives as 403 with `errorType:
+# "Unauthorized"`, and two controls that answer OPPOSITE questions produce it:
+#
+#   the field-level GROUP FLOOR   "this caller's groups do not admit this operation"
+#   a per-object RESOURCE control "this caller's groups were fine and the object
+#                                  they named was refused"
+#
+# For this harness those are opposite verdicts about the control under test. The
+# matrix asserts the first and cannot avoid provoking the second, because it drives
+# every operation with deliberately bogus arguments — so a bucket outside the
+# deployment's allow-list, a chat session nobody owns and a document selection that
+# does not exist all answered 403 and read as "DENIED but allowed", i.e. as the
+# group check failing for a role the manifest permits. Eight cells of one run.
+# Issue #1308.
+#
+# The dispatcher now says which one, in `errors[0].authzControl`. These names are
+# ITS vocabulary, not this file's: `test_api_rbac_verdicts.py` reads them out of
+# `http_api_dispatcher/index.py` and fails if the two drift, so a renamed value
+# cannot leave this harness silently reading `None` for every refusal.
+CONTROL_FIELD = "authzControl"
+#: The group floor refused (authz.enforce: undeclared field, IAM-only, or group
+#: mismatch). A decision about the FIELD and the caller's GROUPS.
+CONTROL_GROUP_FLOOR = "api-group-floor"
+#: A resolver refused the OBJECT named, having admitted the caller's groups.
+CONTROL_RESOURCE = "resource"
+#: A resolver refused without saying which control did it.
+CONTROL_RESOLVER = "resolver"
+#: An invocation asserted its own identity and was refused.
+CONTROL_UNVERIFIED_IDENTITY = "unverified-identity"
+
+# Why `None` is not folded into `CONTROL_RESOLVER`, even though both end up at the
+# strict verdict: `None` means "this deployment did not tell me", which is the
+# answer from any stack deployed before the label existed, and from the in-band
+# `{success:false,error:{type:"Unauthorized"}}` 200 the configuration and sync
+# resolvers use (the dispatcher passes that body through and never sees a refusal).
+# A reader of the report has to be able to tell "the harness could not attribute
+# this" from "the server said it could not attribute it"; collapsing them would
+# make a stack with no labels at all look like one whose resolvers are all
+# unattributed, and the first of those is the case where the whole distinction
+# below is inert and has to be read as such.
+CONTROL_UNLABELLED = None
+
+
+def refusal_is_resource_level(control):
+    """Is this refusal positively attributed to a per-object control?
+
+    The polarity is the load-bearing part and it is **fail-closed**: only an
+    explicit ``"resource"`` label answers True. An unattributed resolver refusal, a
+    missing label, an unrecognised value and a group-floor refusal all answer
+    False, so every one of them keeps the strict verdict.
+
+    Defaulting the other way would be the suppression this exists to avoid: a
+    genuine group-check regression inside a resolver would then read as a known
+    coverage gap, and the harness would report a real authorization failure as an
+    expected one. A forgotten label costs a visible failure instead, which is the
+    direction a security gate should fail in.
+    """
+    return control == CONTROL_RESOURCE
+
+
+class ApiResult(tuple):
+    """``(http_status, errorType, in_band_error_type, request_id)`` — plus which
+    control refused, and the refusal message, as ATTRIBUTES.
+
+    A 4-tuple with two attributes rather than a 6-tuple, because sixteen call sites
+    across this file and ``api_security_cases.py`` unpack exactly four values and
+    ``st, et, ib, rid = call(...)`` has to keep working. It is the same trade
+    ``UNREADABLE_BODY`` makes by travelling in the ``errorType`` slot, and it is
+    recorded here for the same reason: the alternative is a sixth element that
+    lands in the wrong variable at one of those sites.
+
+    ``authz_control`` is the dispatcher's ``errors[0].authzControl`` or ``None``;
+    ``message`` is ``errors[0].message``, which the report prints so a refusal can
+    be read without a CloudWatch query.
+
+    ``body`` is the WHOLE response text, and it is here because a check that reads
+    only ``message`` answers a narrower question than it looks like: a refusal that
+    carried a presigned URL in a top-level field, or in a second ``errors`` entry,
+    satisfies every status assertion and hands over the object. Carrying the raw
+    text means the leak check and the verdict are made against the SAME response —
+    a second call for the body would leave the two about different ones.
+    """
+
+    def __new__(
+        cls,
+        status,
+        error_type,
+        in_band,
+        request_id,
+        control=None,
+        message="",
+        body="",
+    ):
+        self = tuple.__new__(cls, (status, error_type, in_band, request_id))
+        self.authz_control = control
+        self.message = message
+        self.body = body
+        return self
+
 
 def call(api_base, field, args, token):
-    """POST /op/<field>; return (http_status, errorType, in_band_error_type,
-    request_id). in_band_error_type captures the {success:false,error:{type}}
-    payload that scope denials use (HTTP 200 body).
+    """POST /op/<field>; return an :class:`ApiResult`, which unpacks as
+    ``(http_status, errorType, in_band_error_type, request_id)`` and also carries
+    ``.authz_control`` and ``.message``. in_band_error_type captures the
+    {success:false,error:{type}} payload that scope denials use (HTTP 200 body).
+
+    ``.authz_control`` is what makes a group refusal and a per-object refusal
+    distinguishable — see :data:`CONTROL_FIELD`. Before it, both arrived as
+    ``403/Unauthorized`` and this function discarded the only field that differed.
 
     Two sentinel values mark a call that established nothing, so that
     :func:`inconclusive` can tell them apart from a refusal:
@@ -437,17 +868,20 @@ def call(api_base, field, args, token):
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         # Reported, not raised: one unreachable operation must not abort the whole
         # matrix, and it must not be mistaken for a refusal either.
-        return 0, None, None, f"<request error: {e}>"
+        return ApiResult(0, None, None, f"<request error: {e}>")
 
+    text = (raw or b"").decode("utf-8", "replace")
     if not (raw or b"").strip():
-        return status, UNREADABLE_BODY, None, request_id
+        return ApiResult(status, UNREADABLE_BODY, None, request_id, body=text)
 
     et = None
     in_band = None
+    control = CONTROL_UNLABELLED
+    message = ""
     try:
         p = json.loads(raw)
     except (ValueError, TypeError):
-        return status, UNREADABLE_BODY, None, request_id
+        return ApiResult(status, UNREADABLE_BODY, None, request_id, body=text)
     if isinstance(p, dict):
         errors = p.get("errors")
         if isinstance(errors, list) and errors:
@@ -461,10 +895,22 @@ def call(api_base, field, args, token):
             first = errors[0]
             if isinstance(first, dict):
                 et = first.get("errorType")
+                # Read as a plain value, with no validation against the vocabulary:
+                # an unrecognised label must reach the verdict functions so they can
+                # apply the strict reading to it, and must reach the report so a
+                # reader sees what the server actually said. Rejecting it here
+                # would turn a value this harness does not know into `None`, which
+                # is the "this deployment cannot tell me" answer and a different
+                # claim entirely.
+                control = first.get(CONTROL_FIELD)
+                raw_message = first.get("message")
+                message = raw_message if isinstance(raw_message, str) else ""
         err = p.get("error")
         if isinstance(err, dict):
             in_band = err.get("type")
-    return status, et, in_band, request_id
+    return ApiResult(
+        status, et, in_band, request_id, control=control, message=message, body=text
+    )
 
 
 def call_body(api_base, field, args, token):
@@ -575,6 +1021,362 @@ def cleanup_seeded_agent_jobs(ctx):
             pass
 
 
+def _notifications_table_name(ctx):
+    """The parent stack's ``NotificationsTableName`` output (cached on ctx).
+
+    Empty when the stack predates the Inbox, which makes the Inbox IDOR suite
+    SKIP rather than pass.
+    """
+    if "_notifications_table" in ctx:
+        return ctx["_notifications_table"]
+    name = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs[?OutputKey=='NotificationsTableName'].OutputValue",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    name = (name or "").strip()
+    ctx["_notifications_table"] = "" if name in ("", "None") else name
+    return ctx["_notifications_table"]
+
+
+def seed_inbox_message(ctx, notification_id, marker):
+    """Seed an unread Inbox message OWNED BY the Admin test user, for the Inbox
+    IDOR suite. The item uses the layout ``idp_common.notifications`` writes:
+    ``PK=USER#<lowercased email>``, ``SK=N#<id>``, ``UnreadPK=PK`` while unread,
+    and a one-day ``ExpiresAfter``. The marker is the title, a field the API
+    returns, so a leak is visible.
+
+    Returns the owner's recipient key, or None when the stack has no
+    ``NotificationsTableName`` output (-> suite SKIPs). A failed write raises,
+    which the suite records as an ERROR: the table exists, so the check should
+    have run.
+    """
+    table = _notifications_table_name(ctx)
+    if not table:
+        return None
+    keys = sec.notification_keys()
+    owner = keys.normalize_recipient_key(test_email("Admin"))
+    pk = keys.partition_key(owner)
+    item = {
+        "PK": {"S": pk},
+        "SK": {"S": keys.message_sk(notification_id)},
+        "UnreadPK": {"S": pk},
+        "Type": {"S": "rbac.idor-probe"},
+        "Title": {"S": marker},
+        "Body": {"S": ""},
+        "Severity": {"S": "info"},
+        "Source": {"S": "rbac-harness"},
+        "CreatedAt": {
+            "S": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        },
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws(
+        "dynamodb",
+        "put-item",
+        "--table-name",
+        table,
+        "--item",
+        json.dumps(item),
+        region=ctx["region"],
+    )
+    ctx.setdefault("_seeded_inbox_messages", []).append((pk, notification_id))
+    return owner
+
+
+def _review_queue_table_name(ctx):
+    """The parent stack's ``HITLTableName`` output (cached on ctx).
+
+    Empty when the stack has no review queues (an older or headless stack),
+    which makes the review-queue IDOR suite SKIP rather than pass.
+    """
+    if "_review_table" in ctx:
+        return ctx["_review_table"]
+    name = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs[?OutputKey=='HITLTableName'].OutputValue",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    name = (name or "").strip()
+    ctx["_review_table"] = "" if name in ("", "None") else name
+    return ctx["_review_table"]
+
+
+REVIEW_IDOR_USERS = ("ReviewIdorA", "ReviewIdorB", "ReviewIdorC")
+
+# A warm review-queues resolver caches queue definitions for 30 s per container
+# (QueueDefStore ttl=30.0), so the seed waits past that before the matrix asserts
+# on user B's membership, polling B's getReviewItem with a bounded deadline.
+REVIEW_SEED_MIN_WAIT_S = 35.0
+REVIEW_SEED_DEADLINE_S = 90.0
+REVIEW_SEED_POLL_S = 5.0
+
+
+def _tracking_table_name(ctx):
+    """Physical name of the stack's TrackingTable (cached on ctx)."""
+    if "_tracking_table" not in ctx:
+        name = aws(
+            "cloudformation",
+            "describe-stack-resource",
+            "--stack-name",
+            ctx["stack"],
+            "--logical-resource-id",
+            "TrackingTable",
+            "--query",
+            "StackResourceDetail.PhysicalResourceId",
+            "--output",
+            "text",
+            region=ctx["region"],
+        )
+        ctx["_tracking_table"] = (name or "").strip()
+    return ctx["_tracking_table"]
+
+
+def seed_review_item(ctx):
+    """Seed the review-queue IDOR fixture (see run_review_queue_idor_suite).
+
+    Creates Annotators A and B, members by the Eligible Annotators of a temporary
+    review queue definition, and C, who is not a member; a temporary profile; a
+    tracking row; and a queue item in that queue CLAIMED by A under a 30-minute
+    lease. Returns the fixture dict, or None when the stack has no HITLTableName
+    output. A seed that fails partway removes what it wrote and re-raises.
+    """
+    table = _review_queue_table_name(ctx)
+    if not table:
+        return None
+    try:
+        return _seed_review_item(ctx, table)
+    except Exception:
+        cleanup_review_item(ctx)
+        raise
+
+
+def _seed_review_item(ctx, table):
+    keys = sec.review_queue_keys()
+    emails = {u: test_email(u) for u in REVIEW_IDOR_USERS}
+    for user in REVIEW_IDOR_USERS:
+        create_cognito_user(ctx, emails[user], "Annotator", TEST_PW)
+    ctx["_review_idor_users"] = list(emails.values())
+
+    qid = f"rbac-idor-{secrets.token_hex(4)}"
+    ctx["_review_idor_queue"] = qid
+    qdef = {
+        **{k: {"S": v} for k, v in keys.qdef_key(qid).items()},
+        "QueueId": {"S": qid},
+        "Name": {"S": "RBAC IDOR (temporary)"},
+        "EligibleAnnotators": {
+            "L": [
+                {"S": emails["ReviewIdorA"].lower()},
+                {"S": emails["ReviewIdorB"].lower()},
+            ]
+        },
+        "Enabled": {"BOOL": False},
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws("dynamodb", "put-item", "--table-name", table, "--item", json.dumps(qdef), region=ctx["region"])
+    t0 = _monotonic()
+
+    profile = f"rbac-review-idor-{secrets.token_hex(4)}"
+    ctx["_review_idor_profile"] = profile
+    import tempfile
+
+    import yaml
+
+    from idp_sdk import IDPClient
+
+    # The profile only scopes the seeded item; membership is the queue definition's.
+    config = {"hitl": {"enabled": True}}
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.safe_dump(config, f)
+        path = f.name
+    client = IDPClient(stack_name=ctx["stack"], region=ctx["region"])
+    upload = client.config.upload(path, config_profile=profile, validate=False)
+    if not upload.success:
+        raise RuntimeError(f"profile upload failed: {upload.error}")
+
+    object_key = f"rbac-review-idor/{secrets.token_hex(6)}.pdf"
+    now_ms = int(time.time() * 1000)
+    cycle_id = f"{now_ms:013d}{secrets.token_hex(4)}"
+    owner = emails["ReviewIdorA"].lower()
+    h16 = __import__("hashlib").sha256(object_key.encode()).hexdigest()[:16]
+    lease = now_ms + 30 * 60_000
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    item = {
+        "PK": {"S": f"DOC#{object_key}"},
+        "SK": {"S": "ITEM"},
+        "DocKey": {"S": object_key},
+        "CycleId": {"S": cycle_id},
+        "Profile": {"S": profile},
+        "Queue": {"S": qid},
+        "State": {"S": "CLAIMED"},
+        "Version": {"N": "1"},
+        "Priority": {"N": "50"},
+        "EnqueuedAt": {"S": iso},
+        "EnqueuedAtMs": {"N": str(now_ms)},
+        "Sections": {"L": [{"S": "1"}]},
+        "OwnerKey": {"S": owner},
+        "OwnerEmail": {"S": owner},
+        "ClaimedAt": {"S": iso},
+        "ClaimedAtMs": {"N": str(now_ms)},
+        "LeaseExpiresAtMs": {"N": str(lease)},
+        "LeaseMinutes": {"N": "30"},
+        "QueuePK": {"S": keys.queue_partition(qid)},
+        "QueueSK": {"S": f"{now_ms:013d}#{h16}"},
+        "OwnerPK": {"S": f"R#{owner}"},
+        "OwnerSK": {"S": f"{now_ms:013d}#{h16}"},
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    ctx["_review_idor_key"] = object_key
+    aws("dynamodb", "put-item", "--table-name", table, "--item", json.dumps(item), region=ctx["region"])
+    tracking = _tracking_table_name(ctx)
+    if tracking:
+        row = {
+            "PK": {"S": f"doc#{object_key}"},
+            "SK": {"S": "none"},
+            "ObjectKey": {"S": object_key},
+            "ObjectStatus": {"S": "HITL_IN_PROGRESS"},
+            "HITLStatus": {"S": "in_review"},
+            "ConfigVersion": {"S": profile},
+            "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+        }
+        aws("dynamodb", "put-item", "--table-name", tracking, "--item", json.dumps(row), region=ctx["region"])
+    tokens = {
+        "A": get_id_token(ctx, emails["ReviewIdorA"], TEST_PW),
+        "B": get_id_token(ctx, emails["ReviewIdorB"], TEST_PW),
+        "C": get_id_token(ctx, emails["ReviewIdorC"], TEST_PW),
+    }
+    _wait_for_queue_definition(ctx, object_key, tokens["B"], t0)
+    return {
+        "tokens": tokens,
+        "object_key": object_key,
+        "cycle_id": cycle_id,
+        "queue_id": qid,
+    }
+
+
+def _wait_for_queue_definition(ctx, object_key, token_b, t0):
+    """Wait until every warm resolver container can see the new queue definition.
+
+    Polls B's getReviewItem until it answers 200 and REVIEW_SEED_MIN_WAIT_S has
+    passed since the put (the cache TTL bounds every container, not just the one
+    that answered). On the deadline it returns anyway, so the matrix records the
+    real result rather than the seed hiding it.
+    """
+    while True:
+        status, _ = call_body(
+            ctx["api_base"], "getReviewItem", {"objectKey": object_key}, token_b
+        )
+        elapsed = _monotonic() - t0
+        if status == 200 and elapsed >= REVIEW_SEED_MIN_WAIT_S:
+            return
+        if elapsed >= REVIEW_SEED_DEADLINE_S:
+            print(
+                "  (review seed: the queue-definition cache did not refresh within "
+                f"{REVIEW_SEED_DEADLINE_S:.0f}s; B's getReviewItem last answered {status})"
+            )
+            return
+        _sleep(REVIEW_SEED_POLL_S)
+
+
+def cleanup_review_item(ctx, seeded=None):
+    """Remove the review-queue IDOR fixture (best-effort, idempotent).
+
+    Order: the item, the tracking row, the queue definition, the profile, the
+    users. The queue definition is deleted directly, never with deleteReviewQueue,
+    which would move the item to Default.
+    """
+    table = ctx.get("_review_table")
+    key = ctx.get("_review_idor_key")
+    if table and key:
+        for sk in ("ITEM",):
+            try:
+                aws(
+                    "dynamodb", "delete-item", "--table-name", table, "--key",
+                    json.dumps({"PK": {"S": f"DOC#{key}"}, "SK": {"S": sk}}),
+                    region=ctx["region"],
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  (review item cleanup error: {e})")
+    tracking = _tracking_table_name(ctx) if key else ""
+    if tracking and key:
+        try:
+            aws(
+                "dynamodb", "delete-item", "--table-name", tracking, "--key",
+                json.dumps({"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}}),
+                region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (tracking row cleanup error: {e})")
+    qid = ctx.get("_review_idor_queue")
+    if table and qid:
+        qkey = {k: {"S": v} for k, v in sec.review_queue_keys().qdef_key(qid).items()}
+        try:
+            aws(
+                "dynamodb", "delete-item", "--table-name", table, "--key",
+                json.dumps(qkey), region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review queue definition cleanup error: {e})")
+    profile = ctx.get("_review_idor_profile")
+    if profile:
+        try:
+            from idp_sdk import IDPClient
+
+            IDPClient(stack_name=ctx["stack"], region=ctx["region"]).config.delete(
+                config_profile=profile
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review profile cleanup error: {e})")
+    for email in ctx.get("_review_idor_users", []):
+        try:
+            delete_cognito_user(ctx, email)
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review user cleanup error: {e})")
+
+
+def cleanup_inbox_message(ctx, notification_id):
+    """Delete one seeded Inbox message (best-effort, idempotent)."""
+    table = ctx.get("_notifications_table")
+    if not table:
+        return
+    keys = sec.notification_keys()
+    for pk, seeded_id in ctx.get("_seeded_inbox_messages", []):
+        if seeded_id != notification_id:
+            continue
+        try:
+            aws(
+                "dynamodb",
+                "delete-item",
+                "--table-name",
+                table,
+                "--key",
+                json.dumps(
+                    {"PK": {"S": pk}, "SK": {"S": keys.message_sk(seeded_id)}}
+                ),
+                region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (cleanup_inbox_message failed: {e})")
+
+
+def cleanup_seeded_inbox_messages(ctx):
+    """Delete every Inbox message the suite seeded (best-effort)."""
+    for _pk, notification_id in list(ctx.get("_seeded_inbox_messages", [])):
+        cleanup_inbox_message(ctx, notification_id)
+
+
 # ----------------------------------------------------------------------------
 # Outcome classification
 # ----------------------------------------------------------------------------
@@ -627,15 +1429,19 @@ def inconclusive(status, et=None, body=None):
     return None
 
 
-# A 5xx is inconclusive, and today it is also COMMON: roughly 50 resolver-level
-# validation refusals raise a bare `Exception`, which the dispatcher can only map to
-# 500 `InternalError`, and the deliberately-bogus arguments this harness sends to
-# prove "auth ran before the argument was used" land on many of them. Those cells
-# are registered against this gap so they surface as WARN — visible, counted
-# separately, never a pass — rather than red-lining the gate for a backlog this
-# change does not fix. Everything else inconclusive (a timeout, a dead connection,
-# an unreadable body) is a HARD failure, because none of those is a known condition
-# of this deployment.
+# A 5xx is inconclusive, and a resolver-level refusal can still produce one: a
+# refusal raised as a bare `Exception` is all the dispatcher can map to 500
+# `InternalError`, and the deliberately-bogus arguments this harness sends to prove
+# "auth ran before the argument was used" land on such sites. The not-found refusals
+# that used to produce most of them now answer 404 (`errorType:
+# "ResourceNotFound"`); what remains at 500 is enumerated in
+# `GAP-SEC-INCONCLUSIVE-5XX` in scripts/api_rbac_expectations.yaml, which is the one
+# place that stays current — a count quoted here would not, and four copies of one
+# did not. Those cells are registered against this gap so they surface as WARN —
+# visible, counted separately, never a pass — rather than red-lining the gate for a
+# backlog this change does not fix. Everything else inconclusive (a timeout, a dead
+# connection, an unreadable body) is a HARD failure, because none of those is a
+# known condition of this deployment.
 GAP_INCONCLUSIVE_5XX = "GAP-SEC-INCONCLUSIVE-5XX"
 
 
@@ -644,6 +1450,30 @@ def _inconclusive_gap(status):
     if isinstance(status, int) and status >= 500:
         return GAP_INCONCLUSIVE_5XX
     return None
+
+
+# The dispatcher answers 404 for two unrelated conditions, and only one of them
+# means "this deployment does not have this operation":
+#
+#   errorType "NotFound"         the operation is declared but not routable here —
+#                               a feature-flagged-off resolver. This is what the
+#                               conditional probes below are looking for.
+#   errorType "ResourceNotFound" the operation ran and the OBJECT the arguments
+#                               named does not exist. The feature is present.
+#
+# Keying the probe on the status alone would read the second as the first and SKIP
+# the operation's whole row — turning an authorization assertion into no
+# observation at all, silently, on a deployment where the feature is enabled. That
+# is strictly worse than the 5xx it replaced: an inconclusive cell is at least
+# counted and printed. The arguments these probes send name deliberately bogus
+# ids, so the second condition is the EXPECTED answer once a resolver reports
+# not-found properly.
+#
+# An unreadable or absent errorType falls back to the status, which keeps the
+# pre-existing behaviour for anything that 404s without a typed body.
+def _is_feature_absent_404(status, error_type):
+    """True when a 404 means "this deployment lacks the feature", not "no such object"."""
+    return status == 404 and error_type != "ResourceNotFound"
 
 
 class Verdict(NamedTuple):
@@ -659,14 +1489,169 @@ class Verdict(NamedTuple):
     detail: str
     outcome: str
     gap: Optional[str] = None
+    #: A compact form for the console matrix, where every cell is padded to 16
+    #: columns. ``detail`` names the control that refused and the remedy, which is
+    #: what the report needs and what makes a one-line-per-operation grid
+    #: unreadable. ``None`` means "the detail is already short enough".
+    cell: Optional[str] = None
 
 
-def classify(role, allowed, status, et, in_band) -> Verdict:
+def _allowed_role_was_denied(status, et, in_band, control) -> Verdict:
+    """A caller the policy ADMITS was refused. Which control did it decides what
+    this cell established.
+
+    * A refusal attributed to a **per-object** control: the request reached the
+      resolver, so the dispatcher's group floor admitted this caller. The cell was
+      asserting that an admitted caller is not refused by *authorization*, and a
+      per-object control is a different control — so the cell did not measure what
+      it exists to measure. ``ERROR``: not a pass, still blocking, and it lands in
+      the report's "Could not be run" section naming the control, instead of
+      reading as the group check failing.
+
+      This is NOT a downgrade to a warning. The remedy is to give the operation an
+      argument the resource control admits — the pattern ``getFileContents`` uses
+      and the one ``autoDetectSections``, ``addDocumentsToTestSetByKey`` and
+      ``getChatMessages`` were given — so that the group floor is what answers.
+      Scoring it green, or registering it against a gap, would turn a cell that
+      measures nothing into a cell that reports success, which is the worse half of
+      the defect this classification exists for.
+
+    * Anything else — the group floor itself, an unattributed resolver refusal, an
+      unrecognised label, or no label at all: ``FAIL``, as before. Positive
+      attribution is required to leave this branch, so a forgotten label costs a
+      visible failure rather than a silent pass.
+    """
+    where = control or "unattributed"
+    if refusal_is_resource_level(control):
+        return Verdict(
+            False,
+            f"INCONCLUSIVE: the group floor ADMITTED this caller and a "
+            f"resource-level control refused the object ({status}/{et}, "
+            f"authzControl={control}); this cell did not measure the group check",
+            "ERROR",
+            cell=f"{status}!grp?",
+        )
+    return Verdict(
+        False,
+        f"DENIED but allowed ({status}/{et}/{in_band}, control={where})",
+        "FAIL",
+        cell=f"DENIED({status})",
+    )
+
+
+def _refusal_is_a_group_refusal(status, et, in_band, control) -> Verdict:
+    """A caller the policy REFUSES was refused. Was it refused for their group?
+
+    ``PASS`` unless the response positively attributes the refusal to a per-object
+    control. That case is a ``FAIL``, and it is a real finding rather than a
+    bookkeeping nicety: the group floor runs before routing, so a caller it should
+    refuse cannot reach a resolver at all. A ``resource`` label on this cell means
+    the floor did not refuse somebody it must refuse, and the per-object control
+    happened to catch them — defense in depth working over a hole in the layer this
+    cell exists to test.
+
+    Before the label existed this cell passed on **any** 403, which is the same
+    confusion as the allowed-role case running the other way: a resource refusal
+    counted as proof that the group check works. That direction was the silent one.
+    """
+    if not _denied(status, et, in_band):
+        return Verdict(False, f"LEAK({status}/{et}/{in_band})", "FAIL")
+    if refusal_is_resource_level(control):
+        return Verdict(
+            False,
+            f"REFUSED BY THE WRONG CONTROL ({status}/{et}, "
+            f"authzControl={control}): the group floor did not refuse a caller "
+            f"its policy excludes; a resource-level control did",
+            "FAIL",
+            cell=f"WRONGCTL({status})",
+        )
+    return Verdict(True, f"{status}", "PASS")
+
+
+def classify_object_scoped(role, status, et, in_band, control) -> Verdict:
+    """Judge a cell for a role the FIELD admits and a PER-OBJECT control refuses.
+
+    The cell exists because the ordinary remedy is unavailable. Everywhere else, an
+    allowed role refused by a per-object control is scored ``ERROR`` and the fix is
+    to give the operation an argument that control admits (#1308). The three review
+    operations cannot be given one: ``_assert_annotator_scope`` reads the named
+    document's ``TestSetId`` out of the tracking table, so the only admitting
+    argument is a document that exists and belongs to a set the caller is assigned —
+    which the matrix would then have Admin and Reviewer perform a real review
+    mutation against. Declining the cell instead would leave the role's own
+    enforcement with no live assertion, which is the defect #1065 is about.
+
+    So the polarity is declared, per operation, in ``object_scoped_roles:``, and the
+    assertion is **two-sided**. Both sides have to hold for a PASS:
+
+    * the call was **refused** — if it was not, a caller assigned to no document's
+      test set reached a review operation on an unassigned document, which is a
+      privilege escalation and the thing this cell is worth having for;
+    * the refusal was **not** ``api-group-floor`` — if it was, the field-level floor
+      refused a role the policy admits, i.e. the manifest no longer carries the role,
+      and the cell says so instead of reading a correct-looking 403 as a pass.
+
+    ⚠️ An **unlabelled** refusal is ``ERROR`` — a check that could not be run.
+    Without a label the two cases above are indistinguishable, so passing would mean
+    passing on a run that established neither. ``ERROR`` rather than ``FAIL``
+    because that is what is true, and it is no weaker: `hard_failures` counts both,
+    so the gate still goes red, and the report puts it under "Could not be run"
+    naming the remedy instead of reporting a deployment whose authorization is fine
+    as broken. A stack deployed before `authzControl` existed (#1308) labels nothing,
+    so every 403 on it arrives this way — which is a fact about the deployment, not
+    about its authorization.
+    """
+    why = inconclusive(status, et)
+    if why:
+        return Verdict(
+            False, f"INCONCLUSIVE: {why}", "ERROR", _inconclusive_gap(status)
+        )
+    if not _denied(status, et, in_band):
+        return Verdict(
+            False,
+            f"NOT REFUSED ({status}/{et}/{in_band}): the per-object control admitted "
+            f"a {role} the object is out of scope for",
+            "FAIL",
+            cell=f"OBJLEAK({status})",
+        )
+    if control == CONTROL_GROUP_FLOOR:
+        return Verdict(
+            False,
+            f"REFUSED BY THE GROUP FLOOR ({status}/{et}): the field-level floor "
+            f"refused {role}, a role this operation's policy admits — check the "
+            f"operation's entry in the dispatcher's required-groups manifest",
+            "FAIL",
+            cell=f"FLOOR({status})",
+        )
+    if control == CONTROL_UNLABELLED:
+        return Verdict(
+            False,
+            f"INCONCLUSIVE: unattributed refusal ({status}/{et}) — this cell needs "
+            f"the refusing control named to tell a correct per-object refusal from "
+            f"the group floor refusing an admitted role, and the response carried "
+            f"no {CONTROL_FIELD}. A deployment predating that field labels nothing; "
+            f"redeploy to evaluate this cell",
+            "ERROR",
+            cell=f"NOCTL({status})",
+        )
+    return Verdict(True, f"{status} ({control})", "PASS")
+
+
+def classify(role, allowed, status, et, in_band, control=CONTROL_UNLABELLED) -> Verdict:
     """Judge one cell of the group matrix. `allowed` is ANY | IAM | set.
 
     ``outcome`` is ``PASS``, ``FAIL`` or ``ERROR``. ``ERROR`` means the check could
     not be run — see :func:`inconclusive` — and is never a pass in any cell,
     whichever way the cell was expected to go.
+
+    ``control`` is the dispatcher's ``errors[0].authzControl``. It decides nothing
+    about whether the call was denied (:func:`_denied` answers that, unchanged); it
+    decides **which control** the denial is attributed to, which is what separates
+    "correctly refused for their group" from "group was fine, the object was
+    refused". Those are opposite verdicts and they arrive in the same
+    ``403/Unauthorized``. Default ``None`` keeps the signature usable against a
+    deployment that predates the label, where every cell reverts to the previous
+    reading — strict in both directions.
     """
     why = inconclusive(status, et)
     if why:
@@ -675,28 +1660,22 @@ def classify(role, allowed, status, et, in_band) -> Verdict:
         )
 
     if allowed == IAM:
-        ok = _denied(status, et, in_band)
-        detail = f"{status}" if ok else f"LEAK({status}/{et})"
-        return Verdict(ok, detail, "PASS" if ok else "FAIL")
+        # Every Cognito caller must be refused, and by the floor: authz.enforce's
+        # IAM_ONLY branch is the control under test here.
+        return _refusal_is_a_group_refusal(status, et, in_band, control)
     if allowed == ANY:
         if _denied(status, et, in_band):
-            return Verdict(
-                False, f"unexpected denial ({status}/{et}/{in_band})", "FAIL"
-            )
+            return _allowed_role_was_denied(status, et, in_band, control)
         return Verdict(True, f"{status}", "PASS")
     # group-restricted
     if role in allowed:
-        # Any denial shape fails here — including a bare 401/403 with no
+        # Any denial shape lands here — including a bare 401/403 with no
         # errorType (e.g. a gateway/WAF rejection), which would otherwise
         # silently pass as "auth worked".
         if _denied(status, et, in_band):
-            return Verdict(
-                False, f"DENIED but allowed ({status}/{et}/{in_band})", "FAIL"
-            )
+            return _allowed_role_was_denied(status, et, in_band, control)
         return Verdict(True, f"{status}", "PASS")
-    ok = _denied(status, et, in_band)
-    detail = f"{status}" if ok else f"LEAK({status}/{et}/{in_band})"
-    return Verdict(ok, detail, "PASS" if ok else "FAIL")
+    return _refusal_is_a_group_refusal(status, et, in_band, control)
 
 
 # ----------------------------------------------------------------------------
@@ -780,11 +1759,43 @@ def _input_bucket(ctx):
                 "text",
                 region=ctx["region"],
             )
-    except RuntimeError as e:
-        print(f"  could not resolve the input bucket: {e}")
+    except (RuntimeError, KeyError) as e:
+        # KeyError as well as RuntimeError, because "never raises" has to be true of
+        # the ctx and not only of the AWS call: `ctx["stack"]` and `ctx["region"]`
+        # are read inside this `try`, and a caller holding a partial ctx — every
+        # offline test of a suite that reaches this does — got a KeyError out of a
+        # function whose contract is to answer "" and let the caller SKIP.
+        print(f"  could not resolve the input bucket: {e!r}")
         name = ""
     ctx["input_bucket"] = "" if (not name or name == "None") else name
     return ctx["input_bucket"]
+
+
+def resolve_document_object_key(ctx, tokens):
+    """The ``ObjectKey`` of any processed document in this stack, or None.
+
+    Read as Admin, deliberately: the caller this key is used against is the SCOPED
+    user, whose own ``listDocuments`` is filtered by the very scope the check under
+    test enforces, so asking them would return nothing and the arm would skip for
+    the reason it exists to assert.
+
+    Any document will do, and that is a property of the seeded scope rather than
+    laziness: :data:`SCOPE_VERSION` is a synthetic profile name no processed
+    document carries, so **every** document in the deployment is outside the scoped
+    user's ``allowedConfigVersions``. A real profile name here would make the arm
+    depend on which documents happen to be in the stack.
+    """
+    st, body = call_body(ctx["api_base"], "listDocuments", {}, tokens["Admin"])
+    if st != 200:
+        return None
+    try:
+        documents = (json.loads(body) or {}).get("Documents") or []
+    except Exception:  # noqa: BLE001 - an unreadable list is "no key", not a crash
+        return None
+    for summary in documents:
+        if isinstance(summary, dict) and summary.get("ObjectKey"):
+            return str(summary["ObjectKey"])
+    return None
 
 
 def apply_dynamic_args(ops, ctx, tokens):
@@ -831,17 +1842,26 @@ def apply_dynamic_args(ops, ctx, tokens):
     # offline, where the allow-list contents are known:
     # nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py.
     bucket = _input_bucket(ctx)
-    for field in ("getFileContents", "getFilePresignedUrl"):
+    uri_fields = ("getFileContents", "getFilePresignedUrl")
+    # The batch field takes the same URI inside a list, so the substitution has to
+    # reach into it. Written as its own tuple rather than branching on the field
+    # name inside one loop, so adding a field to either shape is a one-line edit
+    # that cannot accidentally give a batch field a scalar argument the validator
+    # would reject before the group floor ever answered.
+    list_fields = ("getFilePresignedUrls",)
+    for field in uri_fields + list_fields:
         if field not in ops:
             continue
-        if bucket:
-            ops[field]["args"] = {
-                "s3Uri": f"s3://{bucket}/__sectest-nonexistent-key__.json"
-            }
-            print(f"  {field}: using this stack's input bucket {bucket}")
-        else:
+        if not bucket:
             skip.add(field)
             print(f"  {field}: could not resolve the stack's input bucket")
+            continue
+        uri = f"s3://{bucket}/__sectest-nonexistent-key__.json"
+        if field in list_fields:
+            ops[field]["args"] = {"files": [{"s3Uri": uri}]}
+        else:
+            ops[field]["args"] = {"s3Uri": uri}
+        print(f"  {field}: using this stack's input bucket {bucket}")
 
     if "getStepFunctionExecution" in ops:
         arn = resolve_execution_arn(ctx, tokens)
@@ -859,7 +1879,13 @@ def apply_dynamic_args(ops, ctx, tokens):
 
 
 def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
-    print("\n=== GROUP MATRIX (unauth + 4 roles) ===")
+    # Derived from MATRIX_PRINCIPALS rather than written out: the header said
+    # "4 roles" while the deployment had five groups, which is the shape of the
+    # defect this list is here to stop (#1065).
+    print(
+        f"\n=== GROUP MATRIX (unauth + {len(MATRIX_PRINCIPALS)} principals: "
+        f"{', '.join(MATRIX_PRINCIPALS)}) ==="
+    )
     for field, o in ops.items():
         groups = o["groups"]
         allowed = (
@@ -889,8 +1915,8 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 "the feature probe would execute the op as Admin."
             )
         if cond == "circuit_breaker" and not ctx.get("circuit_breaker"):
-            st, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
-            if st == 404:
+            st, et, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
+            if _is_feature_absent_404(st, et):
                 _record(
                     results,
                     field,
@@ -903,8 +1929,8 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 print(f"  {field:28s} SKIP (circuit breaker disabled)")
                 continue
         if cond == "feature_platform":
-            st, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
-            if st == 404:
+            st, et, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
+            if _is_feature_absent_404(st, et):
                 _record(
                     results,
                     field,
@@ -919,7 +1945,8 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
 
         cells = [field]
         # unauthenticated
-        st, et, ib, rid = call(ctx["api_base"], field, o["args"], None)
+        unauth = call(ctx["api_base"], field, o["args"], None)
+        st, et, ib, rid = unauth
         # Already strict (401 exactly, not merely "denied"), but a call that never
         # completed is not a failed assertion about the authorizer — it is no
         # observation at all, and has to say so.
@@ -938,9 +1965,20 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
             rid,
             gap=_inconclusive_gap(st) if why else None,
             outcome="ERROR" if why else None,
+            # The unauth cell asserts a 401 from the route's Cognito authorizer,
+            # which runs ahead of the dispatcher and therefore produces no label at
+            # all. Recorded anyway, because a non-null value here would mean the
+            # request reached the dispatcher — i.e. the authorizer did not
+            # authenticate — which is worth seeing in the report.
+            control=unauth.authz_control,
+            message=unauth.message,
         )
-        # roles
-        for role in ROLES:
+        # The five group roles plus the caller in no group. Driven from
+        # MATRIX_PRINCIPALS so a group added to the deployment is driven by adding
+        # it in one place, rather than reported over a role set that is not the
+        # deployment's.
+        object_scoped = set(o.get("object_scoped_roles") or [])
+        for role in MATRIX_PRINCIPALS:
             role_allowed = allowed not in (ANY, IAM) and role in allowed
             if skip_allowed and role_allowed:
                 cells.append(f"{role[:2]}=skip")
@@ -954,9 +1992,13 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                     outcome="SKIP",
                 )
                 continue
-            st, et, ib, rid = call(ctx["api_base"], field, o["args"], tokens[role])
-            verdict = classify(role, allowed, st, et, ib)
-            cells.append(f"{role[:2]}={verdict.detail}")
+            res = call(ctx["api_base"], field, o["args"], tokens[role])
+            st, et, ib, rid = res
+            if role in object_scoped:
+                verdict = classify_object_scoped(role, st, et, ib, res.authz_control)
+            else:
+                verdict = classify(role, allowed, st, et, ib, res.authz_control)
+            cells.append(f"{role[:2]}={verdict.cell or verdict.detail}")
             _record(
                 results,
                 field,
@@ -967,6 +2009,8 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 et,
                 ib,
                 rid,
+                control=res.authz_control,
+                message=res.message,
                 # The operation's own known_gap wins if it has one; otherwise an
                 # inconclusive cell carries the gap classify assigned it.
                 gap=o.get("known_gap") or verdict.gap,
@@ -1089,6 +2133,191 @@ def run_scope_suite(ctx, tokens, results):
     )
 
 
+#: The operation the document-bytes arm drives. The single-object presign rather
+#: than ``getFileContents``, because it is the capability-issuing one — a refusal
+#: that leaked here would hand out a URL carrying its own authorization for the
+#: lifetime of the signature — and both reach the same
+#: ``_parse_and_validate_one`` choke point, so one of them exercises the control.
+_DOCUMENT_BYTES_FIELD = "getFilePresignedUrl"
+
+
+def run_document_bytes_scope_suite(ctx, tokens, results):
+    """The per-DOCUMENT scope on object bytes, and the label it declares.
+
+    Its own suite rather than a fourth arm of :func:`run_scope_suite`, because its
+    preconditions are different in kind: that one needs only the scoped user's
+    token, this one needs a resolvable input bucket **and** a processed document in
+    the stack, so it SKIPs where the other three still reach a verdict. Folding it
+    in would make one suite answer two availability questions.
+
+    The group matrix cannot assert this either. Every principal it drives is
+    unscoped, and ``document_scope.assert_document_in_scope`` is a documented no-op
+    for an unscoped caller, so the matrix's nonexistent-key argument never reaches
+    the control at all — which is also why ``object_scoped_roles:`` is the wrong
+    vehicle for these fields: that key declares a ROLE the per-object control
+    refuses, and the axis here is ``allowedConfigVersions``, not a group.
+
+    Two arms, and both have to hold:
+
+    * the **scoped** caller is refused a real document's bytes, and the refusal is
+      labelled ``resource`` — the per-object control, positively attributed. An
+      unattributed refusal is ``ERROR`` rather than ``PASS`` for the reason
+      :func:`refusal_is_resource_level` is fail-closed: without the label this cell
+      cannot tell the control it is testing from the resolver's own group check, so
+      it established neither;
+    * **Admin** is *not* refused the same URI. Without this arm the first one passes
+      on a deployment that refuses the object to everybody — a broken bucket
+      allow-list, an unwired tracking table — and reports the scope working. ⚠️ It
+      asserts "not refused" rather than "served": a 400 `File not found`, which is
+      what a tracking row outliving its S3 object produces, passes this arm. That is
+      deliberate — the arm exists to rule out a blanket refusal, and requiring a 200
+      would make it fail on a stack whose input bucket has been swept.
+
+    No signed URL may appear anywhere in the refusal, and that is checked over the
+    **whole response text** rather than over `errors[0].message`: the point of the
+    control is that the capability is never minted, and a 403 carrying the URL in a
+    top-level field or in a second `errors` entry would satisfy every status
+    assertion above while handing over the object. It is the same response the label
+    came from, which is why `ApiResult` carries the body.
+
+    An inconclusive call carries ``_inconclusive_gap`` like every other arm in this
+    file, so a 5xx is a WARN that still reports itself as having established
+    nothing rather than an ERROR indistinguishable from a real refusal.
+    """
+    print("\n=== PER-DOCUMENT SCOPE ON OBJECT BYTES ===")
+    if "scoped" not in tokens:
+        print("  SKIP (scoped user unavailable)")
+        _record(
+            results,
+            _DOCUMENT_BYTES_FIELD,
+            "scoped(document bytes)",
+            "SKIP",
+            False,
+            "scoped user unavailable",
+            outcome="SKIP",
+        )
+        return
+
+    bucket = _input_bucket(ctx)
+    key = resolve_document_object_key(ctx, tokens) if bucket else None
+    if not bucket or not key:
+        why = (
+            "could not resolve the input bucket"
+            if not bucket
+            else "no processed document found in this stack"
+        )
+        print(f"  SKIP ({why})")
+        _record(
+            results,
+            _DOCUMENT_BYTES_FIELD,
+            "scoped(document bytes)",
+            "SKIP",
+            False,
+            f"per-document scope not exercised: {why}",
+            outcome="SKIP",
+        )
+        return
+
+    uri = f"s3://{bucket}/{key}"
+
+    res = call(ctx["api_base"], _DOCUMENT_BYTES_FIELD, {"s3Uri": uri}, tokens["scoped"])
+    st, et, ib, rid = res
+    why = inconclusive(st, et)
+    control = res.authz_control
+    message = res.message or ""
+    # Two markers, because either alone is reachable without the other: a URL built
+    # from a VPC endpoint or a custom domain need not contain "s3", and an
+    # unsigned bucket URL is not a capability. `X-Amz-Signature` is what makes a
+    # presigned GET usable by whoever holds it.
+    body = res.body or ""
+    leaked = "https://" in body or "X-Amz-Signature" in body
+    if why:
+        detail, passed, outcome = f"INCONCLUSIVE: {why}", False, "ERROR"
+    elif not _denied(st, et, ib):
+        detail, passed, outcome = (
+            f"NOT REFUSED ({st}/{et}/{ib}): the scoped caller was served another "
+            "configuration profile's document bytes",
+            False,
+            None,
+        )
+    elif leaked:
+        detail, passed, outcome = (
+            "REFUSED but the response carries a signed URL, so the capability was "
+            "minted anyway",
+            False,
+            None,
+        )
+    elif control == CONTROL_UNLABELLED:
+        detail, passed, outcome = (
+            "REFUSED but unattributed: this deployment sets no authzControl, so "
+            "the per-object control cannot be told from the resolver's own group "
+            "check — redeploy to evaluate this cell",
+            False,
+            "ERROR",
+        )
+    elif not refusal_is_resource_level(control):
+        detail, passed, outcome = (
+            f"REFUSED with authzControl={control!r}, not {CONTROL_RESOURCE!r}: a "
+            "per-document refusal is a decision about the object the caller named "
+            "and must declare itself (raise ResourceAccessDenied in "
+            "document_scope), or an operator reads it as a group check",
+            False,
+            None,
+        )
+    else:
+        detail, passed, outcome = (
+            f"refused as {CONTROL_RESOURCE} with no URL in the body ({st}/{et})",
+            True,
+            None,
+        )
+    _record(
+        results,
+        _DOCUMENT_BYTES_FIELD,
+        "scoped(out-of-scope document)",
+        st,
+        passed,
+        detail,
+        et,
+        ib,
+        rid,
+        control=control,
+        message=message,
+        gap=_inconclusive_gap(st) if why else None,
+        outcome=outcome,
+    )
+    print(
+        f"  scoped Author {_DOCUMENT_BYTES_FIELD} (out-of-scope document) -> "
+        f"{st}/{et or ib} control={control!r} ({'OK' if passed else 'PROBLEM'})"
+    )
+
+    res = call(ctx["api_base"], _DOCUMENT_BYTES_FIELD, {"s3Uri": uri}, tokens["Admin"])
+    st, et, ib, rid = res
+    why = inconclusive(st, et)
+    ok = (not why) and not _denied(st, et, ib)
+    _record(
+        results,
+        _DOCUMENT_BYTES_FIELD,
+        "admin(unrestricted)",
+        st,
+        ok,
+        f"INCONCLUSIVE: {why}"
+        if why
+        else "expect the same URI NOT refused an unrestricted caller; "
+        f"got {st}/{et}/{ib}",
+        et,
+        ib,
+        rid,
+        control=res.authz_control,
+        message=res.message,
+        gap=_inconclusive_gap(st) if why else None,
+        outcome="ERROR" if why else None,
+    )
+    print(
+        f"  Admin {_DOCUMENT_BYTES_FIELD} (same document) -> {st} "
+        f"({'OK allowed' if ok else 'WRONGLY DENIED — the first arm proves nothing'})"
+    )
+
+
 def run_token_negatives(ctx, tokens, results):
     """Malformed / tampered / missing tokens must all be rejected at the
     gateway (401)."""
@@ -1177,6 +2406,8 @@ def _record(
     request_id="",
     gap=None,
     outcome=None,
+    control=CONTROL_UNLABELLED,
+    message="",
 ):
     resolved = _derive_outcome(passed, gap, outcome)
     # A gap downgrades a FAIL/ERROR to a WARN; it never turns one into a pass.
@@ -1189,6 +2420,19 @@ def _record(
             "http_status": status,
             "error_type": et,
             "in_band_error": in_band,
+            # WHICH control refused, verbatim from the response
+            # (`errors[0].authzControl`), or None when the response did not say —
+            # which is the answer from a stack deployed before the label existed,
+            # and from the in-band 200 denial the configuration and sync resolvers
+            # use. Recorded on every row, not only on refusals, so a reader can see
+            # at a glance whether this run could attribute refusals at all. A
+            # report full of nulls means the distinction below was inert.
+            "authz_control": control,
+            # The refusal message, so triaging a 403 does not start with a
+            # CloudWatch query. The dispatcher's own messages are fixed strings
+            # naming the field and the required groups; a resolver's names the
+            # control it applied.
+            "authz_message": message,
             # Kept for report/consumer compatibility, but `outcome` is the field
             # that decides anything. A SKIP is NOT passed: counting an absent
             # precondition as a satisfied assertion is the same conflation as
@@ -1314,9 +2558,23 @@ def _render_md(ctx, results, hard_fails, gap_fails, known_gaps, stamp, account):
         f"({len(hard_fails)} hard fail).",
         "",
         "> A **skipped** check asserted nothing, and a check that **could not be "
-        "run** (🛑 — a timeout, a dead connection, an unreadable body, a 5xx) "
-        "established nothing. Neither is counted as a pass. A known gap downgrades "
-        "either to a warning; it does not make it a pass.",
+        "run** (🛑 — a timeout, a dead connection, an unreadable body, a 5xx, or a "
+        "refusal by a control other than the one the cell tests) established "
+        "nothing. Neither is counted as a pass. A known gap downgrades either to a "
+        "warning; it does not make it a pass.",
+        "",
+        "> **Control** is which control refused, from the response's "
+        "`errors[0].authzControl`. `api-group-floor` is the field-level group "
+        "check in `authz.py`; `resource` is a per-object control inside a resolver "
+        "(a bucket allow-list, a session the caller does not own, a document "
+        "selection out of scope) which refuses a caller whose GROUP was admitted; "
+        "`resolver` is a resolver refusal that did not say which control it was, "
+        "and is read strictly. An empty column means the response carried no "
+        "label — a stack deployed before the label existed, the route's Cognito "
+        "authorizer answering 401 ahead of the dispatcher, or an in-band 200 "
+        "denial. Every 403 here was `errorType: \"Unauthorized\"` whichever "
+        "control produced it, so this column is the only thing that tells a "
+        "correct group refusal apart from a correct per-object one.",
         "",
     ]
     if parts["inconclusive"]:
@@ -1327,12 +2585,13 @@ def _render_md(ctx, results, hard_fails, gap_fails, known_gaps, stamp, account):
             "inconclusive result are different outcomes. Rows with no gap id are "
             "hard failures.",
             "",
-            "| Op | Principal | Status | Detail | Gap | Request ID |",
-            "|----|-----------|--------|--------|-----|------------|",
+            "| Op | Principal | Status | Control | Detail | Gap | Request ID |",
+            "|----|-----------|--------|---------|--------|-----|------------|",
         ]
         for r in parts["inconclusive"]:
             lines.append(
                 f"| `{r['op']}` | {r['principal']} | {r['http_status']} | "
+                f"{r.get('authz_control') or ''} | "
                 f"{r['detail']} | {r['known_gap'] or ''} | `{r['request_id']}` |"
             )
         lines.append("")
@@ -1340,12 +2599,13 @@ def _render_md(ctx, results, hard_fails, gap_fails, known_gaps, stamp, account):
         lines += [
             "## ❌ Hard failures",
             "",
-            "| Op | Principal | Status | Detail | Request ID |",
-            "|----|-----------|--------|--------|------------|",
+            "| Op | Principal | Status | Control | Detail | Request ID |",
+            "|----|-----------|--------|---------|--------|------------|",
         ]
         for r in parts["fail"]:
             lines.append(
                 f"| `{r['op']}` | {r['principal']} | {r['http_status']} | "
+                f"{r.get('authz_control') or ''} | "
                 f"{r['detail']} | `{r['request_id']}` |"
             )
         lines.append("")
@@ -1365,8 +2625,8 @@ def _render_md(ctx, results, hard_fails, gap_fails, known_gaps, stamp, account):
     lines += [
         "## Full matrix",
         "",
-        "| Op | Principal | Status | Pass | Detail | Request ID |",
-        "|----|-----------|--------|------|--------|------------|",
+        "| Op | Principal | Status | Pass | Control | Detail | Request ID |",
+        "|----|-----------|--------|------|---------|--------|------------|",
     ]
     for r in results:
         mark = _OUTCOME_MARK.get(r["outcome"], "❌")
@@ -1374,6 +2634,7 @@ def _render_md(ctx, results, hard_fails, gap_fails, known_gaps, stamp, account):
             mark = "⚠️🛑"
         lines.append(
             f"| `{r['op']}` | {r['principal']} | {r['http_status']} | {mark} | "
+            f"{r.get('authz_control') or ''} | "
             f"{r['detail']} | `{r['request_id']}` |"
         )
     lines += ["", "## Known gaps register", ""]
@@ -1450,19 +2711,23 @@ def main():
         restore_auth_flows(ctx)
         return 0
     if args.setup_only:
-        setup_users(ctx)
+        setup_users(ctx, ops)
         print(f"Setup-only: test-user password is {TEST_PW}")
         return 0
 
     try:
         # setup inside the try so a mid-setup failure still tears down the
         # users already created and reverts the app-client auth flows.
-        setup_users(ctx)
-        tokens = {r: get_token(ctx, r) for r in ROLES}
+        setup_users(ctx, ops)
+        # Every matrix principal, including the groupless one. A missing token is
+        # fatal rather than a skipped row: a principal the matrix declares and does
+        # not drive is the defect #1065 is about, so it must not be reachable by a
+        # token that failed to mint.
+        tokens = {r: get_token(ctx, r) for r in MATRIX_PRINCIPALS}
         st = get_token(ctx, SCOPED)
         if st and len(st) > 100:
             tokens["scoped"] = st
-        for r in ROLES:
+        for r in MATRIX_PRINCIPALS:
             if not tokens[r] or len(tokens[r]) < 100:
                 print(f"ERROR: failed to mint token for {r}")
                 return 2
@@ -1476,6 +2741,7 @@ def main():
         skip_fields = apply_dynamic_args(ops, ctx, tokens)
         run_group_matrix(ops, ctx, tokens, results, skip_fields)
         run_scope_suite(ctx, tokens, results)
+        run_document_bytes_scope_suite(ctx, tokens, results)
         run_token_negatives(ctx, tokens, results)
 
         # --- Mandatory security-focused test cases (checklist 2.1-4) ---------
@@ -1488,6 +2754,23 @@ def main():
             tokens,
             seed_fn=lambda jid, marker: seed_agent_job(ctx, jid, marker),
             call_body=call_body,
+        )
+        sec.run_inbox_idor_suite(
+            ctx,
+            _record,
+            results,
+            tokens,
+            seed_fn=lambda nid, marker: seed_inbox_message(ctx, nid, marker),
+            call_body=call_body,
+            cleanup_fn=lambda nid: cleanup_inbox_message(ctx, nid),
+        )
+        sec.run_review_queue_idor_suite(
+            ctx,
+            _record,
+            results,
+            seed_fn=lambda: seed_review_item(ctx),
+            call_body=call_body,
+            cleanup_fn=lambda seeded: cleanup_review_item(ctx, seeded),
         )
         sec.run_deleted_resource_suite(
             ctx, call, _record, results, tokens, call_body=call_body
@@ -1552,6 +2835,7 @@ def main():
         # Always remove any agent-job rows the IDOR suite seeded (independent of
         # --no-teardown, which only preserves the Cognito users for debugging).
         cleanup_seeded_agent_jobs(ctx)
+        cleanup_seeded_inbox_messages(ctx)
         if args.no_teardown:
             print(f"--no-teardown: keeping test users (password: {TEST_PW})")
         else:

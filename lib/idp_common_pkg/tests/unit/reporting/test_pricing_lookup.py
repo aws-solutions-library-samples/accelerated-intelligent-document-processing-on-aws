@@ -31,6 +31,7 @@ import pytest
 import yaml
 
 from idp_common.config.models import IDPConfig
+from idp_common.metering_units import EXPECTED_CACHE_UNIT_OMISSIONS
 from idp_common.reporting.save_reporting_data import SaveReportingData
 
 # repo root: lib/idp_common_pkg/tests/unit/reporting/<this file> -> up 5 parents.
@@ -121,10 +122,19 @@ def test_cache_read_never_falls_back_to_the_input_rate(toy_reporter):
 
     ``bedrock/toy-model`` lists no ``cacheWriteInputTokens``. The old unit-level
     substring rule matched 'inputtokens' inside 'cachewriteinputtokens' and
-    returned 1.0E-6. It must be $0.00 — not chargeable — instead.
+    returned 1.0E-6, the fresh-input rate (#926).
+
+    The answer is ``None`` — reported as an unpriced NULL cost — rather than
+    $0.00, and the distinction is the subject of #1206: a cache unit is only free
+    when ``metering_units.EXPECTED_CACHE_UNIT_OMISSIONS`` records, for that exact
+    pricing key, that AWS publishes no chargeable rate for the dimension. A toy
+    key nothing has read a price list for is exactly the case that must not come
+    back as free, since the two are indistinguishable in a cost report and the
+    zero is always in the cheap direction.
     """
     assert (
-        toy_reporter._get_unit_cost("bedrock/toy-model", "cacheWriteInputTokens") == 0.0
+        toy_reporter._get_unit_cost("bedrock/toy-model", "cacheWriteInputTokens")
+        is None
     )
     # ...and the cache-read unit that IS listed still resolves to its own rate,
     # a tenth of the input rate, not to the input rate.
@@ -197,17 +207,25 @@ CACHE_RATE_CASES = [
     ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 1.1e-6, 1.1e-7, 1.4e-6),
     ("eu.anthropic.claude-sonnet-4-5-20250929-v1:0", 3.3e-6, 3.3e-7, 4.125e-6),
     ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", 3.0e-6, 3.0e-7, 3.75e-6),
-    # Nova: cache read 0.25x input, cache write 1.0x input.
-    ("us.amazon.nova-lite-v1:0", 6.0e-8, 1.5e-8, 6.0e-8),
-    ("us.amazon.nova-pro-v1:0", 8.0e-7, 2.0e-7, 8.0e-7),
-    ("us.amazon.nova-2-lite-v1:0", 3.0e-7, 7.5e-8, 3.0e-7),
-    ("us.amazon.nova-2-lite-v1:0:flex", 1.5e-7, 3.75e-8, 1.5e-7),
-    ("us.amazon.nova-2-lite-v1:0:priority", 5.25e-7, 1.31e-7, 5.25e-7),
-    ("eu.amazon.nova-2-lite-v1:0", 3.9e-7, 9.75e-8, 3.9e-7),
-    # Added by this change; the two IDs the substring rule was mis-binding.
-    ("eu.amazon.nova-2-lite-v1:0:flex", 1.95e-7, 4.88e-8, 1.95e-7),
-    ("eu.amazon.nova-2-lite-v1:0:priority", 6.83e-7, 1.71e-7, 6.83e-7),
-    ("global.amazon.nova-2-lite-v1:0:flex", 1.5e-7, 3.75e-8, 1.5e-7),
+    # Nova: cache read 0.25x input, cache write $0.00 — NOT a multiple of input.
+    # Nova charges for the cache read and not for the write that populates the
+    # cache, so these rows are the one family here whose write column is zero
+    # rather than 1.25x. That is AWS's published rate in every region and tier,
+    # and it is only correct because the units are disjoint; both halves are
+    # owned by test_nova_cache_write_pricing.py, which derives the whole Nova
+    # class from the shipped file rather than transcribing it. These rows carried
+    # the full input rate until issue #1405 — transcribed here too, which is part
+    # of why it survived.
+    ("us.amazon.nova-lite-v1:0", 6.0e-8, 1.5e-8, 0.0),
+    ("us.amazon.nova-pro-v1:0", 8.0e-7, 2.0e-7, 0.0),
+    ("us.amazon.nova-2-lite-v1:0", 3.0e-7, 7.5e-8, 0.0),
+    ("us.amazon.nova-2-lite-v1:0:flex", 1.5e-7, 3.75e-8, 0.0),
+    ("us.amazon.nova-2-lite-v1:0:priority", 5.25e-7, 1.31e-7, 0.0),
+    ("eu.amazon.nova-2-lite-v1:0", 3.9e-7, 9.75e-8, 0.0),
+    # Added by #926; the two IDs the substring rule was mis-binding.
+    ("eu.amazon.nova-2-lite-v1:0:flex", 1.95e-7, 4.88e-8, 0.0),
+    ("eu.amazon.nova-2-lite-v1:0:priority", 6.83e-7, 1.71e-7, 0.0),
+    ("global.amazon.nova-2-lite-v1:0:flex", 1.5e-7, 3.75e-8, 0.0),
 ]
 
 
@@ -277,19 +295,62 @@ def test_cache_heavy_document_cost_computed_by_hand(shipped_reporter):
 
 
 @pytest.mark.unit
-def test_govcloud_claude_cache_read_is_zero_not_the_input_rate(shipped_reporter):
-    """The sharpest same-model instance of the bug, pinned.
+def test_govcloud_claude_resolves_the_govcloud_band_through_the_lookup(
+    shipped_reporter,
+):
+    """The GovCloud row costed by hand, and the same 10x mis-binding pinned on it.
 
-    ``bedrock/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`` deliberately
-    lists no cache units (verified live: cachePoint does not reduce input tokens
-    through that inference profile). The old unit-level substring rule returned
-    its 3.3E-6 inputTokens price for ``cacheReadInputTokens`` — the fresh-input
-    rate, 10x the commercial cache-read rate. It must be $0.00.
+    ``bedrock/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`` is the GovCloud
+    cross-region inference profile for the model the test above prices
+    commercially, and AWS charges more for it in GovCloud: $3.60 input, $18.00
+    output, $0.36 cache read, $4.50 five-minute cache write per MTok.
+    ``test_govcloud_pricing_rates.py`` is what ties those four figures to AWS's
+    published offer file; this test is about the lookup resolving them.
+
+        inputTokens            2,000 x 3.6E-6 = 0.0072
+        cacheReadInputTokens 100,000 x 3.6E-7 = 0.036
+        cacheWriteInputTokens  8,000 x 4.5E-6 = 0.036
+        outputTokens           1,500 x 1.8E-5 = 0.027
+                                                -------
+                                                 0.1062
+
+    Two things are worth pinning beyond the total. The #926 substring rule
+    returned this row's ``inputTokens`` price for ``cacheReadInputTokens`` — the
+    fresh-input rate, 10x the cache-read one — and that ratio is exactly 10 in
+    GovCloud as well, so the same arithmetic detects the same regression here.
+
+    And the GovCloud band is a uniform 12/11 of the commercial band on **every**
+    one of the four units, which is why a GovCloud cost report built from the
+    commercial rates was 8.3% low whatever the token mix (#1404). Asserting the
+    ratio rather than the four differences is what makes a single mistyped rate on
+    either row visible.
     """
     api = "bedrock/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    assert shipped_reporter._get_unit_cost(api, "inputTokens") == 3.3e-6
-    assert shipped_reporter._get_unit_cost(api, "cacheReadInputTokens") == 0.0
-    assert shipped_reporter._get_unit_cost(api, "cacheWriteInputTokens") == 0.0
+    commercial = "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    counts = {
+        "inputTokens": 2_000,
+        "cacheReadInputTokens": 100_000,
+        "cacheWriteInputTokens": 8_000,
+        "outputTokens": 1_500,
+    }
+    total = sum(n * shipped_reporter._get_unit_cost(api, u) for u, n in counts.items())
+    assert total == pytest.approx(0.1062, rel=1e-12)
+
+    cache_read = shipped_reporter._get_unit_cost(api, "cacheReadInputTokens")
+    input_rate = shipped_reporter._get_unit_cost(api, "inputTokens")
+    assert cache_read == 3.6e-7
+    assert input_rate == 3.6e-6
+    assert input_rate / cache_read == pytest.approx(10.0)
+
+    for unit in counts:
+        assert shipped_reporter._get_unit_cost(
+            api, unit
+        ) / shipped_reporter._get_unit_cost(commercial, unit) == pytest.approx(
+            12 / 11
+        ), (
+            f"the GovCloud and commercial Sonnet 4.5 rows no longer stand in the "
+            f"published 12/11 ratio on {unit}"
+        )
 
 
 @pytest.mark.unit
@@ -364,7 +425,7 @@ _TEMPLATES = (
 # A Bedrock model ID: an optional cross-region/geo prefix, a provider, then the
 # model name (which may carry ':0', ':1m', ':flex', ':priority' suffixes).
 _MODEL_ID_RE = re.compile(
-    r"^(?:(?:us|eu|us-gov|global)\.)?"
+    r"^(?:(?:us|eu|ca|us-gov|global)\.)?"
     r"(?:anthropic|amazon|openai|xai|meta|qwen|google|nvidia|deepseek|mistral"
     r"|cohere|ai21|writer|twelvelabs)"
     r"\.[A-Za-z0-9][A-Za-z0-9.:+_-]*$"
@@ -387,36 +448,28 @@ _COVERAGE_EXEMPT = {
     "cohere.embed-multilingual-v3": "embedding model — never metered",
 }
 
-# Entries that legitimately carry only inputTokens/outputTokens, with the reason
-# each cache unit is absent. Two conditions have to hold for the rate to be
-# unreachable rather than merely unpublished, and
-# test_no_cache_units_allowlist_matches_cachepoint_support asserts BOTH:
-#   1. absent from ``bedrock.client.CACHEPOINT_SUPPORTED_MODELS``, so the client
-#      strips cache markers before the call; and
-#   2. not an implicit cacher per ``bedrock.prompt_cache.model_caches_implicitly``,
-#      since those models cache with no cachePoint sent at all (the implicit
-#      cachers are the OpenAI gpt-5.4/5.5/6-astra models, and none of those is
-#      selectable here).
-# Either one failing means cacheReadInputTokens can be nonzero with no rate to
-# price it, so the model must get real cache rates and come off this list — which
-# is what that test will then demand.
-_NO_CACHE_UNITS_EXPECTED = {
-    "amazon.nova-lite-v1:0": "bare GovCloud ID; GovCloud caching unverified",
-    "amazon.nova-pro-v1:0": "bare GovCloud ID; GovCloud caching unverified",
-    "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0": (
-        "verified live: cachePoint does not reduce input tokens through this "
-        "GovCloud inference profile"
-    ),
-    "qwen.qwen3-vl-235b-a22b": "not in CACHEPOINT_SUPPORTED_MODELS",
-    # The four below were invisible until PR #952 widened the enumeration to read
-    # configuration-schema ``enum:`` blocks; all four are absent from
-    # CACHEPOINT_SUPPORTED_MODELS, so like the entries above their cache rate is
-    # unreachable rather than merely unrecorded.
-    "us.meta.llama4-maverick-17b-instruct-v1:0": "not in CACHEPOINT_SUPPORTED_MODELS",
-    "us.meta.llama4-scout-17b-instruct-v1:0": "not in CACHEPOINT_SUPPORTED_MODELS",
-    "google.gemma-3-27b-it": "not in CACHEPOINT_SUPPORTED_MODELS",
-    "nvidia.nemotron-nano-12b-v2": "not in CACHEPOINT_SUPPORTED_MODELS",
-}
+# Model IDs whose pricing entry legitimately carries only inputTokens and
+# outputTokens. Derived, not written here: the basis for each omission lives in
+# ``idp_common.metering_units.EXPECTED_CACHE_UNIT_OMISSIONS``, one record per
+# pricing key AND per unit, each naming the AWS price-list model it was read
+# against and what that reading showed.
+#
+# This used to be a dict of model id to reason maintained in this module, and the
+# move is not a tidy-up. Its universe was ``_selectable_model_ids()`` — the
+# template enums plus the shipped presets — and ``config_library/pricing.yaml``
+# holds three entries that omit cache units and that no enum or preset names
+# (``us.amazon.nova-premier-v1:0`` and the two ``claude-3-haiku-20240307``
+# profiles). Those are still configurable, because pricing.yaml doubles as the set
+# of model ids configuration validation accepts
+# (``config.merge_utils._load_valid_bedrock_models``), so they were reachable and
+# covered by nothing. The register's universe is pricing.yaml itself, which closes
+# that; ``test_cache_unit_omission_basis.py`` owns it and asserts both the
+# CACHEPOINT_SUPPORTED_MODELS and implicit-cacher conditions this module used to,
+# over all eleven entries rather than eight. See issue #1206.
+_CACHE_OMISSION_REGISTERED = frozenset(
+    entry.pricing_key.removeprefix("bedrock/")
+    for entry in EXPECTED_CACHE_UNIT_OMISSIONS
+)
 
 
 # Both keys that enumerate a closed set of choices in these templates. CFN
@@ -571,11 +624,14 @@ def test_every_selectable_model_has_an_exact_pricing_entry(shipped_pricing_raw):
 
 @pytest.mark.unit
 def test_every_selectable_model_prices_all_four_token_units(shipped_pricing_raw):
-    """All four token units, or an explicit entry in _NO_CACHE_UNITS_EXPECTED.
+    """All four token units, or a registered omission for each cache unit absent.
 
-    A missing cache unit is no longer a 10x overcharge, but it is still a $0.00
+    A missing cache unit is no longer a 10x overcharge, but it was still a $0.00
     under-report if the model really does cache — so the omission has to be a
-    stated decision, not an oversight.
+    stated decision, not an oversight. The basis per entry and per unit lives in
+    ``metering_units.EXPECTED_CACHE_UNIT_OMISSIONS`` and is checked by
+    ``test_cache_unit_omission_basis.py`` against AWS's published price list and
+    against the two constants that decide whether the unit is reachable at all.
     """
     units_by_name = {
         entry["name"]: {u["name"] for u in entry.get("units") or []}
@@ -590,138 +646,32 @@ def test_every_selectable_model_prices_all_four_token_units(shipped_pricing_raw)
         absent = [u for u in TOKEN_UNITS if u not in units]
         if not absent:
             continue
-        if model_id in _NO_CACHE_UNITS_EXPECTED:
-            # Documented omission — but only the cache units may be absent.
+        if model_id in _CACHE_OMISSION_REGISTERED:
+            # Registered omission — but only the cache units may be absent,
+            # and every absent one must be registered individually.
             assert set(absent) <= {"cacheReadInputTokens", "cacheWriteInputTokens"}, (
                 f"{model_id} is missing non-cache units {absent}, which "
-                f"_NO_CACHE_UNITS_EXPECTED does not excuse"
+                f"EXPECTED_CACHE_UNIT_OMISSIONS does not excuse"
             )
             continue
         incomplete[model_id] = absent
 
     assert not incomplete, (
         f"selectable Bedrock models missing token units: {incomplete}. Add the "
-        "rates to config_library/pricing.yaml, or add the model to "
-        "_NO_CACHE_UNITS_EXPECTED with the reason its cache rate is unreachable."
+        "rates to config_library/pricing.yaml, or register the omission in "
+        "idp_common.metering_units.EXPECTED_CACHE_UNIT_OMISSIONS with the AWS "
+        "price-list reading and the reason the rate is unreachable."
     )
 
 
-@pytest.mark.unit
-def test_no_cache_units_allowlist_has_no_stale_entries(shipped_pricing_raw):
-    """An allowlist that outlives its reason quietly stops protecting anything."""
-    units_by_name = {
-        entry["name"]: {u["name"] for u in entry.get("units") or []}
-        for entry in shipped_pricing_raw["pricing"]
-    }
-    selectable = _selectable_model_ids()
-    stale = sorted(
-        model_id
-        for model_id in _NO_CACHE_UNITS_EXPECTED
-        if model_id not in selectable
-        or "cacheReadInputTokens" in units_by_name.get(f"bedrock/{model_id}", set())
-    )
-    assert not stale, (
-        f"_NO_CACHE_UNITS_EXPECTED entries that are no longer needed (model is "
-        f"not selectable, or now has cache rates): {stale}"
-    )
-
-
-@pytest.mark.unit
-def test_no_cache_units_allowlist_matches_cachepoint_support():
-    """The condition the allowlist's own comment claims, actually asserted.
-
-    _NO_CACHE_UNITS_EXPECTED says every entry is absent from
-    ``CACHEPOINT_SUPPORTED_MODELS`` and that "if any of these is later added to
-    CACHEPOINT_SUPPORTED_MODELS, it must get real cache rates and come off this
-    list — which is what this test will then demand". Nothing demanded it: the
-    stale-entry test above looks only at selectability and at the pricing rows, so
-    adding a listed model to CACHEPOINT_SUPPORTED_MODELS left the whole suite
-    green while the model began emitting cache tokens with no rate to price them —
-    a silent $0.00 under-report, the mirror image of the overcharge #926 fixed.
-
-    Membership in CACHEPOINT_SUPPORTED_MODELS is therefore the rule, with one
-    escape hatch: an entry whose reason begins with "verified live:" documents a
-    MEASURED observation that the profile does not actually cache despite being
-    listed, which no static check can derive. Anything else must be absent.
-
-    There are TWO independent ways a model can emit cache units, and the
-    allowlist's claim is that the rate is *unreachable*, which needs both ruled
-    out. A model absent from CACHEPOINT_SUPPORTED_MODELS never receives a Converse
-    ``cachePoint`` block — but the models in
-    ``prompt_cache._IMPLICIT_CACHE_BASE_NAMES`` cache without one, and
-    ``prompt_cache`` records ``openai.gpt-6-astra`` emitting
-    ``cacheReadInputTokens=2707`` while absent from CACHEPOINT_SUPPORTED_MODELS.
-    The two sets are genuinely disjoint concepts, so an implicit cacher could be
-    allowlisted on the strength of the CACHEPOINT check alone and its cache reads
-    would then silently cost $0.00. Current exposure is zero — all three implicit
-    base names are ``openai.*`` and no allowlisted id is — so this half of the
-    assertion is a forward guard, not a live finding.
-    """
-    from idp_common.bedrock.client import CACHEPOINT_SUPPORTED_MODELS
-    from idp_common.bedrock.prompt_cache import (
-        _IMPLICIT_CACHE_BASE_NAMES,
-        model_caches_implicitly,
-    )
-
-    # Sanity-check both import targets before drawing conclusions from them: an
-    # empty or renamed list, or a predicate that answered the same way for every
-    # input, would make the assertions below pass vacuously.
-    #
-    # The implicit-cache predicate is probed in BOTH directions rather than by
-    # asserting the constant is non-empty. `assert _IMPLICIT_CACHE_BASE_NAMES` was
-    # the obvious way to write that and it is dead code: the constant is a literal
-    # `tuple[str, str, str]`, so the expression is statically always true, which
-    # basedpyright reports as reportAssertAlwaysTrue. Probing the predicate covers
-    # the empty-tuple case anyway, because indexing `[0]` would raise IndexError.
-    assert len(CACHEPOINT_SUPPORTED_MODELS) > 20, (
-        "CACHEPOINT_SUPPORTED_MODELS looks wrong "
-        f"({len(CACHEPOINT_SUPPORTED_MODELS)} entries); this test would pass "
-        "vacuously"
-    )
-    assert model_caches_implicitly(f"us.{_IMPLICIT_CACHE_BASE_NAMES[0]}-v1:0"), (
-        "model_caches_implicitly no longer recognises its own base names "
-        f"({_IMPLICIT_CACHE_BASE_NAMES}); the implicit-cache half of this test "
-        "would pass vacuously"
-    )
-    assert not model_caches_implicitly(
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    ), (
-        "model_caches_implicitly answers True for a model that caches only when "
-        "sent a cachePoint; the implicit-cache half of this test would fail for "
-        "every model rather than for the right ones"
-    )
-
-    contradictory = []
-    implicit = []
-    for model_id, reason in _NO_CACHE_UNITS_EXPECTED.items():
-        excused = reason.startswith("verified live:")
-        if model_id in CACHEPOINT_SUPPORTED_MODELS and not excused:
-            contradictory.append(model_id)
-        # No "verified live:" escape hatch here: that hatch records a measurement
-        # that a cachePoint had no effect, which says nothing about whether the
-        # model caches implicitly on its own.
-        if model_caches_implicitly(model_id):
-            implicit.append(model_id)
-
-    assert not sorted(contradictory), (
-        "these models are in bedrock.client.CACHEPOINT_SUPPORTED_MODELS, so the "
-        "client will send cachePoint markers and they WILL emit "
-        "cacheReadInputTokens/cacheWriteInputTokens — but "
-        f"_NO_CACHE_UNITS_EXPECTED excuses them from having cache rates: "
-        f"{sorted(contradictory)}. Add the real cache rates to "
-        "config_library/pricing.yaml and remove the entry, or — if you have "
-        "MEASURED that this profile does not cache in practice — restate the "
-        "reason starting with 'verified live:'."
-    )
-    assert not sorted(implicit), (
-        "these models cache IMPLICITLY per "
-        "bedrock.prompt_cache.model_caches_implicitly, so they emit "
-        "cacheReadInputTokens with no cachePoint sent and regardless of "
-        "CACHEPOINT_SUPPORTED_MODELS — but _NO_CACHE_UNITS_EXPECTED excuses them "
-        f"from having cache rates, which prices those reads at $0.00: "
-        f"{sorted(implicit)}. Add the real cache rates to "
-        "config_library/pricing.yaml and remove the entry."
-    )
+# The two tests that used to sit here — a staleness check on the model-to-reason
+# dict, and the CACHEPOINT_SUPPORTED_MODELS / implicit-cacher assertion over its
+# members — moved to ``test_cache_unit_omission_basis.py`` with the register
+# itself, where they run over every ``bedrock/`` entry in
+# ``config_library/pricing.yaml`` rather than over the subset a template enum or a
+# shipped preset names. The staleness direction is stronger there too, because the
+# register is keyed per unit: a row that gains a cache-read rate while still
+# omitting cache-write leaves one member live and retires the other.
 
 
 # --------------------------------------------------------------------------- #

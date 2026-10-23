@@ -34,7 +34,7 @@ all eight have a row in the record — including any that could not run, with th
 > transform. Check the template's `Description` says `(v<VERSION>)` before you start.
 >
 > **This skill validates a release; it does not publish one.** The publish procedure —
-> `scripts/aws-release.sh`, the three public buckets, the mutable vs version-pinned keys,
+> `scripts/aws-release.sh`, the four public buckets, the mutable vs version-pinned keys,
 > and the failure/recovery paths — is in `docs/release-runbook.md`. If the artifact under
 > test does not exist yet, that runbook is what produces it.
 
@@ -115,7 +115,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |
 | Build + package | `publish.py … --clean-build` in a **clean env** (`env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin AWS_PROFILE=default bash -lc '…'`) | template validation + cfn-lint clean on all packaged templates | `full-test-battery.md` |
-| **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every one of the **9** measurable trees measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
+| **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every measurable tree measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
 
 The build is needed anyway: the transform tiers publish from source, and the
 self-deploy stack-tests take its `idp-main.yaml` URL as `TEMPLATE_URL`.
@@ -123,7 +123,7 @@ self-deploy stack-tests take its `idp-main.yaml` URL as `TEMPLATE_URL`.
 ⚠️ **Measure coverage, do not report `make coverage-summary`.** That target prints the
 figures recorded in `scripts/coverage_debt.json`, which is a **ratchet baseline** — a
 floor written when the debt was last paid down, not a measurement of the release in
-front of you. `make coverage-all` is what measures all nine trees;
+front of you. `make coverage-all` is what measures every tree in the registry;
 `make coverage-table COVERAGE_ARGS=--tree=NAME` prints one tree from the last run
 without re-measuring. Quoting the recorded number as the release's coverage is the same
 class of error as quoting `filesAnalyzed` from memory, and it cannot fail visibly —
@@ -131,12 +131,12 @@ the baseline is always self-consistent.
 
 The coverage subsystem is newer than most of this battery (`#1160`, 2026-09-22, in the
 0.6.10 cycle) and it carries no `CHANGELOG` entry, so it is easy to miss that it exists
-at all: nine trees, a per-file ratchet with a 1% tolerance, and
+at all: a registry of measurable trees, a per-file ratchet with a 1% tolerance, and
 `make check-coverage-debt` failing when a file loses coverage or a new module arrives
 unratcheted. `make test` does **not** produce a coverage report, so without this row a
 release ships with no coverage figure measured at all — which is what happened up to
 and including v0.6.10, where `idp_sdk` sat at a recorded **36.61% over 51 files**, the
-lowest of the nine and the one worth watching in the record.
+lowest of them and the one worth watching in the record.
 
 ### B. Security (against a live stack at `v<VERSION>`)
 
@@ -332,10 +332,12 @@ the ranked usability findings; a flow that is blocked because the feature is onl
 an unmerged branch is **blocked, not broken**, and the record must say which.
 
 Optionally record it (`scripts/ux_recorder.py start … mark … stop`, then `render`) —
-useful when a finding is easier to show than to describe. The mp4 stays in gitignored
-`scratch/ux-recordings/`: it shows real documents from a live stack, so it is
-**never** committed or attached to a PR. Link nothing; describe the finding in the
-record and keep the video for the team channel.
+useful when a finding is easier to show than to describe. The session directory
+stays in gitignored `scratch/ux-recordings/`: its mp4 shows real documents from a
+live stack, and its click log labels clicks with text from the page (Privacy in
+`ux-test.md`), so none of it is **ever** committed or attached to a PR, and
+`render`'s click table stays out of the record. Link nothing; describe the finding
+in the record and keep the video for the team channel.
 
 Skill: `ux-test.md`.
 
@@ -414,7 +416,7 @@ appears only at exit. Track progress from CloudFormation and `runmap.json`, not 
 1. Preflight → `make srt-scan` → start `publish.py --clean-build` detached.
 2. While it builds: `make test`, `make lint-cicd`, `make dep-audit`, `make typecheck`,
    and `make coverage-all` + `make check-coverage-debt` (the coverage sweep measures
-   nine trees and is the slowest of the offline gates — start it early and leave it).
+   every tree and is the slowest of the offline gates — start it early and leave it).
 3. Deploy the **upgrade** PREV stack (long) and the **transform headless** run, two in flight.
 4. When a `v<VERSION>` stack exists: `make security-results` against it, then the
    tier-G UX review on the same stack (it needs nothing else deployed, and the
@@ -511,7 +513,7 @@ context first, then the verdict, in prose, per the writing-style memory:
    - **the measured per-tree coverage table and its movement from PREV**, naming any
      tree that lost coverage even where the ratchet's tolerance absorbed it, and
      naming the lowest-covered tree explicitly rather than reporting only an average
-     — nine trees averaged hides a tree in the thirties;
+     — an average across the trees hides a tree in the thirties;
    - surprising **improvements** too — v0.6.6 found a defect open since v0.6.0 had
      quietly closed, which was the most useful line in that record.
 4. Findings in test/tooling code, marked as such, separately from product findings.
@@ -523,15 +525,6 @@ with the test extras, and never write "GovCloud works" from a commercial run.
 
 ## Standing issues to recognise, not rediscover (delete when fixed)
 
-- **`make security-results` curates an SRT verdict its own gate disagrees with**
-  (2026-09-26, open). `make srt-scan` carries a scope decision: Bandit `B105`/`B106`
-  match an identifier's *name* against a password wordlist, and in test code that no
-  deployment artifact is built from they are reported at Bandit's own severity rather
-  than blocking. `scripts/security/curate_results.py` implements no equivalent, so the
-  **published** snapshot read `SRT — FAIL ❌ (5 open/reopened HIGH)` for a release whose
-  security gate was green, on the same `.srt/issues.json`. Check the open-HIGH list
-  against the scan's own "identifier-name findings in test code" block before believing
-  a red snapshot, and say in the record which of the two you are reporting.
 - **`make coverage-summary` is a baseline, not a measurement** (see tier A). It prints
   `scripts/coverage_debt.json`, which is a ratchet floor and always self-consistent, so
   quoting it as the release's coverage cannot fail visibly.

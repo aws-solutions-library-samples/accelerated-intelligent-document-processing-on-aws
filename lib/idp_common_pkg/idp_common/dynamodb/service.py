@@ -11,10 +11,12 @@ storage and retrieval through direct DynamoDB operations, bypassing AppSync.
 import datetime
 import json
 import logging
+import re
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from idp_common.dynamodb.client import DynamoDBClient
+from idp_common.dynamodb.ttl import calculate_ttl
 from idp_common.models import (
     Document,
     Page,
@@ -23,6 +25,7 @@ from idp_common.models import (
     Status,
     coerce_revision,
 )
+from idp_common.review_queues.statuses import LEGACY_PENDING
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,81 @@ logger = logging.getLogger(__name__)
 # production Document List, while staying efficiently queryable on its own.
 ITEM_TYPE_DOCUMENT = "document"
 ITEM_TYPE_TEST_DOCUMENT = "test-document"
+
+#: ``WorkflowStatus`` for each document status that ENDS a document's life.
+#: The document service derives ``WorkflowStatus`` from ``ObjectStatus``, and the
+#: UI and the test-set resolvers read it, so getting it wrong reports a finished
+#: document as still running.
+_TERMINAL_WORKFLOW_STATUS = {
+    Status.COMPLETED: "SUCCEEDED",
+    # Terminal and successful: a preprocessing hook produced a redacted copy that
+    # is processed as its own document, which is the requested outcome rather
+    # than a failure. `idp_sdk` classifies it in `SUCCESS_DOCUMENT_STATES` for the
+    # same reason.
+    Status.REDACTED_SUPERSEDED: "SUCCEEDED",
+    Status.FAILED: "FAILED",
+    Status.ABORTED: "ABORTED",
+    # Terminal disposition reached by a successful finalize execution: a
+    # reviewer rejected the document in a review queue. Not a processing
+    # failure, so the workflow itself SUCCEEDED.
+    Status.REJECTED: "SUCCEEDED",
+    # Refused at the ingest malware gate. Terminal and not successful: no output
+    # exists because the document was never admitted to the pipeline.
+    Status.QUARANTINED: "FAILED",
+    Status.MALWARE_SCAN_FAILED: "FAILED",
+}
+
+#: Every status a document passes THROUGH. Enumerated rather than reached by an
+#: `else`, because the two sets together are what makes a newly added status
+#: visible: this function used to answer "RUNNING" for anything it did not
+#: recognise, so a terminal status nobody considered was stored as a document
+#: still being worked on — and REDACTED_SUPERSEDED was already in exactly that
+#: position. `MALWARE_SCANNING` is here because a document waiting on a scan
+#: verdict has been accepted and will change again, even though no pipeline stage
+#: is running for it.
+_IN_FLIGHT_DOCUMENT_STATUSES = frozenset(
+    {
+        Status.PENDING_UPLOAD,
+        Status.IN_PROGRESS,
+        Status.MALWARE_SCANNING,
+        Status.QUEUED,
+        Status.RUNNING,
+        Status.PREPROCESSING,
+        Status.OCR,
+        Status.CLASSIFYING,
+        Status.EXTRACTING,
+        Status.ASSESSING,
+        Status.POSTPROCESSING,
+        Status.HITL_IN_PROGRESS,
+        Status.SUMMARIZING,
+        Status.RULE_VALIDATION_POLICY_CLASSIFICATION,
+        Status.RULE_VALIDATION,
+        Status.RULE_VALIDATION_ORCHESTRATOR,
+        Status.EVALUATING,
+    }
+)
+
+
+def _workflow_status_for(status: Status) -> str:
+    """Map a document status to the ``WorkflowStatus`` attribute to store.
+
+    A status in neither table is a `Status` member added without deciding whether
+    it ends a document's life. That is reported rather than raised — this is a
+    derived display attribute, and failing a document's status write over it would
+    turn a cosmetic omission into a stuck pipeline — so the caller still gets a
+    usable answer and the log names the member to fix.
+    """
+    terminal = _TERMINAL_WORKFLOW_STATUS.get(status)
+    if terminal is not None:
+        return terminal
+    if status not in _IN_FLIGHT_DOCUMENT_STATUSES:
+        logger.warning(
+            "Document status %s is in neither _TERMINAL_WORKFLOW_STATUS nor "
+            "_IN_FLIGHT_DOCUMENT_STATUSES in idp_common/dynamodb/service.py; "
+            "storing WorkflowStatus=RUNNING, which is wrong if it is terminal",
+            getattr(status, "value", status),
+        )
+    return "RUNNING"
 
 
 def convert_floats_to_decimal(obj):
@@ -374,6 +452,29 @@ class DocumentDynamoDBService:
             item["SubmissionSource"] = document.submission_source
         if document.test_set_id:
             item["TestSetId"] = document.test_set_id
+        # Which object version the malware gate is waiting on. Written HERE, on
+        # create, rather than by a later update: the gate's compare-and-set reads
+        # it, so a window in which the row exists without it is a window in which
+        # a verdict for a superseded upload could be applied.
+        if document.malware_scan_version_id:
+            item["MalwareScanVersionId"] = document.malware_scan_version_id
+
+        # The configuration and its provenance are written on the CREATE path too,
+        # not only on the update path below. A document refused at ingest — a prefix
+        # mapping in `reject` conflict mode — is created and never updated, so
+        # without this its row carries no ConfigVersion; and `scope_allows` denies a
+        # document with no profile to name to *every* scoped caller, so the person
+        # whose upload was refused would see no row at all rather than a failure.
+        if document.config_version:
+            item["ConfigVersion"] = document.config_version
+        if document.config_revision is not None:
+            item["ConfigRevision"] = int(document.config_revision)
+        if document.config_source:
+            item["ConfigSource"] = document.config_source
+        if document.config_mapping_prefix:
+            item["ConfigMappingPrefix"] = document.config_mapping_prefix
+        if document.config_assignment_error:
+            item["ConfigAssignmentError"] = document.config_assignment_error
 
         if expires_after:
             item["ExpiresAfter"] = expires_after
@@ -439,15 +540,34 @@ class DocumentDynamoDBService:
             expression_names["#ConfigRevision"] = "ConfigRevision"
             expression_values[":ConfigRevision"] = int(document.config_revision)
 
-        # Set workflow status based on document status
-        if document.status == Status.FAILED:
-            workflow_status = "FAILED"
-        elif document.status == Status.COMPLETED:
-            workflow_status = "SUCCEEDED"
-        elif document.status == Status.ABORTED:
-            workflow_status = "ABORTED"
-        else:
-            workflow_status = "RUNNING"
+        # Where that profile came from, and the prefix mapping that decided it.
+        # Without these the UI can show WHICH configuration a document used but not
+        # WHY, and with four possible sources "why" is the question an operator
+        # actually has.
+        if document.config_source:
+            set_expressions.append("#ConfigSource = :ConfigSource")
+            expression_names["#ConfigSource"] = "ConfigSource"
+            expression_values[":ConfigSource"] = document.config_source
+
+        if document.config_mapping_prefix:
+            set_expressions.append("#ConfigMappingPrefix = :ConfigMappingPrefix")
+            expression_names["#ConfigMappingPrefix"] = "ConfigMappingPrefix"
+            expression_values[":ConfigMappingPrefix"] = document.config_mapping_prefix
+
+        if document.config_assignment_error:
+            set_expressions.append("#ConfigAssignmentError = :ConfigAssignmentError")
+            expression_names["#ConfigAssignmentError"] = "ConfigAssignmentError"
+            expression_values[":ConfigAssignmentError"] = (
+                document.config_assignment_error
+            )
+
+        # Both writers of this attribute go through the one mapping. This branch
+        # is the one that matters most for a terminal-but-not-failed status:
+        # `workflow_tracker` reaches DynamoDB through `update_document`, not
+        # `update_document_status`, so it is the path that actually produces
+        # REDACTED_SUPERSEDED — and while this read `else: "RUNNING"` the SDK
+        # classified that status as terminal while the row said it was running.
+        workflow_status = _workflow_status_for(document.status)
 
         set_expressions.append("#WorkflowStatus = :WorkflowStatus")
         expression_names["#WorkflowStatus"] = "WorkflowStatus"
@@ -621,6 +741,41 @@ class DocumentDynamoDBService:
             expression_names["#TraceId"] = "TraceId"
             expression_values[":TraceId"] = document.trace_id
 
+        # Malware-scan verdict (GuardDuty Malware Protection for S3). Written by
+        # the ingest gate in queue_sender for every scanned document, clean ones
+        # included. Truthiness is the right test for all five: none of them has a
+        # falsy value that means anything — an empty reasons list is the same
+        # statement as an absent one — so a document from a stack with scanning
+        # DISABLED emits no clause and its item is untouched.
+        if document.malware_scan_status:
+            set_expressions.append("#MalwareScanStatus = :MalwareScanStatus")
+            expression_names["#MalwareScanStatus"] = "MalwareScanStatus"
+            expression_values[":MalwareScanStatus"] = document.malware_scan_status
+        if document.malware_scan_result:
+            set_expressions.append("#MalwareScanResult = :MalwareScanResult")
+            expression_names["#MalwareScanResult"] = "MalwareScanResult"
+            expression_values[":MalwareScanResult"] = document.malware_scan_result
+        if document.malware_scan_threat:
+            set_expressions.append("#MalwareScanThreat = :MalwareScanThreat")
+            expression_names["#MalwareScanThreat"] = "MalwareScanThreat"
+            expression_values[":MalwareScanThreat"] = document.malware_scan_threat
+        if document.malware_scan_reasons:
+            set_expressions.append("#MalwareScanReasons = :MalwareScanReasons")
+            expression_names["#MalwareScanReasons"] = "MalwareScanReasons"
+            expression_values[":MalwareScanReasons"] = list(
+                document.malware_scan_reasons
+            )
+        if document.malware_scan_time:
+            set_expressions.append("#MalwareScanTime = :MalwareScanTime")
+            expression_names["#MalwareScanTime"] = "MalwareScanTime"
+            expression_values[":MalwareScanTime"] = document.malware_scan_time
+        if document.malware_scan_version_id:
+            set_expressions.append("#MalwareScanVersionId = :MalwareScanVersionId")
+            expression_names["#MalwareScanVersionId"] = "MalwareScanVersionId"
+            expression_values[":MalwareScanVersionId"] = (
+                document.malware_scan_version_id
+            )
+
         # Add Review Status fields if available
         if document.hitl_status:
             set_expressions.append("#HITLStatus = :HITLStatus")
@@ -629,8 +784,7 @@ class DocumentDynamoDBService:
             # Maintain sparse GSI attribute for pending review queries
             # "PendingReview" = initial trigger, "Review Pending" = after release_review,
             # "InProgress" = after claim_review
-            pending_statuses = ("PendingReview", "Review Pending", "InProgress")
-            if document.hitl_status in pending_statuses:
+            if document.hitl_status in LEGACY_PENDING:
                 set_expressions.append("#HITLPendingReview = :HITLPendingReview")
                 expression_names["#HITLPendingReview"] = "HITLPendingReview"
                 expression_values[":HITLPendingReview"] = "true"
@@ -722,8 +876,7 @@ class DocumentDynamoDBService:
         # Remove HITLPendingReview GSI attribute when review is completed/skipped
         remove_expressions = []
         if document.hitl_status:
-            pending_statuses = ("PendingReview", "Review Pending", "InProgress")
-            if document.hitl_status not in pending_statuses:
+            if document.hitl_status not in LEGACY_PENDING:
                 remove_expressions.append("HITLPendingReview")
         if remove_expressions:
             update_expression += " REMOVE " + ", ".join(remove_expressions)
@@ -760,6 +913,9 @@ class DocumentDynamoDBService:
             initial_event_time=item.get("InitialEventTime"),
             config_version=item.get("ConfigVersion"),
             config_revision=coerce_revision(item.get("ConfigRevision")),
+            config_source=item.get("ConfigSource"),
+            config_mapping_prefix=item.get("ConfigMappingPrefix"),
+            config_assignment_error=item.get("ConfigAssignmentError"),
         )
 
         # Convert status
@@ -895,6 +1051,18 @@ class DocumentDynamoDBService:
                     )
                 )
 
+        # Malware-scan verdict. Read back so a document loaded here and written
+        # again keeps its verdict instead of silently dropping it — the writer
+        # above omits a falsy field, so a load->write round trip would otherwise
+        # leave the stored attributes behind on the item while the in-memory
+        # document denied having them.
+        doc.malware_scan_status = item.get("MalwareScanStatus")
+        doc.malware_scan_result = item.get("MalwareScanResult")
+        doc.malware_scan_threat = item.get("MalwareScanThreat")
+        doc.malware_scan_reasons = list(item.get("MalwareScanReasons") or [])
+        doc.malware_scan_time = item.get("MalwareScanTime")
+        doc.malware_scan_version_id = item.get("MalwareScanVersionId")
+
         # Convert Review Status fields
         doc.hitl_status = item.get("HITLStatus")
         # `or None`, so an absent attribute AND a stored empty list both read back
@@ -1020,6 +1188,47 @@ class DocumentDynamoDBService:
 
         logger.info(f"Successfully updated document: {document.input_key}")
         return updated_document
+
+    def update_review_attributes(
+        self,
+        object_key: str,
+        set_attrs: Mapping[str, Any],
+        remove_attrs: Sequence[str] = (),
+    ) -> None:
+        """Targeted write of review-queue attributes on the tracking row.
+
+        One ``UpdateItem`` (``SET``/``REMOVE``) of only the named attributes, so
+        it never races the whole-document ``update_document`` over other fields.
+        Requires the row to exist (``attribute_exists(PK)``).
+        """
+        names: Dict[str, str] = {}
+        values: Dict[str, Any] = {}
+        sets = []
+        for i, (name, value) in enumerate(set_attrs.items()):
+            names[f"#s{i}"] = name
+            values[f":s{i}"] = value
+            sets.append(f"#s{i} = :s{i}")
+        removes = []
+        for i, name in enumerate(remove_attrs):
+            if name in set_attrs:
+                continue
+            names[f"#r{i}"] = name
+            removes.append(f"#r{i}")
+        parts = []
+        if sets:
+            parts.append("SET " + ", ".join(sets))
+        if removes:
+            parts.append("REMOVE " + ", ".join(removes))
+        if not parts:
+            return
+        self.client.update_item(
+            key={"PK": f"doc#{object_key}", "SK": "none"},
+            update_expression=" ".join(parts),
+            expression_attribute_names=names,
+            expression_attribute_values=values or None,
+            return_values="NONE",
+            condition_expression="attribute_exists(PK)",
+        )
 
     def get_document(self, object_key: str) -> Optional[Document]:
         """
@@ -1280,6 +1489,8 @@ class DocumentDynamoDBService:
         document_id: str,
         status: Status,
         workflow_execution_arn: Optional[str] = None,
+        condition_expression: Optional[str] = None,
+        extra_attributes: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Update only the status of a document (lightweight operation).
@@ -1292,27 +1503,36 @@ class DocumentDynamoDBService:
             document_id: The ObjectKey of the document to update
             status: The new Status to set
             workflow_execution_arn: Optional workflow execution ARN
+            condition_expression: Optional DynamoDB ConditionExpression. The ingest
+                malware gate uses this to make its transition a compare-and-set:
+                GuardDuty delivers scan results **at least once**, so an
+                unconditional write would let a duplicate verdict enqueue the same
+                document twice. Raises ``DynamoDBError`` with error_code
+                ``ConditionalCheckFailedException`` when it does not hold, which
+                the caller reads as "somebody else already decided this".
+                Expression attribute names are the DynamoDB attribute names with a
+                ``#`` prefix (e.g. ``#ObjectStatus``), and values are supplied via
+                ``extra_attributes`` keys prefixed with ``:``.
+            extra_attributes: Optional additional DynamoDB attributes to SET in the
+                same write, as ``{"AttributeName": value}``. Keys beginning with
+                ``:`` are treated as ConditionExpression *values* only and are not
+                written. Used by the gate to land the malware verdict and the
+                status in one atomic write — two writes would leave a window where
+                a document reads QUARANTINED with no threat name to show.
 
         Returns:
             Dictionary with the updated document attributes
 
         Raises:
-            DynamoDBError: If the DynamoDB operation fails
+            DynamoDBError: If the DynamoDB operation fails, including when
+                ``condition_expression`` does not hold.
         """
         key = {
             "PK": f"doc#{document_id}",
             "SK": "none",
         }
 
-        # Derive workflow status from document status
-        if status == Status.FAILED:
-            workflow_status = "FAILED"
-        elif status == Status.COMPLETED:
-            workflow_status = "SUCCEEDED"
-        elif status == Status.ABORTED:
-            workflow_status = "ABORTED"
-        else:
-            workflow_status = "RUNNING"
+        workflow_status = _workflow_status_for(status)
 
         # Build minimal update expression
         set_expressions = [
@@ -1333,7 +1553,43 @@ class DocumentDynamoDBService:
             expression_names["#WorkflowExecutionArn"] = "WorkflowExecutionArn"
             expression_values[":WorkflowExecutionArn"] = workflow_execution_arn
 
+        for attribute_name, value in (extra_attributes or {}).items():
+            if attribute_name.startswith(":"):
+                # A ConditionExpression value, not an attribute to write. Kept in
+                # the same mapping so a caller supplies its condition and the
+                # values it compares against together, rather than in two
+                # arguments that can disagree.
+                expression_values[attribute_name] = value
+                continue
+            placeholder = f"#{attribute_name}"
+            value_ref = f":{attribute_name}"
+            set_expressions.append(f"{placeholder} = {value_ref}")
+            expression_names[placeholder] = attribute_name
+            expression_values[value_ref] = value
+
         update_expression = "SET " + ", ".join(set_expressions)
+
+        if condition_expression:
+            # An expression attribute NAME is registered only by a SET clause,
+            # i.e. by an `extra_attributes` key that does NOT begin with ':'. A
+            # condition referencing a name nothing registers is accepted here,
+            # rejected by DynamoDB as a ValidationException, and — because a
+            # caller guarding a compare-and-set necessarily wraps it in
+            # `except` — easy to swallow. The caller then believes its condition
+            # did not hold when in fact it never ran. Raised rather than
+            # repaired: the fix is to decide what the condition should compare,
+            # and silently registering a name would write an attribute the
+            # caller never asked for.
+            unregistered = sorted(
+                set(re.findall(r"#\w+", condition_expression)) - set(expression_names)
+            )
+            if unregistered:
+                raise ValueError(
+                    f"condition_expression references {unregistered}, which "
+                    f"nothing registers. Add the bare attribute name (no ':' "
+                    f"prefix) to extra_attributes so a SET clause registers it; "
+                    f"registered here: {sorted(expression_names)}"
+                )
 
         response = self.client.update_item(
             key=key,
@@ -1341,6 +1597,7 @@ class DocumentDynamoDBService:
             expression_attribute_names=expression_names,
             expression_attribute_values=expression_values,
             return_values="ALL_NEW",
+            condition_expression=condition_expression,
         )
 
         logger.info(f"Updated document status: {document_id} -> {status.value}")
@@ -1480,6 +1737,8 @@ class DocumentDynamoDBService:
         manifest_uri: str,
         file_count: int = 0,
         expires_after: Optional[int] = None,
+        *,
+        run_kind: Optional[str] = None,
     ) -> str:
         """
         Record an immutable run (version) item for a completed document and
@@ -1491,6 +1750,8 @@ class DocumentDynamoDBService:
             manifest_uri: S3 URI of the run's output-version manifest
             file_count: Number of output objects pinned by the manifest
             expires_after: Optional TTL timestamp (should match the doc item's)
+            run_kind: Optional ``RunKind`` (``review_phase1`` / ``review_final``
+                for the two runs of a review-queue document)
 
         Returns:
             The run_id of the created run item
@@ -1504,6 +1765,8 @@ class DocumentDynamoDBService:
             "ManifestUri": manifest_uri,
             "FileCount": file_count,
         }
+        if run_kind:
+            item["RunKind"] = run_kind
 
         # Snapshot of the run's metadata (mirrors the doc item's attributes so
         # the UI can render a prior version with the same code paths).
@@ -1523,6 +1786,10 @@ class DocumentDynamoDBService:
             item["ConfigVersion"] = document.config_version
         if document.config_revision is not None:
             item["ConfigRevision"] = int(document.config_revision)
+        if document.config_source:
+            item["ConfigSource"] = document.config_source
+        if document.config_mapping_prefix:
+            item["ConfigMappingPrefix"] = document.config_mapping_prefix
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
         if document.metering:
@@ -1713,5 +1980,4 @@ class DocumentDynamoDBService:
         Returns:
             Unix timestamp (seconds since epoch) for the expiration date
         """
-        expiration_date = datetime.datetime.now() + datetime.timedelta(days=days)
-        return int(expiration_date.timestamp())
+        return calculate_ttl(days)

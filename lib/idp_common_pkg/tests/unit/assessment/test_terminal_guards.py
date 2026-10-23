@@ -30,7 +30,9 @@ failure into a bounded, reported one:
   carry no confidence, but every caller discarded that, so a section could return
   a fraction of its rows scored and still report unqualified success. Coverage
   materially short of the extracted list length now emits
-  ``assessment_coverage_incomplete`` (warning, escalating to error).
+  ``assessment_coverage_incomplete`` (warning, escalating to error). The warning rung
+  reads the shortfall two ways — as a share of the list and as an absolute row count
+  (#1495) — so the band it passes in silence does not grow with the document.
 
 Note on scope: the batch SIZER that mis-estimates a multi-instance row's output
 (``cols=2 per_row~80`` for a row carrying 100 transactions) is NOT fixed here and
@@ -43,6 +45,7 @@ from idp_common.assessment.batching import (
     _COVERAGE_SHORTFALL_ERROR_FRACTION,
     _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS,
     _COVERAGE_SHORTFALL_WARNING_FRACTION,
+    _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS,
     _row_confidence_missing,
     assess_results_batched,
     audit_explainability,
@@ -406,6 +409,52 @@ def test_error_severity_needs_an_absolute_row_floor_not_just_a_fraction():
     assert ten.severity == "error"
 
 
+def test_zero_scored_rows_is_an_error_at_every_list_length():
+    """The absolute row floor does not apply when NOTHING was scored (#997).
+
+    ``scored_rows == 0`` is not a short list with a gap in it — the section has no
+    confidence surface anywhere, and the message the gate emits in that case says
+    confidence-based review "does not apply to any of it". Measured over the
+    committed benchmark grids, every run that crossed the error fraction with fewer
+    than 10 unscored rows was in exactly this state, and the partial case the floor
+    was written for (one ``None`` leaf in a two-entry array) occurred zero times — so
+    as shipped the floor only ever downgraded a total absence of coverage.
+    ``benchmarks/tests/test_coverage_threshold_evidence.py`` re-derives that from the
+    artifacts.
+
+    Both sides of the boundary are asserted, across list lengths, with **lopsided**
+    inputs on the warning side: one row scored out of ten is a 90% shortfall and nine
+    unscored rows, which is as close to the exception as a partial shortfall gets
+    while still being one. A mutant that drops the exception fails the first loop; one
+    that widens it to ``scored <= 1`` fails the second; one that replaces the ``or``
+    with an ``and`` fails the first loop at every length below the floor; and an
+    inverted comparison fails both.
+    """
+    floor = _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+
+    # Nothing scored → error, from a single-row list up to one far above the floor.
+    for total in (1, 2, 3, 4, floor - 1, floor, 40, 400):
+        issue = _coverage_issue(total, 0)
+        assert issue is not None, total
+        assert issue.severity == "error", (total, issue.severity)
+        assert issue.details["scored_rows"] == 0, total
+
+    # One row scored, everything else not: still a partial shortfall, so the floor
+    # governs it and it stays a warning while the unscored count is below the floor.
+    for total in (2, 3, 4, floor - 1, floor):
+        unscored = total - 1
+        issue = _coverage_issue(total, 1)
+        assert issue is not None, total
+        expected = "error" if unscored >= floor else "warning"
+        assert issue.severity == expected, (total, unscored, issue.severity)
+
+    # The floor's own boundary, reached from the lopsided side: one row scored out of
+    # eleven is ten unscored rows, which is the floor, so it is an error — and the
+    # rung below it is not.
+    assert _coverage_issue(floor + 1, 1).severity == "error"
+    assert _coverage_issue(floor, 1).severity == "warning"
+
+
 def test_zero_coverage_does_not_claim_partial_coverage():
     """At 0% scored, "covers only part of this section" is simply false, and this
     audit cannot vouch for the extracted data either — it only knows nothing was
@@ -658,6 +707,72 @@ def test_coverage_counts_every_list_field_not_just_the_largest():
     assert coverage["expected_rows"] == 14  # scalars are not rows
     assert coverage["scored_rows"] == 10
     assert coverage["unscored_rows_by_field"] == {"fees": 4}
+    # The DENOMINATOR beside that numerator, so a per-field ratio is recoverable.
+    # Without it "fees: 4" cannot be read as 4 of 4 rather than 4 of 400, which is
+    # the difference between an attribute with no confidence surface and a trace.
+    assert coverage["expected_rows_by_field"] == {"transactions": 10, "fees": 4}
+
+
+def test_a_wholly_unscored_small_field_can_sit_under_the_section_wide_fraction():
+    """The residual the section-wide denominator leaves, pinned rather than fixed.
+
+    The fraction divides by the TOTAL list rows of the section, so an attribute that
+    is entirely unscored beside a large fully-scored one lands below the 5% warning
+    fraction and nothing is emitted — and the ladder cannot cover it either, because
+    ``split_stats["unrecoverable_rows"]`` is computed for the largest list field
+    only. The per-field numbers are what make the case readable off a recorded run,
+    which is why both halves are now carried.
+
+    The absolute ceiling of #1495 narrows this residual without closing it: an
+    attribute of 10 rows or more that is wholly unscored now crosses the ceiling
+    whatever the section total, so what is left is the SHORT wholly-unscored
+    attribute — which is the shape this fixture uses, a two-entry ``endorsements``
+    beside 400 scored transactions.
+
+    This asserts current behaviour deliberately. Firing per field instead would be
+    strictly more sensitive, and the committed benchmark grids cannot say what that
+    would cost: they record unscored rows per field but, until
+    ``conf_rows_expected_by_field`` was added, no per-field denominator, so the
+    false-positive rate of a per-field rung is unmeasured. Changing this should
+    follow that measurement, not precede it (#997).
+    """
+    data = {
+        "transactions": [{"amount": "1"} for _ in range(400)],
+        "endorsements": [{"text": "a"}, {"text": "b"}],
+    }
+    assessment = {
+        "transactions": [{"amount": _leaf(0.9)} for _ in range(400)],
+        "endorsements": [{"text": _leaf(None)}, {"text": _leaf(None)}],
+    }
+    coverage = confidence_coverage(assessment, data)
+    assert coverage["unscored_rows_by_field"] == {"endorsements": 2}
+    assert coverage["expected_rows_by_field"] == {
+        "transactions": 400,
+        "endorsements": 2,
+    }
+    # 2 of 402 is 0.5% section-wide, and 100% of the attribute it belongs to.
+    assert coverage["unscored_fraction"] < _COVERAGE_SHORTFALL_WARNING_FRACTION
+    assert coverage["unscored_rows"] < _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS, (
+        "this fixture no longer isolates the per-field residual from the ceiling"
+    )
+    _gaps, issues = audit_explainability(
+        assessment, data, geometry_mode="off", section_id="1"
+    )
+    assert [i for i in issues if i.code == "assessment_coverage_incomplete"] == []
+
+    # The same shape with the small attribute at the ceiling is NOT in the residual:
+    # 10 unscored of 410 is 2.4% section-wide, well under the fraction, and the
+    # ceiling reports it — so what the section-wide denominator still hides is only
+    # the attribute shorter than the ceiling.
+    data["endorsements"] = [{"text": str(i)} for i in range(10)]
+    assessment["endorsements"] = [{"text": _leaf(None)} for _ in range(10)]
+    at_ceiling = confidence_coverage(assessment, data)
+    assert at_ceiling["unscored_fraction"] < _COVERAGE_SHORTFALL_WARNING_FRACTION
+    _gaps, issues = audit_explainability(
+        assessment, data, geometry_mode="off", section_id="1"
+    )
+    assert [i.code for i in issues] == ["assessment_coverage_incomplete"]
+    assert issues[0].severity == "warning"
 
 
 def test_coverage_from_gaps_rounds_for_reporting_only():
@@ -668,20 +783,39 @@ def test_coverage_from_gaps_rounds_for_reporting_only():
     assert coverage["scored_rows"] == 2
 
 
-def test_the_rungs_compare_the_exact_ratio_not_the_rounded_one():
-    """A rung must not be moved by the rounding applied for display.
+def test_the_fraction_rung_compares_the_exact_ratio_not_the_rounded_one():
+    """The fraction rung must not be moved by the rounding applied for display.
 
     ``coverage_from_gaps`` rounds ``unscored_fraction`` to 4 places, so reusing that
-    value as the comparand shifts every rung by up to half a rounding step. The case
+    value as the comparand shifts the rung by up to half a rounding step. The case
     below is inside that band and on the wrong side of it: 100 unscored rows out of
     2001 is 0.04997501…, which is BELOW the 0.05 warning fraction, but rounds to
-    exactly 0.05 and would fire.
+    exactly 0.05 and would cross a rung comparing the rounded value.
 
     The band is only ~5e-5 wide, so nothing here is about magnitude — it is about the
     comparand being the quantity the threshold is expressed in. The assertions
     surrounding this one all use round numbers, which is precisely why none of them
     could see the substitution.
+
+    **Which rung fired is what this reads, not whether one did.** Any case straddling
+    that rounding band needs at least 50 unscored rows — an integer total exists in
+    ``(unscored/0.05, unscored/0.04995]`` only once that interval is a row wide — so
+    every such case also crosses the absolute ceiling of #1495 and the issue is
+    emitted either way. The two rungs are distinguishable in the message, because a
+    shortfall under the fraction leads with the row count rather than the share, and
+    that is the discriminator used here.
+
+    Two assertions carry that between them, and the second is what keeps the
+    sensitivity direct rather than a consequence of how a mutation happens to be
+    written: the SHIPPED reporting value on this case equals the threshold exactly,
+    and the fraction rung did not fire on it. A rung reading
+    ``coverage["unscored_fraction"]`` would therefore take the proportional branch,
+    which the message assertion catches.
     """
+    assert 100 >= _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS, (
+        "this case no longer crosses the absolute ceiling, so the message-based "
+        "discrimination below is testing nothing — assert on absence instead"
+    )
     below = _coverage_case(2001, 1901)  # 100 unscored -> 0.0499750…
     exact_ratio = 100 / 2001
     assert exact_ratio < _COVERAGE_SHORTFALL_WARNING_FRACTION
@@ -690,14 +824,116 @@ def test_the_rungs_compare_the_exact_ratio_not_the_rounded_one():
         "distinguishes the exact ratio from the reported one — pick a new one"
     )
     _gaps, issues = audit_explainability(*below, geometry_mode="off", section_id="1")
-    assert [i for i in issues if i.code == "assessment_coverage_incomplete"] == [], (
-        f"{100 / 2001:.8f} is below the {_COVERAGE_SHORTFALL_WARNING_FRACTION} "
-        "warning fraction; firing here means the rung is comparing the rounded "
-        "reporting value rather than the exact ratio"
+    found = [i for i in issues if i.code == "assessment_coverage_incomplete"]
+    assert len(found) == 1
+    assert found[0].message.startswith("100 of 2001"), (
+        f"{exact_ratio:.8f} is below the {_COVERAGE_SHORTFALL_WARNING_FRACTION} "
+        "warning fraction, so this shortfall must be reported by the absolute "
+        "ceiling and phrased in rows. A proportional message here means the "
+        "fraction rung is comparing the rounded reporting value rather than the "
+        f"exact ratio. Got: {found[0].message}"
+    )
+    assert found[0].severity == "warning"
+    # The comparand a mutation would substitute, read off the shipped issue rather
+    # than recomputed: it is equal to the threshold while the rung above declined.
+    assert (
+        found[0].details["unscored_fraction"] == _COVERAGE_SHORTFALL_WARNING_FRACTION
+    ), (
+        f"the reported fraction is {found[0].details['unscored_fraction']}, not the "
+        f"{_COVERAGE_SHORTFALL_WARNING_FRACTION} threshold, so this case no longer "
+        "distinguishes the exact ratio from the reported one — pick a new one"
     )
 
-    # One row further and it is genuinely past the line, so the guard still works.
+    # One row further and it is genuinely past the fraction, which the proportional
+    # phrasing is what shows — so the fraction rung itself still works.
     _gaps, issues = audit_explainability(
         *_coverage_case(2001, 1900), geometry_mode="off", section_id="1"
     )
     assert [i.code for i in issues] == ["assessment_coverage_incomplete"]
+    assert issues[0].message.startswith("Only 1900 of 2001"), issues[0].message
+
+
+def test_the_warning_rung_has_an_absolute_ceiling_as_well_as_a_fraction():
+    """A fraction alone leaves a silent band proportional to the list (#1495).
+
+    The 5% rung's own justification has an absolute half — "a 1-2 row gap on an
+    800-row table is ``assessment_incomplete``'s business" — and a ratio scales that
+    with the document, so the number of rows that can be left unscored with no report
+    is bounded only by how long the longest list is: 19 at 400 rows, 39 at 800, 159 at
+    3,200. Measured over the committed benchmark grids, the largest silent shortfall
+    was 24 unscored rows of 800 until a 3,200-row document was benchmarked and it
+    became 115 of 3,200 at a near-identical share — the same state of the world on a
+    bigger document.
+
+    The ceiling is ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` read in the other
+    direction, not a second tuned number: that constant already names "more unscored
+    rows than a reviewer can be assumed to spot-check by hand", which the error rung
+    uses to keep a tiny list out of red and the warning rung needs to decide when an
+    absolute quantity must be said out loud whatever the list length. Both ends are
+    asserted at list lengths spanning an order of magnitude, so a mutant restoring a
+    purely multiplicative rung fails on the long lists while still passing on short
+    ones.
+    """
+    ceiling = _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS
+    assert ceiling == _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS, (
+        "the ceiling is derived from the error rung's floor rather than tuned; if "
+        "they are to differ, that needs its own measurement (#1495)"
+    )
+
+    # At or above the ceiling the shortfall is reported however long the list, and
+    # every one of these is below the 5% fraction — 4.98% at 201 rows, which is the
+    # shortest list on which the ceiling is the only instrument, down to 0.25% at
+    # 4,000, where the fraction would need 200 unscored rows to say anything.
+    for total in (201, 400, 800, 3200, 4000):
+        issue = _coverage_issue(total, total - ceiling)
+        assert issue is not None, f"{ceiling} unscored of {total} was silent"
+        assert issue.severity == "warning", (total, issue.severity)
+        assert issue.details["unscored_rows"] == ceiling
+        assert issue.details["unscored_fraction"] < _COVERAGE_SHORTFALL_WARNING_FRACTION
+
+    # One row below it, on the same lists, the fraction is the only instrument and
+    # the shortfall stays the ladder's business.
+    for total in (201, 400, 800, 3200, 4000):
+        assert _coverage_issue(total, total - (ceiling - 1)) is None, total
+
+    # The observed shape #1495 was filed on, end to end.
+    observed = _coverage_issue(3200, 3085)
+    assert observed is not None
+    assert observed.severity == "warning"
+    assert observed.details["unscored_rows"] == 115
+    assert observed.details["unscored_fraction"] == 0.0359
+    assert observed.message.startswith("115 of 3200 extracted list row(s)")
+    assert "3.6% of the section" in observed.message
+    assert "extracted values themselves are unaffected" in observed.message
+
+
+def test_the_absolute_ceiling_cannot_reach_error_severity():
+    """The ceiling reports a shortfall; it never escalates one (#1495).
+
+    Error severity renders the section red ("Incomplete") in the Sections panel, and a
+    shortfall of a few percent is not that — the scored majority is still a usable
+    sample. The guarantee is arithmetic rather than a convention: a run that crosses
+    the ceiling without crossing the 5% fraction is below the 25% error fraction too,
+    and ``scored_rows == 0`` implies a shortfall of 1.0, so neither error path is
+    reachable from the ceiling alone. Asserted at both ends and the middle of the band
+    between the ceiling and the fraction, at several list lengths, because this is the
+    property that decides whether the change can break a document that completes
+    today.
+    """
+    ceiling = _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS
+    for total in (400, 800, 3200):
+        # One row below the proportional rung: the top of the band the ceiling owns.
+        largest_sub_fraction = int(total * _COVERAGE_SHORTFALL_WARNING_FRACTION) - 1
+        assert largest_sub_fraction >= ceiling, total
+        for unscored in {
+            ceiling,
+            ceiling + 1,
+            (ceiling + largest_sub_fraction) // 2,
+            largest_sub_fraction,
+        }:
+            issue = _coverage_issue(total, total - unscored)
+            assert issue is not None, (total, unscored)
+            assert issue.severity == "warning", (total, unscored, issue.severity)
+            assert (
+                issue.details["unscored_fraction"] < _COVERAGE_SHORTFALL_ERROR_FRACTION
+            ), (total, unscored)

@@ -175,9 +175,9 @@ through this list (skip items that genuinely don't apply, and note why):
       caveats, examples.
 - [ ] `docs/*.md` — feature docs that list models / caveats (e.g.
       `discovery.md`, `extraction.md`, `service-tiers.md`, `web-ui.md`,
-      `configuration.md`, `idp-cli.md`, `eu-region-model-support.md`), plus a
-      dedicated model guide if the model is materially different (see
-      `docs/openai-models.md`).
+      `configuration.md`, `idp-cli.md`, `eu-region-model-support.md`,
+      `canada-region-model-support.md`), plus a dedicated model guide if the
+      model is materially different (see `docs/openai-models.md`).
 - [ ] `docs/README.md` index — link any new doc.
 - [ ] `CHANGELOG.md` — `[Unreleased]` entry stating what IS and IS NOT supported.
 

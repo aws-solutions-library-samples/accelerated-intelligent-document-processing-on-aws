@@ -8,7 +8,7 @@ All AWS access uses the 'default' profile (the deployment account).
 import json
 import os
 import re
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NamedTuple, NoReturn
 
 import boto3
 import yaml
@@ -17,6 +17,7 @@ import yaml
 # PYTHONPATH for every harness entry point (benchmarks/matrices/METHODOLOGY.md),
 # and this module is stdlib-only, so importing it costs nothing.
 from idp_common.metering_units import (
+    CACHE_UNITS,
     NOT_CHARGEABLE,
     classify_absent_unit,
     pricing_key_service,
@@ -450,17 +451,26 @@ def price_metering(metering) -> Priced:
                 # Free, or unpriced? One rule, imported rather than restated, so
                 # this and production cannot answer it differently:
                 # idp_common.metering_units.classify_absent_unit. A zero count is
-                # free arithmetically; a unit declared non-chargeable for the
-                # service on AWS price-list evidence is free by declaration;
-                # anything else is a price this harness does not have, and
-                # dropping it made a new Bedrock usage field cost 0.00 (#1212).
+                # free arithmetically; a unit declared non-chargeable is free by
+                # declaration -- at SERVICE scope for the units that are not a
+                # billing dimension of the service at all, and per PRICING KEY
+                # for the two prompt-cache units, since whether a cache read
+                # costs anything is a property of the model (#1206). Anything
+                # else is a price this harness does not have, and dropping it
+                # made a new Bedrock usage field cost 0.00 (#1212).
                 if classify_absent_unit(matched, unit, count) == NOT_CHARGEABLE:
                     continue
+                declaration = (
+                    "EXPECTED_CACHE_UNIT_OMISSIONS (per pricing key and unit)"
+                    if unit in CACHE_UNITS
+                    else f"NON_CHARGEABLE_METERING_UNITS for "
+                    f"{pricing_key_service(matched)!r}"
+                )
                 unpriced.append(
                     f"{meter_key!r} unit {unit!r}: pricing entry {matched!r} "
-                    f"lists no rate for it and it is not declared "
-                    f"non-chargeable for "
-                    f"{pricing_key_service(matched)!r} (count={count!r}) — add "
+                    f"lists no rate for it and nothing declares it "
+                    f"non-chargeable in idp_common.metering_units."
+                    f"{declaration} (count={count!r}) — add "
                     f"the rate, or this run's cost is below truth by whatever "
                     f"it spent on it"
                 )
@@ -819,7 +829,165 @@ def read_sections(bucket, doc_prefix) -> SectionRead:
 
 
 # ----------------------------------------------------------------------------- GT matching
-SEQ = re.compile(r"SEQ(\d{5})")
+# The corpus embeds a `SEQnnnnn` tag in one string cell of every generated row, and
+# row identity across this whole harness is read from it. Two patterns, because the
+# width is not reliable in the output and reading it as though it were is GitHub
+# #1500.
+#
+# ⚠️ **A digit count is not a row count.** `SEQ_STRICT` requires EXACTLY five digits
+# and the regex engine is happy to take the first five of six, so a tag that came
+# back a digit wider is not *missed* — it is silently read as some OTHER row. The
+# `bedrock_llm` OCR backend duplicates the leading zero of a fixed-width identifier
+# on the pages it corrupts, so `SEQ00042` arrives as `SEQ000042` and `SEQ(\d{5})`
+# returns `int("00004") == 4`: the tag lands on row 4, which is already present, and
+# the DISTINCT count drops by one with no row anywhere missing. Scored that way,
+# `small_narrow` read 62/100 rows and `completeness_recall` 0.620 on a run that
+# returned all 100 — the same figure on every run of four consecutive releases,
+# because both the corpus and the corruption are deterministic. It was read as a
+# product regression each time.
+#
+# `SEQ` is therefore width-tolerant, and :func:`canonical_seq` reconciles what it
+# matches against the truth file's own id set. That is a join, not a guess: the truth
+# file carries every id the document contains, so `int("000042") == 42` IS a truth
+# row and needs no inference. Nothing is matched by proximity or by order.
+SEQ_WIDTH = 5
+SEQ_STRICT = re.compile(rf"SEQ(\d{{{SEQ_WIDTH}}})")
+SEQ = re.compile(r"SEQ(\d{4,8})")
+
+
+class SeqReading(NamedTuple):
+    """Every `SEQ` tag found in one blob, canonicalised against the truth ids.
+
+    `ids` holds one entry per RESOLVED tag and keeps repeats, so
+    `len(ids) - len(set(ids))` is a count of genuinely duplicated rows rather than of
+    identifiers that collided on the way in. `tagged` counts every tag the pattern
+    matched, resolvable or not, which is the "did the rows come back" figure that
+    `rows_extracted` was being mistaken for. `repaired` counts the tags whose
+    canonical id differs from what `SEQ_STRICT` would have read — the shortfall #1500
+    is about, now a recorded number instead of a silent subtraction. `unresolved`
+    holds the raw digit runs that name no truth row, which is the one bucket a reader
+    has to treat as unmeasured.
+    """
+
+    ids: tuple[int, ...]
+    tagged: int
+    repaired: int
+    unresolved: tuple[str, ...]
+
+
+def _one_edit_candidates(digits: str) -> set[int]:
+    """Every id one inserted-or-deleted digit away from `digits`, as integers.
+
+    Only in the direction the width says: a run wider than `SEQ_WIDTH` had a digit
+    put in, so a deletion is undone; a narrower one lost a digit, so an insertion is.
+    A run of the right width that names no truth row had a digit CHANGED (or was
+    invented), and a substitution has ten readings per position with nothing to
+    choose between them — so it gets no candidates and is reported unresolved.
+    """
+    if len(digits) > SEQ_WIDTH:
+        return {int(digits[:i] + digits[i + 1 :]) for i in range(len(digits))}
+    if len(digits) < SEQ_WIDTH:
+        return {
+            int(digits[:i] + d + digits[i:])
+            for i in range(len(digits) + 1)
+            for d in "0123456789"
+        }
+    return set()
+
+
+def canonical_seq(digits: str, truth_ids=None) -> int | None:
+    """The truth row a matched `SEQ` digit run names, or `None` if it names none.
+
+    `int()` does the work for the perturbation this corpus actually sees, because an
+    inserted leading zero is not information: `int("000042")` is already 42. The
+    strict pattern failed on it only by refusing to look past the fifth digit.
+
+    ⚠️ **The plain integer reading is only safe for a run at least `SEQ_WIDTH` wide.**
+    A tag that came back a digit SHORT reads as a perfectly plausible other row of the
+    same corpus — `SEQ00042` arriving as `SEQ0042` is `int("0042") == 42` on the way
+    out but 4 on the way in — so accepting it would trade the collapse this function
+    exists to fix for a quieter version of the same thing. A short run is reconciled
+    through :func:`_one_edit_candidates` like any other perturbation.
+
+    Every repair is accepted only when exactly ONE candidate names a truth row.
+    Ambiguity returns `None` and is counted, never resolved by picking the nearest; a
+    wrong row id is worse here than an unmeasured one, because it would be joined to
+    another row's cell truth and reported as a value error.
+
+    With no `truth_ids` to join against (``score_cells`` on a truth file that declares
+    no `rows_typed`) the plain integer reading is returned, which is what every
+    well-formed tag reads as anyway.
+    """
+    value = int(digits)
+    if not truth_ids:
+        return value
+    if len(digits) >= SEQ_WIDTH and value in truth_ids:
+        return value
+    candidates = _one_edit_candidates(digits) & set(truth_ids)
+    return candidates.pop() if len(candidates) == 1 else None
+
+
+def read_seq_ids(text: str, truth_ids=None) -> SeqReading:
+    """Read every row identifier out of one serialised blob. See :class:`SeqReading`."""
+    tags = SEQ.findall(text)
+    ids, repaired, unresolved = [], 0, []
+    for digits in tags:
+        row = canonical_seq(digits, truth_ids)
+        if row is None:
+            unresolved.append(digits)
+            continue
+        ids.append(row)
+        strict = SEQ_STRICT.match(f"SEQ{digits}")
+        if strict is None or int(strict.group(1)) != row:
+            repaired += 1
+    return SeqReading(tuple(ids), len(tags), repaired, tuple(unresolved))
+
+
+def unverified_row_shortfall(
+    rows_truth, rows_extracted, dups, unresolved_ids=0
+) -> str | None:
+    """Why this run's row shortfall must not be read as row loss, or `None`.
+
+    The guard #1500 asks for, and the reason it is worth having even once
+    :func:`canonical_seq` is in place: a shortfall is only evidence of a missing row
+    if row identity was readable, and two shapes say it was not.
+
+    `dups` **at or above** the shortfall is the first, and it is the signature the
+    issue was found by. Truncation drops a contiguous tail, so the rows that do come
+    back are distinct and `dups` is 0; identifier collapse is the opposite — a tag
+    arrives for every row and two of them read as one id, so each unit of shortfall
+    is paid for by a unit of `dups`. That combination cannot be truncation whatever
+    else it is, and it is what `small_narrow` recorded on every run of four
+    consecutive releases (62/100 with `dups: 38`) while returning all 100 rows.
+
+    An `unresolved_ids` count is the second: a tag naming no truth row is an
+    identifier this scorer declined to attribute, so the row behind it is unmeasured
+    rather than absent.
+
+    ⚠️ **Both shapes are bounded by the shortfall they can account for, and the
+    second has to be for the same reason as the first.** One unresolved tag accounts
+    for at most one unmeasured row — it contributes nothing to `rows_extracted`, so
+    it can explain one unit of shortfall and no more. An unbounded test would let a
+    single hallucinated tag excuse a 40-row shortfall, annotating a genuine
+    completeness regression as not-row-loss, which is the opposite of what this
+    function is for. So the two counts are summed and compared against the shortfall
+    once; the label then says which of them carries it. A shortfall larger than
+    `dups + unresolved_ids` is unexplained, and this returns `None` for it.
+
+    Returned as a short reason rather than a bool so a `summary.csv` column says
+    which. Recorded on the row rather than raised: a grid that stops scoring loses
+    every other metric in the run as well.
+    """
+    if not rows_truth or rows_extracted is None:
+        return None
+    shortfall = rows_truth - rows_extracted
+    if shortfall <= 0:
+        return None
+    dups = dups or 0
+    unresolved_ids = unresolved_ids or 0
+    if shortfall > dups + unresolved_ids:
+        return None
+    return "dups_at_or_above_shortfall" if shortfall <= dups else "unresolved_row_ids"
 
 
 def walk_confidence(explainability_info):
@@ -843,10 +1011,95 @@ def walk_confidence(explainability_info):
     Requires ``idp_common`` on ``PYTHONPATH`` (pinned in
     benchmarks/matrices/METHODOLOGY.md). ``confidence_curve`` and ``curve_store``
     are deliberately standard-library-only, so this import does not pull Stickler.
+
+    Every score is range-checked on the way out — see
+    :func:`assert_confidences_in_range`. This is the one place every confidence
+    score the harness reports passes through, so checking here is what makes the
+    range a property of the harness rather than of each statistic that remembered
+    to ask.
     """
     from idp_common.evaluation import flatten_confidences
 
-    return flatten_confidences(explainability_info)
+    found = flatten_confidences(explainability_info)
+    assert_confidences_in_range(found, "explainability_info")
+    return found
+
+
+CONFIDENCE_MIN = 0.0
+CONFIDENCE_MAX = 1.0
+
+# How many offending leaves the message names before it stops. A table whose every
+# row carries the same mis-scaled column would otherwise print thousands of lines
+# and bury the count.
+MAX_OUT_OF_RANGE_REPORTED = 10
+
+
+class ConfidenceOutOfRange(ValueError):
+    """A stored confidence that is not a probability reached a harness statistic.
+
+    Deliberately an exception and not a clamp, and not a recorded ``None``.
+    A clamp is what hid GitHub #1395: four releases published a
+    ``mean_confidence`` of up to 14.185 — one leaf carrying 100 averaged with
+    fourteen carrying fractions — and had the value been clamped to 1.0 the same
+    unit mismatch would have produced a plausible-looking 0.99 that nothing could
+    have found. The scorer's callers (``aggregate.score_all`` and
+    ``aggregate.score_reference_run``) already turn an exception into one
+    ``SCORE_ERROR`` row carrying the message, so raising costs the run one row
+    and no more, and the reason travels with it.
+    """
+
+
+def assert_confidences_in_range(scores, where=""):
+    """Raise :class:`ConfidenceOutOfRange` unless every score is in [0, 1].
+
+    A confidence is a probability. ``scores`` is either a ``{field path: score}``
+    mapping (what :func:`walk_confidence` returns) or any iterable of scores; the
+    mapping form is preferred because the message can then name the field, which
+    is what says whether the mismatch is one grader leaf or a whole column.
+
+    Checked BEFORE any statistic is computed, so no mean, percentage or bin index
+    is ever derived from a value outside the range — a check downstream of the
+    arithmetic cannot stop the number being written. ``NaN`` fails the comparison
+    and so is caught here too, which matters because it would otherwise travel
+    silently through every mean it entered.
+
+    An empty mapping passes, and that is not a hole: there is nothing out of
+    range in it, and the statistics that consume it already report ``None``
+    rather than a figure over no observations.
+    """
+    items = (
+        sorted(scores.items())
+        if isinstance(scores, dict)
+        else [(str(i), v) for i, v in enumerate(scores)]
+    )
+    bad = [
+        (path, value)
+        for path, value in items
+        if not (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and CONFIDENCE_MIN <= float(value) <= CONFIDENCE_MAX
+        )
+    ]
+    if not bad:
+        return
+    named = ", ".join(
+        f"{path}={value!r}" for path, value in bad[:MAX_OUT_OF_RANGE_REPORTED]
+    )
+    if len(bad) > MAX_OUT_OF_RANGE_REPORTED:
+        named += f", … ({len(bad) - MAX_OUT_OF_RANGE_REPORTED} more)"
+    source = f" in {where}" if where else ""
+    raise ConfidenceOutOfRange(
+        f"{len(bad)} of {len(items)} confidence scores{source} are outside "
+        f"[{CONFIDENCE_MIN}, {CONFIDENCE_MAX}]: {named}. "
+        "A confidence is a probability, so every statistic taken over these — "
+        "mean_confidence, pct_conf_below_0.9, and every calibration figure — "
+        "would be meaningless rather than merely imprecise. A value at or near "
+        "100 is a percentage averaged with fractions (GitHub #1395); the "
+        "assessment stage stores the grader's number verbatim and only warns "
+        "(assessment_confidence_out_of_range), so the value reaching this point "
+        "is expected and reporting a figure over it is not."
+    )
 
 
 def confidence_values(explainability_info):

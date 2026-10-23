@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import gzip
 import json
 import logging
@@ -12,6 +13,12 @@ from decimal import Decimal
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_common.api_adapter import ResourceNotFound  # type: ignore
+from idp_common.config.migrations import migrate_config  # type: ignore
+from idp_common.review_queues.statuses import (  # type: ignore
+    LEGACY_DONE,
+    LegacyHitlStatus,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -78,7 +85,7 @@ def handler(event, context):
 
         # Validate context length
         if test_context and len(test_context) > 500:
-            raise Exception("Context cannot exceed 500 characters")
+            raise ValueError("Context cannot exceed 500 characters")
 
         number_of_files = input_data.get("numberOfFiles")
         # Names exactly which documents to process, where numberOfFiles takes the
@@ -100,7 +107,7 @@ def handler(event, context):
         # Get test set
         test_set = _get_test_set(tracking_table, test_set_id)
         if not test_set:
-            raise ValueError(f"Test set with ID '{test_set_id}' not found")
+            raise ResourceNotFound(f"Test set with ID '{test_set_id}' not found")
 
         # Determine actual file count to process
         test_set_file_count = test_set["fileCount"]
@@ -280,6 +287,14 @@ def handler(event, context):
             "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
 
+    except ResourceNotFound as e:
+        # WARNING, not ERROR: a caller naming a test set, run or profile that does
+        # not exist is an ordinary outcome, and the same choice `api_adapter` makes
+        # for this class. Letting it fall into the catch-all below would put every
+        # 404 into the error channel — the noise-in-the-wrong-channel problem one
+        # level down from the 500-for-a-not-found this convention exists to fix.
+        logger.warning(f"Not found in test runner: {str(e)}")
+        raise
     except Exception as e:
         logger.error(f"Error in test runner: {str(e)}")
         raise
@@ -302,7 +317,7 @@ def send_test_run_to_review(args):
         "Item"
     )
     if not run:
-        raise ValueError(f"Test run '{test_run_id}' not found")
+        raise ResourceNotFound(f"Test run '{test_run_id}' not found")
 
     files = run.get("Files") or []
     queued = 0
@@ -317,12 +332,7 @@ def send_test_run_to_review(args):
         # Never reopen a review that is already completed or skipped.
         alert_count = int(doc.get("ConfidenceAlertCount", 0) or 0)
         status = doc.get("HITLStatus", "")
-        if alert_count <= 0 or status in (
-            "Review Completed",
-            "Review Skipped",
-            "Completed",
-            "Skipped",
-        ):
+        if alert_count <= 0 or status in LEGACY_DONE:
             skipped += 1
             continue
 
@@ -333,7 +343,7 @@ def send_test_run_to_review(args):
             ),
             ExpressionAttributeValues={
                 ":t": True,
-                ":s": "PendingReview",
+                ":s": LegacyHitlStatus.PENDING_REVIEW.value,
                 ":tsid": run.get("TestSetId"),
             },
         )
@@ -510,14 +520,14 @@ def _published_revision(config_table, config_version):
 
 
 def _require_profile(config_table, config_version):
-    """Raise ``ValueError`` unless the configuration profile head exists."""
+    """Raise ``ResourceNotFound`` unless the configuration profile head exists."""
     table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
     item = table.get_item(
         Key={"Configuration": f"Config#{config_version}"},
         ProjectionExpression="Configuration",
     ).get("Item")
     if not item:
-        raise ValueError(f"Configuration profile '{config_version}' not found")
+        raise ResourceNotFound(f"Configuration profile '{config_version}' not found")
 
 
 def _pin_revision(config_table, config_version, revision):
@@ -537,6 +547,40 @@ def _pin_revision(config_table, config_version, revision):
         logger.warning(
             f"Could not pin r{revision} of '{config_version}' against retention: {e}"
         )
+
+
+def _current_format(body):
+    """``body`` migrated to the current config format, without mutating it.
+
+    A run records its configuration so it can be compared with other runs later.
+    Capturing a pre-0.9 profile or revision in its stored (flat classification)
+    shape would make every moved setting compare as ``<missing>`` against a run
+    captured in the nested shape, so the capture is normalised here.
+
+    The capture carries the resulting ``config_format_version``, including for a
+    body that recorded none — the stamp then states the shape the capture is in,
+    which is the current one. It must not depend on where the body came from, and
+    the two routes here no longer look alike: ``ConfigurationManager.get_revision()``
+    converts on read, so a pinned revision arrives already stamped, while a profile
+    head read straight from DynamoDB does not. A rule that dropped the stamp for an
+    unstamped body would therefore be able to see only the head path, and would give
+    one configuration two different captures according to how the run reached it —
+    one spurious difference in run comparison, on the one key that says nothing
+    about how documents are processed.
+    """
+    if not isinstance(body, dict) or not body:
+        return body
+    try:
+        return migrate_config(copy.deepcopy(body))
+    except Exception:  # noqa: BLE001 — the capture is a record, not the run's config
+        # The body was read; only its normalisation for later comparison failed.
+        # Record it as stored rather than failing the test run over it.
+        logger.warning(
+            "Could not convert the captured configuration to the current format; "
+            "recording it as stored",
+            exc_info=True,
+        )
+        return body
 
 
 def _capture_config(config_table, config_version=None, config_revision=None):
@@ -585,7 +629,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
         # instead." — which failed every startTestRun that pinned a revision.
         # The config read from DynamoDB never hit this because it comes back as
         # Decimal already.
-        config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
+        config["Config"] = json.loads(
+            json.dumps(_current_format(body)), parse_float=Decimal
+        )
         _pin_revision(config_table, config_version, config_revision)
         return config
 
@@ -603,7 +649,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
                 return config
         response = table.get_item(Key={"Configuration": key})
         if "Item" in response:
-            config["Config"] = _decompress_config_item(response["Item"])
+            config["Config"] = _current_format(
+                _decompress_config_item(response["Item"])
+            )
         else:
             logger.warning(f"Config {key} not found")
 
@@ -729,9 +777,9 @@ def _json_default(value):
     # documented round-trip semantic) and a loud ``TypeError`` for
     # everything else — configs get their known types converted, and
     # genuinely-surprising types still raise where they should.
+    import base64 as _b64
     import datetime as _dt
     import uuid as _uuid
-    import base64 as _b64
 
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
         # ISO-8601 — read-back is a string, not a datetime; that mirrors
@@ -744,7 +792,11 @@ def _json_default(value):
         # ``"b'...'"`` which is neither valid data nor decodable.
         return _b64.b64encode(bytes(value)).decode("ascii")
     if isinstance(value, (set, frozenset)):
-        return sorted(value) if all(isinstance(v, (str, int, float)) for v in value) else list(value)
+        return (
+            sorted(value)
+            if all(isinstance(v, (str, int, float)) for v in value)
+            else list(value)
+        )
     # Genuinely-surprising types raise so the failure is loud and named
     # rather than silently coerced to a repr that corrupts the round-trip.
     # Pinned by ``test_non_decimal_non_json_types_raise_typeerror_not_silent_str``.

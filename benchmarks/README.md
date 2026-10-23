@@ -22,7 +22,9 @@ benchmarks/
   corpus/
     generators/              – exact-ground-truth synthetic document generators
     manifest.yaml            – generated + referenced docs with GT pointers
+                               (paths relative to the repo root — see METHODOLOGY §1.A)
   harness/
+    corpus_manifest.py       – read manifest.yaml against THIS checkout (refuses absolute paths)
     gen_corpus.py            – build the synthetic corpus (writes docs + GT JSON)
     make_configs.py          – expand config_matrix.yaml into full v0.6 config variants
     run_matrix.py            – orchestrate runs (upload configs, launch, poll)

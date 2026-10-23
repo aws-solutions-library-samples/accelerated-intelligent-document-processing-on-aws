@@ -121,7 +121,7 @@ Astra out of `CACHEPOINT_SUPPORTED_MODELS`.
 | Capability | Supported? | Notes |
 |---|---|---|
 | OCR (Bedrock backend) | ✅ | Image + text input |
-| Classification | ✅ | Page-level and holistic |
+| Classification | ✅ | Both strategies, both granularities |
 | Extraction (standard) | ✅ | Text + page images |
 | **Agentic / advanced extraction** | ✅ | Astra reaches Converse and emits `toolUse` under a forced `toolChoice`. **This is the key difference from GPT-5.x.** |
 | Confidence (assessment) | ✅ | |
@@ -243,7 +243,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 | Capability | Supported? | Notes |
 |---|---|---|
 | OCR (Bedrock backend) | ✅ | Image + text input |
-| Classification | ✅ | Page-level and holistic |
+| Classification | ✅ | Both strategies, both granularities |
 | Extraction (standard) | ✅ | Text + page images |
 | Confidence (assessment) | ✅ | `separate` and `integrated` modes on the simple (non-agentic) path |
 | Summarization | ✅ | |
@@ -281,7 +281,7 @@ Chat-with-Document) exposes a `reasoning_effort` config field.
 | OpenAI GPT-5.x | `minimal`, `low`, `medium`, `high` | Responses API `reasoning.effort` |
 | OpenAI GPT-6 Astra | `none`, `low`, `medium`, `high`, `xhigh`, `max` | Converse `additionalModelRequestFields.reasoning.effort` |
 | xAI Grok | `none`, `low`, `medium`, `high`, `xhigh` (**not** `max`) | Converse `additionalModelRequestFields.reasoning.effort` |
-| Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 | `low`, `medium`, `high`, `xhigh`, `max` | Bedrock Converse `output_config.effort` |
+| Claude Sonnet 5 / Sonnet 5.5 / Sonnet 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 | `low`, `medium`, `high`, `xhigh`, `max` | Bedrock Converse `output_config.effort` |
 
 The vocabularies genuinely differ — `minimal` is GPT-5.x-only, `none` is not a
 Claude value, and `max` is valid everywhere except Grok. The config UI offers the

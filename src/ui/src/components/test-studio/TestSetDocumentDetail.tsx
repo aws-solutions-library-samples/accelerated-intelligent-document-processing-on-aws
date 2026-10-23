@@ -166,7 +166,7 @@ const TestSetDocumentDetail = (): React.JSX.Element => {
                   ]}
                 />
                 {docView === 'source' ? (
-                  <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} presignVia="server" />
+                  <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} />
                 ) : (
                   <GroundTruthVisualEditor
                     bucket={testSetBucket}

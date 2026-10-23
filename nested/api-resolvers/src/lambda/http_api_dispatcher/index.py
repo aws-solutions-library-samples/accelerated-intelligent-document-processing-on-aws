@@ -43,10 +43,111 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from validation import validate_arguments
 
-from idp_common.api_adapter import _http_response, normalize_event
+from idp_common.api_adapter import (
+    ResourceAccessDenied,
+    ResourceNotFound,
+    _http_response,
+    normalize_event,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+
+# ---------------------------------------------------------------------------
+# Which control refused — the `authzControl` field on every 403 body
+# ---------------------------------------------------------------------------
+# A 403 with `errorType: "Unauthorized"` is the ONLY authorization-refusal shape
+# this API has, and it is produced by controls that answer opposite questions:
+#
+#   * the field-level group floor in authz.py — "this caller's GROUPS do not admit
+#     this operation";
+#   * a per-object control inside a resolver — "this caller's groups were fine and
+#     the OBJECT they named was refused" (a bucket outside the deployment's
+#     allow-list, a chat session they do not own, a document selection that is
+#     unfinished or out of their configuration scope).
+#
+# Nothing in the response distinguished them. The live RBAC matrix
+# (`scripts/test_api_rbac.py`) asserts the first and cannot avoid provoking the
+# second — it drives every operation with deliberately bogus arguments — so eight
+# cells reported a per-object control working correctly as a group-authorization
+# failure, and a reader had to go to CloudWatch to tell the two apart. Issue #1308.
+#
+# `errorType` stays `"Unauthorized"` and the status stays 403 for every value
+# below: the UI keys on those and nothing about the client contract changes. This
+# field is ADDITIVE, and a consumer that does not read it sees exactly what it saw
+# before.
+#
+# The vocabulary is closed, and the names are the stable part — a consumer matches
+# on these strings. `scripts/test_api_rbac.py` derives its own table from this
+# dict, so the two cannot drift.
+AUTHZ_CONTROL_FIELD = "authzControl"
+#: authz.enforce refused: undeclared field, IAM_ONLY operation, or group mismatch.
+#: All three are decisions about the FIELD and the CALLER'S GROUPS.
+AUTHZ_CONTROL_GROUP_FLOOR = "api-group-floor"
+#: A resolver refused the OBJECT the caller named, having admitted the caller.
+#: Declared by the resolver, by raising an exception named `ResourceAccessDenied`
+#: (recognised by class name across the invoke boundary, like `ResourceNotFound`).
+AUTHZ_CONTROL_RESOURCE = "resource"
+#: A resolver refused and did NOT say which control did it. Deliberately distinct
+#: from `resource`: an unlabelled refusal gets the STRICT reading downstream, so
+#: forgetting to declare a per-object control costs a visible failure rather than a
+#: silent pass. Defaulting the other way would let a genuine group-check regression
+#: inside a resolver read as a known coverage gap.
+AUTHZ_CONTROL_RESOLVER_UNSPECIFIED = "resolver"
+#: normalize_event refused an invocation that asserted its own `identity`. Neither
+#: a group decision nor an object one — reachable only by a principal holding
+#: lambda:InvokeFunction on this function directly.
+AUTHZ_CONTROL_UNVERIFIED_IDENTITY = "unverified-identity"
+
+AUTHZ_CONTROLS = (
+    AUTHZ_CONTROL_GROUP_FLOOR,
+    AUTHZ_CONTROL_RESOURCE,
+    AUTHZ_CONTROL_RESOLVER_UNSPECIFIED,
+    AUTHZ_CONTROL_UNVERIFIED_IDENTITY,
+)
+
+
+def _denial_response(message: str, control: str) -> Dict[str, Any]:
+    """The one place a 403 body is built, so every denial carries a control label.
+
+    One function rather than four literals: a new refusal path that forgets the
+    label is the failure mode this exists to prevent, and the harness reads an
+    absent label as "this deployment cannot tell me", which silently restores the
+    behaviour #1308 is about.
+
+    An unrecognised value is **logged and downgraded, never raised.** Every call
+    site passes one of the module constants, so reaching this branch is a
+    programming error — but this function runs inside an ``except`` handler, so an
+    exception from here escapes the handler entirely and API Gateway answers a
+    bodiless 502. A refusal that becomes a 502 is worse than one carrying the wrong
+    label: it stops being a denial the UI can render, and it moves a deliberate
+    policy decision into the 5xx rate that server faults are alarmed on. Denying
+    with the strict label keeps the refusal a refusal, and the ERROR line is how the
+    mistake gets found.
+    """
+    if control not in AUTHZ_CONTROLS:
+        logger.error(
+            "Unknown authz control %r; expected one of %s. Denying with %r, which "
+            "every consumer reads strictly. This is a programming error in this "
+            "module, not an authorization decision about the caller.",
+            control,
+            AUTHZ_CONTROLS,
+            AUTHZ_CONTROL_RESOLVER_UNSPECIFIED,
+        )
+        control = AUTHZ_CONTROL_RESOLVER_UNSPECIFIED
+    return _http_response(
+        403,
+        {
+            "errors": [
+                {
+                    "message": message,
+                    "errorType": "Unauthorized",
+                    AUTHZ_CONTROL_FIELD: control,
+                }
+            ]
+        },
+    )
+
 
 # REST API Gateway abandons an integration after 29s (account default) and
 # answers the browser `504` with no body, so anything slower than this is
@@ -141,15 +242,19 @@ def _load_field_function_map() -> Dict[str, str]:
 FIELD_FUNCTION_MAP: Dict[str, str] = _load_field_function_map()
 
 # Field aliases: fields served by the SAME resolver Lambda as another field.
-# Kept out of FIELD_FUNCTION_MAP (the SSM parameter that carries it) because
-# that parameter is at the 8 KB Advanced-tier ceiling — one map entry per
-# GraphQL field (rather than per unique resolver Lambda) would duplicate the
-# same ARN/name dozens of times and overflow it (worse in GovCloud, where
-# arn:aws-us-gov:... is longer than arn:aws:...). Each alias's resolver
+# Kept out of FIELD_FUNCTION_MAP (the SSM parameter that carries it): one map
+# entry per unique resolver Lambda, not per GraphQL field. Advanced-tier SSM
+# value limit is 8,192 bytes; the resolved worst case is checked by
+# scripts/tests/test_http_api_field_map_size.py. Route additional fields of an
+# existing Lambda through FIELD_ALIASES. Each alias's resolver
 # branches on the GraphQL `fieldName`, which the normalized event carries
 # regardless of which field name routed to it.
 FIELD_ALIASES: Dict[str, str] = {
     "getFilePresignedUrl": "getFileContents",
+    # Both presign fields alias the same resolver, which dispatches on fieldName.
+    # An alias rather than a FIELD_FUNCTION_MAP entry for the reason stated below:
+    # HttpApiFieldFunctionMap is already at its 8 KB Advanced-tier ceiling.
+    "getFilePresignedUrls": "getFileContents",
     "listSampleDocuments": "uploadDocument",
     "uploadSampleDocument": "uploadDocument",
     # addDocumentsToTestSet (TestSetResolverFunction)
@@ -162,8 +267,17 @@ FIELD_ALIASES: Dict[str, str] = {
     "deleteTestSets": "addDocumentsToTestSet",
     "estimateReviewEffort": "addDocumentsToTestSet",
     "getAnnotationQueue": "addDocumentsToTestSet",
-    # Single hop to a real SSM map entry: HttpApiFieldFunctionMap is at its 8 KB
-    # Advanced-tier ceiling, so a new key would overflow the parameter.
+    "assignTestSetDocuments": "addDocumentsToTestSet",
+    "unassignTestSetDocuments": "addDocumentsToTestSet",
+    "listMyTestSetTasks": "addDocumentsToTestSet",
+    "listTestSetQueues": "addDocumentsToTestSet",
+    "saveTestSetDocumentSection": "addDocumentsToTestSet",
+    "skipTestSetDocument": "addDocumentsToTestSet",
+    "claimTestSetDocument": "addDocumentsToTestSet",
+    "updateTestSetQueue": "addDocumentsToTestSet",
+    # Single hop to a real SSM map entry (aliases do not chain). Advanced-tier
+    # SSM value limit is 8,192 bytes; the resolved worst case is checked by
+    # scripts/tests/test_http_api_field_map_size.py.
     "openTestSetAnnotationDraft": "addDocumentsToTestSet",
     "generateDraftLabels": "addDocumentsToTestSet",
     "getDraftLabelJob": "addDocumentsToTestSet",
@@ -189,6 +303,12 @@ FIELD_ALIASES: Dict[str, str] = {
     "labelConfigProfileRevision": "deleteConfigVersion",
     "listConfigProfileRevisions": "deleteConfigVersion",
     "restoreConfigProfileRevision": "deleteConfigVersion",
+    # Config prefix mappings (S3 prefix -> Configuration Profile), served by the
+    # same configuration resolver.
+    "listConfigPrefixMappings": "deleteConfigVersion",
+    "putConfigPrefixMapping": "deleteConfigVersion",
+    "deleteConfigPrefixMapping": "deleteConfigVersion",
+    "resolveConfigPrefixMapping": "deleteConfigVersion",
     "getConfigVersion": "deleteConfigVersion",
     "getConfigVersions": "deleteConfigVersion",
     "getConfigurationLibraryFile": "deleteConfigVersion",
@@ -220,6 +340,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "completeSectionReview": "claimReview",
     "releaseReview": "claimReview",
     "skipAllSectionsReview": "claimReview",
+    "saveSectionReviewEdits": "claimReview",
     # createUser (UserManagementFunctionArn)
     "updateUser": "createUser",
     "deleteUser": "createUser",
@@ -231,6 +352,36 @@ FIELD_ALIASES: Dict[str, str] = {
     "listFinetuningJobs": "createFinetuningJob",
     # sendTestRunToReview (TestRunnerFunction)
     "sendTestRunToReview": "startTestRun",
+    # listInboxMessages (NotificationsResolverFunction)
+    "getInboxUnreadCount": "listInboxMessages",
+    "getInboxPreferences": "listInboxMessages",
+    "markInboxMessages": "listInboxMessages",
+    "markAllInboxMessagesRead": "listInboxMessages",
+    "deleteInboxMessages": "listInboxMessages",
+    "clearReadInboxMessages": "listInboxMessages",
+    "updateInboxPreferences": "listInboxMessages",
+    # getMyReviewQueues (ReviewQueuesResolverFunction)
+    "listReviewQueueItems": "getMyReviewQueues",
+    "listMyReviewWork": "getMyReviewQueues",
+    "getReviewItem": "getMyReviewQueues",
+    "claimReviewItem": "getMyReviewQueues",
+    "claimNextReviewItem": "getMyReviewQueues",
+    "renewReviewLease": "getMyReviewQueues",
+    "releaseReviewItem": "getMyReviewQueues",
+    "saveReviewDraft": "getMyReviewQueues",
+    "completeReviewItem": "getMyReviewQueues",
+    "rejectReviewItem": "getMyReviewQueues",
+    "removeReviewItem": "getMyReviewQueues",
+    "getReviewQueuesOverview": "getMyReviewQueues",
+    "forceReleaseReviewItem": "getMyReviewQueues",
+    "reassignReviewItem": "getMyReviewQueues",
+    "takeOverReviewItem": "getMyReviewQueues",
+    "moveReviewItem": "getMyReviewQueues",
+    "listReviewQueues": "getMyReviewQueues",
+    "listAnnotators": "getMyReviewQueues",
+    "createReviewQueue": "getMyReviewQueues",
+    "updateReviewQueue": "getMyReviewQueues",
+    "deleteReviewQueue": "getMyReviewQueues",
 }
 
 
@@ -324,12 +475,33 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
         if isinstance(data, dict):
             msg = data.get("errorMessage", msg)
             err_type = data.get("errorType", "") or ""
+        # A PER-OBJECT refusal -> 403, labelled `resource`. Checked BEFORE the
+        # general authorization branch below, because this class's messages keep the
+        # "Unauthorized" prefix (deliberately, so the mapping survives a resolver
+        # deployed ahead of this dispatcher) and that prefix would otherwise match
+        # the general branch first and lose the attribution. Matched by class NAME:
+        # the exception object does not
+        # cross the invoke boundary, only data["errorType"], so a resolver with no
+        # idp_common dependency can declare its own class of this name. See
+        # idp_common.api_adapter.ResourceAccessDenied.
+        if err_type == "ResourceAccessDenied":
+            raise ResourceAccessDenied(msg)
         # Authorization denials -> 403. Match by exception class name or a
-        # conventional "Unauthorized:"/"Forbidden" message prefix.
+        # conventional "Unauthorized:"/"Forbidden" message prefix. Reaching here
+        # means the resolver did not say which control refused, which the handler
+        # labels `resolver` rather than guessing.
         if err_type in ("PermissionError", "AuthorizationError") or msg.startswith(
             ("Unauthorized", "Forbidden")
         ):
             raise PermissionError(msg)
+        # A named resource that does not exist -> 404. Matched by class NAME: the
+        # exception object does not cross the invoke boundary, only
+        # data["errorType"], so a resolver with no idp_common dependency can
+        # declare its own class of this name. See
+        # idp_common.api_adapter.ResourceNotFound for why its errorType is not
+        # "NotFound" (that one means "operation not routable here").
+        if err_type == "ResourceNotFound":
+            raise ResourceNotFound(msg)
         # Client input errors -> 400.
         if err_type in ("ValueError", "KeyError"):
             raise ValueError(msg)
@@ -359,9 +531,7 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         appsync_event = normalize_event(event)
     except PermissionError as e:
         logger.warning("Rejecting invocation with an unverified identity: %s", e)
-        return _http_response(
-            403, {"errors": [{"message": str(e), "errorType": "Unauthorized"}]}
-        )
+        return _denial_response(str(e), AUTHZ_CONTROL_UNVERIFIED_IDENTITY)
     field = appsync_event.get("info", {}).get("fieldName", "")
 
     if not field:
@@ -421,11 +591,28 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
                     ]
                 },
             )
-    except PermissionError as e:
+    except authz.GroupFloorDenied as e:
+        # The FIELD-level group floor refused: the caller's groups do not admit this
+        # operation (or it is undeclared, or IAM-only). Attributed from the
+        # exception CLASS, which only authz.enforce raises, rather than from the
+        # message — resolver group refusals and resolver per-object refusals are
+        # both worded "Unauthorized: ...", so prose cannot carry this.
         logger.warning("Authorization denied for %s: %s", field, e)
-        return _http_response(
-            403, {"errors": [{"message": str(e), "errorType": "Unauthorized"}]}
-        )
+        return _denial_response(str(e), AUTHZ_CONTROL_GROUP_FLOOR)
+    except ResourceAccessDenied as e:
+        # A resolver admitted the caller's groups and refused the OBJECT they
+        # named. Same status and errorType as every other denial; the label is the
+        # only difference, and it is what lets a consumer tell "correctly refused
+        # for their group" from "group was fine, the resource was refused".
+        logger.warning("Resource access denied for %s: %s", field, e)
+        return _denial_response(str(e), AUTHZ_CONTROL_RESOURCE)
+    except PermissionError as e:
+        # A refusal this layer cannot attribute: a resolver's own group check, or a
+        # per-object control that has not been declared with ResourceAccessDenied.
+        # Labelled as unattributed rather than guessed at, and read downstream as
+        # the strict verdict.
+        logger.warning("Authorization denied for %s: %s", field, e)
+        return _denial_response(str(e), AUTHZ_CONTROL_RESOLVER_UNSPECIFIED)
     except ResolverTimeout as e:
         # 504 with a body. API Gateway's own 29s timeout produces a 504 with an
         # empty body, which is what made this failure mode undiagnosable from
@@ -441,6 +628,24 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
                     }
                 ]
             },
+        )
+    except ResourceNotFound as e:
+        # 404 with errorType "ResourceNotFound" — NOT the "NotFound" the
+        # unroutable-operation branch above returns. The two 404s mean different
+        # things ("this object does not exist" vs "this deployment does not have
+        # this operation") and the live RBAC harness keys its feature-disabled
+        # probe on the difference.
+        #
+        # Logged at warning, not error: this is an ordinary outcome. Without this
+        # arm a resolver that refused because the named object does not exist
+        # answered 500, which counted against the API's 5xx signals. Not *every*
+        # deliberate not-found did: the unroutable-operation branch above already
+        # answered 404, and the IAM-gated direct path in `api_adapter.py`
+        # propagates the exception rather than mapping it to a status at all.
+        logger.warning("Not found for %s: %s", field, e)
+        return _http_response(
+            404,
+            {"errors": [{"message": str(e), "errorType": "ResourceNotFound"}]},
         )
     except (ValueError, KeyError) as e:
         logger.warning("Bad request for %s: %s", field, e)

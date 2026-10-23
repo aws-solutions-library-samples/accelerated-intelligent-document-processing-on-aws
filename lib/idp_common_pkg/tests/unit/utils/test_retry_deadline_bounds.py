@@ -473,8 +473,8 @@ def test_concurrent_calls_do_not_share_the_cumulative_budget():
 @pytest.mark.unit
 def test_deadline_propagates_through_asyncio_primitives():
     """The agentic fan-out uses gather/create_task and asyncio.to_thread, so the
-    deadline must survive all three. It does NOT survive a raw ThreadPoolExecutor —
-    that limitation is documented on set_lambda_deadline_epoch."""
+    deadline must survive all three. A raw ThreadPoolExecutor does not carry the
+    ContextVar either, and is covered separately below."""
     deadline = time.time() + 500
 
     async def run():
@@ -497,19 +497,37 @@ def test_deadline_propagates_through_asyncio_primitives():
 
 
 @pytest.mark.unit
-def test_thread_pool_does_not_inherit_the_deadline():
-    """Pins the documented limitation so it cannot be silently relied upon."""
+def test_a_thread_pool_worker_can_read_the_deadline():
+    """The ContextVar still does not cross; the accessor answers anyway, and must.
+
+    This library reaches Bedrock from a raw ``ThreadPoolExecutor`` on the two paths
+    the budget gate matters most on — ``assessment.batching`` fans concurrent
+    confidence batches out with ``pool.map``, and
+    ``bedrock.client.generate_embeddings_batch`` with ``executor.submit`` — so a
+    deadline readable only inside the calling context leaves the gate inert exactly
+    where a 300-second request is retried. Both halves are asserted: the ContextVar
+    is genuinely empty in the worker, which is why the accessor cannot be a bare
+    ``ContextVar.get``, and ``copy_context`` is no longer load-bearing for this.
+    """
+    import contextvars
     from concurrent.futures import ThreadPoolExecutor
 
-    set_lambda_deadline_epoch(time.time() + 500)
+    from idp_common.lambda_deadline import _LAMBDA_DEADLINE_EPOCH
+
+    deadline = time.time() + 500
+    set_lambda_deadline_epoch(deadline)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        assert pool.submit(get_lambda_deadline_epoch).result() is None
-    # ...and copy_context() is the documented workaround.
-    import contextvars
+        assert pool.submit(_LAMBDA_DEADLINE_EPOCH.get).result() is None
+        assert pool.submit(get_lambda_deadline_epoch).result() == deadline
 
     ctx = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=1) as pool:
-        assert pool.submit(ctx.run, get_lambda_deadline_epoch).result() is not None
+        assert pool.submit(ctx.run, get_lambda_deadline_epoch).result() == deadline
+
+    # And clearing it clears both, so a test or a local run is not left bounded.
+    set_lambda_deadline_epoch(None)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(get_lambda_deadline_epoch).result() is None
 
 
 # ---------------------------------------------------------------------------

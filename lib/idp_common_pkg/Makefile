@@ -57,8 +57,13 @@ test: test-unit
 test-unit:
 	$(PYTEST_HERMETIC) $(PYTEST_PARALLEL) -m "not integration"
 
+# Real AWS, so NOT $(PYTEST_HERMETIC) — that wrapper removes the credentials and
+# region these tests exist to use. $(PYTEST_FIRST_PARTY) is the same interpreter
+# with the AWS environment left alone and only the first-party PYTHONPATH pinned,
+# so this suite still measures the checkout it was started from (#1094). Taking
+# the whole wrapper off used to take the pin with it.
 test-integration:
-	$(PYTHON) -m pytest -m "integration"
+	$(PYTEST_FIRST_PARTY) -m "integration"
 
 test-cicd: test-unit-cicd
 

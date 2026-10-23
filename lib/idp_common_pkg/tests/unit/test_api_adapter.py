@@ -16,6 +16,7 @@ import pytest
 
 from idp_common.api_adapter import (
     CallerIdentityRefused,
+    ResourceNotFound,
     _coerce_groups,
     api_resolver,
     normalize_event,
@@ -401,6 +402,63 @@ def test_decorator_http_value_error_400():
     result = handler(_http_event("x", "[Admin]"), None)
     assert result["statusCode"] == 400
     assert json.loads(result["body"])["errors"][0]["errorType"] == "BadRequest"
+
+
+def test_decorator_http_resource_not_found_404():
+    """ResourceNotFound -> 404 with its own errorType.
+
+    The in-process half of the mapping the dispatcher applies across the invoke
+    boundary; the two have to agree, or the same refusal gets a different status
+    depending on how the resolver was reached (#1304).
+    """
+
+    @api_resolver
+    def handler(event, context):
+        raise ResourceNotFound("Test set 'nope' not found")
+
+    result = handler(_http_event("x", "[Admin]"), None)
+    assert result["statusCode"] == 404
+    body = json.loads(result["body"])
+    assert body["errors"][0]["errorType"] == "ResourceNotFound"
+    assert body["errors"][0]["message"] == "Test set 'nope' not found"
+
+
+def test_resource_not_found_is_not_reported_as_a_bad_request_or_a_server_error():
+    """The arm must sit above the catch-all AND not be absorbed by the 400 arm.
+
+    ResourceNotFound deliberately does not subclass ValueError: a missing object
+    is not a malformed request, and the live RBAC harness distinguishes the two.
+    Ordering is what makes this pass, so it is asserted behaviourally rather than
+    by reading the source.
+    """
+
+    @api_resolver
+    def handler(event, context):
+        raise ResourceNotFound("gone")
+
+    assert handler(_http_event("x", "[Admin]"), None)["statusCode"] == 404
+    assert not issubclass(ResourceNotFound, (ValueError, KeyError)), (
+        "subclassing ValueError would make this refusal a 400 under the arm below"
+    )
+    assert not issubclass(ResourceNotFound, PermissionError), (
+        "subclassing PermissionError would make this refusal a 403"
+    )
+
+
+def test_a_resource_not_found_on_the_direct_path_still_propagates():
+    """A direct (IAM-gated) invocation gets the exception, not a 404 envelope.
+
+    Same contract the other exception types have on that path: the invoker sees a
+    function error rather than a 200 carrying an error body.
+    """
+
+    @api_resolver
+    def handler(event, context):
+        raise ResourceNotFound("gone")
+
+    event = {"arguments": {}, "identity": None, "info": {"fieldName": "x"}}
+    with pytest.raises(ResourceNotFound):
+        handler(event, None)
 
 
 def test_decorator_http_unexpected_error_500():

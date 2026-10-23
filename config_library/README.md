@@ -56,11 +56,12 @@ classes:
 To override a specific setting:
 
 ```yaml
-notes: "Configuration with custom classification method"
+notes: "Configuration that classifies a whole packet in one call"
 
-# Override just the classification method - everything else uses defaults
+# Override just the granularity - everything else uses defaults
 classification:
-  classificationMethod: textbasedHolisticClassification
+  one_stage:
+    granularity: packet
 
 classes:
   # ... your document classes
@@ -227,7 +228,7 @@ For documents with extensive tabular data, consider enabling agentic extraction 
 
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:

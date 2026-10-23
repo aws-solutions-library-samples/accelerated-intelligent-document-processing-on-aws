@@ -15,7 +15,6 @@ import {
   Select,
   Input,
   Textarea,
-  Modal,
   Alert,
   Badge,
   Popover,
@@ -25,7 +24,6 @@ import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
-import FileViewer from '../document-viewer/JSONViewer';
 import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../common/confidence-alerts-utils';
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import ClassNameText from '../common/ClassNameText';
@@ -33,16 +31,21 @@ import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/
 import { getConfigClassOptions } from '../common/config-class-options';
 import PageGroupingEditor from '../common/PageGroupingEditor';
 import type { GroupedSection } from '../common/section-grouping';
-import { updateDocumentSections } from '../../graphql/generated';
-import usePageThumbnails from '../../hooks/use-page-thumbnails';
+import { saveDocumentGrouping } from '../common/document-grouping';
+import { submitProcessChanges } from '../common/process-changes';
+import ProcessChangesConfirmModal from '../common/ProcessChangesConfirmModal';
+import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
 import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
+import { documentEditHref } from '../../routes/constants';
 import { useDocumentVersion } from '../../contexts/document-version';
-import { processChanges, getFilePresignedUrl, skipAllSectionsReview } from '../../graphql/generated';
+import { getFilePresignedUrl, skipAllSectionsReview } from '../../graphql/generated';
 import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
+import { SKIP_ALL_REASONS, isInReviewQueue, isQueueManaged } from '../common/review-status';
+import ReasonModal from '../common/ReasonModal';
 
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
@@ -290,43 +293,31 @@ const StatusCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
   );
 };
 
-const ActionsCell = ({
-  item,
-  pages,
-  documentItem,
-  mergedConfig,
-  isSectionCompleted,
-  isReviewerOnly,
-  isEditModeEnabled,
-  // Section navigation props
-  allSections = [],
-  currentSectionIndex = 0,
-  onNavigateToSection,
-  onViewerOpen,
-  onViewerClose,
-  isViewerOpen = false,
-}: {
-  item: SectionItem;
-  pages: PageItem[];
-  documentItem: DocumentItem | undefined;
-  mergedConfig: Record<string, unknown> | null | undefined;
-  isSectionCompleted: boolean;
-  isReviewerOnly: boolean;
-  isEditModeEnabled: boolean;
-  allSections?: SectionItem[];
-  currentSectionIndex?: number;
-  onNavigateToSection: (index: number) => void;
-  onViewerOpen: () => void;
-  onViewerClose: () => void;
-  isViewerOpen?: boolean;
-}) => {
+/**
+ * A section's data opens in the unified editor's direct edit, on that section. "Edit
+ * Data" for a user who may edit (Admin, Author, Reviewer), "View Data" otherwise; the
+ * editor decides what is editable (a document in a review queue is read-only there).
+ */
+const SectionDataLink = ({ item, documentItem }: { item: SectionItem; documentItem: DocumentItem | undefined }): React.JSX.Element => {
+  const { canWrite, canReview } = useUserRole();
+  const canEdit = canWrite || canReview;
+  const objectKey = (documentItem?.objectKey || documentItem?.ObjectKey || '') as string;
+  return (
+    <Button
+      href={documentEditHref(objectKey, String(item.Id))}
+      variant="inline-link"
+      iconName={canEdit ? 'edit' : undefined}
+      disabled={!objectKey || !item.OutputJSONUri}
+      disabledReason={!item.OutputJSONUri ? 'This section has no data yet' : undefined}
+    >
+      {canEdit ? 'Edit Data' : 'View Data'}
+    </Button>
+  );
+};
+
+const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: DocumentItem | undefined }) => {
   const [isDownloading, setIsDownloading] = React.useState(false);
   const { settings } = useSettingsContext();
-
-  // Disable View/Edit only if reviewer and no review owner (review not claimed)
-  // View Data should always be enabled, Edit Mode requires claimed review
-  const _hasReviewOwner = documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail;
-  const shouldDisableViewEdit = false; // View Data always enabled
 
   // Check if baseline is available based on evaluation status
   const isBaselineAvailable = documentItem?.evaluationStatus === 'BASELINE_AVAILABLE' || documentItem?.evaluationStatus === 'COMPLETED';
@@ -465,32 +456,17 @@ const ActionsCell = ({
 
   return (
     <SpaceBetween direction="horizontal" size="xs">
-      <FileViewer
-        fileUri={item.OutputJSONUri ?? ''}
-        fileType="json"
-        buttonText={isEditModeEnabled ? 'Edit Data' : 'View Data'}
-        sectionData={{ ...item, pages, documentItem, mergedConfig, isSectionCompleted, isReviewerOnly }}
-        onOpen={onViewerOpen}
-        onClose={onViewerClose}
-        disabled={shouldDisableViewEdit}
-        isReadOnly={!isEditModeEnabled}
-        allSections={allSections}
-        currentSectionIndex={currentSectionIndex}
-        onNavigateToSection={onNavigateToSection}
-        isExternallyOpen={isViewerOpen}
-      />
-      {!isViewerOpen && (
-        <ButtonDropdown
-          items={downloadMenuItems}
-          onItemClick={({ detail }) => handleDownload(detail.id)}
-          disabled={isDownloading}
-          loading={isDownloading}
-          variant="normal"
-          expandToViewport
-        >
-          Download
-        </ButtonDropdown>
-      )}
+      <SectionDataLink item={item} documentItem={documentItem} />
+      <ButtonDropdown
+        items={downloadMenuItems}
+        onItemClick={({ detail }) => handleDownload(detail.id)}
+        disabled={isDownloading}
+        loading={isDownloading}
+        variant="normal"
+        expandToViewport
+      >
+        Download
+      </ButtonDropdown>
     </SpaceBetween>
   );
 };
@@ -625,67 +601,27 @@ const EditablePageIdsCell = ({
 const EditableActionsCell = ({
   item,
   deleteSection,
-  pages,
   documentItem,
-  mergedConfig,
-  // Navigation props for edit mode
-  allSections = [],
-  currentSectionIndex = 0,
-  onNavigateToSection,
-  onViewerOpen,
-  onViewerClose,
-  isViewerOpen = false,
 }: {
   item: SectionItem;
   deleteSection: (id: string) => void;
-  pages: PageItem[];
   documentItem: DocumentItem | undefined;
-  mergedConfig: Record<string, unknown> | null | undefined;
-  allSections?: SectionItem[];
-  currentSectionIndex?: number;
-  onNavigateToSection: (index: number) => void;
-  onViewerOpen: () => void;
-  onViewerClose: () => void;
-  isViewerOpen?: boolean;
 }) => {
   return (
     <SpaceBetween direction="horizontal" size="xs">
-      <FileViewer
-        fileUri={item.OutputJSONUri ?? ''}
-        fileType="json"
-        buttonText="Edit Data"
-        sectionData={{ ...item, pages, documentItem, mergedConfig, isSectionCompleted: false, isReviewerOnly: false }}
-        onOpen={onViewerOpen}
-        onClose={onViewerClose}
-        disabled={!item.OutputJSONUri}
-        isReadOnly={false}
-        allSections={allSections}
-        currentSectionIndex={currentSectionIndex}
-        onNavigateToSection={onNavigateToSection}
-        isExternallyOpen={isViewerOpen}
-      />
-      {!isViewerOpen && <Button variant="icon" iconName="remove" ariaLabel="Delete section" onClick={() => deleteSection(item.Id)} />}
+      <SectionDataLink item={item} documentItem={documentItem} />
+      <Button variant="icon" iconName="remove" ariaLabel="Delete section" onClick={() => deleteSection(item.Id)} />
     </SpaceBetween>
   );
 };
 
-// Column definitions - now a factory that takes navigation params
+// Column definitions
 const createColumnDefinitions = (
   pages: PageItem[],
   documentItem: DocumentItem | undefined,
   mergedConfig: Record<string, unknown> | null | undefined,
-  isReviewerOnly: boolean,
-  isEditModeEnabled: boolean,
-  // Navigation params
-  allSections: SectionItem[],
-  openViewerSectionIndex: number | null,
-  setOpenViewerSectionIndex: (index: number | null) => void,
-  onNavigateToSection: (index: number) => void,
   classificationIndex: ClassificationIndex,
 ) => {
-  // Get completed sections from documentItem
-  const completedSections = documentItem?.hitlSectionsCompleted || [];
-
   return [
     {
       id: 'id',
@@ -732,29 +668,7 @@ const createColumnDefinitions = (
     {
       id: 'actions',
       header: 'Actions',
-      cell: (item: SectionItem) => {
-        // Find index of current item in allSections
-        const currentIndex = allSections?.findIndex((s: SectionItem) => s.Id === item.Id) ?? -1;
-        const isThisViewerOpen = openViewerSectionIndex === currentIndex;
-
-        return (
-          <ActionsCell
-            item={item}
-            pages={pages}
-            documentItem={documentItem}
-            mergedConfig={mergedConfig}
-            isSectionCompleted={completedSections.includes(item.Id)}
-            isReviewerOnly={isReviewerOnly}
-            isEditModeEnabled={isEditModeEnabled}
-            allSections={allSections}
-            currentSectionIndex={currentIndex}
-            onNavigateToSection={onNavigateToSection}
-            onViewerOpen={() => setOpenViewerSectionIndex(currentIndex)}
-            onViewerClose={() => setOpenViewerSectionIndex(null)}
-            isViewerOpen={isThisViewerOpen}
-          />
-        );
-      },
+      cell: (item: SectionItem) => <ActionsCell item={item} documentItem={documentItem} />,
       minWidth: 400,
       width: 400,
       isResizable: true,
@@ -767,16 +681,8 @@ const createPattern1EditColumnDefinitions = (
   pages: PageItem[],
   documentItem: DocumentItem | undefined,
   mergedConfig: Record<string, unknown> | null | undefined,
-  // Navigation params
-  allSections: SectionItem[],
-  openViewerSectionIndex: number | null,
-  setOpenViewerSectionIndex: (index: number | null) => void,
-  onNavigateToSection: (index: number) => void,
   classificationIndex: ClassificationIndex,
 ) => {
-  // Get completed sections from documentItem
-  const completedSections = documentItem?.hitlSectionsCompleted || [];
-
   return [
     {
       id: 'id',
@@ -815,37 +721,7 @@ const createPattern1EditColumnDefinitions = (
     {
       id: 'actions',
       header: 'Actions',
-      cell: (item: SectionItem) => {
-        // Find index of current item in allSections
-        const currentIndex = allSections?.findIndex((s: SectionItem) => s.Id === item.Id) ?? -1;
-        const isThisViewerOpen = openViewerSectionIndex === currentIndex;
-
-        return (
-          <SpaceBetween direction="horizontal" size="xs">
-            <FileViewer
-              fileUri={item.OutputJSONUri ?? ''}
-              fileType="json"
-              buttonText="Edit Data"
-              sectionData={{
-                ...item,
-                pages,
-                documentItem,
-                mergedConfig,
-                isSectionCompleted: completedSections.includes(item.Id),
-                isReviewerOnly: false,
-              }}
-              onOpen={() => setOpenViewerSectionIndex(currentIndex)}
-              onClose={() => setOpenViewerSectionIndex(null)}
-              disabled={!item.OutputJSONUri}
-              isReadOnly={false}
-              allSections={allSections}
-              currentSectionIndex={currentIndex}
-              onNavigateToSection={onNavigateToSection}
-              isExternallyOpen={isThisViewerOpen}
-            />
-          </SpaceBetween>
-        );
-      },
+      cell: (item: SectionItem) => <SectionDataLink item={item} documentItem={documentItem} />,
       minWidth: 200,
       width: 200,
       isResizable: true,
@@ -863,11 +739,6 @@ const createEditColumnDefinitions = (
   pages: PageItem[],
   documentItem: DocumentItem | undefined,
   mergedConfig: Record<string, unknown> | null | undefined,
-  // Navigation params
-  allSections: SectionItem[],
-  openViewerSectionIndex: number | null,
-  setOpenViewerSectionIndex: (index: number | null) => void,
-  onNavigateToSection: (index: number) => void,
   classificationIndex: ClassificationIndex,
 ) => [
   {
@@ -905,27 +776,7 @@ const createEditColumnDefinitions = (
   {
     id: 'actions',
     header: 'Actions',
-    cell: (item: SectionItem) => {
-      // Find index of current item in allSections
-      const currentIndex = allSections?.findIndex((s: SectionItem) => s.Id === item.Id) ?? -1;
-      const isThisViewerOpen = openViewerSectionIndex === currentIndex;
-
-      return (
-        <EditableActionsCell
-          item={item}
-          deleteSection={deleteSection}
-          pages={pages}
-          documentItem={documentItem}
-          mergedConfig={mergedConfig}
-          allSections={allSections}
-          currentSectionIndex={currentIndex}
-          onNavigateToSection={onNavigateToSection}
-          onViewerOpen={() => setOpenViewerSectionIndex(currentIndex)}
-          onViewerClose={() => setOpenViewerSectionIndex(null)}
-          isViewerOpen={isThisViewerOpen}
-        />
-      );
-    },
+    cell: (item: SectionItem) => <EditableActionsCell item={item} deleteSection={deleteSection} documentItem={documentItem} />,
     minWidth: 300,
     width: 350,
     isResizable: true,
@@ -944,7 +795,12 @@ const SectionsPanel = ({
   const [isRegrouping, setIsRegrouping] = useState(false);
   const [isSavingGrouping, setIsSavingGrouping] = useState(false);
   const [groupingNotice, setGroupingNotice] = useState<string | null>(null);
-  const thumbnailUrls = usePageThumbnails(pages);
+  // Deferred until the page-regrouping board is actually open: these thumbnails
+  // feed only that board, so signing them on mount signed a whole document's
+  // pages — one resolver round trip per document view — and rendered none of
+  // them. PagesPanel keeps signing eagerly because it shows its thumbnails
+  // immediately.
+  const { urls: thumbnailUrls, failure: thumbnailFailure } = usePageThumbnails(pages, { enabled: isRegrouping });
   const [editedSections, setEditedSections] = useState<SectionItem[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -952,7 +808,6 @@ const SectionsPanel = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
   // Track which section's viewer is open for navigation
-  const [openViewerSectionIndex, setOpenViewerSectionIndex] = useState<number | null>(null);
   // `mergedConfig` is the config VERSION the document was processed with
   // (see DocumentPanel: it fetches `documentVersionConfig` from the doc's
   // `configVersion` and passes it in here). Using the current live config
@@ -975,7 +830,8 @@ const SectionsPanel = ({
   const hitlStatusLower = documentItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
   const isHitlSkipped = hitlStatusLower === 'skipped' || hitlStatusLower === 'reviewskipped';
   const isHitlCompleted = hitlStatusLower === 'completed' || hitlStatusLower === 'reviewcompleted';
-  const hasPendingHITL = documentItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped;
+  // A queued document's review is skipped from its queue item, not here.
+  const hasPendingHITL = documentItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !isQueueManaged(documentItem?.hitlStatus);
   // Show skip button only if HITL pending and not already completed/skipped
   // (never while viewing a historical version — it mutates current state).
   const showSkipAllButton = canReview && hasPendingHITL && !isHistorical;
@@ -1028,25 +884,14 @@ const SectionsPanel = ({
     if (!documentKey) return;
     setIsSavingGrouping(true);
     try {
-      const response = await client.graphql({
-        query: updateDocumentSections,
-        variables: {
-          objectKey: documentKey,
-          sections: next.map((section) => ({
-            sectionId: section.sectionId,
-            classification: section.documentClass ?? undefined,
-            pageIds: section.pageIds.map((id) => String(id)),
-          })),
-        },
-      });
-      const result = response.data?.updateDocumentSections;
-      if (!result?.success) {
+      const result = await saveDocumentGrouping(documentKey, next);
+      if (!result.success) {
         // Surfaced rather than thrown: the resolver returns a reasoned refusal for the
         // cases a reviewer can act on — a document mid-pipeline, most of all.
-        setGroupingNotice(result?.message ?? 'The page grouping could not be saved.');
+        setGroupingNotice(result.message ?? 'The page grouping could not be saved.');
         return;
       }
-      setGroupingNotice(result.message ?? null);
+      setGroupingNotice(result.message);
       setIsRegrouping(false);
       // The document record changed underneath the page, so the caller refetches.
       if (onDocumentUpdate) onDocumentUpdate((prev) => ({ ...prev }));
@@ -1063,28 +908,19 @@ const SectionsPanel = ({
   // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL completed/skipped
   // Admins and Authors can always edit
   // - Viewing a historical version (read-only snapshot)
+  // - In a review queue, for every role: it is reviewed from its queue item
+  const inReviewQueue = isInReviewQueue(documentItem?.hitlStatus);
   const isEditModeDisabled =
     isHistorical ||
+    inReviewQueue ||
     (!canWrite && !canReview) ||
     (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlCompleted || isHitlSkipped));
 
   logger.debug('Edit Mode Check:', { isReviewerOnly, isEditModeDisabled, isHitlCompleted, isHitlSkipped });
 
-  // Auto-exit edit mode when switching to a historical version, or (for
-  // reviewers) when the document starts processing or HITL is completed/skipped.
-  useEffect(() => {
-    if (isHistorical && isEditMode) {
-      setIsEditMode(false);
-      return;
-    }
-    if (isReviewerOnly && isEditMode && (isDocumentProcessing || isHitlCompleted || isHitlSkipped)) {
-      logger.info('Auto-exiting edit mode due to status change');
-      setIsEditMode(false);
-    }
-  }, [isHistorical, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
-
-  // Handle skip all sections review (Admin only)
-  const handleSkipAllSections = async () => {
+  // Handle skip all sections review (Admin or Reviewer); the reason and note are
+  // recorded with the skip in the review history.
+  const handleSkipAllSections = async (reason: string, note: string | undefined) => {
     setIsSkipping(true);
     setShowSkipAllModal(false);
 
@@ -1096,7 +932,7 @@ const SectionsPanel = ({
 
       const result = await client.graphql({
         query: skipAllSectionsReview,
-        variables: { objectKey },
+        variables: { objectKey, reason, note },
       });
 
       logger.info('All sections review skipped successfully', result);
@@ -1462,25 +1298,8 @@ const SectionsPanel = ({
       console.log('Modified sections:', modifiedSections);
       console.log('Deleted sections:', deletedSectionIds);
 
-      // Call the GraphQL API with timeout
-      const result = await Promise.race([
-        client.graphql({
-          query: processChanges,
-          variables: {
-            objectKey,
-            modifiedSections: allChanges,
-          },
-        }),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Request timed out after 30 seconds')), 30000);
-        }),
-      ]);
-
-      const response = result.data.processChanges;
-
-      if (!response?.success) {
-        throw new Error((response?.message as string) || 'Failed to process changes - no response received');
-      }
+      // Call the API with a timeout
+      await submitProcessChanges(objectKey, allChanges);
 
       // Update document state with new HITL status (review completed via Save and Reprocess)
       if (onDocumentUpdate) {
@@ -1526,33 +1345,12 @@ const SectionsPanel = ({
     setValidationErrors({});
   };
 
-  // Handle section navigation - just update the open section index
-  // The FileViewer will close current viewer and open the new one based on the new index
-  const handleNavigateToSection = (newIndex: number): void => {
-    logger.info('Section navigation requested:', { from: openViewerSectionIndex, to: newIndex });
-    // Update the open viewer index - this triggers the FileViewer to close and re-open with new section
-    setOpenViewerSectionIndex(newIndex);
-  };
-
-  // Get all sections for navigation (use current view - edited or original)
-  const allSectionsForNav = isEditMode ? editedSections : sections || [];
-
   // Determine which columns and data to use
   // Pattern-1: uses data-only edit mode (no section structure editing)
   // Pattern-2/3: uses full edit mode with section structure editing
   const columnDefinitions = isEditMode
     ? isPattern1()
-      ? createPattern1EditColumnDefinitions(
-          pages,
-          documentItem,
-          mergedConfig,
-          // Navigation params for edit mode
-          allSectionsForNav,
-          openViewerSectionIndex,
-          setOpenViewerSectionIndex,
-          handleNavigateToSection,
-          classificationIndex,
-        )
+      ? createPattern1EditColumnDefinitions(pages, documentItem, mergedConfig, classificationIndex)
       : createEditColumnDefinitions(
           validationErrors,
           updateSection,
@@ -1562,26 +1360,9 @@ const SectionsPanel = ({
           pages,
           documentItem,
           mergedConfig,
-          // Navigation params for edit mode
-          allSectionsForNav,
-          openViewerSectionIndex,
-          setOpenViewerSectionIndex,
-          handleNavigateToSection,
           classificationIndex,
         )
-    : createColumnDefinitions(
-        pages,
-        documentItem,
-        mergedConfig,
-        isReviewerOnly,
-        isEditMode,
-        // Navigation params
-        allSectionsForNav,
-        openViewerSectionIndex,
-        setOpenViewerSectionIndex,
-        handleNavigateToSection,
-        classificationIndex,
-      );
+    : createColumnDefinitions(pages, documentItem, mergedConfig, classificationIndex);
 
   // Sort sections by their starting page ID for consistent display order.
   // During parallel Map state execution (Extraction/Assessment), subscription events
@@ -1621,11 +1402,13 @@ const SectionsPanel = ({
                         because it regenerates them. Hidden for Pattern-1, where BDA owns
                         the section structure. */}
                     {!isPattern1() && (
-                      <Button iconName="edit" onClick={() => setIsRegrouping(true)} disabled={isEditModeDisabled}>
-                        Edit page grouping
+                      // Always enabled for now; the server still refuses a save it can't take.
+                      <Button iconName="edit" onClick={() => setIsRegrouping(true)}>
+                        Edit Page Grouping
                       </Button>
                     )}
-                    <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick} disabled={isEditModeDisabled}>
+                    {/* Always enabled for now; the server still refuses a save it can't take. */}
+                    <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick}>
                       Edit Mode
                     </Button>
                   </>
@@ -1661,6 +1444,14 @@ const SectionsPanel = ({
         {groupingNotice && (
           <Alert type="info" dismissible onDismiss={() => setGroupingNotice(null)}>
             {groupingNotice}
+          </Alert>
+        )}
+
+        {/* The board's page cards are the thumbnails, so a refused signing leaves it
+            showing unlabelled empty cards. Say why instead. */}
+        {isRegrouping && thumbnailFailure && (
+          <Alert type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'} header="Page thumbnails unavailable">
+            {THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]}
           </Alert>
         )}
 
@@ -1724,92 +1515,37 @@ const SectionsPanel = ({
       </Container>
 
       {/* Confirmation Modal */}
-      <Modal
-        onDismiss={() => setShowConfirmModal(false)}
+      <ProcessChangesConfirmModal
         visible={showConfirmModal}
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button variant="link" onClick={() => setShowConfirmModal(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={confirmSaveChanges}>
-                Confirm & Process
-              </Button>
-            </SpaceBetween>
-          </Box>
+        structuralChanges={
+          editedSections.some((section) => hasActualChanges(section, sections)) ||
+          (sections ?? []).some((original) => !editedSections.find((edited) => edited.OriginalId === original.Id))
         }
-        header="Confirm Reprocessing"
-      >
-        <SpaceBetween size="s">
-          {(() => {
-            // Calculate changes to determine modal content
-            const actuallyModifiedSections = editedSections.filter((section) => hasActualChanges(section, sections));
-            const deletedSectionIds =
-              sections?.filter((original) => !editedSections.find((edited) => edited.OriginalId === original.Id)) || [];
-            const hasStructuralChanges = actuallyModifiedSections.length > 0 || deletedSectionIds.length > 0;
+        bdaMode={!!isPattern1()}
+        onConfirm={() => void confirmSaveChanges()}
+        onCancel={() => setShowConfirmModal(false)}
+      />
 
-            if (hasStructuralChanges) {
-              return (
-                <>
-                  <Box>You are about to save changes to document sections and trigger selective reprocessing. This will:</Box>
-                  <ul>
-                    <li>Update section classifications and page assignments</li>
-                    <li>Remove extraction data for modified sections</li>
-                    <li>Reprocess only the changed sections (skipping OCR and classification steps)</li>
-                  </ul>
-                </>
-              );
-            }
-            return (
-              <>
-                <Box>
-                  No section structure changes detected. This will trigger <strong>evaluation and summarization</strong> reprocessing.
-                </Box>
-                <Box>Use this when you have edited extraction data (predictions or baseline) and want to:</Box>
-                <ul>
-                  <li>Re-run evaluation to compare predictions against baseline</li>
-                  <li>Update the document summary report</li>
-                </ul>
-                <Alert type="info">
-                  {isPattern1()
-                    ? 'BDA (Bedrock Data Automation) processing will be automatically skipped since existing data is preserved.'
-                    : 'OCR, Classification, Extraction, and Assessment steps will be automatically skipped since existing data is preserved.'}
-                </Alert>
-              </>
-            );
-          })()}
-        </SpaceBetween>
-      </Modal>
-
-      {/* Skip All Sections Review Modal (Admin only) */}
-      <Modal
+      {/* Skip All Sections Review Modal (Admin or Reviewer) */}
+      <ReasonModal
         onDismiss={() => setShowSkipAllModal(false)}
         visible={showSkipAllModal}
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button variant="link" onClick={() => setShowSkipAllModal(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={handleSkipAllSections}>
-                Skip All Reviews
-              </Button>
-            </SpaceBetween>
-          </Box>
-        }
         header="Skip All Section Reviews"
+        reasons={SKIP_ALL_REASONS}
+        confirmLabel="Skip All Reviews"
+        loading={isSkipping}
+        onConfirm={(reason, note) => void handleSkipAllSections(reason, note)}
       >
         <SpaceBetween size="s">
           <Alert type="warning">This action will skip all pending section reviews and continue the document processing workflow.</Alert>
           <Box>Skipping review will:</Box>
           <ul>
             <li>Mark all pending sections as review skipped without human verification</li>
-            <li>Record this action in the review history</li>
+            <li>Record this action, with your reason, in the review history</li>
           </ul>
           <Box>Are you sure you want to skip all section reviews?</Box>
         </SpaceBetween>
-      </Modal>
+      </ReasonModal>
     </SpaceBetween>
   );
 };

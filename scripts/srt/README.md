@@ -143,7 +143,7 @@ srt_security_review:
 
 ### Why on every push, not just MRs to `develop`?
 
-The job needs no AWS and runs in **parallel** with `code_checks` (`needs: []`), so
+The job needs no AWS and runs in **parallel** with `static_checks` (`needs: []`), so
 it adds no wall-clock to the fast gate while still gating the expensive deploy
 stages. Running it on every push surfaces security regressions early on any
 branch, and GitLab emails the committer on failure.
@@ -239,6 +239,25 @@ substitute for its source in a security scan: every inline suppression is gone.
 ```bash
 make srt-setup
 ```
+
+### `PyYAML is not importable on this interpreter`
+
+```bash
+pip install PyYAML
+```
+
+`make srt-scan` refuses to start without it, and the refusal is deliberate rather
+than strict. The scan classifies Bandit's identifier-name findings (B105/B106) by
+whether their file sits inside a directory a deployment artifact is built from, and
+for a container-built Lambda that directory is named only in the CodeBuild buildspec
+— which needs a YAML parser to read. Without one, nothing can be established about
+the packaged set, so every such finding in test code is reported as a gating HIGH:
+a findings table and exit 1, which is also what a real security regression looks
+like. Install the package rather than reading the findings.
+
+Install it for the interpreter that runs the scan, which the message names. It is
+the one on `PATH` (or the repository's `.venv`), **not** SRT's managed venv under
+`.srt/.venv` — that one holds the scanners.
 
 ### Configuration issues
 

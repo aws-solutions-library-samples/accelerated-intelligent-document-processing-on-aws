@@ -10,7 +10,7 @@
  * corresponding view on that page.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert,
@@ -33,6 +33,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Table,
+  type TableProps,
   TextFilter,
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -63,11 +64,19 @@ import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals'
 import PublishVersionModal, { type PublishVersionInput } from './PublishVersionModal';
 import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from './GroundTruthVisualEditor';
+import { createLatestResponseGuard } from './latestResponseOnly';
 
 const client = generateClient();
 const logger = new ConsoleLogger('TestSetDetail');
 
 const PAGE_SIZE = 50;
+
+/**
+ * How long the search box waits before asking the server. The search covers the
+ * whole set rather than the page on screen, so it is a LIST over the set's keys —
+ * cheap, but not cheap enough to run once per keystroke.
+ */
+const SEARCH_DEBOUNCE_MS = 300;
 
 /**
  * After a bucket or zip add, how often the set's size is re-read and for how long.
@@ -98,7 +107,7 @@ export interface TestSetDocumentItem {
  */
 export const LABEL_SOURCE_BADGES: Record<string, { color: 'blue' | 'green' | 'grey' | 'severity-neutral'; text: string }> = {
   'draft-machine': { color: 'blue', text: 'Draft (machine)' },
-  'reviewed-human': { color: 'green', text: 'Reviewed (human)' },
+  'reviewed-human': { color: 'green', text: 'Reviewed' },
   synthetic: { color: 'grey', text: 'Synthetic' },
   uploaded: { color: 'grey', text: 'Uploaded' },
 };
@@ -371,6 +380,45 @@ export const formatSize = (size?: number | null): string => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+/**
+ * Comparators for the sortable document columns.
+ *
+ * Module-level on purpose: Cloudscape decides which header carries the sorted
+ * chevron by comparing the comparator (or the sorting field) it was handed back
+ * with the ones on the current column definitions. The definitions here are
+ * written inline in the table, so an inline comparator is a new function on
+ * every render — the rows would stay sorted while the chevron fell back to
+ * "sortable", i.e. the same complaint this fixes, one click later.
+ *
+ * Comparators rather than `sortingField` for the same identity reason in
+ * reverse: "Extraction labels" and "Review state" are two renderings of
+ * `labelSource`, so a shared `sortingField` marks both headers as sorted at
+ * once, and neither can order by what its own column shows.
+ */
+export const compareByObjectKey = (a: TestSetDocumentItem, b: TestSetDocumentItem): number => a.objectKey.localeCompare(b.objectKey);
+
+export const compareByLabelSource = (a: TestSetDocumentItem, b: TestSetDocumentItem): number =>
+  (a.labelSource ?? '').localeCompare(b.labelSource ?? '');
+
+/** Documents carrying no alert count sort below zero alerts, not alongside them. */
+export const compareByAlertCount = (a: TestSetDocumentItem, b: TestSetDocumentItem): number => (a.alertCount ?? -1) - (b.alertCount ?? -1);
+
+/**
+ * Review progress, so ascending puts the documents needing work first. Ordered
+ * by the states `renderReviewState` renders, not alphabetically by the raw
+ * `labelSource` — "Awaiting review" after "Ground truth" is noise in the one
+ * column a reviewer sorts to find their queue.
+ */
+const REVIEW_STATE_RANK: Record<string, number> = {
+  '': 0,
+  'draft-machine': 1,
+  'reviewed-human': 2,
+};
+const reviewStateRank = (labelSource?: string | null): number => REVIEW_STATE_RANK[labelSource ?? ''] ?? 3;
+
+export const compareByReviewState = (a: TestSetDocumentItem, b: TestSetDocumentItem): number =>
+  reviewStateRank(a.labelSource) - reviewStateRank(b.labelSource);
+
 const TestSetDetail = (): React.JSX.Element => {
   const { testSetId } = useParams<{ testSetId: string }>();
   const navigate = useNavigate();
@@ -389,7 +437,18 @@ const TestSetDetail = (): React.JSX.Element => {
   const [setStatus, setSetStatus] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What is in the search box. */
   const [filterText, setFilterText] = useState('');
+  /**
+   * The search the server is answering, which lags `filterText` by the debounce.
+   * Held separately so the table's copy can distinguish "no search" from "a
+   * search that matched nothing" without reacting to a half-typed word.
+   */
+  const [searchText, setSearchText] = useState('');
+  /** Documents in the whole set matching `searchText`; `null` when none is active. */
+  const [matchCount, setMatchCount] = useState<number | null>(null);
+  /** The search stopped before the end of the set, so `matchCount` is a lower bound. */
+  const [searchTruncated, setSearchTruncated] = useState(false);
   const [labelJob, setLabelJob] = useState<{
     jobId: string;
     status: string;
@@ -423,6 +482,13 @@ const TestSetDetail = (): React.JSX.Element => {
   const [isClearingDrafts, setIsClearingDrafts] = useState(false);
   const [clearedMessage, setClearedMessage] = useState<string | null>(null);
   const [worstFirst, setWorstFirst] = useState(true);
+  /**
+   * The column the user sorted by, or `null` for the default order. Held here
+   * rather than taken from `useCollection` because the "worst-first" button is a
+   * second ordering of the same rows: the two have to be able to clear each
+   * other, and a collection's sorting state cannot be cleared once set.
+   */
+  const [sorting, setSorting] = useState<{ column: TableProps.SortingColumn<TestSetDocumentItem>; isDescending: boolean } | null>(null);
   const [selectedItems, setSelectedItems] = useState<TestSetDocumentItem[]>([]);
   const [showRemoveModal, setShowRemoveModal] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
@@ -432,11 +498,25 @@ const TestSetDetail = (): React.JSX.Element => {
   /** Progress of an add in flight, from any of the three sources. */
   const [arrivalNotice, setArrivalNotice] = useState<{ type: 'info' | 'success' | 'error'; text: string } | null>(null);
   const arrivalTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * Lets only the newest document fetch render its reply. The search box issues a
+   * request per settled keystroke and the replies do not arrive in order; the
+   * reasoning and the measurements are in `latestResponseOnly.ts`.
+   *
+   * `useMemo` rather than `useRef(createLatestResponseGuard())`: the latter calls
+   * the factory on every render and throws away every result but the first, which
+   * reads as if a fresh guard were wanted each time. One guard per mounted table is
+   * what is meant — two tables must not cancel each other's requests.
+   */
+  const responseGuard = useMemo(createLatestResponseGuard, []);
   const { available: generatorAvailable, getJobStatus } = useSyntheticDataGenerator();
 
   const fetchPage = useCallback(
     async (pageIndex: number, tokens: (string | null)[]) => {
       if (!testSetId) return;
+      // Claim this fetch as the current one. Anything that comes back after a
+      // later fetch has started is discarded below rather than rendered.
+      const isCurrentFetch = responseGuard.claim();
       setIsLoading(true);
       setError(null);
       // Rows may be gone or renumbered after any refetch, so a selection made
@@ -449,13 +529,28 @@ const TestSetDetail = (): React.JSX.Element => {
             testSetId,
             limit: PAGE_SIZE,
             nextToken: tokens[pageIndex - 1] ?? undefined,
+            // Searching is the server's job because the set is paginated there:
+            // filtering the 50 rows held here would answer about the page while
+            // looking like it answered about the set.
+            search: searchText || undefined,
           },
         });
+        // A superseded reply is thrown away. Without this the rows are whichever
+        // reply lands last, and the ordering is actively against us: the search
+        // box issues one request per settled keystroke, and a broad search is
+        // SLOWER than a narrow one, because every document it returns is hydrated
+        // with a read per section. So "0" (500 matches, 50 rows to hydrate)
+        // routinely lands after "0063" (1 match) and replaces the one match with
+        // page 1 of almost the whole set — the search looking like it reset
+        // itself a moment after working.
+        if (!isCurrentFetch()) return;
         const page = response.data?.getTestSetDocuments;
         setDocuments((page?.documents ?? []) as TestSetDocumentItem[]);
         setHasMore(Boolean(page?.nextToken));
         setTotalCount(page?.totalCount ?? null);
         setSetStatus(page?.status ?? null);
+        setMatchCount(page?.matchCount ?? null);
+        setSearchTruncated(Boolean(page?.searchTruncated));
         setPageTokens((prev) => {
           const next = [...prev];
           next[pageIndex] = page?.nextToken ?? null;
@@ -472,17 +567,63 @@ const TestSetDetail = (): React.JSX.Element => {
         }
       } catch (err) {
         logger.error('Error loading test set documents:', err);
-        setError('Failed to load test set documents. Please try again.');
+        // Same reasoning as the success path: a superseded request's failure must
+        // not put an error banner over a later request that worked.
+        if (isCurrentFetch()) {
+          setError('Failed to load test set documents. Please try again.');
+        }
       } finally {
-        setIsLoading(false);
+        // Only the current request owns the spinner. An earlier one clearing it
+        // would report "loaded" while the request whose rows will actually be
+        // shown is still in flight.
+        if (isCurrentFetch()) setIsLoading(false);
       }
     },
-    [testSetId],
+    [testSetId, searchText],
   );
 
+  /**
+   * The latest `fetchPage`, for the two arrival/generation polls below.
+   *
+   * Those create a `setInterval` once and their callback would otherwise keep
+   * calling the `fetchPage` that existed when the interval started — which closes
+   * over the search in force at *that* moment. A search typed while an add or a
+   * generation is in flight was therefore thrown away by the next poll, which
+   * refetched unfiltered: the same symptom as a lost search, reached by a
+   * different route. Click handlers are rebuilt every render and so are fine.
+   */
+  const fetchPageRef = useRef(fetchPage);
+  useEffect(() => {
+    fetchPageRef.current = fetchPage;
+  }, [fetchPage]);
+
+  /**
+   * Let the search box settle before asking the server, so a typed word is one
+   * scan of the set rather than one per keystroke.
+   */
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchText(filterText.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [filterText]);
+
+  /**
+   * Loads page 1, and reloads it whenever the search changes — `fetchPage` closes
+   * over `searchText`, so a new search gives this effect a new identity. Page 1 is
+   * the only page a new search can land on: the tokens held are offsets into the
+   * previous search's matches, which say nothing about this one's.
+   *
+   * The match count and the truncation flag are dropped here rather than left to
+   * be replaced when the reply lands. They describe the *previous* needle, and the
+   * reply is a debounce plus a round trip away — so leaving them would caption the
+   * table "(50 of 73 matching)" while the search that produced 73 is no longer the
+   * one in the box. That is the same statement-about-stale-data this page is being
+   * fixed for, one layer up.
+   */
   useEffect(() => {
     setPageTokens([null]);
     setCurrentPageIndex(1);
+    setMatchCount(null);
+    setSearchTruncated(false);
     fetchPage(1, [null]);
   }, [testSetId, fetchPage]);
 
@@ -522,7 +663,7 @@ const TestSetDetail = (): React.JSX.Element => {
           stopArrivalWatch();
           setArrivalNotice({ type: 'success', text: `Documents are arriving — this set now has ${size} document(s).` });
           setCurrentPageIndex(1);
-          fetchPage(1, [null]);
+          fetchPageRef.current(1, [null]);
         }
       } catch (err) {
         logger.debug('Arrival poll failed; will retry:', err);
@@ -542,7 +683,7 @@ const TestSetDetail = (): React.JSX.Element => {
         stopArrivalWatch();
         setArrivalNotice({ type: 'success', text: 'Generation complete — the new documents are in this set.' });
         setCurrentPageIndex(1);
-        fetchPage(1, [null]);
+        fetchPageRef.current(1, [null]);
       } else if (job.status === 'FAILED') {
         stopArrivalWatch();
         setArrivalNotice({ type: 'error', text: `Generation failed: ${job.errorMessage || 'unknown error'}` });
@@ -790,7 +931,13 @@ const TestSetDetail = (): React.JSX.Element => {
     fetchPage(currentPageIndex, pageTokens);
   }, [documentsStale, currentPageIndex, pageTokens, fetchPage]);
 
-  const filteredDocs = filterText ? documents.filter((d) => d.objectKey.toLowerCase().includes(filterText.toLowerCase())) : documents;
+  /**
+   * The rows to show, already narrowed by the search. There is no filtering left to
+   * do here: the server searched the whole set and `documents` is a page of the
+   * matches, so filtering it again would be filtering a filter — and when this page
+   * *was* the filter, a document two pages along read as "no results".
+   */
+  const filteredDocs = documents;
 
   /**
    * Why a version cannot be published right now, or `null` when it can. Passed to the
@@ -828,15 +975,78 @@ const TestSetDetail = (): React.JSX.Element => {
 
   const hasConfidence = documents.some((d) => d.minConfidence !== null && d.minConfidence !== undefined);
   // Sorts the current page only: pagination is server-side and opaque, so a
-  // set-wide ranking is not available here.
-  const visibleDocs =
-    worstFirst && hasConfidence
-      ? [...filteredDocs].sort((a, b) => {
-          const av = a.minConfidence ?? Number.POSITIVE_INFINITY;
-          const bv = b.minConfidence ?? Number.POSITIVE_INFINITY;
-          return av - bv;
-        })
-      : filteredDocs;
+  // set-wide ranking is not available here. The header says so whenever the page
+  // is not the whole set, since a page-scoped order looks set-wide.
+  const visibleDocs = (() => {
+    if (sorting) {
+      const comparator = sorting.column.sortingComparator;
+      if (!comparator) return filteredDocs;
+      const direction = sorting.isDescending ? -1 : 1;
+      return [...filteredDocs].sort((a, b) => comparator(a, b) * direction);
+    }
+    if (worstFirst && hasConfidence) {
+      return [...filteredDocs].sort((a, b) => {
+        const av = a.minConfidence ?? Number.POSITIVE_INFINITY;
+        const bv = b.minConfidence ?? Number.POSITIVE_INFINITY;
+        return av - bv;
+      });
+    }
+    return filteredDocs;
+  })();
+
+  const tableDescription =
+    [
+      hasConfidence
+        ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
+        : null,
+      // Sorting only, and only when the rows on screen are not all there is to
+      // order. Search is no longer page-scoped, so the sentence no longer says it
+      // is — and under a search what sorting falls short of is the matches, not
+      // the set.
+      searchText
+        ? (matchCount ?? 0) > filteredDocs.length
+          ? 'Sorting orders this page of matches, not all of them.'
+          : null
+        : totalCount !== null && totalCount > filteredDocs.length
+          ? 'Sorting orders this page, not the whole set.'
+          : null,
+      searchTruncated
+        ? `This set is too large to search in full, so there may be matches beyond the ${matchCount} found. Narrow the search.`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(' ') || undefined;
+
+  /**
+   * The table's count.
+   *
+   * Under a search this counts the matches in the **whole set**, because a page
+   * count next to a search box reads as "this is everything that matches". The
+   * server supplies it; it is not derivable from the rows on screen, which are one
+   * page of the matches.
+   *
+   * No count at all while the first page is loading: '(0)' reads as "this set is
+   * empty", which is a statement we cannot make yet and the one that most misleads.
+   */
+  const tableCounter = (() => {
+    if (isLoading && filteredDocs.length === 0) return undefined;
+    if (searchText) {
+      // No count while this search's own count is still in flight. The counts are
+      // cleared when the needle changes, so `null` here means "not answered yet",
+      // and counting the rows instead would caption the previous search's page.
+      if (matchCount === null && isLoading) return undefined;
+      // A search whose count the server did not return — only possible against an
+      // older resolver — falls back to counting the page rather than claiming a total.
+      if (matchCount === null) return `(${filteredDocs.length})`;
+      // '+' because a truncated search scanned part of the set, so its count is a
+      // floor. Dropping it would report a lower bound as a total.
+      const matches = `${matchCount}${searchTruncated ? '+' : ''}`;
+      return matchCount > filteredDocs.length ? `(${filteredDocs.length} of ${matches} matching)` : `(${matches} matching)`;
+    }
+    return totalCount !== null && totalCount > filteredDocs.length
+      ? `(${filteredDocs.length} of ${totalCount})`
+      : `(${filteredDocs.length})`;
+  })();
 
   return (
     <AppLayout
@@ -942,25 +1152,22 @@ const TestSetDetail = (): React.JSX.Element => {
             <Table
               header={
                 <Header
-                  counter={
-                    // No count at all while the first page is loading: '(0)' reads
-                    // as "this set is empty", which is a statement we cannot make
-                    // yet and the one that most misleads.
-                    isLoading && filteredDocs.length === 0
-                      ? undefined
-                      : totalCount !== null && totalCount > filteredDocs.length
-                        ? `(${filteredDocs.length} of ${totalCount})`
-                        : `(${filteredDocs.length})`
-                  }
-                  description={
-                    hasConfidence
-                      ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
-                      : undefined
-                  }
+                  counter={tableCounter}
+                  description={tableDescription}
                   actions={
                     <SpaceBetween direction="horizontal" size="xs">
                       {hasConfidence && (
-                        <Button onClick={() => setWorstFirst((prev) => !prev)}>{worstFirst ? 'Sort by name' : 'Sort worst-first'}</Button>
+                        <Button
+                          onClick={() => {
+                            // A column sort overrides worst-first, so while one is
+                            // active this button re-applies worst-first rather than
+                            // toggling away an order that is not on screen.
+                            setWorstFirst((prev) => (sorting ? true : !prev));
+                            setSorting(null);
+                          }}
+                        >
+                          {worstFirst && !sorting ? 'Sort by name' : 'Sort worst-first'}
+                        </Button>
                       )}
                       <ButtonDropdown
                         items={[
@@ -1052,7 +1259,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   cell: (item: TestSetDocumentItem) => (
                     <Link href={testSetDocumentHref(testSetId ?? '', item.objectKey)}>{item.objectKey}</Link>
                   ),
-                  sortingField: 'objectKey',
+                  sortingComparator: compareByObjectKey,
                 },
                 {
                   id: 'labelSource',
@@ -1060,14 +1267,14 @@ const TestSetDetail = (): React.JSX.Element => {
                   // split labels, which are separate things.
                   header: 'Extraction labels',
                   cell: (item: TestSetDocumentItem) => renderLabelSource(item.labelSource),
-                  sortingField: 'labelSource',
+                  sortingComparator: compareByLabelSource,
                 },
                 {
                   id: 'alertCount',
                   header: 'Confidence alerts',
                   cell: (item: TestSetDocumentItem) =>
                     renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold),
-                  sortingField: 'alertCount',
+                  sortingComparator: compareByAlertCount,
                 },
                 {
                   id: 'reviewState',
@@ -1076,7 +1283,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   // them.
                   header: 'Review state',
                   cell: (item: TestSetDocumentItem) => renderReviewState(item.labelSource),
-                  sortingField: 'labelSource',
+                  sortingComparator: compareByReviewState,
                 },
                 {
                   id: 'size',
@@ -1107,6 +1314,12 @@ const TestSetDetail = (): React.JSX.Element => {
                 },
               ]}
               items={visibleDocs}
+              // The chevrons are rendered by any column that declares a sorting
+              // basis, but the state is the caller's: without these three the
+              // headers invited a click that could do nothing.
+              sortingColumn={sorting?.column}
+              sortingDescending={sorting?.isDescending}
+              onSortingChange={({ detail }) => setSorting({ column: detail.sortingColumn, isDescending: Boolean(detail.isDescending) })}
               selectionType="multi"
               selectedItems={selectedItems}
               onSelectionChange={({ detail }) => setSelectedItems(detail.selectedItems)}
@@ -1121,7 +1334,8 @@ const TestSetDetail = (): React.JSX.Element => {
               filter={
                 <TextFilter
                   filteringText={filterText}
-                  filteringPlaceholder="Find documents on this page"
+                  filteringPlaceholder="Find documents in this set"
+                  filteringAriaLabel="Find documents in this set"
                   onChange={({ detail }) => setFilterText(detail.filteringText)}
                 />
               }
@@ -1137,8 +1351,20 @@ const TestSetDetail = (): React.JSX.Element => {
                 <Box textAlign="center" color="inherit">
                   <b>No documents</b>
                   <Box variant="p" color="inherit">
-                    {filterText
-                      ? 'This test set has no documents matching the filter.'
+                    {/* "in this test set", not "on this page": the search ran over the
+                        whole set, so this is now a statement about the set.
+
+                        Keyed on `searchText`, NOT on `filterText`. `filterText` is
+                        what is in the box, which runs ahead of the rows by the
+                        debounce plus a round trip — so clearing the box after a
+                        search that matched nothing would, for that window, tell the
+                        user "this test set has no documents" about a set full of
+                        them, and while typing it would quote a needle the server has
+                        not answered about yet. `searchText` is '' exactly when the
+                        server was last asked without a search, which is the
+                        condition this sentence is about. */}
+                    {searchText
+                      ? `No document in this test set matches "${searchText}".`
                       : 'This test set has no documents. Use Add documents to bring some in: processed documents, files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>

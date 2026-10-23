@@ -25,12 +25,14 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - View and edit pattern configuration, including document classes, prompt engineering, and model settings
 - Manage multiple configuration profiles — create, compare, activate, and delete profiles, and view/compare/restore each profile's revision history (see [configuration-profiles.md](configuration-profiles.md))
 - Retain, view, compare, and delete **document versions** — every processing run of a document is kept and viewable read-only (see [document-versions.md](document-versions.md))
-- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the Assessment & HITL Configuration section
+- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the **Human-in-the-Loop (HITL) Review (Optional)** configuration section
 - Document upload from your local computer, or from the **bundled sample documents** shipped with the deployment (no local download needed)
 - Knowledge base querying for document collections
 - "Chat with document" from the detailed view of the document
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
+- **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
+- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one document editor (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -56,6 +58,43 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 - **Test Studio** — documents submitted by a [Test Studio](test-studio.md) run. Adds a **Test Run** column linking to that run's results, and holds the **Abort**, **Reprocess** and **Delete** actions: a run's results (and the confidence calibration derived from them) are scored against these exact documents, so a run's lifecycle is managed from **Test Executions**, not here.
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
+
+### Deleting documents
+
+Select one or more rows and use **Delete**. The confirmation modal applies to the whole
+selection, and deleting a document removes its input object, every version of its output
+objects, its tracking record and its version history. It is not reversible.
+
+**A delete that does not finish is reported as an error naming the documents it could not
+remove and why.** That matters because the cleanup spans S3 and DynamoDB, which cannot be
+made one transaction, so a step can fail on its own — and the two failures seen in
+practice are deployment-level rather than per-document: a permission the execution role
+is missing, or a request the service refuses. Both affect every document in the selection
+identically, so the banner names the cause rather than only a count.
+
+**What is left behind depends on which step failed, and the error reports what each step
+did remove.** Only one of the three cases leaves the document in the list, so it is worth
+reading which one you have:
+
+- **The list-index cleanup failed.** The document's **tracking record is deliberately
+  kept**: that record's queued timestamp is the only route to its row in the list index,
+  so discarding it would leave that row orphaned with nothing able to find it again. The
+  document stays in the list, and retrying the delete from the UI once the underlying
+  cause is fixed completes the job.
+- **The output-object purge failed.** That does not hold the tracking record back, so the
+  document *is* removed from the list and some or all of its output objects remain in the
+  bucket. The UI has no row left to select, so finishing the job means `idp-cli` against
+  the key, or deleting the prefix directly. Those objects are noncurrent versions, so the
+  bucket's lifecycle rule expires them eventually; the cost of leaving them is storage
+  until it does.
+- **The input-object delete failed.** The document is likewise removed from the list, and
+  **the originally uploaded file is still in the input bucket**. This is the case worth
+  acting on if the reason for deleting was that the document should not be held — the
+  remedy is the same `idp-cli` delete, or removing that one object.
+
+A selection where some documents were removed and others were not reports the failure for
+the whole call and names each document it could not finish; the ones that were removed are
+gone.
 
 > **Note:** documents processed before v0.6.5 carry no provenance metadata. The `ItemType` backfill run at upgrade retypes them where it can prove they came from a test run; any it cannot prove remain in the Production view. See the 0.6.5 upgrade note in [CHANGELOG.md](../CHANGELOG.md).
 
@@ -141,8 +180,8 @@ markdown automatically.
 
 ## Comparing a document against its baseline
 
-On a document that has an evaluation baseline, **View Data** shows the
-**document class** comparison straight away — predicted, expected, and a verdict
+On a document that has an evaluation baseline, **Edit Data** (or **View Data**)
+opens the document editor, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -169,7 +208,8 @@ set, see
 
 ## Re-grouping a processed document's pages
 
-**Document Sections → Edit page grouping** opens a board with every section side by
+**Document Sections → Edit Page Grouping**, or **Edit Page Grouping** in the document
+editor (**Edit** on the document page), opens a board with every section side by
 side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
 to section** menu — the keyboard and screen-reader route to the same operation.
 Shift-click selects a run of pages so they move together, which is usually what a wrong
@@ -191,12 +231,13 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes** afterwards if you
-would rather the pipeline redo them.
+so they may no longer match; use **Edit Mode → Process Changes**, or **Complete**
+in the document editor, afterwards if you would rather the pipeline redo
+them.
 
 That is the difference between the two routes, and it is the reason both exist:
 
-| | Edit page grouping | Edit Mode → Process Changes |
+| | Edit Page Grouping | Edit Mode → Process Changes |
 |---|---|---|
 | Page assignments | drag and drop | comma-separated text |
 | Page order within a section | drag, or Move earlier / later | order of the ids you type |
@@ -279,7 +320,7 @@ The Edit Sections feature uses **2-phase schema knowledge optimization**:
 
 Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic section management. Edit Mode in Pattern-1 provides **data-only editing**:
 
-- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" button for each section
+- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" link for each section, which opens the document editor
 - **Section Structure**: Read-only - section boundaries, classifications, and page assignments are managed by BDA
 - **Reprocessing**: "Save and Reprocess" triggers evaluation and summarization steps without re-invoking BDA
 - **BDA Skip Logic**: When reprocessing with existing pages/sections data, BDA invocation is automatically skipped
@@ -521,7 +562,7 @@ A self-describing `manifest.json` is written at the ZIP root capturing the expor
 
 ### Fetching mechanics
 
-Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. Files in the **OutputBucket** and **InputBucket** are signed client-side with your browser's Cognito credentials, which saves a round trip. Files in the **EvaluationBaselineBucket** are signed by the backend `getFilePresignedUrl` resolver instead — the browser's Cognito identity role deliberately does not grant read access to the baseline bucket, so signing those in the browser produces a URL that fails with HTTP 403 at fetch time. Up to 5 files are fetched in parallel. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
+Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. **Every URL is signed by the backend**, through the `getFilePresignedUrl` resolver, whichever bucket the file is in — the **OutputBucket** and **InputBucket** included. Your browser's Cognito credentials grant **nothing** on the document buckets, so a URL signed in the browser would fail with HTTP 403 at fetch time; routing the signature through the resolver is also what puts a group check and the caller's configuration-profile scope in front of the bytes. Up to 5 files are fetched in parallel. The surfaces that show many pages at once — the page-image viewer and the page thumbnails — use the batch form, `getFilePresignedUrls`, so opening a document asks for its page URLs in a single call — or, for a document of more than 250 pages, in one call per 250 — rather than one call per page. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
 
 ### Bulk download from the document list
 
@@ -595,6 +636,121 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 1. Navigate to a document's detail page and scroll to the bottom
 2. In the text area, type in your question and you'll see an answer pop up after the document is analyzed with the Nova Pro model
 
+## HITL
+
+**HITL** (human-in-the-loop) brings every kind of human review work into one place:
+production documents held in review queues, and test sets that need ground truth.
+The pages are described in [review-queues.md](review-queues.md). In outline:
+
+- **Navigation.** A user whose only role is Annotator sees exactly **My Work**
+  (**Inbox**, **Tasks**, **Queues**). Other users have no My Work and no Inbox.
+  They see the usual sections their roles
+  allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
+  **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
+- **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
+  Queues** (one per test set), each listing Queue, Items, Pending, Assigned and
+  Annotators with an actions menu. Admins edit and delete Production queues here,
+  setting each one's name, priority, time limit, eligible Annotators (who works the
+  queue) and **Enabled** switch in its **Settings**; there is no **Create queue**.
+  When HITL is enabled in a document's configuration and the Default queue is
+  enabled, a production document that raised confidence alerts goes to the Default
+  queue. Queues have no threshold of their own: the alerts use each field's own
+  threshold, otherwise `hitl.confidence_threshold`. Deleting a queue moves its
+  items to Default; Default itself can't be deleted. On each queue's page, Admins
+  select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
+  to another queue, or **Remove from queue** (the document completes with
+  its machine output).
+- **My Work › Queues** lists the queues you're listed on. On a queue's page you can
+  open any item read-only and **Claim** one nobody holds, which assigns it to you.
+- **My Work › Tasks** lists everything assigned to you, both Production review items
+  and Test Studio documents, with their document, source, queue and age. Selecting
+  one opens it. The **Tasks** badge counts them; completing or skipping an item
+  removes it from the list and the count straight away (**Skip** gives the item back
+  to its queue, unassigned and not finished), and work assigned to you by an Admin
+  appears within about 30 seconds.
+- **The document editor** is the same for every edit, whether you open a queue item
+  from Tasks, an Inbox message or Queue Management, or edit a document directly. It
+  has three routes:
+  - a Production item at `#/review-queues/items/<document>`
+  - a test-set document at `#/review-queues/test-sets/<id>/items/<document>`
+  - a direct edit of any document at `#/documents/<document>/edit` (optionally
+    `?section=<id>`), opened from **Edit Data** on a section row or **Edit** on the
+    document page
+
+  The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
+  role. The actions are at the top, each shown where it applies: **History** (field
+  edits, and a Production item's review activity), **Skip** (queue items, for the
+  assignee), **Discard Changes**, **Save** (Production items and direct
+  edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
+  Complete finishes a queue item, and on a direct edit saves the edits,
+  confirms, and reprocesses the document. A direct edit also shows the evaluation
+  baseline when the document has one: the class comparison, **Show Evaluation** to
+  compare every field, and baseline editing. An Admin edits an unassigned Production
+  item directly (the first saved edit, or Complete, assigns it to them) and
+  uses **Take over** on one assigned to someone else.
+- The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
+  **Review Status** as **In Review**, which for Admins and Annotators links to the queue
+  item. A queued document is reviewed only from that item; the legacy Reviewer flow
+  (**Start Review**) applies to documents outside the queues.
+
+## Inbox
+
+Annotators have an **Inbox**, in **My Work**: messages that platform components post to you,
+either by name or to a Cognito group you belong to. Messages are private to you;
+marking, deleting or muting them does not affect anyone else's copy. There are three
+entry points:
+
+- **Bell (top navigation).** The bell shows a badge while you have unread messages and
+  opens a menu with your five most recent messages, read and unread, with unread ones
+  flagged. Choosing a message opens the page it links to (or the Inbox page when it has
+  no link) and marks it read. The menu also offers **Mark all as read** and
+  **View all in Inbox**.
+- **Inbox (left navigation).** **Inbox** is the first entry of **My Work**, with a badge
+  showing the unread count. Users who aren't Annotators have no Inbox: no navigation
+  entry, no bell and no Inbox page.
+- **Inbox page.** The Inbox page lists your messages with when they were received,
+  their title (bold while unread; long titles are shortened, with the full title on
+  hover), type and severity. Find messages by text, or filter by read
+  state (**All** or **Unread**), type and severity, and sort by any column (severity
+  sorts from success to error). Select messages to **Mark as read**, **Mark as unread**
+  or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
+  (which deletes every read message) without a selection. Each row's actions menu
+  (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
+  and marks it read; **Open related page** follows its link.
+
+**Settings.** The settings button (gear icon) at the top right of the Inbox page opens
+**Inbox settings**, which lists the message types and lets you turn off the ones you
+don't want. A muted type isn't delivered to you at all:
+it is not stored and not counted. Turning a type back on affects new messages only.
+
+**How quickly messages appear.** The bell, the navigation badge and the Inbox page
+share one check for new messages, about every 60 seconds while the browser tab is
+visible. Checking pauses while the tab is hidden and resumes when you return to it.
+New messages update the badges and never raise a pop-up notification. Your own
+actions (marking messages read or unread, deleting them) update the unread count
+on the bell and the navigation badge straight away.
+
+**Retention.** Messages are kept for a limited time and up to a per-user cap; when
+the cap is reached, the oldest read messages are removed first. Administrators set
+both in the configuration — see
+[Inbox message retention](configuration.md#inbox-message-retention).
+
+**What arrives in the Inbox.** HITL review queues post three kinds of message to the
+Annotator concerned, for production items and Test Studio documents alike:
+
+| Type (Inbox settings) | Sent when |
+|---|---|
+| **Review item assigned to you** | An Admin assigns an item or document to you. |
+| **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
+| **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+
+Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
+**Review claim expired**. This release does not send them: arrivals in a queue are
+announced to nobody (Admins see waiting work in Queue Management), and assignments do
+not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+posting messages should read the
+[notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
+
 ## Feedback & Issue Reporting
 
 The UI makes it easy to report bugs or request enhancements on the project's public
@@ -618,30 +774,42 @@ hand-type them. There are three entry points:
   continues in the background.
 - **Create GitHub issue (Agent Companion Chat).** The [Agent Companion Chat](agent-companion-chat.md)
   — which can also run the Error Analyzer — shows a **Create GitHub issue** button
-  under the latest agent answer, offering *Report a bug* (with the answer attached as
-  findings) or *Request a feature*.
+  under the latest agent answer, offering *Report a bug* or *Request a feature*, each
+  with the answer attached as additional context.
 - **Resources & help panel.** The side navigation **Resources** section includes a
   **Report an issue** link, and the right-side info (Help) panel on the Document List
   includes a **Feedback & support** section with the same links.
 
-**What gets pre-filled.** Every link opens the GitHub new-issue page with the
-**issue body** pre-populated — an environment summary (**Version**, **Build**,
-**Stack name**, **Region**, **Processing Mode**) sourced from the deployment's
-settings, plus context: the Troubleshoot path adds the document context and agent
-findings, and the Agent Companion Chat path adds the agent's answer. The report/copy
+**What gets pre-filled.** Every link opens the repository's **Bug report** or
+**Feature request** issue form with its fields pre-populated, so a report filed from
+the accelerator has the same structure — and the same labels and required fields — as
+one filed from GitHub's own **New issue** chooser. *Accelerator Version / Build*
+carries an environment summary (**Version**, **Build**, **Stack name**, and the stack
+pattern) sourced from the deployment's settings, and the bug form's *AWS Region* and
+*Accelerator Processing Mode* fields are filled from the same place. Context goes to
+the field that describes it: the Troubleshoot path fills *Output of the 'Troubleshoot'
+agent* with the document context and the agent's findings, and the Agent Companion
+Chat path fills *Additional context* with the agent's answer. The report/copy
 affordances appear once the agent job completes.
+
+*Accelerator Processing Mode* is left for you to fill in on a unified-pattern stack,
+which is every current deployment: the unified pattern can run either the BDA or the
+Pipeline branch and which one a document takes is decided per configuration, so the
+UI cannot answer the question. The stack's pattern is reported in the version field
+instead.
 
 > **Privacy note:** issues on the public repository are visible to everyone. Nothing
 > is submitted automatically — GitHub always shows you the pre-filled form to review
 > first. **Please review every field and redact any sensitive document data**
 > (names, account numbers, PII) before submitting.
 
-The in-app links pre-fill the issue **body** directly (via `?title=&body=&labels=`),
-so the content is embedded immediately. This intentionally bypasses the `.yml` issue
-*forms* in `.github/ISSUE_TEMPLATE/` — GitHub ignores a pre-filled `body` when a form
-template is selected — so those forms apply only when a user clicks **New issue**
-directly on GitHub. Very long findings are length-capped in the URL; use **Copy full
-details** in the Troubleshoot modal to grab the complete text.
+The in-app links select an issue form with `?template=` and fill its individual
+fields by name. A pre-filled `body` cannot be combined with that — GitHub ignores
+`body` once a form template is selected — so the fields are the mechanism, and the
+labels each form declares are applied automatically. The forms are read from the
+repository's default branch rather than from the release a deployment was built from.
+Very long findings are length-capped so the URL stays inside GitHub's limit; use
+**Copy full details** in the Troubleshoot modal to grab the complete text.
 
 ## Authentication Features
 

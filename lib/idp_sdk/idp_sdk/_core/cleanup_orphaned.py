@@ -18,7 +18,7 @@ Safety features:
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import click
@@ -28,7 +28,15 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Regions to check for IDP stacks
+# Regions to check for IDP stacks when the caller names none. A superset of the
+# Regions releases are published to (`scripts/aws-release.sh`), because a customer
+# can deploy from source anywhere — but every published Region belongs here, or
+# the orphaned resources of a deleted stack in it are skipped and leak.
+#
+# ⚠️ This is the *SDK* default, reached only when `regions is None`. The
+# `idp-cli remove-deleted-stack-resources` option carries its own, narrower
+# default (three Regions) and always passes it, so adding a Region here does not
+# change what the CLI scans.
 IDP_REGIONS = [
     "us-east-1",
     "us-west-2",
@@ -36,6 +44,7 @@ IDP_REGIONS = [
     "eu-west-1",
     "ap-southeast-1",
     "ap-northeast-1",
+    "ca-central-1",
 ]
 
 # IDP solution identifier in CloudFormation Description
@@ -72,6 +81,10 @@ class OrphanedResourceCleanup:
         self._active_stacks: Dict[str, Dict] = {}  # stack_name -> {id, region, status}
         self._deleted_stacks: Dict[str, Dict] = {}  # stack_name -> {id, region, status}
         self._discovery_complete = False
+        # stack_name -> (verdict, reason), ("", "") once confirmed gone; see
+        # _still_present_elsewhere.
+        self._presence_elsewhere: Dict[str, Tuple[str, str]] = {}
+        self._cfn_clients: Dict[str, Any] = {}
 
         # Track "yes/no to all" decisions per resource type
         self._yes_to_all: Dict[str, bool] = {}  # resource_type -> True/False
@@ -83,8 +96,16 @@ class OrphanedResourceCleanup:
         self._max_workers = 50
 
     def _get_cfn_client(self, region: str):
-        """Get CloudFormation client for a specific region."""
-        return self.session.client("cloudformation", region_name=region)
+        """Get CloudFormation client for a specific region, built once per Region.
+
+        _still_present_elsewhere asks every enabled Region once per deleted stack
+        name, so an uncached client would be rebuilt for each of those calls.
+        """
+        if region not in self._cfn_clients:
+            self._cfn_clients[region] = self.session.client(
+                "cloudformation", region_name=region
+            )
+        return self._cfn_clients[region]
 
     def discover_idp_stacks(self, regions: Optional[List[str]] = None) -> Dict:
         """Discover all IDP stacks (active AND deleted) across regions.
@@ -231,6 +252,72 @@ class OrphanedResourceCleanup:
                 return ("DELETED", info)
 
         return ("UNKNOWN", None)
+
+    def _still_present_elsewhere(self, stack_name: str) -> Tuple[str, str]:
+        """Whether a DELETED stack's *global* resource must still be left alone.
+
+        Discovery covers only the Regions it was given (the CLI's
+        ``--check-stack-regions``), while CloudFront distributions, response headers policies, IAM
+        policies and the account's S3 bucket listing are global and carry only
+        the stack *name* (a bucket's random suffix is stripped before matching). A stack deleted
+        in a scanned Region and since recreated under the same name in an
+        unscanned one therefore reads as DELETED, and its live resources were
+        swept (#1533). So before a global resource is touched on the strength of
+        a DELETED verdict, every Region enabled for the account is asked whether
+        a stack of that name still exists there.
+
+        Returns ``(verdict, reason)``. ``("", "")`` only when every enabled
+        Region answers that no such stack exists. ``("present", reason)`` when
+        one does: a deliberate skip. ``("unknown", reason)`` when any Region
+        cannot be read: the resource is still left alone, but callers report it
+        as an error, because a missing permission here would otherwise turn
+        every global sweep into a silent no-op that reads as a clean account.
+        """
+        # Ask about the name discovery recorded, not the one parsed out of the
+        # resource: S3 forces bucket names to lowercase, and get_stack_state
+        # matches case-insensitively, so the parsed name may not be one
+        # CloudFormation answers to.
+        stack_name = next(
+            (
+                name
+                for name in self._deleted_stacks
+                if name.upper() == stack_name.upper()
+            ),
+            stack_name,
+        )
+        if stack_name in self._presence_elsewhere:
+            return self._presence_elsewhere[stack_name]
+
+        verdict, reason = "", ""
+        try:
+            ec2 = self.session.client("ec2", region_name=self.region)
+            # Without AllRegions this lists only the Regions enabled for the
+            # account, which are the only ones a stack can exist in.
+            regions = [r["RegionName"] for r in ec2.describe_regions()["Regions"]]
+        except Exception as e:
+            regions = []
+            verdict = "unknown"
+            reason = f"could not list enabled Regions to confirm it is gone: {e}"
+
+        for region in regions:
+            try:
+                stacks = (
+                    self._get_cfn_client(region)
+                    .describe_stacks(StackName=stack_name)
+                    .get("Stacks", [])
+                )
+            except Exception as e:
+                if "does not exist" in str(e):
+                    continue
+                verdict = "unknown"
+                reason = f"could not confirm it is gone in {region}: {e}"
+                break
+            if any(s.get("StackStatus") != "DELETE_COMPLETE" for s in stacks):
+                verdict, reason = "present", f"still exists in {region}"
+                break
+
+        self._presence_elsewhere[stack_name] = (verdict, reason)
+        return verdict, reason
 
     def extract_stack_name_from_comment(self, comment: str) -> str:
         """Extract stack name from CloudFront distribution comment."""
@@ -573,6 +660,19 @@ class OrphanedResourceCleanup:
 
                 state, stack_info = self.get_stack_state(stack_name)
 
+                if state == "DELETED":
+                    verdict, reason = self._still_present_elsewhere(stack_name)
+                    if verdict == "present":
+                        results["skipped"].append(
+                            f"{distribution_id} (stack: {stack_name} - {reason})"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        results["errors"].append(
+                            f"Not deleted {distribution_id} (stack: {stack_name}): {reason}"
+                        )
+                        continue
+
                 if state == "ACTIVE":
                     results["skipped"].append(
                         f"{distribution_id} (stack: {stack_name} - active)"
@@ -854,6 +954,19 @@ class OrphanedResourceCleanup:
 
                 state, stack_info = self.get_stack_state(stack_name)
 
+                if state == "DELETED":
+                    verdict, reason = self._still_present_elsewhere(stack_name)
+                    if verdict == "present":
+                        results["skipped"].append(
+                            f"{policy_name} (stack: {stack_name} - {reason})"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        results["errors"].append(
+                            f"Not deleted {policy_name} (stack: {stack_name}): {reason}"
+                        )
+                        continue
+
                 if state == "ACTIVE":
                     results["skipped"].append(
                         f"{policy_name} (stack: {stack_name} - active)"
@@ -942,6 +1055,19 @@ class OrphanedResourceCleanup:
                         continue
 
                     state, stack_info = self.get_stack_state(stack_name)
+
+                    if state == "DELETED":
+                        verdict, reason = self._still_present_elsewhere(stack_name)
+                        if verdict == "present":
+                            results["skipped"].append(
+                                f"{policy_name} (stack: {stack_name} - {reason})"
+                            )
+                            continue
+                        if verdict == "unknown":
+                            results["errors"].append(
+                                f"Not deleted {policy_name} (stack: {stack_name}): {reason}"
+                            )
+                            continue
 
                     if state == "ACTIVE":
                         results["skipped"].append(
@@ -1084,6 +1210,21 @@ class OrphanedResourceCleanup:
 
                 state, stack_info = self.get_stack_state(stack_name)
 
+                if state == "DELETED":
+                    # list_buckets is account-wide, so this sweep sees the buckets
+                    # of a same-named stack in every Region.
+                    verdict, reason = self._still_present_elsewhere(stack_name)
+                    if verdict == "present":
+                        results["skipped"].append(
+                            f"{bucket_name} (stack: {stack_name} - {reason})"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        results["errors"].append(
+                            f"Not deleted {bucket_name} (stack: {stack_name}): {reason}"
+                        )
+                        continue
+
                 if state == "UNKNOWN":
                     continue
                 elif state == "ACTIVE":
@@ -1200,7 +1341,7 @@ class OrphanedResourceCleanup:
         Args:
             dry_run: If True, only report what would be cleaned up
             auto_approve: If True, skip confirmation prompts
-            regions: List of regions to check for stacks (default: us-east-1, us-west-2, eu-central-1)
+            regions: List of regions to check for stacks (default: ``IDP_REGIONS``)
 
         Returns:
             Dict with results for each resource type

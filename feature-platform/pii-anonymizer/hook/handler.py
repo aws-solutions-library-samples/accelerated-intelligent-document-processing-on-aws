@@ -482,14 +482,22 @@ def _store_mapping(
 
     SECURITY: the mapping is a re-identification key (contains REAL PII). It is
     stored in a feature-owned table — NOT the host Output/Working buckets —
-    precisely because the host's getFileContents resolver will proxy any
-    Output-bucket key to any caller holding one of the five Cognito groups, with
-    no key-level or config-version scoping, and because the browser's own Identity
-    Pool role reads that bucket directly whatever group the caller is in. Either
-    path would bypass the RBAC gate. Kept out of any host-proxyable location,
-    the mapping is reachable ONLY via the feature API's RBAC-gated
-    /report/{docId}/mapping route (feature-api/handler.py), which checks the
-    caller's allowedConfigVersions against original_config_version."""
+    because none of the controls on the host's object-read path
+    (getFileContents / getFilePresignedUrl / getFilePresignedUrls) makes the
+    decision this record needs. Their group floor is satisfied by every one of
+    the five Cognito groups; their bucket allow-list bounds which bucket, not
+    which object; and their per-document check matches the OWNING document's
+    ConfigVersion against the caller's allowedConfigVersions, which is a no-op
+    for a caller whose scope is unset (opt-in per user, so that is the default)
+    and, where it applies, authorizes against the profile of whichever document
+    owns the key rather than against original_config_version — the value this
+    function is given precisely because it is the only one that answers "may
+    this caller re-identify?". A presigned URL is also a bearer capability for
+    the life of its signature, whereas the route below re-checks on every
+    request. Kept out of any host-proxyable location, the mapping is reachable
+    ONLY via the feature API's RBAC-gated /report/{docId}/mapping route
+    (feature-api/handler.py), which checks the caller's allowedConfigVersions
+    against original_config_version."""
     if not _MAPPING_TABLE:
         logger.warning("MAPPING_TABLE_NAME not set; cannot store mapping")
         return False
@@ -565,7 +573,30 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         Bucket=_INPUT_BUCKET,
         Key=redacted_key,
         MetadataDirective="REPLACE",
-        Metadata={"config-version": companion_version},
+        Metadata={
+            "config-version": companion_version,
+            # ``submission-source`` marks this as a submission the deployment made
+            # itself, which exempts it from config prefix mappings
+            # (idp_common.config.prefix_mappings). Without it the copy is an
+            # ordinary upload as far as ingest is concerned, and because
+            # ``_redacted_input_key`` writes it BESIDE the original, any mapping
+            # governing the original's prefix governs the copy too. Two outcomes,
+            # both wrong:
+            #
+            #  * under a mapping's default precedence the copy is processed under
+            #    the mapped profile instead of the companion one, so it runs with
+            #    whatever hooks that profile registers rather than with none;
+            #  * under a mapping in ``reject`` mode the copy is REFUSED at ingest —
+            #    and in ``redactcopy_and_stop`` this hook returns ``halt=true``,
+            #    after which the host deletes the original. The original is gone and
+            #    the redacted copy never processes, which is unrecoverable loss of
+            #    the document from one mapping an admin typed.
+            #
+            # The re-entrancy guard at step (2) is unaffected either way: it is the
+            # ``_is_redacted_key`` filename check, which is a hard stop that does not
+            # depend on the configuration the copy runs under.
+            "submission-source": "pii-anonymizer",
+        },
     )
     logger.info(
         "Wrote redacted copy s3://%s/%s (config-version=%s, pii_count=%s, mode=%s)",

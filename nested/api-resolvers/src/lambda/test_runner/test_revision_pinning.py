@@ -28,6 +28,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.api_adapter import ResourceNotFound
+
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("TRACKING_TABLE", "tracking")
 os.environ.setdefault("CONFIG_TABLE", "config")
@@ -81,7 +83,9 @@ class TestRevisionPinning:
 
     def test_an_explicit_revision_wins_over_the_current_one(self, index):
         index.handler(
-            _event({"testSetId": "w2-set", "configVersion": "lending", "configRevision": 3}),
+            _event(
+                {"testSetId": "w2-set", "configVersion": "lending", "configRevision": 3}
+            ),
             None,
         )
 
@@ -91,7 +95,9 @@ class TestRevisionPinning:
 
     def test_the_captured_config_comes_from_the_pinned_revision(self, index):
         index.handler(
-            _event({"testSetId": "w2-set", "configVersion": "lending", "configRevision": 3}),
+            _event(
+                {"testSetId": "w2-set", "configVersion": "lending", "configRevision": 3}
+            ),
             None,
         )
 
@@ -103,7 +109,9 @@ class TestRevisionPinning:
         index.handler(_event({"testSetId": "w2-set"}), None)
 
         assert "configRevision" not in _sqs_body(index)
-        assert index._store_test_run_metadata.call_args.kwargs["config_revision"] is None
+        assert (
+            index._store_test_run_metadata.call_args.kwargs["config_revision"] is None
+        )
 
     def test_the_run_still_records_the_profile(self, index):
         index.handler(_event({"testSetId": "w2-set"}), None)
@@ -136,7 +144,11 @@ class TestRetentionPin:
 
         captured = module._capture_config("config-table", "lending", 5)
 
-        assert captured["Config"] == {"notes": "pinned body"}
+        # The revision's body is what the run records. Its shape is normalised to
+        # the current config format, which
+        # `test_capture_migrates_legacy_config.py` covers; this test is about the
+        # pin, so it asserts only that the body arrived.
+        assert captured["Config"]["notes"] == "pinned body"
         manager.get_revision.assert_called_once_with("lending", 5)
         manager.mark_revision_pinned.assert_called_once_with("lending", 5)
 
@@ -244,18 +256,23 @@ class TestRetentionPin:
         )
         module.dynamodb = MagicMock()
 
-        with pytest.raises(ValueError, match="Could not read revision r5 .*AccessDenied"):
+        with pytest.raises(
+            ValueError, match="Could not read revision r5 .*AccessDenied"
+        ):
             module._capture_config("config-table", "lending", 5)
 
 
 @pytest.mark.unit
 class TestMissingProfile:
     def test_a_missing_profile_is_refused_before_anything_is_written(self, index):
-        index._require_profile.side_effect = ValueError(
+        # Mirrors what the real `_require_profile` raises (ResourceNotFound -> 404
+        # since #1304); a mock will raise whatever it is given, so keeping the two
+        # in step is what makes this test about the handler's behaviour.
+        index._require_profile.side_effect = ResourceNotFound(
             "Configuration profile 'rk-adv-off' not found"
         )
 
-        with pytest.raises(ValueError, match="rk-adv-off"):
+        with pytest.raises(ResourceNotFound, match="rk-adv-off"):
             index.handler(
                 _event({"testSetId": "w2-set", "configVersion": "rk-adv-off"}), None
             )
@@ -281,9 +298,13 @@ class TestMissingProfile:
         module.dynamodb.Table.return_value = table
 
         table.get_item.return_value = {}
-        with pytest.raises(ValueError, match="'ghost' not found"):
+        # ResourceNotFound (404), not ValueError (400): the argument is
+        # well-formed, the profile it names is not there. See #1304.
+        with pytest.raises(module.ResourceNotFound, match="'ghost' not found"):
             module._require_profile("config", "ghost")
-        assert table.get_item.call_args.kwargs["Key"] == {"Configuration": "Config#ghost"}
+        assert table.get_item.call_args.kwargs["Key"] == {
+            "Configuration": "Config#ghost"
+        }
 
         table.get_item.return_value = {"Item": {"Configuration": "Config#lending"}}
         module._require_profile("config", "lending")  # does not raise

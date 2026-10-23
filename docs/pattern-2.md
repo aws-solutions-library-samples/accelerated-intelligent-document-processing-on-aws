@@ -47,9 +47,15 @@ For the current architecture diagram, see the unified architecture in [architect
 
 The workflow consists of three main processing steps with an optional assessment step:
 1. OCR processing using Amazon Textract
-2. Document classification using Claude via Amazon Bedrock (with two available methods):
-   - Page-level classification: Classifies individual pages and groups them
-   - Holistic packet classification: Analyzes multi-document packets to identify document boundaries
+2. Document classification using Amazon Bedrock. `classification.strategy`
+   chooses between two strategies, and the page-reading call then works at one of
+   two granularities:
+   - `single_pass` (*One stage* in the configuration editor): one call returns a
+     page's or packet's boundaries and classes together
+   - `two_stage`: boundaries first, with no class vocabulary in the prompt, then
+     one call per detected section to classify it
+   - Within either, `granularity: page` makes one call per page and
+     `granularity: packet` one call per packet or window of `window_pages` pages
 3. Field extraction using Claude via Amazon Bedrock
 4. **Assessment** (optional): Confidence evaluation of extraction results using LLMs
 
@@ -118,9 +124,9 @@ Each step includes comprehensive retry logic for handling transient errors:
 #### Classification Function
 - **Purpose**: Classifies pages or document packets using Claude via Bedrock and segments into sections
 - **Key Features**:
-  - Two classification methods:
-    - Page-level classification (multimodalPageLevelClassification)
-    - Holistic packet classification (textbasedHolisticClassification)
+  - Two classification granularities, set by `classification.one_stage.granularity` (see [Classification](./classification.md)):
+    - Page granularity (the default): one call per page
+    - Packet granularity: one call per packet
   - RVL-CDIP dataset categories for classification
   - Concurrent page processing
   - Automatic image resizing and optimization
@@ -189,7 +195,8 @@ Each step includes comprehensive retry logic for handling transient errors:
 Pattern-2 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
 
 **Pattern-2 Specific Configuration:** HITL is enabled through the configuration
-(Web UI **Configuration → Assessment & HITL Configuration**, or the config YAML),
+(Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
+`hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md).
@@ -230,7 +237,6 @@ The pattern exports these outputs to the parent stack:
 ### Configuration
 
 **Stack Deployment Parameters:**
-- `ClassificationMethod`: Classification methodology to use (options: 'multimodalPageLevelClassification' or 'textbasedHolisticClassification')
 - **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
 - `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
 - `MaxConcurrentWorkflows`: Workflow concurrency limit
@@ -256,7 +262,7 @@ Bedrock OCR is configured through the pattern's configuration files. The OCR bac
 ```yaml
 ocr:
   backend: "bedrock"  # Options: "textract", "bedrock", "none"
-  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  model_id: "us.anthropic.claude-sonnet-4-6"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
 ```
@@ -266,73 +272,14 @@ ocr:
 To use Bedrock OCR:
 
 1. **Set the backend**: Configure `backend: "bedrock"` in your OCR configuration
-2. **Choose a model**: Select from supported vision-capable models:
-   - `us.amazon.nova-lite-v1:0`
-   - `us.amazon.nova-pro-v1:0` 
-   - `us.amazon.nova-2-lite-v1:0`
-   - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `us.anthropic.claude-haiku-5-5`
-   - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `us.anthropic.claude-sonnet-4-20250514-v1:0`
-   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `us.anthropic.claude-sonnet-4-6`
-   - `us.anthropic.claude-sonnet-4-6:1m`
-   - `us.anthropic.claude-opus-4-5-20251101-v1:0`
-   - `us.anthropic.claude-opus-4-1-20250805-v1:0`
-   - `us.anthropic.claude-opus-4-5-20251101-v1:0`
-   - `us.anthropic.claude-opus-4-6-v1`
-   - `us.anthropic.claude-opus-4-6-v1:1m`
-   - `us.anthropic.claude-opus-4-7`
-   - `us.anthropic.claude-opus-4-7:1m`
-   - `us.anthropic.claude-opus-4-8`
-   - `us.anthropic.claude-opus-4-8:1m`
-   - `us.anthropic.claude-opus-5`
-   - `us.anthropic.claude-opus-5:1m`
-   - `us.anthropic.claude-opus-5-5`
-   - `us.anthropic.claude-opus-5-5:1m`
-   - `eu.amazon.nova-lite-v1:0`
-   - `eu.amazon.nova-pro-v1:0`
-   - `eu.amazon.nova-2-lite-v1:0`
-   - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `eu.anthropic.claude-haiku-5-5`
-   - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `eu.anthropic.claude-sonnet-4-20250514-v1:0`
-   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `eu.anthropic.claude-sonnet-4-6`
-   - `eu.anthropic.claude-sonnet-4-6:1m`
-   - `eu.anthropic.claude-opus-4-5-20251101-v1:0`
-   - `eu.anthropic.claude-opus-4-6-v1`
-   - `eu.anthropic.claude-opus-4-6-v1:1m`
-   - `eu.anthropic.claude-opus-4-7`
-   - `eu.anthropic.claude-opus-4-7:1m`
-   - `eu.anthropic.claude-opus-4-8`
-   - `eu.anthropic.claude-opus-4-8:1m`
-   - `eu.anthropic.claude-opus-5`
-   - `eu.anthropic.claude-opus-5:1m`
-   - `eu.anthropic.claude-opus-5-5`
-   - `eu.anthropic.claude-opus-5-5:1m`
-   - `qwen.qwen3-vl-235b-a22b`
-   - `global.amazon.nova-2-lite-v1:0`
-   - `global.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `global.anthropic.claude-haiku-5-5`
-   - `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `global.anthropic.claude-sonnet-4-6`
-   - `global.anthropic.claude-sonnet-4-6:1m`
-   - `global.anthropic.claude-opus-4-5-20251101-v1:0`
-   - `global.anthropic.claude-opus-4-6-v1`
-   - `global.anthropic.claude-opus-4-6-v1:1m`
-   - `global.anthropic.claude-opus-4-7`
-   - `global.anthropic.claude-opus-4-7:1m`
-   - `global.anthropic.claude-opus-4-8`
-   - `global.anthropic.claude-opus-4-8:1m`
-   - `global.anthropic.claude-opus-5`
-   - `global.anthropic.claude-opus-5:1m`
-   - `global.anthropic.claude-opus-5-5`
-   - `global.anthropic.claude-opus-5-5:1m`
+2. **Choose a model**: Pick from the **Model** dropdown under OCR in the
+   configuration editor. It is generated from the `ocr.model_id` enum in
+   `patterns/unified/template.yaml`, and spans the `us.`, `eu.` and `global.`
+   Claude and Nova families, `qwen.qwen3-vl-235b-a22b`, Grok and the OpenAI
+   models. Commonly used: `us.amazon.nova-lite-v1:0` for clean
+   text-heavy scans, `us.amazon.nova-pro-v1:0` for mixed layouts,
+   `us.anthropic.claude-sonnet-4-6` for handwriting and dense tables. Select
+   `LambdaHook` to route OCR to your own Lambda function instead.
 
 3. **Configure prompts**: Customize system and task prompts for your specific use case
 4. **Deploy**: The configuration can be updated through the Web UI without stack redeployment
@@ -395,11 +342,19 @@ The OCR service supports optional image resizing for processing optimization:
 # OCR configuration example
 ocr:
   image:
-    resize_config:
-      target_width: 951   # Target width for processing
-      target_height: 1268 # Target height for processing
+    target_width: 951     # Target width for processing
+    target_height: 1268   # Target height for processing
+    dpi: 400              # PDF-to-image rasterization DPI
     preprocessing: true   # Enable adaptive binarization preprocessing
 ```
+
+All four settings sit directly under `ocr.image`, and there is no
+`resize_config` level in the configuration — the service builds that dictionary
+itself from `target_width` and `target_height`. The `resize_config=` and `dpi=`
+constructor keywords in the Python example above are the deprecated
+back-compatibility path; pass the configuration instead and set the values
+there. When neither dimension is set, `OcrService` applies its own 2600×3600
+ceiling.
 
 ### OCR Image Processing Features
 
@@ -464,13 +419,13 @@ ocr:
 
 ## Customizing Classification
 
-The pattern supports two different classification methods:
+Classification runs at one of two granularities, set in the configuration by `classification.one_stage.granularity`:
 
-1. **Page-Level Classification (multimodalPageLevelClassification)**: This is the default method that classifies each page independently based on its visual layout and textual content. It outputs a simple JSON format with a single class label per page.
+1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.one_stage.page.system_prompt` and `classification.one_stage.page.task_prompt`.
 
-2. **Holistic Packet Classification (textbasedHolisticClassification)**: This method examines the document as a whole to identify boundaries between different document types within a multi-document packet. It can detect logical document boundaries and identifies document types in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies document segments with start and end page numbers.
+2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify boundaries between different document types within a multi-document packet. It can detect logical document boundaries and identifies document types in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies document segments with start and end page numbers. Its prompts are `classification.one_stage.packet.system_prompt` and `classification.one_stage.packet.task_prompt`.
 
-You can select which method to use by setting the `ClassificationMethod` parameter when deploying the stack.
+The granularity is a configuration setting, not a stack parameter: change it in the configuration (for example in the web UI's configuration editor). [Classification](./classification.md) covers both granularities, the two-stage strategy, and how to choose between them.
 
 The classification system uses RVL-CDIP dataset categories and can be customized through the configuration files. Classification models and prompts are now managed through the configuration library rather than CloudFormation parameters.
 

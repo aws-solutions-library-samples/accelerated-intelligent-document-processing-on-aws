@@ -106,13 +106,24 @@ class TestShippedPromptsCarryPlaceholder:
 
         _assert_placeholder_is_cacheable(prompt, prompt_key)
 
-    def test_default_classification_prompt_includes_few_shot_placeholder(self):
-        """Classification carries it too — same silent-drop failure otherwise."""
-        defaults = load_system_defaults("pattern-2")
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ("one_stage", "page", "task_prompt"),
+            ("one_stage", "packet", "task_prompt"),
+            ("two_stage", "section_classification", "llm", "task_prompt"),
+        ],
+        ids=".".join,
+    )
+    def test_default_classification_prompt_includes_few_shot_placeholder(self, path):
+        """Every class-assigning classification prompt carries it too — same
+        silent-drop failure otherwise. Segmentation assigns no class, so its
+        prompts take no examples."""
+        prompt = load_system_defaults("pattern-2")["classification"]
+        for key in path:
+            prompt = prompt[key]
 
-        _assert_placeholder_is_cacheable(
-            defaults["classification"]["task_prompt"], "classification.task_prompt"
-        )
+        _assert_placeholder_is_cacheable(prompt, "classification." + ".".join(path))
 
 
 @pytest.mark.unit

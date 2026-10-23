@@ -170,7 +170,7 @@ stalled identically, five attempts filled the invocation, and the shard died on 
 clock — reaching the #1014 outcome through the other door
 ([#1310](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1310)).
 
-So the bound lives in the ladder instead. `_attempt_cannot_finish` refuses to **begin**
+So the bound lives in the ladder instead. `lambda_deadline.attempt_cannot_finish` refuses to **begin**
 an attempt the size of the one that just failed when the remaining invocation cannot hold
 it, and raises the underlying error. It measures rather than estimating, so it needs no
 constant, and it covers whatever an attempt actually spends — a stalled stream, the
@@ -194,8 +194,10 @@ A raised transient error is wrapped as `TransientError` and retried eight times 
 state-machine budget of 21,600 s.
 
 ⚠️ **A stall on both clients can still exceed the invocation** — 600 + 300 + 90 is over
-900 — and that residual is deliberate rather than denied: the confidence client's own
-ladder is not deadline-aware (see below), so no arithmetic here can close it.
+900 — and that residual is deliberate rather than denied. Both ladders consult the gate
+now, but neither can refuse its **first** attempt: with nothing measured yet there is
+nothing to compare the remaining time against. The bound each carries is therefore "at
+most one doomed attempt", so one full stall on each client remains possible.
 `test_the_confidence_client_can_still_overrun_and_that_is_recorded_not_hidden` asserts
 the residual is still real, so if the numbers ever do fit, this paragraph is stale and
 should go rather than understate what holds.
@@ -234,18 +236,52 @@ the deployed function's `Timeout` still matches the assumed ceiling; and — on 
 simulated clock — that a shard meeting an injected `ReadTimeoutError` returns it as a
 transient error with a full read-timeout window still left to retry in.
 
-⚠️ **One exposure these constants do not bound.** `bedrock/client.py`'s
-`_invoke_with_retry` has its own application-level ladder — `max_retries` attempts,
-backing off `initial_backoff` doubling to `max_backoff` — and unlike
-`invoke_agent_with_retry` it never calls `get_lambda_deadline_epoch`, so it can overrun
-an invocation by itself whatever the arithmetic says. The inequality bounds one stalled
-call per client, not that ladder. Making it deadline-aware changes behaviour for every
-non-agentic path, so it is tracked separately; the test above pins its numbers and its
-nominal worst case, and fails if either moves or if the ladder gains a deadline check
-that makes the caveat obsolete.
+⚠️ **These constants do not bound the ladders in `bedrock/client.py`; the gate does.**
+That module's four application-level ladders — non-streamed `converse`, embedding,
+LambdaHook and the OpenAI Responses endpoint — each make `max_retries` attempts backing
+off `initial_backoff` doubling to `max_backoff`, with no cumulative allowance, so their
+nominal worst case is outside one invocation however the arithmetic above comes out:
+eight non-streamed `converse` attempts at `CONFIDENCE_READ_TIMEOUT_SECONDS` is 2,400 s
+of a 900 s function, and three fill it exactly. Each of them now consults
+`lambda_deadline.attempt_cannot_finish` at every retry decision — about the **costliest**
+attempt it has measured, not the last one, because a ladder's costs are not monotonic and
+a cheap throttle between two stalls would otherwise reset the comparison — and clamps
+every sleep with `clamp_sleep_to_budgets`, which is the same rule and the same
+implementation the streamed ladder uses
+([#1362](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1362)).
+`tests/unit/bedrock/test_invocation_budget_guard.py` asserts the behaviour and derives
+the set of retry sites from the source, so a fifth ladder fails there rather than
+arriving unguarded.
+
+The gate is **inert unless a handler publishes the deadline**, and that is the half most
+easily left undone: a handler computes `context.get_remaining_time_in_millis()` and
+threads it somewhere specific without calling `set_lambda_deadline_epoch`. Three call
+sites publish it today — both extraction entry points and the assessment function — and
+the same test file asserts that they do, as real statements rather than as text.
+
+⚠️ **This client runs in many more Lambda functions than those three, and in the others
+the gate is a no-op.** OCR, classification, summarization, evaluation, rule validation,
+discovery, the agent functions and the configuration resolver all reach it without
+publishing a deadline, so their ladders behave exactly as they did before. Publishing it
+in each is a behaviour change per function rather than a mechanical edit — the state
+machine's retry policy for that task decides whether an early transient failure is
+better than a wall-clock one — so it is a separate decision, not an omission to be
+tidied up.
+
+⚠️ **The published deadline is readable from a thread, and it has to be.** A ContextVar
+survives `asyncio.run`, `gather`/`create_task` and `asyncio.to_thread`, and does **not**
+survive a raw `ThreadPoolExecutor` — and two of this library's Bedrock fan-outs are raw
+pools: `assessment.batching` maps concurrent confidence batches over one, and
+`bedrock.client.generate_embeddings_batch` submits to one. A deadline visible only in
+the calling context would therefore leave the gate inert in exactly the concurrent
+confidence batch a 300 s request is retried in. `set_lambda_deadline_epoch` writes a
+process-wide value alongside the ContextVar and `get_lambda_deadline_epoch` falls back
+to it, so no fan-out site has to remember `contextvars.copy_context().run`. The cost is
+the contract on that function: **publish at the start of every invocation,
+unconditionally**, or a warm container keeps the previous one's deadline.
 
 Note what a reserve cannot promise. `clamp_sleep_to_budgets` keeps
-`_DEADLINE_RESERVE_SECONDS` of the remaining budget unspent so a sleep does not end
+`DEADLINE_RESERVE_SECONDS` of the remaining budget unspent so a sleep does not end
 exactly at the wall, but an agent call can legitimately take minutes, so the reserve is
 a floor on usefulness rather than a guarantee that the next attempt completes. It also
 only ever **shortens** a sleep: it never converts one into a failure, because being

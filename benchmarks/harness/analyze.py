@@ -18,6 +18,37 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib  # noqa: E402
 
+CONF_BELOW = 0.9
+
+
+def confidence_distribution(confs, where=""):
+    """``mean_confidence`` / ``pct_conf_below_0.9`` / ``n_conf_leaves`` for one document.
+
+    The three figures were computed by the same copy-pasted expression in
+    ``score_synthetic`` and ``score_reference``, which is one definition too many
+    for a statistic whose range was never checked in either: GitHub #1395 found a
+    ``mean_confidence`` of 14.185 in four releases' committed grids, and it reached
+    both scorers through the same arithmetic.
+
+    The range check runs FIRST, before any of the three is computed, so a value
+    outside [0, 1] cannot be written and then flagged — see
+    :func:`lib.assert_confidences_in_range`, which raises rather than clamping. It
+    runs on the empty case too, where it passes because there is nothing out of
+    range; ``mean_confidence`` and ``pct_conf_below_0.9`` are then ``None`` and
+    ``n_conf_leaves`` is 0, which is what distinguishes "the grader scored nothing
+    here" from "it scored 0.0".
+    """
+    lib.assert_confidences_in_range(confs, where)
+    return {
+        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
+        "pct_conf_below_0.9": round(
+            100 * sum(1 for c in confs if c < CONF_BELOW) / len(confs), 1
+        )
+        if confs
+        else None,
+        "n_conf_leaves": len(confs),
+    }
+
 
 def score_confidence_coverage(sections):
     """Confidence coverage over every section of one document: scored/extracted rows.
@@ -48,6 +79,7 @@ def score_confidence_coverage(sections):
 
     expected = scored = 0
     by_field = {}
+    expected_by_field = {}
     for sec in sections:
         info = sec.get("explainability_info")
         # `explainability_info` is written as a one-element list wrapping the
@@ -58,12 +90,20 @@ def score_confidence_coverage(sections):
         scored += cov["scored_rows"]
         for field, n in cov["unscored_rows_by_field"].items():
             by_field[field] = by_field.get(field, 0) + n
+        for field, n in cov["expected_rows_by_field"].items():
+            expected_by_field[field] = expected_by_field.get(field, 0) + n
     return {
         "conf_rows_expected": expected,
         "conf_rows_scored": scored,
         "conf_rows_unscored": expected - scored,
         "conf_coverage": round(scored / expected, 4) if expected else None,
         "conf_unscored_by_field": by_field or None,
+        # The denominator beside that numerator. The fractions divide by the
+        # section-wide row total, so a SHORT attribute that is wholly unscored beside
+        # a large fully-scored one lands below the warning fraction — and under 10
+        # rows, below the warning rung's absolute ceiling as well; without a
+        # per-field denominator a recorded run cannot be read for that case at all.
+        "conf_rows_expected_by_field": expected_by_field or None,
     }
 
 
@@ -162,19 +202,59 @@ def typed_match(expected, got):
     return isinstance(got, str) and got.strip() == str(expected).strip()
 
 
-def _seq_of(row):
-    """The SEQnnnnn tag embedded in any string cell of an extracted row."""
+def _truth_seq(tag):
+    """The row id a truth file's `rows_typed` key names. `SEQ00042` or `42`."""
+    text = str(tag)
+    return int(text[3:]) if text.startswith("SEQ") else int(text)
+
+
+def _seq_of(row, truth_ids=None):
+    """The truth row id the `SEQnnnnn` tag in any string cell of this row names.
+
+    Canonicalised against `truth_ids` (#1500), so a tag whose width the OCR backend
+    perturbed resolves to the row it came from instead of onto a neighbour. That
+    matters more here than for the row count, and in a worse direction: a tag read as
+    the wrong id joins this row's values to ANOTHER row's cell truth, and
+    `cell_accuracy` then reports value errors that are artefacts of the join.
+    Returns `None` for a tag that names no truth row, which drops the row from the
+    comparison rather than mispairing it.
+    """
     if not isinstance(row, dict):
         return None
     for v in row.values():
         if isinstance(v, str):
             m = lib.SEQ.search(v)
             if m:
-                return int(m.group(1))
+                return lib.canonical_seq(m.group(1), truth_ids)
     return None
 
 
-def score_cells(sections, rows_typed, list_key):
+def _canonicalisation_ids(rows_typed, seq_ids=None):
+    """The id set :func:`_seq_of` canonicalises against — the DOCUMENT's, not the
+    instrument's (#1500).
+
+    `rows_typed` declares the rows that carry cell truth and `seq_ids` every row the
+    document contains, and the two coincide only while the generator emits typed
+    cells for every row. They have diverged before: `rows_typed` used to be written
+    for the value-noise variants alone, which is the gap "An instrument only exists
+    where the truth file declares it" in `benchmarks/matrices/METHODOLOGY.md`
+    records.
+
+    ⚠️ **Canonicalising against a SUBSET is worse than not canonicalising.** A
+    one-edit repair is taken when exactly one candidate names a truth row, so
+    narrowing the set does not make the repair fail — it makes a different candidate
+    unique. `SEQ000042` yields readings `{42, 2, 4}`; against the whole document that
+    is ambiguous and reported unresolved, but against a set declaring only row 4 it
+    resolves, confidently, to the wrong row — and that row's values are then compared
+    against another row's cell truth. So the join target is the full set whenever the
+    truth file carries one, and `rows_typed` is only the fallback.
+    """
+    ids = {_truth_seq(tag) for tag in rows_typed or {}}
+    ids |= {_truth_seq(tag) for tag in seq_ids or ()}
+    return ids
+
+
+def score_cells(sections, rows_typed, list_key, seq_ids=None):
     """Per-CELL accuracy over list rows, matched to truth by SEQ tag.
 
     Completeness (``completeness_recall``) answers "did every row come back";
@@ -187,9 +267,16 @@ def score_cells(sections, rows_typed, list_key):
     Returns ``(hits, total, rows_matched)``. ``total`` counts only cells the
     truth declares AND whose row was recovered, so this metric is about VALUE
     fidelity and does not double-count the truncation that recall already reports.
+
+    ``(None, None, None)`` means the truth declares no ``rows_typed`` — the document
+    has no list attribute, so this metric does not apply to it at all. That is a
+    different answer from ``(0, 0, 0)``, which means a list was declared and not one
+    of its rows came back, and ``cell_metric_keys`` is what keeps the two
+    distinguishable on the row (#1497).
     """
     if not rows_typed:
         return None, None, None
+    truth_ids = _canonicalisation_ids(rows_typed, seq_ids)
     by_seq = {}
     for sec in sections:
         ir = sec.get("inference_result") or {}
@@ -203,12 +290,12 @@ def score_cells(sections, rows_typed, list_key):
                 if not isinstance(val, list):
                     continue
                 for row in val:
-                    seq = _seq_of(row)
+                    seq = _seq_of(row, truth_ids)
                     if seq is not None:
                         by_seq.setdefault(seq, row)
     hits = total = 0
     for seq_tag, cells in rows_typed.items():
-        seq = int(str(seq_tag)[3:]) if str(seq_tag).startswith("SEQ") else int(seq_tag)
+        seq = _truth_seq(seq_tag)
         row = by_seq.get(seq)
         if row is None:
             continue  # not recovered at all -> recall's business, not ours
@@ -273,7 +360,7 @@ def _assert_row_alignment(section, prefix, field, data_rows):
     )
 
 
-def confidence_observations(sections, rows_typed, list_key):
+def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
     """``(confidence, correct)`` per list CELL, joined to exact truth by SEQ tag.
 
     This is the join #935 is about. A confidence score is only a calibration
@@ -328,9 +415,12 @@ def confidence_observations(sections, rows_typed, list_key):
         return []
     truth = {}
     for tag, cells in rows_typed.items():
-        text = str(tag)
-        seq = int(text[3:]) if text.startswith("SEQ") else int(text)
-        truth[seq] = {str(c).lower(): e for c, e in (cells or {}).items()}
+        truth[_truth_seq(tag)] = {str(c).lower(): e for c, e in (cells or {}).items()}
+    # The full document's ids, not `truth`'s keys — see `_canonicalisation_ids`. A
+    # tag resolving to a row this instrument does not declare is then skipped below
+    # for want of cell truth, which is the right outcome; resolving it onto a
+    # declared row would pair it with the wrong truth.
+    truth_ids = _canonicalisation_ids(rows_typed, seq_ids)
 
     observations = []
     seen = set()
@@ -347,7 +437,7 @@ def confidence_observations(sections, rows_typed, list_key):
                     continue
                 _assert_row_alignment(sec, prefix, field, value)
                 for index, row in enumerate(value):
-                    seq = _seq_of(row)
+                    seq = _seq_of(row, truth_ids)
                     cells = truth.get(seq) if seq is not None else None
                     if not cells or seq in seen:
                         continue
@@ -367,7 +457,7 @@ def confidence_observations(sections, rows_typed, list_key):
     return observations
 
 
-def score_calibration(sections, rows_typed, list_key, observations=None):
+def score_calibration(sections, rows_typed, list_key, observations=None, seq_ids=None):
     """Is this run's confidence CALIBRATED, and does it RANK errors? (#935)
 
     ``mean_confidence`` and ``pct_conf_below_0.9`` next door describe the shape of
@@ -431,7 +521,7 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
     them in rather than have the join run twice over the same sections.
     """
     if observations is None:
-        observations = confidence_observations(sections, rows_typed, list_key)
+        observations = confidence_observations(sections, rows_typed, list_key, seq_ids)
     if not observations:
         return {
             "calibration_observations": 0,
@@ -761,6 +851,175 @@ def score_audit_metadata(sections):
     }
 
 
+def render_tally(tally):
+    """A ``{name: count}`` tally as one CSV-safe string, or ``None`` when empty.
+
+    ``"code=4 other_code=1"``, sorted by name so two grids diff. Needed because
+    ``aggregate._write_summary_csvs`` uses ``csv.DictWriter``: a dict row value
+    stringifies to its ``repr`` in the cell, and a key absent from ``CSV_COLS`` is
+    dropped without a word. The JSON keeps the tally as a tally.
+    """
+    return " ".join(f"{k}={tally[k]}" for k in sorted(tally)) or None
+
+
+def score_processing_issues(sections):
+    """What the pipeline WARNED about on this document (GitHub #1378).
+
+    ``grep -rn processing_issues benchmarks/harness/*.py`` returned nothing before
+    this existed. Extraction, classification and assessment all emit
+    :class:`idp_common.models.ProcessingIssue`, and none of it reached
+    ``benchmarks/results/*/summary.json`` — so a run whose extraction reported
+    losing rows was recorded identically to a clean one, and **a check that fires
+    into a field nobody reads is indistinguishable, in the results tree, from a
+    check that does not fire**. Issue #1361 was duly filed as large documents
+    losing rows "silently" when ``extraction_rows_below_ocr_estimate`` had fired on
+    every lossy count it reported.
+
+    Read off the same place :func:`score_audit_metadata` reads its audit block: the
+    section's ``result.json`` ``metadata``. More than extraction's own issues reach
+    that key — extraction preserves the issues of stages it does not own
+    (``owned_stages`` in ``extraction/service.py``) and assessment merges into it
+    rather than replacing it — but it is **not** the complete per-section set, and
+    the difference matters more than the mechanisms do.
+
+    ⚠️ **What this cannot see, and why a ``0`` here is not a clean bill of health.**
+    Everything below records onto the section's DynamoDB record and never into the
+    S3 object this reads, because nothing rewrites ``result.json`` afterwards:
+
+    * ``assessment``'s **degrade and skip** pair —
+      ``assessment_failed_confidence_unavailable`` and
+      ``assessment_skipped_confidence_unavailable``, declared in
+      ``assessment/degradation.py``, whose own docstring says that path
+      "deliberately does not rewrite that file", and whose five
+      ``skip_section_no_confidence`` call sites in ``assessment/service.py`` each
+      ``return document`` before the write. These are the ones to worry about: they
+      are **error** severity on a document that **completes** — not failing it is
+      the whole point of the path — so a section that came back with no confidence
+      scores at all reads here as ``processing_issues: 0, success: true``, with no
+      ``status`` to fall back on. And it is live where it counts: over the committed
+      ``results/v0.6.11/*/summary.json`` rows, ``resolved.assessment`` is
+      ``separate`` on 4,192 rows against 516 ``integrated`` and 257 ``off``, and the
+      skip sites are on the standalone path.
+    * ``rule_validation`` and ``postprocessing``, recorded through
+      ``document_failure.record_section_failure`` from the handlers in
+      ``patterns/unified/src/``. Smaller, because these accompany a document the
+      harness already records as failed: what is lost is the reason, not the event.
+
+    The DynamoDB record is not read instead, for three reasons that point the same
+    way: it would need de-duplicating against the S3 copy of every earlier stage's
+    issues, it is another large attribute fetched per run on a path that already
+    scans, and it is deleted with its stack (three release stacks already are) where
+    the S3 artifacts outlive it. So the boundary is **declared and closed** instead:
+    ``test_processing_issues_recorded.py`` partitions every declared stage and every
+    code declared in ``degradation.py`` across what reaches ``result.json`` and a
+    named boundary list, so a *third* such stage or a *third* such code fails there
+    rather than going quietly unread.
+
+    Nothing here enumerates issue types. The tallies are keyed on each issue's own
+    ``severity``/``code``/``stage``, and ``processing_issue_detail`` carries the
+    issue dicts themselves, so a code added to any service tomorrow is recorded
+    without an edit here. A recorder listing the codes it knows would be the very
+    defect this closes, one level up.
+
+    Each issue is normalised through the shipped model —
+    ``ProcessingIssue.from_dict(...).to_dict()`` — rather than copied raw or
+    re-described by a field list written here. That makes the model the authority
+    for what an issue *is* (and applies its own ``root_cause``/``details`` size
+    bounds, which is what keeps a 281 KB jsonschema message out of a committed
+    artifact). Imported inside the function and deliberately NOT wrapped in a
+    try/except recording ``None``, for the same reason
+    :func:`score_confidence_coverage` is not: a silent skip here reproduces exactly
+    the defect the measurement exists to close.
+
+    ``processing_issues`` is ``0`` for a clean document and never ``None``. The
+    absence of issues IS the measurement here, whereas ``None`` is the encoding
+    this harness reserves for "could not be read" (see :func:`unread_sections_row`)
+    — and both callers return before reaching this when the sections did not read,
+    so a ``0`` always means a document that was read and warned about nothing.
+    An entry that is not a dict, or a ``processing_issues`` that is not a list, is
+    counted as ``processing_issues_malformed`` rather than dropped: output nobody
+    can parse is a finding about the run, not an empty one.
+    """
+    from idp_common.models import ProcessingIssue
+
+    issues = []
+    malformed = 0
+    why: list[str] = []
+    for sec in sections:
+        md = sec.get("metadata")
+        if not isinstance(md, dict):
+            continue
+        raw = md.get("processing_issues")
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            malformed += 1
+            why.append(f"processing_issues is {type(raw).__name__}, not a list")
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict):
+                malformed += 1
+                why.append(f"issue entry is {type(entry).__name__}, not a dict")
+                continue
+            # An entry with no `code` is not an issue type, it is malformed output.
+            # `{}` would otherwise become a real issue tallied under `""` for all
+            # three axes, which reads as a warned run with an unnameable cause. The
+            # test is STRUCTURAL — the identifying field is absent — not a check
+            # against any list of known codes, so a code nobody has written yet is
+            # still recorded, and an emitter that stopped setting `code` would show
+            # up here as malformed rather than vanish.
+            if not str(entry.get("code") or "").strip():
+                malformed += 1
+                why.append("issue entry carries no code")
+                continue
+            # `isinstance(entry, dict)` is not enough to admit it to the model.
+            # `ProcessingIssue.__post_init__` byte-truncates `root_cause`, so an
+            # entry carrying a non-string there raises `AttributeError` on
+            # `.encode` — and one such entry killed the whole scoring pass, which is
+            # the opposite of what a reader of malformed output must do. Narrow by
+            # construction: the only call inside is the model's, the failure is
+            # COUNTED and NAMED rather than swallowed, and a reason is on the row.
+            try:
+                issues.append(ProcessingIssue.from_dict(entry).to_dict())
+            except Exception as exc:  # noqa: BLE001 - reported on the row, not hidden
+                malformed += 1
+                why.append(
+                    f"issue entry {str(entry.get('code') or '?')[:60]!r} would not "
+                    f"read: {type(exc).__name__}: {exc}"
+                )
+    by_severity, by_code, by_stage = {}, {}, {}
+    for issue in issues:
+        for tally, field in (
+            (by_severity, "severity"),
+            (by_code, "code"),
+            (by_stage, "stage"),
+        ):
+            name = str(issue.get(field) or "")
+            tally[name] = tally.get(name, 0) + 1
+    return {
+        "processing_issues": len(issues),
+        # Counted whether or not anything READ. A document whose every issue entry
+        # is unparseable must not report as clean — `malformed if issues else None`
+        # is the shape that does, and it is the issue's own defect.
+        "processing_issues_malformed": malformed or None,
+        # ...and WHY, in the same spirit as `cost_unread` and `sections_unread`: a
+        # count alone cannot be acted on. JSON only; the CSV carries the count.
+        "processing_issues_malformed_why": why or None,
+        # Severity is kept as its OWN axis rather than folded into the total: the
+        # whole use of this figure is triage, and a warning and an error collapsed
+        # into one count cannot be triaged.
+        "processing_issues_by_severity": by_severity,
+        "processing_issues_by_code": by_code,
+        "processing_issues_by_stage": by_stage,
+        # The issues themselves, verbatim. This is what makes the figure readable
+        # rather than merely present: #1361's author needed the message
+        # ("141 of an estimated 814 rows"), not a count.
+        "processing_issue_detail": issues,
+        "processing_issue_severities": render_tally(by_severity),
+        "processing_issue_codes": render_tally(by_code),
+    }
+
+
 def unread_sections_row(read):
     """The row keys a document whose sections could not all be READ contributes.
 
@@ -783,6 +1042,116 @@ def unread_sections_row(read):
     }
 
 
+TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS = (
+    "no typed scalar truth: this document's truth file declares no `fields_typed`, so "
+    "typed_accuracy / typed_fields do not apply to this row and are absent, not zero. "
+    "Only a document whose generator emits typed scalar expectations carries them "
+    "(`kv_form`); for a transaction-list document the per-value instrument is "
+    "cell_accuracy, with cells_compared as its denominator, and scalar_accuracy "
+    "compares the text the document renders."
+)
+
+
+def typed_scalar_keys(hits, total):
+    """The typed-scalar metric keys a scored row carries — or the reason it carries none.
+
+    ``typed_accuracy`` is only defined for a document whose truth declares
+    ``fields_typed``, which in this corpus means the ``kv_form`` generator and nothing
+    else: ``bank_statement``'s two scalar fields are an account number with leading
+    zeros and a date RANGE, both of which a typed schema correctly leaves as strings,
+    so there is no typed scalar to score and never will be without changing ``FIELDS``
+    — which would move ``scalar_accuracy``'s denominator and break the comparability
+    that metric exists to preserve.
+
+    So the pair is ABSENT on such a row rather than present-and-null, and a reason
+    column says so. This is the same contract as ``scored_against_keys`` below, for
+    the same reason stated there: presence-and-null is already this harness's signal
+    for "measured, and there was nothing to join", so a metric that was never
+    applicable must not borrow it. It was borrowing it, on every row of every suite
+    the published tables are built from — 7,434 of the 7,458 committed rows that
+    carry the key — which is how a column the release procedure asks for came to
+    render as blank cells in a table instead of as a missing measurement
+    (GitHub #1490).
+
+    The ``not total`` guard folds ``total == 0`` onto "no typed scalar truth", which is
+    deliberate and is NOT how ``cell_metric_keys`` below guards. ``fields_typed`` is a
+    mapping the truth file either declares or does not, so an empty one and an absent
+    one are the same fact and both mean the metric does not apply. ``score_cells``
+    answers in three states rather than two and distinguishes them by returning
+    ``None`` for no-list against ``0`` for a declared list that joined nothing, so a
+    zero there is load-bearing and must not be folded. The two helpers are adjacent
+    and the asymmetry is the point; do not tidy it.
+    """
+    if not total:
+        return {"typed_truth_unavailable": TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS}
+    return {
+        "typed_accuracy": round(hits / total, 4),
+        "typed_fields": total,
+        "typed_truth_unavailable": None,
+    }
+
+
+CELL_TRUTH_UNAVAILABLE_NO_LIST = (
+    "no per-cell truth: this document has no list attribute — its truth file declares "
+    "no `rows_typed` — so cell_accuracy / cells_compared do not apply to this row and "
+    "are absent, not zero. Only a document whose generator emits per-row typed "
+    "expectations carries them (`bank_statement`); for a flat key/value form the "
+    "per-value instruments are scalar_accuracy, which compares the text the document "
+    "renders, and typed_accuracy, which compares the schema-typed target."
+)
+
+
+def cell_metric_keys(hits, total):
+    """The per-cell metric keys a scored row carries — or the reason it carries none.
+
+    ``score_cells`` answers in three states, and two of them used to encode
+    identically. It returns ``(None, None, None)`` when the truth declares no
+    ``rows_typed`` at all — the document has no list attribute, so there is nothing a
+    per-cell metric could be about — and ``(0, 0, ...)`` when a list IS declared and
+    not one of its rows came back, which is a real measurement over an empty join.
+    Both produced ``cell_accuracy: None`` and ``cells_compared: None``, because
+    ``cell_tot or None`` folded the honest ``0`` onto the same value as the absent one.
+
+    So this splits them, by the contract ``typed_scalar_keys`` above and
+    ``scored_against_keys`` below already use, for the reason stated there:
+    presence-and-null is already this harness's signal for "measured, and there was
+    nothing to join", so a metric that was never *applicable* must not borrow it.
+
+    * **No list attribute** — both keys ABSENT, and ``cell_truth_unavailable`` says
+      why and names the instruments that do apply. ``aggregate._stats`` drops an
+      absent key exactly as it drops a null one, so ``cell_stats`` is unchanged; what
+      changes is that a reader of the row, the CSV or a table built from either can
+      tell "not applicable here" from "measured nothing".
+    * **A list, and nothing joined** — ``cell_accuracy`` present and null (0/0 is
+      undefined, and a 1.0 there would be the "a null column scores 1.000" blind spot
+      in its purest form), with ``cells_compared`` the literal ``0`` it measured
+      rather than a blank a reader fills in as zero by guessing correctly.
+    * **A list, and cells joined** — the ratio and its denominator, as before.
+
+    This matters more than the typed pair it follows (#1490) because ``cell_accuracy``
+    is the column the configuration guidance leans on hardest: every per-model and
+    per-cell table in its §5 quotes it, and an accuracy figure whose denominator reads
+    as a blank is the specific shape that hides row loss — a model returning 10 rows of
+    400 scores 1.000 over the 20 cells it returned (GitHub #1497).
+
+    One bound on the two reason strings, since each points the reader at the other's
+    metrics: a generator declaring NEITHER ``rows_typed`` nor ``fields_typed`` would
+    emit both, and each would then name a column that is also absent on that row. Both
+    still name ``scalar_accuracy``, which ``score_synthetic`` writes unconditionally,
+    so the reader is not left with nothing — but the referral would be wrong. Not
+    reachable today: ``bank_statement`` and ``kv_form`` are the whole corpus and each
+    declares exactly one of the two. A third generator declaring neither needs a reason
+    string of its own rather than these two together.
+    """
+    if hits is None or total is None:
+        return {"cell_truth_unavailable": CELL_TRUTH_UNAVAILABLE_NO_LIST}
+    return {
+        "cell_accuracy": round(hits / total, 4) if total else None,
+        "cells_compared": total,
+        "cell_truth_unavailable": None,
+    }
+
+
 def score_synthetic(bucket, doc_prefix, truth):
     """Exact completeness + accuracy from SEQ tags and known field values.
 
@@ -795,7 +1164,13 @@ def score_synthetic(bucket, doc_prefix, truth):
     read = lib.read_sections(bucket, doc_prefix)
     if not read.complete:
         return unread_sections_row(read)
+    # The whole document's ids: the recall denominator and the canonicalisation join
+    # target are the same set here, which is the property `_canonicalisation_ids`
+    # restores for the per-cell scorers.
+    truth_ids = _canonicalisation_ids(None, truth.get("seq_ids"))
     seqs, confs = [], []
+    tagged = repaired = 0
+    unresolved = []
     scalar_hits = scalar_tot = 0
     typed_hits = typed_tot = 0
     fields = truth.get("fields") or {}
@@ -805,7 +1180,13 @@ def score_synthetic(bucket, doc_prefix, truth):
     for sec in sections:
         ir = sec.get("inference_result", {}) or {}
         blob = json.dumps(ir)
-        seqs += [int(m) for m in lib.SEQ.findall(blob)]
+        # Row identity, canonicalised against this document's own truth ids rather
+        # than read off a fixed-width regex — see lib.canonical_seq and #1500.
+        reading = lib.read_seq_ids(blob, truth_ids)
+        seqs += list(reading.ids)
+        tagged += reading.tagged
+        repaired += reading.repaired
+        unresolved += list(reading.unresolved)
         confs += lib.confidence_values(sec.get("explainability_info"))
         # capture scalar fields (top-level, case-insensitive)
         # Unwrap a multi-instance result so its records' fields are visible; a
@@ -813,7 +1194,6 @@ def score_synthetic(bucket, doc_prefix, truth):
         for record in scalar_bearing_records(ir):
             for k, v in record.items():
                 got_fields.setdefault(k.lower(), v)
-    truth_ids = set(int(s[3:]) for s in truth.get("seq_ids", []))
     extracted = set(seqs)
     n_truth = len(truth_ids)
     recall = len(extracted & truth_ids) / n_truth if n_truth else None
@@ -829,16 +1209,14 @@ def score_synthetic(bucket, doc_prefix, truth):
         if got is not None and str(got).strip() == str(exp).strip():
             scalar_hits += 1
     # Typed accuracy: a SEPARATE metric, not a redefinition of the one above.
-    # Only populated for truth files that declare `fields_typed`.
+    # Defined only for truth files that declare `fields_typed`; see
+    # `typed_scalar_keys` for what a row carries when they do not.
     for label, exp in fields_typed.items():
         typed_tot += 1
         if typed_match(exp, got_fields.get(label.lower())):
             typed_hits += 1
     cell_hits, cell_tot, _rows_matched = score_cells(
-        sections, truth.get("rows_typed"), truth.get("list_key")
-    )
-    cell_accuracy = (
-        round(cell_hits / cell_tot, 4) if cell_hits is not None and cell_tot else None
+        sections, truth.get("rows_typed"), truth.get("list_key"), truth.get("seq_ids")
     )
     # Section count vs the truth's expectation. This is the metric boundary
     # detection is judged on, and nothing else can see it: a document split into
@@ -855,33 +1233,70 @@ def score_synthetic(bucket, doc_prefix, truth):
     )
     return {
         **audit,
+        **score_processing_issues(sections),
         "sections": len(sections),
         "sections_expected": expected_sections,
         "sections_correct": sections_correct,
         "rows_truth": n_truth,
+        # ⚠️ Distinct truth identifiers found ANYWHERE in the section's JSON, which
+        # is deliberate (a tag is read wherever the OCR backend put it) and is not
+        # the same thing as a row. A model declining inside the field — a declared
+        # array coming back as "the statement contains 400 transactions (SEQ00000 to
+        # SEQ00399), too many to list" — contributes every id its sentence names, so
+        # four committed runs read 2 against a correct `conf_rows_expected` of 0.
+        # Left as it is on purpose: the raw sections the committed grids were scored
+        # from are not in the repository, so a narrowed scan cannot be re-measured
+        # over them. `test_row_identity_collapse.py::
+        # test_a_prose_refusal_inflates_the_row_count` executes the case, and
+        # `ExtractionService.LIST_FIELD_NOT_A_LIST_CODE` is the pipeline-side signal
+        # for the shape (#1505).
         "rows_extracted": len(extracted),
         "completeness_recall": round(recall, 4) if recall is not None else None,
         "truncation_prefix": prefix if n_truth else None,
         "dups": len(seqs) - len(extracted),
         "n_gaps": len(truth_ids - extracted),
+        # The three identifier figures beside the row count, so a collapse is
+        # VISIBLE in the artifact rather than only correct (#1500). `rows_extracted`
+        # is a count of distinct rows recovered and `rows_tagged` of identifiers
+        # seen, and the published defect is what happens when a reader has only the
+        # first and takes it for the second. `rows_id_repaired` says how much of the
+        # agreement between them was bought by canonicalisation — non-zero means the
+        # OCR backend perturbed identifier widths on this run, which is a finding
+        # about the backend and not about completeness. `rows_id_unresolved` is the
+        # only genuinely unmeasured bucket: tags naming no truth row, which this
+        # scorer declines to attribute by proximity.
+        #
+        # All three are written as plain integers, 0 included, like `dups` and
+        # `n_gaps` above and unlike the `x or None` ratios below them. A zero here is
+        # a measurement — "no tag needed repair" — and `or None` would blank the CSV
+        # cell, which in this harness already means "measured, nothing to join" (see
+        # the `SCORED_EXACT_TRUTH` comment below) and which a reader fills in by
+        # guessing. Reading a blank as 0 is how a scorer that produced nothing came
+        # to be published as a result.
+        "rows_tagged": tagged,
+        "rows_id_repaired": repaired,
+        "rows_id_unresolved": len(unresolved),
+        # Backstop, not the fix: a shortfall is only evidence of a missing row if
+        # row identity was readable, and this names the two shapes that say it was
+        # not. Null on every run whose identifiers canonicalised cleanly.
+        "unverified_row_shortfall": lib.unverified_row_shortfall(
+            n_truth, len(extracted), len(seqs) - len(extracted), len(unresolved)
+        ),
         "scalar_accuracy": round(scalar_hits / scalar_tot, 4) if scalar_tot else None,
-        "typed_accuracy": round(typed_hits / typed_tot, 4) if typed_tot else None,
-        "typed_fields": typed_tot or None,
-        "cell_accuracy": cell_accuracy,
-        "cells_compared": cell_tot or None,
-        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
-        "pct_conf_below_0.9": round(
-            100 * sum(1 for c in confs if c < 0.9) / len(confs), 1
-        )
-        if confs
-        else None,
-        "n_conf_leaves": len(confs),
+        **typed_scalar_keys(typed_hits, typed_tot),
+        **cell_metric_keys(cell_hits, cell_tot),
+        **confidence_distribution(confs, f"{doc_prefix}sections/*/result.json"),
         **score_confidence_coverage(sections),
         # Calibration and discrimination against the exact per-cell truth (#935).
         # Only the synthetic corpus can carry these: a reference corpus is scored by
         # the stack's own evaluation, which does not expose a per-cell verdict to
         # join a per-cell confidence to.
-        **score_calibration(sections, truth.get("rows_typed"), truth.get("list_key")),
+        **score_calibration(
+            sections,
+            truth.get("rows_typed"),
+            truth.get("list_key"),
+            seq_ids=truth.get("seq_ids"),
+        ),
     }
 
 
@@ -910,6 +1325,24 @@ def score_classification(ev):
         "class_calibration_separation": None,
         "class_mean_confidence": None,
         "n_class_scored_pages": 0,
+        # Section accuracy split into its two halves (GitHub #1329).
+        # `split_accuracy_without_order` requires a predicted section to match on
+        # BOTH its page set and its class, so a wrong boundary and a wrong label
+        # are the same number there — and those two call for different fixes (a
+        # different segmentation prompt, or a different labelling model). The
+        # decomposition is exact: split = boundary x label.
+        #
+        # This is the pair that makes a granularity comparison worth running: a
+        # model shown the whole packet should place boundaries better, and
+        # `class_accuracy` alone cannot show that because it is per PAGE and a
+        # page can carry the right class inside the wrong section.
+        "boundary_accuracy": None,
+        # ⚠️ Null means NOT SCORED, not zero: no section's boundaries matched, so
+        # no label was ever judged. Averaging it as 0 across a run would report
+        # "every label was wrong" for documents where the labels were never
+        # reached.
+        "label_accuracy": None,
+        "split_accuracy_without_order": None,
     }
     if not ev:
         return out
@@ -917,6 +1350,10 @@ def score_classification(ev):
     acc = ds.get("page_level_accuracy")
     if isinstance(acc, (int, float)):
         out["class_accuracy"] = round(acc, 4)
+    for key in ("boundary_accuracy", "label_accuracy", "split_accuracy_without_order"):
+        value = ds.get(key)
+        if isinstance(value, (int, float)):
+            out[key] = round(value, 4)
     right, wrong = [], []
     for row in ds.get("page_details") or []:
         c = row.get("predicted_confidence")
@@ -974,19 +1411,55 @@ def score_reference(bucket, doc_prefix):
         confs += lib.confidence_values(sec.get("explainability_info"))
     return {
         **score_audit_metadata(sections),
+        **score_processing_issues(sections),
         "eval_unread": ev_read.error if ev_read.is_failed else None,
         "weighted_accuracy": acc,
         "parse_failures": pf,
         "calibration_separation": sep,
         **score_classification(ev),
-        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
-        "pct_conf_below_0.9": round(
-            100 * sum(1 for c in confs if c < 0.9) / len(confs), 1
-        )
-        if confs
-        else None,
-        "n_conf_leaves": len(confs),
+        **confidence_distribution(confs, f"{doc_prefix}sections/*/result.json"),
         **score_confidence_coverage(sections),
+    }
+
+
+# Which of the two scorers produced a row's accuracy, recorded ON the row (#1364).
+#
+# `score_doc` dispatches on whether a local truth file exists, and the two scorers emit
+# DISJOINT accuracy families: `score_synthetic` writes `cells_compared`,
+# `cell_accuracy`, `scalar_accuracy` and `completeness_recall`; `score_reference` writes
+# `weighted_accuracy` and `class_accuracy` from the stack's own evaluation against the
+# corpus labels. Which one ran was recorded nowhere, so a reference row was shaped
+# exactly like a synthetic row whose scorer had produced nothing — the exact-key columns
+# absent, their CSV cells blank, `cells_compared` read as 0 by any reader defaulting it,
+# and a mean over no observations read as `nan`. That reading was published as "the
+# reference corpora produced cost but no scored accuracy" for a grid in which all 2,280
+# reference rows carried a `weighted_accuracy`, and it left a documentation section
+# unrefreshed whose numbers were sitting in the artifact.
+#
+# So the row says which scorer ran (always, both paths) and, when the exact-key family
+# does not apply, why and which column carries this row's accuracy instead. The absent
+# keys stay absent rather than becoming present-and-null: presence-and-null is already
+# this harness's signal for "measured, nothing to join" (see `calibration_curve`), and
+# borrowing it here would trade one ambiguity for another.
+SCORED_EXACT_TRUTH = "exact_truth"
+SCORED_STACK_EVALUATION = "stack_evaluation"
+
+EXACT_TRUTH_UNAVAILABLE_REFERENCE = (
+    "no local per-cell truth: a reference corpus is a labelled test set on the stack, "
+    "so cells_compared / cell_accuracy / scalar_accuracy / completeness_recall do not "
+    "apply to this row and are absent, not zero. This row's accuracy against the "
+    "corpus labels is weighted_accuracy (with class_accuracy for classification), "
+    "scored by the stack's own evaluation."
+)
+
+
+def scored_against_keys(truth):
+    """The provenance pair every scored row carries, for a given truth file (#1364)."""
+    return {
+        "scored_against": SCORED_EXACT_TRUTH if truth else SCORED_STACK_EVALUATION,
+        "exact_truth_unavailable": (
+            None if truth else EXACT_TRUTH_UNAVAILABLE_REFERENCE
+        ),
     }
 
 
@@ -1066,6 +1539,10 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         ),
         "tokens": tok,
         "tokens_by_phase": tok_by_phase,
+        # Set here rather than inside either scorer so it survives the unread-sections
+        # path too: `unread_sections_row` deliberately returns ONLY its two bookkeeping
+        # keys, and a row that could not be read still has a knowable scorer (#1364).
+        **scored_against_keys(truth),
     }
     if truth:
         out.update(score_synthetic(bucket, doc_prefix, truth))

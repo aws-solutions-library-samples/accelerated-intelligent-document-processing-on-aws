@@ -1,0 +1,29 @@
+# The Python packages install.sh installs, at exactly lib/idp_common_pkg/uv.lock's
+# versions, each with the sha256 of every file pip may install for it on the job's
+# image (python:3.13-bookworm): the universal wheel, or for Pillow and PyYAML the
+# CPython 3.13 manylinux wheels for x86_64 and aarch64. install.sh installs them
+# with --require-hashes, so pip refuses any file not listed here, and none of them
+# is a source distribution, so nothing is built and no unchecked build requirement
+# is fetched. The digests are PyPI's for those files, which uv.lock records too;
+# scripts/tests/test_ux_runner_docker.py pins both the versions and the digests to
+# it, so moving a pin means moving uv.lock and taking the new files' digests from it.
+boto3==1.42.97 \
+    --hash=sha256:966e49f0510af9a64057a902b7df53d4348c447de0d3df4cc855dfd85e058fcd
+botocore==1.42.97 \
+    --hash=sha256:77d2c8ce1bc592d3fbd7c01c35836f4a5b0cac2ca03ccdf6ffc60faa16b5fadc
+jmespath==1.1.0 \
+    --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+s3transfer==0.16.0 \
+    --hash=sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe
+python-dateutil==2.9.0.post0 \
+    --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
+Pillow==13.0.0 \
+    --hash=sha256:19b66ca0a4d25cc0200b381ce824c7ea090db61427315e73cfb05dbf1b35c369 \
+    --hash=sha256:5f56499c1a74d2b862beb0c33b8016f99d095858455df9d21583bbbc1c15b582
+PyYAML==6.0.2 \
+    --hash=sha256:70b189594dbe54f75ab3a1acec5f1e3faa7e8cf2f1e08d9b561cb41b845f69d5 \
+    --hash=sha256:0ffe8360bab4910ef1b9e87fb812d8bc0a308b0d0eef8c8f44e0254ab3b07133

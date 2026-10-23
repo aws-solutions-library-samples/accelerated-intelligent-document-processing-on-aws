@@ -29,7 +29,8 @@ vi.mock('../../../graphql/generated', () => ({
 }));
 
 vi.mock('../../../hooks/use-page-thumbnails', () => ({
-  default: () => ({ '1': 'blob:1', '2': 'blob:2', '3': 'blob:3', '4': 'blob:4' }),
+  default: () => ({ urls: { '1': 'blob:1', '2': 'blob:2', '3': 'blob:3', '4': 'blob:4' }, failure: null }),
+  THUMBNAIL_FAILURE_MESSAGES: { 'access-denied': 'access denied', failed: 'failed' },
 }));
 
 vi.mock('../../../hooks/use-user-role', () => ({
@@ -77,7 +78,7 @@ const renderPanel = () =>
   );
 
 const openBoard = async () => {
-  await userEvent.click(screen.getByRole('button', { name: /Edit page grouping/i }));
+  await userEvent.click(screen.getByRole('button', { name: /Edit Page Grouping/i }));
 };
 
 const movePageTo = async (pageId: number, sectionId: string) => {
@@ -90,7 +91,7 @@ describe('SectionsPanel page regrouping', () => {
     renderPanel();
 
     // Both routes stay available; their labels carry the difference in consequence.
-    expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Edit Mode/i })).toBeInTheDocument();
   });
 

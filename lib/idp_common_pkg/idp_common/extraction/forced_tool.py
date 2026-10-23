@@ -28,10 +28,12 @@ What it costs, and why the caller must handle both:
 
 * Not every route reaches Converse. `LambdaHook` and the GPT-5.x Responses path
   cannot carry a `toolConfig` at all, so this must be skipped for them.
-* Reaching Converse is not enough either. Claude Opus 5.5 accepts a `toolConfig`
-  and answers `toolChoice: auto`, but rejects `any` and `tool` with a 400 — so
-  forcing is unavailable on a model that is otherwise fully tool-capable, and this
-  is skipped for it too.
+* Reaching Converse is not enough either. Claude Opus 5.5 and Claude Sonnet 5.5
+  accept a `toolConfig` and answer `toolChoice: auto`, but reject `any` and `tool`
+  with a 400 — so forcing is unavailable on models that are otherwise fully
+  tool-capable, and this is skipped for them too. Note Claude Sonnet 5 and Opus 5
+  accept forcing: the answer is per model id, not per family, so ask
+  `forced_tool_choice_unsupported_reason` rather than matching on a family stem.
 * A model can accept a `toolConfig` and still answer in prose. That is a normal
   outcome, not an error, so the caller keeps the text path as a fallback.
 * Bedrock rejects property names outside `^[a-zA-Z0-9_.-]{1,64}$`, which four
@@ -208,9 +210,10 @@ def should_force_tool(
     reason = tool_config_unsupported_reason(model_id)
     if reason:
         return False, f"model does not reach the Converse API: {reason}"
-    # Reaching Converse is necessary but no longer sufficient. Claude Opus 5.5
-    # carries a toolConfig and emits a toolUse under ``toolChoice: auto``, but
-    # rejects both forcing modes with a 400 — and an unforced tool call gives up
+    # Reaching Converse is necessary but no longer sufficient. Claude Opus 5.5 and
+    # Claude Sonnet 5.5 carry a toolConfig and emit a toolUse under
+    # ``toolChoice: auto``, but reject both forcing modes with a 400 — and an
+    # unforced tool call gives up
     # the one guarantee this module exists for (that the declared fields cannot
     # fail to parse), so the honest answer is to fall back to the prose schema
     # rather than send a tool the model may simply decline to call.

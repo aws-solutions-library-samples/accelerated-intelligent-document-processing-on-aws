@@ -1,0 +1,15 @@
+query ListReviewQueues {
+  listReviewQueues {
+    id
+    name
+    description
+    priority
+    checklist
+    rejectReasons
+    skipReasons
+    timeLimitMinutes
+    eligibleAnnotators
+    isDefaultQueue
+    enabled
+  }
+}

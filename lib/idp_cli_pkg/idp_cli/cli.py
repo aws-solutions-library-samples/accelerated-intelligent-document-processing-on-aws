@@ -371,11 +371,19 @@ def _display_deployment_failure(client, stack_name: str, result):
         console.print()
 
 
-# Region-specific template URLs
+# Region-specific template URLs. One entry per Region `scripts/aws-release.sh`
+# publishes to: this dict and that script are the two halves of the same claim,
+# and a Region in one but not the other is the failure to avoid — an entry here
+# with no published artifact serves a 404 to `idp-cli deploy`, and a published
+# Region missing here is refused by all three deploy paths that read this dict
+# (`--govcloud`, `--headless` and the plain deploy below) while the README and
+# `docs/deployment.md` Launch Stack buttons still offer it.
 TEMPLATE_URLS = {
     "us-west-2": "https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main.yaml",
     "us-east-1": "https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml",
     "eu-central-1": "https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml",
+    # Canada publishes to a different bucket basename; see scripts/aws-release.sh.
+    "ca-central-1": "https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml",
 }
 
 
@@ -469,7 +477,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.11")
+@click.version_option(version="0.6.12")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -535,7 +543,7 @@ def cli():
     help=(
         "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
         "stack parameter: enable it in the Web UI under Configuration → "
-        "Assessment & HITL Configuration, or in the config YAML."
+        "Human-in-the-Loop (HITL) Review, or in the config YAML."
     ),
 )
 @click.option(
@@ -685,7 +693,7 @@ def deploy(
             console.print(
                 "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
                 "  HITL became a configuration setting in v0.4.11. Enable it in the "
-                "Web UI under Configuration → Assessment & HITL Configuration, or "
+                "Web UI under Configuration → Human-in-the-Loop (HITL) Review, or "
                 "in the config YAML passed to --custom-config."
             )
             sys.exit(1)
@@ -3880,16 +3888,29 @@ def _batch_status_to_display_dicts(batch_status):
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,
             "error": doc.error or "",
+            # in_review / complete / rejected (review queues); None if never routed.
+            "review_status": getattr(doc.review_status, "value", doc.review_status),
         }
-        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
-        # over `DocumentState` -- the same authority the SDK's own progress monitor
-        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
-        # about whether a state is terminal. The chain this replaced named eleven
+        # The producer's own verdict wins when it recorded one, and
+        # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
+        # -- answers when it did not. The chain this replaced named eleven
         # members and sent the other twelve to `queued` by falling off the end,
         # which put `PREPROCESSING` (set for every document whenever a
         # preprocessing hook is registered) under "Queued" and left the terminal
         # `ABORTED` reporting "IN PROGRESS" forever.
-        bucket = classify_document_state(doc.status)
+        #
+        # Deriving the bucket from `status` is right for every state except
+        # `NOT_FOUND`, which is the one state whose bucket is not a function of
+        # the status alone: inside `NOT_FOUND_GRACE_SECONDS` of the batch's
+        # submission the SDK reports it as queued, because the QueueSender row
+        # may still be in flight, and only the SDK holds the submission time
+        # that decides it. Re-deriving here sent such a document to `failed`,
+        # so the display read "Failed 1, 100% complete" -- with no error
+        # message, since a provisional NOT_FOUND carries none -- for as long as
+        # the window lasted, while `all_complete` came from the SDK and
+        # correctly kept the loop polling. Two authorities, one of them blind to
+        # the grace window, disagreeing about the same document.
+        bucket = doc.bucket or classify_document_state(doc.status)
         if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:
@@ -3993,10 +4014,6 @@ def _monitor_progress(
     status_data = {}
     stats = {}
 
-    # Minimum wait time before considering batch complete (seconds)
-    # This gives time for documents to be picked up by the queue and tracked in DynamoDB
-    MIN_WAIT_BEFORE_COMPLETE = 60
-
     try:
         with Live(console=console, refresh_per_second=1) as live:
             while True:
@@ -4014,23 +4031,26 @@ def _monitor_progress(
                 )
                 live.update(layout)
 
-                # Check if all complete
-                # Add grace period: don't exit early if no documents have completed/failed yet
-                # This handles the case where documents are still being picked up by the queue
+                # Every document is in a state that will not change again.
+                #
+                # There is deliberately no second grace period here. One used to
+                # sit at this spot -- `MIN_WAIT_BEFORE_COMPLETE = 60`, commented
+                # "gives time for documents to be picked up by the queue and
+                # tracked in DynamoDB" -- and it could never fire: it was reached
+                # only via `has_terminal_docs or waited_long_enough`, and
+                # `all_complete` is `completed + failed == total`, so for any
+                # non-empty batch `all_complete` already implies
+                # `has_terminal_docs` and the first operand always won. The wait
+                # it described never happened once.
+                #
+                # Waiting for the queue is now the monitor's job, where the
+                # information needed to do it correctly lives: a document with no
+                # tracking row is reported as queued until the batch is older
+                # than `NOT_FOUND_GRACE_SECONDS`, so it does not count towards
+                # `all_complete` and this loop keeps polling without having to
+                # second-guess the counts it is handed.
                 if stats["all_complete"]:
-                    # If we have actual completions or failures, we can exit
-                    has_terminal_docs = stats["completed"] > 0 or stats["failed"] > 0
-                    # Or if we've waited long enough (documents should have started by now)
-                    waited_long_enough = elapsed_time >= MIN_WAIT_BEFORE_COMPLETE
-
-                    if has_terminal_docs or waited_long_enough:
-                        break
-                    else:
-                        # Documents haven't started yet, keep waiting
-                        logger.debug(
-                            f"all_complete=True but no terminal docs yet, waiting... "
-                            f"(elapsed={elapsed_time:.1f}s, min_wait={MIN_WAIT_BEFORE_COMPLETE}s)"
-                        )
+                    break
 
                 # Wait before next check
                 time.sleep(refresh_interval)
@@ -4831,6 +4851,16 @@ def remove_residual_resources_from_deleted_stacks(
     3. Tracks both ACTIVE stacks (protected) and DELETED stacks (cleanup targets)
     4. Only targets resources that belong to stacks in DELETE_COMPLETE state
     5. Resources from active stacks are NEVER touched
+    6. Before deleting a global resource (CloudFront distribution, response
+       headers policy, IAM policy, S3 bucket), confirms in EVERY enabled
+       region that no stack of that name still exists. A region that cannot
+       be read leaves the resource in place and is reported as an error
+       (exit 1).
+
+    PERMISSIONS:
+    Besides delete permissions for what it cleans, the region confirmation
+    needs ec2:DescribeRegions and cloudformation:DescribeStacks in every
+    enabled region.
 
     SAFETY FEATURES:
     - Multi-region stack discovery (customizable with --check-stack-regions)
@@ -4926,8 +4956,17 @@ def remove_residual_resources_from_deleted_stacks(
                 for error in result["errors"]:
                     console.print(f"    - {error}")
 
+            # Without this a resource left alone (its stack still exists, here or
+            # in another Region, or the user declined) read as "No resources
+            # found", indistinguishable from an account with nothing there.
+            if result.get("skipped"):
+                console.print(f"  [dim]Skipped ({len(result['skipped'])}):[/dim]")
+                for item in result["skipped"]:
+                    console.print(f"    - {item}")
+
             if not any(
-                result.get(key) for key in ["deleted", "disabled", "updated", "errors"]
+                result.get(key)
+                for key in ["deleted", "disabled", "updated", "errors", "skipped"]
             ):
                 console.print("  No resources found")
 
@@ -7935,9 +7974,8 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
-        # and Rich would read that as a style tag and drop it -- leaving the user told
-        # to `pip install idp_common`, which is already installed. The constant is
+        # `escape`, because INSTALL_HINT is shared text and Rich reads any `[...]` in
+        # it (a pip extra, say) as a style tag and silently drops it. The constant is
         # shared with consumers that do not render through Rich (the bootstrap
         # module, the capability field), so the escape belongs at this call site
         # rather than in the constant.

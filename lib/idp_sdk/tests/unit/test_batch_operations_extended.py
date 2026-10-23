@@ -49,6 +49,7 @@ import base64
 import json
 import os
 import warnings
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import boto3
@@ -66,8 +67,10 @@ from idp_sdk.models import (
     BatchInfo,
     BatchListResult,
     BatchProcessResult,
+    DocumentBucket,
     RerunStep,
 )
+from idp_sdk.operations.batch import _batch_started_at
 
 STACK_NAME = "test-idp-stack"
 BARE_STACK = "test-idp-stack-bare"
@@ -981,7 +984,73 @@ class TestGetStatus:
 
         client.batch.get_status("b")
 
-        monitor.get_batch_status.assert_called_once_with(["b/a.pdf"])
+        # The submission time is passed alongside the keys, parsed from the
+        # stored metadata's ``timestamp``. The monitor needs it to tell a
+        # document whose tracking row has not been written yet from one that
+        # will never have a row; without it every poll in the first seconds of a
+        # batch reports it complete-and-failed.
+        monitor.get_batch_status.assert_called_once_with(
+            ["b/a.pdf"],
+            batch_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            ("2026-01-01T00:00:00+00:00", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            # `Z` is valid ISO 8601 and `fromisoformat` rejected it before 3.11.
+            ("2026-01-01T00:00:00Z", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            ("2026-01-01T00:00:00", datetime(2026, 1, 1)),
+        ],
+    )
+    def test_the_stored_submission_time_is_parsed(self, stored, expected):
+        assert _batch_started_at({"timestamp": stored}) == expected
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            {},
+            {"timestamp": None},
+            {"timestamp": "not a timestamp"},
+            {"timestamp": 1767225600},
+        ],
+        ids=["absent", "null", "unparseable", "epoch-int"],
+    )
+    def test_an_unusable_submission_time_becomes_none_instead_of_raising(self, record):
+        """A bad timestamp must cost the grace window, not the status query.
+
+        `None` means "assume it has settled", which is the behaviour that
+        predates the grace window — so the worst case is the race coming back
+        for that one batch, rather than `get_status` raising and telling the
+        caller nothing at all. The integer case is the one worth naming: batch
+        metadata is JSON, so a hand-written or older record can hold an epoch
+        rather than a string, and `str.replace` on an `int` is an
+        `AttributeError` rather than the `ValueError` the parse guards.
+        """
+        assert _batch_started_at(record) is None
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_batch_with_an_unusable_timestamp_still_reports_status(
+        self, monitor_cls, client, s3
+    ):
+        """The degraded path end to end: no grace window, but an answer."""
+        _store_batch(s3, "b", ["b/a.pdf"], timestamp="whenever")
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [],
+            "running": [],
+            "queued": [],
+            "failed": [],
+            "all_complete": True,
+            "total": 1,
+        }
+        monitor.calculate_statistics.return_value = {"total": 1}
+        monitor_cls.return_value = monitor
+
+        assert client.batch.get_status("b").total == 1
+        monitor.get_batch_status.assert_called_once_with(
+            ["b/a.pdf"], batch_started_at=None
+        )
 
     @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
     def test_empty_timestamps_become_none_rather_than_empty_strings(
@@ -1013,6 +1082,76 @@ class TestGetStatus:
     def test_an_unknown_batch_is_a_resource_not_found_error(self, client):
         with pytest.raises(IDPResourceNotFoundError, match="Batch not found"):
             client.batch.get_status("b")
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_each_document_carries_the_bucket_the_monitor_put_it_in(
+        self, monitor_cls, client, s3
+    ):
+        """The monitor's verdict travels on the document, not just in the counts.
+
+        ``DocumentStatus.status`` cannot express the one decision the monitor
+        makes that a consumer cannot reproduce: a ``NOT_FOUND`` document inside
+        the grace window is queued, and the same status past the window is
+        failed. Both arrive with ``status == "NOT_FOUND"``, so a consumer
+        re-deriving the bucket from the status gets "failed" for both, which is
+        the shape that showed a just-submitted batch as 100% complete with one
+        failure. The bucket the monitor chose is recorded here so there is one
+        authority rather than two.
+        """
+        _store_batch(s3, "b", ["b/racing.pdf", "b/done.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [{"document_id": "b/done.pdf", "status": "COMPLETED"}],
+            "running": [],
+            # Inside the grace window, so the monitor reported the missing
+            # tracking row as queued rather than as a failure.
+            "queued": [{"document_id": "b/racing.pdf", "status": "NOT_FOUND"}],
+            "failed": [],
+            "all_complete": False,
+            "total": 2,
+        }
+        monitor.calculate_statistics.return_value = {"total": 2}
+        monitor_cls.return_value = monitor
+
+        status = client.batch.get_status("b")
+
+        buckets = {doc.document_id: doc.bucket for doc in status.documents}
+        assert buckets == {
+            "b/racing.pdf": DocumentBucket.QUEUED,
+            "b/done.pdf": DocumentBucket.COMPLETED,
+        }
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_settled_not_found_carries_the_failed_bucket(
+        self, monitor_cls, client, s3
+    ):
+        """The other direction: past the window the same status is a failure.
+
+        Identical ``status`` to the test above, opposite bucket — which is the
+        whole reason the bucket is carried rather than derived.
+        """
+        _store_batch(s3, "b", ["b/lost.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [],
+            "running": [],
+            "queued": [],
+            "failed": [
+                {
+                    "document_id": "b/lost.pdf",
+                    "status": "NOT_FOUND",
+                    "error": "Document not found in tracking table",
+                }
+            ],
+            "all_complete": True,
+            "total": 1,
+        }
+        monitor.calculate_statistics.return_value = {"total": 1}
+        monitor_cls.return_value = monitor
+
+        status = client.batch.get_status("b")
+
+        assert status.documents[0].bucket is DocumentBucket.FAILED
 
 
 @pytest.mark.unit

@@ -29,7 +29,73 @@ The circuit breaker short-circuits that cycle by refusing to start new workflows
 |-------|----------|
 | **CLOSED** | Normal operation. All requests processed. |
 | **OPEN** | Bedrock unavailable. Queue Processor returns messages to SQS for retry. |
-| **HALF_OPEN** | Testing recovery. Limited traffic allowed through. First successful workflow closes the breaker; first new alarm reopens it. |
+| **HALF_OPEN** | Testing recovery. A bounded number of probes is admitted — 5 workflows per 60 seconds — and every other message is returned to SQS for retry. The first successful workflow closes the breaker; if none closes it within the probe window (15 minutes by default) the breaker returns to OPEN and the recovery timeout is re-timed. |
+
+### How much traffic HALF_OPEN admits
+
+Five workflows per rolling 60-second window, and the rest are refused with the
+message left on `DocumentQueue` to retry on its ordinary 60 s visibility
+timeout. The budget is claimed with a conditional DynamoDB write on the breaker
+record, so concurrent Queue Processor invocations cannot collectively exceed it.
+
+The two numbers are module constants in `src/lambda/queue_processor/index.py`
+(`HALF_OPEN_PROBE_BUDGET`, `HALF_OPEN_PROBE_WINDOW_SECONDS`) rather than stack
+parameters. One probe per window would be enough to detect recovery — a single
+successful workflow closes the breaker — but it would make that detection
+hostage to one document, so a handful per window gives recovery several
+independent chances a minute while still holding admitted work far below
+`MaxConcurrentWorkflows`.
+
+**The budget is per rolling window, not per half-open episode**, and that
+matters for what happens during a long outage. The trickle is what notices the
+service coming back — the first probe that completes successfully closes the
+breaker — so it has to keep running for as long as the breaker is half-open. A
+budget spent once per episode would stop it: nothing in the half-open state
+reports a probe *failure*, so once the budget were spent with no success the
+breaker would refuse every document until the episode ended, and the service
+could recover with nothing left to notice.
+
+### How long HALF_OPEN lasts
+
+A half-open episode is bounded in time as well as in admitted traffic. If no
+probe closes the breaker within **15 minutes** of entering HALF_OPEN, the
+scheduled health check returns the breaker to OPEN, re-times the recovery
+timeout from that moment, and the cycle begins again: a quiet OPEN pause,
+followed by a fresh bounded probe episode. A sustained outage therefore
+alternates between the two states rather than settling in either.
+
+That matters for how long the queue can hold documents. A refused document in
+OPEN has its SQS visibility pushed out to
+`CircuitBreakerRecoveryTimeoutSeconds` (300 s by default), while a refused
+probe in HALF_OPEN keeps `DocumentQueue`'s ordinary 60-second visibility — see
+the table under [When the state cannot be read](#when-the-state-cannot-be-read)
+for why the two are priced differently. Against `maxReceiveCount` 500 that is
+roughly 41 hours of redrive budget versus roughly 8, so a breaker that settled
+in HALF_OPEN would move documents to the dead-letter queue about five times
+sooner than one held in OPEN.
+
+Alternating between the two states lands between those figures rather than at
+the better one, and it is worth doing the arithmetic before relying on it. With
+the defaults a cycle is one 15-to-20-minute probe episode followed by a
+5-to-10-minute pause (both ends decided by the same 5-minute schedule), during
+which a refused message takes 15 to 20 deliveries at 60 seconds and one or two
+at 300 — so 500 deliveries last roughly **10 to 12 hours**. The large number
+belongs to a breaker that spends the outage paused, which is not what a probing
+breaker does. Raising `CircuitBreakerRecoveryTimeoutSeconds` lengthens both
+phases and buys more of it.
+
+The window is the module constant `HALF_OPEN_TIMEOUT_SECONDS` in
+`src/lambda/circuit_breaker_manager/index.py`, defined as
+`max(900, RECOVERY_TIMEOUT_SECONDS)` — so raising
+`CircuitBreakerRecoveryTimeoutSeconds` for a deliberately patient breaker
+lengthens the probe window with it, and there is no second parameter to keep
+consistent with the first. It is not shorter than 15 minutes for a reason worth
+knowing before tuning it: a successful probe closes the breaker only if the
+state is **still** HALF_OPEN when that workflow finishes, so a window shorter
+than a document takes to process could never close the breaker at all. The
+15-minute floor is a whole Lambda step's worth of room for a probe admitted at
+the start of an episode. The health check evaluates the window on its 5-minute
+schedule, so an episode ends between 15 and 20 minutes in.
 
 ### When the state cannot be read
 
@@ -84,17 +150,25 @@ Queue Processor never reads the record at all.
                    │ OR manual Pause (admin)
                    ▼
               ┌──────────┐
-              │   OPEN   │◄──── Alarm fires during HALF_OPEN
-              └────┬─────┘      OR manual Pause (admin)
+              │   OPEN   │◄──── No probe closed the breaker within the
+              └────┬─────┘      probe window (scheduled health check)
+                   │             OR alarm fires during HALF_OPEN
+                   │             OR manual Pause (admin)
                    │
                    │ Recovery timeout elapsed (scheduled health check)
                    │ OR alarm returns to OK
                    │ OR manual Probe (admin)
                    ▼
               ┌───────────┐
-              │ HALF_OPEN │──── First new alarm re-opens
-              └───────────┘     (back to OPEN)
+              │ HALF_OPEN │──── Probe window elapsed with no success,
+              └───────────┘     or a new alarm (both back to OPEN)
 ```
+
+The probe window is the transition that keeps HALF_OPEN a window rather than a
+resting state; see [How long HALF_OPEN lasts](#how-long-half_open-lasts). An
+alarm cannot be relied on for it: the alarm handler needs a fresh transition
+*into* `ALARM`, and CloudWatch does not deliver one while the alarm is already
+in `ALARM`, which is exactly the case during the outage that opened the breaker.
 
 ## Architecture
 
@@ -116,7 +190,8 @@ Queue Processor never reads the record at all.
 │   Queue     │             │ Queue Processor │─────processing──────────┘
 └─────────────┘             └─────────────────┘
                                    │
-                                   │ if CLOSED or HALF_OPEN
+                                   │ if CLOSED, or HALF_OPEN with
+                                   │ a probe slot free
                                    ▼
                            ┌─────────────────┐
                            │  Step Functions │
@@ -127,7 +202,7 @@ Queue Processor never reads the record at all.
 - **BedrockServiceOutageAlarm**: CloudWatch MetricMath alarm on Bedrock error metrics (see [Alarm threshold](#alarm-threshold)).
 - **CircuitBreakerManager**: Lambda triggered by the alarm's SNS topic and by a 5-minute EventBridge schedule. Manages state transitions and publishes notifications.
 - **ConcurrencyTable**: Existing DynamoDB table — circuit breaker state is stored on the `circuit_breaker` partition key.
-- **QueueProcessor**: Reads state before starting workflows. If OPEN, it returns without starting the Step Functions execution, leaving the message in SQS.
+- **QueueProcessor**: Reads state before starting workflows. If OPEN, it returns without starting the Step Functions execution, leaving the message in SQS. If HALF_OPEN, it tries to claim one of the bounded probe slots and does the same when none is free (see [How much traffic HALF_OPEN admits](#how-much-traffic-half_open-admits)).
 - **WorkflowTracker**: On a successful workflow completion, if state is HALF_OPEN, transitions to CLOSED.
 
 ## Alarm threshold
@@ -254,7 +329,11 @@ aws dynamodb get-item \
 
 CloudWatch metrics emitted by the circuit breaker (under the stack namespace):
 
-- `CircuitBreakerOpened` — incremented each time the breaker transitions to OPEN
+- `CircuitBreakerOpened` — incremented each time the breaker transitions to
+  OPEN, including a return to OPEN from a half-open episode that no probe
+  closed. During a sustained outage this one alternates with
+  `CircuitBreakerHalfOpen` rather than firing once, so a repeating pair is the
+  signature of an outage that has not recovered, not of a flapping breaker
 - `CircuitBreakerHalfOpen` — incremented on transition to HALF_OPEN
 - `CircuitBreakerClosed` — incremented on transition to CLOSED
 - `CircuitBreakerCheckFailed` — the Queue Processor could not read the breaker's

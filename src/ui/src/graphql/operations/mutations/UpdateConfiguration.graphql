@@ -2,6 +2,7 @@ mutation UpdateConfiguration($versionName: String!, $customConfig: AWSJSON!, $de
   updateConfiguration(versionName: $versionName, customConfig: $customConfig, description: $description) {
     success
     message
+    warnings
     error {
       type
       message

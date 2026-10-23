@@ -273,7 +273,7 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make check-filtered-scans` | DynamoDB `Scan` with a filter expression that cannot see all matches |
 | `make check-data-plane-tags` | the `idp:plane=data` tag on the Lambdas that must carry it |
 | `make check-markdown-links` | a relative Markdown link that resolves to nothing, an `#anchor` naming a heading that has since been retitled, a **published** `docs/` page linking relatively to one `docs-site/setup.sh` does not symlink (resolves on GitHub, 404s on the site), and a code fence that swallows content, which would otherwise leave this gate blind to the rest of the file. Every tracked `.md` file, from `git ls-files`. Anchors are slugified by `github-slugger`'s rule, which `scripts/tests/test_markdown_links.py` verifies against the real package over every heading in the tree. External `http(s)` URLs are **not** fetched, so a green result says nothing about them ([#1068](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1068)) |
-| `make validate-buildspec` | malformed CodeBuild buildspecs — otherwise a deploy-time failure |
+| `make validate-buildspec` | malformed CodeBuild buildspecs, and a loop in a multi-line command that cannot report its own failure — otherwise a deploy-time failure |
 | `make codegen-check` | generated GraphQL types drifting from the schema |
 | `make typecheck` | `basedpyright` over every tracked `.py` file — this is what both CIs run. `make typecheck-pr` narrows it to the files a branch changes, for local latency, and is a gate in neither |
 | `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual) for the live half |
@@ -336,12 +336,14 @@ path-filtered, and `Test Results` is a check run an action creates behind an `if
 so none of them reports on every PR and requiring one would leave a check pending
 forever and block every merge.
 
-Three details are worth knowing about what it reads. Eight of the ten shared gates
-are *steps* inside one job, so those eight collapse to a single requireable context
-and share a single red mark — a required-check failure does not say which of them
-failed. The remaining two, the SRT scan and the dependency audit, are jobs of their
-own, one context each. It reads **both** enforcement mechanisms, classic branch
-protection and
+Three details are worth knowing about what it reads. Ten of the twelve shared gates
+live in `developer-tests.yml` and the other two — the SRT scan and the dependency
+audit — in `security-checks.yml`; because a context is a *job*, and those two
+workflows hold four and two jobs respectively, the twelve gates produce six
+requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
+it looks**: the test suites are their own contexts, so all six have to be required
+for a red test run to block a merge. It reads **both** enforcement mechanisms,
+classic branch protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
 endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
 the classic endpoint needs repository **admin** and answers 404 without it, so the
@@ -385,6 +387,20 @@ make ui-build       # lint + typecheck + production Vite build
 
 Both CIs run the Vitest suite. Nothing in this layer opens a browser — that is
 layer 6's UX review, and it is the only tier in the repo that does.
+
+**If you are splitting a local run across lanes, note that these two share
+`src/ui/node_modules` with `make lint-cicd`.** Both reinstall that directory with
+`npm ci`, which deletes it before rebuilding it, and so do the three UI targets
+`lint-cicd` performs itself (`ui-lint`, `ui-build-only`, `codegen-check`) — so
+"lint in one lane, UI tests in another" is two lanes writing one directory, which
+is how three gates once went red with three unrelated-looking missing-module
+errors. Every one of those targets now takes an exclusive lock on that directory,
+so the second lane waits rather than racing; it tells you it is waiting, and it
+gives up with an error after a bounded wait instead of hanging. The cost in a
+single serial run is one `flock` and no output. Neither CI is affected either way:
+both split these gates across separate runners with separate checkouts, so nothing
+there contends. See the comment above the UI section of the `Makefile` and
+`scripts/ui_deps_lock.sh`.
 
 ## 4. Security scanning (SAST and SCA)
 
@@ -453,6 +469,8 @@ manual. The rest of the rows run only when a person asks.
 | API RBAC — dynamic (also runs in the GitLab `integration_tests` job) | that the **deployed** resolver enforces authorization per Cognito group and configuration-profile scope, not just that the code looks right | `make api-test STACK_NAME=…` | [`api-rbac-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/api-rbac-test.md) |
 | Cognito authorization behaviour | that the pre-token group-mapping trigger and client attribute permissions behave as the docs claim — they do not always | `make live-auth-checks` · `make verify-idp-federation` | [`live-auth-checks`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/live-auth-checks.md) |
 | **UX review (browser)** | that a person can actually complete each flow in the web UI, and how it feels doing so — functional pass/fail **plus** usability findings. The only tier here that opens a browser | `make ux-test STACK_NAME=…` | [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md) |
+| Inbox end to end | that a message posted through `idp_common.notifications` (direct, Cognito group fan-out, idempotency key, dedupe key) is the one the **deployed** API lists, counts and marks read for its recipient, and that another user cannot reach it. Creates and removes a temporary Cognito group, two users and their Inbox items | `make stacktest-inbox STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Review queues end to end | that a document routed under a profile with review queues on reaches the **deployed** queue, can be claimed, edited and completed through the API with a real Annotator token, and finishes with the final status object, an unchanged machine manifest and a final manifest. Creates and removes a temporary profile, user and document (`CHECK_EVENTS=1` adds a temporary EventBridge rule and SQS queue) | `make stacktest-review-queues STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | ZAP DAST | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Deploy variants | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
@@ -484,9 +502,28 @@ frames only when the screen changes, and re-paces the result for a viewer: idle
 gaps clamped, paused stretches dropped, narration spoken by Amazon Polly, every
 click drawn on the frame that was on screen when it happened. Output — `review.mp4`,
 `review.srt`, `segments.json`, `review.md` — lands under gitignored
-`scratch/ux-recordings/`. **A recording of a live stack shows real documents and
-nothing is redacted: never commit one or attach it to a pull request.** Details:
+`scratch/ux-recordings/`, in a session directory that also holds the tab's address
+and title and a click log (`events.jsonl`, `timeline.json`) that labels clicks with
+text from the page. **A recording of a live stack shows real documents and
+nothing is redacted: never commit the session directory or attach any of it to a
+pull request.** One exception is a finished product-demo video its author chooses
+to publish: the author uploads that `demo.mp4`, and nothing else from the session, to
+get its asset URL for the demo videos page. The MR UX test's mp4 of the CI review
+stack, which holds only shipped example data, is the other. What a click label can
+hold is set out under Privacy in
+[`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md#privacy).
+Details:
 [`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy).
+
+**On a merge request the same review runs unattended.** When a non-Draft MR to
+`develop` changes `src/ui/`, the advisory `ai_ux_test` job tests the MR's UI build in
+a confined headless browser against the long-lived review stack `idp-ux-nightly`, and
+appends its findings and a narrated video to the automated code-review comment for
+that commit. It gates nothing. `make ai-ux-test-local MR=<iid>` runs the same test in
+Docker as a dry run, and `make ai-ux-browser` starts only the confined browser, with
+DevTools on `127.0.0.1:9222`, for an interactive session on a machine with no local
+Chrome. Contract:
+[`ux-test-ci`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-ci.md).
 
 ## 7. Benchmarks
 

@@ -105,8 +105,8 @@ const renderEditor = () =>
   );
 
 const openBoard = async () => {
-  await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeEnabled());
-  await userEvent.click(screen.getByRole('button', { name: /Edit page grouping/i }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeEnabled());
+  await userEvent.click(screen.getByRole('button', { name: /Edit Page Grouping/i }));
 };
 
 describe('GroundTruthVisualEditor page regrouping', () => {
@@ -169,7 +169,7 @@ describe('GroundTruthVisualEditor page regrouping', () => {
     renderEditor();
     await openBoard();
 
-    // Matched on the consequence copy specifically: "Reviewed (human)" alone also hits
+    // Matched on the consequence copy specifically: "Reviewed" alone also hits
     // the provenance badge rendered above the editor.
     expect(screen.getByText(/provenance and the edit history are all kept/)).toBeInTheDocument();
     expect(screen.getByText(/ground truth for how the packet splits/)).toBeInTheDocument();
@@ -188,7 +188,7 @@ describe('GroundTruthVisualEditor page regrouping', () => {
 
     // reextract and the grouping mutation are both keyed on the set; offering the button
     // would produce a save that cannot be addressed.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeDisabled());
   });
 
   it('does not offer the board to someone who cannot change the class', async () => {
@@ -206,7 +206,7 @@ describe('GroundTruthVisualEditor page regrouping', () => {
 
     // Re-grouping is the same class of annotation authority as changing a class, and it
     // persists through the same kind of write.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeDisabled());
   });
 });
 
@@ -216,16 +216,16 @@ describe('GroundTruthVisualEditor page regrouping', () => {
  *
  * Re-grouping rewrites the document's structure, so sitting it next to the field data made
  * it read as part of that data. These are DOM-relationship and document-order assertions
- * on purpose — `getByRole('button', { name: /Edit page grouping/ })` passes wherever the
+ * on purpose — `getByRole('button', { name: /Edit Page Grouping/ })` passes wherever the
  * button happens to be, so a presence check could not have caught the old placement and
  * cannot protect the new one.
  */
 describe('GroundTruthVisualEditor page grouping placement', () => {
   it('sits on the same row as the section pills', async () => {
     renderEditor();
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeEnabled());
 
-    const button = screen.getByRole('button', { name: /Edit page grouping/i });
+    const button = screen.getByRole('button', { name: /Edit Page Grouping/i });
     const pill = screen.getByRole('button', { name: /^Section 2\b/ });
 
     expect(button.closest('div')).toContainElement(pill);
@@ -235,7 +235,7 @@ describe('GroundTruthVisualEditor page grouping placement', () => {
     renderEditor();
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
 
-    const button = screen.getByRole('button', { name: /Edit page grouping/i });
+    const button = screen.getByRole('button', { name: /Edit Page Grouping/i });
     // The read-only Pages field is where the button used to be, immediately after this
     // input — so in the old layout the input PRECEDED the button.
     const pagesField = screen.getByDisplayValue('1, 2');
@@ -258,7 +258,7 @@ describe('GroundTruthVisualEditor page grouping placement', () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit page grouping/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeEnabled());
     // And with one section there are no pills to sit beside.
     expect(screen.queryByRole('button', { name: /^Section 2\b/ })).not.toBeInTheDocument();
   });
@@ -269,7 +269,7 @@ describe('GroundTruthVisualEditor page grouping placement', () => {
 
     // Still informational — a reviewer looking at a section wants to know which pages it
     // covers — and it now says where the editing control went.
-    expect(screen.getByText(/Use Edit page grouping, above/i)).toBeInTheDocument();
+    expect(screen.getByText(/Use Edit Page Grouping, above/i)).toBeInTheDocument();
   });
 
   it('hides the control while the board is open, so it cannot be re-triggered', async () => {
@@ -278,7 +278,7 @@ describe('GroundTruthVisualEditor page grouping placement', () => {
 
     // The pills hide during regrouping; a lone button beside them would be a dead affordance
     // pointing at the thing already on screen.
-    expect(screen.queryByRole('button', { name: /^Edit page grouping$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit Page Grouping$/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Save page grouping/i })).toBeInTheDocument();
   });
 });

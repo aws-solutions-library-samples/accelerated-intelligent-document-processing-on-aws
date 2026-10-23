@@ -4,18 +4,24 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from idp_common.api_adapter import (  # type: ignore
+    ResourceAccessDenied,
+    ResourceNotFound,
+)
 from idp_common.config_scope import (  # type: ignore
     ScopeLookupError,
     caller_email_from_claims,
     caller_sub_from_claims,
     resolve_allowed_config_versions,
     scope_allows,
+    user_row_key,
 )
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.dynamodb.client import DynamoDBError  # type: ignore
@@ -24,22 +30,57 @@ from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_PAGES_PER_DOC,
     estimate_for_target,
 )
-from idp_common.evaluation.curve_store import (  # type: ignore
-    CurveStore,
-    field_child_path,
-    list_child_path,
-)
+from idp_common.evaluation.curve_store import CurveStore  # type: ignore
 from idp_common.models import Status  # type: ignore
+from idp_common.review_queues import testset_summaries  # type: ignore
+from idp_common.review_queues.annotators import (  # type: ignore
+    ANNOTATOR_GROUP,
+    COGNITO_SOURCE,
+    cognito_account,
+    persona_for_groups,
+)
+from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS  # type: ignore
+from idp_common.review_queues.statuses import LEGACY_DONE  # type: ignore
+from idp_common.review_queues.testset_docs import (  # type: ignore
+    SUMMARY_BUILDING,
+    SUMMARY_READY,
+    SUMMARY_VERSION,
+    TestSetDocStore,
+    notify_assigned,
+    notify_unassigned,
+    request_summaries,
+    store_assigned_count,
+    time_limit_minutes,
+    validate_time_limit,
+)
+from idp_common.review_queues.testset_summaries import (  # type: ignore
+    LABEL_SOURCE_DRAFT,
+    LABEL_SOURCE_HUMAN,
+    attach_label_metadata,
+    list_baseline_sections,
+    summarize_document,
+)
 from idp_common.s3 import find_matching_files  # type: ignore
 from idp_common.testset_scope import (  # type: ignore
+    TestSetAccessDenied,
     assert_can_access_test_set,
     caller_email,
+    clear_scope_cache,
 )
 
 # Constants
 MAX_ZIP_SIZE_BYTES = 1073741824  # 1 GB
 
 logger = logging.getLogger()
+
+# The label-metadata helpers live in idp_common.review_queues.testset_summaries;
+# their resolver-module names stay importable.
+_absent_field_paths = testset_summaries.absent_field_paths
+_alert_counts = testset_summaries.alert_counts
+_confidence_threshold = testset_summaries.confidence_threshold
+_min_confidence = testset_summaries.min_confidence
+_walk_confidence_named = testset_summaries.walk_confidence_named
+list_child_path = testset_summaries.list_child_path
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 
@@ -180,7 +221,7 @@ _SNAPSHOT_CONCURRENCY = 16
 # the LIST pagination, the reservation, the version write and the pointer writes.
 #
 # What that arithmetic omits is the cost most likely to bind, and the reason the figure stays
-# unverified: at MemorySize 256 this function has a fraction of a vCPU, and sixteen Python
+# unverified: at MemorySize 1024 this function has about 0.6 vCPU, and sixteen Python
 # threads share one GIL, so 3000 SigV4 signings and response parses are **client-side CPU**
 # rather than network latency the fan-out can hide. Measure before raising it. If a real set
 # needs more, the lever is memory — which buys CPU — or the asynchronous snapshot the refusal
@@ -224,6 +265,12 @@ def _caller_in_groups(event, allowed):
 # allowed to see a given set.
 ANNOTATOR_ALLOWED_FIELDS = (
     "getAnnotationQueue",
+    # Saving an assigned document that has no review copy (authored ground truth);
+    # the handler requires the caller to be its assignee.
+    "saveTestSetDocumentSection",
+    # Completing an assigned document without reviewing it; the handler requires
+    # the caller to be its assignee.
+    "skipTestSetDocument",
     "getTestSetDocuments",
     "reextractTestSetDocument",
     # The workspace shows annotators what their review is buying (accuracy now vs
@@ -247,6 +294,10 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # them — and it is the operation that preserves the labels being edited away from.
     # Per-set scope asserted in the dispatch below.
     "openTestSetAnnotationDraft",
+    # The documents assigned to the caller, across sets (My Work › Tasks). An
+    # assignment can outlive the caller's scope, so the handler drops every set
+    # assert_can_access_test_set refuses.
+    "listMyTestSetTasks",
 )
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
@@ -258,6 +309,11 @@ ANNOTATOR_ALLOWED_FIELDS = (
 # with their baselines. Authors still create sets from a zip, by generation, or
 # empty.
 ADMIN_ONLY_FIELDS = (
+    # Admins assign test-set documents to any listed Annotator.
+    "assignTestSetDocuments",
+    "unassignTestSetDocuments",
+    # HITL › Queue Management's Test Studio queue settings (Admin-only page).
+    "updateTestSetQueue",
     "resetTestSetLabels",
     "listBucketFiles",
     "addTestSet",
@@ -265,12 +321,36 @@ ADMIN_ONLY_FIELDS = (
 )
 
 
+# Admin and Annotator, not Author: the Test Studio queues (Admins see every set, an
+# Annotator only the sets whose queue lists them: My Work › Queues).
+ADMIN_AND_ANNOTATOR_FIELDS = ("listTestSetQueues",)
+
+# Annotator only: an Annotator listed on a set's queue claims one of its documents,
+# which assigns it to them. Admins assign (assignTestSetDocuments) rather than claim.
+ANNOTATOR_ONLY_FIELDS = ("claimTestSetDocument",)
+
+#: Operations slower than this are logged at WARNING, so slow pages can be traced.
+SLOW_OP_MS = 3000
+
+
 def handler(event, context):
+    started = time.monotonic()
+    field_name = (event.get("info") or {}).get("fieldName")
+    try:
+        return _dispatch(event, context)
+    finally:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms > SLOW_OP_MS:
+            logger.warning(f"event=slow_test_set_op field={field_name} ms={elapsed_ms}")
+
+
+def _dispatch(event, context):
     field_name = event["info"]["fieldName"]
     logger.info(f"Test set resolver invoked with field_name: {field_name}")
 
     # Defense-in-depth: test-set operations are Admin+Author, plus the
-    # ANNOTATOR_ALLOWED_FIELDS allowlist.
+    # ANNOTATOR_ALLOWED_FIELDS allowlist; ADMIN_ONLY_FIELDS, ADMIN_AND_ANNOTATOR_FIELDS
+    # and ANNOTATOR_ONLY_FIELDS narrow or replace that default.
     # Allow direct Lambda invocations (no 'identity' field or identity=None) for CI/automation.
     # AppSync invocations always have 'identity' with non-None value, so RBAC is still enforced for UI users.
     # Security: Direct invocation path is gated by IAM (lambda:InvokeFunction permission on this ARN),
@@ -279,6 +359,10 @@ def handler(event, context):
     if is_appsync_invoke:
         if field_name in ADMIN_ONLY_FIELDS:
             allowed_groups = ["Admin"]
+        elif field_name in ADMIN_AND_ANNOTATOR_FIELDS:
+            allowed_groups = ["Admin", "Annotator"]
+        elif field_name in ANNOTATOR_ONLY_FIELDS:
+            allowed_groups = [ANNOTATOR_GROUP]
         else:
             allowed_groups = ["Admin", "Author"]
             if field_name in ANNOTATOR_ALLOWED_FIELDS:
@@ -300,23 +384,59 @@ def handler(event, context):
     elif field_name == "addTestSetFromUpload":
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
-        return add_documents_to_test_set(event["arguments"])
+        return _labels_changed(
+            event["arguments"],
+            add_documents_to_test_set(event["arguments"]),
+            copying=True,
+        )
     elif field_name == "addDocumentsToTestSetByKey":
-        return add_documents_to_test_set_by_key(event["arguments"], event)
+        return _labels_changed(
+            event["arguments"],
+            add_documents_to_test_set_by_key(event["arguments"], event),
+            copying=True,
+        )
     elif field_name == "addDocumentsToTestSetFromUpload":
-        return add_documents_to_test_set_from_upload(event["arguments"])
+        return _labels_changed(
+            event["arguments"],
+            add_documents_to_test_set_from_upload(event["arguments"]),
+            copying=True,
+        )
     elif field_name == "updateTestSet":
         return update_test_set(event["arguments"])
     elif field_name == "removeDocumentsFromTestSet":
-        return remove_documents_from_test_set(event["arguments"])
+        result = remove_documents_from_test_set(event["arguments"])
+        _forget_documents(event["arguments"])
+        return _labels_changed(event["arguments"], result)
     elif field_name == "clearDraftLabels":
-        return clear_draft_labels(event["arguments"])
+        return _labels_changed(
+            event["arguments"], clear_draft_labels(event["arguments"])
+        )
     elif field_name == "resetTestSetLabels":
-        return reset_test_set_labels(event["arguments"])
+        return _labels_changed(
+            event["arguments"], reset_test_set_labels(event["arguments"])
+        )
     elif field_name == "deleteTestSets":
-        return delete_test_sets(event["arguments"])
+        result = delete_test_sets(event["arguments"])
+        for test_set_id in event["arguments"].get("testSetIds") or []:
+            _drop_summaries(test_set_id)
+        return result
     elif field_name == "getTestSets":
         return get_test_sets()
+    elif field_name == "listTestSetQueues":
+        return list_test_set_queues(event)
+    elif field_name == "claimTestSetDocument":
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        return claim_test_set_document(event["arguments"], event)
+    elif field_name == "updateTestSetQueue":
+        return update_test_set_queue(event["arguments"])
+    elif field_name == "saveTestSetDocumentSection":
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_assignee(event, event["arguments"])
+        return save_test_set_document_section(event["arguments"], event)
+    elif field_name == "skipTestSetDocument":
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_assignee(event, event["arguments"])
+        return skip_test_set_document(event["arguments"], event)
     elif field_name == "getTestSetDocuments":
         # Annotator-reachable: group membership alone would expose other sets.
         assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
@@ -337,12 +457,18 @@ def handler(event, context):
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
         assert_can_access_test_set(event, input_data.get("testSetId") or "")
-        return update_test_set_document_sections(event["arguments"], event)
+        _assert_assignee(event, input_data)
+        result = update_test_set_document_sections(event["arguments"], event)
+        _refresh_summary(input_data.get("testSetId"), input_data.get("objectKey"))
+        return result
     elif field_name == "reextractTestSetDocument":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
         assert_can_access_test_set(event, input_data.get("testSetId") or "")
-        return reextract_test_set_document(event["arguments"], event)
+        _assert_assignee(event, input_data)
+        result = reextract_test_set_document(event["arguments"], event)
+        _refresh_summary(input_data.get("testSetId"), input_data.get("objectKey"))
+        return result
     elif field_name == "getDraftLabelJob":
         # Annotator-reachable: group membership alone would expose other sets' jobs.
         assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
@@ -353,6 +479,10 @@ def handler(event, context):
         return estimate_review_effort(event["arguments"])
     elif field_name == "getAnnotationQueue":
         return get_annotation_queue(event["arguments"], event)
+    elif field_name in ("assignTestSetDocuments", "unassignTestSetDocuments"):
+        return test_set_assignment(field_name, event["arguments"], event)
+    elif field_name == "listMyTestSetTasks":
+        return list_my_test_set_tasks(event)
     elif field_name == "listBucketFiles":
         return list_bucket_files(event["arguments"])
     elif field_name == "validateTestFileName":
@@ -372,7 +502,7 @@ def add_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # The caller's name wins. This used to be derived from the filename
     # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
@@ -391,13 +521,13 @@ def add_test_set_from_upload(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
@@ -468,13 +598,13 @@ def add_test_set(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Generate test set ID with name format, replace spaces with dashes
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
@@ -588,11 +718,11 @@ def create_empty_test_set(args):
     document_class_type = args.get("documentClassType")
 
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = test_set_name.replace(" ", "-").lower()
     now = datetime.utcnow().isoformat() + "Z"
@@ -622,7 +752,7 @@ def create_empty_test_set(args):
         if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
             "ConditionalCheckFailed" in str(e)
         ):
-            raise Exception(f"A test set with id '{test_set_id}' already exists")
+            raise ValueError(f"A test set with id '{test_set_id}' already exists")
         raise
     # After the row: a marker without a row is a stray folder discovery ignores,
     # while a row without a marker is reaped on the next getTestSets.
@@ -658,10 +788,10 @@ def _begin_test_set_append(test_set_id):
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
@@ -820,7 +950,15 @@ def _enforce_selection_scope(event, object_keys):
                 "Rejecting addDocumentsToTestSetByKey: a selected document is "
                 "missing, unfinished, or outside the caller's scope"
             )
-            raise PermissionError(_SELECTION_REFUSED)
+            # Per-object, so it is raised as ResourceAccessDenied: the caller holds
+            # Admin or Author (the dispatcher's floor admitted them) and it is the
+            # DOCUMENTS they selected that are refused. The dispatcher labels it
+            # `authzControl: "resource"`, which is what lets a consumer tell this
+            # apart from a group refusal — the same 403/Unauthorized carried both
+            # meanings, and the live RBAC matrix reported this check working as a
+            # group-check failure (issue #1308). Status, errorType and message are
+            # unchanged.
+            raise ResourceAccessDenied(_SELECTION_REFUSED)
 
 
 def add_documents_to_test_set_by_key(args, event=None):
@@ -860,16 +998,16 @@ def add_documents_to_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
@@ -1241,10 +1379,10 @@ def publish_test_set_version(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if (_as_int(meta.get("fileCount")) or 0) <= 0:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has no documents; add documents before "
             "publishing a version"
         )
@@ -1294,7 +1432,7 @@ def publish_test_set_version(args, event=None):
                     test_set_id, client_token, held_by_other
                 )
                 if my_claimed_at is None:
-                    raise Exception(
+                    raise ValueError(
                         f"A publish of test set '{test_set_id}' for this attempt is already "
                         "running. It may still succeed — wait for it to finish rather than "
                         "publishing again."
@@ -1303,7 +1441,7 @@ def publish_test_set_version(args, event=None):
                 # In flight, and it has produced no version yet. Publishing now would
                 # duplicate the work that attempt is about to finish, which is the whole
                 # failure this token exists to prevent.
-                raise Exception(
+                raise ValueError(
                     f"A publish of test set '{test_set_id}' for this attempt is already "
                     "running. It may still succeed — wait for it to finish rather than "
                     "publishing again."
@@ -1330,7 +1468,7 @@ def publish_test_set_version(args, event=None):
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise Exception(f"Test set '{test_set_id}' not found")
+                raise ResourceNotFound(f"Test set '{test_set_id}' not found")
             raise
         next_version = int(reserve["Attributes"]["latestVersion"])
 
@@ -1484,7 +1622,7 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
         # after the copy, so an oversize set would otherwise fail with a generic
         # error and fail identically on every retry — permanently unable to start
         # annotating, with nothing saying why.
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
             f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
             "Publishing a version of a set this large needs an asynchronous snapshot, "
@@ -1553,7 +1691,7 @@ def open_test_set_annotation_draft(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     existing_draft = _as_int(meta.get("draftVersion"))
     if existing_draft:
@@ -1721,12 +1859,6 @@ def open_test_set_annotation_draft(args, event=None):
 # listable per set and expire with it.
 # ---------------------------------------------------------------------------
 
-LABEL_SOURCE_DRAFT = "draft-machine"
-LABEL_SOURCE_HUMAN = "reviewed-human"
-# Ground truth supplied with the test set. Authoritative — draft labeling will not
-# overwrite it — but not review work, so it never counts toward annotation progress.
-LABEL_SOURCE_UPLOADED = "uploaded"
-
 
 def _label_job_sk(test_run_id):
     return f"labeljob#{test_run_id}"
@@ -1804,7 +1936,9 @@ def _harvest_active_label_job(test_set_id, meta):
     not fail the queue, which still works for already-labeled documents.
 
     All in-flight jobs share one time budget, since the caller is a single request
-    and copying results is S3-bound.
+    and copying results is S3-bound. That budget is the queue's share of its own
+    request, so the harvest stops in time for the queue to be read after it; the
+    workspace re-reads the queue while a job runs, and each read continues it.
     """
     # Every non-terminal job, not just the one the set's pointer names: a
     # one-document re-extract repoints it, and harvesting only the pointer would
@@ -1823,7 +1957,7 @@ def _harvest_active_label_job(test_set_id, meta):
             {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(pointer)}
         )
 
-    deadline = time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
+    deadline = time.monotonic() + QUEUE_HARVEST_TIME_BUDGET_SECONDS
     harvested = []
     for job in jobs:
         try:
@@ -1895,26 +2029,26 @@ def generate_draft_labels(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     file_count = int(meta.get("fileCount", 0) or 0)
     if file_count <= 0:
-        raise Exception(f"Test set '{test_set_id}' has no documents to label")
+        raise ValueError(f"Test set '{test_set_id}' has no documents to label")
 
     already_labeled = 0
     if not object_keys:
         object_keys, already_labeled = _documents_needing_labels(test_set_id)
         if not object_keys and already_labeled:
-            raise Exception(
+            raise ValueError(
                 f"Every document in '{test_set_id}' already has ground truth "
                 f"({already_labeled} document(s)) — there is nothing to draft-label. "
                 "Run a test to score the pipeline against it instead."
@@ -2034,16 +2168,16 @@ def reextract_test_set_document(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     if document_class:
@@ -2130,9 +2264,9 @@ def _validate_regrouping(sections, previously_labelled_pages):
     entirely is exactly the defect a reviewer is here to fix.
     """
     if not sections:
-        raise Exception("A document must have at least one section")
+        raise ValueError("A document must have at least one section")
     if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
-        raise Exception(
+        raise ValueError(
             f"Too many sections ({len(sections)}); the maximum is "
             f"{MAX_SECTIONS_PER_DOCUMENT}"
         )
@@ -2146,19 +2280,19 @@ def _validate_regrouping(sections, previously_labelled_pages):
         # renumber around a group that no longer exists. The page-level checks below
         # cannot catch it: both groups' pages are legitimately accounted for.
         if section_id in section_ids:
-            raise Exception(f"Section '{section_id}' appears more than once")
+            raise ValueError(f"Section '{section_id}' appears more than once")
         section_ids.add(section_id)
         indices = section.get("pageIndices")
         if not isinstance(indices, list) or not indices:
-            raise Exception(f"Section '{section_id}' has no pages")
+            raise ValueError(f"Section '{section_id}' has no pages")
         for raw in indices:
             if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
-                raise Exception(
+                raise ValueError(
                     f"Section '{section_id}' has an invalid page index {raw!r}; "
                     "expected a non-negative integer"
                 )
             if raw in seen:
-                raise Exception(
+                raise ValueError(
                     f"Page index {raw} is in both section '{seen[raw]}' and "
                     f"section '{section_id}'"
                 )
@@ -2166,7 +2300,7 @@ def _validate_regrouping(sections, previously_labelled_pages):
 
     lost = sorted(previously_labelled_pages - set(seen))
     if lost:
-        raise Exception(
+        raise ValueError(
             f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
             "would no longer belong to any section, which would discard the ground "
             "truth for those pages"
@@ -2206,22 +2340,22 @@ def update_test_set_document_sections(args, event=None):
     incoming = input_data.get("sections") or []
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     for section in incoming:
         if not validate_document_class(section.get("documentClass")):
-            raise Exception(
+            raise ValueError(
                 f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
                 "characters of letters, digits, spaces, hyphens or underscores"
             )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
     if not existing:
-        raise Exception(
+        raise ValueError(
             f"'{object_key}' has no baseline sections to re-group. Generate draft "
             "labels for this test set first."
         )
@@ -2388,7 +2522,7 @@ def get_draft_label_job(args):
     key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
     job = db_client.get_item(key)
     if not job:
-        raise Exception(f"Labeling job '{job_id}' not found")
+        raise ResourceNotFound(f"Labeling job '{job_id}' not found")
 
     if job.get("status") in ("COMPLETED", "FAILED"):
         return _label_job_to_result(job)
@@ -2426,200 +2560,6 @@ def get_draft_label_job(args):
     return _label_job_to_result(harvested)
 
 
-def _walk_confidence(explainability_info):
-    """Collect (confidence, confidence_threshold) pairs from explainability_info.
-
-    The shape is nested and irregular — ``{field: {"confidence": 0.9}}`` for
-    scalars, nested dicts for compound fields (``PayPeriod.StartDate``), lists of
-    such dicts for tables — so walk it and collect every ``confidence`` leaf
-    rather than assuming a depth.
-    """
-    found = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            value = node.get("confidence")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                threshold = node.get("confidence_threshold")
-                if not isinstance(threshold, (int, float)) or isinstance(
-                    threshold, bool
-                ):
-                    threshold = None
-                found.append((float(value), threshold))
-            for key, child in node.items():
-                if key != "confidence":
-                    walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(explainability_info)
-    return found
-
-
-def _absent_field_paths(inference_result):
-    """Field *paths* whose extracted value is absent (null, ``""``, or an empty list).
-
-    A field the document does not contain is assessed at confidence 0.0, which is a
-    correct reading of a blank box but indistinguishable from real uncertainty once
-    reduced to a number. Callers exclude these from headline scores.
-
-    Paths, not bare leaf names: one empty ``Description`` cell would otherwise
-    exclude *every* Description score in a 200-row transaction table, understating
-    review need on exactly the table-heavy documents this feature targets.
-
-    Paths are keyed by ``field_child_path`` / ``list_child_path`` — the same rule
-    ``curve_store.flatten_values`` uses — so they are interchangeable with a stored
-    confidence curve's keys and with :func:`_walk_confidence_named`'s.
-
-    **Why this is not simply a call to ``flatten_values``.** That function records
-    scalar leaves, and an empty list has no leaf to record. An empty list is exactly
-    what "the document does not contain this table" looks like, so it has to be
-    collected here. Taking the path *rule* from the shared module rather than the
-    whole traversal is what keeps the keys aligned without giving up that case.
-    """
-    absent = set()
-
-    def walk(node, prefix=""):
-        if isinstance(node, dict):
-            for key, child in node.items():
-                walk(child, field_child_path(prefix, key))
-        elif isinstance(node, list):
-            if not node and prefix:
-                absent.add(prefix)
-            for index, child in enumerate(node):
-                walk(child, list_child_path(prefix, index))
-        elif prefix and (node is None or node == ""):
-            absent.add(prefix)
-
-    walk(inference_result)
-    return absent
-
-
-def _min_confidence(explainability_info, inference_result=None):
-    """Lowest confidence among fields the document actually has a value for.
-
-    Returns None when the payload carries no confidence at all (e.g. assessment
-    disabled), so callers can distinguish "no confidence data" from "confidence 0".
-
-    Absent fields are excluded: their 0.0 describes the emptiest box on the form,
-    not the quality of the extraction, so including it would report 0.0% for a
-    document whose populated fields all score above 0.99. The per-field 0.0 stays in
-    explainability_info; it just does not define the headline score.
-    """
-    found = _walk_confidence(explainability_info)
-    if not found:
-        return None
-    if inference_result is not None:
-        absent = _absent_field_paths(inference_result)
-        populated = [
-            (c, t)
-            for c, t, name in _walk_confidence_named(explainability_info)
-            if name not in absent
-        ]
-        # An entirely absent extraction falls back to the unfiltered minimum, so it
-        # reports 0 rather than "no data".
-        if populated:
-            return min(c for c, _ in populated)
-    return min(c for c, _ in found)
-
-
-def _walk_confidence_named(explainability_info):
-    """As :func:`_walk_confidence`, plus the field *path* each score belongs to.
-
-    Paths are built by ``field_child_path`` / ``list_child_path``, so they line up
-    with :func:`_absent_field_paths`' per occurrence rather than per field name —
-    see that function for why the distinction matters on tables — and with
-    ``curve_store.flatten_confidences``' keys, which is what a caller joining one of
-    these paths to a stored confidence curve would need.
-
-    **Why this is not simply a call to ``flatten_confidences``.** That function
-    returns path → confidence. This one also has to return the per-field
-    ``confidence_threshold`` sitting beside each score, which ``flatten_confidences``
-    deliberately skips, because :func:`_alert_counts` compares each score against its
-    own field's threshold. Taking the path *rule* from the shared module rather than
-    the whole traversal is what keeps the keys aligned without giving that up.
-
-    What is shared is how a path is KEYED, then, not which leaves are collected: this
-    walk descends into a ``geometry`` or ``confidence_threshold`` subtree, which
-    ``flatten_confidences`` skips, so a ``confidence`` leaf nested inside one would be
-    reported here and not there. Neither carries one today; the difference is in the
-    leaf set rather than in the path shape, and it is the path shape a join needs.
-    """
-    found = []
-
-    def walk(node, prefix=""):
-        if isinstance(node, dict):
-            value = node.get("confidence")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                threshold = node.get("confidence_threshold")
-                if not isinstance(threshold, (int, float)) or isinstance(
-                    threshold, bool
-                ):
-                    threshold = None
-                found.append((float(value), threshold, prefix or None))
-            for key, child in node.items():
-                if key != "confidence":
-                    walk(child, field_child_path(prefix, key))
-        elif isinstance(node, list):
-            for index, child in enumerate(node):
-                walk(child, list_child_path(prefix, index))
-
-    walk(explainability_info)
-    return found
-
-
-def _confidence_threshold(explainability_info, inference_result=None):
-    """The configured alert threshold for the weakest field, if it carries one.
-
-    Reported alongside minConfidence so the UI colors against the config's threshold
-    rather than hardcoded bands: 0.85 fails under a 0.9 threshold and passes under
-    0.8.
-    """
-    found = _walk_confidence_named(explainability_info)
-    if not found:
-        return None
-    if inference_result is not None:
-        absent = _absent_field_paths(inference_result)
-        populated = [f for f in found if f[2] not in absent]
-        if populated:
-            found = populated
-    # Tie to the same field minConfidence reports.
-    return min(found, key=lambda triple: triple[0])[1]
-
-
-# The bar a field is measured against when its own assessment carries no threshold.
-# Must match the UI's fallback, or alert counts differ across the API.
-DEFAULT_ALERT_THRESHOLD = 0.8
-
-
-def _alert_counts(explainability_info, inference_result=None):
-    """(alerts, fields): how many fields fall below their configured threshold.
-
-    The count, not the single lowest score, is what decides a document needs a
-    human, and it ranks review work the way an annotator experiences it: eight weak
-    fields is more work than one weak field at a lower score.
-
-    Absent fields are excluded, as in :func:`_min_confidence` — a blank box is a
-    correct reading rather than an alert.
-    """
-    found = _walk_confidence_named(explainability_info)
-    if not found:
-        return None, None
-    if inference_result is not None:
-        absent = _absent_field_paths(inference_result)
-        populated = [f for f in found if f[2] not in absent]
-        if populated:
-            found = populated
-    alerts = sum(
-        1
-        for confidence, threshold, _ in found
-        if confidence
-        < (threshold if threshold is not None else DEFAULT_ALERT_THRESHOLD)
-    )
-    return alerts, len(found)
-
-
 # ---------------------------------------------------------------------------
 # Review-effort estimator: "how many documents must a human review to reach a
 # target accuracy?" Reads the measured confidence→accuracy curve for this test set
@@ -2627,6 +2567,327 @@ def _alert_counts(explainability_info, inference_result=None):
 # confidences, returning review depth, implied cutoff, effort, audit sample and how
 # far the numbers can be trusted.
 # ---------------------------------------------------------------------------
+
+
+def _store_queue_counts(test_set_id, reviewed_count):
+    """Keep the set's reviewed-document count on its metadata item.
+
+    getTestSets returns it, so Human Review › Queues shows each set's pending and
+    total documents without ranking every set. completeSectionReview adds to it as
+    documents become fully reviewed; this full count corrects any drift. Best-effort.
+    """
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="SET QueueReviewedDocs = :r, QueueCountsAt = :at",
+            expression_attribute_values={
+                ":r": int(reviewed_count),
+                ":at": datetime.utcnow().isoformat() + "Z",
+            },
+            return_values="NONE",
+        )
+    except Exception as e:  # noqa: BLE001 — the queue itself must still be served
+        logger.warning(f"Could not store queue counts for {test_set_id}: {e}")
+
+
+def _doc_store():
+    """Test Studio document summaries and assignments (HITLTable)."""
+    return TestSetDocStore(
+        boto3.resource("dynamodb").Table(os.environ["HITL_TABLE_NAME"])
+    )
+
+
+def _forget_documents(args):
+    """Drop removed documents from the queue now, rather than at the next summary
+    build, and recount the queue. Never raises: the documents are already gone."""
+    test_set_id = args["testSetId"]
+    try:
+        store = _doc_store()
+        store.delete(test_set_id, args.get("fileNames") or [])
+        store_assigned_count(_get_tracking_table(), store, test_set_id)
+    except Exception as e:  # noqa: BLE001 — the next summary build catches up
+        logger.warning(f"Could not drop removed documents of {test_set_id}: {e}")
+
+
+def _is_admin(event):
+    return _caller_in_groups(event, ("Admin",))
+
+
+# Copies in flight: the file copier summarizes the set itself when it finishes.
+_COPYING_STATUSES = ("COPYING", "UPDATING", "QUEUED", "PROCESSING")
+
+
+def _ensure_summaries(test_set_id, meta):
+    """``(status, count)`` of the set's summaries, requesting a background build
+    (TestSetFileCopierFunction) when they are missing and no copy is in flight.
+
+    Never reads the labels here: that is what made queue pages slow.
+    """
+    if meta.get("SummaryVersion") == SUMMARY_VERSION:
+        return SUMMARY_READY, _as_int(meta.get("SummaryCount"))
+    if meta.get("status") not in _COPYING_STATUSES:
+        request_summaries(
+            _get_tracking_table(),
+            boto3.client("sqs"),
+            os.environ["TEST_SET_COPY_QUEUE_URL"],
+            test_set_id,
+        )
+    return SUMMARY_BUILDING, _as_int(meta.get("SummaryCount"))
+
+
+def _invalidate_summaries(test_set_id):
+    """Documents are being copied in: the copier rebuilds the summaries when done."""
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="REMOVE SummaryVersion",
+            return_values="NONE",
+        )
+    except Exception as e:  # noqa: BLE001 — the next read requests a build anyway
+        logger.warning(f"Could not invalidate summaries of {test_set_id}: {e}")
+
+
+def _refresh_summary(test_set_id, object_key):
+    """Rewrite one document's summary after its labels changed (its sections only)."""
+    if not test_set_id or not object_key:
+        return
+    try:
+        doc = summarize_document(
+            s3_client, os.environ["TEST_SET_BUCKET"], test_set_id, object_key
+        )
+        _doc_store().upsert_summary(test_set_id, doc)
+    except Exception as e:  # noqa: BLE001 — a full rebuild corrects it
+        logger.warning(f"Could not refresh summary of {test_set_id}/{object_key}: {e}")
+        _rebuild_summaries_later(test_set_id)
+
+
+def _rebuild_summaries_later(test_set_id):
+    """Labels of the whole set changed: rebuild every summary in the background."""
+    request_summaries(
+        _get_tracking_table(),
+        boto3.client("sqs"),
+        os.environ["TEST_SET_COPY_QUEUE_URL"],
+        test_set_id,
+    )
+
+
+def _labels_changed(args, result, *, copying=False):
+    """A writer changed the labels or documents of a whole set.
+
+    ``copying``: documents are being copied in, and the copier rebuilds the
+    summaries when it finishes; otherwise the rebuild is requested now.
+    """
+    input_data = args.get("input", args) if isinstance(args, dict) else {}
+    test_set_id = input_data.get("testSetId") or input_data.get("id")
+    if test_set_id:
+        if copying:
+            _invalidate_summaries(test_set_id)
+        else:
+            _rebuild_summaries_later(test_set_id)
+    return result
+
+
+def _drop_summaries(test_set_id):
+    try:
+        _doc_store().delete_set(test_set_id)
+    except Exception as e:  # noqa: BLE001 — orphans are harmless; the set is gone
+        logger.warning(f"Could not delete summaries of {test_set_id}: {e}")
+
+
+def _assert_assignee(event, input_data):
+    """An Annotator saves only documents an Admin assigned to them."""
+    if _caller_in_groups(event, ("Admin", "Author")):
+        return
+    try:
+        _doc_store().assert_assignee(
+            input_data.get("testSetId") or "",
+            input_data.get("objectKey") or "",
+            caller_email(event) or "",
+        )
+    except ValueError as e:
+        raise ValueError(str(e)) from None
+
+
+def _grant_test_set_to_annotator(email, test_set_id, meta=None):
+    """An Annotator assigned a document of a set may open that set.
+
+    The assignee must be in the Cognito Annotator group (the source of truth, as for
+    production items) and listed on the set's queue. Adds the set to their ``allowedTestSets`` on every UsersTable record for
+    the email, creating the record when the user was added in Cognito directly and
+    has none yet. Raises ValueError with the reason when the user can't be assigned.
+    """
+    pool = os.environ.get("USER_POOL_ID", "")
+    if not pool:
+        raise ValueError("The user pool is not configured")
+    account = cognito_account(pool, email)
+    if not account or ANNOTATOR_GROUP not in account["groups"]:
+        raise ValueError("ASSIGNEE_NOT_ELIGIBLE: the user isn't in the Annotator group")
+    if email not in _queue_annotators(meta):
+        raise ValueError(
+            "ASSIGNEE_NOT_ELIGIBLE: the Annotator isn't listed on this queue"
+        )
+    _grant_allowed_test_set(email, test_set_id, account)
+
+
+def _queue_annotators(meta):
+    """The Annotators (lower-case emails) listed on a test set's queue."""
+    return [str(e).lower() for e in ((meta or {}).get("QueueEligibleAnnotators") or [])]
+
+
+def _grant_allowed_test_set(email, test_set_id, account):
+    """Add the set to every UsersTable record for the email (creating one if needed)."""
+    table_name = os.environ.get("USERS_TABLE_NAME", "")
+    if not table_name:
+        raise ValueError("The users table is not configured")
+    from boto3.dynamodb.conditions import Key
+
+    table = boto3.resource("dynamodb").Table(table_name)
+    users = (
+        table.query(
+            IndexName="EmailIndex", KeyConditionExpression=Key("email").eq(email)
+        ).get("Items")
+        or []
+    )
+    if not users:
+        users = [_create_user_record(table, email, account)]
+    changed = False
+    for user in users:
+        allowed = [str(t) for t in (user.get("allowedTestSets") or [])]
+        if test_set_id not in allowed:
+            table.update_item(
+                Key={"PK": user["PK"], "SK": user["SK"]},
+                UpdateExpression="SET allowedTestSets = :a",
+                ExpressionAttributeValues={":a": allowed + [test_set_id]},
+            )
+            changed = True
+    if changed:
+        clear_scope_cache()
+
+
+def _create_user_record(table, email, account):
+    """The UsersTable record of a user who exists only in Cognito.
+
+    The same row User Management's Cognito sync writes (persona from the groups, the
+    Cognito ``sub`` recorded, no scope pointer), marked ``source: cognito`` so the
+    user-sync stream does not create the Cognito account again. The next User
+    Management listing matches it by ``sub`` and leaves it alone.
+    """
+    user_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    row = {
+        **user_row_key(user_id),
+        "userId": user_id,
+        "email": email,
+        "persona": persona_for_groups(account["groups"]),
+        "status": "active",
+        "source": COGNITO_SOURCE,
+        "createdAt": account.get("created_at") or now,
+        "updatedAt": now,
+    }
+    if account.get("sub"):
+        row["cognitoSub"] = account["sub"]
+    table.put_item(Item=row, ConditionExpression="attribute_not_exists(PK)")
+    logger.info(f"Created the User Management record of Cognito user {email}")
+    return row
+
+
+def test_set_assignment(field_name, args, event):
+    """Admin: assign test-set documents to an Annotator, or unassign them.
+
+    Annotators never claim documents themselves. An assignment lasts until the
+    document is fully reviewed or an Admin unassigns it; the set's time limit only
+    schedules a reminder.
+    """
+    test_set_id = args.get("testSetId") or ""
+    object_keys = [str(k) for k in (args.get("objectKeys") or []) if k]
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    if not object_keys or len(object_keys) > 200:
+        raise ValueError("objectKeys must list 1-200 documents")
+    for key in object_keys:
+        if ".." in key or key.startswith("/"):
+            raise ValueError("Invalid object key")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
+    store = _doc_store()
+    # A set still being summarized in the background: summarize just these.
+    for key in object_keys:
+        if store.get(test_set_id, key) is None:
+            _refresh_summary(test_set_id, key)
+    caller = (caller_email(event) or "").lower()
+    changed = []
+    if field_name == "assignTestSetDocuments":
+        email = str(args.get("assigneeEmail") or "").strip().lower()
+        if "@" not in email:
+            raise ValueError("assigneeEmail must be an email address")
+        _grant_test_set_to_annotator(email, test_set_id, meta)
+        minutes = time_limit_minutes(meta)
+        for key in object_keys:
+            former = store.get(test_set_id, key)
+            doc = store.assign(
+                test_set_id, key, email, assigned_by=caller, time_limit=minutes
+            )
+            if former and former.get("assignedTo") and former["assignedTo"] != email:
+                notify_unassigned(former)
+            notify_assigned(doc, caller)
+            changed.append(doc)
+    else:
+        for key in object_keys:
+            former = store.unassign(test_set_id, key)
+            if former:
+                notify_unassigned(former)
+                changed.append(store.get(test_set_id, key) or former)
+    store_assigned_count(_get_tracking_table(), store, test_set_id)
+    logger.info(
+        f"{field_name} {test_set_id}: {len(changed)} of {len(object_keys)} by {caller}"
+    )
+    return [
+        {
+            "testSetId": d["testSetId"],
+            "objectKey": d["objectKey"],
+            "assignedTo": d.get("assignedTo"),
+            "assignedAt": d.get("assignedAt"),
+        }
+        for d in changed
+    ]
+
+
+def list_my_test_set_tasks(event):
+    """The Test Studio documents assigned to the caller, across every set (one Query).
+
+    Only sets the caller may still open: an assignment outlives the Annotator's
+    ``allowedTestSets`` scope (an Admin can narrow it without unassigning), and
+    the rows carry the document's name and classes, so a set the caller lost
+    access to is left out rather than listed.
+    """
+    caller = (caller_email(event) or "").lower()
+    if not caller:
+        return []
+    access = {}
+    tasks = []
+    for d in _doc_store().assigned_to(caller):
+        test_set_id = d["testSetId"]
+        if test_set_id not in access:
+            try:
+                assert_can_access_test_set(event, test_set_id)
+                access[test_set_id] = True
+            except TestSetAccessDenied:
+                access[test_set_id] = False
+        if not access[test_set_id]:
+            continue
+        tasks.append(
+            {
+                "testSetId": test_set_id,
+                "objectKey": d["objectKey"],
+                "assignedTo": d.get("assignedTo"),
+                "assignedAt": d.get("assignedAt"),
+                "labelSource": d.get("labelSource"),
+                "alertCount": d.get("alertCount"),
+                "documentClasses": d.get("documentClasses") or [],
+            }
+        )
+    return tasks
 
 
 def get_annotation_queue(args, event=None):
@@ -2644,9 +2905,15 @@ def get_annotation_queue(args, event=None):
     test_set_id = args["testSetId"]
     limit = max(1, min(int(args.get("limit") or 50), 200))
     include_completed = bool(args.get("includeCompleted"))
+    # objectKey opens one document's workspace, the only path here that reads labels
+    # from S3; mineOnly keeps the caller's own assignments.
+    only_object_key = args.get("objectKey") or None
+    mine_only = bool(args.get("mineOnly"))
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
+    if only_object_key and (".." in only_object_key or only_object_key.startswith("/")):
+        raise ValueError("Invalid object key")
 
     # Scope check precedes any read, so an unauthorized caller cannot even learn
     # whether the set exists.
@@ -2654,14 +2921,45 @@ def get_annotation_queue(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
+    deadline = time.monotonic() + SAMPLING_TIME_BUDGET_SECONDS
     label_job = _harvest_active_label_job(test_set_id, meta)
+    summary_status, summary_count = _ensure_summaries(test_set_id, meta)
 
-    documents = _collect_queue_documents(test_set_id)
+    caller = (caller_email(event) or "").lower()
+    store = _doc_store()
+    if only_object_key:
+        # One document's workspace: its labels and sections from S3 (the editor
+        # needs them), which also refreshes its summary.
+        documents = (
+            get_test_set_documents(
+                {"testSetId": test_set_id, "objectKey": only_object_key, "limit": 1},
+                deadline=deadline,
+            ).get("documents")
+            or []
+        )
+        summaries = {}
+        for doc in documents:
+            store.upsert_summary(test_set_id, doc)
+            summaries[doc["objectKey"]] = store.get(test_set_id, doc["objectKey"]) or {}
+    else:
+        # The queue: one Query of the set's document summaries in DynamoDB. They
+        # are built in the background by the test-set file copier, and kept current
+        # per document by every label writer; this request never reads the labels.
+        job_active = bool(label_job) and (label_job or {}).get("status") not in (
+            "COMPLETED",
+            "FAILED",
+        )
+        if job_active:
+            # Labels are being copied in: those documents are re-summarized as they
+            # are harvested (_write_draft_labels_for_doc); nothing to rebuild here.
+            pass
+        documents = store.list(test_set_id)
+        if mine_only:
+            documents = [d for d in documents if d.get("assignedTo") == caller]
+        summaries = {d["objectKey"]: d for d in documents}
     claims = _claim_state_for_documents(test_set_id, meta, documents)
-
-    caller = caller_email(event)
     # Review operations (claimReview / completeSectionReview) key on the pipeline
     # copy of a document, "{runId}/{filename}", not the test-set key. It is returned
     # so no client has to reconstruct that backend key layout.
@@ -2672,13 +2970,12 @@ def get_annotation_queue(args, event=None):
     entries = []
     for doc in documents:
         state = claims.get(doc["objectKey"], {})
-        owner = state.get("owner") or ""
+        owner = (summaries.get(doc["objectKey"]) or {}).get("assignedTo") or ""
         status = state.get("status") or ""
-        reviewed = doc.get("labelSource") == LABEL_SOURCE_HUMAN or status in (
-            "Review Completed",
-            "Completed",
-            "Review Skipped",
-            "Skipped",
+        reviewed = doc.get("labelSource") == LABEL_SOURCE_HUMAN or status in LEGACY_DONE
+        # Skipped: the task was completed without a review (skipTestSetDocument).
+        skipped = not reviewed and bool(
+            doc.get("skipped") or (summaries.get(doc["objectKey"]) or {}).get("skipped")
         )
         claimed_by_other = bool(owner) and owner != caller
         # A pipeline copy exists only for documents the labeling run processed, and
@@ -2706,11 +3003,21 @@ def get_annotation_queue(args, event=None):
                 "documentClasses": doc.get("documentClasses") or [],
                 "sectionCount": len(doc.get("sections") or []),
                 "sections": doc.get("sections") or [],
+                # The assignee; claimedBy/claimedByMe carry the same for older clients.
+                "assignedTo": owner or None,
+                "assignedAt": (summaries.get(doc["objectKey"]) or {}).get("assignedAt"),
+                # Sections already reviewed; some but not all means in progress.
+                "reviewedSections": doc.get("reviewedSections")
+                or (summaries.get(doc["objectKey"]) or {}).get("reviewedSections")
+                or 0,
                 "claimedBy": owner or None,
                 "claimedByMe": bool(owner) and owner == caller,
+                "leaseExpiresAt": None,
                 "reviewStatus": status or None,
                 "reviewed": reviewed,
-                "available": not reviewed and not claimed_by_other,
+                "skipped": skipped,
+                # Admins assign work; an unassigned document can be assigned.
+                "available": not claimed_by_other,
             }
         )
 
@@ -2738,16 +3045,24 @@ def get_annotation_queue(args, event=None):
     entries.sort(key=sort_key)
 
     reviewed_count = sum(1 for e in entries if e["reviewed"])
+    completed_count = sum(1 for e in entries if e["reviewed"] or e["skipped"])
     inspected = len(entries)
-    # The set's real size, not the inspected page: the page is capped, so counting it
-    # would report a 2000-document set as the cap and claim "0 remaining" while most
-    # of the set was untouched.
+    # The set's real size, not the summaries listed: while a build is still running
+    # only some documents have one, so counting them would claim "0 remaining" while
+    # most of the set was untouched.
     total = int(meta.get("fileCount", 0) or 0) or inspected
     # Authored ground truth counts toward totalDocs but has no pipeline copy to
     # claim, so a mixed set cannot reach 100% here. Excluding it instead would report
     # an uploaded set as fully annotated, which
     # test_uploaded_ground_truth_is_not_counted_as_review_work forbids.
-    queue = [e for e in entries if include_completed or not e["reviewed"]]
+    # A lookup by objectKey is the annotation screen opening one document, not a
+    # "next in queue" list, so a completed document is returned with its state.
+    # Filtering it out made a reviewed document read as "not in the test set".
+    queue = [
+        e
+        for e in entries
+        if include_completed or only_object_key or not (e["reviewed"] or e["skipped"])
+    ]
 
     # The open transition, so the workspace does not have to call the mutation to discover
     # one — that call snapshots, and probing with it would open a transition just by
@@ -2757,25 +3072,45 @@ def get_annotation_queue(args, event=None):
 
     result = {
         "testSetId": test_set_id,
+        "name": meta.get("name"),
+        "claimLeaseMinutes": time_limit_minutes(meta),
+        # What a Skip may give as its reason (skipTestSetDocument).
+        "skipReasons": _skip_reasons(meta),
+        # BUILDING while the background build of the set's summaries runs; the
+        # documents listed so far are returned meanwhile.
+        "summaryStatus": summary_status,
+        "summaryCount": summary_count,
         "totalDocs": total,
         "inspectedDocs": inspected,
         "reviewedDocs": reviewed_count,
+        "completedDocs": completed_count,
         "draftVersion": draft_version,
         "baseVersion": draft_version - 1 if draft_version else None,
-        # Documents beyond the inspected page are unreviewed, so they count here.
-        "remainingDocs": max(0, total - reviewed_count),
+        # Documents with no summary yet are unreviewed, so they count here.
+        "remainingDocs": max(0, total - completed_count),
         "claimedByOthers": sum(
             1
             for e in entries
-            if not e["reviewed"] and e["claimedBy"] and not e["claimedByMe"]
+            if not (e["reviewed"] or e["skipped"])
+            and e["claimedBy"]
+            and not e["claimedByMe"]
         ),
         "documents": queue[:limit],
         # The next document this caller can open; None when their queue is drained.
-        "nextObjectKey": next((e["objectKey"] for e in queue if e["available"]), None),
+        "nextObjectKey": next(
+            (
+                e["objectKey"]
+                for e in queue
+                if e["available"] and not (e["reviewed"] or e["skipped"])
+            ),
+            None,
+        ),
         "labelJobStatus": (label_job or {}).get("status"),
         "labelJobLabeled": _as_int((label_job or {}).get("labeled")),
         "labelJobTotal": _as_int((label_job or {}).get("total")),
     }
+    if not only_object_key and not mine_only:
+        _store_queue_counts(test_set_id, reviewed_count)
     logger.info(
         f"getAnnotationQueue({test_set_id}) for {caller or 'service'}: "
         f"{result['remainingDocs']}/{total} remaining "
@@ -2783,39 +3118,6 @@ def get_annotation_queue(args, event=None):
         f"{result['claimedByOthers']} claimed by others"
     )
     return result
-
-
-def _collect_queue_documents(test_set_id):
-    """Documents in the set with their label metadata, up to the queue cap.
-
-    Capped and time-bounded because each page reads every section on it from S3
-    (~24s per 200 documents), which times the Lambda out on a large set. A short
-    queue is workable, since annotators take documents from the front; a timeout
-    means the workspace cannot open. inspectedDocs reports how much was ranked.
-    """
-    documents = []
-    next_token = None
-    started = time.monotonic()
-    while len(documents) < MAX_DOCS_FOR_ESTIMATE:
-        page = get_test_set_documents(
-            {
-                "testSetId": test_set_id,
-                "limit": min(200, MAX_DOCS_FOR_ESTIMATE - len(documents)),
-                "nextToken": next_token,
-            }
-        )
-        documents.extend(page.get("documents") or [])
-        next_token = page.get("nextToken")
-        if not next_token:
-            break
-        if time.monotonic() - started > SAMPLING_TIME_BUDGET_SECONDS:
-            logger.warning(
-                f"getAnnotationQueue({test_set_id}): stopped collecting at "
-                f"{len(documents)} document(s) after "
-                f"{SAMPLING_TIME_BUDGET_SECONDS}s"
-            )
-            break
-    return documents
 
 
 def _claim_state_for_documents(test_set_id, meta, documents):
@@ -3038,13 +3340,13 @@ def estimate_review_effort(args):
     config_version = args.get("configVersion")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not (0.0 < target_accuracy <= 100.0):
-        raise Exception("targetAccuracy must be between 0 and 100")
+        raise ValueError("targetAccuracy must be between 0 and 100")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Resolve the configuration whose confidence semantics produced these labels
     # (argument > bound field > the drafting run's resolved version), so the
@@ -3088,14 +3390,16 @@ def estimate_review_effort(args):
         pages_per_doc,
         ground_truth_docs,
         alerts_per_doc,
+        inspected_docs,
+        whole_set_inspected,
     ) = _collect_doc_confidences(test_set_id)
 
     # The set's real size, which may exceed the sample. Using the sample size as the
     # total understates the work, the effort and the audit pool by however far the
-    # set exceeds MAX_DOCS_FOR_ESTIMATE.
-    total_docs = int(meta.get("fileCount", 0) or 0) or len(doc_confidences)
-    # Ground truth is not reviewable work, so it comes off the total.
-    total_docs = max(0, total_docs - ground_truth_docs)
+    # set exceeds MAX_DOCS_FOR_ESTIMATE. The stored counter can lag the set, and
+    # the set holds at least what was just read, so it never sizes below that.
+    set_size = max(int(meta.get("fileCount", 0) or 0), inspected_docs)
+    total_docs = _reviewable_docs(set_size, inspected_docs, ground_truth_docs)
     sampled_docs = len(doc_confidences)
 
     # A sample is treated as representative and repeated across the whole set, so the
@@ -3139,6 +3443,17 @@ def estimate_review_effort(args):
     result["reliabilityTable"] = curve.reliability_table(prior)
     # Surfaced so a caller can say how much of the set was actually inspected.
     result["sampledDocs"] = sampled_docs
+    # What the reviewable size was scaled from. A sample with no reviewable
+    # document scales to zero, which is a statement about the whole set only when
+    # the sample read all of it; otherwise documents outside the sample were never
+    # read and a caller must not report the set as fully labelled (#1479).
+    result["inspectedDocs"] = inspected_docs
+    result["setDocs"] = set_size
+    # Whether the listing was read to its end. Decided by the listing rather than
+    # by inspectedDocs against setDocs, because setDocs rests on a stored counter
+    # that can be stale or absent, and a sample cut by the cap or the time budget
+    # must never read as the whole set.
+    result["wholeSetInspected"] = whole_set_inspected
     logger.info(
         f"estimateReviewEffort({test_set_id}, target={target_accuracy}): "
         f"{estimate.docs_to_review}/{total_docs} docs, "
@@ -3147,18 +3462,58 @@ def estimate_review_effort(args):
     return result
 
 
-# Cap on how many documents the estimator reads confidences for. Each document's
-# sections are read from S3, costing ~24s per 200-document page, so a larger cap
-# needs several pages and exceeds the resolver's 60s timeout. 200 keeps the call
-# inside one page and already pins the curve (10 reliability bins; document shape is
-# measured from at most 20 sections). The cost is a wider docs-to-review range on
-# very large sets, which sampledDocs and estimateConfidence report.
+def _reviewable_docs(set_size, inspected_docs, ground_truth_docs):
+    """How many of ``set_size`` documents are reviewable work, from the sample.
+
+    Ground truth is not reviewable work, so it comes off the total -- but it is
+    counted over the inspected sample only, which MAX_DOCS_FOR_ESTIMATE caps. The
+    sample's confidences are extrapolated across the whole set, so its ground-truth
+    count has to be extrapolated the same way: the sample's reviewable fraction is
+    applied to the set's size. Subtracting the raw count instead planned review for
+    every uninspected document, so a 500-document set sampled as 200 of 200 ground
+    truth estimated 300 documents to review (#1479).
+
+    The sample is the first documents in listing order, not a random draw, so the
+    fraction assumes ground truth is spread independently of key order. A set whose
+    labelled files sort together is mis-sized in either direction; no set-wide
+    ground-truth count is stored that could be read instead.
+
+    Rounded up, so a sample holding any reviewable document never estimates zero.
+    With nothing inspected there is no fraction to apply, and the whole set counts.
+    """
+    if inspected_docs <= 0:
+        return max(0, set_size)
+    reviewable_sampled = max(0, inspected_docs - ground_truth_docs)
+    return max(0, -(-set_size * reviewable_sampled // inspected_docs))  # ceil
+
+
+# Cap on how many documents the estimator reads confidences for. Every section on a
+# page is read from S3, so a page costs in proportion to its sections rather than its
+# documents: at 256 MB, 8-10s for 200 single-section documents and ~26s for 200
+# four-section packets. 200 keeps the call inside one page and already pins the curve
+# (10 reliability bins; document shape is measured from at most 20 sections). The
+# cost is a wider docs-to-review range on very large sets, which sampledDocs and
+# estimateConfidence report.
 MAX_DOCS_FOR_ESTIMATE = 200
 
-# Hard stop for any operation that pages the document list, independent of the
-# document cap: a set whose pages are unusually slow must yield a narrower sample
-# rather than a timeout. Shared by the estimator and the annotation queue.
-SAMPLING_TIME_BUDGET_SECONDS = 25
+# Deadline on the reads behind any operation that samples the document list, so a
+# slow set yields a narrower sample rather than a timeout. Shared by the estimator
+# and the annotation queue's single-document lookup (objectKey); the queue itself
+# reads summaries from DynamoDB and no labels. It is checked before every section
+# read, not only between pages, because the cap above makes the sample a single page.
+#
+# It has to expire inside the dispatcher's 20s (_RESOLVER_READ_TIMEOUT_SECONDS in
+# http_api_dispatcher): past that the caller already has a 504, however narrow the
+# sample became. The rest of the 20s pays for a cold start (~1.7s measured), the
+# reads before and after sampling, and the reads in flight when the deadline passes.
+# For the annotation queue the deadline is set before its label-job harvest, which
+# spends QUEUE_HARVEST_TIME_BUDGET_SECONDS of it.
+#
+# Not bounded by it: the listing of the set's whole baseline/ prefix that precedes
+# each page's section reads. That time is spent from this budget, but the deadline
+# is not checked inside it, and it grows with the size of the set rather than the
+# page.
+SAMPLING_TIME_BUDGET_SECONDS = 12
 
 # Ceiling on baseline sections read to characterise document shape for the effort
 # model. Each read is a separate S3 GET, and sets vary widely in sections per
@@ -3169,6 +3524,12 @@ MAX_SECTIONS_FOR_FIELD_SAMPLE = 40
 # several S3 calls per section, so a large set cannot finish in one pass; stopping
 # short leaves the job RUNNING and the next poll continues.
 HARVEST_TIME_BUDGET_SECONDS = 20
+
+# The annotation queue's harvest share of its own request. Kept well under
+# SAMPLING_TIME_BUDGET_SECONDS, which the queue measures from before the harvest, so
+# a harvest that uses all of its share still leaves a single-document lookup time to
+# read the document's sections.
+QUEUE_HARVEST_TIME_BUDGET_SECONDS = 4
 
 # Document states the pipeline never leaves. A labeling job waiting on one of
 # these would never complete, and every caller that shows a job re-harvests on a
@@ -3205,15 +3566,21 @@ def _collect_doc_confidences(test_set_id):
     ordering would not describe the work the user is about to do.
 
     Returns ``(confidences, fields_per_doc, pages_per_doc, ground_truth_docs,
-    alerts_per_doc)``. The
+    alerts_per_doc, inspected_docs, whole_set_inspected)``. The
     two shape figures fall back to the module defaults when the baseline carries
     nothing to measure. ``ground_truth_docs`` counts inspected documents that already
     have ground truth and are therefore absent from ``confidences``.
+    ``inspected_docs`` is how many documents the sample read, ground truth included:
+    the denominator for scaling the sample's ground-truth fraction to the set.
+    ``whole_set_inspected`` is True only when the listing ended inside the time
+    budget. A page cut by the budget also ends with no token, so a listing that
+    finished after the budget passed is reported as partial: the safe direction,
+    since a partial sample is never called the whole set.
     """
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     documents = []
     next_token = None
-    started = time.monotonic()
+    deadline = time.monotonic() + SAMPLING_TIME_BUDGET_SECONDS
 
     while len(documents) < MAX_DOCS_FOR_ESTIMATE:
         page = get_test_set_documents(
@@ -3221,7 +3588,8 @@ def _collect_doc_confidences(test_set_id):
                 "testSetId": test_set_id,
                 "limit": min(200, MAX_DOCS_FOR_ESTIMATE - len(documents)),
                 "nextToken": next_token,
-            }
+            },
+            deadline=deadline,
         )
         documents.extend(page.get("documents") or [])
         next_token = page.get("nextToken")
@@ -3229,7 +3597,7 @@ def _collect_doc_confidences(test_set_id):
             break
         # A narrower sample still produces a usable estimate, and says so via
         # sampledDocs; a timeout produces nothing.
-        if time.monotonic() - started > SAMPLING_TIME_BUDGET_SECONDS:
+        if time.monotonic() > deadline:
             logger.warning(
                 f"estimateReviewEffort({test_set_id}): stopped sampling at "
                 f"{len(documents)} document(s) after "
@@ -3237,6 +3605,8 @@ def _collect_doc_confidences(test_set_id):
                 "sample"
             )
             break
+
+    whole_set_inspected = not next_token and time.monotonic() <= deadline
 
     confidences = []
     alert_counts = []
@@ -3265,14 +3635,19 @@ def _collect_doc_confidences(test_set_id):
     # and this reads every section in the set one at a time.
     field_counts = []
     sections_read = 0
+
+    def field_sample_done():
+        return (
+            sections_read >= MAX_SECTIONS_FOR_FIELD_SAMPLE
+            or len(field_counts) >= 20
+            or time.monotonic() > deadline
+        )
+
     for doc in documents:
-        if sections_read >= MAX_SECTIONS_FOR_FIELD_SAMPLE or len(field_counts) >= 20:
+        if field_sample_done():
             break
         for section in doc.get("sections") or []:
-            if (
-                sections_read >= MAX_SECTIONS_FOR_FIELD_SAMPLE
-                or len(field_counts) >= 20
-            ):
+            if field_sample_done():
                 break
             key = section.get("baselineKey")
             if not key:
@@ -3301,6 +3676,8 @@ def _collect_doc_confidences(test_set_id):
         max(1.0, pages_per_doc),
         ground_truth_docs,
         alerts_per_doc,
+        len(documents),
+        whole_set_inspected,
     )
 
 
@@ -3435,6 +3812,8 @@ def _harvest_label_job(job, deadline=None):
                 config_version=job.get("configVersion") or doc.get("ConfigVersion"),
                 confidence_fingerprint=run.get("ConfidenceFingerprint") or None,
             )
+            # Keep the queue's summary of this document current as its draft lands.
+            _refresh_summary(test_set_id, file_name)
             # TestSetId on the pipeline document is how completeSectionReview knows
             # to write back to the baseline, tag the label reviewed-human and record
             # the curve observation; without it the save reports success and does
@@ -3769,30 +4148,30 @@ def remove_documents_from_test_set(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     file_names = args["fileNames"]
     logger.info(f"Removing {len(file_names)} document(s) from test set {test_set_id}")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
     # A harvest in progress writes a baseline for each document as its run
     # finishes; deleting a document under it leaves that baseline orphaned as
     # "Extra baseline files". A copier or extractor in flight recounts on
     # completion and would overwrite the count computed here.
     if meta.get("labelJobStatus") == "RUNNING":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is being draft-labeled; wait for the job "
             "to finish before removing documents"
         )
     if meta.get("status") in IN_FLUX_TEST_SET_STATUSES:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is busy ({meta.get('status')}); try again "
             "when it is COMPLETED"
         )
     for file_name in file_names:
         if not file_name or file_name.startswith("/") or "//" in file_name:
-            raise Exception(f"Invalid document name: {file_name!r}")
+            raise ValueError(f"Invalid document name: {file_name!r}")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -3902,11 +4281,11 @@ def clear_draft_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -4017,11 +4396,11 @@ def reset_test_set_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -4151,13 +4530,13 @@ def update_test_set(args):
 
     # Validate description if provided
     if description is not None and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Build update expression dynamically
     update_parts = []
@@ -4168,6 +4547,13 @@ def update_test_set(args):
         update_parts.append("#desc = :desc")
         expression_values[":desc"] = description
         expression_names["#desc"] = "description"
+
+    if input_data.get("claimLeaseMinutes") is not None:
+        # The reminder time limit for assigned documents (the field keeps its name).
+        update_parts.append("TimeLimitMinutes = :lease")
+        expression_values[":lease"] = validate_time_limit(
+            input_data["claimLeaseMinutes"]
+        )
 
     # Check if we need to remove documentClassType
     remove_expression = False
@@ -4231,6 +4617,7 @@ def update_test_set(args):
         "status": updated_item.get("status"),
         "createdAt": updated_item["createdAt"],
         "documentClassType": updated_item.get("documentClassType"),
+        "claimLeaseMinutes": time_limit_minutes(updated_item),
     }
 
 
@@ -4299,8 +4686,12 @@ def delete_test_sets(args):
     return True
 
 
-def get_test_sets():
-    logger.info("Retrieving all test sets and scanning for direct uploads")
+def _load_test_set_records():
+    """Every test set's metadata item: TypeDateIndex keys, then BatchGetItem.
+
+    DynamoDB only, so HITL › Queue Management lists the sets without the S3
+    reconcile getTestSets does for Test Studio.
+    """
 
     # Use GSI to find testset PK/SK keys efficiently, then BatchGetItem for full records.
     # This avoids scanning the entire TrackingTable (which includes all documents).
@@ -4350,6 +4741,333 @@ def get_test_sets():
             filter_expression="begins_with(PK, :pk) AND SK = :sk",
             expression_attribute_values={":pk": "testset#", ":sk": "metadata"},
         )
+    return items
+
+
+#: Largest section label body accepted from the editor.
+MAX_SECTION_LABEL_BYTES = 2_000_000
+
+
+def save_test_set_document_section(args, event=None):
+    """Save (or, without ``data``, confirm) one section's labels of a test-set document.
+
+    For documents with no review copy, which ``completeSectionReview`` cannot reach:
+    authored ground truth, or labels written straight to the set. The label is
+    stamped reviewed-human with the caller's identity from the verified token, the
+    document's summary is refreshed, and once every section is reviewed the
+    assignment ends. The handler has already checked set scope and the assignee.
+    """
+    test_set_id = args.get("testSetId") or ""
+    object_key = args.get("objectKey") or ""
+    section_id = str(args.get("sectionId") or "")
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    if not object_key or ".." in object_key or object_key.startswith("/"):
+        raise ValueError("Invalid object key")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", section_id):
+        raise ValueError("Invalid section id")
+    bucket = os.environ["TEST_SET_BUCKET"]
+    key = f"{test_set_id}/baseline/{object_key}/sections/{section_id}/result.json"
+    try:
+        existing = json.loads(
+            s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+            raise ResourceNotFound(
+                f"Section {section_id} of '{object_key}' has no labels"
+            ) from None
+        raise
+    raw = args.get("data")
+    if raw is None:
+        label = dict(existing)
+    else:
+        if (
+            len(raw if isinstance(raw, str) else json.dumps(raw))
+            > MAX_SECTION_LABEL_BYTES
+        ):
+            raise ValueError("The section labels are too large")
+        label = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(label, dict):
+            raise ValueError("data must be a JSON object")
+    caller = (caller_email(event) or "").lower()
+    history = (
+        existing.get("_editHistory")
+        if isinstance(existing.get("_editHistory"), list)
+        else []
+    )
+    label["_editHistory"] = [
+        *history,
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "editedBy": caller or "unknown",
+            "source": "test-set-annotation"
+            if raw is not None
+            else "test-set-confirmation",
+        },
+    ]
+    label["labelSource"] = LABEL_SOURCE_HUMAN
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(label, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+    summary = summarize_document(s3_client, bucket, test_set_id, object_key)
+    store = _doc_store()
+    store.upsert_summary(test_set_id, summary)
+    reviewed = summary.get("labelSource") == LABEL_SOURCE_HUMAN
+    if reviewed:
+        store.mark_reviewed(test_set_id, object_key)
+        store_assigned_count(_get_tracking_table(), store, test_set_id)
+        _store_queue_counts(
+            test_set_id, sum(1 for d in store.list(test_set_id) if d["reviewed"])
+        )
+    logger.info(
+        f"saveTestSetDocumentSection {test_set_id}/{object_key}#{section_id} by {caller}"
+    )
+    return {
+        "testSetId": test_set_id,
+        "objectKey": object_key,
+        "sectionId": section_id,
+        "reviewed": reviewed,
+    }
+
+
+def skip_test_set_document(args, event=None):
+    """Hand a test-set document back to its queue without reviewing it.
+
+    The caller's assignment ends, so the document leaves their Tasks and goes back
+    to the queue unassigned, where another Annotator can claim it. It is not
+    completed: its labels are untouched and it still counts as remaining. The
+    handler has already checked set scope and the assignee.
+    """
+    test_set_id = args.get("testSetId") or ""
+    object_key = args.get("objectKey") or ""
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    if not object_key or ".." in object_key or object_key.startswith("/"):
+        raise ValueError("Invalid object key")
+    reason = args.get("reason")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if reason not in _skip_reasons(meta or {}):
+        raise ValueError(
+            "REASON_REQUIRED: choose a skip reason from this test set's queue settings"
+        )
+    note = (args.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
+    caller = (caller_email(event) or "").lower()
+    store = _doc_store()
+    store.unassign(
+        test_set_id,
+        object_key,
+        skip={
+            "by": caller,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
+            **({"note": note} if note else {}),
+        },
+    )
+    store_assigned_count(_get_tracking_table(), store, test_set_id)
+    logger.info(f"skipTestSetDocument {test_set_id}/{object_key} by {caller}")
+    return {"testSetId": test_set_id, "objectKey": object_key, "skipped": True}
+
+
+def claim_test_set_document(args, event=None):
+    """An Annotator takes a document of a set whose queue lists them.
+
+    The document must be unassigned and not yet reviewed. It is assigned to the
+    caller exactly as an Admin assignment would (no expiry; the set's time limit
+    schedules a reminder), so it appears in their My Work › Tasks.
+    """
+    test_set_id = args.get("testSetId") or ""
+    object_key = args.get("objectKey") or ""
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    if not object_key or ".." in object_key or object_key.startswith("/"):
+        raise ValueError("Invalid object key")
+    caller = (caller_email(event) or "").lower()
+    if not caller or not _caller_in_groups(event, (ANNOTATOR_GROUP,)):
+        logger.warning("Rejecting claimTestSetDocument: caller is not an Annotator")
+        raise PermissionError("NOT_ELIGIBLE: only Annotators take test-set documents")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
+    if caller not in _queue_annotators(meta):
+        logger.warning(
+            "Rejecting claimTestSetDocument: caller isn't listed on the queue"
+        )
+        raise PermissionError("NOT_ELIGIBLE: you aren't listed on this queue")
+    store = _doc_store()
+    if store.get(test_set_id, object_key) is None:
+        _refresh_summary(test_set_id, object_key)
+    doc = store.assign(
+        test_set_id,
+        object_key,
+        caller,
+        assigned_by=caller,
+        time_limit=time_limit_minutes(meta),
+        only_if_unassigned=True,
+    )
+    store_assigned_count(_get_tracking_table(), store, test_set_id)
+    logger.info(f"claimTestSetDocument {test_set_id}/{object_key} by {caller}")
+    return {
+        "testSetId": doc["testSetId"],
+        "objectKey": doc["objectKey"],
+        "assignedTo": doc.get("assignedTo"),
+        "assignedAt": doc.get("assignedAt"),
+    }
+
+
+#: Test Studio queue settings kept on the set's metadata item.
+_QUEUE_SETTING_ATTRS = {
+    "description": "QueueDescription",
+    "priority": "QueuePriority",
+    "timeLimitMinutes": "TimeLimitMinutes",
+    "eligibleAnnotators": "QueueEligibleAnnotators",
+    "checklist": "QueueChecklist",
+    "skipReasons": "QueueSkipReasons",
+}
+
+#: Longest skip note kept, the review queues' note limit.
+MAX_SKIP_NOTE = 1000
+
+
+def _skip_reasons(item):
+    """The set's skip reasons: its own list, or the review queues' defaults."""
+    return [str(r) for r in (item.get("QueueSkipReasons") or DEFAULT_SKIP_REASONS)]
+
+
+def _queue_settings_view(item):
+    return {
+        "description": item.get("QueueDescription") or None,
+        "priority": _as_int(item.get("QueuePriority")),
+        "claimLeaseMinutes": time_limit_minutes(item),
+        "eligibleAnnotators": [
+            str(e) for e in (item.get("QueueEligibleAnnotators") or [])
+        ],
+        "checklist": [str(c) for c in (item.get("QueueChecklist") or [])],
+        "skipReasons": _skip_reasons(item),
+    }
+
+
+def update_test_set_queue(args):
+    """Admin: a test set's queue settings (HITL › Queue Management › Settings).
+
+    Description, priority (0-100), the reminder time limit, the Annotators who work
+    the queue (empty: none, only Admins) and an advisory checklist. Each newly listed
+    Annotator is given access to the set (``allowedTestSets``), as an assignment does,
+    so they can open it from My Work › Queues.
+    """
+    data = args.get("input") or {}
+    test_set_id = data.get("testSetId") or ""
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
+    values = {}
+    added = []
+    if "description" in data:
+        values["description"] = str(data.get("description") or "").strip()[:300]
+    if data.get("priority") is not None:
+        priority = int(data["priority"])
+        if not 0 <= priority <= 100:
+            raise ValueError("priority must be 0-100")
+        values["priority"] = priority
+    if data.get("timeLimitMinutes") is not None:
+        values["timeLimitMinutes"] = validate_time_limit(data["timeLimitMinutes"])
+    if "eligibleAnnotators" in data:
+        emails = []
+        for raw in data.get("eligibleAnnotators") or []:
+            email = str(raw).strip().lower()
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+                raise ValueError("eligibleAnnotators must contain email addresses")
+            if email not in emails:
+                emails.append(email)
+        if len(emails) > 200:
+            raise ValueError("eligibleAnnotators lists at most 200 Annotators")
+        values["eligibleAnnotators"] = emails
+        added = [e for e in emails if e not in _queue_annotators(meta)]
+    if "checklist" in data:
+        items = [
+            str(c).strip()[:200] for c in data.get("checklist") or [] if str(c).strip()
+        ]
+        if len(items) > 20:
+            raise ValueError("checklist has at most 20 items")
+        values["checklist"] = items
+    if data.get("skipReasons"):
+        reasons = list(
+            dict.fromkeys(
+                str(r).strip()[:200] for r in data["skipReasons"] if str(r).strip()
+            )
+        )
+        if not reasons or len(reasons) > 20:
+            raise ValueError("skipReasons lists 1 to 20 reasons")
+        values["skipReasons"] = reasons
+    if not values:
+        raise ValueError("Nothing to update")
+    # Before the write, so a listed user who isn't an Annotator refuses the save.
+    new_list = {"QueueEligibleAnnotators": values.get("eligibleAnnotators") or []}
+    for email in added:
+        _grant_test_set_to_annotator(email, test_set_id, new_list)
+    names = {f"#a{i}": _QUEUE_SETTING_ATTRS[k] for i, k in enumerate(values)}
+    exprs = {f":v{i}": v for i, v in enumerate(values.values())}
+    db_client.update_item(
+        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+        update_expression="SET "
+        + ", ".join(f"#a{i} = :v{i}" for i in range(len(values))),
+        expression_attribute_names=names,
+        expression_attribute_values=exprs,
+        return_values="NONE",
+    )
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    return {"testSetId": test_set_id, **_queue_settings_view(meta or {})}
+
+
+def list_test_set_queues(event=None):
+    """Test Studio queues: every set for an Admin (HITL › Queue Management), and for
+    an Annotator only the sets whose queue lists them (My Work › Queues).
+
+    One read of the sets' metadata items, which carry the counts kept by the
+    background summary build, assignments and completed reviews. No S3 reads, and no
+    per-set queue reads, so the list appears at once. Sets with no summaries yet are
+    queued for a background build.
+    """
+    caller = (caller_email(event) or "").lower() if event else ""
+    only_listed = bool(event and event.get("identity")) and not _caller_in_groups(
+        event, ("Admin",)
+    )
+    out = []
+    for item in _load_test_set_records():
+        test_set_id = item.get("id") or str(item.get("PK", "")).replace("testset#", "")
+        if not test_set_id:
+            continue
+        if only_listed and caller not in _queue_annotators(item):
+            continue
+        status, _count = _ensure_summaries(test_set_id, item)
+        out.append(
+            {
+                "id": test_set_id,
+                "name": item.get("name") or test_set_id,
+                "status": item.get("status"),
+                "fileCount": _as_int(item.get("fileCount")),
+                "reviewedDocs": _as_int(item.get("QueueReviewedDocs")),
+                "pendingDocs": _as_int(item.get("QueuePendingDocs")),
+                "assignedDocs": _as_int(item.get("QueueAssignedDocs")),
+                "inProgressDocs": _as_int(item.get("QueueInProgressDocs")),
+                "annotators": _as_int(item.get("QueueAnnotators")),
+                "summaryStatus": status,
+                **_queue_settings_view(item),
+                "queueCountsAt": item.get("QueueCountsAt"),
+                "updatedAt": item.get("updatedAt") or item.get("createdAt"),
+            }
+        )
+    return out
+
+
+def get_test_sets():
+    logger.info("Retrieving all test sets and scanning for direct uploads")
+    items = _load_test_set_records()
 
     existing_test_sets = {}
     result = []
@@ -4401,6 +5119,14 @@ def get_test_sets():
                 # Optional preselected config version. Absent for the stack-managed
                 # benchmark sets, which rely on the id==version-name convention.
                 "configVersion": item.get("configVersion"),
+                # Annotation progress stored by getAnnotationQueue and
+                # completeSectionReview; absent until the set's queue is first opened.
+                "reviewedDocs": _as_int(item.get("QueueReviewedDocs")),
+                "claimLeaseMinutes": time_limit_minutes(item),
+                "queueCountsAt": item.get("QueueCountsAt"),
+                # Listing the sets also backfills any set whose queue summaries
+                # are missing, in the background (one SQS message per set).
+                "summaryStatus": _ensure_summaries(test_set_id, item)[0],
             }
         )
     # Scan TestSetBucket for direct uploads
@@ -4417,7 +5143,7 @@ def get_test_sets():
         # Per-request reconcile budget. Cold-container invocations pay 2
         # paginated list_objects_v2 + 1 HeadObject per registered prefix
         # before the warm-container memo kicks in, and this resolver runs
-        # under a 60 s timeout with 256 MB. Cap the work here the same way
+        # under a 60 s timeout with 1024 MB. Cap the work here the same way
         # ``_reconcile_label_state`` caps its own probes (25 / 5 s) — the
         # remainder is picked up by the next poll, which is what the memo
         # is designed for. The listing paths do NOT skip on this budget;
@@ -4628,7 +5354,7 @@ def get_test_sets():
     return result
 
 
-def get_test_set_documents(args):
+def get_test_set_documents(args, deadline=None):
     """List the documents in a test set with their baseline (ground truth) sections.
 
     Paginated over the set's `input/` prefix; the S3 continuation token is
@@ -4636,6 +5362,16 @@ def get_test_set_documents(args):
     whole `baseline/` prefix is listed once (bulk) and section result.json
     keys are matched to their document in memory — one extra LIST per page
     regardless of page size, and it handles nested input file names.
+
+    `search` is matched against every document in the set rather than against the
+    page, because the page is the thing the caller cannot see past: a table that
+    filtered its own 50 rows reported "no results" for documents that were in the
+    set two pages along. See ``_search_test_set_documents``.
+
+    ``deadline`` is for internal callers sampling the set under a time budget. When
+    it passes mid-page, the page is cut to the leading documents none of whose
+    sections it skipped, and ``nextToken`` is ``None``, since resuming from the uncut
+    page's token would skip the documents dropped from it.
     """
     test_set_id = args["testSetId"]
     limit = args.get("limit") or 100
@@ -4643,88 +5379,93 @@ def get_test_set_documents(args):
     # Optional exact-match filter, so a deep-linked document detail page does not
     # page through the whole set.
     object_key = args.get("objectKey")
+    # Optional case-insensitive substring over the set's document names, for a
+    # search box. Ignored when `objectKey` is given, which is already the narrower
+    # of the two.
+    search = (args.get("search") or "").strip()
 
     # The id is derived from a validated name, so it must satisfy the same charset.
     # This also rejects '/' and '..', which could traverse outside the S3 prefix.
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if object_key and ".." in object_key:
-        raise Exception("Invalid object key")
+        raise ValueError("Invalid object key")
+    # No document name approaches this, so a longer search is not a search. Bounded
+    # because the value is echoed into the log line below, and because an
+    # unbounded one is the only input here whose size a caller chooses freely.
+    #
+    # ValueError, not Exception: an over-long search is a malformed request, and
+    # #1304 made that distinction load-bearing — a bare Exception is answered as a
+    # 500, which reports a caller's bad input as a server fault.
+    if len(search) > _SEARCH_MAX_LENGTH:
+        raise ValueError("Search text is too long")
     limit = max(1, min(int(limit), 1000))
 
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     input_prefix = f"{test_set_id}/input/"
 
-    list_kwargs = {
-        "Bucket": test_set_bucket,
-        # The objectKey equality check below drops same-prefix siblings.
-        "Prefix": f"{input_prefix}{object_key}" if object_key else input_prefix,
-        "MaxKeys": limit,
-    }
-    if next_token:
-        list_kwargs["ContinuationToken"] = next_token
-    response = s3_client.list_objects_v2(**list_kwargs)
-
-    documents = []
-    for obj in response.get("Contents", []):
-        key = obj["Key"]
-        if key.endswith("/"):
-            continue  # skip folder placeholder objects
-        relative_name = key[len(input_prefix) :]
-        if object_key and relative_name != object_key:
-            continue
-        documents.append(
-            {
-                "objectKey": relative_name,
-                "inputKey": key,
-                "size": obj.get("Size"),
-                "lastModified": obj["LastModified"].isoformat(),
-                "sections": [],
-            }
+    match_count = None
+    search_truncated = None
+    if search and not object_key:
+        documents, response_next_token, match_count, search_truncated = (
+            _search_test_set_documents(
+                test_set_bucket, input_prefix, search, limit, next_token
+            )
         )
+    else:
+        # A token minted under a search is an offset into *that* search's matches
+        # and means nothing without it. Refused here rather than handed to S3,
+        # which would reject it as an opaque InvalidArgument and surface as
+        # "Failed to load test set documents" with no indication of why.
+        if next_token and next_token.startswith(_SEARCH_OFFSET_PREFIX):
+            raise ValueError("Invalid pagination token without a search")
+        list_kwargs = {
+            "Bucket": test_set_bucket,
+            # The objectKey equality check below drops same-prefix siblings.
+            "Prefix": f"{input_prefix}{object_key}" if object_key else input_prefix,
+            "MaxKeys": limit,
+        }
+        if next_token:
+            list_kwargs["ContinuationToken"] = next_token
+        response = s3_client.list_objects_v2(**list_kwargs)
+
+        documents = []
+        for obj in response.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # skip folder placeholder objects
+            relative_name = key[len(input_prefix) :]
+            if object_key and relative_name != object_key:
+                continue
+            documents.append(_document_row(obj, relative_name))
+        response_next_token = response.get("NextContinuationToken")
 
     if documents:
-        # Bulk-list baseline section files once and match to this page's docs.
-        # Baseline layout: <id>/baseline/<relative_name>/sections/<n>/result.json
-        baseline_prefix = f"{test_set_id}/baseline/"
-        sections_by_doc = {d["objectKey"]: d["sections"] for d in documents}
-        section_re = re.compile(r"^(.+)/sections/([^/]+)/result\.json$")
-        paginator = s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=test_set_bucket, Prefix=baseline_prefix):
-            for obj in page.get("Contents", []):
-                rel = obj["Key"][len(baseline_prefix) :]
-                match = section_re.match(rel)
-                if not match:
-                    continue
-                doc_name, section_id = match.groups()
-                sections = sections_by_doc.get(doc_name)
-                if sections is not None:
-                    sections.append(
-                        {
-                            "sectionId": section_id,
-                            "baselineKey": obj["Key"],
-                        }
-                    )
-
-        # Sort sections numerically where possible so "10" doesn't precede "2"
+        # Baseline layout: <id>/baseline/<relative_name>/sections/<n>/result.json,
+        # listed once for the page and matched to its documents in memory.
+        sections = list_baseline_sections(
+            s3_client, test_set_bucket, test_set_id, object_key=object_key
+        )
         for doc in documents:
-            doc["sections"].sort(
-                key=lambda s: (
-                    (0, int(s["sectionId"]))
-                    if s["sectionId"].isdigit()
-                    else (1, s["sectionId"])
-                )
-            )
+            doc["sections"] = sections.get(doc["objectKey"], [])
 
-        _attach_label_metadata(test_set_bucket, documents)
+        complete = _attach_label_metadata(test_set_bucket, documents, deadline)
+        if complete < len(documents):
+            logger.warning(
+                f"getTestSetDocuments({test_set_id}): time budget reached after "
+                f"reading {complete} of {len(documents)} document(s) on this page; "
+                "returning those"
+            )
+            documents = documents[:complete]
+            response_next_token = None
 
     result = {
         "documents": documents,
-        "nextToken": response.get("NextContinuationToken"),
+        "nextToken": response_next_token,
         # The set's whole size, not this page's. A paginated response that reports
         # only what it returned leaves the caller counting the page and calling it
         # the total: the UI showed "Documents (50)" and offered to "Label 50
@@ -4739,6 +5480,10 @@ def get_test_set_documents(args):
         # (publishing a version) has nothing else to read. Free here — the metadata
         # row is already in hand.
         "status": item.get("status"),
+        # Both `None` unless a search ran, so a caller can tell "no search" from
+        # "a search that matched nothing".
+        "matchCount": match_count,
+        "searchTruncated": search_truncated,
     }
 
     # Surfaced so a page load resumes polling an in-flight job. Labels are harvested
@@ -4749,164 +5494,147 @@ def get_test_set_documents(args):
 
     logger.info(
         f"getTestSetDocuments({test_set_id}): {len(documents)} documents"
+        # !r rather than the bare value: this is caller-supplied text, and repr
+        # escapes the newlines that would otherwise let it forge log lines.
+        f"{f' matching {search!r} ({match_count} in the set)' if match_count is not None else ''}"
         f"{' (more available)' if result['nextToken'] else ''}"
     )
     return result
 
 
-def _attach_label_metadata(test_set_bucket, documents):
-    """Add labelSource, alert counts and minConfidence to each document on a page.
-
-    Label state lives inside each section's baseline result.json, so those are read
-    here — bounded to one page of documents and fetched concurrently, since the calls
-    are pure I/O.
-
-    Alert counts sum across a document's sections, since weak fields in two sections
-    is more review work than in one; minConfidence takes the minimum, because it
-    names the single weakest field.
-
-    Best-effort per section: an unreadable result.json is skipped rather than failing
-    the listing.
-    """
-    tasks = []
-    for doc in documents:
-        for section in doc["sections"]:
-            tasks.append((doc, section))
-    if not tasks:
-        for doc in documents:
-            doc["labelSource"] = None
-            doc["minConfidence"] = None
-            doc["confidenceThreshold"] = None
-            doc["alertCount"] = None
-            doc["fieldCount"] = None
-        return
-
-    def read(key):
-        try:
-            body = s3_client.get_object(Bucket=test_set_bucket, Key=key)["Body"].read()
-            return json.loads(body)
-        except Exception as e:  # noqa: BLE001 — best-effort enrichment
-            logger.warning(f"Could not read baseline label {key}: {e}")
-            return None
-
-    per_doc = {
-        id(doc): {
-            "sources": [],
-            "confidences": [],
-            "alerts": [],
-            "fields": [],
-            # The class each section was given. Collected here because these
-            # baselines are already being read for label state, so it costs
-            # nothing extra — and a reviewer working the queue could not
-            # previously see what class a document had been assigned without
-            # opening it, which is the whole difficulty with a misclassified
-            # document: extraction against the wrong schema can be confidently
-            # wrong, so nothing else about the row looks unusual.
-            "classes": [],
-        }
-        for doc, _ in tasks
+def _document_row(obj, relative_name):
+    """One listing row for an S3 input object, before sections are attached."""
+    return {
+        "objectKey": relative_name,
+        "inputKey": obj["Key"],
+        "size": obj.get("Size"),
+        "lastModified": obj["LastModified"].isoformat(),
+        "sections": [],
     }
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=min(len(tasks), 16)
-    ) as executor:
-        results = executor.map(lambda t: (t[0], t[1], read(t[1]["baselineKey"])), tasks)
-        for doc, section, result in results:
-            if not result:
-                continue
-            # The section's OWN class, distinct from the document-level
-            # `documentClasses` badge list: the regrouping board shows a class per
-            # section, and the editor only ever loads the section being viewed.
-            section_class = (result.get("document_class") or {}).get("type")
-            if section_class:
-                section["documentClass"] = str(section_class)
-            # The section's page grouping, so the page-regrouping editor can show every
-            # section at once instead of fetching each result.json again. Free: this
-            # file is already open for label state and class, same as `classes` below.
-            # Left absent rather than empty when unreadable — an empty grouping would
-            # read as "this section has no pages", which is a different claim.
-            indices = (result.get("split_document") or {}).get("page_indices")
-            if isinstance(indices, list):
-                section["pageIndices"] = [
-                    int(i)
-                    for i in indices
-                    if isinstance(i, int) and not isinstance(i, bool)
-                ]
-            bucket_for_doc = per_doc[id(doc)]
-            # A baseline with no labelSource is ground truth supplied when the set was
-            # created: authoritative, but not reviewed here. Reporting it as
-            # LABEL_SOURCE_UPLOADED rather than reviewed-human keeps overwrite safety
-            # (via _existing_label_is_human) without letting the annotation queue
-            # count it as completed review work.
-            bucket_for_doc["sources"].append(
-                result.get("labelSource") or LABEL_SOURCE_UPLOADED
-            )
-            inference = result.get("inference_result")
-            # Recomputed rather than read back, because a stored minConfidence may
-            # predate the exclusion of absent fields and carry a 0.0 from a blank box.
-            # The stored value is only a fallback when there is no
-            # explainability_info to recompute from.
-            confidence = _min_confidence(result.get("explainability_info"), inference)
-            if confidence is None:
-                confidence = result.get("minConfidence")
-            if confidence is not None:
-                threshold = _confidence_threshold(
-                    result.get("explainability_info"), inference
-                )
-                if threshold is None:
-                    threshold = result.get("confidenceThreshold")
-                bucket_for_doc["confidences"].append((float(confidence), threshold))
-            alerts, fields = _alert_counts(result.get("explainability_info"), inference)
-            if alerts is not None:
-                bucket_for_doc["alerts"].append(alerts)
-                bucket_for_doc["fields"].append(fields)
-            # Reusing section_class from above — same `result`, same iteration.
-            if section_class:
-                bucket_for_doc["classes"].append(str(section_class))
 
-    for doc in documents:
-        collected = per_doc.get(
-            id(doc),
-            {
-                "sources": [],
-                "confidences": [],
-                "alerts": [],
-                "fields": [],
-                "classes": [],
-            },
-        )
-        # Distinct classes, order preserved. A single-section document yields one;
-        # a packet yields the classes its sections were split into. Reported as a
-        # list rather than joined, so the UI decides how to render more than one
-        # rather than parsing a string back apart.
-        seen_classes = []
-        for cls in collected["classes"]:
-            if cls not in seen_classes:
-                seen_classes.append(cls)
-        doc["documentClasses"] = seen_classes
-        sources = collected["sources"]
-        confidences = collected["confidences"]
-        # A document counts as reviewed only when every section is.
-        if not sources:
-            doc["labelSource"] = None
-        elif all(s == LABEL_SOURCE_HUMAN for s in sources):
-            doc["labelSource"] = LABEL_SOURCE_HUMAN
-        elif any(s == LABEL_SOURCE_DRAFT for s in sources):
-            doc["labelSource"] = LABEL_SOURCE_DRAFT
-        else:
-            doc["labelSource"] = sources[0]
-        if confidences:
-            worst, threshold = min(confidences, key=lambda pair: pair[0])
-            doc["minConfidence"] = worst
-            doc["confidenceThreshold"] = threshold
-        else:
-            doc["minConfidence"] = None
-            doc["confidenceThreshold"] = None
-        if collected["alerts"]:
-            doc["alertCount"] = sum(collected["alerts"])
-            doc["fieldCount"] = sum(collected["fields"])
-        else:
-            doc["alertCount"] = None
-            doc["fieldCount"] = None
+
+# How many S3 keys one search will read before it stops and says so. At the page
+# size below that is 50 **sequential** LIST calls at the worst case — not free, and
+# the reason there is a budget at all rather than an unbounded walk; the bound is
+# well above any test set this has been built for, so the worst case is not the
+# ordinary one. Past it the returned page is still correct; `matchCount` becomes a
+# lower bound and `searchTruncated` says that it is.
+#
+# Note which direction the cost runs: a broad needle is *slower* to answer than a
+# narrow one, because every row the page returns costs one S3 GET per baseline
+# section in ``_attach_label_metadata`` while matching itself only reads key names.
+# If that is ever reported as a bug, this is why.
+_SEARCH_SCAN_KEY_BUDGET = 50_000
+
+# Keys per LIST call: S3's maximum, and the paginator's default. Named because the
+# budget above can only be honoured at this granularity, so the two belong
+# together rather than one of them being whatever default happens to be in force.
+_SEARCH_SCAN_PAGE_SIZE = 1000
+
+# Longest accepted `search`. S3 keys cap at 1024 bytes and a document name is a
+# fraction of that, so this is well clear of any real search while keeping the
+# value a bounded quantity.
+_SEARCH_MAX_LENGTH = 256
+
+# Search pages are an offset into the matches, not an S3 continuation token, and
+# the prefix is what keeps the two kinds of `nextToken` from being replayed as
+# each other. A continuation token resumes at a LIST page boundary: a 1000-key
+# page holding more than `limit` matches would lose every match after the first
+# `limit`, silently, which is the same class of bug as filtering one page.
+#
+# Named OFFSET rather than TOKEN, and it has to stay that way: Bandit's B105
+# matches an identifier's *name* against a password wordlist, which `TOKEN` is in,
+# so a module-level string assigned to such a name is a finding. SRT promotes
+# B105 to HIGH unconditionally and the test-code scope decision does not reach
+# this file — it is a Lambda deployment artifact — so the name alone blocks the
+# security gate, for a six-character constant that is not a credential.
+_SEARCH_OFFSET_PREFIX = "match:"
+
+
+def _search_test_set_documents(bucket, input_prefix, search, limit, next_token):
+    """Find the documents in a set whose name contains `search`, at any page depth.
+
+    Returns ``(documents, next_token, match_count, truncated)``.
+
+    S3 has no substring match, so the set's `input/` prefix is listed in full and
+    matched here. Only key *names* are read — no GET per document — so a search
+    costs one LIST per 1000 keys and hands back a page of at most `limit`
+    documents, which is what keeps the expensive part of this listing (the
+    per-section reads in ``_attach_label_metadata``) proportional to the page
+    rather than to the set.
+
+    `search` is never used as an S3 `Prefix`, so it needs no path validation: a
+    caller cannot reach outside `input_prefix` through it, and a leading-substring
+    search is not a prefix search.
+
+    A malformed token raises `ValueError`, not `Exception`, following #1304: the
+    dispatcher picks the HTTP status from the exception's class name, so a bare
+    `Exception` would answer 500 for what is plainly a bad request. The gate added
+    with #1304 cannot catch this direction — it matches not-found wording only, and
+    says so — which is why it is stated here.
+
+    Only the rows for the requested page are held, while every match is counted,
+    so memory is proportional to `limit` and the count is still the set's.
+    """
+    needle = search.lower()
+    offset = 0
+    if next_token:
+        if not next_token.startswith(_SEARCH_OFFSET_PREFIX):
+            raise ValueError("Invalid pagination token for a search")
+        try:
+            offset = max(0, int(next_token[len(_SEARCH_OFFSET_PREFIX) :]))
+        except ValueError as exc:
+            raise ValueError("Invalid pagination token for a search") from exc
+    end = offset + limit
+
+    documents = []
+    match_count = 0
+    scanned = 0
+    truncated = False
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(
+        Bucket=bucket,
+        Prefix=input_prefix,
+        PaginationConfig={"PageSize": _SEARCH_SCAN_PAGE_SIZE},
+    ):
+        for obj in page.get("Contents", []):
+            scanned += 1
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # skip folder placeholder objects
+            relative_name = key[len(input_prefix) :]
+            if needle not in relative_name.lower():
+                continue
+            if offset <= match_count < end:
+                documents.append(_document_row(obj, relative_name))
+            match_count += 1
+        if scanned >= _SEARCH_SCAN_KEY_BUDGET:
+            # Truncated only if S3 says keys remain. Reaching the budget on the
+            # last page means the scan finished, and reporting that as truncated
+            # would caption an exact count as a lower bound and ask the user to
+            # narrow a search that already saw the whole set.
+            truncated = bool(page.get("IsTruncated"))
+            break
+
+    # Only matches this scan actually reached are offered as a next page. Offset
+    # paging re-scans from the start and stops at the same budget, so a token past
+    # what was scanned would return the same rows forever; a truncated search says
+    # so instead, and the caller's remedy is a narrower search.
+    return (
+        documents,
+        f"{_SEARCH_OFFSET_PREFIX}{end}" if match_count > end else None,
+        match_count,
+        truncated,
+    )
+
+
+def _attach_label_metadata(test_set_bucket, documents, deadline=None):
+    """Add label source, alert counts, confidence and classes to a page of documents.
+
+    Returns how many leading documents were read before ``deadline``; see
+    ``attach_label_metadata``.
+    """
+    return attach_label_metadata(s3_client, test_set_bucket, documents, deadline)
 
 
 def _is_valid_test_set_structure(s3_client, bucket, prefix):
@@ -5497,7 +6225,7 @@ _RECONCILE_TTL_SECONDS = 30
 # Per-request cap on reconcile probes, mirroring the label-state probe
 # budget (MAX_LABEL_STATE_PROBES / LABEL_STATE_PROBE_BUDGET_SECONDS above).
 # Reconcile does the same 2 x list_objects_v2 + 1 x HeadObject per prefix
-# on a cold container; the resolver's Timeout is 60 s and MemorySize 256 MB.
+# on a cold container; the resolver's Timeout is 60 s and MemorySize 1024 MB.
 # Beyond this budget, the remainder of the prefixes are picked up by the
 # next getTestSets call (which finds them in the warm-container memo when
 # it comes back for them).

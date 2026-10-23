@@ -46,13 +46,15 @@ interface DiffItem {
 interface EditHistoryTabProps {
   predictionData: Record<string, unknown> | null;
   baselineData: Record<string, unknown> | null;
+  /** Height of the scrolling area; the default fills the editor pane. A dialog passes its own. */
+  height?: string;
 }
 
 /**
  * EditHistoryTab - Shows timeline of all edits made to this document section
  * Parses _editHistory array from the saved JSON files
  */
-const EditHistoryTab = ({ predictionData, baselineData }: EditHistoryTabProps): React.JSX.Element => {
+const EditHistoryTab = ({ predictionData, baselineData, height = 'calc(100vh - 280px)' }: EditHistoryTabProps): React.JSX.Element => {
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
 
   // Extract edit history from prediction data
@@ -181,7 +183,7 @@ const EditHistoryTab = ({ predictionData, baselineData }: EditHistoryTabProps): 
   // If no history, show empty state
   if (combinedHistory.length === 0) {
     return (
-      <div style={{ height: 'calc(100vh - 280px)', padding: '16px' }}>
+      <div style={{ height, padding: '16px' }}>
         <Alert type="info" header="No Edit History">
           <SpaceBetween size="s">
             <Box>No edit history is available for this document section.</Box>
@@ -196,7 +198,7 @@ const EditHistoryTab = ({ predictionData, baselineData }: EditHistoryTabProps): 
   }
 
   return (
-    <div style={{ height: 'calc(100vh - 280px)', padding: '16px', overflow: 'auto' }}>
+    <div style={{ height, padding: '16px', overflow: 'auto' }}>
       <SpaceBetween size="m">
         <Alert type="info">
           <strong>Edit History</strong> - View all changes made to this section.

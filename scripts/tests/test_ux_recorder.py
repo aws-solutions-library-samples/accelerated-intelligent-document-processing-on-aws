@@ -8,9 +8,14 @@ would not catch quickly: the WebSocket client speaks RFC 6455 correctly against
 Chrome, frames are acknowledged without blocking the reader, paused time never
 reaches the video, each segment is paced for a person (pre-roll, action after the
 narrator has started, no fast-forward past the ceiling, a settle at the end),
-captions line up with the voice, and the daemon's control protocol writes the
-files the skill tells the agent to fill in. Nothing here needs AWS, Chrome or a
-network; the one ffmpeg test skips when ffmpeg is absent.
+captions line up with the voice, the daemon's control protocol writes the files
+the skill tells the agent to fill in, a click on a field is logged by the field's
+label and never by what was typed into it, and a click made while paused is logged
+with no label and never reaches the video. Nothing here needs AWS, Chrome or a
+network; the ffmpeg tests skip when ffmpeg is absent. The click-label tests run the
+cursor overlay's JavaScript under node and skip when node is absent, except in CI,
+where they fail instead: they are the only automated check on what a click label
+can hold, so a skip there would let that check go missing with the job still green.
 """
 
 from __future__ import annotations
@@ -19,6 +24,8 @@ import base64
 import importlib.util
 import io
 import json
+import os
+import re
 import shutil
 import struct
 import subprocess
@@ -319,7 +326,7 @@ class TestScreencast:
 
 @pytest.mark.unit
 class TestCursorOverlay:
-    def test_overlay_is_installed_now_and_for_new_documents(self):
+    def test_overlay_is_installed_now_and_for_new_documents_in_its_own_world(self):
         ws, session = _session(
             {
                 "Runtime.enable": {"result": {}},
@@ -327,6 +334,8 @@ class TestCursorOverlay:
                 "Page.addScriptToEvaluateOnNewDocument": {
                     "result": {"identifier": "s1"}
                 },
+                "Page.getFrameTree": {"result": {"frameTree": {"frame": {"id": "F1"}}}},
+                "Page.createIsolatedWorld": {"result": {"executionContextId": 7}},
                 "Runtime.evaluate": {"result": {}},
             }
         )
@@ -336,10 +345,24 @@ class TestCursorOverlay:
             "Runtime.enable",
             "Runtime.addBinding",
             "Page.addScriptToEvaluateOnNewDocument",
+            "Page.getFrameTree",
+            "Page.createIsolatedWorld",
             "Runtime.evaluate",
         ]
-        assert ws.sent[1]["params"] == {"name": cdp.CLICK_BINDING}
-        assert ws.sent[2]["params"]["source"] == cdp.CURSOR_OVERLAY_JS
+        world = cdp.OVERLAY_WORLD
+        assert ws.sent[1]["params"] == {
+            "name": cdp.CLICK_BINDING,
+            "executionContextName": world,
+        }
+        assert ws.sent[2]["params"] == {
+            "source": cdp.CURSOR_OVERLAY_JS,
+            "worldName": world,
+        }
+        assert ws.sent[4]["params"] == {"frameId": "F1", "worldName": world}
+        assert ws.sent[5]["params"] == {
+            "expression": cdp.CURSOR_OVERLAY_JS,
+            "contextId": 7,
+        }
 
     def test_overlay_reports_clicks_through_the_binding(self):
         js = cdp.CURSOR_OVERLAY_JS
@@ -352,6 +375,762 @@ class TestCursorOverlay:
         assert "z-index:2147483647" in js
         assert "aria-hidden" in js
         assert "mousedown" in js and "pointermove" in js
+
+    def test_the_docstring_states_the_limits_the_overlay_uses(self):
+        prose = " ".join((cdp.__doc__ or "").split())
+        assert f"the label's {LABEL_LENGTH} characters" in prose
+        assert f"has visited {WALK_LIMIT:,} nodes" in prose
+
+
+HAS_NODE = shutil.which("node") is not None
+IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS"))
+
+CLICK_HARNESS_JS = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const LABELABLE = ['button', 'input', 'meter', 'output', 'progress', 'select', 'textarea'];
+const failures = [];
+let armed = false;
+
+const fail = (message) => {
+  failures.push(message);
+  throw new Error(message);
+};
+
+const splitTop = (text) => {
+  const parts = [];
+  let depth = 0;
+  let quote = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) { quote = null; }
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '(' || c === '[') {
+      depth += 1;
+    } else if (c === ')' || c === ']') {
+      depth -= 1;
+    } else if (c === ',' && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+};
+
+const compound = (text) => {
+  const tests = [];
+  let rest = text.trim();
+  const tag = /^[a-z][a-z0-9-]*/.exec(rest);
+  if (tag) {
+    tests.push((el) => el.localName === tag[0]);
+    rest = rest.slice(tag[0].length);
+  }
+  while (rest) {
+    let m = /^\[([a-z-]+)\]/.exec(rest);
+    if (m) {
+      const name = m[1];
+      tests.push((el) => el.getAttribute(name) !== null);
+    } else if ((m = /^\[([a-z-]+)="([^"]*)"( i)?\]/.exec(rest))) {
+      const name = m[1];
+      const fold = m[3] ? (s) => s.toLowerCase() : (s) => s;
+      const value = fold(m[2]);
+      tests.push((el) => el.getAttribute(name) !== null && fold(el.getAttribute(name)) === value);
+    } else if ((m = /^:not\(([^()]*)\)/.exec(rest))) {
+      const inner = compound(m[1]);
+      tests.push((el) => !inner(el));
+    } else if ((m = /^\.([a-z][a-z0-9-]*)/.exec(rest))) {
+      const name = m[1];
+      tests.push((el) => (el.getAttribute('class') || '').split(/\s+/).includes(name));
+    } else {
+      fail('selector syntax this stub does not implement: ' + JSON.stringify(text));
+    }
+    rest = rest.slice(m[0].length);
+  }
+  if (!tests.length) { fail('empty selector: ' + JSON.stringify(text)); }
+  return (el) => tests.every((test) => test(el));
+};
+
+const matchers = new Map();
+const matches = (el, selector) => {
+  if (!matchers.has(selector)) {
+    const alternatives = splitTop(selector).map(compound);
+    matchers.set(selector, (node) => alternatives.some((test) => test(node)));
+  }
+  return matchers.get(selector)(el);
+};
+
+class TextNode {
+  constructor(data) {
+    this.nodeType = 3;
+    this.nodeValue = data;
+    this.parentNode = null;
+  }
+
+  get textContent() { return this.nodeValue; }
+}
+
+class Element {
+  constructor(doc, tag, attrs, props) {
+    this.nodeType = 1;
+    this.localName = tag;
+    this.tagName = tag.toUpperCase();
+    this.attrs = new Map(Object.entries(attrs || {}));
+    this.childNodes = [];
+    this.parentNode = null;
+    this.style = {};
+    if (LABELABLE.includes(tag)) {
+      Object.defineProperty(this, 'labels', { get: () => doc.labelsFor(this) });
+    }
+    Object.assign(this, props || {});
+  }
+
+  get id() { return this.getAttribute('id') || ''; }
+
+  get parentElement() {
+    return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null;
+  }
+
+  get textContent() { return this.childNodes.map((n) => n.textContent).join(''); }
+
+  set textContent(value) {
+    this.childNodes = [];
+    this.appendChild(new TextNode(String(value)));
+  }
+
+  getAttribute(name) { return this.attrs.has(name) ? String(this.attrs.get(name)) : null; }
+
+  setAttribute(name, value) { this.attrs.set(name, String(value)); }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.childNodes.push(child);
+    return child;
+  }
+
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.childNodes = this.parentNode.childNodes.filter((n) => n !== this);
+      this.parentNode = null;
+    }
+  }
+
+  matches(selector) { return matches(this, selector); }
+
+  closest(selector) {
+    for (let el = this; el; el = el.parentElement) {
+      if (el.matches(selector)) { return el; }
+    }
+    return null;
+  }
+}
+
+class Trap {
+  constructor() { this.parentNode = null; }
+
+  get nodeType() { return this.visit(); }
+
+  get textContent() { return this.visit(); }
+
+  get childNodes() { return this.visit(); }
+
+  visit() {
+    if (armed) { failures.push('read a node after the walk should have stopped'); }
+    return 1;
+  }
+}
+
+class Document {
+  constructor() {
+    this.listeners = {};
+    this.pointed = null;
+    this.designMode = 'off';
+    this.documentElement = new Element(this, 'html');
+    this.head = this.documentElement.appendChild(new Element(this, 'head'));
+    this.body = this.documentElement.appendChild(new Element(this, 'body'));
+  }
+
+  createElement(tag) { return new Element(this, tag); }
+
+  addEventListener(type, listener) {
+    (this.listeners[type] = this.listeners[type] || []).push(listener);
+  }
+
+  removeEventListener() {}
+
+  elementFromPoint() { return this.pointed; }
+
+  elements(root = this.documentElement) {
+    const found = [];
+    const visit = (node) => {
+      if (node instanceof Element) {
+        found.push(node);
+        node.childNodes.forEach(visit);
+      }
+    };
+    visit(root);
+    return found;
+  }
+
+  getElementById(id) {
+    return this.elements().find((el) => el.getAttribute('id') === id) || null;
+  }
+
+  labelled(label) {
+    const target = label.getAttribute('for');
+    if (target !== null) {
+      const el = this.getElementById(target);
+      return el && LABELABLE.includes(el.localName) ? el : null;
+    }
+    return this.elements(label).find((el) => el !== label && LABELABLE.includes(el.localName)) || null;
+  }
+
+  labelsFor(control) {
+    return this.elements().filter((el) => el.localName === 'label' && this.labelled(el) === control);
+  }
+}
+
+const beyondReach = (node) => {
+  if (armed) { failures.push('took a child the walk had no visits left to reach'); }
+  return node;
+};
+
+const build = (doc, spec, refs) => {
+  if (typeof spec === 'string') { return new TextNode(spec); }
+  if (spec.trap) { return new Trap(); }
+  const el = new Element(doc, spec.tag, spec.attrs, spec.props);
+  spec.children.forEach((child, index) => {
+    const node = el.appendChild(build(doc, child, refs));
+    if (child.unreachable) {
+      Object.defineProperty(el.childNodes, index, { enumerable: true, get: () => beyondReach(node) });
+    }
+  });
+  if (spec.ref) { refs[spec.ref] = el; }
+  return el;
+};
+
+const run = (scenario) => {
+  failures.length = 0;
+  armed = false;
+  const doc = new Document();
+  doc.designMode = scenario.designMode || 'off';
+  const refs = {};
+  scenario.body.forEach((spec) => doc.body.appendChild(build(doc, spec, refs)));
+  const payloads = [];
+  const window = {
+    scrollX: 0,
+    scrollY: 0,
+    __uxRecorderEvent: (text) => payloads.push(JSON.parse(text)),
+  };
+  new Function('window', 'document', 'setTimeout', input.overlay)(window, doc, () => 0);
+  doc.pointed = refs.hit;
+  armed = true;
+  const event = { clientX: 12, clientY: 34, button: 0, target: refs.hit };
+  (doc.listeners.mousedown || []).forEach((listener) => listener(event));
+  armed = false;
+  return { payloads, failures: failures.slice() };
+};
+
+const results = {};
+Object.entries(input.scenarios).forEach(([name, scenario]) => {
+  results[name] = run(scenario);
+});
+process.stdout.write(JSON.stringify(results));
+"""
+
+TYPED = "correct-horse-battery-staple"
+CHOSEN = "Second region"
+
+
+def overlay_constant(name):
+    found = re.search(rf"const {name} = (\d+);", cdp.CURSOR_OVERLAY_JS)
+    assert found, (
+        f"CURSOR_OVERLAY_JS no longer declares `const {name} = <number>;`, which "
+        "these tests read so that their scenarios and expectations move with it"
+    )
+    return int(found[1])
+
+
+LABEL_LENGTH = overlay_constant("LABEL_LENGTH")
+WALK_LIMIT = overlay_constant("WALK_LIMIT")
+LONG_TEXT = "Statements " * (LABEL_LENGTH // len("Statements ") + 2)
+
+
+def element(tag, *children, ref=None, attrs=None, props=None):
+    spec = {
+        "tag": tag,
+        "children": list(children),
+        "attrs": attrs or {},
+        "props": props or {},
+    }
+    if ref:
+        spec["ref"] = ref
+    return spec
+
+
+def editable(spelling):
+    return {
+        "body": [
+            element(
+                "div",
+                element("p", TYPED, ref="hit"),
+                attrs={"contenteditable": spelling, "aria-label": "Reply"},
+            )
+        ]
+    }
+
+
+def read_only(spelling):
+    return {
+        "body": [
+            element(
+                "div",
+                "Read-only summary",
+                ref="hit",
+                attrs={"contenteditable": spelling},
+            )
+        ]
+    }
+
+
+def button_input(attrs):
+    return {"body": [element("input", ref="hit", attrs=attrs)]}
+
+
+def item(role):
+    return {
+        "body": [
+            element(
+                "ul",
+                element(
+                    "li",
+                    element("span", "Show details", ref="hit"),
+                    attrs={"role": role},
+                ),
+            )
+        ]
+    }
+
+
+def select_trigger(role=None):
+    attrs = {
+        "id": "region",
+        "type": "button",
+        "aria-haspopup": "listbox",
+        "aria-expanded": "false",
+        "aria-labelledby": "region-label trigger-content",
+    }
+    if role:
+        attrs["role"] = role
+    return {
+        "body": [
+            element("label", "Region", attrs={"id": "region-label", "for": "region"}),
+            element(
+                "button",
+                element("span", CHOSEN, ref="hit", attrs={"id": "trigger-content"}),
+                element("span", element("svg"), attrs={"class": "arrow"}),
+                attrs=attrs,
+                props={"type": "button"},
+            ),
+        ]
+    }
+
+
+CLICK_SCENARIOS = {
+    "password": {
+        "body": [
+            element(
+                "form",
+                element("label", "Password", attrs={"for": "pw"}),
+                element(
+                    "input",
+                    ref="hit",
+                    attrs={"id": "pw", "type": "password", "name": "pass"},
+                    props={"type": "password", "value": TYPED},
+                ),
+            )
+        ]
+    },
+    "text-input": {
+        "body": [
+            element("span", "Document name", attrs={"id": "name-label"}),
+            element(
+                "input",
+                ref="hit",
+                attrs={"aria-labelledby": "name-label", "name": "doc"},
+                props={"type": "text", "value": TYPED},
+            ),
+        ]
+    },
+    "placeholder-input": {
+        "body": [
+            element(
+                "input",
+                ref="hit",
+                attrs={"placeholder": "Search documents", "name": "q"},
+                props={"type": "search", "value": TYPED},
+            )
+        ]
+    },
+    "bare-input": {
+        "body": [
+            element(
+                "input",
+                ref="hit",
+                attrs={"type": "email"},
+                props={"type": "email", "value": TYPED},
+            )
+        ]
+    },
+    "textarea": {
+        "body": [
+            element(
+                "label",
+                "Notes ",
+                element(
+                    "textarea",
+                    TYPED,
+                    ref="hit",
+                    props={"type": "textarea", "value": TYPED},
+                ),
+            )
+        ]
+    },
+    "select": {
+        "body": [
+            element(
+                "select",
+                element("option", "First region", attrs={"value": "first"}),
+                element("option", CHOSEN, attrs={"value": TYPED, "selected": ""}),
+                ref="hit",
+                attrs={"name": "region"},
+                props={"type": "select-one", "value": TYPED},
+            )
+        ]
+    },
+    "multi-select-option": {
+        "body": [
+            element(
+                "select",
+                element("option", "First region"),
+                element("option", CHOSEN, ref="hit", attrs={"selected": ""}),
+                attrs={"name": "regions", "multiple": ""},
+                props={"type": "select-multiple", "value": CHOSEN},
+            )
+        ]
+    },
+    "contenteditable": editable("true"),
+    "contenteditable-empty": editable(""),
+    "contenteditable-plaintext": editable("plaintext-only"),
+    "editable-in-card": {
+        "body": [
+            element(
+                "div",
+                element(
+                    "div",
+                    element("p", TYPED, ref="hit"),
+                    attrs={"contenteditable": "", "aria-label": "Reply"},
+                ),
+                attrs={"role": "button", "aria-label": "Open card"},
+            )
+        ]
+    },
+    "textbox": {
+        "body": [
+            element("span", "Search the queue", attrs={"id": "q-label"}),
+            element(
+                "div",
+                TYPED,
+                ref="hit",
+                attrs={"role": "textbox", "aria-labelledby": "q-label"},
+            ),
+        ]
+    },
+    "searchbox": {
+        "body": [
+            element(
+                "div",
+                element("span", TYPED, ref="hit"),
+                attrs={"role": "searchbox", "aria-label": "Find"},
+            )
+        ]
+    },
+    "mixed-case-textbox": {
+        "body": [
+            element(
+                "div",
+                element("span", TYPED, ref="hit"),
+                attrs={"role": "TextBox", "aria-label": "Notes"},
+            )
+        ]
+    },
+    "unlabelled-textbox": {
+        "body": [element("div", TYPED, ref="hit", attrs={"role": "textbox"})]
+    },
+    "spinbutton": {
+        "body": [
+            element("span", "Quantity", attrs={"id": "qty"}),
+            element(
+                "div",
+                TYPED,
+                ref="hit",
+                attrs={"role": "spinbutton", "aria-labelledby": "qty"},
+            ),
+        ]
+    },
+    "combobox": {
+        "body": [
+            element("span", "Time zone", attrs={"id": "tz-label"}),
+            element(
+                "div",
+                TYPED,
+                ref="hit",
+                attrs={"role": "combobox", "aria-labelledby": "tz-label"},
+            ),
+        ]
+    },
+    "combobox-trigger": select_trigger(role="combobox"),
+    "monaco": {
+        "body": [
+            element(
+                "div",
+                element(
+                    "div",
+                    element(
+                        "div",
+                        element(
+                            "div",
+                            element(
+                                "div",
+                                element("span", element("span", TYPED, ref="hit")),
+                                attrs={"class": "view-line"},
+                            ),
+                            attrs={"class": "view-lines", "role": "presentation"},
+                        ),
+                        attrs={"class": "lines-content"},
+                    ),
+                    element(
+                        "div",
+                        attrs={
+                            "class": "native-edit-context",
+                            "role": "textbox",
+                            "aria-label": "Editor content",
+                        },
+                    ),
+                    attrs={"class": "overflow-guard"},
+                ),
+                attrs={"class": "monaco-editor no-user-select vs", "role": "code"},
+            )
+        ]
+    },
+    "design-mode": {"designMode": "on", "body": [element("p", TYPED, ref="hit")]},
+    "container": {
+        "body": [
+            element(
+                "div",
+                element("h3", "Comment"),
+                element("textarea", TYPED, props={"type": "textarea", "value": TYPED}),
+                element("div", element("p", TYPED), attrs={"contenteditable": "true"}),
+                element(
+                    "div", element("span", TYPED), attrs={"class": "monaco-editor"}
+                ),
+                element(
+                    "select",
+                    element("option", CHOSEN, attrs={"selected": ""}),
+                    props={"type": "select-one", "value": CHOSEN},
+                ),
+                ref="hit",
+            )
+        ]
+    },
+    "labelled-from-inside": {
+        "body": [
+            element(
+                "div",
+                element("p", TYPED, ref="hit", attrs={"id": "first"}),
+                attrs={"contenteditable": "true", "aria-labelledby": "first"},
+            )
+        ]
+    },
+    "custom-element": {
+        "body": [element("idp-token-input", ref="hit", props={"value": TYPED})]
+    },
+    "button": {"body": [element("button", element("span", "Save changes", ref="hit"))]},
+    "icon-button": {
+        "body": [
+            element(
+                "button",
+                element("svg", element("path", ref="hit")),
+                attrs={"aria-label": "Refresh"},
+            )
+        ]
+    },
+    "submit-input": button_input({"type": "submit", "value": "Save changes"}),
+    "image-input": button_input({"type": "image", "alt": "Search"}),
+    "reset-input": button_input({"type": "RESET"}),
+    "link": {"body": [element("a", "Open the set", ref="hit", attrs={"href": "#/s"})]},
+    "read-only-region": read_only("false"),
+    "read-only-region-uppercase": read_only("FALSE"),
+    "long-container": {
+        "body": [
+            element(
+                "div",
+                element("p", LONG_TEXT),
+                {"trap": True},
+                ref="hit",
+            )
+        ]
+    },
+    "wide-container": {
+        "body": [
+            element(
+                "div",
+                *[element("span") for _ in range(WALK_LIMIT - 1)],
+                {"trap": True},
+                ref="hit",
+            )
+        ]
+    },
+    "wider-than-the-walk": {
+        "body": [
+            element(
+                "div",
+                *[element("span") for _ in range(WALK_LIMIT - 2)],
+                "Last reachable",
+                {"trap": True, "unreachable": True},
+                ref="hit",
+            )
+        ]
+    },
+    "menuitemcheckbox": item("menuitemcheckbox"),
+    "menuitemradio": item("menuitemradio"),
+    "tree-item": item("treeitem"),
+    "select-trigger": select_trigger(),
+}
+
+FIELD_CLICKS = {
+    "password": ('input#pw "Password"', 'input#pw "Password"'),
+    "text-input": ('input "Document name"', 'input "Document name"'),
+    "placeholder-input": ('input "Search documents"', 'input "Search documents"'),
+    "bare-input": ('input "email"', 'input "email"'),
+    "textarea": ('textarea "Notes"', 'textarea "Notes"'),
+    "select": ('select "region"', 'select "region"'),
+    "multi-select-option": ('option "regions"', 'select "regions"'),
+    "contenteditable": ('p "Reply"', 'div "Reply"'),
+    "contenteditable-empty": ('p "Reply"', 'div "Reply"'),
+    "contenteditable-plaintext": ('p "Reply"', 'div "Reply"'),
+    "editable-in-card": ('p "Reply"', 'div "Reply"'),
+    "textbox": ('div "Search the queue"', 'div "Search the queue"'),
+    "searchbox": ('span "Find"', 'div "Find"'),
+    "mixed-case-textbox": ('span "Notes"', 'div "Notes"'),
+    "unlabelled-textbox": ('div "textbox"', 'div "textbox"'),
+    "spinbutton": ('div "Quantity"', 'div "Quantity"'),
+    "combobox": ('div "Time zone"', 'div "Time zone"'),
+    "combobox-trigger": ('span#trigger-content "Region"', 'button#region "Region"'),
+    "monaco": ('span "code"', 'div "code"'),
+    "design-mode": ('p ""', 'html ""'),
+    "container": ('div "Comment"', None),
+    "labelled-from-inside": ('p#first ""', 'div ""'),
+    "custom-element": ('idp-token-input ""', None),
+}
+
+PAGE_TEXT_CLICKS = {
+    "button": ('span "Save changes"', 'button "Save changes"'),
+    "icon-button": ('path ""', 'button "Refresh"'),
+    "submit-input": ('input "Save changes"', 'input "Save changes"'),
+    "image-input": ('input "Search"', 'input "Search"'),
+    "reset-input": ('input "reset"', 'input "reset"'),
+    "link": ('a "Open the set"', 'a "Open the set"'),
+    "read-only-region": ('div "Read-only summary"', None),
+    "read-only-region-uppercase": ('div "Read-only summary"', None),
+    "tree-item": ('span "Show details"', None),
+    "select-trigger": (
+        f'span#trigger-content "{CHOSEN}"',
+        f'button#region "{CHOSEN}"',
+    ),
+}
+
+
+@pytest.fixture(scope="module")
+def clicks(tmp_path_factory):
+    if not HAS_NODE:
+        reason = (
+            "node is not on PATH, and these tests run the cursor overlay's "
+            "JavaScript under it"
+        )
+        if IN_CI:
+            pytest.fail(f"{reason}. CI must run them, so give this job node.")
+        pytest.skip(reason)
+    harness = tmp_path_factory.mktemp("overlay") / "harness.js"
+    harness.write_text(CLICK_HARNESS_JS, encoding="utf-8")
+    done = subprocess.run(
+        ["node", str(harness)],
+        input=json.dumps(
+            {"overlay": cdp.CURSOR_OVERLAY_JS, "scenarios": CLICK_SCENARIOS}
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if done.returncode != 0:
+        pytest.fail(f"node could not run the cursor overlay: {done.stderr.strip()}")
+    return json.loads(done.stdout)
+
+
+def click_payload(clicks, name):
+    result = clicks[name]
+    assert result["failures"] == [], result["failures"]
+    assert len(result["payloads"]) == 1, result
+    return result["payloads"][0]
+
+
+@pytest.mark.unit
+class TestClickLabels:
+    """The overlay's own JavaScript, run under node against stub elements.
+
+    ``CURSOR_OVERLAY_JS`` is executed as shipped and a mousedown is dispatched to
+    the listener it registers, so what is asserted is the payload the recorder
+    would write to ``events.jsonl``. The stub's selector matcher implements only
+    the syntax the overlay uses and fails the test on anything else, so a selector
+    the stub cannot read is a failure rather than a silent non-match.
+    """
+
+    @pytest.mark.parametrize("name", FIELD_CLICKS)
+    def test_a_click_is_never_labelled_by_what_was_typed_or_chosen(self, clicks, name):
+        label, interactive = FIELD_CLICKS[name]
+        payload = click_payload(clicks, name)
+        recorded = json.dumps(payload)
+        assert TYPED not in recorded and CHOSEN not in recorded, recorded
+        assert payload["target"] == label and payload["under"] == label
+        assert payload["interactive"] == interactive
+
+    @pytest.mark.parametrize("name", PAGE_TEXT_CLICKS)
+    def test_anything_else_keeps_its_own_label(self, clicks, name):
+        label, interactive = PAGE_TEXT_CLICKS[name]
+        payload = click_payload(clicks, name)
+        assert payload["target"] == label and payload["under"] == label
+        assert payload["interactive"] == interactive
+
+    def test_a_large_container_is_read_only_as_far_as_its_label(self, clicks):
+        payload = click_payload(clicks, "long-container")
+        assert payload["target"] == f'div "{LONG_TEXT[:LABEL_LENGTH].strip()}"'
+
+    def test_a_container_without_text_is_walked_only_so_far(self, clicks):
+        payload = click_payload(clicks, "wide-container")
+        assert payload["target"] == 'div ""'
+
+    def test_a_wide_container_is_read_only_as_far_as_the_walk_can_reach(self, clicks):
+        payload = click_payload(clicks, "wider-than-the-walk")
+        assert payload["target"] == 'div "Last reachable"'
+
+    @pytest.mark.parametrize("role", ["menuitemcheckbox", "menuitemradio"])
+    def test_a_click_inside_a_checkable_menu_item_is_interactive(self, clicks, role):
+        payload = click_payload(clicks, role)
+        assert payload["target"] == 'span "Show details"'
+        assert payload["interactive"] == 'li "Show details"'
 
 
 def frames_at(times, start_seq=1):
@@ -392,6 +1171,25 @@ class TestPauses:
     def test_unmatched_pause_runs_to_stop(self):
         events = [ev(0, 0, "start"), ev(1, 2, "pause"), ev(2, 9, "stop")]
         assert render.pause_intervals(events) == [(2, 9)]
+
+    def test_a_click_made_while_paused_reaches_neither_the_video_nor_the_table(self):
+        sign_in = 'button "Sign in"'
+        events = [
+            ev(0, 0, "start"),
+            ev(1, 2, "pause"),
+            ev(2, 3, "click", x=10, y=20, target=sign_in, interactive=sign_in),
+            ev(3, 5, "resume"),
+            ev(4, 6, "click", x=30, y=40, target='a "Set"', interactive='a "Set"'),
+            ev(5, 9, "stop"),
+        ]
+        kept, frames, _ = render.apply_pauses(events, frames_at([0, 1, 2.5, 4, 7]))
+        assert [e.seq for e in kept if e.type == "click"] == [4]
+        marked = render.click_frames(
+            frames, kept, 0.7, lambda click, frame: f"render/clicks/{click.seq:04d}.jpg"
+        )
+        assert [f.file for f in marked if f.hold] == ["render/clicks/0004.jpg"]
+        table, warnings = render.click_table(kept)
+        assert "Sign in" not in table and warnings == []
 
 
 @pytest.mark.unit
@@ -847,6 +1645,27 @@ def _recorder(tmp_path, kind: str = "review"):
     return rec, session_dir, out_dir
 
 
+PAUSED_TEXT = "Pat Example"
+
+
+def clicker(rec):
+    def click(label, interactive):
+        payload = {
+            "kind": "click",
+            "x": 440,
+            "y": 321,
+            "target": label,
+            "under": label,
+            "interactive": label if interactive else None,
+        }
+        rec._on_event(
+            "Runtime.bindingCalled",
+            {"name": recorder_cli.cdp.CLICK_BINDING, "payload": json.dumps(payload)},
+        )
+
+    return click
+
+
 @pytest.mark.unit
 class TestRecorderCommands:
     def test_mark_note_pause_resume_and_stop_write_the_session_files(self, tmp_path):
@@ -936,6 +1755,42 @@ class TestRecorderCommands:
         assert len(clicks) == 1
         assert clicks[0]["x"] == 440 and clicks[0]["interactive"].startswith("a ")
         assert rec.status()["clicks"] == 1 and rec.status()["clicks_off_target"] == 0
+
+    def test_a_click_made_while_paused_is_counted_but_not_described(self, tmp_path):
+        rec, session_dir, _ = _recorder(tmp_path)
+        rec.begin()
+        click = clicker(rec)
+        rec.handle_command({"cmd": "pause"})
+        click(f'button "Continue as {PAUSED_TEXT}"', interactive=True)
+        click(f'div "Signed in as {PAUSED_TEXT}"', interactive=False)
+        rec.handle_command({"cmd": "resume"})
+        click('a "Open the set"', interactive=True)
+        click('div "Console"', interactive=False)
+        status = rec.status()
+        rec.handle_command({"cmd": "stop"})
+        clicks = [e for e in rec.events if e["type"] == "click"]
+        assert [sorted(c) for c in clicks[:2]] == [
+            ["paused", "seq", "t", "type"],
+            ["off_target", "paused", "seq", "t", "type"],
+        ]
+        assert clicks[2]["target"] == 'a "Open the set"' and clicks[2]["x"] == 440
+        assert "off_target" not in clicks[2] and clicks[3]["off_target"] is True
+        assert status["clicks"] == 4 and status["clicks_off_target"] == 2
+        written = [p.read_text() for p in session_dir.iterdir() if p.is_file()]
+        assert written and not [text for text in written if PAUSED_TEXT in text]
+
+    def test_a_paused_click_is_not_rendered_when_the_daemon_dies_paused(self, tmp_path):
+        rec, session_dir, _ = _recorder(tmp_path)
+        rec.begin()
+        rec.handle_command({"cmd": "pause"})
+        clicker(rec)('button "Sign in"', interactive=True)
+        timeline = recorder_cli.finalize_from_disk(session_dir)
+        events = [render.Event.from_record(e) for e in timeline["events"]]
+        last_click = [e for e in events if e.type == "click"][-1]
+        windows = render.pause_intervals(events)
+        assert windows and not [w for w in windows if w[0] <= last_click.t < w[1]]
+        kept, _, _ = render.apply_pauses(events, [])
+        assert [e for e in kept if e.type == "click"] == []
 
     def test_visibility_changes_are_recorded(self, tmp_path):
         rec, _, _ = _recorder(tmp_path)

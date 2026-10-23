@@ -335,7 +335,9 @@ class TestTheForwardDirectionStaysInScope:
         monkeypatch.setattr(
             index,
             "reprocess_document",
-            lambda key, version=None, revision=None: calls.append((key, version)),
+            lambda key, version=None, revision=None, **_kwargs: calls.append(
+                (key, version)
+            ),
         )
         return calls
 
@@ -420,3 +422,351 @@ class TestTheLookupIsTheSharedOne:
 
         with pytest.raises(config_scope.ScopeLookupError):
             index._get_user_allowed_config_versions("author@example.com")
+
+
+@pytest.mark.unit
+class TestConfigPrefixMappingsOnReprocess:
+    """Moving a mapping and reprocessing is how a backlog is re-run under a new
+    profile — but the mapping must never override the scope pin.
+
+    That ordering is the easy thing to get backwards: the pin exists for exactly the
+    case "no explicit profile was requested", which is also the case a mapping wants
+    to fill. Consulting the mapping first would let a reprocess move a scoped
+    caller's own document out of their scope, reintroducing the bug this module's
+    header documents through a feature that looks unrelated to it.
+    """
+
+    def _queued(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            index,
+            "reprocess_document",
+            lambda key, version=None, revision=None, **kwargs: calls.append(
+                (key, version, kwargs.get("config_source"))
+            ),
+        )
+        return calls
+
+    def _mappings(self, monkeypatch, *entries):
+        monkeypatch.setattr(index, "_prefix_mappings", lambda: list(entries))
+
+    def test_an_unscoped_caller_picks_up_the_mapping(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "mapped-profile"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", "mapped-profile", "prefix-mapping")]
+
+    def test_the_scope_pin_beats_the_mapping(
+        self, users_table, document_version, monkeypatch
+    ):
+        """The control this feature must not weaken."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "somewhere-else"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", "tenant-a", "document-pin")]
+
+    def test_a_mapping_wins_over_an_explicit_reprocess_request(
+        self, users_table, document_version, monkeypatch
+    ):
+        """The hole this closes: `mapping` precedence must not mean "the mapping
+        wins, except on reprocess".
+
+        An explicit request used to be returned before mappings were consulted at
+        all, so an operator could defeat an administrator's routing policy by
+        uploading, letting the mapping override them, and then reprocessing with
+        the profile they wanted. A reprocess request is the same kind of claim as a
+        profile named in upload metadata, so the same conflict mode adjudicates it.
+        """
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "mapping",
+            },
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == [("acme/statement.pdf", "mapped-profile", "prefix-mapping")]
+
+    def test_a_deferring_mapping_still_honours_an_explicit_request(
+        self, users_table, document_version, monkeypatch
+    ):
+        """`metadata` precedence defers, so the request stands -- which is what
+        makes the fix above an application of the administrator's rule rather than
+        a blanket override of the caller."""
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "metadata",
+            },
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == [("acme/statement.pdf", "chosen", "explicit-request")]
+
+    def test_a_refusing_mapping_refuses_the_reprocess(
+        self, users_table, document_version, monkeypatch
+    ):
+        """`reject` must not mean "refuse the upload, then accept the same conflict
+        on a re-run". Nothing is queued."""
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "reject",
+            },
+        )
+        calls = self._queued(monkeypatch)
+
+        # The message must describe a REPROCESS, not upload metadata: the
+        # conflicting profile came from this request, not from the object, and the
+        # resolver's own reason says otherwise because it is written for ingest.
+        with pytest.raises(ValueError, match="Refused") as excinfo:
+            index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == []
+        message = str(excinfo.value)
+        assert "acme/" in message, "the refusal must name the mapping to edit"
+        assert "upload metadata" not in message
+        assert "Reprocess without naming a profile" in message
+
+    def _metrics(self, monkeypatch):
+        """Every metric datum this resolver publishes, as (name, dimensions)."""
+        published = []
+
+        class Recorder:
+            def put_metric_data(self, **kwargs):
+                for datum in kwargs.get("MetricData", []):
+                    dims = {
+                        d["Name"]: d["Value"] for d in datum.get("Dimensions", [])
+                    }
+                    published.append((datum["MetricName"], dims))
+
+        monkeypatch.setattr(index, "cloudwatch", Recorder())
+        return published
+
+    def test_agreement_on_reprocess_is_not_published_as_a_conflict(
+        self, users_table, document_version, monkeypatch
+    ):
+        """Naming the profile the mapping already assigns is agreement.
+
+        The resolver treats it as agreement deliberately -- that is what stops
+        `reject` failing correctly-named requests -- so publishing
+        `PrefixMappingConflict` for it would make the conflict metric fire on the
+        harmless case and misreport how often the two actually disagree.
+        """
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "mapping",
+            },
+        )
+        self._queued(monkeypatch)
+        published = self._metrics(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="mapped-profile"), None)
+
+        names = [name for name, _ in published]
+        assert "PrefixMappingApplied" in names
+        assert "PrefixMappingConflict" not in names, (
+            "the request named the profile the mapping assigns, which is agreement "
+            f"rather than a conflict; published {names}"
+        )
+
+    def test_applied_means_matched_here_as_it_does_at_ingest(
+        self, users_table, document_version, monkeypatch
+    ):
+        """One metric, one meaning across both emitters.
+
+        `queue_sender` publishes `Applied` whenever a mapping MATCHED the key,
+        whoever won the precedence contest, and the CHANGELOG states that as the
+        definition. Both emitters feed one dashboard SEARCH expression, so a
+        narrower meaning here would make a `metadata`-precedence prefix show ingest
+        hits and no reprocess hits -- read as "unused on reprocess" rather than as
+        two definitions of one name.
+        """
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                # The mapping DEFERS, so it loses -- and must still count as
+                # matched.
+                "metadataPrecedence": "metadata",
+            },
+        )
+        self._queued(monkeypatch)
+        published = self._metrics(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        applied = [dims for name, dims in published if name == "PrefixMappingApplied"]
+        assert applied == [{"Prefix": "acme/"}], (
+            "a mapping that matched but lost must still publish Applied, with the "
+            f"prefix dimension the dashboard filters on; published {published}"
+        )
+        # And this one IS a conflict, with the winner recorded.
+        assert ("PrefixMappingConflict", {"Winner": "metadata"}) in published
+
+    def test_a_refused_reprocess_publishes_rejected(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "reject",
+            },
+        )
+        self._queued(monkeypatch)
+        published = self._metrics(monkeypatch)
+
+        with pytest.raises(ValueError):
+            index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert "PrefixMappingRejected" in [name for name, _ in published]
+
+    def test_an_explicit_request_stands_where_no_mapping_governs_the_key(
+        self, users_table, document_version, monkeypatch
+    ):
+        """The common case, unchanged: with no mapping over the prefix the request
+        is honoured exactly as before."""
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "elsewhere/", "configProfile": "mapped-profile"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == [("acme/statement.pdf", "chosen", "explicit-request")]
+
+    def test_a_mapping_outside_a_callers_scope_is_not_applied(
+        self, users_table, document_version, monkeypatch
+    ):
+        """Belt and braces: the pin above already covers a scoped caller, but the
+        resolved profile is scope-checked too so the rule holds if that ever stops
+        producing a pin."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        monkeypatch.setattr(index, "_document_config_version", lambda _key: None)
+        monkeypatch.setattr(
+            index,
+            "_enforce_document_scope",
+            lambda allowed, keys: {},
+        )
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "finance-prod"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        # No profile pinned -- but `active-profile` as the SOURCE, not an empty
+        # one: a blank ConfigSource cannot be told apart from a document written
+        # before the field existed. The scope denial is recorded in the log and
+        # deliberately NOT in the source, because the source travels onto the
+        # document and a value meaning "a mapping was refused here" would tell a
+        # scoped user that a mapping governs a prefix they cannot see.
+        assert calls == [("acme/statement.pdf", None, "active-profile")]
+
+    def test_no_mapping_leaves_the_reprocess_unpinned_as_before(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(monkeypatch)
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        # Unpinned, as before mappings existed -- but the provenance is recorded.
+        # This is the ordinary case, so an empty source here would leave the
+        # commonest reprocess unable to answer the question ConfigSource exists for.
+        assert calls == [("acme/statement.pdf", None, "active-profile")]
+
+    def test_an_unreadable_mapping_table_does_not_refuse_the_reprocess(
+        self, monkeypatch
+    ):
+        """Fails open, like queue_sender: reprocessing under the active profile is a
+        far better outcome than refusing because a ROUTING table was unreadable."""
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "some-table")
+
+        class Boom:
+            def Table(self, _name):
+                raise RuntimeError("throttled")
+
+        monkeypatch.setattr(index, "_dynamodb", Boom())
+        assert index._prefix_mappings() == []
+
+    def test_no_configuration_table_wired_is_not_an_error(self, monkeypatch):
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
+        assert index._prefix_mappings() == []
+
+    def test_the_configuration_manager_is_built_once_per_container(
+        self, monkeypatch
+    ):
+        """Memoized like the two sibling paths, and keyed on the table name.
+
+        The key matters as much as the cache: a changed environment must not be
+        served a client pointed at the previous deployment's table, which is a
+        silent wrong-answer rather than a latency cost.
+        """
+        index._CONFIG_MANAGERS.clear()
+        built = []
+
+        class FakeManager:
+            def __init__(self, table_name=None):
+                built.append(table_name)
+
+        monkeypatch.setattr(index, "ConfigurationManager", FakeManager)
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "table-a")
+
+        first = index._configuration_manager()
+        second = index._configuration_manager()
+        assert first is second
+        assert built == ["table-a"]
+
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "table-b")
+        third = index._configuration_manager()
+        assert third is not first
+        assert built == ["table-a", "table-b"]
+
+        index._CONFIG_MANAGERS.clear()

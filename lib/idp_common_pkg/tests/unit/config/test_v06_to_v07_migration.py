@@ -363,13 +363,17 @@ class TestNewerStampIsNotDowngraded:
         assert out["config_format_version"] == "0.9"
 
     def test_older_stamp_is_still_advanced(self):
+        # CONFIG_FORMAT_VERSION, not this step's TARGET_VERSION: these drive the
+        # WHOLE chain, so the stamp they should see is its end state. Asserting
+        # one step's target here made the test fail on the next hop being added
+        # rather than on anything being wrong.
         for stamp in ("0.5", "0.6"):
             out = migrate_config({"config_format_version": stamp})
-            assert out["config_format_version"] == TARGET_VERSION, stamp
+            assert out["config_format_version"] == CONFIG_FORMAT_VERSION, stamp
 
     def test_absent_stamp_is_still_advanced(self):
         out = migrate_config({"extraction": {"mode": "simple"}})
-        assert out["config_format_version"] == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
 
     def test_two_digit_minor_is_ordered_numerically_not_lexically(self):
         """'0.10' > '0.7' numerically but '0.10' < '0.7' as strings.
@@ -381,7 +385,7 @@ class TestNewerStampIsNotDowngraded:
 
     def test_unparseable_stamp_is_treated_as_predating_versioning(self):
         out = migrate_config({"config_format_version": "not-a-version"})
-        assert out["config_format_version"] == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
 
 
 class TestVersionComparatorIsShared:
@@ -458,7 +462,7 @@ class TestFloatStampIsNotGuessedAt:
 
     def test_a_float_stamped_config_is_normalized_to_a_string(self):
         out = migrate_config({"config_format_version": 0.10})
-        assert out["config_format_version"] == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
         assert isinstance(out["config_format_version"], str)
 
     def test_ten_is_ordered_above_seven_when_quoted(self):

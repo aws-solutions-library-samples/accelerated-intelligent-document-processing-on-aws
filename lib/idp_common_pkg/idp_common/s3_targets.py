@@ -40,6 +40,32 @@ import os
 import re
 from typing import Iterable, Mapping, Optional, Set
 
+
+class ResourceAccessDenied(PermissionError):
+    """A refusal by a per-object control rather than by the caller's group.
+
+    Declared here rather than imported from :mod:`idp_common.api_adapter`, which
+    holds the canonical class, and the reason is this module's vendoring: it is
+    copied **byte-identically** into resolver packages that carry no ``idp_common``
+    layer (``scripts/tests/test_s3_targets_vendored.py`` enforces the copy is
+    identical), so an import that resolves inside the package would fail inside the
+    copy, and a conditional import would make the two declarations differ.
+
+    Declaring it twice is sound rather than merely tolerable, because the consumer
+    is across a process boundary: the dispatcher recognises this refusal by its
+    class **NAME**, since a resolver reached through ``lambda:Invoke`` surfaces its
+    exception as the ``errorType`` string and the class object never crosses that
+    boundary. ``ResourceNotFound`` and ``AuthorizationError`` are already declared
+    this way elsewhere in the tree for the same reason.
+
+    It must stay a ``PermissionError`` subclass and its messages must keep the
+    ``Unauthorized`` prefix — those are what map the refusal to 403 rather than 500
+    on the two in-process mappings and on a dispatcher that predates the class. See
+    :class:`idp_common.api_adapter.ResourceAccessDenied` for what the label means
+    and why an unattributed refusal is read strictly.
+    """
+
+
 # Environment variables that name a bucket this deployment owns. A name that is
 # unset simply contributes nothing — the set is the intersection of what the code
 # knows about and what the template wired.
@@ -81,14 +107,32 @@ def assert_bucket_allowed(
 ) -> None:
     """Refuse ``bucket`` unless it is one this deployment owns.
 
-    Raises ``PermissionError``, which ``http_api_dispatcher`` maps to **HTTP 403**
-    with ``errorType: "Unauthorized"`` — the marker the UI keys on. It must be
+    Raises a ``PermissionError``, which ``http_api_dispatcher`` maps to **HTTP 403**
+    with ``errorType: "Unauthorized"`` — the marker the UI keys on. It must be a
     ``PermissionError`` and its message must keep the ``Unauthorized`` prefix: the
     dispatcher chooses a status from the exception's class name, falling back to an
     anchored message prefix, and a refusal that loses both arrives as a 500. Neither
     message names the bucket, the allow-list, or whether the bucket exists, so
     fixing a status code does not build an enumeration oracle; the allow-list goes to
     the log for whoever triages the 403.
+
+    ⚠️ The two refusals are deliberately **different classes**, and the split is
+    "is this a decision about the object the caller named?":
+
+    * a bucket outside the allow-list is a **per-object** refusal — the caller's
+      groups were fine and this bucket is not theirs to reach — so it raises
+      :class:`~idp_common.api_adapter.ResourceAccessDenied`, which the dispatcher
+      labels ``authzControl: "resource"``. That label is what lets the live RBAC
+      matrix tell this apart from a group refusal instead of reporting the
+      allow-list working as a group-check failure (issue #1308);
+    * an **empty** allow-list is a deployment fault rather than a decision about
+      anything the caller sent, so it stays a bare ``PermissionError``. The
+      dispatcher cannot attribute that, labels it ``"resolver"``, and every
+      consumer reads an unattributed refusal as the strict verdict — which is the
+      right outcome for a template fault: it stays visible.
+
+    Both are 403 with ``errorType: "Unauthorized"`` and the messages are unchanged,
+    so nothing a client sees differs.
     """
     if not allowed:
         if logger is not None:
@@ -110,7 +154,7 @@ def assert_bucket_allowed(
                 bucket,
                 sorted(allowed),
             )
-        raise PermissionError(
+        raise ResourceAccessDenied(
             "Unauthorized: requested bucket is not accessible from this deployment."
         )
 
@@ -215,7 +259,11 @@ def assert_key_writable(key: str, *, logger=None) -> None:
         return
     if logger is not None:
         logger.warning("Rejecting upload to a write-once key (%s): %r", what, value)
-    raise PermissionError(
+    # Per-object, by the same rule as the allow-list refusal above: the decision is
+    # about the key the caller named, not about their groups. The refusal one line
+    # up — "an upload must name a single object" — is argument shape rather than a
+    # decision about an object, so it keeps the unattributed class.
+    raise ResourceAccessDenied(
         "Unauthorized: that location is reserved and cannot be written to."
     )
 

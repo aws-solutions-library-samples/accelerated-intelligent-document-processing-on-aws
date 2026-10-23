@@ -62,6 +62,7 @@ from idp_common.timeout_budget import (
 )
 from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
+    is_max_tokens_agent_error,
 )
 from idp_common.utils.strands_agent_tools.todo_list import (
     create_todo_list,
@@ -1742,6 +1743,81 @@ def _prepare_prompt_content(
     return prompt_content
 
 
+class TruncatedAgentRun:
+    """Stand-in for the ``AgentResult`` a truncation-killed agent loop never returns.
+
+    Strands raises ``MaxTokensReachedException`` out of the event loop instead of
+    returning, so there is no ``AgentResult`` — but the tool calls that already
+    succeeded DID happen, and their result is sitting in ``agent.state``. When that
+    state holds an extraction the class model validates,
+    :func:`_invoke_agent_for_extraction` returns it with this object standing in for
+    the response, so the shard keeps its data instead of failing the whole section
+    (GitHub issue #1363).
+
+    It carries ``metrics`` straight off the agent — ``Agent.event_loop_metrics`` is
+    the same ``EventLoopMetrics`` instance ``AgentResult.metrics`` would have pointed
+    at — so the tokens the run really spent are still metered. Duck-typed rather than
+    a subclass of ``AgentResult``, whose required fields (``stop_reason``,
+    ``message``) would have to be invented.
+    """
+
+    def __init__(self, agent: Any, reason: str) -> None:
+        self.metrics = getattr(agent, "event_loop_metrics", None)
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return self.reason
+
+
+def _salvage_truncated_extraction(
+    agent: Agent,
+    data_format: type[TargetModel],
+    error: Exception,
+    model_id: str | None,
+) -> tuple[TruncatedAgentRun, TargetModel] | None:
+    """Recover a validated extraction from a truncation-killed agent loop, or None.
+
+    Returns ``None`` when ``agent.state`` holds nothing the class model accepts —
+    there is then no extraction to keep and the caller re-raises, which is the old
+    behaviour. It deliberately does NOT re-run the agent or synthesise an empty
+    result: an empty object validates for a class whose every leaf is nullable, and
+    "the document completed with no fields" is worse than a failed section.
+    """
+    try:
+        current = agent.state.get("current_extraction")
+    except Exception:  # noqa: BLE001 - a state object that cannot be read
+        current = None
+    if not current:
+        return None
+    try:
+        result = data_format(**current)
+    except Exception as validation_error:  # noqa: BLE001
+        logger.error(
+            "Agent run hit the model's max output tokens and the extraction in its "
+            "state does not validate, so there is nothing to keep: %s",
+            validation_error,
+            extra={"model_id": model_id, "data_format": data_format.__name__},
+        )
+        return None
+    reason = (
+        "The agent's output was cut off at the model's max output tokens; the "
+        "extraction it had already committed was kept."
+    )
+    logger.error(
+        "Agent run hit the model's max output tokens (%s). The extraction already "
+        "committed to agent state VALIDATES, so it is kept and the section "
+        "continues; per-field confidence from this run may be missing or partial. "
+        "This is reported as an extraction_output_truncated issue. Reduce the rows "
+        "one shard is asked for (extraction.agentic.max_pages_per_shard) or, with "
+        "extraction.confidence.mode: integrated, score confidence in a separate "
+        "pass. (underlying error: %s)",
+        model_id,
+        error,
+        extra={"model_id": model_id, "data_format": data_format.__name__},
+    )
+    return TruncatedAgentRun(agent, reason), result
+
+
 async def _invoke_agent_for_extraction(
     agent: Agent,
     prompt_content: list[ContentBlock],
@@ -1802,10 +1878,29 @@ async def _invoke_agent_for_extraction(
                     "(requires Textract TABLES so OCR emits Markdown tables); "
                     "reduce attached page images; or use a larger-context model "
                     "(a ':1m' Claude variant, or one whose default window is "
-                    "already 1M such as Claude Haiku 5.5 — which has no ':1m' id "
-                    "precisely because it needs none). "
+                    "already 1M such as Claude Sonnet 5.5 or Claude Haiku 5.5 — "
+                    "neither has a ':1m' id, precisely because neither needs one). "
                     f"(underlying error: {e})"
                 ) from e
+            if is_max_tokens_agent_error(e):
+                # #1363. Strands raises out of the event loop on a `max_tokens`
+                # stop, so the loop below — which reads the extraction out of
+                # agent.state — is never reached, and a shard that had ALREADY
+                # extracted and validated its rows failed anyway. With
+                # extraction.confidence.mode: integrated that is the ordinary
+                # outcome rather than an edge case: the agent emits the whole
+                # shard's per-row confidence in ONE provide_field_assessment call,
+                # with no budget check of any kind (the separate pass caps a
+                # confidence call at extraction.confidence.list_batch_size rows,
+                # 25 by default, and at 50 in the auto-sizer), so on a row-heavy
+                # shard the turn that overruns is the one AFTER the data is safe.
+                # One shard failing fails the section, and the Distributed Map
+                # tolerates no shard failure, so the document failed.
+                salvaged = _salvage_truncated_extraction(
+                    agent, data_format, e, model_id
+                )
+                if salvaged is not None:
+                    return salvaged
             raise
         logger.debug("Agent response received")
 
@@ -2142,7 +2237,7 @@ async def structured_output_async(
       descriptions into the agent's understanding.
 
     Args:
-        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-5")
         data_format: Pydantic model class defining the expected structure
         prompt: Input content (text, image, or content blocks)
         enable_image_tools: Whether to enable image enhancement tools (default: True)
@@ -2183,7 +2278,7 @@ async def structured_output_async(
 
         # Recommended usage with custom instructions for extraction guidance
         result, response = await structured_output_async(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=InvoiceModel,
             prompt=image_content,
             custom_instruction="Focus on line items in the main table. Ignore header/footer text."
@@ -2194,7 +2289,7 @@ async def structured_output_async(
 
         # Discouraged - only use if default system prompt is completely unsuitable
         result, response = await structured_output_async(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=CustomModel,
             prompt=content,
             system_prompt="Your completely custom system prompt here..."
@@ -2482,6 +2577,19 @@ async def structured_output_async(
             )
         }
 
+        # The run was cut off at the model's output ceiling and this extraction was
+        # salvaged from agent state (#1363). Rides in metering — like
+        # ``_integrated_field_assessment`` and ``_shard_scalar_conflicts`` — because
+        # that is the one part of a shard's result that is persisted to S3 and merged,
+        # so the marker survives both the in-process and the Step Functions path. It
+        # is popped in ``_save_results``, which turns it into
+        # ``metadata["output_truncated"]`` and so into an
+        # ``extraction_output_truncated`` processing issue. Without that the salvage
+        # would turn a loud failure into a quiet partial, which is the worse
+        # direction.
+        if isinstance(response, TruncatedAgentRun):
+            metering_dict["_output_truncated"] = True
+
         # Include table parsing stats if tool was used
         tool_stats = agent.state.get("table_parsing_stats")
         if tool_stats:
@@ -2567,7 +2675,7 @@ def structured_output(
       while allowing for domain-specific customizations.
 
     Args:
-        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-5")
         data_format: Pydantic model class defining the expected structure
         prompt: Input content (text, image, or content blocks)
         existing_data: Optional existing data to update via patches
@@ -2588,7 +2696,7 @@ def structured_output(
 
         # Recommended usage with custom instructions for extraction guidance
         result, response = structured_output(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=InvoiceModel,
             prompt=image_content,
             custom_instruction="Focus on line items in the main table. Ignore header/footer text."
@@ -2599,7 +2707,7 @@ def structured_output(
 
         # Discouraged - only use if default system prompt is completely unsuitable
         result, response = structured_output(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=CustomModel,
             prompt=content,
             system_prompt="Your completely custom system prompt here..."
@@ -2714,7 +2822,7 @@ if __name__ == "__main__":
 
     async def async_main():
         result, _ = await structured_output_async(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=DocumentFormat,
             prompt=Message(
                 role="user",

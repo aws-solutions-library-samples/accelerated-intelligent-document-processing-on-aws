@@ -188,7 +188,102 @@ ENFORCE_PATTERNS = (
     "_ADMIN_GROUP",
 )
 # Patterns indicating row-level / ownership scoping (for ANY-auth ops).
+#
+# ⚠️ These name the SUBJECT of an ownership check, not the check. Every resolver
+# that handles a per-user object mentions several of them in passing — resolving
+# the caller from `identity`, logging `(user: {user_id})`, naming a `session` —
+# so a file can match all six while scoping nothing. A substring hit here is
+# therefore necessary and NOT sufficient, and `OWNERSHIP_REFUSAL_PATTERNS` below
+# is the second half.
 OWNERSHIP_PATTERNS = ("owner", "user_id", "userId", "sub", "session", "caller")
+# An ownership check that cannot REFUSE is not a check.
+#
+# This is the half that makes `ownership: true` mean something. A declaration
+# says the resolver scopes an object to its owner, and the only observable form
+# of that is a refusal on the not-the-owner branch: raise, or return a denial
+# the dispatcher maps to 403. A file naming `user_id` with no refusal anywhere
+# has resolved the caller and then not used the answer.
+#
+# Deliberately a disjunction of raise-shapes rather than an AST walk over the
+# destructive statement: the latter is the stronger check and needs to know
+# which call is destructive per resolver, which is a per-operation judgement the
+# scanner does not hold. What this catches is the whole class where no refusal
+# exists at all — which is the shape that reaches production, because a resolver
+# with a refusal on the wrong branch at least fails the live matrix.
+OWNERSHIP_REFUSAL_PATTERNS = (
+    "ResourceAccessDenied",
+    "PermissionError",
+    # `raise Unauthorized` and `errorType": "Unauthorized"` were here and are
+    # deleted: `test_ownership_refusal_vocabulary.py` measured that neither
+    # matches any ownership-declaring resolver in the tree. An unmatched pattern
+    # is not inert — it silently admits the next file that happens to contain the
+    # string — so this list holds only spellings that do work today.
+    "Unauthorized:",
+    # The scope mechanism is a refusal too, and spells itself differently. The
+    # document-chat processor denies a turn by raising `ScopeLookupError` or by
+    # `scope_allows` answering no — fail-closed, with no `Unauthorized` string
+    # anywhere in the file. Listing only the 403 vocabulary reported it as having
+    # no refusal, which was a false positive of this list rather than a gap.
+    #
+    # `return False` is deliberately NOT here. It is the weakest candidate
+    # available, it appears in almost every resolver for reasons unrelated to
+    # authorization, and admitting it would make this arm satisfiable by any file.
+    "ScopeLookupError",
+    "scope_allows",
+)
+# A resolver whose EVERY data access is keyed by the caller needs no refusal: a
+# query it cannot aim at another user's rows returns nothing rather than denying.
+# `listChatSessions` is the shape — `KeyConditionExpression: "userId = :user_id"`.
+#
+# ⚠️ This must be judged per ACCESS, never per file, and that is the whole point.
+# A resolver can hold one caller-keyed access and one that is not: a session
+# metadata row keyed (userId, sessionId) beside a message query keyed by session
+# id alone. A file-level "contains a caller-keyed access" test passes such a file
+# and so cannot see the only arrangement that matters. So the predicate below
+# requires every key expression in the file to carry a caller term, and reports
+# the ones that do not.
+_KEY_ARG_NAMES = ("Key", "KeyConditionExpression")
+_CALLER_KEY_TERMS = ("userid", "user_id", "ownersub", "owner_sub", "caller", "sub")
+
+
+def unscoped_key_accesses(text: str) -> list[str]:
+    """Key expressions in ``text`` that name no caller term.
+
+    Empty means every data access this file makes is aimed at the caller's own
+    partition, which is a stronger guarantee than a refusal and needs none. A
+    non-empty result names the accesses a refusal has to cover instead.
+
+    ⚠️ Walks the syntax tree, deliberately, and a regex here was measured wrong
+    rather than merely judged risky. Anchoring on ``Key=`` or
+    ``KeyConditionExpression=`` and consuming the expression that follows needs a
+    bound, and the obvious bound — "until a blank line" — is greedy across the
+    newlines inside a multi-line call, so **one match swallows the others** and
+    ``finditer`` never sees them. On the resolver this check exists for, that
+    read 1 access where there are 3, reported the caller-keyed one, and cleared
+    the file. A key argument is a keyword in a call; ask the parser for it.
+
+    Unparseable source yields ``["<unparseable>"]`` rather than ``[]``: a file
+    this cannot read must not come back as "every access is caller-keyed".
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ["<unparseable>"]
+
+    unscoped = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg not in _KEY_ARG_NAMES:
+                continue
+            try:
+                expr = ast.unparse(kw.value)
+            except Exception:  # noqa: BLE001 - unparse is best-effort here
+                expr = "<unparseable expression>"
+            if not any(term in expr.lower() for term in _CALLER_KEY_TERMS):
+                unscoped.append(" ".join(expr.split())[:120])
+    return unscoped
 SCOPE_PATTERNS = (
     "allowedConfigVersions",
     "allowed_config_versions",
@@ -1200,6 +1295,27 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                         f"ownership scoping expected but no owner/user check in "
                         f"{o['enforced_in']}",
                     )
+                elif not any(p in text for p in OWNERSHIP_REFUSAL_PATTERNS):
+                    # Names the subject, never refuses. See the comment on
+                    # OWNERSHIP_REFUSAL_PATTERNS: this is the direction the
+                    # subject-only match cannot see, and it is the one that
+                    # reaches production, because a resolver that refuses on the
+                    # wrong branch still fails the live matrix.
+                    #
+                    # Unless every access is aimed at the caller's own partition,
+                    # in which case there is nothing to refuse — computed per
+                    # access, so a file holding one caller-keyed access beside
+                    # one that is not still reports.
+                    unscoped = unscoped_key_accesses(text)
+                    if unscoped:
+                        gap_or_fail(
+                            op, "S3",
+                            f"ownership scoping declared and the caller is "
+                            f"resolved in {o['enforced_in']}, but nothing there "
+                            f"refuses a caller who is not the owner, and "
+                            f"{len(unscoped)} data access(es) are not keyed by "
+                            f"the caller: {'; '.join(unscoped[:2])}",
+                        )
             elif not o.get("known_gap"):
                 # ANY with no ownership and no gap is fine (intentionally open),
                 # but flag if it's a mutation with no enforcement at all so a

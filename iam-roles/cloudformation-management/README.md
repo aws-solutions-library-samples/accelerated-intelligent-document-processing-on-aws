@@ -636,7 +636,11 @@ The real reason is rollback safety, and it is an admission of something unverifi
 iam:PassRole
 ```
 - **Resource**: same `<ManagedStackNamePrefix>*` role ARNs — never `*`
-- **Condition**: `StringEqualsIfExists { iam:PassedToService: [ apigateway, bedrock, bedrock-agentcore, cloudfront, cloudwatch, codebuild, cognito-identity, ec2, events, glue, lambda, logs, scheduler, states ] }`
+- **Condition**: `StringEqualsIfExists { iam:PassedToService: [ apigateway, bedrock, bedrock-agentcore, cloudformation, cloudfront, cloudwatch, codebuild, cognito-identity, ec2, events, glue, lambda, logs, malware-protection-plan.guardduty, scheduler, states ] }`
+
+⚠️ **This list is load-bearing in the direction that is easy to miss.** Every other control here asks whether the role is *too broad*; a missing entry makes it too **narrow**, and the symptom is not a permissions warning but a stack that rolls back mid-deploy with `no identity-based policy allows the iam:PassRole action`. It has happened twice: `cloudformation` (a nested stack inherits this role, so CloudFormation passes it to itself) and `malware-protection-plan.guardduty` (`AWS::GuardDuty::MalwareProtectionPlan` passes `MalwareScanRole`). Both took the whole deploy down.
+
+Spell the principal exactly as the passed role's trust policy spells it. GuardDuty's malware plan trusts `malware-protection-plan.guardduty.amazonaws.com`, **not** `guardduty.amazonaws.com`, so the shorter parent name reads as correct in review and still denies. `scripts/sdlc/tests/test_service_role_can_deploy_nested_stacks.py` now derives the required set from the trust policy of every role the solution templates pass, so a new resource that passes a role fails there rather than at deploy time.
 
 **One statement with `StringEqualsIfExists`, not two.** Not every service populates `iam:PassedToService`, and a plain `StringEquals` would give `AccessDenied` on the pass for any service that omits it — and would wedge the rollback too. This used to be two statements: a plain `StringEquals` on the list, plus a second statement whose condition was `Null { iam:PassedToService: true }` to allow the absent case. The collapse is exactly behaviour-preserving. The pair allowed "key absent" **or** "key present and in the list", and denied "key present and not in the list"; that is precisely what `StringEqualsIfExists` evaluates for a single key.
 

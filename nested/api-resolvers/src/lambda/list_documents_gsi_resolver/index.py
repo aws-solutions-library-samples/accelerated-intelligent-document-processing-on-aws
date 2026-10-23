@@ -44,6 +44,17 @@ from config_scope import (  # noqa: E402
     scope_allows,
 )
 
+# Vendored verbatim from idp_common/review_queues/statuses.py, for the same
+# reason; test_review_modules_vendored.py fails if the copies drift.
+from review_statuses import LegacyHitlStatus  # noqa: E402
+
+#: Legacy HITL statuses that make a document part of a Reviewer's working set.
+_REVIEWER_ACTIVE_STATUSES = (
+    LegacyHitlStatus.PENDING_REVIEW.value,
+    LegacyHitlStatus.IN_PROGRESS.value,
+    LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -215,9 +226,9 @@ def _reviewer_filter_expression(caller):
         owner_is_me = owner_is_me | Attr("HITLReviewOwner").eq(value)
     hitl_active = (
         Attr("HITLTriggered").eq(True) |
-        Attr("HITLStatus").eq("PendingReview") |
-        Attr("HITLStatus").eq("InProgress") |
-        Attr("HITLStatus").eq("ReviewInProgress")
+        Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[0]) |
+        Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[1]) |
+        Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[2])
     )
     return hitl_active & (
         (
@@ -230,6 +241,13 @@ def _reviewer_filter_expression(caller):
         ) |
         owner_is_me
     )
+
+
+def _list_filter(caller, reviewer_only):
+    """The server-side filter for a restricted caller, or None (unfiltered)."""
+    if reviewer_only:
+        return _reviewer_filter_expression(caller)
+    return None
 
 
 def _item_in_config_scope(item, allowed_versions):
@@ -346,9 +364,10 @@ def list_documents(event):
         query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
     
     # RBAC: Server-side filtering for Reviewer-only users
-    if reviewer_only:
-        query_kwargs["FilterExpression"] = _reviewer_filter_expression(caller)
-        logger.info(f"Applied reviewer filter for user: {caller['username']} / {caller['email']}")
+    list_filter = _list_filter(caller, reviewer_only)
+    if list_filter is not None:
+        query_kwargs["FilterExpression"] = list_filter
+        logger.info("Applied reviewer filter for the caller")
 
 
     # Handle pagination token
@@ -483,7 +502,9 @@ def get_document_count(event, context=None):
         "IndexName": TYPE_DATE_INDEX,
         # A scoped caller needs the projected ConfigVersion of each row to decide
         # whether it counts, so only an unscoped caller can use COUNT.
-        "Select": "ALL_PROJECTED_ATTRIBUTES" if allowed_versions else "COUNT",
+        "Select": "ALL_PROJECTED_ATTRIBUTES"
+        if allowed_versions
+        else "COUNT",
     }
 
     if start_dt and end_dt:
@@ -504,8 +525,9 @@ def get_document_count(event, context=None):
     else:
         query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
 
-    if reviewer_only:
-        query_kwargs["FilterExpression"] = _reviewer_filter_expression(caller)
+    list_filter = _list_filter(caller, reviewer_only)
+    if list_filter is not None:
+        query_kwargs["FilterExpression"] = list_filter
 
     logger.info(
         f"Counting documents: start={start_dt}, end={end_dt}, "
@@ -520,9 +542,10 @@ def get_document_count(event, context=None):
         response = table.query(**query_kwargs)
         pages += 1
         if allowed_versions:
+            # Same row decisions as listDocuments, so the count equals the rows.
             total_count += sum(
                 1
-                for item in (response.get("Items") or [])
+                for item in response.get("Items") or []
                 if _item_in_config_scope(item, allowed_versions)
             )
         else:

@@ -106,7 +106,8 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - **Single-class document validation** - multi-class documents are not supported
 
 **Metering Data Processing**:
-- Context-prefixed key parsing (OCR/, Classification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
+- Context-prefixed key parsing (OCR/, Classification/, Segmentation/, SectionClassification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
+- All three classification contexts are summed into the one classification figure: `Classification/` carries the Bedrock tokens under `strategy: single_pass`, and `Segmentation/` and `SectionClassification/` carry them under `strategy: two_stage` (see [Which context the tokens arrive under](#which-context-the-tokens-arrive-under))
 - Token count aggregation from inputTokens, outputTokens, and totalTokens fields
 - Request count calculation: average requests per document from metering samples
 - Page count extraction from multiple sources:
@@ -134,6 +135,49 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - Current vs. required quota comparison with utilization percentages
 - Status indicators: ✅ Sufficient, ⚠️ Increase Needed
 - Direct "Request Increase" buttons linking to AWS Service Quotas console
+
+> ⚠️ **The RPM row is approximate for the Claude Sonnet models, and reads as
+> authoritative.** AWS publishes no requests-per-minute quota for Claude Sonnet 5
+> or Claude Sonnet 5.5, so `BEDROCK_MODEL_RPM_QUOTA_CODES` records their
+> *tokens*-per-minute code for the RPM lookup. The consequence is a row that looks
+> like every other one: a six-million "RPM quota", an affirmative ✅, and a
+> "Request Increase" link that opens the TPM quota's console page. **The TPM rows
+> are exact; treat the RPM row for either Sonnet as a placeholder rather than a
+> measurement**, and read the TPM table when deciding whether to request an
+> increase.
+>
+> This does not distort the capacity figure. The request limit is the **minimum RPM
+> across every model in the TPM map**, not just the ones the plan calls, so an
+> overstated value cannot bind a minimum. (The TPM map is what decides membership:
+> the RPM lookup is built from its key set — `generate_rpm_quota_codes(
+> tpm_model_quotas.keys())` — and `BEDROCK_MODEL_RPM_QUOTA_CODES` only supplies the
+> code for each key it finds. The two maps carry the same keys today, and a model
+> added to one and not the other is the case the checklist in
+> `.claude/skills/add-model.md` exists to prevent.)
+>
+> ⚠️ **Note that this reduction is over a wider set than the TPM one, and the
+> difference is not cosmetic.** The token limit *is* narrowed to the plan's step models, so a model
+> the pipeline never calls cannot constrain it. The request limit is not, so a
+> genuinely **low** RPM quota for a model you do not use still binds the RPM row and
+> can send you to request an increase you do not need. Check which model the row
+> names before acting on it.
+>
+> ⚠️ Separately: the quota maps cover a **subset** of the selectable models. A step
+> model with no entry in them fails Capacity Planning outright with
+> `ValueError: TPM quota not available for model <id>` rather than omitting a row,
+> and the message names the variable to add it to.
+>
+> ⚠️ **The reverse also holds, and it is not scoped to one row: a quota code that
+> does not resolve in the stack's Region fails the whole Capacity Planning
+> response.** Every entry in both maps is fetched with `get_service_quota`, and a
+> non-throttling error is re-raised rather than skipped — so one bad code takes out
+> the report for every model, not just its own. Add a code only after confirming it
+> resolves in the Regions you deploy to, with the `aws service-quotas
+> list-service-quotas --service-code bedrock` query in
+> `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
+> `BEDROCK_MODEL_RPM_QUOTA_CODES` in `template.yaml` are the authority for which
+> models are covered — read them rather than a list here, which would go stale on
+> the next model addition.
 
 **Latency Bar Color Coding**:
 - **Green** (P50, P75): When all model quotas are within limits
@@ -247,6 +291,30 @@ Navigate to the Web UI and select the "Capacity Planning" section:
   }
 }
 ```
+
+#### Which context the tokens arrive under
+
+Classification is metered under a context named after the **stage**, not after
+the step, and `classification.strategy` decides which stages run. The split is
+not the same for Bedrock spend and for Lambda invocations, which is the part
+worth reading before you write a report that filters on a prefix:
+
+| Strategy | Bedrock token keys | Lambda keys |
+|---|---|---|
+| `single_pass` | `Classification/bedrock/<model>` | `Classification/lambda/requests`, `Classification/lambda/duration` |
+| `two_stage` | `Segmentation/bedrock/<model>` and `SectionClassification/bedrock/<model>` — **no** `Classification/bedrock/*` key at all | `Classification/lambda/requests`, `Classification/lambda/duration` |
+
+The Lambda keys stay under `Classification/` either way because one Lambda
+function runs both stages, and its invocation is metered under the step's name.
+So a report that filters on the `Classification/` prefix alone finds the Lambda
+cost of a two-stage run and none of its Bedrock cost, and reads as a
+classification step that invoked the model zero times. Sum all three prefixes,
+as Capacity Planning does.
+
+A two-stage run under a declared file shape
+(`classification.file_shape.sectionSplitting` of `disabled` or `page`) emits no
+`Segmentation/` keys at all, because the boundaries are asserted rather than
+detected and the segmentation call never runs.
 
 **Page Count Extraction Priority**:
 1. OCR Bedrock requests count (`metrics.requests`)

@@ -30,7 +30,7 @@ axes:
       extraction.coercion.enabled: true
       extraction.validation.enabled: true
       extraction.validation.fail_action: escalate
-  # classification.sectionSplitting. The ONE genuine cost increase that shipped
+  # classification.file_shape.sectionSplitting. The ONE genuine cost increase that shipped
   # on-by-default in v0.7: fixing #686 made `llm_determined` (the default) perform
   # real boundary detection for SINGLE-CLASS configs, which previously
   # short-circuited to one all-pages section with zero inference. So a multi-page
@@ -40,9 +40,9 @@ axes:
   # (bank_statement is one) and a MULTI-PAGE document — a single-page document has
   # nothing to split, so the call is skipped either way.
   section_splitting:
-    disabled:       {classification.sectionSplitting: disabled}
-    page:           {classification.sectionSplitting: page}
-    llm_determined: {classification.sectionSplitting: llm_determined}
+    disabled:       {classification.file_shape.sectionSplitting: disabled}
+    page:           {classification.file_shape.sectionSplitting: page}
+    llm_determined: {classification.file_shape.sectionSplitting: llm_determined}
   # x-aws-idp-multi-instance on the document class (#715). Replaces the class's
   # EFFECTIVE schema with an instances[] List-of-Class wrapper, so a section that
   # holds several documents of the class extracts every one of them instead of
@@ -103,7 +103,7 @@ axes:
   ocr_dpi:
     '150': {ocr.image.dpi: 150}
     '300': {ocr.image.dpi: 300}
-  # classification.confidence.mode (#731/#673). Turned ON by default (`topk`) in
+  # classification.one_stage.llm.confidence.mode (#731/#673). Turned ON by default (`topk`) in
   # v0.7, so every existing deployment starts paying per-page classification
   # output tokens on upgrade — this axis is how that cost gets measured.
   #
@@ -114,9 +114,9 @@ axes:
   # measured +0.00 on all three shapes with `topk` on, having measured a real
   # deficit before #731 landed. Hold it `off` to isolate a prompt change.
   class_confidence:
-    topk: {classification.confidence.mode: topk}
-    'off': {classification.confidence.mode: "off"}
-  # classification.task_prompt, frozen at two points in history. This is the ONLY
+    topk: {classification.one_stage.llm.confidence.mode: topk}
+    'off': {classification.one_stage.llm.confidence.mode: "off"}
+  # classification.one_stage.page.task_prompt, frozen at two points in history. This is the ONLY
   # axis whose value is a whole prompt rather than a scalar, so it uses the
   # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
   # benchmarks/matrices/prompts/.
@@ -138,11 +138,11 @@ axes:
   boundary_prompt:
     current: {}          # whatever the shipped system default is (the fix)
     legacy:
-      classification.task_prompt: "@file:classification_task_prompt_pre653.txt"
+      classification.one_stage.page.task_prompt: "@file:classification_task_prompt_pre653.txt"
     # The v0.6.7 shipped prompt (#653 rules, before the #726 TABLE CONTINUATION rule):
     # the same-stack control for the #726 A/B.
     v067:
-      classification.task_prompt: "@file:classification_task_prompt_v067.txt"
+      classification.one_stage.page.task_prompt: "@file:classification_task_prompt_v067.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -249,6 +249,30 @@ axes:
     # its cost against nova_lite with that in mind, and read the note on its
     # model_config_limits.yaml entry before publishing a cost claim.
     haiku55:      {extraction.model: us.anthropic.claude-haiku-5-5}
+    # Claude Sonnet 5.5 — selectable for every model-taking service since v0.6.12 and
+    # in no axis before this one, so no published figure of any kind covered it. Three
+    # things make its arm read differently from Sonnet 5's, and none is a harness bug:
+    #
+    # 1. It REJECTS a forced toolChoice, so Schema Enforcement falls back to the prose
+    #    schema and the run records metadata.forced_tool.skipped. An `enforcement` or
+    #    `forcing` cell on this model therefore measures the PROSE path whatever the
+    #    knob says — read forced_tool_honored_rate before comparing it to any other
+    #    model's forcing arm.
+    # 2. It rejects temperature/top_p/top_k outright (400). The accelerator strips them
+    #    for this model id, so this is invisible at the harness level, but a cell that
+    #    reaches Bedrock by any other route will fail rather than degrade.
+    # 3. 1M is its DEFAULT window with no `:1m` id, which makes the derived agentic
+    #    shard budget 578,400 tokens against Sonnet 5's 18,400. Wide shards defeat
+    #    prompt caching, so its cost per document is NOT comparable with Sonnet 5's on
+    #    the agentic path unless extraction.agentic.shard_token_budget is pinned — the
+    #    same hazard the haiku55 note above describes, arriving by a different route.
+    #
+    # Per-token input and output prices are IDENTICAL to Sonnet 5's ($2.20/$11.00 per
+    # MTok); only cache reads differ ($0.11 vs $0.22). ⚠️ A cost report will nonetheless
+    # show it ~33% cheaper, because the Sonnet 5 rows in pricing.yaml carry Sonnet 4.6's
+    # rates by a separately-tracked decision. Do NOT publish a 5.5-vs-5 cost ratio from
+    # this arm: compare the two from the AWS price list.
+    sonnet55:     {extraction.model: us.anthropic.claude-sonnet-5-5}
   # extraction.agentic.max_pages_per_shard — the lever that decides whether a big
   # context window is reachable at all on the AGENTIC path.
   #
@@ -273,23 +297,23 @@ axes:
   lazy_images:
     'on':  {extraction.agentic.table_parsing.lazy_images: true}
     'off': {extraction.agentic.table_parsing.lazy_images: false}
-  # classification.model. Added for #653: that bug was reported on Sonnet 5 and
+  # classification.one_stage.llm.model. Added for #653: that bug was reported on Sonnet 5 and
   # the workaround was pinning classification to Sonnet 4.5, so a boundary-detection
   # fix has to be verified on the model it was reported against, not only on the
   # default. Sonnet 5 also REJECTS temperature/top_p/top_k (they are stripped, see
   # _CLAUDE_4_7_BASE_NAMES), so it samples where Nova receives temperature: 0 —
   # which makes it the stricter test of a prompt-only fix.
   classification_model:
-    nova_2_lite: {classification.model: us.amazon.nova-2-lite-v1:0}
-    nova_lite:   {classification.model: us.amazon.nova-lite-v1:0}
-    sonnet5:     {classification.model: us.anthropic.claude-sonnet-5}
-    sonnet46:    {classification.model: us.anthropic.claude-sonnet-4-6}
+    nova_2_lite: {classification.one_stage.llm.model: us.amazon.nova-2-lite-v1:0}
+    nova_lite:   {classification.one_stage.llm.model: us.amazon.nova-lite-v1:0}
+    sonnet5:     {classification.one_stage.llm.model: us.anthropic.claude-sonnet-5}
+    sonnet46:    {classification.one_stage.llm.model: us.anthropic.claude-sonnet-4-6}
     # Haiku 4.5 is here because #726's over-split is classification-model-dependent and
     # Sonnet 5 is an expensive way to fix it (classification is billed per PAGE, so it
     # costs a simple-mode user +45%). A prompt-level probe on the shipped boundary prompt
     # scored Haiku 9/9 on the boundary decision in 3 of 3 repeats — same as Sonnet 5 — at
     # a fifth of the price. This axis is how that gets confirmed end to end.
-    haiku45:     {classification.model: us.anthropic.claude-haiku-4-5-20251001-v1:0}
+    haiku45:     {classification.one_stage.llm.model: us.anthropic.claude-haiku-4-5-20251001-v1:0}
     # Haiku 5.5 alongside Haiku 4.5 rather than replacing it, because the pair IS the
     # measurement: classification is billed per PAGE, so the per-token rate lands
     # directly on a simple-mode user's bill, and this model is 10x cheaper per token
@@ -298,7 +322,7 @@ axes:
     # finding about where the floor is, and only a same-family pair can show it.
     # Note its images cost high-resolution tokens (~3x Haiku 4.5's), which matters
     # here more than on the extraction axis: classification can send a page image.
-    haiku55:     {classification.model: us.anthropic.claude-haiku-5-5}
+    haiku55:     {classification.one_stage.llm.model: us.anthropic.claude-haiku-5-5}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}
@@ -518,7 +542,14 @@ sweeps:
   # only be answered across a family boundary. It is also the arm a cost-sensitive
   # user now lands on by default when they ask for the cheapest Claude, so a guide
   # that omits it recommends from a price list that no longer has a floor.
-  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, opus55, astra, haiku55]
+  # sonnet55 is swept because v0.6.12 makes it selectable for every model-taking
+  # service while its own CHANGELOG entry states it is in no benchmark sweep and that
+  # no accuracy, completeness or cost figure should be quoted for it — which is a
+  # guide recommending from a price list whose newest entry is blank. Its arm needs
+  # the three caveats on its axis entry above read first: the forcing interaction and
+  # the shard-budget cost hazard both make individual columns non-comparable with
+  # Sonnet 5's even though accuracy and completeness are.
+  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, opus55, astra, haiku55, sonnet55]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
   # haiku55 is swept; haiku45 deliberately is not, which keeps this sweep the same
   # width as before plus one. The Haiku-4.5-vs-5.5 comparison this model's cost case
