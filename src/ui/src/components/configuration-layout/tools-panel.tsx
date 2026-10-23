@@ -81,7 +81,8 @@ const ToolsPanel = (): React.JSX.Element => (
         </li>
         <li>
           Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules,
-          and the <strong>Prompt Preview</strong> tab to see the exact prompts sent to the model.
+          and the <strong>Prompt Preview</strong> tab to see what each step&apos;s prompt includes, with your configuration values filled
+          in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.
         </li>
         <li>
           Edited fields show an orange dot; a per-field <strong>Restore default</strong> resets a single value. An unsaved-changes banner
