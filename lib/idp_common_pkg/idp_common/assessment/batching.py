@@ -2023,25 +2023,29 @@ def audit_explainability(
     geometry_missing = missing_geometry_rows + missing_geometry_scalars
     nothing_located = geometry_total > 0 and geometry_missing == geometry_total
     if missing_geometry_rows or nothing_located:
-        # The two conditions report different things, so they say different things.
-        # Summing both counts under the list half's wording would publish a figure
-        # that includes scalars this rung declines to report individually.
-        if nothing_located:
-            message = (
-                f"No scored field in this section has a bounding box under "
-                f"geometry.mode '{geometry_mode}' ({geometry_missing} leaf/leaves)."
-            )
-        else:
-            message = (
-                f"{missing_geometry_rows} scored leaf/leaves have no bounding "
-                f"box under geometry.mode '{geometry_mode}'."
-            )
         issues.append(
             ProcessingIssue(
                 stage="assessment",
                 severity="info",
                 code="assessment_geometry_incomplete",
-                message=message,
+                # The two conditions report different things, so they say different
+                # things: summing both counts under the list half's wording would
+                # publish a figure including scalars this rung declines to report
+                # individually.
+                #
+                # ⚠️ Written inline rather than assigned to a local first, because
+                # `scripts/tests/test_info_code_ui_parity.py` reads this argument
+                # from source to check the code reports an absence and not a repair.
+                # A bare name defeats that reader — it fails loudly rather than
+                # passing vacuously, which is how this was caught — and a
+                # conditional expression keeps **both** messages in its view.
+                message=(
+                    f"No scored field in this section has a bounding box under "
+                    f"geometry.mode '{geometry_mode}' ({geometry_missing} leaf/leaves)."
+                    if nothing_located
+                    else f"{missing_geometry_rows} scored leaf/leaves have no bounding "
+                    f"box under geometry.mode '{geometry_mode}'."
+                ),
                 root_cause=(
                     "value could not be matched to OCR lines"
                     if geometry_mode == "ocr_only"
