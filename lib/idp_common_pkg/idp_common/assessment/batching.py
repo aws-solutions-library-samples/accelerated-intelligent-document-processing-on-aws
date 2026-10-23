@@ -1888,6 +1888,7 @@ def audit_explainability(
     want_geometry = bool(geometry_mode) and geometry_mode != "off"
     out_of_range = 0
     missing_geometry_rows = 0
+    row_geometry_total = 0
     missing_geometry_scalars = 0
     scalar_geometry_total = 0
 
@@ -1905,6 +1906,31 @@ def audit_explainability(
     def _has_geometry(leaf: dict[str, Any]) -> bool:
         geo = leaf.get("geometry") or leaf.get("bbox") or leaf.get("bounding_box")
         return bool(geo)
+
+    def _scalar_leaf_values(node: Any, value: Any) -> list[tuple[dict[str, Any], Any]]:
+        """``(leaf, that leaf's OWN value)`` under a non-list field.
+
+        Pairing matters because the populated-ness test is a property of the leaf,
+        not of the field holding it: ``_is_populated_value`` is true for the dict
+        ``{"State": None, "ZipCode": ""}`` — it is a non-empty container — while
+        every leaf beneath it has nothing to locate. Testing the field would count
+        those leaves as wanting a box and report that none was found, about values
+        that do not exist.
+
+        A group whose extraction value is a plain string (the assessment model split
+        one value into sub-keyed fragments) yields ``None`` per child and so is
+        counted for nothing, which is the conservative direction: silence about a
+        shape this rung cannot reason over beats a note it cannot justify.
+        """
+        if not isinstance(node, dict):
+            return []
+        if "confidence" in node:
+            return [(node, value)]
+        pairs: list[tuple[dict[str, Any], Any]] = []
+        for key, child in node.items():
+            child_value = value.get(key) if isinstance(value, dict) else None
+            pairs.extend(_scalar_leaf_values(child, child_value))
+        return pairs
 
     for field, data_val in extraction_results.items():
         assessed = assessment.get(field)
@@ -1924,8 +1950,10 @@ def audit_explainability(
                     conf = leaf.get("confidence")
                     if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
                         out_of_range += 1
-                    if want_geometry and conf is not None and not _has_geometry(leaf):
-                        missing_geometry_rows += 1
+                    if want_geometry and conf is not None:
+                        row_geometry_total += 1
+                        if not _has_geometry(leaf):
+                            missing_geometry_rows += 1
         else:
             # Scalar/group: verify a confidence leaf exists and is in range.
             #
@@ -1935,18 +1963,25 @@ def audit_explainability(
             # ran — absence produced nothing to check and the audit stayed silent
             # on the one thing it was looking at (#1474). Presence is now its own
             # question, asked below over every populated non-list field at once.
-            scalar_populated = _is_populated_value(data_val)
             for leaf in _leaf_confidences(assessed):
                 conf = leaf.get("confidence")
                 if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
                     out_of_range += 1
-                # Geometry was counted in the list branch only, so this rung could
-                # not fire for a scalar field at all — the same row/scalar asymmetry
-                # as #1474. Measured over 571 real sections: **no** list leaf was
-                # scored-but-box-less, while 495 scalar ones were, in 222 sections.
-                # The rung was therefore counting the case that does not arise and
-                # structurally blind to the one that does (#1520).
-                if want_geometry and scalar_populated and conf is not None:
+            # Geometry was counted in the list branch only, so this rung could not
+            # fire for a scalar field at all — the same row/scalar asymmetry as
+            # #1474. Measured over 571 real sections: **no** list leaf was
+            # scored-but-box-less, while 495 scalar ones were, in 222 sections. The
+            # rung was therefore counting the case that does not arise and
+            # structurally blind to the one that does (#1520).
+            #
+            # Each leaf is tested against its OWN value rather than the field's —
+            # see ``_scalar_leaf_values`` for why a group makes those differ.
+            if want_geometry:
+                for leaf, leaf_value in _scalar_leaf_values(assessed, data_val):
+                    if leaf.get("confidence") is None:
+                        continue
+                    if not _is_populated_value(leaf_value):
+                        continue
                     scalar_geometry_total += 1
                     if not _has_geometry(leaf):
                         missing_geometry_scalars += 1
@@ -1980,20 +2015,33 @@ def audit_explainability(
     # operator opening the section will see and cannot otherwise explain. It fires on
     # 2% of the same corpus. The shape mirrors the ``scored_fields <= 0`` condition
     # this function already uses one rung down, so the two rungs read alike.
-    no_scalar_geometry_at_all = (
-        scalar_geometry_total > 0 and missing_geometry_scalars == scalar_geometry_total
-    )
-    if missing_geometry_rows or no_scalar_geometry_at_all:
-        missing_total = missing_geometry_rows + missing_geometry_scalars
+    # ⚠️ The condition spans BOTH halves, because "no scalar carries a box" is a
+    # much weaker statement than the one this rung makes and a far more common
+    # state: one unmatched ``Language`` beside a fully grounded table satisfies it,
+    # and a note claiming nothing was located would be a plain false alarm there.
+    geometry_total = row_geometry_total + scalar_geometry_total
+    geometry_missing = missing_geometry_rows + missing_geometry_scalars
+    nothing_located = geometry_total > 0 and geometry_missing == geometry_total
+    if missing_geometry_rows or nothing_located:
+        # The two conditions report different things, so they say different things.
+        # Summing both counts under the list half's wording would publish a figure
+        # that includes scalars this rung declines to report individually.
+        if nothing_located:
+            message = (
+                f"No scored field in this section has a bounding box under "
+                f"geometry.mode '{geometry_mode}' ({geometry_missing} leaf/leaves)."
+            )
+        else:
+            message = (
+                f"{missing_geometry_rows} scored leaf/leaves have no bounding "
+                f"box under geometry.mode '{geometry_mode}'."
+            )
         issues.append(
             ProcessingIssue(
                 stage="assessment",
                 severity="info",
                 code="assessment_geometry_incomplete",
-                message=(
-                    f"{missing_total} scored leaf/leaves have no bounding "
-                    f"box under geometry.mode '{geometry_mode}'."
-                ),
+                message=message,
                 root_cause=(
                     "value could not be matched to OCR lines"
                     if geometry_mode == "ocr_only"
@@ -2001,10 +2049,15 @@ def audit_explainability(
                 ),
                 section_id=section_id,
                 details={
-                    "missing_geometry_leaves": missing_total,
+                    # Stays list-rows-only, which is what it counted before the
+                    # scalar half existed: a consumer reading it sees no change in
+                    # meaning. The new keys carry the rest.
+                    "missing_geometry_leaves": missing_geometry_rows,
                     "missing_geometry_rows": missing_geometry_rows,
+                    "row_leaves_wanting_geometry": row_geometry_total,
                     "missing_geometry_scalars": missing_geometry_scalars,
                     "scalar_leaves_wanting_geometry": scalar_geometry_total,
+                    "nothing_located": nothing_located,
                 },
             )
         )

@@ -1740,9 +1740,14 @@ class TestSeparatorAtALineBreak:
         assert g._normalize("Yes, No") == "yes no"
         assert g._normalize("disc pain; cell therapy") == "disc pain cell therapy"
 
-    def test_a_pipe_survives_normalization(self):
-        """``|`` is excluded too: it delimits Markdown table cells in OCR text,
-        where collapsing it would merge adjacent cells into one string."""
+    def test_a_pipe_is_not_a_separator_this_collapses(self):
+        """``|`` is outside the rule, for a reason of its own.
+
+        It is not a list separator a model inserted at a join — it delimits
+        Markdown table cells in OCR text, where collapsing it would merge adjacent
+        cells into one string. Stated separately so the two exclusions are not read
+        as one reason.
+        """
         assert g._normalize("Total | 1234") == "total | 1234"
 
     def test_a_separator_inside_a_token_survives(self):
@@ -1767,7 +1772,10 @@ class TestSeparatorAtALineBreak:
         pd = {1: _page([_line("2,6,6914", 0.40, 0.36, width=0.03, height=0.013)])}
         geom, source, _conf = g.match_value_to_geometry(2669.14, pd)
         assert geom is not None
-        assert source in ("ocr", g._SOURCE_NORMALIZED, g._SOURCE_FUZZY)
+        # The Levenshtein rung specifically — asserting only that a box came back
+        # would pass on a substring hit and so could not tell the named path from
+        # any other.
+        assert source == g._SOURCE_FUZZY == "ocr-fuzzy"
 
 
 class TestVerbatimBeatsFormatBridged:
@@ -1846,3 +1854,73 @@ class TestVerbatimBeatsFormatBridged:
         }
         _geom, source, _conf = g.match_value_to_geometry("2013-04-11", pd)
         assert source == g._SOURCE_NORMALIZED
+
+
+class TestRowOrderWithVariantOnlyMatches:
+    """Repeated list values that ground only through a format variant (#1520).
+
+    This is the shape ``geometry.mode: ocr_only`` plus ``occurrence_index`` exists
+    for — an Amount column the model emitted as ``1234.00`` against OCR
+    ``$1,234.00``, the same value on several rows — and it is the shape a duplicate
+    candidate corrupts invisibly: the row-order path indexes into the sorted list,
+    so one duplicate per line shifts every row's box down by one and clamps the
+    last rows onto the final entry. The box is on the right text and the wrong row,
+    which no assertion about the source or the tier would catch.
+
+    The invariant that keeps it correct is that the exact-index fast path either
+    short-circuits or leaves ``candidates`` empty for the full scan, so a line is
+    never collected twice. These tests hold that from the outside.
+    """
+
+    def test_each_row_gets_its_own_line_when_only_a_variant_matches(self):
+        pd = {
+            1: _page(
+                [
+                    _line("$1,234.00", 0.2, 0.10),
+                    _line("$1,234.00", 0.2, 0.15),
+                    _line("$1,234.00", 0.2, 0.20),
+                ]
+            )
+        }
+        tops = []
+        for occ in range(3):
+            geom, source, _conf = g.match_value_to_geometry(
+                1234.00, pd, None, occ, {"type": "number"}
+            )
+            assert source == g._SOURCE_NORMALIZED, "should ground via a variant"
+            tops.append(round(geom["boundingBox"]["top"], 2))
+        assert tops == [0.10, 0.15, 0.20]
+
+    def test_iso_dates_against_slash_rendered_lines_map_row_for_row(self):
+        pd = {
+            1: _page(
+                [
+                    _line("06/30/2014", 0.2, 0.10),
+                    _line("06/30/2014", 0.2, 0.15),
+                ]
+            )
+        }
+        tops = [
+            round(
+                g.match_value_to_geometry(
+                    "2014-06-30", pd, None, occ, {"type": "string", "format": "date"}
+                )[0]["boundingBox"]["top"],
+                2,
+            )
+            for occ in range(2)
+        ]
+        assert tops == [0.10, 0.15]
+
+    def test_a_verbatim_repeated_value_still_maps_row_for_row(self):
+        """The fast-path side of the same invariant."""
+        pd = {1: _page([_line("ACME", 0.2, 0.10), _line("ACME", 0.2, 0.15)])}
+        tops = [
+            round(
+                g.match_value_to_geometry("ACME", pd, None, occ)[0]["boundingBox"][
+                    "top"
+                ],
+                2,
+            )
+            for occ in range(2)
+        ]
+        assert tops == [0.10, 0.15]

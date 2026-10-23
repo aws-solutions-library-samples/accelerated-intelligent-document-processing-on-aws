@@ -69,7 +69,9 @@ class TestTheScalarHalfCanFireAtAll:
         assert issue.details["missing_geometry_scalars"] == 2
         assert issue.details["missing_geometry_rows"] == 0
         assert issue.details["scalar_leaves_wanting_geometry"] == 2
-        assert "2 scored leaf/leaves have no bounding box" in issue.message
+        assert issue.details["nothing_located"] is True
+        assert "No scored field in this section has a bounding box" in issue.message
+        assert "(2 leaf/leaves)" in issue.message
 
 
 class TestTheScalarHalfStaysQuietWhereABoxExists:
@@ -181,3 +183,93 @@ class TestTheListHalfIsUnchanged:
         issue = _issue(issues, "assessment_geometry_incomplete")
         assert issue.details["missing_geometry_rows"] == 1
         assert issue.details["missing_geometry_scalars"] == 0
+
+
+class TestTheConditionSpansBothHalves:
+    """ "Nothing was located" is about the whole section, not about the scalars.
+
+    "No scalar carries a box" is a much weaker statement and a far more common
+    state — one unmatched ``Language`` beside a fully grounded table satisfies it —
+    so a rung resting on it would claim nothing was located while highlighting
+    works for every row on the page.
+    """
+
+    def test_a_grounded_table_beside_one_box_less_scalar_stays_quiet(self):
+        extraction = {"Items": [{"Name": "a"}, {"Name": "b"}], "Language": "English"}
+        assessment = {
+            "Items": [{"Name": _scored(GEOMETRY)}, {"Name": _scored(GEOMETRY)}],
+            "Language": _scored(),
+        }
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
+
+    def test_a_section_where_neither_rows_nor_scalars_ground_reports(self):
+        extraction = {"Items": [{"Name": "a"}], "Language": "English"}
+        assessment = {"Items": [{"Name": _scored()}], "Language": _scored()}
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        issue = _issue(issues, "assessment_geometry_incomplete")
+        assert issue.details["nothing_located"] is True
+        assert "No scored field in this section has a bounding box" in issue.message
+
+    def test_the_aggregate_detail_key_stays_list_rows_only(self):
+        """``missing_geometry_leaves`` counted list rows before the scalar half
+        existed, so a consumer reading it must see no change in meaning."""
+        extraction = {
+            "Items": [{"Name": "a"}],
+            "Language": "English",
+            "Title": "Annual Report",
+        }
+        assessment = {
+            "Items": [{"Name": _scored()}],
+            "Language": _scored(),
+            "Title": _scored(GEOMETRY),
+        }
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        issue = _issue(issues, "assessment_geometry_incomplete")
+        assert issue.details["nothing_located"] is False
+        assert issue.details["missing_geometry_leaves"] == 1  # the row, not the scalar
+        assert issue.details["missing_geometry_scalars"] == 1  # counted, not reported
+        assert "1 scored leaf/leaves have no bounding box" in issue.message
+
+
+class TestPopulatedIsAPropertyOfTheLeaf:
+    """A group's dict can be non-empty while every leaf under it is empty.
+
+    ``_is_populated_value({"State": None, "ZipCode": ""})`` is true — it is a
+    non-empty container — so testing the *field* counts leaves that have no value
+    to locate and reports that none was found about them.
+    """
+
+    def test_a_group_whose_members_are_all_empty_stays_quiet(self):
+        extraction = {"CompanyAddress": {"State": None, "ZipCode": ""}}
+        assessment = {"CompanyAddress": {"State": _scored(), "ZipCode": _scored()}}
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
+
+    def test_a_group_with_one_populated_box_less_member_reports_that_one(self):
+        extraction = {"CompanyAddress": {"State": "WA", "ZipCode": ""}}
+        assessment = {"CompanyAddress": {"State": _scored(), "ZipCode": _scored()}}
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        issue = _issue(issues, "assessment_geometry_incomplete")
+        assert issue.details["scalar_leaves_wanting_geometry"] == 1
+        assert issue.details["missing_geometry_scalars"] == 1
+
+    def test_a_group_member_that_grounded_keeps_the_section_quiet(self):
+        extraction = {"CompanyAddress": {"State": "WA", "ZipCode": "98101"}}
+        assessment = {
+            "CompanyAddress": {"State": _scored(GEOMETRY), "ZipCode": _scored()}
+        }
+        _gaps, issues = audit_explainability(
+            assessment, extraction, geometry_mode="ocr_only", section_id="1"
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
