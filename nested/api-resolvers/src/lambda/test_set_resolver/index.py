@@ -3390,14 +3390,16 @@ def estimate_review_effort(args):
         pages_per_doc,
         ground_truth_docs,
         alerts_per_doc,
+        inspected_docs,
+        whole_set_inspected,
     ) = _collect_doc_confidences(test_set_id)
 
     # The set's real size, which may exceed the sample. Using the sample size as the
     # total understates the work, the effort and the audit pool by however far the
-    # set exceeds MAX_DOCS_FOR_ESTIMATE.
-    total_docs = int(meta.get("fileCount", 0) or 0) or len(doc_confidences)
-    # Ground truth is not reviewable work, so it comes off the total.
-    total_docs = max(0, total_docs - ground_truth_docs)
+    # set exceeds MAX_DOCS_FOR_ESTIMATE. The stored counter can lag the set, and
+    # the set holds at least what was just read, so it never sizes below that.
+    set_size = max(int(meta.get("fileCount", 0) or 0), inspected_docs)
+    total_docs = _reviewable_docs(set_size, inspected_docs, ground_truth_docs)
     sampled_docs = len(doc_confidences)
 
     # A sample is treated as representative and repeated across the whole set, so the
@@ -3441,12 +3443,48 @@ def estimate_review_effort(args):
     result["reliabilityTable"] = curve.reliability_table(prior)
     # Surfaced so a caller can say how much of the set was actually inspected.
     result["sampledDocs"] = sampled_docs
+    # What the reviewable size was scaled from. A sample with no reviewable
+    # document scales to zero, which is a statement about the whole set only when
+    # the sample read all of it; otherwise documents outside the sample were never
+    # read and a caller must not report the set as fully labelled (#1479).
+    result["inspectedDocs"] = inspected_docs
+    result["setDocs"] = set_size
+    # Whether the listing was read to its end. Decided by the listing rather than
+    # by inspectedDocs against setDocs, because setDocs rests on a stored counter
+    # that can be stale or absent, and a sample cut by the cap or the time budget
+    # must never read as the whole set.
+    result["wholeSetInspected"] = whole_set_inspected
     logger.info(
         f"estimateReviewEffort({test_set_id}, target={target_accuracy}): "
         f"{estimate.docs_to_review}/{total_docs} docs, "
         f"confidence={estimate.estimate_confidence.value}"
     )
     return result
+
+
+def _reviewable_docs(set_size, inspected_docs, ground_truth_docs):
+    """How many of ``set_size`` documents are reviewable work, from the sample.
+
+    Ground truth is not reviewable work, so it comes off the total -- but it is
+    counted over the inspected sample only, which MAX_DOCS_FOR_ESTIMATE caps. The
+    sample's confidences are extrapolated across the whole set, so its ground-truth
+    count has to be extrapolated the same way: the sample's reviewable fraction is
+    applied to the set's size. Subtracting the raw count instead planned review for
+    every uninspected document, so a 500-document set sampled as 200 of 200 ground
+    truth estimated 300 documents to review (#1479).
+
+    The sample is the first documents in listing order, not a random draw, so the
+    fraction assumes ground truth is spread independently of key order. A set whose
+    labelled files sort together is mis-sized in either direction; no set-wide
+    ground-truth count is stored that could be read instead.
+
+    Rounded up, so a sample holding any reviewable document never estimates zero.
+    With nothing inspected there is no fraction to apply, and the whole set counts.
+    """
+    if inspected_docs <= 0:
+        return max(0, set_size)
+    reviewable_sampled = max(0, inspected_docs - ground_truth_docs)
+    return max(0, -(-set_size * reviewable_sampled // inspected_docs))  # ceil
 
 
 # Cap on how many documents the estimator reads confidences for. Every section on a
@@ -3528,10 +3566,16 @@ def _collect_doc_confidences(test_set_id):
     ordering would not describe the work the user is about to do.
 
     Returns ``(confidences, fields_per_doc, pages_per_doc, ground_truth_docs,
-    alerts_per_doc)``. The
+    alerts_per_doc, inspected_docs, whole_set_inspected)``. The
     two shape figures fall back to the module defaults when the baseline carries
     nothing to measure. ``ground_truth_docs`` counts inspected documents that already
     have ground truth and are therefore absent from ``confidences``.
+    ``inspected_docs`` is how many documents the sample read, ground truth included:
+    the denominator for scaling the sample's ground-truth fraction to the set.
+    ``whole_set_inspected`` is True only when the listing ended inside the time
+    budget. A page cut by the budget also ends with no token, so a listing that
+    finished after the budget passed is reported as partial: the safe direction,
+    since a partial sample is never called the whole set.
     """
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     documents = []
@@ -3561,6 +3605,8 @@ def _collect_doc_confidences(test_set_id):
                 "sample"
             )
             break
+
+    whole_set_inspected = not next_token and time.monotonic() <= deadline
 
     confidences = []
     alert_counts = []
@@ -3630,6 +3676,8 @@ def _collect_doc_confidences(test_set_id):
         max(1.0, pages_per_doc),
         ground_truth_docs,
         alerts_per_doc,
+        len(documents),
+        whole_set_inspected,
     )
 
 
