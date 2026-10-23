@@ -1,0 +1,73 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
+
+/**
+ * A set with no draft labels left to review.
+ *
+ * estimateReviewEffort reports totalDocs 0 when the sampled documents all carry
+ * ground truth (#1479). The dialog must then say there is nothing to review and
+ * nothing else: a prior-trust banner, three priced strategies and a math section
+ * beside that alert would all describe zero documents.
+ */
+
+import { render, screen, waitFor } from '@testing-library/react';
+import React from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const graphql = vi.fn();
+vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => graphql(...a) }) }));
+vi.mock('../../../graphql/generated', () => ({ estimateReviewEffort: 'estimateReviewEffort' }));
+
+// Imported after the mocks, which vitest hoists.
+import ReviewEffortModal from '../ReviewEffortModal';
+
+const estimate = (totalDocs: number) => ({
+  testSetId: 'docsplit',
+  targetAccuracy: 99,
+  curveSource: 'prior',
+  docsToReview: totalDocs ? 1 : 0,
+  docsToReviewLow: 0,
+  docsToReviewHigh: totalDocs ? 2 : 0,
+  totalDocs,
+  sampledDocs: totalDocs,
+  impliedCutoff: null,
+  residualError: 0,
+  baselineError: 0,
+  effortMinutes: 0,
+  effortMinutesPerDoc: 0,
+  estimateConfidence: 'prior',
+  auditSampleSize: 0,
+  recommendReviewAll: false,
+  calibration: { reliable: false, totalObservations: 0, binCoverage: 0, ece: null, auroc: null },
+  burndown: [],
+  reliabilityTable: [],
+});
+
+const renderWith = async (totalDocs: number) => {
+  graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs) } });
+  render(<ReviewEffortModal visible testSetId="docsplit" onDismiss={() => {}} onContinue={() => {}} />);
+  await waitFor(() => expect(graphql).toHaveBeenCalled());
+  await screen.findByText(/document\(s\) with draft labels/);
+};
+
+describe('ReviewEffortModal with nothing to review', () => {
+  beforeEach(() => graphql.mockReset());
+
+  it('shows only the nothing-to-review alert', async () => {
+    await renderWith(0);
+    expect(screen.getByText('Nothing to review')).toBeTruthy();
+    expect(screen.queryByText(/Rough estimate/)).toBeNull();
+    expect(screen.queryByText('How much should annotators review?')).toBeNull();
+    expect(screen.queryByText(/Show the math/)).toBeNull();
+  });
+
+  it('still shows the estimate when there is something to review', async () => {
+    // The control for the test above: the same fixture with one document renders
+    // everything that test asserts is absent, so its absence there is the gate.
+    await renderWith(3);
+    expect(screen.queryByText('Nothing to review')).toBeNull();
+    expect(screen.getByText(/Rough estimate/)).toBeTruthy();
+    expect(screen.getByText('How much should annotators review?')).toBeTruthy();
+    expect(screen.getByText(/Show the math/)).toBeTruthy();
+  });
+});

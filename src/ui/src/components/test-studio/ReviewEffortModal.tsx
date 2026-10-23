@@ -281,207 +281,218 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             </Box>
           )}
 
-          {banner && (
-            <Alert type={banner.type} header={banner.header}>
-              {banner.body}
-            </Alert>
-          )}
-          {curveNote && (
-            <Box variant="small" color="text-body-secondary">
-              {curveNote}
-            </Box>
-          )}
-
-          {estimate?.calibration?.degenerate && (
-            <Alert type="warning" header="Confidence barely varies across this set">
-              Only {estimate.calibration.binCoverage} of 10 confidence bins carry observations, so ranking documents worst-first is close to
-              arbitrary. Reviewing everything is the safer choice.
-            </Alert>
-          )}
-
-          {estimate?.calibration?.overconfident && (
-            <Alert type="warning" header="Model is overconfident on this set">
-              Errors are landing in the high-confidence range that worst-first review never opens, so a small sample would miss them. The
-              audit sample below is the only check on that zone.
-            </Alert>
-          )}
-
-          {estimate?.calibration?.undiscriminating && (
-            <Alert type="warning" header="Confidence does not identify the errors on this set">
-              Confidence ranks correctness no better than chance
-              {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
-                ? ` (AUROC ${estimate.calibration.auroc.toFixed(2)}, where 0.5 is a coin flip)`
-                : ''}
-              , so reviewing the documents with the most confidence alerts would find no more errors than reviewing at random. Review
-              everything, or change the confidence model for this configuration profile and re-score.
-            </Alert>
-          )}
-
-          <FormField label="How much should annotators review?">
-            <Tiles
-              value={strategy}
-              onChange={({ detail }) => setStrategy(detail.value as ReviewStrategy)}
-              items={[
-                {
-                  value: 'worst-first',
-                  label: 'Review the documents with the most confidence alerts',
-                  description: estimate
-                    ? `Focus effort where the model is least sure — about ${estimate.docsToReview} of ${estimate.totalDocs} documents (${estimate.docsToReviewLow}–${estimate.docsToReviewHigh}). Highest accuracy gain per hour.`
-                    : 'Focus human effort where the model is least sure. Highest accuracy gain per hour.',
-                  disabled: estimate?.recommendReviewAll === true,
-                },
-                {
-                  value: 'everything',
-                  label: 'Review everything',
-                  description: estimate
-                    ? `All ${estimate.totalDocs} documents get human eyes (${formatEffort(effortForAll(estimate))}). Highest confidence in the result; most effort.`
-                    : 'Every document gets human eyes. Highest confidence in the result; most effort.',
-                },
-                {
-                  value: 'accept-drafts',
-                  label: 'Accept machine labels as-is',
-                  description: estimate
-                    ? `No human review. Leaves an estimated ${pct(estimate.baselineError)} of fields wrong, unreviewed. Fastest; lowest trust.`
-                    : 'No human review — use the draft labels directly. Fastest; lowest trust.',
-                },
-              ]}
-            />
-          </FormField>
-
-          {estimate && strategy !== 'accept-drafts' && (
-            <ColumnLayout columns={4} variant="text-grid">
-              <div>
-                <Box variant="awsui-key-label">Review</Box>
-                <Box fontSize="display-l" fontWeight="bold" color="text-status-info">
-                  {reviewCount}
+          {/* With nothing to review there is no estimate to qualify or price: the
+              trust banner, the strategies and the math would all describe zero
+              documents beside the alert saying so. */}
+          {!nothingToReview && (
+            <>
+              {banner && (
+                <Alert type={banner.type} header={banner.header}>
+                  {banner.body}
+                </Alert>
+              )}
+              {curveNote && (
+                <Box variant="small" color="text-body-secondary">
+                  {curveNote}
                 </Box>
-                <Box fontSize="body-s" color="text-body-secondary">
-                  of {estimate.totalDocs} documents
-                </Box>
-              </div>
-              <div>
-                <Box variant="awsui-key-label">Est. effort</Box>
-                <Box fontSize="heading-l">{formatEffort(strategy === 'everything' ? effortForAll(estimate) : estimate.effortMinutes)}</Box>
-              </div>
-              <div>
-                <Box variant="awsui-key-label">Est. accuracy after</Box>
-                <Box fontSize="heading-l">{pct(1 - (strategy === 'everything' ? 0 : estimate.residualError))}</Box>
-                <Box fontSize="body-s" color="text-body-secondary">
-                  from {pct(1 - estimate.baselineError)} now
-                </Box>
-              </div>
-              <div>
-                <Box variant="awsui-key-label">Audit sample</Box>
-                <Box fontSize="heading-l">{estimate.auditSampleSize}</Box>
-                <Box fontSize="body-s" color="text-body-secondary">
-                  spot-check of accepted docs
-                </Box>
-              </div>
-            </ColumnLayout>
-          )}
+              )}
 
-          {estimate && (
-            <ExpandableSection headerText="Show the math — target a specific label accuracy">
-              <SpaceBetween size="l">
-                <FormField
-                  label="Target label accuracy"
-                  description={
-                    estimate.impliedCutoff !== null && estimate.impliedCutoff !== undefined
-                      ? `Implied confidence cutoff ≈${estimate.impliedCutoff.toFixed(2)} — documents below this get reviewed.`
-                      : 'Documents with the most confidence alerts are reviewed first, until the target is met.'
-                  }
-                >
-                  <SpaceBetween size="xs">
-                    <Slider
-                      value={target}
-                      onChange={({ detail }) => setTarget(detail.value)}
-                      min={90}
-                      max={100}
-                      step={0.5}
-                      valueFormatter={(v) => `${v}%`}
-                      referenceValues={[95]}
-                    />
-                    <Button onClick={() => load(target)} loading={isLoading} iconName="refresh">
-                      Recalculate at {target}%
-                    </Button>
-                  </SpaceBetween>
-                </FormField>
+              {estimate?.calibration?.degenerate && (
+                <Alert type="warning" header="Confidence barely varies across this set">
+                  Only {estimate.calibration.binCoverage} of 10 confidence bins carry observations, so ranking documents worst-first is
+                  close to arbitrary. Reviewing everything is the safer choice.
+                </Alert>
+              )}
 
-                {chartData.length > 1 && (
+              {estimate?.calibration?.overconfident && (
+                <Alert type="warning" header="Model is overconfident on this set">
+                  Errors are landing in the high-confidence range that worst-first review never opens, so a small sample would miss them.
+                  The audit sample below is the only check on that zone.
+                </Alert>
+              )}
+
+              {estimate?.calibration?.undiscriminating && (
+                <Alert type="warning" header="Confidence does not identify the errors on this set">
+                  Confidence ranks correctness no better than chance
+                  {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
+                    ? ` (AUROC ${estimate.calibration.auroc.toFixed(2)}, where 0.5 is a coin flip)`
+                    : ''}
+                  , so reviewing the documents with the most confidence alerts would find no more errors than reviewing at random. Review
+                  everything, or change the confidence model for this configuration profile and re-score.
+                </Alert>
+              )}
+
+              <FormField label="How much should annotators review?">
+                <Tiles
+                  value={strategy}
+                  onChange={({ detail }) => setStrategy(detail.value as ReviewStrategy)}
+                  items={[
+                    {
+                      value: 'worst-first',
+                      label: 'Review the documents with the most confidence alerts',
+                      description: estimate
+                        ? `Focus effort where the model is least sure — about ${estimate.docsToReview} of ${estimate.totalDocs} documents (${estimate.docsToReviewLow}–${estimate.docsToReviewHigh}). Highest accuracy gain per hour.`
+                        : 'Focus human effort where the model is least sure. Highest accuracy gain per hour.',
+                      disabled: estimate?.recommendReviewAll === true,
+                    },
+                    {
+                      value: 'everything',
+                      label: 'Review everything',
+                      description: estimate
+                        ? `All ${estimate.totalDocs} documents get human eyes (${formatEffort(effortForAll(estimate))}). Highest confidence in the result; most effort.`
+                        : 'Every document gets human eyes. Highest confidence in the result; most effort.',
+                    },
+                    {
+                      value: 'accept-drafts',
+                      label: 'Accept machine labels as-is',
+                      description: estimate
+                        ? `No human review. Leaves an estimated ${pct(estimate.baselineError)} of fields wrong, unreviewed. Fastest; lowest trust.`
+                        : 'No human review — use the draft labels directly. Fastest; lowest trust.',
+                    },
+                  ]}
+                />
+              </FormField>
+
+              {estimate && strategy !== 'accept-drafts' && (
+                <ColumnLayout columns={4} variant="text-grid">
                   <div>
-                    <Box variant="awsui-key-label">Error burndown</Box>
-                    <Box fontSize="body-s" color="text-body-secondary" padding={{ bottom: 's' }}>
-                      Remaining error as more documents are reviewed, worst-first.
+                    <Box variant="awsui-key-label">Review</Box>
+                    <Box fontSize="display-l" fontWeight="bold" color="text-status-info">
+                      {reviewCount}
                     </Box>
-                    <div style={{ height: 220 }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="docs" label={{ value: 'documents reviewed', position: 'insideBottom', offset: -10 }} />
-                          <YAxis label={{ value: 'est. error %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }} />
-                          <Tooltip
-                            formatter={(value) => [`${value}%`, 'Est. remaining error']}
-                            labelFormatter={(label) => `${label} documents reviewed`}
-                          />
-                          <ReferenceLine
-                            x={estimate.docsToReview}
-                            stroke="#b8860b"
-                            strokeDasharray="4 4"
-                            label={{ value: `${estimate.docsToReview} docs → target`, fontSize: 11, position: 'top' }}
-                          />
-                          <Line type="monotone" dataKey="error" stroke="#0073bb" strokeWidth={2} dot={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      of {estimate.totalDocs} documents
+                    </Box>
                   </div>
-                )}
+                  <div>
+                    <Box variant="awsui-key-label">Est. effort</Box>
+                    <Box fontSize="heading-l">
+                      {formatEffort(strategy === 'everything' ? effortForAll(estimate) : estimate.effortMinutes)}
+                    </Box>
+                  </div>
+                  <div>
+                    <Box variant="awsui-key-label">Est. accuracy after</Box>
+                    <Box fontSize="heading-l">{pct(1 - (strategy === 'everything' ? 0 : estimate.residualError))}</Box>
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      from {pct(1 - estimate.baselineError)} now
+                    </Box>
+                  </div>
+                  <div>
+                    <Box variant="awsui-key-label">Audit sample</Box>
+                    <Box fontSize="heading-l">{estimate.auditSampleSize}</Box>
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      spot-check of accepted docs
+                    </Box>
+                  </div>
+                </ColumnLayout>
+              )}
 
-                <div>
-                  <Box variant="awsui-key-label">Reliability table — the measured curve</Box>
-                  <Box fontSize="body-s" color="text-body-secondary" padding={{ bottom: 's' }}>
-                    {estimate.calibration.totalObservations} observation(s) across {estimate.calibration.binCoverage} of 10 bins
-                    {estimate.calibration.ece !== null && estimate.calibration.ece !== undefined
-                      ? ` · ECE ${estimate.calibration.ece.toFixed(3)}`
-                      : ''}
-                    {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
-                      ? ` · AUROC ${estimate.calibration.auroc.toFixed(3)}`
-                      : ''}
-                    {estimate.sampledDocs !== null && estimate.sampledDocs !== undefined && estimate.sampledDocs < estimate.totalDocs
-                      ? ` · sampled ${estimate.sampledDocs} of ${estimate.totalDocs} documents`
-                      : ''}
-                  </Box>
-                  <Table
-                    variant="embedded"
-                    items={estimate.reliabilityTable.filter((b) => b.observations > 0)}
-                    empty={<Box textAlign="center">No observations recorded yet.</Box>}
-                    columnDefinitions={[
-                      {
-                        id: 'bin',
-                        header: 'Confidence',
-                        cell: (b: ReliabilityBin) => `${b.binStart.toFixed(1)}–${b.binEnd.toFixed(1)}`,
-                      },
-                      { id: 'n', header: 'Observations', cell: (b: ReliabilityBin) => b.observations },
-                      {
-                        id: 'observed',
-                        header: 'Observed accuracy',
-                        cell: (b: ReliabilityBin) => pct(b.observedAccuracy),
-                      },
-                      {
-                        id: 'blended',
-                        header: 'Used in estimate',
-                        cell: (b: ReliabilityBin) => pct(b.blendedAccuracy),
-                      },
-                    ]}
-                  />
-                </div>
+              {estimate && (
+                <ExpandableSection headerText="Show the math — target a specific label accuracy">
+                  <SpaceBetween size="l">
+                    <FormField
+                      label="Target label accuracy"
+                      description={
+                        estimate.impliedCutoff !== null && estimate.impliedCutoff !== undefined
+                          ? `Implied confidence cutoff ≈${estimate.impliedCutoff.toFixed(2)} — documents below this get reviewed.`
+                          : 'Documents with the most confidence alerts are reviewed first, until the target is met.'
+                      }
+                    >
+                      <SpaceBetween size="xs">
+                        <Slider
+                          value={target}
+                          onChange={({ detail }) => setTarget(detail.value)}
+                          min={90}
+                          max={100}
+                          step={0.5}
+                          valueFormatter={(v) => `${v}%`}
+                          referenceValues={[95]}
+                        />
+                        <Button onClick={() => load(target)} loading={isLoading} iconName="refresh">
+                          Recalculate at {target}%
+                        </Button>
+                      </SpaceBetween>
+                    </FormField>
 
-                <StatusIndicator type={estimate.calibration.reliable ? 'success' : 'warning'}>
-                  {estimate.calibration.reliable
-                    ? 'Confidence is reliable enough to rank documents on this set.'
-                    : 'Confidence is not yet reliable enough to rank documents on this set.'}
-                </StatusIndicator>
-              </SpaceBetween>
-            </ExpandableSection>
+                    {chartData.length > 1 && (
+                      <div>
+                        <Box variant="awsui-key-label">Error burndown</Box>
+                        <Box fontSize="body-s" color="text-body-secondary" padding={{ bottom: 's' }}>
+                          Remaining error as more documents are reviewed, worst-first.
+                        </Box>
+                        <div style={{ height: 220 }}>
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="docs" label={{ value: 'documents reviewed', position: 'insideBottom', offset: -10 }} />
+                              <YAxis
+                                label={{ value: 'est. error %', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle' } }}
+                              />
+                              <Tooltip
+                                formatter={(value) => [`${value}%`, 'Est. remaining error']}
+                                labelFormatter={(label) => `${label} documents reviewed`}
+                              />
+                              <ReferenceLine
+                                x={estimate.docsToReview}
+                                stroke="#b8860b"
+                                strokeDasharray="4 4"
+                                label={{ value: `${estimate.docsToReview} docs → target`, fontSize: 11, position: 'top' }}
+                              />
+                              <Line type="monotone" dataKey="error" stroke="#0073bb" strokeWidth={2} dot={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <Box variant="awsui-key-label">Reliability table — the measured curve</Box>
+                      <Box fontSize="body-s" color="text-body-secondary" padding={{ bottom: 's' }}>
+                        {estimate.calibration.totalObservations} observation(s) across {estimate.calibration.binCoverage} of 10 bins
+                        {estimate.calibration.ece !== null && estimate.calibration.ece !== undefined
+                          ? ` · ECE ${estimate.calibration.ece.toFixed(3)}`
+                          : ''}
+                        {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
+                          ? ` · AUROC ${estimate.calibration.auroc.toFixed(3)}`
+                          : ''}
+                        {estimate.sampledDocs !== null && estimate.sampledDocs !== undefined && estimate.sampledDocs < estimate.totalDocs
+                          ? ` · sampled ${estimate.sampledDocs} of ${estimate.totalDocs} documents`
+                          : ''}
+                      </Box>
+                      <Table
+                        variant="embedded"
+                        items={estimate.reliabilityTable.filter((b) => b.observations > 0)}
+                        empty={<Box textAlign="center">No observations recorded yet.</Box>}
+                        columnDefinitions={[
+                          {
+                            id: 'bin',
+                            header: 'Confidence',
+                            cell: (b: ReliabilityBin) => `${b.binStart.toFixed(1)}–${b.binEnd.toFixed(1)}`,
+                          },
+                          { id: 'n', header: 'Observations', cell: (b: ReliabilityBin) => b.observations },
+                          {
+                            id: 'observed',
+                            header: 'Observed accuracy',
+                            cell: (b: ReliabilityBin) => pct(b.observedAccuracy),
+                          },
+                          {
+                            id: 'blended',
+                            header: 'Used in estimate',
+                            cell: (b: ReliabilityBin) => pct(b.blendedAccuracy),
+                          },
+                        ]}
+                      />
+                    </div>
+
+                    <StatusIndicator type={estimate.calibration.reliable ? 'success' : 'warning'}>
+                      {estimate.calibration.reliable
+                        ? 'Confidence is reliable enough to rank documents on this set.'
+                        : 'Confidence is not yet reliable enough to rank documents on this set.'}
+                    </StatusIndicator>
+                  </SpaceBetween>
+                </ExpandableSection>
+              )}
+            </>
           )}
         </SpaceBetween>
       </Form>

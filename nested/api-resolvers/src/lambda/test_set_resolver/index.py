@@ -3386,14 +3386,14 @@ def estimate_review_effort(args):
         pages_per_doc,
         ground_truth_docs,
         alerts_per_doc,
+        inspected_docs,
     ) = _collect_doc_confidences(test_set_id)
 
     # The set's real size, which may exceed the sample. Using the sample size as the
     # total understates the work, the effort and the audit pool by however far the
     # set exceeds MAX_DOCS_FOR_ESTIMATE.
-    total_docs = int(meta.get("fileCount", 0) or 0) or len(doc_confidences)
-    # Ground truth is not reviewable work, so it comes off the total.
-    total_docs = max(0, total_docs - ground_truth_docs)
+    set_size = int(meta.get("fileCount", 0) or 0) or inspected_docs
+    total_docs = _reviewable_docs(set_size, inspected_docs, ground_truth_docs)
     sampled_docs = len(doc_confidences)
 
     # A sample is treated as representative and repeated across the whole set, so the
@@ -3443,6 +3443,26 @@ def estimate_review_effort(args):
         f"confidence={estimate.estimate_confidence.value}"
     )
     return result
+
+
+def _reviewable_docs(set_size, inspected_docs, ground_truth_docs):
+    """How many of ``set_size`` documents are reviewable work, from the sample.
+
+    Ground truth is not reviewable work, so it comes off the total -- but it is
+    counted over the inspected sample only, which MAX_DOCS_FOR_ESTIMATE caps. The
+    sample's confidences are extrapolated across the whole set, so its ground-truth
+    count has to be extrapolated the same way: the sample's reviewable fraction is
+    applied to the set's size. Subtracting the raw count instead planned review for
+    every uninspected document, so a 500-document set sampled as 200 of 200 ground
+    truth estimated 300 documents to review (#1479).
+
+    Rounded up, so a sample holding any reviewable document never estimates zero.
+    With nothing inspected there is no fraction to apply, and the whole set counts.
+    """
+    if inspected_docs <= 0:
+        return max(0, set_size)
+    reviewable_sampled = max(0, inspected_docs - ground_truth_docs)
+    return max(0, -(-set_size * reviewable_sampled // inspected_docs))  # ceil
 
 
 # Cap on how many documents the estimator reads confidences for. Every section on a
@@ -3524,10 +3544,12 @@ def _collect_doc_confidences(test_set_id):
     ordering would not describe the work the user is about to do.
 
     Returns ``(confidences, fields_per_doc, pages_per_doc, ground_truth_docs,
-    alerts_per_doc)``. The
+    alerts_per_doc, inspected_docs)``. The
     two shape figures fall back to the module defaults when the baseline carries
     nothing to measure. ``ground_truth_docs`` counts inspected documents that already
     have ground truth and are therefore absent from ``confidences``.
+    ``inspected_docs`` is how many documents the sample read, ground truth included:
+    the denominator for scaling the sample's ground-truth fraction to the set.
     """
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     documents = []
@@ -3626,6 +3648,7 @@ def _collect_doc_confidences(test_set_id):
         max(1.0, pages_per_doc),
         ground_truth_docs,
         alerts_per_doc,
+        len(documents),
     )
 
 
