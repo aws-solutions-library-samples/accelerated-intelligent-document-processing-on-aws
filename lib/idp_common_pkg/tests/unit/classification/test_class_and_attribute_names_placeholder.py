@@ -485,6 +485,7 @@ class TestPlaceholderSubstitutionEndToEnd:
         subs = service._build_classification_substitutions(
             document_text="hello",
             class_names_and_descriptions="dummy classes",
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert "DOCUMENT_TEXT" in subs
         assert "CLASS_NAMES_AND_DESCRIPTIONS" in subs
@@ -507,6 +508,7 @@ class TestPlaceholderSubstitutionEndToEnd:
             document_text="some doc",
             class_names_and_descriptions="invoice [ desc ]",
             image_content=None,
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         rendered_text = content[0]["text"]
         # legacy placeholders substituted
@@ -532,6 +534,7 @@ class TestPlaceholderSubstitutionEndToEnd:
             # legacy classes string is irrelevant here — not referenced
             class_names_and_descriptions="UNUSED",
             image_content=None,
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         rendered_text = content[0]["text"]
         # the disambiguating schema field is now in the prompt
