@@ -215,8 +215,9 @@ cross-region inference profiles (`us.*`, `global.*`). The deploy-time model
 swap does not rewrite IDs for a GovCloud region, so the preset pins a GovCloud
 model for every model setting, including ones for features that are off by
 default (OCR's `bedrock` backend, schema-validation escalation, rule
-validation). After the merge, every model setting names one of the models
-listed under [Prerequisites](#prerequisites), with one exception.
+validation). After the merge, every model setting names `amazon.nova-pro-v1:0`,
+`amazon.nova-lite-v1:0` or `us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+with one exception.
 
 **Multi-Doc Discovery's embedding step is not available in GovCloud.** It needs
 a multimodal embedding model, and when the preset was last checked GovCloud

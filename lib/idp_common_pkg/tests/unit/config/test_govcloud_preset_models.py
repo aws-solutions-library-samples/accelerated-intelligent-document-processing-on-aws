@@ -44,9 +44,9 @@ _CONFIG_LIBRARY = Path(__file__).resolve().parents[5] / "config_library"
 _PRESET_PATH = _CONFIG_LIBRARY / "unified/lending-package-sample-govcloud/config.yaml"
 _PRICING_PATH = _CONFIG_LIBRARY / "pricing.yaml"
 
-#: The GovCloud models the preset ships with, as listed in its README
-#: (``config_library/unified/lending-package-sample-govcloud/README.md``). The
-#: preset header states the rule they were admitted under: a model is added only
+#: The model ids the GovCloud preset pins (its README lists the same ids for
+#: readers; the test compares against the preset, not the README). The preset
+#: header states the rule they were admitted under: a model is added only
 #: after a real Converse call succeeds in us-gov-west-1. Written out rather than
 #: derived, because that is a statement about live Bedrock that nothing in this
 #: tree can compute. Adding a model here widens what the gate accepts, so this
@@ -144,15 +144,58 @@ def test_the_derivations_are_not_empty():
     )
     assert "us" in REGION_PREFIXES and "us-gov" in REGION_PREFIXES
 
-    merged_models = _model_values(_merged_preset())
-    raw_models = _model_values(_raw_preset())
-    assert raw_models, f"no model values found in {_PRESET_PATH}"
-    # The merge has to contribute model settings the preset does not name, or this
-    # file is not testing the inheritance it exists for.
-    inherited = set(merged_models) - set(raw_models)
-    assert inherited, (
-        "every model setting in the merged configuration is also in the raw preset, "
-        "so the merge with system defaults is not being exercised"
+    raw = _raw_preset()
+    merged = _merged_preset()
+    assert _model_values(raw), f"no model values found in {_PRESET_PATH}"
+
+    # The merge has to have run: it contributes settings the preset does not name.
+    raw_paths = {path for path, _, _ in _string_leaves(raw)}
+    merged_paths = {path for path, _, _ in _string_leaves(merged)}
+    assert merged_paths - raw_paths, (
+        "the merged configuration adds no setting to the raw preset, so the merge "
+        "with system defaults is not being exercised"
+    )
+
+    # Every model setting the system defaults carry must be in the census at its
+    # merged path. This is what the test exists to check, and it holds however many
+    # of those settings the preset pins, so paying off the exemption below does not
+    # turn it red.
+    defaults = merge_config_with_defaults({}, pattern="pattern-2", validate=False)
+    default_models = _model_values(defaults)
+    assert default_models, "the system defaults yielded no model settings"
+    # Each route on its own, so dropping one from _model_values is visible here even
+    # when the values it alone reaches are priced or exempt. Measured bound: today
+    # every value the region-prefix route reaches is also reached by another route,
+    # so removing that route alone leaves this file green. It is a backstop for a
+    # model id under a key named neither *model nor *model_id.
+    geo_prefixes = tuple(f"{prefix}." for prefix in REGION_PREFIXES)
+    for route, reached in (
+        (
+            "key suffix",
+            {
+                path
+                for path, key, value in _string_leaves(defaults)
+                if value.strip() and (key.endswith("model") or key.endswith("model_id"))
+            },
+        ),
+        (
+            "region prefix",
+            {
+                path
+                for path, _, value in _string_leaves(defaults)
+                if value.strip().startswith(geo_prefixes)
+            },
+        ),
+    ):
+        assert reached, f"the {route} route reaches nothing in the system defaults"
+        assert reached <= set(default_models), (
+            f"the census drops settings the {route} route reaches: "
+            f"{sorted(reached - set(default_models))}"
+        )
+    missed = sorted(set(default_models) - set(_model_values(merged)))
+    assert not missed, (
+        f"model settings in the system defaults that the merged-preset census does "
+        f"not reach: {missed}"
     )
 
 
