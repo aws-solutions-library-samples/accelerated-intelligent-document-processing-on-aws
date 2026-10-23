@@ -12,7 +12,6 @@ query GetMyReviewQueues($itemLimit: Int) {
       claimedByMe
       oldestEnqueuedAt
       isDefaultQueue
-      confidenceThreshold
       enabled
       claimCap
       checklist

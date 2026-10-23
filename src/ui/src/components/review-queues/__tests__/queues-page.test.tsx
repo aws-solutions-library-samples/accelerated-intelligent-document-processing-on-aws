@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The queue tables in HITL › Queue Management. What has to hold: both tables show
+ * The queue tables in HITL › Queue Management. What has to hold: there is no Create
+ * queue control (queues other than Default stay listed and usable); both tables show
  * exactly Queue, Items, Pending, Assigned, Annotators and the actions menu, in that
  * order (Assigned counts every assigned item, started or not; the other settings
  * stay in the queue's Settings dialog); every production queue but Default can be
@@ -51,7 +52,6 @@ const def = (id: string, over: Record<string, unknown> = {}) => ({
   timeLimitMinutes: 60,
   eligibleAnnotators: [],
   isDefaultQueue: id === 'default',
-  confidenceThreshold: 0.8,
   enabled: true,
   ...over,
 });
@@ -105,12 +105,7 @@ const openMenu = (queue: string) => {
 
 beforeEach(() => {
   document.body.innerHTML = '';
-  listReviewQueues
-    .mockReset()
-    .mockResolvedValue([
-      def('default', { enabled: false, confidenceThreshold: 0.9 }),
-      def('claims', { confidenceThreshold: 0.65, priority: 5 }),
-    ]);
+  listReviewQueues.mockReset().mockResolvedValue([def('default', { enabled: false }), def('claims', { priority: 5 })]);
   fetchQueuesOverview.mockReset().mockResolvedValue({ queues: [health('default', 0), health('claims', 3, 2, 1)] });
   listTestSetQueues.mockReset().mockResolvedValue([
     {
@@ -130,6 +125,18 @@ beforeEach(() => {
 });
 
 describe('the Production Queues table', () => {
+  it('offers no Create queue', async () => {
+    await renderPage();
+    const labels = createWrapper(document.body)
+      .findAllButtons()
+      .map((b) => b.getElement().textContent);
+    expect(labels).not.toContain('Create queue');
+    const header = table().findHeaderSlot()!.getElement().textContent ?? '';
+    expect(header).toContain(
+      "When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue.",
+    );
+  });
+
   it('shows exactly Queue, Items, Pending, Assigned, Annotators and the actions menu', async () => {
     await renderPage();
     expect(headers()).toEqual(['Queue', 'Items', 'Pending', 'Assigned', 'Annotators', 'Actions']);

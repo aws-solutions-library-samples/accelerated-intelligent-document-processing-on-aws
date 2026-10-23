@@ -769,12 +769,12 @@ operations:
       Hands a test-set document back to its queue, with a reason from the set's skip list: the assignment ends and the document is unassigned again, not completed. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
 
   claimTestSetDocument:
-    groups: [Admin, Annotator]
+    groups: [Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
-      An Annotator listed on the set's queue assigns one of its unassigned, unreviewed documents to themselves. The caller must be in the Annotator group (an Admin who isn't is refused NOT_ELIGIBLE) and listed on the queue; a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
+      An Annotator listed on the set's queue assigns one of its unassigned, unreviewed documents to themselves. Admins assign test-set documents (assignTestSetDocuments) rather than claim them, so the gateway refuses a caller outside the Annotator group; a user in both Admin and Annotator is admitted. A caller not listed on the queue is refused NOT_ELIGIBLE, and a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
   saveTestSetDocumentSection:
     groups: [Admin, Author, Annotator]
     kind: mutation
