@@ -208,49 +208,46 @@ class TestQueueDefinitions:
             "timeLimitMinutes": 15,
             "eligibleAnnotators": ["a@x.com"],
             "isDefaultQueue": False,
-            "confidenceThreshold": 0.8,
             "enabled": True,
         }
 
-    def test_create_takes_the_threshold_and_switch(self, module):
+    def test_create_takes_the_switch(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = lambda d, create: d
+        result = module.handler(
+            _event("createReviewQueue", {"input": {"id": "q", "enabled": False}}),
+            None,
+        )
+        assert result["enabled"] is False
+
+    def test_a_confidence_threshold_in_the_input_is_ignored(self, module):
+        """An older client may still send one; queues have no threshold."""
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
         result = module.handler(
             _event(
                 "createReviewQueue",
-                {"input": {"id": "q", "confidenceThreshold": 0.6, "enabled": False}},
+                {"input": {"id": "q", "confidenceThreshold": 1.5}},
             ),
             None,
         )
-        assert (result["confidenceThreshold"], result["enabled"]) == (0.6, False)
-
-    def test_a_threshold_outside_0_1_is_a_bad_request(self, module):
-        with pytest.raises(ValueError, match="BAD_ARGUMENT"):
-            module.handler(
-                _event(
-                    "createReviewQueue",
-                    {"input": {"id": "q", "confidenceThreshold": 1.5}},
-                ),
-                None,
-            )
-        module._SERVICE.directory.queue_defs.put.assert_not_called()
+        store.put.assert_called_once()
+        assert "confidenceThreshold" not in result
 
     def test_update_writes_over_an_existing_queue(self, module):
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
-        store.get.return_value = QueueDefinition(
-            id="default", enabled=True, confidence_threshold=0.9
-        )
+        store.get.return_value = QueueDefinition(id="default", enabled=False)
         result = module.handler(
             _event("updateReviewQueue", {"input": {"id": "default"}}), None
         )
         assert store.put.call_args.kwargs == {"create": False}
         assert result["isDefaultQueue"] is True
-        # Left out of the input, the switch and threshold keep their stored values.
-        assert (result["enabled"], result["confidenceThreshold"]) == (True, 0.9)
+        # Left out of the input, the switch keeps its stored value.
+        assert result["enabled"] is False
         store.invalidate.assert_called_once()
 
-    def test_update_changes_the_threshold_and_switch(self, module):
+    def test_update_changes_the_switch(self, module):
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
         store.get.return_value = QueueDefinition(id="default", enabled=False)
@@ -261,13 +258,12 @@ class TestQueueDefinitions:
                     "input": {
                         "id": "default",
                         "enabled": True,
-                        "confidenceThreshold": 0.7,
                     }
                 },
             ),
             None,
         )
-        assert (result["enabled"], result["confidenceThreshold"]) == (True, 0.7)
+        assert result["enabled"] is True
 
     def test_update_keeps_the_stored_skip_reasons_when_omitted(self, module):
         """The queue dialog saves without the lists it does not show."""
