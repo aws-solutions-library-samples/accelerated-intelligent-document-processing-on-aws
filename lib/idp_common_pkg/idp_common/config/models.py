@@ -2381,6 +2381,25 @@ class FileShapeConfig(BaseModel):
         validator here: clearing the field in the editor is "use the default", not a
         mistake, and it used to produce a spurious "Invalid sectionSplitting value
         ''" line.
+
+        ⚠️ **This is the only classification setting that refuses an unrecognised
+        value, and the neighbouring validators argue the opposite direction for
+        themselves — so what distinguishes it is worth stating.** Two things, and
+        they are independent. First, **there is no safe reading of an unrecognised
+        splitting mode.** Its neighbours each have one that the pipeline already
+        applied: an unusable page limit means "classify every page", and an
+        unrecognised ``reasoning_effort`` means the default, because a family with
+        no effort control did exactly that with it. A splitting mode decides whether
+        boundaries are detected at all, and every candidate answer is a different
+        document structure. Second, **a bad value here is not reachable in stored
+        data**, because this validator already normalised on the way in, so nothing
+        could persist one — which is precisely the condition
+        :func:`normalise_reasoning_effort` and :meth:`parse_max_pages` do *not* meet,
+        and the reason they normalise.
+
+        What that costs is worth knowing: ``update_configuration`` validates through
+        these same models at deploy time, so an unrecognised value in a hand-written
+        ``CustomConfigPath`` file fails the stack operation rather than a save.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
             return DEFAULT_SECTION_SPLITTING
