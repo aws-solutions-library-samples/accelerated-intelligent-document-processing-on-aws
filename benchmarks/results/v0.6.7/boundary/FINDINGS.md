@@ -20,7 +20,7 @@ cell/doc; the failure is non-deterministic, so a single run settles nothing.
 |---|---|---|---|---|---|
 | `paginated_3pg` | yes | 1 | **100%** `[1,1,1,1,1]` | 100% `[1,1,1,1,1]` | **none** |
 | `small_narrow` | **no** | 1 | **0%** `[2,3,2,3,2]` | **60%** `[1,2,1,1,2]` | **improved** |
-| `twodocs_2x20` | yes (per copy) | 2 | **100%** `[2,2,2,2,2]` | 100% `[2,2,2,2,2]` | **none** |
+| `twodocs_2x20` | **no** | 2 | **100%** `[2,2,2,2,2]` | 100% `[2,2,2,2,2]` | **none** |
 
 `completeness_recall` is **1.0 in every arm** — no rows are lost either way. This
 failure never shows up as missing data; only the section count changes.

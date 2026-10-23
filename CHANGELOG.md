@@ -109,6 +109,8 @@ SPDX-License-Identifier: MIT-0
 
 - **The integration build's Step 0 BDA sweep no longer deletes the BDA projects and blueprints of a run that still has a stack, whatever that stack's status or name suffix** ([#1440](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1440)). When it cannot read which runs still have a stack, it now deletes nothing and reports one warning, rather than skipping only the runs it could not read. **Action:** none; this changes only what the integration deploy harness deletes and how it reports.
 
+- **Benchmark fixtures that combine several statements with pagination now carry a ground truth their own pages agree with.** The `bank_statement` corpus generator numbered pages across the whole file, so a three-statement fixture read *Page 1 of 3 / 2 of 3 / 3 of 3* against a truth recording three sections — evidence for the opposite answer, on the first signal the classification boundary rules read. Pagination is now scoped to the statement, a reprinted running identity header carries its own statement's account number, and the generator refuses a fixture whose two layout passes disagree rather than numbering it anyway. **Action:** none — no committed matrix cell or corpus record combined those axes, so no recorded result changes and every shipped fixture renders exactly as before. ([#1541](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1541))
+
 ## [0.6.12]
 
 ### Added
