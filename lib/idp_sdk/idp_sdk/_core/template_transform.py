@@ -401,6 +401,7 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "WAFAllowedIPv4Ranges",
             "DocumentKnowledgeBase",
             "KnowledgeBaseVectorStore",
+            "KnowledgeBaseEmbeddingModel",
             "KnowledgeBaseModelId",
             "ChatCompanionModelId",
             "EnableHITL",

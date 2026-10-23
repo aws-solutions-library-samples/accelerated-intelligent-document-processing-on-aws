@@ -1846,7 +1846,7 @@
     "scripts/tests/nested_parameter_defaults_baseline.json::nested_parameter_defaults_baseline.json": {
       "kind": "exemption",
       "memberKind": "nested stack logical id + parameter name",
-      "turnsOff": "the report of a parameter of a nested stack that declares a Default which the parent template never overrides, per (logical id, parameter) pair. An `accepted` member stops being reported because the nested default is the value this solution intends; a `knownDefects` member stops being reported while staying labelled a defect, which is what lets the check ship before the two fixes do.",
+      "turnsOff": "the report of a parameter of a nested stack that declares a Default which the parent template never overrides, per (logical id, parameter) pair. An `accepted` member stops being reported because the nested default is the value this solution intends; a `knownDefects` member stops being reported while staying labelled a defect, which is what let the check ship before the fixes for issues 1553 and 1558 did; that section is empty while no unfixed defect of this shape is known.",
       "premise": [
         "JUDGEMENT"
       ],
@@ -1859,7 +1859,7 @@
         "scripts/tests/test_nested_stack_parameters.py",
         "scripts/tests/nested_parameter_defaults.py"
       ],
-      "ratchetGap": "Closure and staleness are both enforced -- a finding in neither section fails, and a recorded member the scan no longer produces fails -- but nothing can check that a member is in the RIGHT section. Moving either known defect into `accepted` with a plausible sentence passes every test here; what it costs is a visible diff on a reasoned entry, which is the control, and it is a review control rather than a gate. The scan is also one level deep: it reads the AWS::CloudFormation::Stack resources of template.yaml, and a nested template declaring one of its own would not be followed. Measured on this tree, none does, so the gap is forward-looking rather than live.",
+      "ratchetGap": "Closure and staleness are both enforced -- a finding in neither section fails, and a recorded member the scan no longer produces fails -- but nothing can check that a member is in the RIGHT section. Recording a real defect in `accepted` with a plausible sentence passes every test here; what it costs is a visible diff on a reasoned entry, which is the control, and it is a review control rather than a gate. The scan is also one level deep: it reads the AWS::CloudFormation::Stack resources of template.yaml, and a nested template declaring one of its own would not be followed. Measured on this tree, none does, so the gap is forward-looking rather than live.",
       "issues": [
         "1553"
       ]
@@ -2552,7 +2552,7 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
+      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml, and the root parameter template.yaml passes to it, which the test derives from the wiring rather than by name), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
       "ratchet": "staleness",
       "ratchetEvidence": [
         "scripts/tests/test_model_surface_consistency.py"

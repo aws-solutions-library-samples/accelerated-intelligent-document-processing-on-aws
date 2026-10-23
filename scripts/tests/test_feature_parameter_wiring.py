@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Nested-stack parameters whose value, not just whose presence, decides a feature.
+"""Two nested-stack parameters whose value, not just whose presence, decides a feature.
 
 ``nested_parameter_defaults.py`` reports a defaulted nested parameter the parent does
 not pass at all. That is a presence check: it is satisfied by any value, including
@@ -13,10 +13,16 @@ parameters that check found unpassed, this module asserts what the parent passes
   pattern stack creates that output. Passing it unconditionally fails the deploy when
   MLflow is off (the output does not exist); passing a constant leaves the feature
   inert. Issue 1553.
+* ``pEmbedModel`` (bedrockkb) must come from a root parameter offering the same
+  choices and the same default, so every model the nested stack supports is
+  selectable and an existing deployment keeps the model it was created with.
+  Issue 1558.
 """
 
 from __future__ import annotations
 
+import re
+import sys
 from typing import Any
 
 import gate_premises
@@ -24,6 +30,7 @@ import pytest
 
 PARENT = gate_premises.PARENT_TEMPLATE
 PATTERN = "patterns/unified/template.yaml"
+KB = "nested/bedrockkb/template.yaml"
 
 
 def _template(path: str) -> dict:
@@ -122,4 +129,92 @@ def test_mlflow_logger_arn_is_the_pattern_output_exactly_when_it_exists() -> Non
         f"the values {PARENT} passes it is {expected!r}. When the two disagree the "
         "GetAtt names an output that does not exist, or the ARN is withheld while "
         "the logger exists."
+    )
+
+
+@pytest.mark.unit
+def test_kb_embedding_model_is_selectable_from_the_root_with_the_nested_choices() -> (
+    None
+):
+    parent = _template(PARENT)
+    nested = _template(KB)["Parameters"]["pEmbedModel"]
+
+    passed = _stack_parameters(parent, "DOCUMENTKB").get("pEmbedModel")
+    root_name = _ref(passed)
+    assert root_name is not None, (
+        f"{PARENT} must pass pEmbedModel to DOCUMENTKB as a Ref to a root parameter, "
+        f"got {passed!r}; without it the nested default decides for every "
+        "deployment (issue 1558)"
+    )
+    root = parent["Parameters"].get(root_name)
+    assert isinstance(root, dict), f"{root_name} is not a root parameter"
+
+    assert nested.get("AllowedValues"), "pEmbedModel declares no AllowedValues"
+    assert set(root.get("AllowedValues") or []) == set(nested["AllowedValues"]), (
+        f"{root_name} offers {root.get('AllowedValues')} but pEmbedModel accepts "
+        f"{nested['AllowedValues']}: a value only the root offers is rejected by the "
+        "nested stack, and one only the nested stack accepts cannot be chosen"
+    )
+    assert root.get("Default") == nested.get("Default"), (
+        f"{root_name} defaults to {root.get('Default')!r} but pEmbedModel to "
+        f"{nested.get('Default')!r}. The nested default is what every existing "
+        "deployment was created with, and changing an existing knowledge base's "
+        "embedding model is not supported, so the root default must match it."
+    )
+
+
+def _refs(node: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ("Ref", "Fn::Ref") and isinstance(value, str):
+                found.add(value)
+            elif key == "Fn::Sub":
+                text = value[0] if isinstance(value, list) else value
+                if isinstance(text, str):
+                    found.update(re.findall(r"\$\{([A-Za-z0-9:]+)[.}]", text))
+            found |= _refs(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _refs(item)
+    return found
+
+
+@pytest.mark.unit
+def test_headless_drops_every_root_parameter_only_the_knowledge_base_reads() -> None:
+    """A parameter read only by DOCUMENTKB has nothing to configure once it is gone.
+
+    The headless transform removes the knowledge-base stack. A root parameter whose
+    only reader was that stack would survive as a deploy-time choice that does
+    nothing, so it must be in ``parameters_to_remove``.
+    """
+    sdk_root = gate_premises.REPO_ROOT / "lib" / "idp_sdk"
+    if str(sdk_root) not in sys.path:
+        sys.path.insert(0, str(sdk_root))
+    from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+
+    template = _template(PARENT)
+    transformer = HeadlessTemplateTransformer()
+    stripped = transformer.kb_resources
+    resources = template["Resources"]
+    elsewhere = _refs(
+        {
+            key: value
+            for key, value in template.items()
+            if key not in ("Resources", "Metadata", "Parameters")
+        }
+    ) | _refs({key: value for key, value in resources.items() if key not in stripped})
+    only_kb = (
+        _refs({key: resources[key] for key in stripped if key in resources})
+        & set(template["Parameters"])
+    ) - elsewhere
+    assert only_kb, (
+        "no root parameter is read only by the knowledge-base stack; this test has "
+        "lost its subject (pEmbedModel's root parameter should be one)"
+    )
+    kept = sorted(only_kb - transformer.parameters_to_remove)
+    assert not kept, (
+        f"{kept} are read only by {sorted(stripped)}, which the headless transform "
+        "removes, and are not in parameters_to_remove, so a headless deployment "
+        "would offer a choice that configures nothing"
     )

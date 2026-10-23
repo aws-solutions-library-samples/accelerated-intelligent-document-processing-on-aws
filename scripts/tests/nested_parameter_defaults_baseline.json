@@ -113,15 +113,6 @@
       "reason": "Declared at patterns/unified/template.yaml:202 and read by nothing in that template -- it is the only entry here with referenced false, and the default therefore decides nothing. Vestigial rather than disabled: the extraction and classification model ids come from the configuration in DynamoDB. The parameter should be deleted, and until it is, `referenced: false` is what the gate re-checks -- wiring it to anything makes this a live default and fails."
     }
   },
-  "knownDefects": {
-    "DOCUMENTKB::pEmbedModel": {
-      "template": "nested/bedrockkb/template.yaml",
-      "referenced": true,
-      "defect": "Declared at nested/bedrockkb/template.yaml:90 with three AllowedValues and an amazon.titan-embed-text-v2:0 default. The parent passes nine other parameters to this resource and not this one, so the nested default decides the embedding model for every deployment and the two Cohere models docs/knowledge-base.md lists as supported cannot be selected. Unlike the MLflow entry nothing silently returns early -- the knowledge base works -- so what is lost is a documented choice rather than a feature.",
-      "issues": [
-        "1558"
-      ]
-    }
-  },
+  "knownDefects": {},
   "newEntryJustifications": []
 }

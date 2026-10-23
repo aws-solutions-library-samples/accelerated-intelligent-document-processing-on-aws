@@ -338,7 +338,7 @@ Parameters:
     AllowedValues:
       - "DISABLED"
       - "BEDROCK_KNOWLEDGE_BASE (Create)"
-    Description: Use document processing results as knowledge base content. Model access for amazon.titan-embed-text-v2:0 MUST be enabled in Amazon Bedrock.
+    Description: Use document processing results as knowledge base content. Model access for the embedding model selected in KnowledgeBaseEmbeddingModel (default amazon.titan-embed-text-v2:0) MUST be enabled in Amazon Bedrock.
 
   KnowledgeBaseVectorStore:
     Type: String
@@ -347,6 +347,18 @@ Parameters:
       - "OPENSEARCH_SERVERLESS"
       - "S3_VECTORS"
     Description: Choose vector store type for Bedrock Knowledge Base. S3 Vectors (default) for cost-effective storage with sub-second latency, OpenSearch Serverless for sub-millisecond queries.
+
+  KnowledgeBaseEmbeddingModel:
+    Type: String
+    Default: "amazon.titan-embed-text-v2:0"
+    # Mirrors pEmbedModel in nested/bedrockkb/template.yaml, which is what the
+    # value is passed to. All three produce 1024-dimension vectors, the size both
+    # vector stores' indexes are created with.
+    AllowedValues:
+      - "amazon.titan-embed-text-v2:0"
+      - "cohere.embed-english-v3"
+      - "cohere.embed-multilingual-v3"
+    Description: Bedrock embedding model the Document Knowledge Base indexes documents with. Model access for the chosen model MUST be enabled in Amazon Bedrock. Choose it when the knowledge base is first created; changing it on an existing stack is not supported.
 
   KnowledgeBaseModelId:
     Type: String
@@ -1507,6 +1519,7 @@ Metadata:
         Parameters:
           - DocumentKnowledgeBase
           - KnowledgeBaseVectorStore
+          - KnowledgeBaseEmbeddingModel
           - KnowledgeBaseModelId
       - Label:
           default: "Post Processing"
@@ -1674,6 +1687,8 @@ Metadata:
         default: "Reporting Bucket Name"
       DocumentKnowledgeBase:
         default: "Document Knowledge Base Configuration"
+      KnowledgeBaseEmbeddingModel:
+        default: "Knowledge Base Embedding Model"
       KnowledgeBaseModelId:
         default: "Knowledge Base Model Id"
       BedrockGuardrailId:
@@ -2407,6 +2422,7 @@ Resources:
         pChunkingStrategy: "Fixed-size chunking"
         pMaxTokens: 8192
         pVectorStoreType: !Ref KnowledgeBaseVectorStore
+        pEmbedModel: !Ref KnowledgeBaseEmbeddingModel
         LogLevel: !Ref LogLevel
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
 
