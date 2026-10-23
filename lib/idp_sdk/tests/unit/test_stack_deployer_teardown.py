@@ -112,8 +112,8 @@ def _contain_the_retry_environment_mutation() -> Any:
 
     This is containment of a real side effect, not test scaffolding.
     ``_cleanup_additional_resources`` sets ``AWS_MAX_ATTEMPTS=10`` and
-    ``AWS_RETRY_MODE=adaptive`` in the process environment at
-    ``_core/stack.py:1943`` and never restores them
+    ``AWS_RETRY_MODE=adaptive`` in the process environment at the top of
+    that function and never restores them
     (``test_retry_configuration_is_set_in_the_process_environment`` pins that).
     Because this file calls that function directly in about forty tests, without
     this fixture the variables persist for the remainder of the pytest session and
@@ -2378,6 +2378,30 @@ def test_force_delete_retries_the_policy_once_distributions_are_verified_gone(
         )
         deployer.cleanup_retained_resources("S1")
     assert order == ["verified", "policy:S1", "bucket"]
+
+
+def test_a_failed_policy_retry_does_not_skip_the_buckets(
+    aws_credentials: str, no_additional_cleanup: None, monkeypatch: pytest.MonkeyPatch
+):
+    """The retry runs after the distributions are verified gone. If it fails, that
+    is not a distribution failure: it must not be recorded as one, and it must not
+    stop the bucket phase the verification just cleared."""
+    deleted: list[str] = []
+    with mock_aws():
+        deployer = StackDeployer(region=REGION)
+        _create_stack(deployer, "S1", BUCKET_AND_FRIENDS)
+        monkeypatch.setattr(
+            deployer, "_verify_cloudfront_distributions_deleted", lambda _name: None
+        )
+
+        def explode(_identifier: str) -> None:
+            raise RuntimeError("NoCredentialsError")
+
+        monkeypatch.setattr(deployer, "_delete_own_response_headers_policy", explode)
+        monkeypatch.setattr(deployer, "_empty_and_delete_bucket", deleted.append)
+        results = deployer.cleanup_retained_resources("S1")
+    assert len(deleted) == 1
+    assert results["errors"] == []
 
 
 def _bda_client(

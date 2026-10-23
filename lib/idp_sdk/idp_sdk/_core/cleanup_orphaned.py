@@ -248,8 +248,9 @@ class OrphanedResourceCleanup:
         """Why a DELETED stack's *global* resource must still be left alone, or "".
 
         Discovery covers only the Regions it was given -- three by default from
-        the CLI -- while CloudFront distributions, response headers policies and
-        IAM policies are global and carry only the stack *name*. A stack deleted
+        the CLI -- while CloudFront distributions, response headers policies, IAM
+        policies and the account's S3 bucket listing are global and carry only
+        the stack *name* (a bucket's random suffix is stripped before matching). A stack deleted
         in a scanned Region and since recreated under the same name in an
         unscanned one therefore reads as DELETED, and its live resources were
         swept (#1533). So before a global resource is touched on the strength of
@@ -260,6 +261,18 @@ class OrphanedResourceCleanup:
         Region that cannot be read makes ownership unknown, and unknown means
         leave it alone -- the same rule ``get_stack_state`` applies with UNKNOWN.
         """
+        # Ask about the name discovery recorded, not the one parsed out of the
+        # resource: S3 forces bucket names to lowercase, and get_stack_state
+        # matches case-insensitively, so the parsed name may not be one
+        # CloudFormation answers to.
+        stack_name = next(
+            (
+                name
+                for name in self._deleted_stacks
+                if name.upper() == stack_name.upper()
+            ),
+            stack_name,
+        )
         if stack_name in self._presence_elsewhere:
             return self._presence_elsewhere[stack_name]
 
@@ -1167,6 +1180,16 @@ class OrphanedResourceCleanup:
                     continue
 
                 state, stack_info = self.get_stack_state(stack_name)
+
+                if state == "DELETED":
+                    # list_buckets is account-wide, so this sweep sees the buckets
+                    # of a same-named stack in every Region.
+                    elsewhere = self._still_present_elsewhere(stack_name)
+                    if elsewhere:
+                        results["skipped"].append(
+                            f"{bucket_name} (stack: {stack_name} - {elsewhere})"
+                        )
+                        continue
 
                 if state == "UNKNOWN":
                     continue

@@ -1306,6 +1306,26 @@ def test_iam_policies_of_a_stack_live_in_an_unscanned_region_are_kept(
 
 
 @pytest.mark.unit
+def test_buckets_of_a_stack_live_in_an_unscanned_region_keep_their_documents(
+    recreated_elsewhere,
+):
+    """``list_buckets`` is account-wide, so this is the sweep where a wrong DELETED
+    verdict costs documents. The bucket name is lowercase while the stack is
+    ``IDP-dead``, so this also pins that the Region check asks about the name
+    discovery recorded rather than the one parsed out of the bucket."""
+    seed_buckets()
+
+    results = recreated_elsewhere.cleanup_s3_buckets(auto_approve=True)
+
+    assert results["deleted"] == []
+    assert {DEAD_INPUT_BUCKET, DEAD_OUTPUT_BUCKET} <= surviving_buckets()
+    body = boto3.client("s3", region_name="us-east-1").get_object(
+        Bucket=DEAD_OUTPUT_BUCKET, Key="out/a.json"
+    )["Body"]
+    assert body.read() == b"{}"
+
+
+@pytest.mark.unit
 def test_unlisted_regions_mean_a_global_resource_is_left_alone(cleanup, monkeypatch):
     """ "Cannot tell whether it is gone everywhere" must mean "leave it"."""
     real_client = cleanup.session.client

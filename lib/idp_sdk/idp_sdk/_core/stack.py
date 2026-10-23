@@ -1813,10 +1813,6 @@ class StackDeployer:
             try:
                 self._verify_cloudfront_distributions_deleted(stack_name)
                 logger.info("CloudFront distributions verified as deleted")
-                # The distribution is what held the policy, so this is the first
-                # point at which it can be deleted. Idempotent: a policy already
-                # gone is skipped quietly.
-                self._delete_own_response_headers_policy(stack_identifier)
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"CloudFront verification failed: {error_msg}")
@@ -1832,6 +1828,17 @@ class StackDeployer:
                     "Skipping S3 bucket deletion to prevent orphaned CloudFront distributions"
                 )
                 return results
+
+            # The distribution is what held the policy, so this is the first point
+            # at which it can be deleted. Outside the verification `try` on
+            # purpose: a failure here is not a distribution failure and must not
+            # skip the bucket phase. Idempotent: a policy already gone is skipped.
+            try:
+                self._delete_own_response_headers_policy(stack_identifier)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to clean up CloudFront Response Headers Policy: {e}"
+                )
 
         # Phase 4: S3 Buckets (LoggingBucket last)
         if retained["s3_buckets"]:
@@ -1991,6 +1998,8 @@ class StackDeployer:
         failure.
         """
         owned = self._owned_response_headers_policy_ids(stack_identifier)
+        # None (unknown, already logged by the callee) and [] (this stack created
+        # no policy) both mean delete nothing; neither may fall back to a name.
         if not owned:
             return
 
@@ -2017,7 +2026,7 @@ class StackDeployer:
                 # InvalidIfMatchVersion, and the ETag is only available from a
                 # read of this same policy.
                 cloudfront_client.delete_response_headers_policy(
-                    Id=policy_id, IfMatch=response.get("ETag")
+                    Id=policy_id, IfMatch=response["ETag"]
                 )
                 logger.info(
                     f"Deleted CloudFront Response Headers Policy: {policy_name}"
