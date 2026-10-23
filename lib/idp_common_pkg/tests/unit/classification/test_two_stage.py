@@ -626,6 +626,55 @@ class TestBoundaryHintsDoNotLeakIntoSinglePass:
         assert A_CLASS_DESCRIPTION in text
 
 
+@pytest.mark.unit
+class TestEveryContentBuilderDemandsItsStage:
+    """⚠️ The one way this defect can come back without a symptom.
+
+    A content builder that defaulted ``stage`` would hand the full vocabulary
+    to any new call site that forgot to pass one: no type error, no failing
+    test, and the only symptom a larger bill — which is the shape of the
+    original defect. So ``stage`` is keyword-only with no default on every
+    builder and on the substitution dict, and that is asserted from the
+    signatures rather than from a sample call, so a builder added later is
+    covered without this test being edited.
+    """
+
+    @staticmethod
+    def _builders():
+        import inspect
+
+        for name, member in inspect.getmembers(
+            ClassificationService, predicate=inspect.isfunction
+        ):
+            if not name.startswith("_build_"):
+                continue
+            parameter = inspect.signature(member).parameters.get("stage")
+            if parameter is not None:
+                yield name, parameter
+
+    def test_there_are_builders_to_check(self):
+        """Non-vacuity: a rename that moved every builder out of the
+        ``_build_*`` namespace would otherwise leave this class green and
+        checking nothing."""
+        assert list(self._builders())
+
+    def test_stage_is_keyword_only_and_required(self):
+        import inspect
+
+        offenders = {
+            name: (parameter.kind.description, parameter.default)
+            for name, parameter in self._builders()
+            if parameter.kind is not inspect.Parameter.KEYWORD_ONLY
+            or parameter.default is not inspect.Parameter.empty
+        }
+        assert not offenders, offenders
+
+    def test_omitting_the_stage_raises_rather_than_rendering_the_vocabulary(self):
+        service = _service(strategy="single_pass")
+        with pytest.raises(TypeError, match="stage"):
+            service._build_classification_substitutions("text", "classes")  # type: ignore[call-arg]
+
+
 # --------------------------------------------------------------------------
 # Stage A at packet granularity
 # --------------------------------------------------------------------------

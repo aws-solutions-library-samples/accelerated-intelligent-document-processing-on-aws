@@ -178,9 +178,21 @@ call exists to do.
 None of this is observable with the shipped prompts — the shipped segmentation
 prompts reference neither vocabulary placeholder, and the shipped one-stage
 prompts do not reference `{BOUNDARY_HINTS}` — so it matters for an edited
-prompt, which every one of these is. The UI's prompt preview
-(`PromptPreview.tsx`) models the same rules, so what it shows for a segmentation
-step is what the stage sends.
+prompt, which every one of these is.
+
+`stage` is a **keyword-only parameter with no default** on every content
+builder and on `_build_classification_substitutions`, which is the point worth
+preserving through a refactor: a call site that omitted it would get the full
+vocabulary back with no type error and no failing test, and the only symptom
+would be the bill.
+
+The UI's prompt preview (`PromptPreview.tsx`) applies the same rules about
+which placeholder is empty for which step, so a step's preview does not
+promise content the call will not carry. It is not byte-equal to the
+request, and is not meant to be: the preview renders a shorter
+`<document-type-hints>` block than the service emits, and substitutes a
+descriptive marker for `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`. Read it for
+what a step *includes*, not as the exact bytes.
 
 ## Sequence Segmentation Approach
 

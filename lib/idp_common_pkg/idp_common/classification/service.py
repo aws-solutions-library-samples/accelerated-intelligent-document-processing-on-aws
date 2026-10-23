@@ -1688,6 +1688,11 @@ class ClassificationService:
     # are all shared between single-pass, Stage A and Stage B. So every one of
     # them asks these two questions instead of each deciding for itself —
     # which is how the guarantee came to hold on one of three paths.
+    #
+    # ⚠️ Every content builder therefore takes `stage` as a KEYWORD-ONLY
+    # parameter with NO default. A default would let a new call site reinstate
+    # the whole vocabulary by omission: no type error, no failing test, and the
+    # only symptom a larger bill.
 
     def _stage_withholds_class_vocabulary(self, stage: str) -> bool:
         """Whether ``stage`` must send no class vocabulary and no examples.
@@ -1919,27 +1924,31 @@ class ClassificationService:
         self,
         document_text: str,
         class_names_and_descriptions: str,
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
         attributes_as_table: bool = False,
     ) -> Dict[str, str]:
         """
         Build the standard placeholder substitution dict for classification
         prompts.
 
-        Always includes ``DOCUMENT_TEXT`` and ``CLASS_NAMES_AND_DESCRIPTIONS``.
-        Lazily includes the optional
-        ``CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS`` substitution — keys
-        not referenced by the template incur no extra cost (the underlying
-        :func:`format_prompt` only substitutes referenced placeholders).
-        Computing the attribute listing is cheap (in-memory schema walk),
-        but we still skip it when the active prompt template does not
-        reference it, to keep logs/metrics clean.
+        Every key is included on every call, the optional
+        ``CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS`` among them, because
+        :func:`format_prompt` substitutes only the placeholders the template
+        actually references — so a key the prompt does not use costs nothing in
+        the request. The listings themselves are computed unconditionally and
+        eagerly: each is an in-memory schema walk, and making one conditional
+        on a substring search of the template would buy nothing measurable
+        while giving the dict two shapes.
 
         **Every vocabulary placeholder is rendered here and nowhere else**, so
         that "Stage A carries no class vocabulary" is decided once. Each of the
         three content builders used to answer it separately and two of them
         answered it differently, which left the guarantee holding on the page
-        path with no context pages and nowhere else.
+        path with no context pages and nowhere else. ``stage`` is keyword-only
+        and has no default for the same reason: a caller that omitted it would
+        get the full vocabulary with no type error and no failing test, which
+        is exactly the symptomless failure this arrangement exists to prevent.
 
         Args:
             document_text: Resolved document/page text to substitute.
@@ -1994,7 +2003,8 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """
         Build content array, automatically deciding whether to use image placeholder processing.
@@ -2036,7 +2046,8 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """
         Build content array with image inserted at DOCUMENT_IMAGE placeholder if present.
@@ -2119,7 +2130,8 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """
         Build content array without DOCUMENT_IMAGE placeholder (standard processing).
@@ -2241,7 +2253,8 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """
         Build content array with support for optional FEW_SHOT_EXAMPLES and DOCUMENT_IMAGE placeholders.
@@ -2316,7 +2329,8 @@ class ClassificationService:
         image_content: Optional[bytes],
         before_images: List[bytes],
         after_images: List[bytes],
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """Build the request content for the ``contextPagesCount > 0`` path.
 
@@ -2392,7 +2406,8 @@ class ClassificationService:
         image_content: Optional[bytes],
         before_images: List[bytes],
         after_images: List[bytes],
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """Render one segment of a context-path prompt, inserting context images.
 
@@ -4885,7 +4900,8 @@ class ClassificationService:
         task_prompt_template: str,
         paged_text: str,
         page_images: List[tuple[str, bytes]],
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """Build the request content for one packet call.
 
@@ -4927,7 +4943,8 @@ class ClassificationService:
         prompt_segment: str,
         paged_text: str,
         page_images: List[tuple[str, bytes]],
-        stage: str = STAGE_CLASSIFICATION,
+        *,
+        stage: str,
     ) -> List[Dict[str, Any]]:
         """Render one segment of a packet prompt, inserting the page images.
 
