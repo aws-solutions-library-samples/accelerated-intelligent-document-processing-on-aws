@@ -139,18 +139,19 @@ old setting becomes and the cases where the conversion is not a pure move.
   model's output limit, on a call the selected strategy makes. Each is named by
   its path, for example `classification.two_stage.section_classification.llm.model`.
 
-## Classification Methods Across Patterns
+## Classification in BDA mode and pipeline mode
 
-The solution supports multiple classification approaches that vary by pattern:
+`use_bda` chooses which of the two runs. They classify in entirely different
+places, which is why only one of them is configurable here:
 
-### Pattern 1: BDA-Based Classification
+### BDA mode (`use_bda: true`)
 
 - Classification is performed by the BDA (Bedrock Data Automation) project configuration
 - Uses BDA blueprints to define classification rules
 - Not configurable inside the GenAIIDP solution itself
 - Configuration happens at the BDA project level
 
-### Pipeline Mode: Bedrock LLM-Based Classification
+### Pipeline mode (`use_bda: false`)
 
 In Pipeline mode, one-stage classification works at one of two granularities:
 
@@ -561,7 +562,7 @@ classification:
 |---------|---------|-------------|
 | `validation.enforceValidClasses` | `true` | When `true`, validate the predicted class and re-prompt on out-of-vocabulary results. When `false`, an invalid class is logged and used as-is. |
 | `validation.maxValidationRetries` | `2` | Maximum number of re-prompts. `0` disables retries (a single invalid prediction goes straight to the fallback). |
-| `fallback_class` | `unclassified` | Class assigned when retries are exhausted. Set to one of your defined classes, or the built-in `unclassified`. One setting for the whole classification step; extraction reads it too. |
+| `fallback_class` | `unclassified` | Class assigned when retries are exhausted. Not validated against your class list — any string is stored, so a typo becomes a class name no extraction schema matches. Use one of your defined classes, or the built-in `unclassified`; clearing it gives `unclassified`. One setting for the whole classification step; extraction reads it too. |
 
 > **Catch-all class:** if you want an explicit "other"/"unknown" bucket, define
 > it as one of your classes — the model will then be able to select it
@@ -719,12 +720,17 @@ Despite its strengths in handling full-document context, this granularity has se
 
 **Scalability Challenges**: Not ideal for very large or visually complex document sets. In such cases, page granularity is more appropriate.
 
-### Pattern 3: UDOP-Based Classification
+### The SageMaker UDOP backend is not deployable from this solution
 
-- Classification is performed by a pre-trained UDOP (Unified Document Processing) model
-- Model is deployed on Amazon SageMaker
-- Performs multi-modal page-level classification (classifies each page based on OCR data and page image)
-- Not configurable inside the GenAIIDP solution
+`ClassificationService` accepts `backend="sagemaker"` alongside the default
+`"bedrock"`, which routes page classification to a pre-trained UDOP (Unified
+Document Processing) model on a SageMaker endpoint. **Nothing in the deployed
+solution reaches it**: no template takes a UDOP endpoint parameter, and the
+classification Lambda constructs the service without a `backend` argument, so it
+always takes the Bedrock default. The parameter is usable only by code calling
+the library directly, with an endpoint it supplies itself.
+
+Everything else on this page describes the Bedrock path.
 
 ## Section Splitting Strategies
 
@@ -1687,7 +1693,7 @@ You can define custom document classes through the Web UI configuration:
 
 ## Image Placement with {DOCUMENT_IMAGE} Placeholder
 
-Pattern 2 supports precise control over where document images are positioned within your classification prompts using the `{DOCUMENT_IMAGE}` placeholder. This feature allows you to specify exactly where images should appear in your prompt template, rather than having them automatically appended at the end.
+Pipeline mode supports precise control over where document images are positioned within your classification prompts using the `{DOCUMENT_IMAGE}` placeholder. This feature allows you to specify exactly where images should appear in your prompt template, rather than having them automatically appended at the end.
 
 ### How {DOCUMENT_IMAGE} Works
 
@@ -1794,7 +1800,7 @@ For documents with multiple pages, the system provides comprehensive image suppo
 
 ## Optional `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` Placeholder
 
-Pattern 2 classification prompts support an **optional** placeholder that
+Pipeline-mode classification prompts support an **optional** placeholder that
 expands to each class's name, description, **and the names of the schema
 attributes (extraction fields)** declared for that class. This gives the
 classifier richer disambiguation signal — particularly useful when two
@@ -1911,7 +1917,7 @@ If you have a class with hundreds of attributes, prefer:
 
 1. Writing a richer class `description` that captures distinguishing
    characteristics, **or**
-2. Adding [few-shot classification examples](#setting-up-few-shot-examples-in-pattern-2)
+2. Adding [few-shot classification examples](#setting-up-few-shot-examples)
    for that class.
 
 ### Mixing with the legacy placeholder
@@ -1921,7 +1927,7 @@ For example you could keep the compact `{CLASS_NAMES_AND_DESCRIPTIONS}`
 list for an overview block and add `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
 in a "for ambiguous cases, consult the schema fields" sub-section.
 
-## Setting Up Few Shot Examples in Pattern 2
+## Setting Up Few Shot Examples
 
 Classification supports few-shot example prompting at either granularity and under either strategy, which can significantly improve classification accuracy by providing concrete document examples. The `rvl-cdip-with-few-shot-examples` preset in `config_library/unified/` is a worked example; examples are defined on a class, so no preset is required to use them.
 
@@ -1935,7 +1941,7 @@ Classification supports few-shot example prompting at either granularity and und
 
 ### Few Shot Example Configuration
 
-In Pattern 2, few-shot examples are configured within document class definitions using JSON Schema format:
+Few-shot examples are configured within document class definitions using JSON Schema format:
 
 ```yaml
 classes:
@@ -2361,7 +2367,7 @@ Two cheap signals are already reliable and cost nothing extra:
 
 ## Regex-Based Classification for Performance Optimization
 
-Pattern 2 now supports optional regex-based classification that can provide significant performance improvements and cost savings by bypassing LLM calls when document patterns are recognized.
+Pipeline mode supports optional regex-based classification that can provide significant performance improvements and cost savings by bypassing LLM calls when document patterns are recognized.
 
 ### Document Name Regex (All Pages Same Class)
 
