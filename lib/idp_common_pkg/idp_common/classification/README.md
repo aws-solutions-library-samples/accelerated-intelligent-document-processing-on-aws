@@ -13,8 +13,10 @@ This module provides document classification capabilities for the IDP Accelerato
 - **Optional regex-based classification for enhanced performance**
   - Document name regex matching when all pages should be classified as the same class
   - Page content regex matching for multi-modal page-level classification
-- **Valid-class enforcement with re-prompt/retry** (page-level) — rejects
-  out-of-vocabulary predictions and re-prompts the model with the allowed classes
+- **Valid-class enforcement with re-prompt/retry** on every call that assigns a
+  class — one stage at page *and* packet granularity, and two-stage section
+  classification — rejects out-of-vocabulary predictions and re-prompts the model
+  with the allowed classes
 - Direct integration with the Document data model
 - Support for both text and image content
 - Concurrent processing of multiple pages
@@ -232,8 +234,11 @@ Two things this is **not** a workaround for, both measured: prompt-level wording
 
 Two OPTIONAL keys in the model's response are parsed alongside `class` and
 `document_boundary` ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
-Neither used to be read by anything, even though `confidence` was documented as
-supported and `classification_reason` is asked for by the **default** prompt.
+Both are read and persisted whenever the model returns them, whatever asked for
+them — the shipped `confidence.mode` composes the instruction, the **default**
+task prompt asks for `classification_reason`, and a hand-written prompt asking
+for either is honoured because the parser is not gated on the setting. The table
+below is where each one lands.
 
 | Key | Lands on | Persisted as |
 |-----|----------|--------------|

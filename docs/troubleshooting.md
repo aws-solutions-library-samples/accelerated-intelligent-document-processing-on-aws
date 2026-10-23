@@ -193,10 +193,14 @@ exist in the configuration the document was processed under, so there was no sch
 to extract against and the section holds no data. Three causes: a class renamed or
 deleted while documents were in flight; an old document reprocessed under a
 configuration that no longer defines its class; or the classifier returned a class
-outside the configured vocabulary with `validation.enforceValidClasses: false`, which
-stores the model's class verbatim. With enforcement on (the default), page and packet
-granularity and two-stage section classification all re-prompt and then assign
-`fallback_class` instead. Add the class to the configuration, reclassify the document
+outside the configured vocabulary with `enforceValidClasses: false`, which
+stores the model's class verbatim. That setting lives inside the `validation`
+block of each call that assigns a class —
+`classification.one_stage.llm.validation.enforceValidClasses` and
+`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+— and there is no `classification.enforceValidClasses`. With enforcement on (the
+default), page and packet granularity and two-stage section classification all
+re-prompt and then assign `fallback_class` instead. Add the class to the configuration, reclassify the document
 under the current one, or turn enforcement on. The same section also carries
 `assessment_skipped_confidence_unavailable`, because it has no confidence scores
 either — so with enforcement off these arrive at a rate set by model output rather

@@ -239,6 +239,27 @@ When classifying documents:
 - **Benefit**: Model sees visual and/or textual examples of each class to make better classification decisions
 - **Filtering**: Only examples with non-empty `x-aws-idp-class-prompt` fields are included
 
+⚠️ **Which classification prompt carries the examples depends on
+`classification.strategy`.** Every prompt example on this page edits
+`classification.one_stage.page.task_prompt`, which is the right place under
+`strategy: single_pass` (*One stage* in the configuration editor) — the default.
+Under `strategy: two_stage`:
+
+- `{FEW_SHOT_EXAMPLES}` belongs in
+  `classification.two_stage.section_classification.llm.task_prompt`, the call
+  that assigns the class. The shipped prompt there carries the placeholder, so
+  defining examples is enough.
+- The **segmentation** prompts
+  (`classification.two_stage.segmentation.llm.page.task_prompt` and
+  `…llm.packet.task_prompt`) deliberately carry no class vocabulary and no
+  examples — they carry `{BOUNDARY_HINTS}` instead. Withholding the class list
+  and the examples from the boundary pass is where two stage's prefix saving
+  comes from, so adding `{FEW_SHOT_EXAMPLES}` to a segmentation prompt spends
+  exactly the tokens the strategy exists to avoid, on a call that is only being
+  asked where documents start.
+- Editing `one_stage.page.task_prompt` under `two_stage` changes nothing and
+  raises no error, because that block is not read.
+
 ### Extraction Process
 
 When extracting attributes from documents:

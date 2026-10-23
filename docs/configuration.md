@@ -509,21 +509,47 @@ classification:
     llm:
       confidence:
         mode: topk          # topk (default) | verbalized | off
-        top_k_candidates: 3 # alternative classes returned per page
+        top_k_candidates: 3 # total ranked candidates, including the chosen class
 ```
 
-Two-stage section classification has the same block at
-`classification.two_stage.section_classification.llm.confidence`.
+⚠️ **This block belongs to the call that assigns the class, so under
+`classification.strategy: two_stage` it is a different one.** The two-stage
+equivalent is `classification.two_stage.section_classification.llm.confidence`,
+and the `one_stage` block above is not read at all — editing it under two stage
+changes nothing and raises no error. Segmentation has no confidence block,
+because it assigns no class. See [Classification
+Configuration](#classification-configuration).
 
-Each page's classification returns its top-K candidate classes with
-probabilities, giving a per-page confidence you can threshold on and a visible
-reason when a page is ambiguous.
+`top_k_candidates` is the size of the whole ranked list **including** the class
+the model chose, which must be first — so `3` means the chosen class plus two
+alternatives. It accepts 2 to 10, and is reduced automatically to the number of
+configured classes when that is smaller.
 
-⚠️ **It costs output tokens on every page.** Unlike extraction confidence, which
-is per *section*, this scales with page count. Measured at roughly **+17% of the
-classification step**, which is a small share of a typical bill because
-classification is cheap relative to extraction — but on a page-heavy corpus it is
-not free. Set `mode: off` to ask for no confidence.
+**Why `topk` is the shipped mode rather than `off` or `verbalized`.** A single
+self-reported number is usually poorly calibrated: small models answer ~0.95
+almost everywhere, which is worse than no score because it invites escalation on
+noise. Ranking alternatives against each other is what puts pressure on the
+number, so `topk` is the mode that produces something worth thresholding on.
+`off` is the right setting for a deployment that will not act on the score — it
+is the only one that saves the tokens. The measurement behind that choice is in
+the [classification confidence
+study](./benchmarking/studies/classification-confidence.md).
+
+**What the score is per.** Not always per page:
+
+| Configuration | One score per |
+|---|---|
+| `single_pass`, `granularity: page` | page |
+| `single_pass`, `granularity: packet` | segment the call returns |
+| `two_stage` | section |
+
+Only the first case multiplies by page count.
+
+⚠️ **At page granularity it costs output tokens on every page.** Unlike
+extraction confidence, which is per *section*, that case scales with page count.
+Measured at roughly **+17% of the classification step**, which is a small share
+of a typical bill because classification is cheap relative to extraction — but on
+a page-heavy corpus it is not free. Set `mode: off` to ask for no confidence.
 
 See [Classification](./classification.md) for the full reference, including how the
 score reaches the UI and what a `None` confidence means.
@@ -1087,17 +1113,146 @@ The evaluation framework uses [Stickler](https://github.com/awslabs/stickler) as
 
 For detailed evaluation capabilities and best practices, see [evaluation.md](evaluation.md).
 
+## Classification Configuration
+
+Every classification setting lives inside the model **call** that reads it, so
+the first thing to settle is which calls you are making. That is
+`classification.strategy`:
+
+| `classification.strategy` | Web UI label | Calls it makes |
+|---|---|---|
+| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the boundaries and the classes together |
+| `two_stage` | **Two stage** | A *segmentation* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
+
+*One stage* and *Two stage* are the labels the configuration editor's form view
+shows. The stored value is `single_pass` or `two_stage` — write that in the
+editor's YAML or JSON view and in any file you upload, because the form labels
+are not accepted as values and a save using one is refused.
+
+### Where each setting lives
+
+```yaml
+classification:
+  strategy: single_pass            # single_pass (One stage) | two_stage
+  fallback_class: unclassified     # the class assigned when none can be decided
+
+  one_stage:                       # read only under strategy: single_pass
+    granularity: page              # page | packet
+    page:
+      contextPagesCount: "0"       # neighbouring pages sent as context; each call carries up to 2k+1 pages
+      system_prompt: ...
+      task_prompt: ...             # must ask for class + document_boundary
+    packet:
+      window_pages: "20"           # most pages one packet call covers; 0 never windows
+      overlap_pages: "2"           # pages repeated between adjacent windows; must be smaller
+      system_prompt: ...
+      task_prompt: ...             # must ask for a segments array
+    llm:                           # the model block for this call
+      model: us.amazon.nova-2-lite-v1:0
+      temperature: "0.0"
+      top_p: "0.0"
+      top_k: "5"
+      max_tokens: ""               # empty uses the model's maximum
+      reasoning_effort: medium     # reasoning-capable models only; ignored by Nova
+      model_lambda_hook_arn: ""    # used when model is 'LambdaHook'
+      modality: {text: "", images: ""}
+      image: {target_width: "", target_height: ""}
+      validation:
+        enforceValidClasses: true  # re-prompt on a class outside the vocabulary
+        maxValidationRetries: "2"  # then assign fallback_class
+      confidence: {mode: topk, top_k_candidates: "3"}
+
+  two_stage:                       # read only under strategy: two_stage
+    segmentation:
+      method: llm
+      llm:
+        granularity: page          # this call's own granularity
+        page: {contextPagesCount: "0", system_prompt: ..., task_prompt: ...}
+        packet: {window_pages: "20", overlap_pages: "2", system_prompt: ..., task_prompt: ...}
+        boundary_hints: none       # none | class_names — what {BOUNDARY_HINTS} renders
+        model: us.amazon.nova-2-lite-v1:0
+        # ...the same model settings as above, minus validation and confidence:
+        # this call assigns no class
+    section_classification:
+      method: llm
+      pages: first_k               # first | first_k | all — pages sent per section
+      k: "2"                       # with first_k
+      llm:
+        model: us.amazon.nova-2-lite-v1:0
+        system_prompt: ...
+        task_prompt: ...
+        # ...plus validation and confidence, as above
+
+  file_shape:                      # applies under both strategies
+    sectionSplitting: llm_determined
+    maxPagesForClassification: ALL
+```
+
+Four notes on reading that:
+
+- **Only the active strategy's block is read.** A setting written in the inactive
+  one validates, saves and does nothing. This is also why `granularity` appears
+  twice: `one_stage.granularity` is the one in force under `single_pass`, and
+  `two_stage.segmentation.llm.granularity` under `two_stage`.
+- **`reasoning_effort` and `model_lambda_hook_arn` are per call**, in each
+  `llm` block, like the model and its parameters. Neither appears in
+  `base-classification.yaml`, so classification runs them at their field
+  defaults — `medium` and unset — until you write them; the configuration editor
+  offers both on each call. `reasoning_effort` is read only by models that have
+  an effort control (Claude Sonnet/Opus/Fable, OpenAI GPT-5.x and GPT-6, xAI
+  Grok — the legal tokens differ per family) and is ignored by the Nova family,
+  including the shipped default model. It is not validated at save time, so a
+  value the model does not accept surfaces as a Bedrock error at run time.
+- **`validation` and `confidence` exist only on the two calls that assign a
+  class** — `one_stage.llm` and `two_stage.section_classification.llm`. Each
+  carries four editable confidence prompts (`task_prompt_topk`,
+  `task_prompt_verbalized`, and the `_packet` variants used at packet
+  granularity), spliced into the call's own task prompt.
+- **`fallback_class` is not validated against your class list.** It accepts any
+  string; the built-in value is `unclassified`. Pointing it at one of your own
+  classes is supported and means extraction then runs that class's schema over a
+  document whose class could not actually be decided — which may be what you
+  want, or may not.
+
+For how to **choose** between the strategies, the granularities,
+`boundary_hints`, the window settings and `pages`/`k` — with the measured cost
+and accuracy figures behind each — see
+[Classification](./classification.md#choosing-granularity-modality-and-strategy).
+The authoritative list of every key with its shipped default and an inline
+rationale is
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+
 ## Section Splitting Strategies
 
-Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.file_shape.sectionSplitting` configuration field:
+Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.file_shape.sectionSplitting` configuration field, and applies identically under both strategies:
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire document as a single section. At page granularity the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); at packet granularity it takes the first segment's class. Simplest approach for single-document processing.
+- **`disabled`**: Treats the entire file as a single section. At **either**
+  granularity its class comes from a page-weighted vote across the segments that
+  were detected — each segment casts one vote per page it covers — counting only
+  segments carrying a class the configuration defines. A tie goes to the earliest
+  segment carrying a tied class, and the first segment's class is used only when
+  no segment carries a configured class at all. Simplest approach for
+  single-document processing.
   
 - **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   
-- **`llm_determined`** (default): Uses LLM boundary detection with "Start"/"Continue" indicators to intelligently segment multi-document packets. Best for complex scenarios where document boundaries are not obvious.
+- **`llm_determined`** (default): Uses whatever boundary signal the active call
+  produces — a per-page `start`/`continue` verdict at page granularity, and a
+  `segments` array of page ranges at packet granularity or from two-stage
+  segmentation. Best for complex scenarios where document boundaries are not
+  obvious.
+
+⚠️ **`disabled` and `page` are assertions, not preferences.** They replace
+boundary detection with a claim about the file rather than nudging the model, and
+nothing downstream recovers if the claim is wrong: a packet of eight documents
+declared `disabled` becomes one section with one extraction over all of it. They
+are also the only two values that let a single-class configuration, or a
+document-name regex match, skip the model call entirely — under `llm_determined`
+that call still runs, because the class may be known while the boundaries are
+not. See
+[Classification](./classification.md#what-decides-the-choice) for which to pick.
 
 ### Configuration Example
 
@@ -1748,9 +1903,13 @@ the bound from the worse of the planner's two regimes rather than from a formula
 so on a document with uneven — or entirely absent — text per page the clamp can
 engage *earlier* than the table says, never later.
 
-This also reaches stages other than extraction. Holistic classification sends every
-page of a packet in one request, so a packet over 20 pages now has its page images
-downscaled at classification time too.
+This also reaches stages other than extraction. Classification at packet
+granularity (`classification.one_stage.granularity: packet`, or
+`classification.two_stage.segmentation.llm.granularity: packet`) sends up to
+`window_pages` pages per request, so the downscale is reached only when that
+setting is raised above 20 or set to `0`, which never windows and sends the whole
+packet in one request. At the shipped `window_pages: 20` a packet is split into
+windows before it reaches the threshold.
 
 **What the re-encode costs.** It removes roughly 15% of the image tokens. Whether
 that costs *accuracy* depends on the model: Claude 4.7+, Opus 5 and Sonnet 5

@@ -81,9 +81,9 @@ interface PromptPreviewProps {
  * option.
  */
 const STEPS = [
-  { value: 'classification', label: 'Classification' },
-  { value: 'classification_segmentation', label: 'Classification: segmentation (two stage)' },
-  { value: 'classification_section', label: 'Classification: section classification (two stage)' },
+  { value: 'classification', label: 'Classification: one stage' },
+  { value: 'classification_segmentation', label: 'Classification: segmentation (Two stage)' },
+  { value: 'classification_section', label: 'Classification: section classification (Two stage)' },
   { value: 'extraction', label: 'Extraction' },
   { value: 'confidence', label: 'Confidence Assessment' },
   { value: 'summarization', label: 'Summarization' },
@@ -1177,8 +1177,8 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
       let task = String(extraction.task_prompt ?? '');
       if (integrated) {
         // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
-        // the 1S-TopK template, Advanced the tool-based one. (Previously the
-        // preview showed the Advanced template for both.)
+        // the 1S-TopK template, Advanced the tool-based one. The two differ, so
+        // picking by mode is load-bearing rather than cosmetic.
         const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
         const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
         task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');

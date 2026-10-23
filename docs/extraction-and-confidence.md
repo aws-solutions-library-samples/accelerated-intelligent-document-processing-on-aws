@@ -810,8 +810,8 @@ carries few enough pages that the clamp engages only at about **101 pages**; at
 `max_concurrent_batches: 5` it is about 51, at 2 about 21, and with sharding off
 (`max_concurrent_batches: 1`) it is 11. Because `max_concurrent_batches` caps the
 number of shards as well as the parallelism, *raising* it makes each request smaller
-and the threshold higher. Holistic classification, which sends a whole packet in one
-request, is affected on the same >20-image rule.
+and the threshold higher. Classification at packet granularity is affected on the same >20-image rule,
+which is why `classification.one_stage.packet.window_pages` ships at 20.
 
 Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5,
 Opus 5.5 and Sonnet 5 it is about 20% below the resolution they would otherwise use,
@@ -1566,11 +1566,14 @@ extraction:
 > reports them, where the remedy is. A section whose *named* class is missing from
 > the configuration is **not** an exception and does publish: the section was
 > expected to hold data and holds none. How often that arrives depends on your
-> classification configuration — with `validation.enforceValidClasses` on (the
+> classification configuration — with `enforceValidClasses` on (the
 > default) every call that assigns a class re-prompts and then assigns
 > `fallback_class`, so it needs a configuration edit, but `enforceValidClasses:
 > false` stores an out-of-vocabulary prediction verbatim, so there the rate follows
-> model output and `ConfidenceUnavailableThreshold` is the lever.
+> model output and `ConfidenceUnavailableThreshold` is the lever. The setting sits
+> in each class-assigning call's own `validation` block
+> (`classification.one_stage.llm.validation.enforceValidClasses`, and
+> `classification.two_stage.section_classification.llm.validation.enforceValidClasses`).
 > `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),

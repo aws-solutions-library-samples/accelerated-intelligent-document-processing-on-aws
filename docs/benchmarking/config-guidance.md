@@ -1966,6 +1966,20 @@ running header on every page, expect 3 sections per document until #750 lands, a
 advanced mode (which rejoins the section before validation) over turning splitting off.
 The Haiku 4.5 classifier recommendation of the v0.6.7 edition is re-measured in §5.
 
+**Two values this cell does not cover.** `sectionSplitting` has a third value,
+`page`, which asserts one document per page; it is not in this matrix, so this
+study compares two of three. Like `disabled` it is an assertion rather than a
+preference, and it is the right answer only for a corpus of single-page documents
+or one where over-splitting is cheaper than merging; on the three fixtures above
+that are one multi-page document it is wrong by construction, for the same reason
+`disabled` is wrong on a packet. The running-header shape has
+also been measured against **`granularity: packet`** rather than against
+`sectionSplitting`: a 3-page reprinted-header statement returned 1 section at
+packet granularity where page granularity returned 3, with the mirror-image cost
+that two 3-page statements in one file merged into 1 where page granularity got 2.
+That is a separate axis from this cell and not part of this matrix; see
+[Classification](../classification.md#neither-granularity-dominates-and-the-failure-modes-are-opposite).
+
 ### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection` — one new failure
 
 Same design as the v0.6.7 study: `twodocs_2x20` is two complete 20-row statements in one

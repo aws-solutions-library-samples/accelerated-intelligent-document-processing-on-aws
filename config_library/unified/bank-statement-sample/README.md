@@ -77,7 +77,12 @@ every classification setting comes from the system defaults
 A multi-statement packet is therefore segmented from the per-page boundary
 signal. To have the model see the whole packet in one call instead — which is
 also what makes classification cost scale with documents rather than pages — set
-`classification.one_stage.granularity: packet`.
+`classification.one_stage.granularity: packet`. A packet longer than
+`classification.one_stage.packet.window_pages` (20 by default) is then split into
+overlapping windows and merged, which keeps a request under the 20-image-block
+threshold above which Bedrock downscales every image to 2,000 px. Keep
+`window_pages` at or below 20 while images are on, and no smaller than your
+longest single document.
 
 ### Extraction Settings
 

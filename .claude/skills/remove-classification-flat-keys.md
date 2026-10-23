@@ -8,44 +8,93 @@ Since 0.9 every one of them is converted on read; this skill removes that
 conversion. Do not start it because the code looks redundant: the conversion is
 what lets an old **pinned revision** load.
 
-## 1. First check: no retained revision predates 0.9
+## 1. First check: census what is still stored at the old shape
 
-A profile head is converted and written back the first time 0.9 code resolves it,
-so heads stop carrying flat keys on their own. A **revision body is immutable**: it
-is converted in memory on every load (`ConfigurationManager._load_revision_config`
-→ `IDPConfig(**body)`) and never rewritten. Removing the conversion makes every
-pre-0.9 revision either fail validation or — worse — load with its classification
-settings silently replaced by defaults, so a test run or reprocess pinned to it
-would run under a configuration nobody chose.
+Two stored things can hold flat keys. ⚠️ **Both have to be checked, and the
+heads are the half that is easy to get wrong.**
 
-So, before anything else, establish that no deployment still retains a pre-0.9
-revision:
+**A revision body is immutable.** It is converted in memory on every load
+(`ConfigurationManager._load_revision_config` → `IDPConfig(**body)`) and never
+rewritten, so a pre-0.9 body stays pre-0.9 for as long as it is retained.
+
+**A profile head is not guaranteed to have converged either.** The only thing
+that moves a head onto the current shape by itself is the write-back in
+`ConfigurationManager.get_merged_configuration`, and it is conditional three
+ways. The configuration editor reads through `get_raw_configuration`, which
+relocates keys in memory and writes nothing back. The write is skipped when the
+resolved configuration already matches what is stored. And
+`_backfill_may_be_persisted` **refuses** it for a profile whose published
+revision was cut before revisions recorded a `storedHash`, because rewriting the
+head would destroy the `UpdatedAt <= createdAt` comparison that is that
+revision's only integrity proof — it also fails closed when the revision index
+cannot be read. A profile in that state is converted on every read and keeps the
+old shape in storage indefinitely. What lifts it is a **save** (an editor save,
+Save As Version, `idp-cli config-upload`, or a stack deployment for `default`
+and the managed presets), because a save records a hash and stores the converted
+body; a profile nobody saves again never converges. Nothing sweeps user profiles
+at upgrade time, so on a stack that has been through several releases expect to
+find heads stored at more than one configuration format, all of them resolving
+correctly on read.
+
+Removing the conversion makes each of those — head or body — either fail
+validation or, worse, load with its classification settings silently replaced by
+defaults, so a run against it would use a configuration nobody chose.
+
+So, before anything else, census both. For a stack you can reach (read-only):
+
+```python
+import boto3
+from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.migrations._version import is_at_or_after
+
+manager = ConfigurationManager()      # needs CONFIGURATION_TABLE_NAME and CONFIGURATION_BUCKET
+table = boto3.resource("dynamodb").Table(TABLE_NAME)
+
+# Heads. Read the item and decompress it: get_raw_configuration() relocates
+# keys and restamps the version, so it reports the CURRENT format for a head
+# stored at an older one.
+for row in table.scan(ProjectionExpression="Configuration").get("Items", []):
+    key = str(row.get("Configuration", ""))
+    if not key.startswith("Config"):
+        continue
+    item = table.get_item(Key={"Configuration": key}).get("Item")
+    stored = ConfigurationManager._decompress_item(item or {})
+    if not is_at_or_after(stored.get("config_format_version"), "0.9"):
+        print("HEAD", key, stored.get("config_format_version"))
+
+# Revision bodies.
+for profile in manager.list_config_versions():
+    name = profile["versionName"]
+    for entry in manager.list_revisions(name):
+        body = manager.get_revision(name, entry["revision"]) or {}
+        if not is_at_or_after(body.get("config_format_version"), "0.9"):
+            print("REVISION", name, entry["revision"], body.get("config_format_version"))
+```
+
+Check the method names against `configuration_manager.py` before running it. Two
+things about the head half: `config_format_version` lives **inside** the gzipped
+`_compressed_config` blob rather than as a top-level attribute, so it is neither
+projected by `list_config_versions` nor queryable and every record has to be
+fetched and decompressed; and `_is_rollback_to_older_format` in
+`src/lambda/update_configuration/index.py` is the in-tree precedent for exactly
+that walk, so read it rather than reinventing the decompression.
+
+Then the two bounds on what a green census means:
 
 - Revisions expire under the Configuration bucket's `DataRetentionInDays`
   lifecycle rule. A revision cut before the 0.9 upgrade is gone only once that
   many days have passed **since the upgrade** on that stack, and only if
-  retention is finite on that stack.
-- For a stack you can reach, list the bodies and their stamps (read-only):
-
-  ```python
-  from idp_common.config.configuration_manager import ConfigurationManager
-  from idp_common.config.migrations._version import is_at_or_after
-
-  manager = ConfigurationManager()          # needs CONFIGURATION_TABLE_NAME and CONFIGURATION_BUCKET
-  for profile in manager.list_config_versions():
-      name = profile["versionName"]
-      for entry in manager.list_revisions(name):
-          body = manager.get_revision(name, entry["revision"]) or {}
-          if not is_at_or_after(body.get("config_format_version"), "0.9"):
-              print(name, entry["revision"], body.get("config_format_version"))
-  ```
-
-  Check the method names against `configuration_manager.py` before running it;
-  they are the ones the revision-history panel uses.
-- Deployments you cannot reach are the binding constraint. This repository ships
-  to customers, so the release that removes the conversion must come after one
-  that told them, in its migration notes, to re-save or delete pre-0.9 revisions
-  they still need. If that notice has not shipped, stop here and ship it first.
+  retention is finite on that stack. A head never expires, so retention does not
+  help with that half at all.
+- ⚠️ **The fleet-wide premise cannot be established from inside this
+  repository, and this check does not try to.** Nothing in the tree enumerates
+  stored configuration formats across deployments — there is no API for it and
+  no schema field exposing the stamp — so a census proves a property of the one
+  stack you ran it on and says nothing about any other. This repository ships to
+  customers, so the release that removes the conversion must come after one that
+  told them, in its migration notes, to re-save the profiles and revisions they
+  still need, re-saving being what stores a profile converted. If that notice
+  has not shipped, stop here and ship it first.
 
 ## 2. Make an old body refuse, never degrade
 
