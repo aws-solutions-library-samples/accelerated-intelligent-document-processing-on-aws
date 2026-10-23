@@ -35,13 +35,21 @@ revision:
   for profile in manager.list_config_versions():
       name = profile["versionName"]
       for entry in manager.list_revisions(name):
-          body = manager.get_revision(name, entry["revision"]) or {}
+          # The STORED body, deliberately: `get_revision()` converts on read, so
+          # it answers 0.9 for every revision and cannot see the stamp this audit
+          # is looking for. `get_body()` is the raw reader.
+          body = manager.revisions.get_body(name, entry["revision"])
+          if body is None:
+              continue                      # expired or pruned: nothing stored to convert
           if not is_at_or_after(body.get("config_format_version"), "0.9"):
               print(name, entry["revision"], body.get("config_format_version"))
   ```
 
-  Check the method names against `configuration_manager.py` before running it;
-  they are the ones the revision-history panel uses.
+  Check the method names against `configuration_manager.py` and `revisions.py`
+  before running it. ⚠️ Do **not** substitute `get_revision()` here, which is what
+  the revision-history panel and `config-download --config-revision` use: it
+  converts the body to the current format on the way out, so the condition above is
+  never true and the audit reports a clean stack whatever it holds.
 - Deployments you cannot reach are the binding constraint. This repository ships
   to customers, so the release that removes the conversion must come after one
   that told them, in its migration notes, to re-save or delete pre-0.9 revisions

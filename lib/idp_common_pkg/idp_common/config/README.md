@@ -457,6 +457,19 @@ Two deliberate choices:
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
+- **A revision is returned in the current config format.** A revision cut before a
+  format change was stored in the shape of the release that cut it, so
+  `_read_revision_body()` converts it on the way out, through the same
+  `migrate_config()` chain every other read of a stored configuration uses. Both of
+  its sources are converted — the stored body and, below, the rebuild from the head
+  — so one revision number does not change shape when its stored body expires. The
+  conversion is **in memory only; the stored body is never rewritten**, because a
+  revision is an immutable record of the configuration that actually ran. Callers
+  that construct an `IDPConfig` from the result (`_load_revision_config()`,
+  `restore_revision()`) convert again through its validator, which is a no-op: the
+  chain is idempotent. What depends on this is shape agreement between the surfaces
+  that serve one revision — `get_revision()` behind `idp-cli config-download
+  --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.

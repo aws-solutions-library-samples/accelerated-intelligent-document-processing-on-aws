@@ -86,13 +86,80 @@ def test_a_legacy_profile_head_is_captured_nested(module):
 
 
 @pytest.mark.unit
-def test_a_body_without_a_version_stamp_is_not_given_one(module):
+def test_an_unstamped_body_is_captured_in_the_current_format(module):
+    """The stamp states the shape the capture is in, which is the current one."""
     item = {"Configuration": "Config#lending", "notes": "x"}
     module.dynamodb.Table.return_value.get_item.return_value = {"Item": item}
 
     captured = module._capture_config("config-table", "lending")
 
-    assert captured["Config"] == item
+    assert captured["Config"]["config_format_version"] == "0.9"
+    assert captured["Config"]["notes"] == "x"
+    # The stored item is not rewritten.
+    assert item == {"Configuration": "Config#lending", "notes": "x"}
+
+
+@pytest.mark.unit
+def test_an_unstamped_configuration_is_captured_the_same_way_either_route(
+    module, monkeypatch
+):
+    """
+    A capture must not depend on how the configuration was reached.
+
+    `ConfigurationManager.get_revision()` converts a revision on read, so a
+    pinned revision arrives at the capture already stamped, while a profile head
+    read straight from DynamoDB does not. Dropping the stamp for an unstamped
+    body could therefore only ever see the head path, which gave one
+    configuration two captures — and run comparison a difference on that key
+    between a run pinned to a revision and a run of the same configuration at the
+    head.
+    """
+    unstamped = {
+        "notes": "x",
+        "classification": {"one_stage": {"llm": {"model": "M"}}},
+    }
+    module.dynamodb.Table.return_value.get_item.return_value = {
+        "Item": {"Configuration": "Config#lending", **unstamped}
+    }
+    from_head = module._capture_config("config-table", "lending")["Config"]
+
+    manager = MagicMock()
+    # What the manager now returns for an unstamped stored body: converted.
+    manager.get_revision.return_value = {**unstamped, "config_format_version": "0.9"}
+    monkeypatch.setitem(
+        sys.modules,
+        "idp_common.config.configuration_manager",
+        MagicMock(ConfigurationManager=MagicMock(return_value=manager)),
+    )
+    from_revision = module._capture_config("config-table", "lending", 5)["Config"]
+
+    assert from_revision["config_format_version"] == "0.9"
+    assert {k: v for k, v in from_head.items() if k != "Configuration"} == from_revision
+
+
+@pytest.mark.unit
+def test_an_unstamped_revision_is_captured_in_the_current_format(module, monkeypatch):
+    """
+    A revision stored before the format stamp existed, as it would arrive from a
+    manager that did not convert it. The capture converts whatever it is given,
+    so the run records the shape it will later be compared in either way.
+    """
+    stored = {"notes": "x", "classification": {"model": "flat-model"}}
+    manager = MagicMock()
+    manager.get_revision.return_value = stored
+    monkeypatch.setitem(
+        sys.modules,
+        "idp_common.config.configuration_manager",
+        MagicMock(ConfigurationManager=MagicMock(return_value=manager)),
+    )
+
+    captured = module._capture_config("config-table", "lending", 5)["Config"]
+
+    assert captured["config_format_version"] == "0.9"
+    assert captured["classification"]["one_stage"]["llm"]["model"] == "flat-model"
+    assert "model" not in captured["classification"]
+    # The body the manager returned is not rewritten.
+    assert stored == {"notes": "x", "classification": {"model": "flat-model"}}
 
 
 @pytest.mark.unit
