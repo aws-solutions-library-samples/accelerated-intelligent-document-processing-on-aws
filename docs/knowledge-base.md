@@ -64,37 +64,47 @@ The Knowledge Base feature supports two vector storage backends to optimize for 
 
 ## Configuration
 
-The Document Knowledge Base Query feature can be configured during stack deployment:
+The Document Knowledge Base Query feature is configured with three stack parameters at
+deployment time:
 
-```yaml
-ShouldUseDocumentKnowledgeBase:
-  Type: String
-  Default: "true"
-  AllowedValues:
-    - "true"
-    - "false"
-  Description: Enable/disable the Document Knowledge Base feature
+| Parameter | Values | Purpose |
+|---|---|---|
+| `DocumentKnowledgeBase` | `DISABLED`, `BEDROCK_KNOWLEDGE_BASE (Create)` (default) | Turns the feature on. The "Create" value is what provisions the knowledge base and its vector store. |
+| `KnowledgeBaseVectorStore` | `S3_VECTORS` (default), `OPENSEARCH_SERVERLESS` | Which vector store backs the knowledge base. See the comparison above. |
+| `KnowledgeBaseModelId` | A Bedrock model id, default `us.amazon.nova-pro-v1:0` | The model that generates the answer from the retrieved passages. |
 
-KnowledgeBaseVectorStore:
-  Type: String
-  Default: "S3_VECTORS"
-  AllowedValues:
-    - "OPENSEARCH_SERVERLESS"
-    - "S3_VECTORS"
-  Description: Vector storage backend for the knowledge base
+`KnowledgeBaseModelId` has an explicit `AllowedValues` list, so the picker in the
+CloudFormation console shows exactly what is selectable; read it from
+`template.yaml` rather than from a copy here, because the list moves as models are added
+and retired. Two region-specific behaviours are worth knowing before you pick one:
 
-DocumentKnowledgeBaseModel:
-  Type: String
-  Default: "us.amazon.nova-pro-v1:0"
-  Description: Bedrock model to use for knowledge base queries (e.g., "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-```
+- **Canada.** A `ca-central-1` or `ca-west-1` stack left at the default is switched to
+  `ca.amazon.nova-lite-v1:0` automatically, because the default has no inference profile
+  in Canada. An explicit choice is passed through unchanged and must be callable from the
+  stack's region.
+- **GovCloud.** None of the `us.` / `eu.` / `global.` cross-region inference-profile
+  prefixes resolve in GovCloud. Use one of the bare or `us-gov.` ids the parameter lists;
+  the `--govcloud` template transform overrides the commercial default for you.
 
-### Supported Embedding Models
+Whichever model you choose must have model access granted in Amazon Bedrock in the
+deployment region.
 
-Both vector store types support the same embedding models:
-- `amazon.titan-embed-text-v2:0` (default)
-- `cohere.embed-english-v3`  (disabled by default)
-- `cohere.embed-multilingual-v3` (disabled by default)
+> **Note:** `ShouldUseDocumentKnowledgeBase` is not a parameter you set. It is a
+> CloudFormation **Condition**, derived from `DocumentKnowledgeBase`, which the parent
+> stack passes down to the pattern stack as a boolean. Setting `DocumentKnowledgeBase` is
+> the whole of the control.
+
+### Embedding Model
+
+The embedding model is **fixed at `amazon.titan-embed-text-v2:0`** and is not selectable
+at deployment time, for either vector store type. The nested knowledge base template
+declares a `pEmbedModel` parameter offering `amazon.titan-embed-text-v2:0`,
+`cohere.embed-english-v3` and `cohere.embed-multilingual-v3`, but the parent stack does not
+pass it, so the nested default always applies. Choosing a Cohere embedding model therefore
+requires editing the templates; it is not reachable from a stack parameter.
+
+Grant model access for `amazon.titan-embed-text-v2:0` in Amazon Bedrock before deploying
+with this feature enabled — without it, ingestion fails.
 
 When the feature is enabled, the solution:
 - Creates the selected vector storage resources (OpenSearch or S3 Vectors)

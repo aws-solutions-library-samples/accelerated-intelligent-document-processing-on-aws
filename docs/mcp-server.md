@@ -400,6 +400,13 @@ Query batch and document processing status.
 }
 ```
 
+⚠️ **`include_errors` is advertised but not implemented.** The handler reads only
+`options.detailed`; `include_errors` is accepted and ignored, and the response carries
+no error-detail field either way. What you get instead is the **count** of failures in
+`status.failed`, plus — with `detailed: true` — each document's own `status` and
+`review_status`. For the text of a failure, use `get_results` on the document, or the
+[Error Analyzer](./error-analyzer.md).
+
 **Output Schema:**
 ```json
 {
@@ -418,6 +425,10 @@ Query batch and document processing status.
   "all_complete": "boolean"
 }
 ```
+
+With `options.detailed: true` the response gains a `documents` array, one entry per
+document in the batch, each with `document_id`, `status`, `duration_seconds` and
+`review_status`.
 
 **Example Request:**
 ```json
@@ -460,7 +471,10 @@ Query batch and document processing status.
 
 The `get_results` tool returns paginated results:
 - Default page size: 10 documents
-- Maximum page size: 100 documents
+- Recommended maximum page size: 100 documents. This is **advice, not a limit** — the
+  schema states it in prose only, and `limit` is passed through to a list slice with no
+  clamping, so a larger value is honoured. Treat 100 as the point beyond which a single
+  response gets slow and large enough to be worth paginating instead
 - Use `next_token` to retrieve subsequent pages
 - `total_in_batch` shows the complete batch size
 - Per-document data is accurate for the current page only

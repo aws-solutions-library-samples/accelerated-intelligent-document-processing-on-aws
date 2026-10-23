@@ -52,7 +52,7 @@ the complete answer rather than token-by-token output.
 
 #### AgentChatResolver
 - **Purpose**: Entry point for user messages
-- **Location**: `src/lambda/agent_chat_resolver/`
+- **Location**: `nested/api-resolvers/src/lambda/agent_chat_resolver/`
 - **Responsibilities**:
   - Validates incoming messages
   - Stores user messages in DynamoDB
@@ -280,26 +280,48 @@ mutation SendMessage {
 }
 ```
 
-#### Subscription: onAgentChatMessageUpdate
-Subscribe to real-time message updates.
+#### Receiving the reply: the SSE stream
 
-```graphql
-subscription WatchMessages {
-  onAgentChatMessageUpdate(sessionId: "user-session-123") {
-    role
-    content
-    timestamp
-    isProcessing
-  }
-}
+There is no subscription to receive replies on. `onAgentChatMessageUpdate` is
+declared in `nested/api-resolvers/src/api/schema.graphql` and the UI still
+imports its operation document, but `src/ui/src/hooks/use-agent-chat.ts` sets
+`useHttpApiTransport` to a constant `true`, so the effect that would open the
+subscription returns immediately and the `client.graphql` call inside it is
+unreachable. The REST client would hand back a no-op handle anyway, and the
+field has no entry in the dispatcher's RBAC manifest, so it is default-denied
+with a 403.
+
+Replies arrive one of two ways, chosen by whether a streaming Function URL is
+configured:
+
+**With a Function URL (the commercial default)** the hook calls `streamChat`
+against the Lambda Function URL, which runs with
+`InvokeMode=RESPONSE_STREAM`. The browser reads the body as Server-Sent
+Events, and each event carries the same shape the subscription used to
+deliver, so events feed straight into the message list. This is the only
+true token-by-token path.
+
+```
+POST <streamUrl>/chat/agent        (SigV4, IAM-authed)
+body: { prompt, sessionId, method, enableCodeIntelligence, callerSub }
+
+→ text/event-stream; one event per chunk, terminal event marks completion
 ```
 
-#### Query: getAgentChatMessages
+**Without one (for example GovCloud)** the hook sends
+`sendAgentChatMessage` over the REST API, which async-invokes the processor,
+and then polls `getChatMessages` for the new assistant reply
+(`src/ui/src/api/chat-poll.ts`). It baselines the existing assistant message
+keys *before* sending so the poll matches only the new reply, which keeps it
+independent of client and server clocks. Because the processor persists only
+the final message, this path shows a spinner and then the complete answer.
+
+#### Query: getChatMessages
 Retrieve conversation history.
 
 ```graphql
 query GetHistory {
-  getAgentChatMessages(sessionId: "user-session-123") {
+  getChatMessages(sessionId: "user-session-123") {
     role
     content
     timestamp
@@ -307,6 +329,13 @@ query GetHistory {
   }
 }
 ```
+
+⚠️ Use `getChatMessages`, not `getAgentChatMessages`. The latter is declared in
+the schema but is routed from nowhere and has no manifest entry, so it returns
+403 to every caller including Admin — see the `getAgentChatMessages` row in
+[docs/rbac.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/rbac.md).
+Reads through `getChatMessages` are session-scoped: it requires any assigned
+group and additionally verifies that the caller owns the session.
 
 ## Available Agents
 

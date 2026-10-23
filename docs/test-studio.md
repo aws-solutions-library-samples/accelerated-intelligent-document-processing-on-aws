@@ -354,7 +354,7 @@ All datasets share these deployment characteristics:
 ### Backend Components
 
 #### TestSetResolver Lambda
-- **Location**: `src/lambda/test_set_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
 - **Purpose**: Handles GraphQL operations for test set management
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
@@ -369,7 +369,7 @@ All datasets share these deployment characteristics:
 - **Features**: S3 event triggered extraction, file validation, status updates, file count recount for accurate totals
 
 #### TestRunner Lambda
-- **Location**: `src/lambda/test_runner/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_runner/index.py`
 - **Purpose**: Initiates test runs and queues file processing jobs
 - **Features**: Test validation, SQS message queuing, fast response optimization
 
@@ -379,7 +379,7 @@ All datasets share these deployment characteristics:
 - **Features**: SQS message processing, file copying, status management
 
 #### TestResultsResolver Lambda
-- **Location**: `src/lambda/test_results_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
 - **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
@@ -397,13 +397,13 @@ All datasets share these deployment characteristics:
   - Automatic retry handling
 
 ### GraphQL Schema
-- **Location**: `src/api/schema.graphql`
+- **Location**: `nested/api-resolvers/src/api/schema.graphql`
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
 #### TestStudioLayout
-- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.tsx`
 - **Purpose**: Main container with two-tab navigation and global state management
 
 #### TestSets
@@ -412,7 +412,7 @@ All datasets share these deployment characteristics:
 - **Features**: Pattern-based creation, zip upload, direct upload detection, incremental document addition, time-based file filtering, dual polling (3s active, 60s discovery)
 
 #### TestExecutions
-- **Location**: `src/ui/src/components/test-studio/TestExecutions.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestExecutions.tsx`
 - **Purpose**: Unified interface combining TestRunner and TestResultsList
 - **Features**: Test execution, results viewing, comparison, export, abort, delete operations
 
@@ -421,16 +421,16 @@ All datasets share these deployment characteristics:
 ```
 components/
 └── test-studio/
-    ├── TestStudioLayout.jsx
-    ├── TestSets.jsx
-    ├── TestExecutions.jsx
-    ├── TestRunner.jsx
-    ├── TestResultsList.jsx
-    ├── TestResults.jsx
-    ├── TestComparison.jsx
-    ├── TestRunnerStatus.jsx
-    ├── DeleteTestModal.jsx
-    └── index.js
+    ├── TestStudioLayout.tsx
+    ├── TestSets.tsx
+    ├── TestExecutions.tsx
+    ├── TestRunner.tsx
+    ├── TestResultsList.tsx
+    ├── TestResults.tsx
+    ├── TestComparison.tsx
+    ├── TestRunnerStatus.tsx
+    ├── DeleteTestModal.tsx
+    └── index.ts
 ```
 
 ## Lifecycle flows: online vs offline paths

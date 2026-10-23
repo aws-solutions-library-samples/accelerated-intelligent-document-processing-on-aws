@@ -1495,8 +1495,8 @@ extraction:
       use_confidence_data: true  # Cross-reference with OCR confidence
       max_empty_line_gap: 3  # Tolerate up to N empty lines in tables
       auto_merge_adjacent_tables: true  # Merge table fragments
-    validation:                # see "Schema-Constraint Validation" below
-      enabled: false
+  validation:                  # sibling of `agentic`, not nested inside it —
+    enabled: false             # see "Schema-Constraint Validation" below
 ```
 
 > **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
@@ -1961,12 +1961,16 @@ validation still fails.
 extraction:
   agentic:
     enabled: true
-    validation:
-      enabled: false          # Off by default (no behavior change on upgrade)
-      check_formats: true     # Enforce JSON-Schema 'format' keywords
-      fail_action: escalate   # warn | escalate | reject
-      escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; "" = retry same model
+  validation:                 # sibling of `agentic`
+    enabled: false            # Off by default (no behavior change on upgrade)
+    check_formats: true       # Enforce JSON-Schema 'format' keywords
+    fail_action: escalate     # warn | escalate | reject
+    escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; "" = retry same model
 ```
+
+A stored config still carrying the older `extraction.agentic.validation` nesting
+is relocated to `extraction.validation` by the v0.7 migration on every load, so it
+keeps working; write new configs in the shape above.
 
 How it works:
 

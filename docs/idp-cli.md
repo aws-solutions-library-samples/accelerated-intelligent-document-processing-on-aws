@@ -691,9 +691,13 @@ idp-cli delete --stack-name test-stack --empty-buckets --force
 # Force delete ALL remaining resources (comprehensive cleanup)
 idp-cli delete --stack-name test-stack --force-delete-all --force
 
-# Delete without waiting
-idp-cli delete --stack-name test-stack --force --no-wait
+# Wait for the deletion to reach DELETE_COMPLETE before returning
+idp-cli delete --stack-name test-stack --force --wait
 ```
+
+Deletion does **not** wait by default: without `--wait` the command initiates the
+delete and returns, printing the console link and the `--wait` form to follow it with.
+There is no `--no-wait` flag — omitting `--wait` is already the no-wait path.
 
 **What you'll see (standard deletion):**
 ```
@@ -783,9 +787,17 @@ Stack 'test-stack' and all resources completely removed.
 If you run `delete` on a stack that already has a DELETE operation in progress, the command automatically switches to monitoring mode instead of failing. This is useful if you started a deletion without `--wait` - simply run the command again to monitor:
 
 ```bash
-# First run without --wait starts the deletion
-$ idp-cli delete --stack-name test-stack --force --no-wait
-✓ Stack DELETE initiated successfully!
+# First run: no --wait, so the deletion is initiated and the command returns
+$ idp-cli delete --stack-name test-stack --force
+✓ Stack deletion initiated!
+Stack: test-stack
+Region: us-east-1
+
+Monitor progress in the AWS Console:
+  CloudFormation → Stacks → test-stack
+
+Or wait for it with:
+  idp-cli delete --stack-name test-stack --force --wait
 
 # Second run - automatically monitors the in-progress deletion
 $ idp-cli delete --stack-name test-stack

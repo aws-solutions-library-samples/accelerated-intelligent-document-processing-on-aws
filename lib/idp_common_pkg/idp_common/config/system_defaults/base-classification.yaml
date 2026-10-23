@@ -14,7 +14,13 @@ classification:
   strategy: single_pass
   # The ONE fallback: assigned when a class cannot be decided — validation
   # retries ran out, or (two-stage, non-LLM methods) the classifier was not
-  # confident. One of the configured classes, or the built-in 'unclassified'.
+  # confident. Normally one of the configured classes, or the built-in
+  # 'unclassified'.
+  #
+  # NOT validated against the class list: any string is accepted and stored as
+  # written, and `validate_config` reports no error and no warning for a name no
+  # class declares. Sections then carry that name downstream, where nothing
+  # matches it. Check the spelling yourself against `classes`.
   fallback_class: unclassified
   # ── strategy: single_pass ────────────────────────────────────────────────
   one_stage:
