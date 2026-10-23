@@ -1181,9 +1181,15 @@ The queue page shows:
   document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
   them re-reads the queue from the server and takes a few seconds on a large set.
 
-Per-document actions (claim, release, skip, mark reviewed) sit at the top of the
-editor pane, so finishing a long document does not mean scrolling past every field
-to reach them.
+Per-document actions sit in one bar at the top of the document editor (the same
+editor as production review items), so finishing a long document does not mean
+scrolling past every field to reach them: **History**, **Skip**, **Discard Changes**,
+**Save**, **Edit Page Grouping**, **Processing Report** and **Complete**, or **Claim**
+for an Annotator viewing an unassigned document. **Save** saves the open section,
+which marks it reviewed (switching sections saves it too), and **Complete** saves the
+open section and confirms the rest. Under the title the screen names the **Document**
+(its input key) and its **Ground Truth**, with an **Annotate | View Source Document**
+switch beneath them, and its notices share one alert.
 
 On large sets the queue is read a page at a time, and the page says so rather than
 implying the whole set has been ranked. What bounds that page is the number of
@@ -1292,10 +1298,11 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Edit page grouping**, beside the section selector at the top of the document, opens a
-board with every section side by side and each page as a thumbnail. It sits with the
-section pills rather than down among the extracted fields because it changes the
-document's structure, not one section's values. (**Pages in this section**, in the field
+**Edit Page Grouping** opens a board with every section side by side and each page as a
+thumbnail. In the queue's document editor it is in the action bar at the top and opens
+the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
+section selector at the top of the document. Either way it is kept away from the
+extracted fields because it changes the document's structure, not one section's values. (**Pages in this section**, in the field
 list below, stays as a read-only record of which pages the open section covers.)
 
 Drag a page from one section to another, or use its **Move to section**
@@ -1369,7 +1376,7 @@ things happened rather than showing an empty form:
   extract against. This is the actionable one: set the class first — re-extracting before
   that produces nothing. A section in this state is marked **(no class)** in its tab. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
-  which **Edit page grouping** can merge.
+  which **Edit Page Grouping** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
 - **A section added by re-grouping**, which starts with no values because nothing has
   extracted those pages as a group yet.
@@ -1421,8 +1428,8 @@ has a chat tool, and the reviewer keeps ownership of the document.
 ### Edit history
 
 Each label records who changed it, when, and which fields moved. Open a document
-and use the **Edit history** tab — the same tab, and the same view, as the
-document detail editor in the main app.
+and use the **Edit history** tab, or **History › Field Edits** in the queue's
+document editor (which has no Edit history tab) — the same view as the document editor in the main app.
 
 > Not to be confused with a Configuration Profile **revision**, which is an
 > immutable numbered snapshot of a *configuration*. This is a log of edits to

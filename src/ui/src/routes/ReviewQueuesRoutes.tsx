@@ -15,6 +15,7 @@ import ReviewQueuePage from '../components/review-queues/ReviewQueuePage';
 import { documentName } from '../components/review-queues/review-api';
 import AnnotationScreen from '../components/review-workspace/AnnotationScreen';
 import type { ItemQueue } from '../components/review-workspace/ProductionAnnotation';
+import type { ItemTestSet } from '../components/review-workspace/TestSetAnnotation';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
 import useUserRole from '../hooks/use-user-role';
 import RequireRole from './RequireRole';
@@ -31,16 +32,15 @@ const useQueueCrumbs = (queueCrumb: BreadcrumbGroupProps.Item) => {
 };
 
 /**
- * An item sits under its queue's page: Queue Management › <queue> › <document> for an
- * Admin, My Work › Queues › <queue> › <document> for an Annotator. Until the queue is
- * known (a production item's loads with it) an Annotator's item sits under Tasks.
+ * An item's breadcrumb has the same shape for every role: Home › <queue or test set> ›
+ * <document>, the queue crumb linking to that queue's page. Until the queue is known (a
+ * production item's loads with it) the item sits under Queue Management for an Admin
+ * and under My Work for an Annotator.
  */
 const useItemCrumbs = (queueCrumb: BreadcrumbGroupProps.Item | null, objectKey: string) => {
   const { isAdmin } = useUserRole();
   const item = { text: documentName(decodeURIComponent(objectKey)), href: '#' };
-  if (isAdmin) return { root: undefined, crumbs: queueCrumb ? [queueCrumb, item] : [item] };
-  if (queueCrumb) return { root: MY_WORK_ROOT, crumbs: [MY_QUEUES_CRUMB, queueCrumb, item] };
-  return { root: MY_WORK_ROOT, crumbs: [{ text: 'Tasks', href: `#${MY_TASKS_PATH}` }, item] };
+  return { root: queueCrumb ?? (isAdmin ? undefined : MY_WORK_ROOT), crumbs: [item] };
 };
 
 export const ProductionItemPage = (): React.JSX.Element => {
@@ -59,10 +59,14 @@ export const ProductionItemPage = (): React.JSX.Element => {
 
 export const TestSetItemPage = (): React.JSX.Element => {
   const { testSetId = '', objectKey = '' } = useParams();
-  const { root, crumbs } = useItemCrumbs({ text: `Test set: ${testSetId}`, href: `#${testSetQueuePath(testSetId)}` }, objectKey);
+  // The set's name arrives with its queue; its id stands in until then.
+  const [loaded, setLoaded] = useState<ItemTestSet | null>(null);
+  const onTestSet = useCallback((testSet: ItemTestSet) => setLoaded(testSet), []);
+  const name = loaded?.id === testSetId ? loaded.name : null;
+  const { root, crumbs } = useItemCrumbs({ text: name ?? testSetId, href: `#${testSetQueuePath(testSetId)}` }, objectKey);
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <AnnotationScreen key={`${testSetId}/${objectKey}`} kind="test-set" />
+      <AnnotationScreen key={`${testSetId}/${objectKey}`} kind="test-set" onTestSet={onTestSet} />
     </ReviewQueuesLayout>
   );
 };

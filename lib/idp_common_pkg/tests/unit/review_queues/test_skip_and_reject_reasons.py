@@ -154,3 +154,49 @@ class TestQueueDefinitionSkipReasons:
             "A",
             "B",
         ]
+
+
+@pytest.mark.unit
+class TestDetailAfterARegroup:
+    """A regroup during review keeps section ids; a section it removed drops out."""
+
+    def test_a_section_the_regroup_removed_is_not_offered(self, service):
+        from types import SimpleNamespace
+
+        now_ms = int(time.time() * 1000)
+        record = ReviewItemRecord(
+            doc_key="r.pdf",
+            cycle_id=CYCLE,
+            profile="default",
+            queue="claims",
+            state="CLAIMED",
+            enqueued_at="2026-10-16T00:00:00.000Z",
+            enqueued_at_ms=now_ms,
+            sections=["1", "2"],
+            version=1,
+            owner_key=ANN.reviewer_key,
+            owner_email=ANN.email,
+            claimed_at_ms=now_ms,
+            lease_expires_at_ms=now_ms + 3_600_000,
+        )
+        service.store.client.put_item(item_to_dynamo(record))
+        # Section 2 was merged into section 1, which now covers both pages.
+        merged = SimpleNamespace(
+            section_id="1",
+            classification="W2",
+            extraction_result_uri="s3://out/r.pdf/sections/1/result.json",
+            page_ids=["1", "2"],
+        )
+        service.document_loader = lambda key: SimpleNamespace(sections=[merged])
+
+        detail = service.get_item_detail(ANN, "r.pdf")
+
+        assert [(s.section_id, s.page_ids) for s in detail.sections] == [
+            ("1", ["1", "2"])
+        ]
+
+    def test_without_a_document_every_review_section_is_listed(self, service):
+        _assigned(service, "s.pdf")
+        service.document_loader = None
+        detail = service.get_item_detail(ANN, "s.pdf")
+        assert [s.section_id for s in detail.sections] == ["1"]

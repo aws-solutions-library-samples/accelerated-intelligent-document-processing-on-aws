@@ -78,6 +78,7 @@ export type AnnotationQueue = {
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;
   labelJobTotal?: Maybe<Scalars['Int']['output']>;
+  name?: Maybe<Scalars['String']['output']>;
   nextObjectKey?: Maybe<Scalars['String']['output']>;
   remainingDocs: Scalars['Int']['output'];
   reviewedDocs: Scalars['Int']['output'];
@@ -2368,7 +2369,6 @@ export type ReviewItemPage = {
 
 export type ReviewQueueDefinition = {
   checklist: Array<Scalars['String']['output']>;
-  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   description?: Maybe<Scalars['String']['output']>;
   eligibleAnnotators: Array<Scalars['String']['output']>;
   enabled?: Maybe<Scalars['Boolean']['output']>;
@@ -2383,7 +2383,6 @@ export type ReviewQueueDefinition = {
 
 export type ReviewQueueDefinitionInput = {
   checklist?: InputMaybe<Array<Scalars['String']['input']>>;
-  confidenceThreshold?: InputMaybe<Scalars['Float']['input']>;
   description?: InputMaybe<Scalars['String']['input']>;
   eligibleAnnotators?: InputMaybe<Array<Scalars['String']['input']>>;
   enabled?: InputMaybe<Scalars['Boolean']['input']>;
@@ -2406,7 +2405,6 @@ export type ReviewQueueSummary = {
   claimCap: Scalars['Int']['output'];
   claimed: Scalars['Int']['output'];
   claimedByMe: Scalars['Int']['output'];
-  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   definedInConfig: Scalars['Boolean']['output'];
   depth: Scalars['Int']['output'];
   description?: Maybe<Scalars['String']['output']>;

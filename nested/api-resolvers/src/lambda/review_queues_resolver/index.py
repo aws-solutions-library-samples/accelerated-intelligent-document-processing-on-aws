@@ -267,7 +267,6 @@ def _queue_view(d: QueueDefinition) -> dict:
         "timeLimitMinutes": d.time_limit_minutes,
         "eligibleAnnotators": list(d.eligible_annotators),
         "isDefaultQueue": d.id == DEFAULT_QUEUE_ID,
-        "confidenceThreshold": d.confidence_threshold,
         "enabled": d.enabled,
     }
 
@@ -275,8 +274,9 @@ def _queue_view(d: QueueDefinition) -> dict:
 def _queue_input(raw: Any, existing: QueueDefinition | None = None) -> QueueDefinition:
     """The definition an input describes.
 
-    ``confidenceThreshold`` and ``enabled`` left out keep the ``existing`` values
-    (an update) or take the defaults (a new queue: 0.8, enabled).
+    ``enabled`` left out keeps the ``existing`` value (an update) or takes the
+    default (a new queue: enabled). A ``confidenceThreshold`` sent by an older
+    client is ignored: queues have no threshold of their own.
     """
     data = raw if isinstance(raw, dict) else {}
     fields = {
@@ -295,10 +295,7 @@ def _queue_input(raw: Any, existing: QueueDefinition | None = None) -> QueueDefi
         fields["skip_reasons"] = data["skipReasons"]
     elif existing is not None:
         fields["skip_reasons"] = list(existing.skip_reasons)
-    for key, name in (
-        ("confidenceThreshold", "confidence_threshold"),
-        ("enabled", "enabled"),
-    ):
+    for key, name in (("enabled", "enabled"),):
         if data.get(key) is not None:
             fields[name] = data[key]
         elif existing is not None:

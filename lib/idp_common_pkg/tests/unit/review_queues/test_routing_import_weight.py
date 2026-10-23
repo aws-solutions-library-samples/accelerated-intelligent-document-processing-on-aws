@@ -10,8 +10,8 @@ document failed with ``No module named 'PIL'`` as soon as the Default queue was
 enabled. The unit suite installs every extra, so nothing else here could see it.
 
 The child process refuses to import any distribution that only an extra the Lambda
-does not install brings in, then drives the routing path that reads a section's
-confidences and looks up its class schema. Both lists are read from the files the
+does not install brings in, then drives the routing path that turns a section's
+confidence alerts into reasons and looks up its class schema. Both lists are read from the files the
 build reads, so a new extra or a changed requirements line is covered unchanged.
 """
 
@@ -94,13 +94,15 @@ from types import SimpleNamespace
 
 from idp_common.review_queues.reasons import build_reasons
 
-result = {"explainability_info": [{"Employer": {"confidence": 0.4, "confidence_threshold": 0.9}}]}
-s3 = SimpleNamespace(get_json_content=lambda uri: result)
-section = SimpleNamespace(section_id="1", classification="W2", extraction_result_uri="s3://b/k")
-config = SimpleNamespace(classes=[{"x-aws-idp-document-type": "W2", "properties": {}}])
-reasons = build_reasons(
-    SimpleNamespace(sections=[section]), config, threshold=0.8, mode="pipeline", s3=s3
+section = SimpleNamespace(
+    section_id="1",
+    classification="W2",
+    confidence_threshold_alerts=[
+        {"attribute_name": "Employer", "confidence": 0.4, "confidence_threshold": 0.9}
+    ],
 )
+config = SimpleNamespace(classes=[{"x-aws-idp-document-type": "W2", "properties": {}}])
+reasons = build_reasons(SimpleNamespace(sections=[section]), config, mode="pipeline")
 import idp_common.review_queues.routing  # noqa: F401
 print(json.dumps([r.field for r in reasons]))
 """

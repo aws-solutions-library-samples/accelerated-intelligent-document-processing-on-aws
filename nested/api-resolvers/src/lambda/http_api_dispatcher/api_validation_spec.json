@@ -3853,13 +3853,6 @@
       {
         "elem_non_null": false,
         "is_list": false,
-        "name": "confidenceThreshold",
-        "non_null": false,
-        "type": "Float"
-      },
-      {
-        "elem_non_null": false,
-        "is_list": false,
         "name": "enabled",
         "non_null": false,
         "type": "Boolean"

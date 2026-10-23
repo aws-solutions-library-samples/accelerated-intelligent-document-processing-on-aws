@@ -1450,9 +1450,10 @@ type TestSetTask @aws_cognito_user_pools {
   documentClasses: [String!]
 }
 
-# A system-wide production review queue (HITL › Queue Management). Low-confidence
-# production documents go to the Default queue when it is enabled; Admins move
-# items between queues and assign them to Annotators.
+# A system-wide production review queue (HITL › Queue Management). Documents are
+# routed to the Default queue when HITL is enabled in their configuration, the
+# Default queue is enabled, and they raised confidence alerts. Admins move items
+# between queues and assign them to Annotators.
 type ReviewQueueDefinition @aws_cognito_user_pools {
   id: String!
   name: String!
@@ -1467,8 +1468,6 @@ type ReviewQueueDefinition @aws_cognito_user_pools {
   # Annotators (by email) who work this queue; empty means none (Admins only).
   eligibleAnnotators: [String!]!
   isDefaultQueue: Boolean!
-  # A document is queued when a field's confidence is below this (0-1).
-  confidenceThreshold: Float
   # When false, no documents are added to this queue.
   enabled: Boolean
 }
@@ -1484,14 +1483,14 @@ input ReviewQueueDefinitionInput {
   skipReasons: [String!]
   timeLimitMinutes: Int
   eligibleAnnotators: [String!]
-  # 0-1; a new queue defaults to 0.8, an update keeps the stored value when omitted.
-  confidenceThreshold: Float
   # A new queue defaults to true, an update keeps the stored value when omitted.
   enabled: Boolean
 }
 
 type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   testSetId: String!
+  # The test set's display name.
+  name: String
   # The set's time limit in minutes: an assigned document still open after this
   # long sends its Annotator a reminder. Assignments do not expire.
   claimLeaseMinutes: Int
@@ -1762,7 +1761,6 @@ type ReviewQueueSummary @aws_cognito_user_pools {
   annotators: Int
   oldestEnqueuedAt: AWSDateTime
   isDefaultQueue: Boolean!
-  confidenceThreshold: Float
   enabled: Boolean
   claimCap: Int!
   checklist: [String!]!
@@ -2264,7 +2262,7 @@ type Mutation {
   # An Annotator listed on a set's queue takes one of its unassigned, unreviewed
   # documents: it is assigned to them and appears in My Work › Tasks.
   claimTestSetDocument(testSetId: String!, objectKey: String!): TestSetDocumentAssignment
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Annotator"])
   releaseReview(objectKey: String!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
 

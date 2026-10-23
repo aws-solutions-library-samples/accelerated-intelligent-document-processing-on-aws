@@ -7,9 +7,12 @@ Live end-to-end check of the review queues (``make stacktest-review-queues``).
 NOTE: needs reworking. The flow below self-claims the item (``claimReviewItem``)
 and uses a per-profile ``default`` queue; queues are now system-wide and an Admin
 assigns queue items to Annotators, so steps 2 and 4 no longer match the product.
-Routing also no longer reads the profile: a document is queued only when the
-Default queue is enabled (HITL › Queue Management), against that queue's
-confidence threshold, so step 2 must enable Default and set its threshold.
+A document is queued only when HITL is enabled in its configuration
+(``hitl.enabled``), the Default queue is enabled (HITL › Queue Management; it is
+seeded enabled), and the document raised confidence alerts (each field's own
+threshold, otherwise ``hitl.confidence_threshold``). Queues have no threshold of
+their own, so step 2 must turn HITL on in the profile and make sure a field scores
+under its threshold.
 
 Routes a real document into a review queue on a deployed stack, reviews it
 through the REST API with a real Annotator ID token, and waits for the

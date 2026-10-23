@@ -4,14 +4,16 @@
 """One routing function for both processing modes (FR-6, FR-7).
 
 ProcessResults (Pipeline and BDA) call :func:`route_for_review` after their own
-work. Queue mode is on when the stack has a review table and its Default queue is
-enabled (HITL › Queue Management); otherwise ``review_mode`` is ``"legacy"`` and
-the handlers keep the profile-driven marking through
-:func:`legacy_section_triggers` and :func:`bda_segment_triggers`. In queue mode
-it either recognises the finalize run of a disposed item, or (a fresh run)
-builds reasons against the Default queue's confidence threshold and writes a
-HOLDING item in the Default queue that the tracker activates when phase 1
-succeeds.
+work. Queue mode is on when HITL is enabled in the document's configuration, the
+stack has a review table and its Default queue is enabled (HITL › Queue
+Management); otherwise ``review_mode`` is ``"legacy"`` and the handlers keep the
+HITL marking through :func:`legacy_section_triggers` and
+:func:`bda_segment_triggers`. In queue mode it either recognises the finalize run
+of a disposed item, or (a fresh run) builds reasons from the sections'
+confidence alerts (each field's own threshold, otherwise
+``hitl.confidence_threshold``; in BDA mode also the blueprint confidence against
+``hitl.confidence_threshold``) and writes a HOLDING item in the Default queue
+that the tracker activates when phase 1 succeeds.
 """
 
 from __future__ import annotations
@@ -62,6 +64,11 @@ def default_queue(store: Any) -> Optional[QueueDefinition]:
         return None
 
 
+def _hitl_enabled(config: Any) -> bool:
+    hitl = getattr(config, "hitl", None) if config is not None else None
+    return bool(getattr(hitl, "enabled", False))
+
+
 def _finalizing(store: Any, document: Any) -> bool:
     """True when the document's item waits for its finalize run."""
     doc_key = getattr(document, "input_key", None)
@@ -78,23 +85,28 @@ def _finalizing(store: Any, document: Any) -> bool:
 def review_mode(
     config: Any, store: Any, document: Any = None
 ) -> Literal["legacy", "queues"]:
-    """``"queues"`` when a store exists and the Default queue is enabled.
+    """``"queues"`` when HITL is enabled, a store exists and Default is enabled.
 
     A Test Studio document always reads ``"legacy"``: it keeps the legacy HITL
     marking and is reviewed as test-set annotation work, never queue-routed. With
-    Default disabled, a document whose item is FINALIZING still reads
+    HITL off or Default disabled, a document whose item is FINALIZING still reads
     ``"queues"`` so its finalize run completes after the switch was turned off.
-    ``config`` is accepted for the callers; the profile no longer decides.
     """
     if document is not None and is_test_studio_document(document):
         return "legacy"
     if store is None:
+        logger.debug("event=review_mode_legacy reason=no_store")
         return "legacy"
     default = default_queue(store)
-    if default is not None and default.enabled:
+    hitl = _hitl_enabled(config)
+    if hitl and default is not None and default.enabled:
         return "queues"
     if document is not None and _finalizing(store, document):
         return "queues"
+    logger.debug(
+        "event=review_mode_legacy reason=%s",
+        "hitl_disabled" if not hitl else "default_queue_disabled",
+    )
     return "legacy"
 
 
@@ -185,17 +197,17 @@ def route_for_review(
             mode="queues", outcome=outcome, cycle_id=item.cycle_id, queue=item.queue
         )
 
-    # Every low-confidence production document goes to the Default queue, judged
-    # against its threshold.
+    # A production document that raised confidence alerts goes to the Default
+    # queue, when HITL is enabled in its configuration.
     queue = default_queue(store)
-    if queue is None or not queue.enabled:
-        # Default was turned off (or is unreadable) after this run's mode was
-        # decided: nothing new is queued.
+    if queue is None or not queue.enabled or not _hitl_enabled(config):
+        # Default was turned off (or is unreadable), or HITL is off and this run
+        # is in queue mode only because an earlier item is FINALIZING: nothing new
+        # is queued.
         return ReviewDecision(mode="queues", hold=False)
-    reasons = build_reasons(
-        document, config, threshold=queue.confidence_threshold, mode=mode, s3=s3
-    )
+    reasons = build_reasons(document, config, mode=mode)
     if not reasons:
+        logger.info("event=review_no_reasons")
         if live:
             _withdraw(
                 item,
