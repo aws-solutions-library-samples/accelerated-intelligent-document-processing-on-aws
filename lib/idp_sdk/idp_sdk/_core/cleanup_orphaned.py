@@ -81,6 +81,9 @@ class OrphanedResourceCleanup:
         self._active_stacks: Dict[str, Dict] = {}  # stack_name -> {id, region, status}
         self._deleted_stacks: Dict[str, Dict] = {}  # stack_name -> {id, region, status}
         self._discovery_complete = False
+        # stack_name -> skip reason ("" once confirmed gone everywhere); see
+        # _still_present_elsewhere.
+        self._presence_elsewhere: Dict[str, str] = {}
 
         # Track "yes/no to all" decisions per resource type
         self._yes_to_all: Dict[str, bool] = {}  # resource_type -> True/False
@@ -240,6 +243,54 @@ class OrphanedResourceCleanup:
                 return ("DELETED", info)
 
         return ("UNKNOWN", None)
+
+    def _still_present_elsewhere(self, stack_name: str) -> str:
+        """Why a DELETED stack's *global* resource must still be left alone, or "".
+
+        Discovery covers only the Regions it was given -- three by default from
+        the CLI -- while CloudFront distributions, response headers policies and
+        IAM policies are global and carry only the stack *name*. A stack deleted
+        in a scanned Region and since recreated under the same name in an
+        unscanned one therefore reads as DELETED, and its live resources were
+        swept (#1533). So before a global resource is touched on the strength of
+        a DELETED verdict, every Region enabled for the account is asked whether
+        a stack of that name still exists there.
+
+        Returns "" only when every enabled Region answers that it does not. Any
+        Region that cannot be read makes ownership unknown, and unknown means
+        leave it alone -- the same rule ``get_stack_state`` applies with UNKNOWN.
+        """
+        if stack_name in self._presence_elsewhere:
+            return self._presence_elsewhere[stack_name]
+
+        reason = ""
+        try:
+            ec2 = self.session.client("ec2", region_name=self.region)
+            # Without AllRegions this lists only the Regions enabled for the
+            # account, which are the only ones a stack can exist in.
+            regions = [r["RegionName"] for r in ec2.describe_regions()["Regions"]]
+        except Exception as e:
+            regions = []
+            reason = f"could not list enabled Regions to confirm it is gone: {e}"
+
+        for region in regions:
+            try:
+                stacks = (
+                    self._get_cfn_client(region)
+                    .describe_stacks(StackName=stack_name)
+                    .get("Stacks", [])
+                )
+            except Exception as e:
+                if "does not exist" in str(e):
+                    continue
+                reason = f"could not confirm it is gone in {region}: {e}"
+                break
+            if any(s.get("StackStatus") != "DELETE_COMPLETE" for s in stacks):
+                reason = f"still exists in {region}"
+                break
+
+        self._presence_elsewhere[stack_name] = reason
+        return reason
 
     def extract_stack_name_from_comment(self, comment: str) -> str:
         """Extract stack name from CloudFront distribution comment."""
@@ -582,6 +633,14 @@ class OrphanedResourceCleanup:
 
                 state, stack_info = self.get_stack_state(stack_name)
 
+                if state == "DELETED":
+                    elsewhere = self._still_present_elsewhere(stack_name)
+                    if elsewhere:
+                        results["skipped"].append(
+                            f"{distribution_id} (stack: {stack_name} - {elsewhere})"
+                        )
+                        continue
+
                 if state == "ACTIVE":
                     results["skipped"].append(
                         f"{distribution_id} (stack: {stack_name} - active)"
@@ -863,6 +922,14 @@ class OrphanedResourceCleanup:
 
                 state, stack_info = self.get_stack_state(stack_name)
 
+                if state == "DELETED":
+                    elsewhere = self._still_present_elsewhere(stack_name)
+                    if elsewhere:
+                        results["skipped"].append(
+                            f"{policy_name} (stack: {stack_name} - {elsewhere})"
+                        )
+                        continue
+
                 if state == "ACTIVE":
                     results["skipped"].append(
                         f"{policy_name} (stack: {stack_name} - active)"
@@ -951,6 +1018,14 @@ class OrphanedResourceCleanup:
                         continue
 
                     state, stack_info = self.get_stack_state(stack_name)
+
+                    if state == "DELETED":
+                        elsewhere = self._still_present_elsewhere(stack_name)
+                        if elsewhere:
+                            results["skipped"].append(
+                                f"{policy_name} (stack: {stack_name} - {elsewhere})"
+                            )
+                            continue
 
                     if state == "ACTIVE":
                         results["skipped"].append(

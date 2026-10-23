@@ -1228,6 +1228,151 @@ def test_an_unusable_policy_api_is_reported_rather_than_raised(cleanup):
 
 
 # ---------------------------------------------------------------------------
+# Global resources and Regions discovery did not scan (#1533)
+# ---------------------------------------------------------------------------
+#
+# The `cleanup` fixture discovers stacks in us-east-1 only, just as the CLI scans
+# only the Regions it is given. CloudFront distributions, response headers policies
+# and IAM policies are global and name only their stack, so a stack deleted in a
+# scanned Region and recreated under the same name in an unscanned one reads as
+# DELETED while its live resources are in the account.
+
+UNSCANNED_REGION = "ca-central-1"
+
+
+@pytest.fixture
+def recreated_elsewhere(cleanup) -> OrphanedResourceCleanup:
+    """``IDP-dead`` is DELETE_COMPLETE in us-east-1 and live in ca-central-1."""
+    boto3.client("cloudformation", region_name=UNSCANNED_REGION).create_stack(
+        StackName=DEAD_STACK, TemplateBody=IDP_TEMPLATE
+    )
+    assert cleanup.get_stack_state(DEAD_STACK)[0] == "DELETED"
+    return cleanup
+
+
+@pytest.mark.unit
+def test_a_headers_policy_of_a_stack_live_in_an_unscanned_region_is_kept(
+    recreated_elsewhere,
+):
+    fake = FakeResponseHeadersPolicies([f"{DEAD_STACK}-security-headers-policy"])
+    recreated_elsewhere.cloudfront = fake
+
+    results = recreated_elsewhere.cleanup_cloudfront_policies(auto_approve=True)
+
+    assert fake.deleted == [] and fake.etag_requests == []
+    assert results["deleted"] == []
+    assert results["skipped"] == [
+        f"{DEAD_STACK}-security-headers-policy "
+        f"(stack: {DEAD_STACK} - still exists in {UNSCANNED_REGION})"
+    ]
+
+
+@pytest.mark.unit
+def test_a_distribution_of_a_stack_live_in_an_unscanned_region_stays_enabled(
+    recreated_elsewhere,
+):
+    """Disabling it takes that deployment's web UI offline."""
+    ids = seed_distributions()
+    cf = boto3.client("cloudfront", region_name="us-east-1")
+
+    results = recreated_elsewhere.cleanup_cloudfront_distributions(auto_approve=True)
+
+    assert results["disabled"] == [] and results["deleted"] == []
+    assert (
+        f"{ids['dead']} (stack: {DEAD_STACK} - still exists in {UNSCANNED_REGION})"
+        in results["skipped"]
+    )
+    assert (
+        cf.get_distribution(Id=ids["dead"])["Distribution"]["DistributionConfig"][
+            "Enabled"
+        ]
+        is True
+    )
+
+
+@pytest.mark.unit
+def test_iam_policies_of_a_stack_live_in_an_unscanned_region_are_kept(
+    recreated_elsewhere,
+):
+    seed_iam_policies()
+
+    results = recreated_elsewhere.cleanup_iam_policies(auto_approve=True)
+
+    assert results["deleted"] == []
+    assert {
+        f"{DEAD_STACK}-PATTERN2STACK-LambdaECRAccessPolicy-1AB",
+        f"{DEAD_STACK}-PermissionsBoundary",
+    } <= surviving_policy_names()
+
+
+@pytest.mark.unit
+def test_unlisted_regions_mean_a_global_resource_is_left_alone(cleanup, monkeypatch):
+    """ "Cannot tell whether it is gone everywhere" must mean "leave it"."""
+    real_client = cleanup.session.client
+
+    def client(service: str, *a: Any, **k: Any) -> Any:
+        if service == "ec2":
+            raise RuntimeError("UnauthorizedOperation")
+        return real_client(service, *a, **k)
+
+    monkeypatch.setattr(cleanup.session, "client", client)
+    fake = FakeResponseHeadersPolicies([f"{DEAD_STACK}-security-headers-policy"])
+    cleanup.cloudfront = fake
+
+    results = cleanup.cleanup_cloudfront_policies(auto_approve=True)
+
+    assert fake.deleted == []
+    assert len(results["skipped"]) == 1
+    assert "could not list enabled Regions" in results["skipped"][0]
+
+
+@pytest.mark.unit
+def test_an_unreadable_region_means_a_global_resource_is_left_alone(
+    cleanup, monkeypatch
+):
+    """A Region answering anything but "does not exist" proves nothing."""
+    real_cfn = cleanup._get_cfn_client
+
+    class Refusing:
+        def describe_stacks(self, **_k: Any) -> Dict[str, Any]:
+            raise RuntimeError("AccessDenied")
+
+    monkeypatch.setattr(
+        cleanup,
+        "_get_cfn_client",
+        lambda region: Refusing() if region == UNSCANNED_REGION else real_cfn(region),
+    )
+    fake = FakeResponseHeadersPolicies([f"{DEAD_STACK}-security-headers-policy"])
+    cleanup.cloudfront = fake
+
+    results = cleanup.cleanup_cloudfront_policies(auto_approve=True)
+
+    assert fake.deleted == []
+    assert results["skipped"] == [
+        f"{DEAD_STACK}-security-headers-policy (stack: {DEAD_STACK} - could not "
+        f"confirm it is gone in {UNSCANNED_REGION}: AccessDenied)"
+    ]
+
+
+@pytest.mark.unit
+def test_the_region_check_is_made_once_per_stack(cleanup, monkeypatch):
+    """Three global sweeps share the answer rather than each re-asking every
+    Region."""
+    calls: List[str] = []
+    real_client = cleanup.session.client
+
+    def client(service: str, *a: Any, **k: Any) -> Any:
+        if service == "ec2":
+            calls.append(service)
+        return real_client(service, *a, **k)
+
+    monkeypatch.setattr(cleanup.session, "client", client)
+    assert cleanup._still_present_elsewhere(DEAD_STACK) == ""
+    assert cleanup._still_present_elsewhere(DEAD_STACK) == ""
+    assert calls == ["ec2"]
+
+
+# ---------------------------------------------------------------------------
 # cleanup_logs_resource_policies
 # ---------------------------------------------------------------------------
 

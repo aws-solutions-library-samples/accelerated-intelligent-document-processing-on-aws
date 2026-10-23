@@ -1036,7 +1036,10 @@ class StackDeployer:
 
                 # Clean up additional stack-specific resources after stack deletion completes
                 logger.info("Cleaning up additional stack-specific resources...")
-                self._cleanup_additional_resources(stack_name)
+                # The stack ID, not the name: once the stack is DELETE_COMPLETE
+                # CloudFormation answers for it only by ID, and the cleanup reads
+                # the deleted stack's resource list to establish what it owned.
+                self._cleanup_additional_resources(stack_id)
 
             return result
 
@@ -1810,6 +1813,10 @@ class StackDeployer:
             try:
                 self._verify_cloudfront_distributions_deleted(stack_name)
                 logger.info("CloudFront distributions verified as deleted")
+                # The distribution is what held the policy, so this is the first
+                # point at which it can be deleted. Idempotent: a policy already
+                # gone is skipped quietly.
+                self._delete_own_response_headers_policy(stack_identifier)
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"CloudFront verification failed: {error_msg}")
@@ -1926,6 +1933,109 @@ class StackDeployer:
         except Exception as e:
             logger.error(f"Error deleting bucket {bucket_name}: {e}")
             raise
+
+    def _owned_response_headers_policy_ids(
+        self, stack_identifier: str
+    ) -> Optional[List[str]]:
+        """Physical ids of the response headers policies this stack created.
+
+        Read from the stack's own resource list, which CloudFormation keeps for a
+        deleted stack when it is addressed by stack ID. Returns ``None`` when the
+        list cannot be read, which callers must treat as "ownership unknown" and
+        not as "owns nothing that matters".
+        """
+        try:
+            paginator = self.cfn.get_paginator("list_stack_resources")
+            owned: List[str] = []
+            for page in paginator.paginate(StackName=stack_identifier):
+                for resource in page.get("StackResourceSummaries", []):
+                    if resource.get(
+                        "ResourceType"
+                    ) == "AWS::CloudFront::ResponseHeadersPolicy" and resource.get(
+                        "PhysicalResourceId"
+                    ):
+                        owned.append(resource["PhysicalResourceId"])
+            return owned
+        except Exception as e:
+            logger.info(
+                f"Could not read the resources of {stack_identifier} to find its "
+                f"CloudFront Response Headers Policy ({e}); deleting none. "
+                "`idp-cli remove-deleted-stack-resources` sweeps orphaned policies "
+                "once the stack is DELETE_COMPLETE."
+            )
+            return None
+
+    def _delete_own_response_headers_policy(self, stack_identifier: str) -> None:
+        """Delete the response headers policy this stack created, and no other.
+
+        CloudFront is global, so listing the account's response headers policies
+        returns those of every IDP stack in every Region. This used to sweep that
+        list, deciding each owner's liveness with ``self.cfn`` -- a client bound to
+        *this* stack's Region -- so a live stack elsewhere read as missing and its
+        policy's deletion was attempted; only CloudFront's
+        ``ResponseHeadersPolicyInUse`` stopped it (#1533). Account-wide orphan
+        sweeping belongs to ``idp-cli remove-deleted-stack-resources``, which
+        discovers stacks across Regions.
+
+        Ownership is read from the stack's resource list rather than inferred from
+        the ``<stack>-security-headers-policy`` name, because a same-named stack in
+        another Region can hold that name while this one, deployed without
+        CloudFront hosting, created no policy at all.
+
+        After a clean ``DELETE_COMPLETE`` CloudFormation has already deleted the
+        policy and this finds nothing to do. It matters when the stack deletion
+        failed and left the policy behind, and then the policy cannot be deleted
+        until its distribution is: disabling one takes 15-20 minutes and deletion
+        only follows that, so ``ResponseHeadersPolicyInUse`` is the expected answer
+        on the first pass and is logged with what to do next rather than as a
+        failure.
+        """
+        owned = self._owned_response_headers_policy_ids(stack_identifier)
+        if not owned:
+            return
+
+        cloudfront_client = boto3.client("cloudfront")
+        for policy_id in owned:
+            try:
+                response = cloudfront_client.get_response_headers_policy(Id=policy_id)
+            except Exception as e:
+                if "NoSuchResponseHeadersPolicy" in str(e):
+                    # CloudFormation already deleted it -- the normal case.
+                    continue
+                logger.warning(
+                    f"Failed to read CloudFront Response Headers Policy {policy_id}: {e}"
+                )
+                continue
+
+            policy_name = (
+                response.get("ResponseHeadersPolicy", {})
+                .get("ResponseHeadersPolicyConfig", {})
+                .get("Name", policy_id)
+            )
+            try:
+                # IfMatch is REQUIRED by CloudFront; omitting it fails with
+                # InvalidIfMatchVersion, and the ETag is only available from a
+                # read of this same policy.
+                cloudfront_client.delete_response_headers_policy(
+                    Id=policy_id, IfMatch=response.get("ETag")
+                )
+                logger.info(
+                    f"Deleted CloudFront Response Headers Policy: {policy_name}"
+                )
+            except Exception as e:
+                if "ResponseHeadersPolicyInUse" in str(e):
+                    logger.info(
+                        f"CloudFront Response Headers Policy {policy_name} is still "
+                        "attached to this stack's distribution, which must finish "
+                        "deleting first (15-20 minutes after it is disabled); it was "
+                        "not deleted. Re-run this delete, or run `idp-cli "
+                        "remove-deleted-stack-resources` once the stack is "
+                        "DELETE_COMPLETE."
+                    )
+                else:
+                    logger.warning(
+                        f"Failed to delete CloudFront policy {policy_name}: {e}"
+                    )
 
     def _cleanup_additional_resources(self, stack_identifier: str) -> None:
         """Clean up additional resources not tracked by CloudFormation"""
@@ -2114,118 +2224,10 @@ class StackDeployer:
             except Exception as e:
                 logger.warning(f"Failed to cleanup CloudFront distributions: {e}")
 
-            # Clean up CloudFront Response Headers Policies
-            try:
-                cloudfront_client = boto3.client("cloudfront")
-                response = cloudfront_client.list_response_headers_policies()
-
-                # Helper function to check stack state
-                def get_stack_state(check_stack_name: str) -> str:
-                    """Get stack state: 'ACTIVE', 'MISSING', or 'INCONSISTENT'"""
-                    try:
-                        cf_response = self.cfn.describe_stacks(
-                            StackName=check_stack_name
-                        )
-                        stacks = cf_response.get("Stacks", [])
-
-                        if not stacks:
-                            return "MISSING"
-                        else:
-                            stack_status = stacks[0].get("StackStatus", "")
-                            if stack_status in [
-                                "CREATE_COMPLETE",
-                                "UPDATE_COMPLETE",
-                                "UPDATE_ROLLBACK_COMPLETE",
-                            ]:
-                                return "ACTIVE"
-                            elif stack_status in [
-                                "DELETE_COMPLETE",
-                                "DELETE_FAILED",
-                                "CREATE_FAILED",
-                                "ROLLBACK_COMPLETE",
-                                "ROLLBACK_FAILED",
-                                "UPDATE_ROLLBACK_FAILED",
-                            ]:
-                                return "INCONSISTENT"
-                            else:
-                                # In progress states - consider active for safety
-                                return "ACTIVE"
-
-                    except self.cfn.exceptions.ClientError as e:
-                        if "does not exist" in str(e):
-                            return "MISSING"
-                        else:
-                            # Unknown error - be conservative
-                            return "ACTIVE"
-                    except Exception:
-                        # Unknown error - be conservative
-                        return "ACTIVE"
-
-                def is_resource_orphaned(check_stack_name: str) -> bool:
-                    """Check if resource is orphaned based on stack state"""
-                    if not check_stack_name:
-                        return False  # Can't determine - be safe
-
-                    state = get_stack_state(check_stack_name)
-                    return state in ["MISSING", "INCONSISTENT"]
-
-                # Delete policies from orphaned stacks only
-                for policy in response.get("ResponseHeadersPolicyList", {}).get(
-                    "Items", []
-                ):
-                    if policy["Type"] == "custom":
-                        policy_name = policy["ResponseHeadersPolicy"][
-                            "ResponseHeadersPolicyConfig"
-                        ]["Name"]
-                        policy_id = policy["ResponseHeadersPolicy"]["Id"]
-
-                        # Check if it's an IDP policy
-                        if policy_name.endswith("-security-headers-policy"):
-                            # Extract stack name from policy name
-                            policy_stack_name = policy_name.replace(
-                                "-security-headers-policy", ""
-                            )
-
-                            # Skip current stack's policy (can't delete while distribution exists)
-                            if policy_stack_name == stack_name:
-                                logger.info(
-                                    f"Skipping current stack's policy: {policy_name}"
-                                )
-                                continue
-
-                            # Only delete if from orphaned stack
-                            if is_resource_orphaned(policy_stack_name):
-                                try:
-                                    # IfMatch is REQUIRED by CloudFront, and omitting it
-                                    # fails with InvalidIfMatchVersion rather than doing
-                                    # nothing quietly -- which, because the failure below
-                                    # is only warned about, is how this path deleted
-                                    # nothing at all for as long as it has existed. The
-                                    # ETag has to be read first; there is no way to derive
-                                    # it from the list response. cleanup_orphaned.py's
-                                    # equivalent has always done this.
-                                    etag = (
-                                        cloudfront_client.get_response_headers_policy(
-                                            Id=policy_id
-                                        ).get("ETag")
-                                    )
-                                    cloudfront_client.delete_response_headers_policy(
-                                        Id=policy_id, IfMatch=etag
-                                    )
-                                    logger.info(
-                                        f"Deleted orphaned CloudFront Response Headers Policy: {policy_name} (stack: {policy_stack_name})"
-                                    )
-                                except Exception as policy_error:
-                                    logger.warning(
-                                        f"Failed to delete CloudFront policy {policy_name}: {policy_error}"
-                                    )
-                            else:
-                                logger.info(
-                                    f"Skipping active stack's policy: {policy_name} (stack: {policy_stack_name})"
-                                )
-
-            except Exception as e:
-                logger.warning(f"Failed to cleanup CloudFront policies: {e}")
+            # Clean up this stack's CloudFront Response Headers Policy -- and only
+            # this stack's. See _delete_own_response_headers_policy for why the
+            # account-wide sweep that used to live here was removed (#1533).
+            self._delete_own_response_headers_policy(stack_identifier)
 
             # Clean up IAM custom policies
             try:
