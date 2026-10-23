@@ -3257,6 +3257,9 @@ class TestTestSetResolver:
 
         assert result["totalDocs"] == 30
         assert 1 <= result["sampledDocs"] < 30
+        # The cut page ends with no token, which must not read as the end of the
+        # listing (#1479): the rest of the set was never read.
+        assert result["wholeSetInspected"] is False
         assert result["docsToReview"] <= 30
         assert len(reads) <= budget + 16, (
             f"{len(reads)} of 120 sections read; reads continued past the budget"
@@ -6102,30 +6105,154 @@ class TestTestSetResolver:
         """Reviewing authored labels is not work the estimate should ask for."""
         table, s3 = labeling_env
         _seed_test_set(table, "ts1", fileCount=2)
-        for name in ("gt.pdf", "draft.pdf"):
-            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
-        s3.put_object(
-            Bucket="test-set-bucket",
-            Key="ts1/baseline/gt.pdf/sections/1/result.json",
-            Body=json.dumps({"inference_result": {"box_a": "authored"}}).encode(),
-        )
-        s3.put_object(
-            Bucket="test-set-bucket",
-            Key="ts1/baseline/draft.pdf/sections/1/result.json",
-            Body=json.dumps(
-                {
-                    "labelSource": "draft-machine",
-                    "explainability_info": [{"f": {"confidence": 0.5}}],
-                    "inference_result": {"f": "v"},
-                }
-            ).encode(),
-        )
+        self._seed_labelled(s3, ground_truth=["gt.pdf"], drafts=["draft.pdf"])
 
         result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
         # One of the two documents is authored ground truth, so only one is
         # reviewable — reporting 2 would bill the owner for finished work.
         assert result["totalDocs"] == 1
         assert result["docsToReview"] <= 1
+        # The whole set was read, so the figure needs no extrapolation caveat.
+        assert (result["inspectedDocs"], result["setDocs"]) == (2, 2)
+        assert result["wholeSetInspected"] is True
+
+    @staticmethod
+    def _seed_labelled(s3, ground_truth=(), drafts=()):
+        """Seed authored ground truth (no labelSource) and machine drafts."""
+        for name in (*ground_truth, *drafts):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+        for name in ground_truth:
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps({"inference_result": {"f": "authored"}}).encode(),
+            )
+        for name in drafts:
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps(
+                    {
+                        "labelSource": "draft-machine",
+                        "explainability_info": [{"f": {"confidence": 0.5}}],
+                        "inference_result": {"f": "v"},
+                    }
+                ).encode(),
+            )
+
+    def test_estimate_scales_an_all_ground_truth_sample_to_nothing_to_review(
+        self, labeling_env, monkeypatch
+    ):
+        """Regression (#1479): a sample that is all ground truth leaves no work.
+
+        The sample's confidences are extrapolated across the set, so its ground-truth
+        count must be too. Subtracting the raw count planned review for every
+        document the sampling cap left uninspected: a 500-document set sampled as
+        200 of 200 ground truth estimated 300 to review, off the global prior.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=500)
+        self._seed_labelled(s3, ground_truth=[f"gt{i}.pdf" for i in range(6)])
+        # The cap is what makes the sample smaller than the set.
+        monkeypatch.setattr(test_set_index, "MAX_DOCS_FOR_ESTIMATE", 4)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["totalDocs"] == 0
+        assert result["docsToReview"] == 0
+        assert result["docsToReviewHigh"] == 0
+        assert result["auditSampleSize"] == 0
+        assert result["burndown"] == []
+        # The zero is extrapolated from 4 of 500, and the response says so: a
+        # caller must not report the set as fully labelled from it.
+        assert (result["inspectedDocs"], result["setDocs"]) == (4, 500)
+        assert result["wholeSetInspected"] is False
+
+    def test_estimate_applies_the_samples_reviewable_fraction_to_the_set(
+        self, labeling_env
+    ):
+        """Half the sample is ground truth, so half the set is reviewable work."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=500)
+        self._seed_labelled(
+            s3, ground_truth=["gt0.pdf", "gt1.pdf"], drafts=["d0.pdf", "d1.pdf"]
+        )
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        # 500 * 2/4, where subtracting the sample's two would leave 498.
+        assert result["totalDocs"] == 250
+        assert result["sampledDocs"] == 2
+        assert len(result["burndown"]) == 251  # 0..N inclusive
+
+    def test_estimate_without_a_file_count_uses_the_inspected_sample(
+        self, labeling_env
+    ):
+        """With no fileCount the set's size is the documents inspected, ground
+        truth included -- not the reviewable ones, from which ground truth would
+        then be subtracted a second time."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1")
+        self._seed_labelled(
+            s3,
+            ground_truth=[f"gt{i}.pdf" for i in range(3)],
+            drafts=[f"d{i}.pdf" for i in range(3)],
+        )
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        # Six inspected, three reviewable. Sizing the set by the three reviewable
+        # ones and then taking the sample's half off them again would report 2.
+        assert result["totalDocs"] == 3
+
+    def test_estimate_does_not_call_a_capped_sample_the_whole_set_without_a_size(
+        self, labeling_env, monkeypatch
+    ):
+        """With no fileCount the set is sized by the sample, so setDocs equals
+        inspectedDocs; only the listing can say the sample stopped short."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1")
+        self._seed_labelled(s3, ground_truth=[f"gt{i}.pdf" for i in range(3)])
+        monkeypatch.setattr(test_set_index, "MAX_DOCS_FOR_ESTIMATE", 2)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["totalDocs"] == 0
+        assert (result["inspectedDocs"], result["setDocs"]) == (2, 2)
+        assert result["wholeSetInspected"] is False
+
+    def test_estimate_never_sizes_the_set_below_what_it_read(self, labeling_env):
+        """A stale fileCount below the documents actually listed must not scale the
+        reviewable work down: the set holds at least what was read."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_labelled(s3, ground_truth=["gt0.pdf"], drafts=["d0.pdf", "d1.pdf"])
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        # 3 * 2/3, where scaling the stale 1 would give 1.
+        assert result["totalDocs"] == 2
+        assert result["setDocs"] == 3
+        assert result["wholeSetInspected"] is True
+
+    @pytest.mark.parametrize(
+        ("set_size", "inspected", "ground_truth", "expected"),
+        [
+            (500, 200, 200, 0),  # all ground truth: nothing to review
+            (500, 200, 0, 500),  # no ground truth: the whole set
+            (500, 200, 100, 250),  # half and half
+            (500, 200, 199, 3),  # 2.5 rounds up: one reviewable doc is not zero
+            (2, 2, 1, 1),  # whole set inspected: exact count
+            (500, 0, 0, 500),  # nothing inspected: no fraction to apply
+        ],
+    )
+    def test_reviewable_docs_scales_the_sampled_fraction(
+        self, set_size, inspected, ground_truth, expected
+    ):
+        assert (
+            test_set_index._reviewable_docs(set_size, inspected, ground_truth)
+            == expected
+        )
 
     def test_reharvest_prunes_sections_the_new_run_no_longer_produces(
         self, labeling_env

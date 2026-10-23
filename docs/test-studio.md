@@ -1010,6 +1010,14 @@ that curve it derives:
 | **Audit sample** | Random spot-check of the *high-confidence* documents |
 | **Burndown** | Residual error at every review depth |
 
+On a large set the estimate reads a bounded sample of documents rather than all of
+them, and scales what it finds to the whole set — both the confidences and the
+share of documents that already carry ground truth, which is not review work. The
+sample is taken in listing order, so a set whose labelled files sort together can
+be sized off. When a partial sample holds only ground truth, the dialog says how
+much of the set it read rather than reporting the set as fully labelled, and still
+lets you continue to the annotation queue, which lists every document.
+
 ### The curve is measured, and it improves
 
 The curve comes from three sources of increasing fidelity:
