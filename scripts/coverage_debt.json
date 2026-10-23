@@ -466,6 +466,7 @@
         "review_queues_resolver/index.py": 78.71,
         "send_chat_document_message_resolver/index.py": 86.59,
         "sync_bda_idp_resolver/index.py": 78.75,
+        "test_results_resolver/index.py": 12.17,
         "test_runner/index.py": 65.4,
         "test_set_resolver/index.py": 15.0,
         "upload_resolver/index.py": 93.27

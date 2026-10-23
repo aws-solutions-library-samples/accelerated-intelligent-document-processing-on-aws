@@ -21,6 +21,12 @@ test can actually fail. Gate exemptions are covered in
 - Add each new root to the `test-packages-cicd` recipe through
   `$(PYTEST_HERMETIC)`, on its own line if it defines a module named `index`.
   Being in `RUN_ROOTS` alone doesn't put it in CI.
+- Record a new root's coverage as well, or the suite you just wrote is
+  unratcheted: measure its tree with `scripts/coverage_all.py --only <tree>`
+  (`--workers 2` to mirror the share CI gives a tree), add the floor with
+  `scripts/check_coverage_debt.py --write-missing`, and, for a handler directory
+  that previously had no suite, lower `EXEMPT_HANDLER_DIRECTORY_COUNT` in
+  `scripts/tests/test_coverage_debt.py` by one.
 - Run tests through `make`, which pins `PYTHONPATH` to this checkout. If you run
   `pytest` directly, pin every `lib/*` root using absolute paths. A `REFUSED:`
   line means the run did not happen.
@@ -44,13 +50,19 @@ test can actually fail. Gate exemptions are covered in
   on a mock attribute, or expectation tables that are printed instead of
   compared.
 - Delete or weaken an existing test without a replacement and a stated reason.
-- Leave a new test directory out of both registries.
+- Leave a new test directory out of any of the three registries: `RUN_ROOTS`, the
+  `test-packages-cicd` recipe, and the coverage baseline.
+- Use `scripts/check_coverage_debt.py --write` to add a floor. It regenerates a
+  measured tree's file set wholesale, so it can move existing floors;
+  `--write-missing` cannot.
 
 ## Verify with
 - `make test`, `make test-list` and `make test-packages-cicd`
 - `cd lib/idp_common_pkg && make test-unit`
 - `scripts/tests/test_run_all_tests_registry.py`,
   `scripts/tests/test_src_lambda_tests_in_ci.py`, `scripts/tests/test_testing_doc.py`
+- `scripts/tests/test_coverage_debt.py`, which is what fails when a new root's
+  coverage is unrecorded
 - `make check-coverage-debt`
 
 ## Sources
