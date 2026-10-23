@@ -239,7 +239,11 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
         <Header
           variant="h2"
           description={
-            estimate ? `${testSetId} · ${estimate.totalDocs} document(s) with draft labels · choose how much to review` : testSetId
+            !estimate
+              ? testSetId
+              : nothingToReview
+                ? `${testSetId} · no documents with draft labels`
+                : `${testSetId} · ${estimate.totalDocs} document(s) with draft labels · choose how much to review`
           }
         >
           Set up team annotation

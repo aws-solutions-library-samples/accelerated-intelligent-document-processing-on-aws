@@ -19,9 +19,10 @@ vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (
 vi.mock('../../../graphql/generated', () => ({ estimateReviewEffort: 'estimateReviewEffort' }));
 
 // Imported after the mocks, which vitest hoists.
-import ReviewEffortModal from '../ReviewEffortModal';
+import ReviewEffortModal, { type ReviewEffortEstimate } from '../ReviewEffortModal';
 
-const estimate = (totalDocs: number) => ({
+// Typed, so a field added to the estimate's interface fails here at compile time.
+const estimate = (totalDocs: number): ReviewEffortEstimate => ({
   testSetId: 'docsplit',
   targetAccuracy: 99,
   curveSource: 'prior',
@@ -38,7 +39,16 @@ const estimate = (totalDocs: number) => ({
   estimateConfidence: 'prior',
   auditSampleSize: 0,
   recommendReviewAll: false,
-  calibration: { reliable: false, totalObservations: 0, binCoverage: 0, ece: null, auroc: null },
+  calibration: {
+    reliable: false,
+    degenerate: false,
+    overconfident: false,
+    undiscriminating: false,
+    totalObservations: 0,
+    binCoverage: 0,
+    ece: null,
+    auroc: null,
+  },
   burndown: [],
   reliabilityTable: [],
 });
@@ -47,7 +57,7 @@ const renderWith = async (totalDocs: number) => {
   graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs) } });
   render(<ReviewEffortModal visible testSetId="docsplit" onDismiss={() => {}} onContinue={() => {}} />);
   await waitFor(() => expect(graphql).toHaveBeenCalled());
-  await screen.findByText(/document\(s\) with draft labels/);
+  await screen.findByText(/with draft labels/);
 };
 
 describe('ReviewEffortModal with nothing to review', () => {
@@ -56,6 +66,8 @@ describe('ReviewEffortModal with nothing to review', () => {
   it('shows only the nothing-to-review alert', async () => {
     await renderWith(0);
     expect(screen.getByText('Nothing to review')).toBeTruthy();
+    expect(screen.getByText('docsplit · no documents with draft labels')).toBeTruthy();
+    expect(screen.queryByText(/choose how much to review/)).toBeNull();
     expect(screen.queryByText(/Rough estimate/)).toBeNull();
     expect(screen.queryByText('How much should annotators review?')).toBeNull();
     expect(screen.queryByText(/Show the math/)).toBeNull();
@@ -66,6 +78,7 @@ describe('ReviewEffortModal with nothing to review', () => {
     // everything that test asserts is absent, so its absence there is the gate.
     await renderWith(3);
     expect(screen.queryByText('Nothing to review')).toBeNull();
+    expect(screen.getByText(/3 document\(s\) with draft labels · choose how much to review/)).toBeTruthy();
     expect(screen.getByText(/Rough estimate/)).toBeTruthy();
     expect(screen.getByText('How much should annotators review?')).toBeTruthy();
     expect(screen.getByText(/Show the math/)).toBeTruthy();

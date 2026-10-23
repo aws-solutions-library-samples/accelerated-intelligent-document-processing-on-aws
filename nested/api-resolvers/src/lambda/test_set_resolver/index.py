@@ -3456,6 +3456,11 @@ def _reviewable_docs(set_size, inspected_docs, ground_truth_docs):
     every uninspected document, so a 500-document set sampled as 200 of 200 ground
     truth estimated 300 documents to review (#1479).
 
+    The sample is the first documents in listing order, not a random draw, so the
+    fraction assumes ground truth is spread independently of key order. A set whose
+    labelled files sort together is mis-sized in either direction; no set-wide
+    ground-truth count is stored that could be read instead.
+
     Rounded up, so a sample holding any reviewable document never estimates zero.
     With nothing inspected there is no fraction to apply, and the whole set counts.
     """
