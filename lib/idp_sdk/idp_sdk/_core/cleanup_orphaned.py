@@ -18,7 +18,7 @@ Safety features:
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import click
@@ -84,6 +84,7 @@ class OrphanedResourceCleanup:
         # stack_name -> skip reason ("" once confirmed gone everywhere); see
         # _still_present_elsewhere.
         self._presence_elsewhere: Dict[str, str] = {}
+        self._cfn_clients: Dict[str, Any] = {}
 
         # Track "yes/no to all" decisions per resource type
         self._yes_to_all: Dict[str, bool] = {}  # resource_type -> True/False
@@ -95,8 +96,16 @@ class OrphanedResourceCleanup:
         self._max_workers = 50
 
     def _get_cfn_client(self, region: str):
-        """Get CloudFormation client for a specific region."""
-        return self.session.client("cloudformation", region_name=region)
+        """Get CloudFormation client for a specific region, built once per Region.
+
+        _still_present_elsewhere asks every enabled Region once per deleted stack
+        name, so an uncached client would be rebuilt for each of those calls.
+        """
+        if region not in self._cfn_clients:
+            self._cfn_clients[region] = self.session.client(
+                "cloudformation", region_name=region
+            )
+        return self._cfn_clients[region]
 
     def discover_idp_stacks(self, regions: Optional[List[str]] = None) -> Dict:
         """Discover all IDP stacks (active AND deleted) across regions.
@@ -247,8 +256,8 @@ class OrphanedResourceCleanup:
     def _still_present_elsewhere(self, stack_name: str) -> str:
         """Why a DELETED stack's *global* resource must still be left alone, or "".
 
-        Discovery covers only the Regions it was given -- three by default from
-        the CLI -- while CloudFront distributions, response headers policies, IAM
+        Discovery covers only the Regions it was given (the CLI's
+        ``--check-stack-regions``), while CloudFront distributions, response headers policies, IAM
         policies and the account's S3 bucket listing are global and carry only
         the stack *name* (a bucket's random suffix is stripped before matching). A stack deleted
         in a scanned Region and since recreated under the same name in an

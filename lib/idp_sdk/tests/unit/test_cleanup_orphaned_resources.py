@@ -1981,3 +1981,13 @@ def test_a_vendedlogs_group_with_no_pattern_segment_uses_the_whole_suffix(
     assert results["updated"] == []
     assert results["errors"] == []
     assert stored_resource_policy() == document
+
+
+@pytest.mark.unit
+def test_a_regions_cloudformation_client_is_built_once(cleanup):
+    """The every-Region check asks each Region once per deleted stack name, so
+    rebuilding the client on each call would multiply client construction by
+    the number of deleted stacks."""
+    first = cleanup._get_cfn_client(UNSCANNED_REGION)
+    assert cleanup._get_cfn_client(UNSCANNED_REGION) is first
+    assert cleanup._get_cfn_client("us-east-1") is not first
