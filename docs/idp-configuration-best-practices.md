@@ -396,9 +396,13 @@ properties:
 
 ## Classification Prompt Customization
 
-### TextBasedHolisticClassification (rvl-cdip)
+### Packet granularity (`one_stage.granularity: packet`)
 
 This approach analyzes entire document packages to identify logical document boundaries.
+Its prompts live at `classification.one_stage.packet.system_prompt` and
+`classification.one_stage.packet.task_prompt`. No preset in `config_library/unified/`
+sets packet granularity; set `classification.one_stage.granularity: packet` to use it.
+See [Classification](./classification.md#packet-granularity-one-call-per-packet).
 
 #### Key Components
 
@@ -445,9 +449,13 @@ task_prompt: >-
 - Cache checkpoint placement for optimization
 - Specific output format requirements
 
-### MultimodalPageLevelClassification (lending-package-sample)
+### Page granularity (`one_stage.granularity: page`, the default)
 
 This approach classifies individual pages using both visual and textual information.
+Its prompts live at `classification.one_stage.page.system_prompt` and
+`classification.one_stage.page.task_prompt`. It is the default, so presets that carry
+no classification block of their own, such as `lending-package-sample` and `rvl-cdip`,
+run this way.
 
 #### Key Components
 
@@ -1123,18 +1131,18 @@ The assessment feature implements several cost optimization techniques:
 
 ## Configuration Architecture Overview
 
-The IDP accelerator supports two primary processing patterns, each with distinct configuration optimization strategies:
+Pipeline-mode classification runs at one of two granularities, set by `classification.one_stage.granularity`, each with distinct configuration optimization strategies:
 
-### Pattern Comparison
+### Granularity Comparison
 
-| Aspect | Holistic Classification | Page-Level Classification |
+| Aspect | Packet granularity | Page granularity (default) |
 |--------|------------------------|---------------------------|
-| **Primary Use Case** | Multi-document packages | Single-page documents |
-| **Input Data** | OCR text + document images | Document images only |
-| **Processing Method** | Document boundary detection | Independent page analysis |
-| **Example Config** | `rvl-cdip` | `lending-package-sample` |
+| **Primary Use Case** | Multi-document packages where boundaries need the whole packet in view | Single documents and packets alike (the default) |
+| **Input Data** | OCR text + page images (subject to `one_stage.llm.modality`) | OCR text + page image (subject to `one_stage.llm.modality`) |
+| **Processing Method** | One call per packet (or window) returning segments | One call per page returning a class and a start/continue boundary marker |
+| **Example Config** | None shipped; set `one_stage.granularity: packet` | `lending-package-sample`, `rvl-cdip` |
 | **Configuration Complexity** | Higher (boundary rules) | Lower (direct classification) |
-| **Output Format** | Segmented page ranges | Single classification |
+| **Output Format** | Segmented page ranges | Per-page class and boundary marker |
 
 ### Configuration Structure
 

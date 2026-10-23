@@ -1089,11 +1089,11 @@ For detailed evaluation capabilities and best practices, see [evaluation.md](eva
 
 ## Section Splitting Strategies
 
-Pattern-2 and Pattern-3 support configurable strategies for how classified pages are grouped into document sections. This is controlled by the `sectionSplitting` configuration field:
+Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.file_shape.sectionSplitting` configuration field:
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire document as a single section. With page-level classification the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); with holistic classification it takes the first segment's class. Simplest approach for single-document processing.
+- **`disabled`**: Treats the entire document as a single section. At page granularity the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); at packet granularity it takes the first segment's class. Simplest approach for single-document processing.
   
 - **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   

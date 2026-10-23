@@ -650,6 +650,12 @@ def validate_config(
     # answering until it names a real pattern.
     _validate_ignored_keys(config, result)
 
+    # A file in the pre-0.9 classification layout is converted silently on read;
+    # say so, and name the one conversion that changes behaviour.
+    from idp_common.config.migrations.v08_to_v09 import conversion_notices
+
+    result["warnings"].extend(conversion_notices(config))
+
     # Try to merge with defaults
     #
     # ⚠️ An ImportError is re-raised rather than described, in both blocks below. The

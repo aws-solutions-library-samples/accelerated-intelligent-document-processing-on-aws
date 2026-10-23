@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ from idp_common.config.constants import (
     RESERVED_VERSION_NAMES,
 )
 from idp_common.config.hook_reachability import InertGatingHookError
+from idp_common.config.migrations import migrate_config
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
 from idp_common.config.prefix_mappings import (
     DEFAULT_PRECEDENCE,
@@ -1372,7 +1374,11 @@ def handle_get_profile_revision(manager, profile, revision):
     Full configuration recorded in one revision.
 
     Returned as a JSON string so the UI can feed it straight into the same
-    comparison view it uses for profiles.
+    comparison view it uses for profiles. The body is migrated to the current
+    config format first — a revision cut before the 0.9 classification nesting
+    is stored flat, and compared raw against a current revision every moved
+    setting would show as missing on one side. The stored body is not
+    rewritten, and restore is unchanged.
     """
     try:
         config = manager.get_revision(profile, revision)
@@ -1384,6 +1390,7 @@ def handle_get_profile_revision(manager, profile, revision):
                     "message": f"Revision r{revision} of '{profile}' is no longer retained",
                 },
             }
+        config = migrate_config(copy.deepcopy(config))
         return {"success": True, "config": json.dumps(config, default=str)}
     except Exception as e:
         logger.error(f"Error reading r{revision} of '{profile}': {e}")

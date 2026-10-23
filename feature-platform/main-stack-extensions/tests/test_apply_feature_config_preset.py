@@ -603,3 +603,65 @@ def test_a_preset_registering_at_preprocessing_installs_in_bda_mode(
         None,
     )
     assert result["configVersionName"] == "pii-anonymizer"
+
+
+# --------------------------------------------------------------------------
+# A legacy (pre-0.9, flat classification) preset is migrated before the merge
+# --------------------------------------------------------------------------
+
+
+def _two_stage_default():
+    from idp_common.config.merge_utils import merge_config_with_defaults
+    from idp_common.config.models import IDPConfig
+
+    return IDPConfig(
+        **merge_config_with_defaults(
+            {"classification": {"strategy": "two_stage"}}, validate=False
+        )
+    )
+
+
+def test_a_flat_preset_is_migrated_before_it_is_merged(
+    monkeypatch, aws_credentials, load_lambda
+):
+    """Merged first, a flat preset forms a hybrid with the nested host default, and
+    the hybrid's migration infers the two-stage calls' modality from the preset's
+    single-pass prompt because it can see the default's strategy. The sparse
+    fallback (and every other write path) migrates the preset on its own first, so
+    the same preset must produce the same configuration on the merged path."""
+    from copy import deepcopy
+
+    from idp_common.config.merge_utils import deep_update
+    from idp_common.config.migrations import migrate_config
+    from idp_common.config.models import IDPConfig
+
+    mod = _preload(monkeypatch, load_lambda)
+    default = _two_stage_default()
+    manager = type("M", (), {"get_configuration": lambda *a, **k: default})()
+    preset = {
+        "config_format_version": "0.8",
+        "classification": {"task_prompt": "Classify {DOCUMENT_TEXT}"},
+    }
+    original = deepcopy(preset)
+
+    merged = mod._merge_over_default(manager, preset)
+
+    expected = deepcopy(default.model_dump(mode="python"))
+    deep_update(expected, migrate_config(deepcopy(preset)))
+    assert merged is not None
+    assert merged.model_dump(mode="json") == IDPConfig(**expected).model_dump(
+        mode="json"
+    )
+    assert (
+        merged.classification.one_stage.page.task_prompt == "Classify {DOCUMENT_TEXT}"
+    )
+    # Concretely: the stage calls keep the default's modality rather than having
+    # one inferred from a single-pass prompt they do not use.
+    stages = merged.classification.two_stage
+    default_stages = default.classification.two_stage
+    assert stages.segmentation.llm.modality == default_stages.segmentation.llm.modality
+    assert (
+        stages.section_classification.llm.modality
+        == default_stages.section_classification.llm.modality
+    )
+    assert preset == original

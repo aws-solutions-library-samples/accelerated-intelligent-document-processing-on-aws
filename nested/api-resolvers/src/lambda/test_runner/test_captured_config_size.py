@@ -80,7 +80,11 @@ def _large_config(n_classes, seed=7):
     """A profile whose inline copy is well past the DynamoDB item limit."""
     rng = random.Random(seed)
     return {
-        "classification": {"model": "m", "temperature": Decimal("0.0")},
+        # Current (0.9) shape: the results resolver migrates a legacy flat
+        # ``classification`` block on read, which these round trips do not test.
+        "classification": {
+            "one_stage": {"llm": {"model": "m", "temperature": Decimal("0.0")}}
+        },
         "extraction": {"model": "m", "temperature": Decimal("0.0")},
         "classes": [
             {

@@ -1566,10 +1566,11 @@ extraction:
 > reports them, where the remedy is. A section whose *named* class is missing from
 > the configuration is **not** an exception and does publish: the section was
 > expected to hold data and holds none. How often that arrives depends on your
-> classification configuration — on the default it needs a configuration edit, but
-> `textbasedHolisticClassification` and `enforceValidClasses: false` both store an
-> out-of-vocabulary prediction verbatim, so there the rate follows model output and
-> `ConfidenceUnavailableThreshold` is the lever.
+> classification configuration — with `validation.enforceValidClasses` on (the
+> default) every call that assigns a class re-prompts and then assigns
+> `fallback_class`, so it needs a configuration edit, but `enforceValidClasses:
+> false` stores an out-of-vocabulary prediction verbatim, so there the rate follows
+> model output and `ConfidenceUnavailableThreshold` is the lever.
 > `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
