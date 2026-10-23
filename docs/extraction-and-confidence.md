@@ -1758,14 +1758,17 @@ else inferred from the value. Format-bridged matches are tagged
 `geometry_source: "ocr-normalized"` and Levenshtein near-misses `"ocr-fuzzy"`,
 distinct from exact `"ocr"` hits so they stay auditable.
 
-A line carrying the value **verbatim and in full** outranks a format-bridged
-variant, whatever tier each matched at. Grounding answers "where on the page did
-this value come from", and a line holding the value as extracted is better evidence
-of that than a different rendering of the same logical value elsewhere: a
-`SubmissionDate` of `4/11/13` read off `Barbara Madsen 4/11/13` belongs on that
-line, not on an `APR 11 2013` received-stamp further up the page. The preference
-stops at whole-value matches — a *fragment* of the value is weaker evidence than a
-variant that matched all of it, so it does not win here.
+When a verbatim hit and a format-bridged one match at the **same tier**, the
+verbatim one wins. Without that, the tie is broken by position, so a variant match
+on an earlier page takes a box the value's own line should have had.
+
+⚠️ **Same tier only.** Preferring a verbatim hit at a *worse* tier looks like the
+same principle and is not, because "verbatim" is meaningful for a string and
+arbitrary for a number: `str(600.0)` is `"600.0"`, a substring of `"600.00 NM"`,
+and `str(6.0)` is a substring of `"126.00"`. A cross-tier rule therefore ranks a
+substring inside an unrelated amount above a variant that matched the right amount
+exactly, and the box lands on the wrong figure. A number's realistic renderings are
+its variants, not whichever form `str` happens to produce.
 
 **Separators at a line break.** A value written across two OCR lines carries a
 separator at the break that the page does not have: the document reads

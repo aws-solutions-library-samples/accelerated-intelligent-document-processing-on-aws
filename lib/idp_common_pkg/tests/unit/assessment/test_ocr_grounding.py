@@ -1779,24 +1779,33 @@ class TestVerbatimBeatsFormatBridged:
     separator change would otherwise have introduced (#1520).
     """
 
-    def test_a_verbatim_substring_beats_a_variant_exact_match(self):
-        """``"4/11/13"`` came from ``"Barbara Madsen 4/11/13"``, not from a stamp.
+    def test_a_variant_exact_beats_a_primary_substring_at_a_worse_tier(self):
+        """⚠️ The preference is same-tier only, and this is why.
 
-        The variant matches the stamp EXACTly (tier 1) while the verbatim line is
-        only a SUBSTRING hit (tier 2), so tier order alone decides this the wrong
-        way round.
+        "Verbatim" is meaningful for a string and arbitrary for a number:
+        ``str(6.0)`` is ``"6.0"``, which is a substring of ``"126.00"``. Preferring a
+        primary hit across tiers therefore ranks a SUBSTRING inside an unrelated
+        amount above a variant that matched the right amount EXACTly, and the box
+        lands on the wrong figure. The realistic renderings of a number are its
+        variants, not whichever form ``str`` happens to produce.
+
+        What this pins is the **combination**, measured rather than assumed: the
+        wrong box needs a cross-tier preference *and* an exact-index fast path that
+        falls through when only a variant hit, since otherwise the primary substring
+        candidate is never collected. Re-introducing either alone leaves this green;
+        re-introducing both turns it red.
         """
         pd = {
             1: _page(
                 [
-                    _line("APR 11 2013", 0.80, 0.09),
-                    _line("Barbara Madsen 4/11/13", 0.54, 0.87),
+                    _line("$126.00", 0.20, 0.10),
+                    _line("$6.00", 0.20, 0.30),
                 ]
             )
         }
-        geom, source, _conf = g.match_value_to_geometry("4/11/13", pd)
-        assert source == "ocr"
-        assert geom["boundingBox"]["top"] == pytest.approx(0.87)
+        geom, _source, _conf = g.match_value_to_geometry(6.0, pd)
+        # The $6.00 line, not the $126.00 line that merely contains "6.0".
+        assert geom["boundingBox"]["top"] == pytest.approx(0.30)
 
     def test_a_verbatim_exact_on_a_later_page_beats_a_variant_on_an_earlier_one(self):
         """The tie-break is positional, so page order would otherwise decide it.

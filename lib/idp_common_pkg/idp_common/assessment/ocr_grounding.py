@@ -1147,7 +1147,6 @@ def match_value_to_geometry(
     # over ~1,800 lines × the full fuzzy ladder. Falls through to the full scan only
     # when nothing matched exactly (reformatting / OCR noise).
     candidates: List[Tuple[int, Dict[str, Any], str, Optional[float]]] = []
-    primary_exact = False
     for page_num in sorted(page_data_by_page):
         page_data = page_data_by_page[page_num]
         if not isinstance(page_data, dict) or not page_data.get("geometryAvailable"):
@@ -1160,18 +1159,7 @@ def match_value_to_geometry(
                 )
                 if m is not None:
                     candidates.append(m)
-                    if i == 0:
-                        primary_exact = True
-    # ⚠️ Short-circuit on a **primary** exact hit only, not on any exact hit. The
-    # speed-up this path exists for is the verbatim case (every cell of a 300-row
-    # table equals its OCR line), and that case sets ``primary_exact``. A hit from a
-    # format *variant* must not suppress the full scan: it would skip collecting the
-    # line that carries the value verbatim, and the verbatim preference below cannot
-    # choose a candidate that was never produced. Measured: a ``"4-15-11"`` whose
-    # exact line sits on page 2 was grounded on page 1's ``"APR 15 2011"`` stamp,
-    # because the ``%b %d, %Y`` variant hit this index and the page-2 line was never
-    # looked at (#1520).
-    if primary_exact:
+    if candidates:
         best_tier = _TIER_EXACT  # by construction
     else:
         # Full (slower) collection across all pages: substring/span/typed/fuzzy.
@@ -1191,30 +1179,29 @@ def match_value_to_geometry(
     if not candidates:
         return None
 
-    # A WHOLE-STRING verbatim hit outranks a format-bridged variant at any tier.
-    #
-    # Grounding answers "where on the page did this value come from", and a line
-    # carrying the value as extracted is better evidence of that than a different
-    # rendering of the same logical value elsewhere. Measured: a ``"4/11/13"`` taken
-    # from ``"Barbara Madsen 4/11/13"`` was grounded on an ``"APR 11 2013"`` stamp,
-    # because the variant matched that stamp EXACTly (tier 1) while the verbatim line
-    # was only a SUBSTRING hit (tier 2) — so tier order alone decides it the wrong
-    # way round (#1520).
-    #
-    # Bounded to tiers at or above SPAN on purpose: those are the tiers where the
-    # whole value matched. A *fragment* of the value (PARTIAL/WEAK_PARTIAL) is weaker
-    # evidence than a variant that matched in full, so it must not win here — which
-    # is the same ordering #1519 established for ``_TIER_WEAK_PARTIAL``.
-    whole_verbatim = [
-        c for c in candidates if c[0] <= _TIER_SPAN and c[2] != _SOURCE_NORMALIZED
-    ]
-    if whole_verbatim:
-        candidates = whole_verbatim
-
     # Keep only the most precise tier that matched (exact beats substring beats
     # span beats fuzzy), so a high-precision hit is never displaced by fuzzy noise.
     best_tier = min(tier for tier, *_ in candidates)
     best = [c for c in candidates if c[0] == best_tier]
+
+    # Same tier, so the tie is about provenance rather than precision: prefer the
+    # line carrying the value as extracted over a format-bridged rendering of it.
+    # Without this the tie-break below is positional, and collapsing a separator can
+    # promote a variant to the same tier as the verbatim hit — measured as a
+    # ``"4-15-11"`` whose own line sits on page 2 being grounded on page 1's
+    # ``"APR 15 2011"`` stamp, which reading order reaches first (#1520).
+    #
+    # ⚠️ **Same tier only.** Letting a verbatim hit beat a variant at a *worse* tier
+    # looks like the same principle and is not, because "verbatim" is meaningful for
+    # a string and arbitrary for a number: ``str(600.0)`` is ``"600.0"``, a substring
+    # of ``"600.00 NM"`` — and ``str(6.0)`` is a substring of ``"126.00"``. A
+    # cross-tier rule therefore ranked a primary SUBSTRING inside an unrelated amount
+    # above a variant that matched the right amount EXACTly, putting boxes on the
+    # wrong figure. The realistic renderings of a number are its variants, not
+    # whichever form Python's ``str`` happens to produce.
+    verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
+    if verbatim_at_tier:
+        best = verbatim_at_tier
 
     if len(best) == 1:
         _, geometry, source, ocr_conf = best[0]
