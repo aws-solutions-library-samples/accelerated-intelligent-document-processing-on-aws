@@ -106,8 +106,6 @@ class ReviewQueueSummary(_View):
     annotators: int = 0
     oldest_enqueued_at: Optional[str] = None
     is_default_queue: bool = False
-    #: A document is queued when a field's confidence is below this.
-    confidence_threshold: Optional[float] = None
     #: When off, no documents are added to the queue.
     enabled: Optional[bool] = None
     claim_cap: int = 10
@@ -149,6 +147,7 @@ class ReviewItemDetail(_View):
     sections: list[ReviewSectionDetail] = Field(default_factory=list)
     checklist: list[str] = Field(default_factory=list)
     reject_reasons: list[str] = Field(default_factory=list)
+    skip_reasons: list[str] = Field(default_factory=list)
     claim_cap: int = 10
     my_claim_count: int = 0
     history: list[ReviewHistoryEntryView] = Field(default_factory=list)
@@ -253,6 +252,11 @@ class SaveDraftArgs(ItemArgs):
 
 class CompleteArgs(ItemArgs):
     checklist: Optional[list[bool]] = Field(default=None, max_length=20)
+    note: Optional[str] = Field(default=None, max_length=MAX_NOTE)
+
+
+class ReleaseArgs(ItemArgs):
+    reason: str = Field(min_length=1, max_length=200)
     note: Optional[str] = Field(default=None, max_length=MAX_NOTE)
 
 

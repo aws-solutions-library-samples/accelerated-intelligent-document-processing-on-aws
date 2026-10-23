@@ -3,15 +3,17 @@
 
 """System-wide review queue definitions (``QDEF`` / ``Q#<queueId>`` items).
 
-Admins create and manage queues in HITL › Queue Management. Low-confidence
-production documents are routed to the ``Default`` queue when it is enabled, using
-its ``confidence_threshold`` (see :mod:`.routing`); an Admin can move items to any
-other queue. A queue's work is assigned to Annotators by an Admin, and an
+Admins manage queues in HITL › Queue Management. A production document that
+raised confidence alerts is routed to the ``Default`` queue when HITL is enabled
+in its configuration and the queue is enabled (see :mod:`.routing`); queues have
+no confidence threshold of their own. An Admin can move items to any other
+queue. A queue's work is assigned to Annotators by an Admin, and an
 assignment does not expire — the queue's ``time_limit_minutes`` only schedules a
 reminder.
 
-The ``Default`` queue is seeded, disabled, whenever the definitions are read and
-it is missing, and it is the only queue that can't be deleted.
+The ``Default`` queue is seeded, enabled, whenever the definitions are read and
+it is missing; a stored Default is never overwritten. It is the only queue that
+can't be deleted.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ import logging
 import re
 import threading
 import time
-from decimal import Decimal
 from typing import Any, Callable, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -32,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_QUEUE_ID = "default"
 DEFAULT_TIME_LIMIT_MINUTES = 60
-#: A field whose confidence is below the queue's threshold queues the document.
-DEFAULT_CONFIDENCE_THRESHOLD = 0.8
 #: An assignment holds the item until it is completed or an Admin unassigns it;
 #: the claim machinery's lease is set this far out so nothing expires.
 ASSIGNMENT_LEASE_MINUTES = 10 * 365 * 24 * 60
@@ -45,6 +44,16 @@ DEFAULT_REJECT_REASONS = (
     "Wrong document type",
     "Pages missing or out of order",
     "Duplicate document",
+    "Other (see note)",
+)
+
+#: Why an Annotator gives an item back to its queue unfinished (Skip). Recorded in
+#: the item's history, so the next reviewer and the Admin can see why it came back.
+DEFAULT_SKIP_REASONS = (
+    "Needs expert review",
+    "Document unclear or incomplete",
+    "Conflict of interest",
+    "Out of time",
     "Other (see note)",
 )
 
@@ -74,16 +83,16 @@ class QueueDefinition(BaseModel):
         min_length=1,
         max_length=20,
     )
+    skip_reasons: List[str] = Field(
+        default_factory=lambda: list(DEFAULT_SKIP_REASONS),
+        min_length=1,
+        max_length=20,
+    )
     #: When an assigned item is still open after this long, its Annotator is reminded.
     time_limit_minutes: int = Field(default=DEFAULT_TIME_LIMIT_MINUTES, ge=1, le=10080)
     #: Annotators (by email) who work this queue; empty = none (Admins only).
     eligible_annotators: List[str] = Field(default_factory=list, max_length=200)
-    #: A document is queued when a field's confidence is below this (0-1).
-    confidence_threshold: float = Field(
-        default=DEFAULT_CONFIDENCE_THRESHOLD, ge=0.0, le=1.0
-    )
-    #: When off, no documents are added to this queue. The seeded Default queue
-    #: starts off, so a new stack routes nothing until an Admin turns it on.
+    #: When off, no documents are added to this queue.
     enabled: bool = True
 
     @field_validator("id", mode="before")
@@ -96,7 +105,7 @@ class QueueDefinition(BaseModel):
     def strip_text(cls, v: Any) -> Any:
         return "" if v is None else str(v).strip()
 
-    @field_validator("checklist", "reject_reasons", mode="before")
+    @field_validator("checklist", "reject_reasons", "skip_reasons", mode="before")
     @classmethod
     def clean_list(cls, v: Any) -> List[str]:
         items = [str(x).strip() for x in (v or []) if str(x).strip()]
@@ -140,16 +149,15 @@ class QueueDefinition(BaseModel):
             "Priority": self.priority,
             "Checklist": list(self.checklist),
             "RejectReasons": list(self.reject_reasons),
+            "SkipReasons": list(self.skip_reasons),
             "TimeLimitMinutes": self.time_limit_minutes,
             "EligibleAnnotators": list(self.eligible_annotators),
-            "ConfidenceThreshold": Decimal(str(self.confidence_threshold)),
             "Enabled": self.enabled,
         }
 
     @classmethod
     def from_item(cls, item: dict[str, Any]) -> "QueueDefinition":
         queue_id = item.get("QueueId") or str(item.get("SK", ""))[2:]
-        threshold = item.get("ConfidenceThreshold")
         enabled = item.get("Enabled")
         return cls(
             id=queue_id,
@@ -158,25 +166,19 @@ class QueueDefinition(BaseModel):
             priority=int(item.get("Priority", 50)),
             checklist=list(item.get("Checklist") or []),
             reject_reasons=list(item.get("RejectReasons") or DEFAULT_REJECT_REASONS),
+            skip_reasons=list(item.get("SkipReasons") or DEFAULT_SKIP_REASONS),
             time_limit_minutes=int(
                 item.get("TimeLimitMinutes", DEFAULT_TIME_LIMIT_MINUTES)
             ),
             eligible_annotators=list(item.get("EligibleAnnotators") or []),
-            confidence_threshold=(
-                DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else float(threshold)
-            ),
-            # A definition stored before the switch existed: Default reads as off
-            # (routing is opt-in), any other queue as on.
-            enabled=(
-                queue_id.strip().lower() != DEFAULT_QUEUE_ID
-                if enabled is None
-                else bool(enabled)
-            ),
+            # A stored ConfidenceThreshold (an older queue setting) is ignored. A
+            # definition stored before the switch existed reads as on.
+            enabled=True if enabled is None else bool(enabled),
         )
 
 
 def default_definitions() -> list[QueueDefinition]:
-    """The queues a stack always has: only Default, seeded disabled."""
+    """The queues a stack always has: only Default, seeded enabled."""
     return [
         QueueDefinition(
             id=DEFAULT_QUEUE_ID,
@@ -184,7 +186,7 @@ def default_definitions() -> list[QueueDefinition]:
             description="Documents with low-confidence fields",
             priority=50,
             checklist=["Check every highlighted field against the page image"],
-            enabled=False,
+            enabled=True,
         ),
     ]
 
@@ -214,6 +216,11 @@ class QueuesView:
     def reject_reasons(self) -> list[str]:
         default = self.queue(DEFAULT_QUEUE_ID)
         return list(default.reject_reasons if default else DEFAULT_REJECT_REASONS)
+
+    @property
+    def skip_reasons(self) -> list[str]:
+        default = self.queue(DEFAULT_QUEUE_ID)
+        return list(default.skip_reasons if default else DEFAULT_SKIP_REASONS)
 
 
 class QueueDefStore:

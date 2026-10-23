@@ -1919,6 +1919,20 @@
           "name": "cycleId",
           "non_null": true,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -2129,6 +2143,31 @@
         }
       ]
     },
+    "saveSectionReviewEdits": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "sectionId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "editedData",
+          "non_null": true,
+          "type": "AWSJSON"
+        }
+      ]
+    },
     "saveTestSetDocumentSection": {
       "args": [
         {
@@ -2304,6 +2343,20 @@
           "name": "objectKey",
           "non_null": true,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -2321,6 +2374,20 @@
           "is_list": false,
           "name": "objectKey",
           "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -3763,6 +3830,13 @@
         "type": "String"
       },
       {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "skipReasons",
+        "non_null": false,
+        "type": "String"
+      },
+      {
         "elem_non_null": false,
         "is_list": false,
         "name": "timeLimitMinutes",
@@ -3775,13 +3849,6 @@
         "name": "eligibleAnnotators",
         "non_null": false,
         "type": "String"
-      },
-      {
-        "elem_non_null": false,
-        "is_list": false,
-        "name": "confidenceThreshold",
-        "non_null": false,
-        "type": "Float"
       },
       {
         "elem_non_null": false,
@@ -3963,6 +4030,13 @@
         "elem_non_null": true,
         "is_list": true,
         "name": "checklist",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "skipReasons",
         "non_null": false,
         "type": "String"
       }

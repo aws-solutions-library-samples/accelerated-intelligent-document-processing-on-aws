@@ -1,12 +1,14 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Opt-in CLASS confidence for classification: prompt assembly + resolution.
+"""CLASS confidence for classification: prompt assembly + resolution.
 
-Turning `classification.confidence.mode` on splices an instruction block into the
+A class-assigning call's `confidence.mode` (for example
+`classification.one_stage.llm.confidence.mode`) splices an instruction block into the
 classification task prompt and resolves whatever comes back into a confidence
-plus (in ``topk`` mode) the ranked runner-up classes. Off by default, and no-op
-when off.
+plus (in ``topk`` mode) the ranked runner-up classes. ``topk`` is the shipped
+mode on both class-assigning calls (``base-classification.yaml``); ``off`` is a
+no-op.
 
 Two modes, and the difference between them is the whole point:
 
@@ -24,12 +26,15 @@ Two modes, and the difference between them is the whole point:
   both more legible and validatable against the vocabulary.
 
 The blocks are EDITABLE CONFIG TEMPLATES
-(``classification.confidence.task_prompt_topk`` /
+(``confidence.task_prompt_topk`` /
 ``task_prompt_verbalized``), not hardcoded strings, matching how every other
 prompt in this repo can be tuned without a code change.
 
-Both modes cost OUTPUT TOKENS PER PAGE, because page-level classification is one
-inference per page. That is why this is opt-in.
+Both modes cost OUTPUT TOKENS PER PAGE at page granularity, because that is one
+inference per page — ``off`` is what saves them, and is the right setting for a
+deployment that will not act on the score. At packet granularity the cost is per
+returned segment, and under two stage it is per section, so only the page case
+scales with page count.
 """
 
 from __future__ import annotations

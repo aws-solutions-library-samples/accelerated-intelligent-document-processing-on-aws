@@ -1017,3 +1017,217 @@ class TestFormatAwareMatching:
         assert all(
             r["d"]["geometry_source"] == g._SOURCE_NORMALIZED for r in out["rows"]
         )
+
+
+class TestWeakPartialDemotion:
+    """A sub-half-coverage substring match is ranked last, not rejected (#1519).
+
+    ``_TIER_PARTIAL`` had no coverage floor, which caused two failures: a fragment
+    was accepted as the value's location, and because any candidate
+    short-circuits the fuzzy and Levenshtein sweeps, a fragment also suppressed
+    the match that was right.
+
+    Rejecting fragments fixes both and costs more than it saves — measured over
+    265 fields, 48 of the 62 sub-floor matches point at a value that genuinely is
+    on the page across several lines, against 14 coincidences, and no absolute-size
+    rule beats break-even. So a fragment is demoted below the whole-string tiers
+    instead: it loses to a better match, and still supplies the only box where
+    there is none. Measured over 50 sections through the full grounding path, no
+    box is lost and 10 move to a better line.
+    """
+
+    def test_a_header_fragment_does_not_beat_the_line_it_fragments(self):
+        """The headline case. OCR read "via" as "vla", so EXACT misses by one
+        character. The page also carries an ``IDENTIFIED`` column header, which is
+        a substring of the value at 29% coverage. The box must land on the
+        sentence, not the header."""
+        pd = {
+            1: _page(
+                [
+                    _line("IDENTIFIED", 0.40, 0.13, width=0.07),
+                    _line(
+                        "Above identified vla arrest report.", 0.07, 0.37, width=0.23
+                    ),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Above identified via arrest report.", pd
+        )
+        assert geom["boundingBox"]["top"] == 0.37, "matched the header, not the value"
+        assert geom["boundingBox"]["width"] == 0.23
+
+    def test_a_single_letter_loses_to_a_whole_string_match(self):
+        """``"D."`` normalizes to the single letter ``d``, a substring of most
+        English values, and was measured as a live candidate for a 34-character
+        sentence. It must not win against a line resembling the whole value."""
+        pd = {
+            1: _page(
+                [
+                    _line("D.", 0.62, 0.24, width=0.014),
+                    _line(
+                        "Above identified vla arrest report.", 0.07, 0.37, width=0.23
+                    ),
+                ]
+            )
+        }
+        geom, _s, _c = g.match_value_to_geometry(
+            "Above identified via arrest report.", pd
+        )
+        assert geom["boundingBox"]["top"] == 0.37
+
+    def test_a_fragment_is_still_used_when_nothing_better_exists(self):
+        """Why fragments are demoted rather than rejected. Measured over 265
+        fields, 48 of the 62 sub-floor matches point at a value that really is on
+        the page across several lines, against 14 coincidences — so dropping them
+        all loses more than it saves.
+
+        The fixture is chosen so that **only** the weak tier can produce this box:
+        16.9% coverage puts it under the floor, token overlap of 0.22 is below the
+        fuzzy threshold, and the length ratio means the Levenshtein ceiling skips
+        it. If sub-floor fragments were rejected there would be no box at all, so
+        this test reds under that change rather than passing either way.
+        """
+        value = (
+            "Carbon fibre maincase (gearbox); Carbon plate floor; Kevlar side panels"
+        )
+        pd = {1: _page([_line("Carbon plate", 0.1, 0.3)])}
+
+        # Assert the mechanism, not just the outcome: the only candidate is the
+        # demoted tier.
+        nv = g._normalize(value)
+        candidates = g._collect_candidates_in_page(nv, g._tokens(nv), pd[1], 1)
+        assert [tier for tier, *_ in candidates] == [g._TIER_WEAK_PARTIAL]
+
+        geom, _s, _c = g.match_value_to_geometry(value, pd)
+        assert geom is not None
+        assert geom["boundingBox"]["top"] == 0.3
+
+    def test_a_fragment_is_ranked_below_every_whole_string_tier(self):
+        assert g._TIER_WEAK_PARTIAL > g._TIER_LEVENSHTEIN > g._TIER_FUZZY
+        assert g._TIER_WEAK_PARTIAL > g._TIER_PARTIAL
+
+    def test_a_correct_prefix_of_a_two_line_value_still_matches(self):
+        """Measured: an address whose first line covers 65% of the value."""
+        pd = {1: _page([_line("PO Box 307, Shortland Street", 0.2, 0.44)])}
+        geom, source, _ = g.match_value_to_geometry(
+            "PO Box 307, Shortland Street, Auckland 1140", pd
+        )
+        assert source == "ocr"
+        assert geom["boundingBox"]["top"] == 0.44
+
+    def test_a_correct_suffix_still_matches(self):
+        """Measured: an author line whose email suffix covers 51% of the value."""
+        pd = {1: _page([_line("menamul@kfupm.edu.sa", 0.3, 0.6)])}
+        geom, _source, _ = g.match_value_to_geometry(
+            "M. Enamul Hossain, menamul@kfupm.edu.sa", pd
+        )
+        assert geom["boundingBox"]["top"] == 0.6
+
+    def test_the_floor_decides_the_tier_not_whether_there_is_a_box(self):
+        """Both sides of the floor still yield a box when they are the only
+        candidate — the floor only decides which tier they compete at. Measured
+        against the NORMALIZED value, since that is what matching compares."""
+        assert g._PARTIAL_MIN_COVERAGE == 0.5
+        value = "abcdefgh"  # 8 chars normalized
+        at_floor = {1: _page([_line("abcd", 0.1, 0.2)])}  # 4/8 == 0.5 -> PARTIAL
+        below = {1: _page([_line("abc", 0.1, 0.3)])}  # 3/8 < 0.5 -> WEAK_PARTIAL
+        assert g.match_value_to_geometry(value, at_floor) is not None
+        assert g.match_value_to_geometry(value, below) is not None
+        # But a sub-floor fragment never beats a near-whole-string match.
+        both = {1: _page([_line("abc", 0.1, 0.3), _line("abcdefgX", 0.5, 0.6)])}
+        geom, _s, _c = g.match_value_to_geometry(value, both)
+        assert geom["boundingBox"]["top"] == 0.6
+
+
+class TestLevenshteinCanReach:
+    """The O(1) ceiling in front of the Levenshtein DP is exact, not heuristic.
+
+    It exists because the ``_PARTIAL_MIN_COVERAGE`` floor (#1519) stopped
+    fragments short-circuiting the sweep, so the DP started running against every
+    line on the page for every long model-composed value. Measured over 50 real
+    sections, grounding went 4.6s -> 25.4s with 98% of it inside ``fuzz_score``;
+    with this guard it is 0.52s and the grounding results are byte-identical.
+    """
+
+    def test_it_never_skips_a_pair_that_would_have_matched(self):
+        """The property that makes skipping safe: if the guard says a pair cannot
+        reach the threshold, the real scorer must agree. Checked over pairs built
+        to straddle the bound rather than a hand-picked table."""
+        thr = g._LEVENSHTEIN_MATCH_THRESHOLD
+        base = "above identified via arrest report"
+        pairs = [(base, base[:n]) for n in range(1, len(base) + 1)]
+        pairs += [(base, base + "x" * n) for n in range(1, 30)]
+        pairs += [
+            (base, "identified"),
+            (base, "d"),
+            (base, "above identified vla arrest report"),
+            ("unknown", "un"),
+            ("1,234.00", "1234.00"),
+            ("", "abc"),
+            ("abc", ""),
+        ]
+        skipped_but_matching = [
+            (a, b)
+            for a, b in pairs
+            if not g._levenshtein_can_reach(a, b, thr)
+            and g._levenshtein_sim(a, b) >= thr
+        ]
+        assert skipped_but_matching == []
+
+    def test_the_known_recovery_case_is_not_skipped(self):
+        """The one-character OCR slip #1519 turns on must survive the guard, or
+        the fix it enables is silently undone."""
+        thr = g._LEVENSHTEIN_MATCH_THRESHOLD
+        value, ocr = (
+            "above identified via arrest report",
+            "above identified vla arrest report",
+        )
+        assert g._levenshtein_can_reach(value, ocr, thr)
+        assert g._levenshtein_sim(value, ocr) >= thr
+
+    def test_a_wildly_different_length_is_skipped(self):
+        """The case that was costing the time: a long composed value against the
+        short lines of a page."""
+        thr = g._LEVENSHTEIN_MATCH_THRESHOLD
+        value = "This handwritten document is a laboratory data sheet recording results"
+        assert not g._levenshtein_can_reach(value, "UN 173", thr)
+
+    def test_an_unavailable_scorer_does_not_narrow_the_tier(self):
+        """If the evaluation module cannot be imported the guard must allow the
+        pair through, so the tier degrades to inert (score 0.0) exactly as before
+        rather than quietly rejecting candidates."""
+        with patch.dict("sys.modules", {"idp_common.evaluation.text_matching": None}):
+            assert g._levenshtein_can_reach("abc", "abcdefghijklmnop", 0.8) is True
+
+
+class TestWeakBoxProvenance:
+    """A fragment-based box is tagged ``ocr-weak`` so it is auditable (#1519).
+
+    Without a distinct tag it is recorded as plain ``"ocr"``, identical to a
+    verbatim match, and neither a reviewer nor a later measurement can tell how
+    much of the value a box rests on. Counting this tag over a corpus is how to
+    answer "how many boxes stand on a fragment" from stored artifacts alone.
+    """
+
+    def test_a_fragment_box_is_tagged_weak(self):
+        value = (
+            "Carbon fibre maincase (gearbox); Carbon plate floor; Kevlar side panels"
+        )
+        pd = {1: _page([_line("Carbon plate", 0.1, 0.3)])}
+        _geom, source, _conf = g.match_value_to_geometry(value, pd)
+        assert source == g._SOURCE_WEAK == "ocr-weak"
+
+    def test_a_strong_match_keeps_plain_ocr_provenance(self):
+        pd = {1: _page([_line("Account: 12345", 0.1, 0.05)])}
+        _geom, source, _conf = g.match_value_to_geometry("Account: 12345", pd)
+        assert source == "ocr"
+
+    def test_an_at_floor_partial_is_not_tagged_weak(self):
+        """Only the sub-floor tier is weak; a half-or-more prefix is an ordinary
+        match and must not be labelled as resting on a fragment."""
+        pd = {1: _page([_line("PO Box 307, Shortland Street", 0.2, 0.44)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            "PO Box 307, Shortland Street, Auckland 1140", pd
+        )
+        assert source == "ocr"

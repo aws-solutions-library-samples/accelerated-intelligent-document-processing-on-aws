@@ -427,7 +427,7 @@ def merge_config_with_defaults(
 
     Example:
         user_config = {
-            "classification": {"model": "us.amazon.nova-lite-v1:0"},
+            "classification": {"one_stage": {"llm": {"model": "us.amazon.nova-lite-v1:0"}}},
             "classes": [...]
         }
         result = merge_config_with_defaults(user_config, "pattern-2")
@@ -649,6 +649,12 @@ def validate_config(
     # call rather than in the document, and there is no document question worth
     # answering until it names a real pattern.
     _validate_ignored_keys(config, result)
+
+    # A file in the pre-0.9 classification layout is converted silently on read;
+    # say so, and name the one conversion that changes behaviour.
+    from idp_common.config.migrations.v08_to_v09 import conversion_notices
+
+    result["warnings"].extend(conversion_notices(config))
 
     # Try to merge with defaults
     #
@@ -916,11 +922,26 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         "summarization": "model",
     }
 
-    for section, field_name in sections_with_models.items():
-        if section not in merged_config:
+    targets: List[tuple] = []
+    for section_name, model_field in sections_with_models.items():
+        if section_name not in merged_config:
             continue
+        if section_name == "classification":
+            # One model per call the active strategy makes.
+            targets.extend(
+                (path, "model", call.get("model"))
+                for path, call in _classification_calls(merged_config)
+            )
+        else:
+            targets.append(
+                (
+                    section_name,
+                    model_field,
+                    merged_config[section_name].get(model_field),
+                )
+            )
 
-        model_id = merged_config[section].get(field_name)
+    for section, field_name, model_id in targets:
         if not model_id:
             continue
 
@@ -1162,6 +1183,107 @@ def _validate_multi_doc_discovery_forced_tool(
         )
 
 
+def _dict_at(root: Any, *path: str) -> Dict[str, Any]:
+    node = root
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else {}
+
+
+def _nested_classification(merged_config: Dict[str, Any]) -> Dict[str, Any]:
+    """The config with its classification block in the nested (0.9) shape.
+
+    ``validate_config`` hands these validators an already-migrated merge, so this
+    is normally the identity. It is here so a caller passing a flat block gets
+    its settings checked rather than silently skipped.
+    """
+    from idp_common.config.migrations.v08_to_v09 import migrate_v08_to_v09
+
+    return migrate_v08_to_v09(merged_config)
+
+
+def _classification_is_two_stage(merged_config: Dict[str, Any]) -> bool:
+    strategy = _dict_at(merged_config, "classification").get("strategy")
+    return str(strategy or "").strip().lower() == "two_stage"
+
+
+def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
+    """``(path, settings)`` for each model call the active strategy makes.
+
+    Classification settings live inside the call that uses them (config format
+    0.9), so a validator reading ``classification.model`` would find nothing and
+    pass everything. Only the active strategy's calls are returned: a setting
+    the selected strategy never sends cannot fail a document, and refusing to
+    save over it would block an unrelated edit.
+    """
+    merged_config = _nested_classification(merged_config)
+    if _classification_is_two_stage(merged_config):
+        paths = [
+            ("two_stage", "segmentation", "llm"),
+            ("two_stage", "section_classification", "llm"),
+        ]
+    else:
+        paths = [("one_stage", "llm")]
+    return [
+        (
+            "classification." + ".".join(path),
+            _dict_at(merged_config, "classification", *path),
+        )
+        for path in paths
+    ]
+
+
+def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
+    """``(path, task_prompt, modality)`` for each prompt the active strategy sends.
+
+    The call's ``modality`` comes along because the placeholder rule cannot be
+    answered from the prompt alone: ``modality.images: true`` adds an image
+    placeholder to a prompt that has none, and ``modality.text: true`` does the same
+    for text, so a prompt carrying neither placeholder is correct when either flag is
+    on. Reporting it as an error regardless made ``idp-cli config-validate`` refuse a
+    configuration the editor saves and the service runs.
+    """
+    merged_config = _nested_classification(merged_config)
+    cls = _dict_at(merged_config, "classification")
+
+    def reader(*path: str) -> tuple:
+        block = _dict_at(cls, *path)
+        granularity = str(block.get("granularity") or "page").strip().lower()
+        side = "packet" if granularity == "packet" else "page"
+        # The prompt sits under page/packet; the modality is on the llm block, which
+        # for one stage is a sibling of them and for segmentation is `block` itself.
+        llm = block if path[-1] == "llm" else _dict_at(block, "llm")
+        return (
+            "classification." + ".".join(path + (side, "task_prompt")),
+            _dict_at(block, side).get("task_prompt", ""),
+            _dict_at(llm, "modality"),
+        )
+
+    if _classification_is_two_stage(merged_config):
+        section_llm = _dict_at(cls, "two_stage", "section_classification", "llm")
+        return [
+            reader("two_stage", "segmentation", "llm"),
+            (
+                "classification.two_stage.section_classification.llm.task_prompt",
+                section_llm.get("task_prompt", ""),
+                _dict_at(section_llm, "modality"),
+            ),
+        ]
+    return [reader("one_stage")]
+
+
+def _modality_supplies_content(modality: Dict[str, Any]) -> bool:
+    """True when a flag is explicitly ON, so content is sent whatever the prompt says.
+
+    Only an affirmative value counts. Empty means "infer from the prompt", which is
+    exactly the case the placeholder rule is about.
+    """
+    return any(
+        str(modality.get(flag, "")).strip().lower() in ("true", "yes", "y", "on", "1")
+        for flag in ("text", "images")
+    )
+
+
 def _validate_task_prompt_placeholders(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1192,7 +1314,7 @@ def _validate_task_prompt_placeholders(
         "classification": (
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
             False,  # Must have at least one
-            "classification.task_prompt must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
+            "{path} must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the classification model will not receive document content, "
             "resulting in classification failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
@@ -1228,7 +1350,14 @@ def _validate_task_prompt_placeholders(
         error_message,
     ) in validation_rules.items():
         section = merged_config.get(section_name, {})
-        task_prompt = section.get("task_prompt", "")
+        if section_name == "classification":
+            # One prompt per call the active strategy makes; see
+            # `_classification_task_prompts`.
+            prompts = _classification_task_prompts(merged_config)
+        else:
+            prompts = [
+                (f"{section_name}.task_prompt", section.get("task_prompt", ""), {})
+            ]
 
         # Special case: OCR task_prompt is only used when backend is 'bedrock'
         if section_name == "ocr":
@@ -1243,7 +1372,14 @@ def _validate_task_prompt_placeholders(
                 # Section is explicitly disabled, skip validation
                 continue
 
-        if task_prompt:
+        for path, task_prompt, modality in prompts:
+            if not task_prompt:
+                continue
+            if _modality_supplies_content(modality):
+                # An explicit modality flag sends the content whether the prompt
+                # asks for it or not, and the service normalises the prompt to
+                # match. See `_classification_task_prompts`.
+                continue
             # Check which placeholders are present
             present_placeholders = [
                 placeholder
@@ -1263,7 +1399,8 @@ def _validate_task_prompt_placeholders(
 
             if not validation_passed:
                 result["valid"] = False
-                result["errors"].append(error_message)
+                # `replace`, not `format`: the messages hold literal braces.
+                result["errors"].append(error_message.replace("{path}", path))
 
 
 def _validate_schema_fields(
@@ -1477,6 +1614,7 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
         "summarization": {"model_field": "model", "max_tokens_field": "max_tokens"},
     }
 
+    targets: List[tuple] = []
     for section_name, config in sections_with_tokens.items():
         section = merged_config.get(section_name, {})
 
@@ -1485,8 +1623,17 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
             if not section.get("enabled", True):
                 continue
 
-        model_id = section.get(config["model_field"])
-        max_tokens_raw = section.get(config["max_tokens_field"])
+        if section_name == "classification":
+            # One model and cap per call the active strategy makes.
+            targets.extend(
+                (path, call) for path, call in _classification_calls(merged_config)
+            )
+        else:
+            targets.append((section_name, section))
+
+    for section_name, section in targets:
+        model_id = section.get("model")
+        max_tokens_raw = section.get("max_tokens")
 
         # Skip if the model is missing. max_tokens is an OPTIONAL cap: empty
         # string / None / a value that coerces to <= 0 all mean "unset" (use the

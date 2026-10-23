@@ -301,6 +301,14 @@ test = [
   # as a manual `pip install`, which made those tests fail on any environment
   # that had not run the benchmark harness by hand.
   "reportlab>=4.0.0",
+  # The other half of that: benchmarks/tests/test_corpus_pagination_truth.py reads
+  # the pagination back out of the RENDERED page, because the defect it covers is a
+  # generator writing a ground truth its own pages contradict and only the page can
+  # settle that. It reads with pypdfium2 — the extractor bank_statement.py already
+  # uses, and already declared in five other extras here — rather than introducing
+  # a second PDF reader. Undeclared, every page-reading case in that file skips, and
+  # a skipped case is indistinguishable from a passing one in a CI log.
+  "pypdfium2>=5.5.0",
 ]
 
 # Full package with all dependencies

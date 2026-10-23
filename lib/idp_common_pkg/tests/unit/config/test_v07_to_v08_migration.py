@@ -29,6 +29,8 @@ deep-merged onto the already-new-shaped defaults.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from idp_common.config.merge_utils import merge_config_with_defaults
@@ -159,7 +161,7 @@ class TestModalityIsLeftAlone:
         merged = merge_config_with_defaults(out, validate=False)
         merged["classification"]["task_prompt"] = text_only
         config = IDPConfig(**merged)
-        assert config.classification.modality.images is None
+        assert config.classification.one_stage.llm.modality.images is None
 
     def test_an_explicit_modality_survives(self):
         out = migrate_v07_to_v08(
@@ -307,8 +309,8 @@ class TestHolisticPromptRelocation:
             validate=False,
         )
         config = IDPConfig(**merged)
-        assert config.classification.granularity == "packet"
-        assert config.classification.packet.task_prompt == hand_written
+        assert config.classification.one_stage.granularity == "packet"
+        assert config.classification.one_stage.packet.task_prompt == hand_written
 
     def test_the_relocated_prompt_is_what_the_service_resolves(self):
         """End to end: a legacy holistic config must still run ITS OWN prompt.
@@ -391,7 +393,9 @@ class TestIdempotenceAndStamping:
         assert out["classification"]["granularity"] == "packet"
 
     def test_the_target_matches_the_models_current_version(self):
-        assert TARGET_VERSION == CONFIG_FORMAT_VERSION
+        # This hop's target is fixed; the chain carries on to the current format.
+        assert TARGET_VERSION == "0.8"
+        assert migrate_config({})["config_format_version"] == CONFIG_FORMAT_VERSION
 
     def test_a_non_dict_is_returned_unchanged(self):
         assert migrate_v07_to_v08(None) is None
@@ -412,8 +416,8 @@ class TestTheWholeChainAndTheMergePath:
                 }
             }
         )
-        assert out["classification"]["granularity"] == "packet"
-        assert "classificationMethod" not in out["classification"]
+        assert out["classification"]["one_stage"]["granularity"] == "packet"
+        assert "classificationMethod" not in json.dumps(out)
 
     def test_a_v05_config_reaches_v08(self):
         """A stored config from three formats ago needs every hop."""
@@ -426,7 +430,7 @@ class TestTheWholeChainAndTheMergePath:
             }
         )
         assert out["config_format_version"] == CONFIG_FORMAT_VERSION
-        assert out["classification"]["granularity"] == "page"
+        assert out["classification"]["one_stage"]["granularity"] == "page"
 
     def test_a_sparse_override_delta_survives_the_merge(self):
         """⚠️ The call-site risk, and the P0 shape #1079's sibling test pins for
@@ -440,8 +444,8 @@ class TestTheWholeChainAndTheMergePath:
         }
         merged = merge_config_with_defaults(delta, validate=False)
         config = IDPConfig(**merged)
-        assert config.classification.granularity == "packet"
-        assert config.classification.packet.task_prompt == PACKET_PROMPT
+        assert config.classification.one_stage.granularity == "packet"
+        assert config.classification.one_stage.packet.task_prompt == PACKET_PROMPT
 
     def test_the_model_drops_the_legacy_key(self):
         """It is no longer a field, and `extra="ignore"` means a config still
@@ -455,7 +459,7 @@ class TestTheWholeChainAndTheMergePath:
             }
         )
         assert not hasattr(config.classification, "classificationMethod")
-        assert config.classification.granularity == "packet"
+        assert config.classification.one_stage.granularity == "packet"
 
     def test_the_shipped_defaults_carry_no_legacy_key(self):
         """Item 4 of the tidy-up: the default config uses the new settings."""
@@ -472,7 +476,7 @@ class TestTheWholeChainAndTheMergePath:
         )
         raw = yaml.safe_load(defaults.read_text())["classification"]
         assert "classificationMethod" not in raw
-        assert raw["granularity"] == "page"
+        assert raw["one_stage"]["granularity"] == "page"
 
     def test_an_explicit_packet_granularity_blocks_the_relocation(self):
         """⚠️ The mirror image of the relocation's own purpose. A config that

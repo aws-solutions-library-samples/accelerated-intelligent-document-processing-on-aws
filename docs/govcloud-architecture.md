@@ -116,8 +116,8 @@ modality in Standard Output Configuration`.
 `ShouldCreateBDAOCRProject` — the `aws` partition only. Outside it the project
 is not created, `BDA_OCR_PROJECT_ARN` is empty, and the OCR service raises a
 clear error *only if* `ocr.backend` is actually set to `bda`. Use
-`ocr.backend: textract` — the built-in default; the GovCloud preset sets no
-`ocr:` key, so the default applies. See
+`ocr.backend: textract` — the built-in default; the GovCloud preset leaves
+`ocr.backend` unset, so the default applies. See
 [the deployment guide](./govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend).
 
 ## What `--headless` Removes

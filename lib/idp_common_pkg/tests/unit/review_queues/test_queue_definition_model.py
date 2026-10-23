@@ -23,18 +23,18 @@ def _queue(**kw) -> QueueDefinition:
 
 @pytest.mark.unit
 class TestDefaults:
-    def test_only_the_default_queue_is_seeded_and_it_starts_disabled(self):
+    def test_only_the_default_queue_is_seeded_and_it_starts_enabled(self):
         defs = default_definitions()
         assert [(q.id, q.name, q.priority, q.enabled) for q in defs] == [
-            ("default", "Default", 50, False),
+            ("default", "Default", 50, True),
         ]
-        assert defs[0].confidence_threshold == 0.8
         assert defs[0].reject_reasons == list(DEFAULT_REJECT_REASONS)
         assert len(DEFAULT_REJECT_REASONS) == 5
 
-    def test_a_new_queue_is_enabled_with_the_default_threshold(self):
+    def test_a_new_queue_is_enabled_and_has_no_threshold(self):
         q = _queue()
-        assert (q.enabled, q.confidence_threshold) == (True, 0.8)
+        assert q.enabled is True
+        assert not hasattr(q, "confidence_threshold")
 
     def test_name_defaults_to_a_display_form_of_the_id(self):
         assert _queue(id="loan_review").name == "Loan Review"
@@ -47,23 +47,25 @@ class TestDefaults:
             reject_reasons=["r"],
             time_limit_minutes=15,
             eligible_annotators=["a@x.com"],
-            confidence_threshold=0.65,
             enabled=False,
         )
         item = q.to_item()
-        assert (item["ConfidenceThreshold"], item["Enabled"]) == (
-            Decimal("0.65"),
-            False,
-        )
+        assert item["Enabled"] is False
+        assert "ConfidenceThreshold" not in item
         assert QueueDefinition.from_item(item) == q
 
-    def test_a_stored_item_without_the_new_fields(self):
-        """Stored before the switch existed: Default reads as off, others as on."""
-        for queue_id, enabled in (("default", False), ("claims", True)):
+    def test_a_stored_item_without_the_switch_reads_as_enabled(self):
+        """Stored before the switch existed: every queue, Default included, is on."""
+        for queue_id in ("default", "claims"):
             item = _queue(id=queue_id).to_item()
-            del item["ConfidenceThreshold"], item["Enabled"]
-            q = QueueDefinition.from_item(item)
-            assert (q.enabled, q.confidence_threshold) == (enabled, 0.8)
+            del item["Enabled"]
+            assert QueueDefinition.from_item(item).enabled is True
+
+    def test_a_stored_confidence_threshold_is_ignored(self):
+        item = {**_queue(id="claims").to_item(), "ConfidenceThreshold": Decimal("0.6")}
+        q = QueueDefinition.from_item(item)
+        assert q.id == "claims"
+        assert "ConfidenceThreshold" not in q.to_item()
 
 
 @pytest.mark.unit
@@ -82,11 +84,6 @@ class TestBounds:
     def test_bad_id_rejected(self, value):
         with pytest.raises(ValidationError):
             _queue(id=value)
-
-    @pytest.mark.parametrize("value", [-0.01, 1.01, "high"])
-    def test_confidence_threshold(self, value):
-        with pytest.raises(ValidationError):
-            _queue(confidence_threshold=value)
 
     def test_reject_reason_bounds(self):
         with pytest.raises(ValidationError):

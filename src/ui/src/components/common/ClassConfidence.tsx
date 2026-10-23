@@ -16,7 +16,7 @@ interface ClassConfidenceProps {
   reason?: string | null;
   /**
    * Ranked alternative classes with probabilities, from
-   * `classification.confidence.mode: topk` (the default).
+   * `confidence.mode: topk` on the class-assigning call (the default).
    */
   candidates?: (ClassCandidate | null)[] | null;
 }

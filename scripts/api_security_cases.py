@@ -294,6 +294,22 @@ def notification_keys():
     return keys
 
 
+def review_queue_keys():
+    """``idp_common.review_queues.keys``, the one owner of the HITLTable key formats.
+
+    Same fallback as :func:`notification_keys`: this repository's own library root
+    is appended to ``sys.path`` when the package isn't installed.
+    """
+    try:
+        from idp_common.review_queues import keys
+    except ImportError:
+        root = Path(__file__).resolve().parents[1] / "lib" / "idp_common_pkg"
+        if root.is_dir() and str(root) not in sys.path:
+            sys.path.append(str(root))
+        from idp_common.review_queues import keys
+    return keys
+
+
 def _inbox_items(body):
     """The ``items`` list of a ``listInboxMessages`` body, or ``None``."""
     try:
@@ -625,9 +641,9 @@ def run_review_queue_idor_suite(
 ):
     """Only the claimer may act on a claimed review item; non-members see nothing.
 
-    ``seed_fn()`` creates a temporary queue-enabled profile whose ``default``
-    queue lists Annotators A and B by email, a third Annotator C who is
-    not a member, and an item CLAIMED by A under a live lease. It returns
+    ``seed_fn()`` writes a temporary review queue definition whose Eligible
+    Annotators are A and B (not C), and a queue item in that queue CLAIMED by A
+    under a live lease; a third Annotator C is not a member. It returns
     ``{"tokens": {"A", "B", "C"}, "object_key", "cycle_id"}``, or ``None`` when
     the stack has no ``HITLTableName`` output (a SKIP, never a PASS). A
     seed that raises is an ERROR. Then:
@@ -750,10 +766,11 @@ def _run_review_idor_checks(ctx, record, results, seeded, call_body):
         outcome="ERROR" if why else None,
     )
 
-    # 3. B can't act on A's claim.
+    # 3. B can't act on A's claim. Each call carries every argument the
+    # dispatcher requires, or it answers 400 before ownership is ever checked.
     for field, extra in (
         ("renewReviewLease", {}),
-        ("releaseReviewItem", {}),
+        ("releaseReviewItem", {"reason": "Out of time"}),
         ("saveReviewDraft", {"sectionId": "1", "data": "{}"}),
         ("completeReviewItem", {}),
     ):

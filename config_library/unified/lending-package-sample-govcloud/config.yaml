@@ -16,9 +16,40 @@ use_bda: false
 
 notes: "Lending package sample - processes payslips, driver licenses, bank checks, bank statements, W2s, and insurance applications - Pipeline mode (Bedrock LLM) - GovCloud. Set use_bda: true to use BDA mode instead."
 
+# Every model-bearing setting below is pinned, including ones for features that
+# are off by default, because a setting this preset leaves out inherits the
+# system default, and the system defaults name commercial cross-region profiles
+# (us.*, global.*) that do not exist in GovCloud. The deploy-time model swap in
+# update_configuration treats a us-gov-* region as "us" and rewrites nothing for
+# it, so this file is the only place those values are corrected. The one
+# setting left at a commercial default is discovery.multi_document's
+# embedding_model_id; see the note there.
+# lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py merges
+# this preset with the system defaults and fails on any model value outside
+# its GOVCLOUD_ALLOWED_MODELS (the models listed in this preset's
+# README, each admitted under the rule at the top of this file).
+
+ocr:
+  # The backend stays the default, textract. model_id is read only when
+  # ocr.backend is set to bedrock; the system default
+  # (us.amazon.nova-2-lite-v1:0) is not available in GovCloud. Nova Pro is the
+  # model this preset already sends page images to for classification.
+  model_id: amazon.nova-pro-v1:0
+
 classification:
-  model: amazon.nova-pro-v1:0
-  max_tokens: "4096"
+  one_stage:
+    llm:
+      model: amazon.nova-pro-v1:0
+      max_tokens: '4096'
+  two_stage:
+    segmentation:
+      llm:
+        model: amazon.nova-pro-v1:0
+        max_tokens: '4096'
+    section_classification:
+      llm:
+        model: amazon.nova-pro-v1:0
+        max_tokens: '4096'
 extraction:
   model: amazon.nova-pro-v1:0
   # v0.6: confidence scoring settings (was the top-level `assessment` block —
@@ -29,6 +60,11 @@ extraction:
     # base-confidence.yaml) — used when Nova Lite leaves rows unscored after
     # hitting its output cap. The system default (us.anthropic.claude-sonnet-5:1m)
     # is invalid in GovCloud.
+    escalation_model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # Schema-validation re-extraction model, used when
+  # extraction.validation.fail_action is escalate. The system default
+  # (us.anthropic.claude-sonnet-5:1m) is not available in GovCloud.
+  validation:
     escalation_model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
 summarization:
   model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
@@ -66,6 +102,15 @@ discovery:
   # Multi-Doc Discovery's embedding step will fail in GovCloud until AWS adds
   # a multimodal embedding model there or this feature is reworked to use a
   # text-only embedding path.
+  #
+  # embedding_model_id is therefore deliberately NOT set here, and the merged
+  # configuration still carries the system default (us.cohere.embed-v4:0).
+  # multi_document has no enable flag to turn off — the feature runs only when
+  # a user starts Multi-Doc Discovery — so this is a known residual rather than
+  # a guess at an ID. lib/idp_common_pkg/tests/unit/config/
+  # test_govcloud_preset_models.py names it as the one model value it excuses
+  # (GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT), and fails when the value changes so
+  # the excuse is re-read.
   multi_document:
     analysis_model_id: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
   # Rule Discovery (extracting business rules from policy documents). The
@@ -1262,3 +1307,10 @@ classes:
     $id: Homeowners-Insurance-Application
 rule_validation:
   enabled: false
+  # Off in this preset, but pinned for when it is turned on: both stages
+  # default to us.anthropic.claude-sonnet-4-6, which is not available in
+  # GovCloud.
+  fact_extraction:
+    model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
+  rule_validation_orchestrator:
+    model: us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0

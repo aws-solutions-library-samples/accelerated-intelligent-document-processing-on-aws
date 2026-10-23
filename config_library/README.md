@@ -60,7 +60,8 @@ notes: "Configuration that classifies a whole packet in one call"
 
 # Override just the granularity - everything else uses defaults
 classification:
-  granularity: packet
+  one_stage:
+    granularity: packet
 
 classes:
   # ... your document classes

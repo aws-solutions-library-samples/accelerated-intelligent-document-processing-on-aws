@@ -26,7 +26,7 @@ from idp_common.review_queues import (
     ReviewItemNotFound,
     ReviewValidationError,
 )
-from idp_common.review_queues.queue_defs import QueueDefinition
+from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS, QueueDefinition
 
 _INDEX = Path(__file__).with_name("index.py")
 
@@ -204,52 +204,50 @@ class TestQueueDefinitions:
             "priority": 70,
             "checklist": [],
             "rejectReasons": ["Blurry"],
+            "skipReasons": list(DEFAULT_SKIP_REASONS),
             "timeLimitMinutes": 15,
             "eligibleAnnotators": ["a@x.com"],
             "isDefaultQueue": False,
-            "confidenceThreshold": 0.8,
             "enabled": True,
         }
 
-    def test_create_takes_the_threshold_and_switch(self, module):
+    def test_create_takes_the_switch(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = lambda d, create: d
+        result = module.handler(
+            _event("createReviewQueue", {"input": {"id": "q", "enabled": False}}),
+            None,
+        )
+        assert result["enabled"] is False
+
+    def test_a_confidence_threshold_in_the_input_is_ignored(self, module):
+        """An older client may still send one; queues have no threshold."""
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
         result = module.handler(
             _event(
                 "createReviewQueue",
-                {"input": {"id": "q", "confidenceThreshold": 0.6, "enabled": False}},
+                {"input": {"id": "q", "confidenceThreshold": 1.5}},
             ),
             None,
         )
-        assert (result["confidenceThreshold"], result["enabled"]) == (0.6, False)
-
-    def test_a_threshold_outside_0_1_is_a_bad_request(self, module):
-        with pytest.raises(ValueError, match="BAD_ARGUMENT"):
-            module.handler(
-                _event(
-                    "createReviewQueue",
-                    {"input": {"id": "q", "confidenceThreshold": 1.5}},
-                ),
-                None,
-            )
-        module._SERVICE.directory.queue_defs.put.assert_not_called()
+        store.put.assert_called_once()
+        assert "confidenceThreshold" not in result
 
     def test_update_writes_over_an_existing_queue(self, module):
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
-        store.get.return_value = QueueDefinition(
-            id="default", enabled=True, confidence_threshold=0.9
-        )
+        store.get.return_value = QueueDefinition(id="default", enabled=False)
         result = module.handler(
             _event("updateReviewQueue", {"input": {"id": "default"}}), None
         )
         assert store.put.call_args.kwargs == {"create": False}
         assert result["isDefaultQueue"] is True
-        # Left out of the input, the switch and threshold keep their stored values.
-        assert (result["enabled"], result["confidenceThreshold"]) == (True, 0.9)
+        # Left out of the input, the switch keeps its stored value.
+        assert result["enabled"] is False
         store.invalidate.assert_called_once()
 
-    def test_update_changes_the_threshold_and_switch(self, module):
+    def test_update_changes_the_switch(self, module):
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
         store.get.return_value = QueueDefinition(id="default", enabled=False)
@@ -260,13 +258,65 @@ class TestQueueDefinitions:
                     "input": {
                         "id": "default",
                         "enabled": True,
-                        "confidenceThreshold": 0.7,
                     }
                 },
             ),
             None,
         )
-        assert (result["enabled"], result["confidenceThreshold"]) == (True, 0.7)
+        assert result["enabled"] is True
+
+    def test_update_keeps_the_stored_skip_reasons_when_omitted(self, module):
+        """The queue dialog saves without the lists it does not show."""
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = lambda d, create: d
+        store.get.return_value = QueueDefinition(
+            id="claims", skip_reasons=["Needs a specialist"]
+        )
+        result = module.handler(
+            _event("updateReviewQueue", {"input": {"id": "claims"}}), None
+        )
+        assert result["skipReasons"] == ["Needs a specialist"]
+
+    def test_update_sets_the_skip_reasons_given(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = lambda d, create: d
+        store.get.return_value = QueueDefinition(id="claims")
+        result = module.handler(
+            _event(
+                "updateReviewQueue",
+                {"input": {"id": "claims", "skipReasons": [" Busy ", "Busy", "Other"]}},
+            ),
+            None,
+        )
+        assert result["skipReasons"] == ["Busy", "Other"]
+
+    def test_skip_requires_a_reason(self, module):
+        with pytest.raises(ValueError, match="BAD_ARGUMENT"):
+            module.handler(
+                _event(
+                    "releaseReviewItem",
+                    {"objectKey": "a.pdf", "cycleId": "0" * 21},
+                ),
+                None,
+            )
+        module._SERVICE.release.assert_not_called()
+
+    def test_skip_passes_its_reason_and_note_to_the_service(self, module):
+        module._SERVICE.release.return_value = _model({"state": "OPEN"})
+        module.handler(
+            _event(
+                "releaseReviewItem",
+                {
+                    "objectKey": "a.pdf",
+                    "cycleId": "0" * 21,
+                    "reason": "Out of time",
+                    "note": "back tomorrow",
+                },
+            ),
+            None,
+        )
+        args = module._SERVICE.release.call_args.args
+        assert args[1:] == ("a.pdf", "0" * 21, "Out of time", "back tomorrow")
 
     def test_invalid_queue_input_is_a_bad_request(self, module):
         with pytest.raises(ValueError, match="BAD_ARGUMENT"):

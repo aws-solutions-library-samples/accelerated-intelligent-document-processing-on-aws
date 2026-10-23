@@ -1614,6 +1614,35 @@ class TestInboxIdorSuiteEdges:
 # --------------------------------------------------------------------------- #
 # IDOR (2.1) — review queues: only the claimer acts on a claimed item
 # --------------------------------------------------------------------------- #
+def _load_dispatcher_validation():
+    """The dispatcher's real argument validator, loaded by path under its own name.
+
+    The fake below runs every call through it first, so a call missing an argument
+    the schema requires gets the same 400 the deployed dispatcher gives it, rather
+    than the 403 the check is waiting for.
+    """
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "nested/api-resolvers/src/lambda/http_api_dispatcher/validation.py"
+    )
+    spec = importlib.util.spec_from_file_location("_dispatcher_validation", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # The loader fails open: an unreadable spec becomes an empty one and every
+    # call validates, which would make this guard check nothing.
+    probed = {
+        "renewReviewLease",
+        "releaseReviewItem",
+        "saveReviewDraft",
+        "completeReviewItem",
+    }
+    missing = probed - set(mod._SPEC["fields"])
+    assert not missing, f"validation spec did not load, or lacks {sorted(missing)}"
+    return mod
+
+
+dispatcher_validation = _load_dispatcher_validation()
+
 REVIEW_KEY = "batch-1/claim.pdf"
 REVIEW_CYCLE = "cycle-1"
 _FORBIDDEN = (403, '{"errors":[{"errorType":"Forbidden"}]}')
@@ -1623,8 +1652,9 @@ class _FakeReviewApi:
     """An in-memory stand-in for the review-queue operations behind ``call_body``.
 
     Token ``"A"`` holds the claim, ``"B"`` is a fellow queue member and ``"C"`` is
-    not a member. By default it behaves like the real resolver; ``status``
-    overrides one ``(field, token)`` response to break one property.
+    not a member. By default it behaves like the real dispatcher and resolver —
+    argument validation first, then ownership; ``status`` overrides one
+    ``(field, token)`` response to break one property.
     """
 
     def __init__(self, **knobs):
@@ -1653,6 +1683,10 @@ class _FakeReviewApi:
         override = self.knobs.get("status", {}).get((field, token))
         if override is not None:
             return override
+        try:
+            dispatcher_validation.validate_arguments(field, args)
+        except ValueError as e:
+            return 400, json.dumps({"errors": [{"errorType": "BadRequest", "message": str(e)}]})
         if field == "getReviewItem":
             if token == "C":  # nosec B105 - fake test token id, not a credential
                 return _FORBIDDEN
@@ -1717,7 +1751,7 @@ class TestReviewQueueIdorSuite:
         item_args = {"objectKey": REVIEW_KEY, "cycleId": REVIEW_CYCLE}
         b_acts = {f: a for f, t, a in api.calls if t == "B" and f != "getReviewItem"}
         assert b_acts["renewReviewLease"] == item_args
-        assert b_acts["releaseReviewItem"] == item_args
+        assert b_acts["releaseReviewItem"] == {**item_args, "reason": "Out of time"}
         assert b_acts["completeReviewItem"] == item_args
         assert b_acts["saveReviewDraft"] == {
             **item_args,
@@ -1889,3 +1923,157 @@ class TestReviewPageKeys:
     @pytest.mark.parametrize("body", [None, "", "not json", "[]", '{"items": {}}'])
     def test_an_unreadable_page_is_none(self, body):
         assert sec._review_page_keys(body) is None
+
+
+class _FakeReviewAws(_FakeAwsCli):
+    """``aws(...)`` for the review seed: snapshots ctx at the queue-definition put."""
+
+    def __init__(self, ctx, fail_item_put=False):
+        super().__init__("IDP1-HITLTable-ABC")
+        self.ctx = ctx
+        self.fail_item_put = fail_item_put
+        self.ctx_at_qdef_put = None
+
+    def __call__(self, *args, region=None):
+        if args[:2] == ("dynamodb", "put-item"):
+            item = json.loads(args[args.index("--item") + 1])
+            if item["PK"] == {"S": "QDEF"}:
+                self.ctx_at_qdef_put = dict(self.ctx)
+            elif item["SK"] == {"S": "ITEM"} and self.fail_item_put:
+                self.calls.append(args)
+                raise RuntimeError("put-item failed")
+        return super().__call__(*args, region=region)
+
+    def deleted_keys(self):
+        return [
+            json.loads(a[a.index("--key") + 1])
+            for a in self.calls
+            if a[:2] == ("dynamodb", "delete-item")
+        ]
+
+
+class TestReviewSeeding:
+    """seed_review_item writes a real queue definition and waits past its cache."""
+
+    def _setup(self, monkeypatch, statuses=None, fail_item_put=False):
+        import types
+
+        ctx = {"stack": "IDP1", "region": "us-west-2", **CTX}
+        fake = _FakeReviewAws(ctx, fail_item_put=fail_item_put)
+        monkeypatch.setattr(harness, "aws", fake)
+        monkeypatch.setattr(harness, "create_cognito_user", lambda *a, **k: None)
+        monkeypatch.setattr(harness, "delete_cognito_user", lambda *a, **k: None)
+        letters = {harness.test_email(u): u[-1] for u in harness.REVIEW_IDOR_USERS}
+        monkeypatch.setattr(
+            harness, "get_id_token", lambda ctx, email, pw: letters[email]
+        )
+        calls = []
+        script = list(statuses or [403])
+
+        def call_body(api_base, field, args, token):
+            calls.append((field, args, token))
+            status = script.pop(0) if len(script) > 1 else script[0]
+            return status, "{}" if status == 200 else ""
+
+        monkeypatch.setattr(harness, "call_body", call_body)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(harness, "_monotonic", lambda: clock["t"])
+
+        def sleep(s):
+            clock["t"] += s
+
+        monkeypatch.setattr(harness, "_sleep", sleep)
+        stub = types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                upload=lambda *a, **k: types.SimpleNamespace(success=True),
+                delete=lambda *a, **k: None,
+            )
+        )
+        sdk = types.ModuleType("idp_sdk")
+        sdk.IDPClient = lambda *a, **k: stub
+        monkeypatch.setitem(sys.modules, "idp_sdk", sdk)
+        return ctx, fake, calls, clock
+
+    def _emails(self):
+        return {u: harness.test_email(u).lower() for u in harness.REVIEW_IDOR_USERS}
+
+    def test_the_first_put_is_the_queue_definition_listing_a_and_b(self, monkeypatch):
+        ctx, fake, _, _ = self._setup(monkeypatch, statuses=[403, 200])
+
+        harness.seed_review_item(ctx)
+
+        qdef = fake.items_written()[0]
+        assert qdef["PK"] == {"S": "QDEF"}
+        emails = self._emails()
+        listed = [e["S"] for e in qdef["EligibleAnnotators"]["L"]]
+        assert listed == [emails["ReviewIdorA"], emails["ReviewIdorB"]]
+        assert emails["ReviewIdorC"] not in listed
+        assert fake.ctx_at_qdef_put["_review_idor_queue"] == qdef["QueueId"]["S"]
+
+    def test_the_item_is_in_the_seeded_queue(self, monkeypatch):
+        ctx, fake, _, _ = self._setup(monkeypatch, statuses=[200])
+
+        seeded = harness.seed_review_item(ctx)
+
+        qid = seeded["queue_id"]
+        item = next(i for i in fake.items_written() if i["SK"] == {"S": "ITEM"})
+        assert item["Queue"] == {"S": qid}
+        assert item["QueuePK"] == {"S": sec.review_queue_keys().queue_partition(qid)}
+
+    def test_the_seed_polls_b_until_past_the_cache_ttl(self, monkeypatch):
+        ctx, _, calls, clock = self._setup(monkeypatch, statuses=[403, 200])
+
+        harness.seed_review_item(ctx)
+
+        assert calls and all(c[0] == "getReviewItem" and c[2] == "B" for c in calls)
+        assert clock["t"] - 1000.0 >= harness.REVIEW_SEED_MIN_WAIT_S
+
+    def test_the_seed_returns_at_the_deadline_without_raising(self, monkeypatch):
+        ctx, _, _, clock = self._setup(monkeypatch, statuses=[403])
+
+        seeded = harness.seed_review_item(ctx)
+
+        assert seeded["queue_id"]
+        assert clock["t"] - 1000.0 >= harness.REVIEW_SEED_DEADLINE_S
+
+    def test_cleanup_deletes_the_item_before_the_queue_definition(self, monkeypatch):
+        ctx, fake, calls, _ = self._setup(monkeypatch, statuses=[200])
+        seeded = harness.seed_review_item(ctx)
+
+        harness.cleanup_review_item(ctx, seeded)
+
+        deleted = fake.deleted_keys()
+        item_at = deleted.index({"PK": {"S": f"DOC#{seeded['object_key']}"}, "SK": {"S": "ITEM"}})
+        qdef_at = deleted.index(
+            {"PK": {"S": "QDEF"}, "SK": {"S": f"Q#{seeded['queue_id']}"}}
+        )
+        assert item_at < qdef_at
+        assert not any(c[0] == "deleteReviewQueue" for c in calls)
+
+    def test_a_failed_item_put_reraises_and_removes_the_queue_definition(
+        self, monkeypatch
+    ):
+        ctx, fake, _, _ = self._setup(monkeypatch, fail_item_put=True)
+
+        with pytest.raises(RuntimeError, match="put-item failed"):
+            harness.seed_review_item(ctx)
+
+        qid = ctx["_review_idor_queue"]
+        assert {"PK": {"S": "QDEF"}, "SK": {"S": f"Q#{qid}"}} in fake.deleted_keys()
+
+    def test_the_written_definition_loads_and_admits_b(self, monkeypatch):
+        from boto3.dynamodb.types import TypeDeserializer
+
+        from idp_common.review_queues.queue_defs import QueueDefinition
+
+        ctx, fake, _, _ = self._setup(monkeypatch, statuses=[200])
+        harness.seed_review_item(ctx)
+
+        raw = fake.items_written()[0]
+        deser = TypeDeserializer()
+        definition = QueueDefinition.from_item(
+            {k: deser.deserialize(v) for k, v in raw.items()}
+        )
+        emails = self._emails()
+        assert definition.allows(emails["ReviewIdorB"])
+        assert not definition.allows(emails["ReviewIdorC"])

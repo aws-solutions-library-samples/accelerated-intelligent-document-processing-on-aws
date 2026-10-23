@@ -9,10 +9,15 @@ get_file_contents_resolver/test_index.py).
 """
 
 import importlib
+from pathlib import Path
 
 import boto3
 import pytest
+import yaml
 from moto import mock_aws
+
+from idp_common import testset_scope
+from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS
 
 TEST_SET_BUCKET = "test-set-bucket"
 TRACKING_TABLE = "tracking-table"
@@ -206,9 +211,7 @@ def test_missing_baseline_yields_empty_sections(resolver):
 def test_unknown_test_set_rejected(resolver):
     index, _ = resolver
     with pytest.raises(Exception, match="not found"):
-        index.handler(
-            _event("getTestSetDocuments", {"testSetId": "no-such-set"}), None
-        )
+        index.handler(_event("getTestSetDocuments", {"testSetId": "no-such-set"}), None)
 
 
 @pytest.mark.unit
@@ -216,9 +219,7 @@ def test_unknown_test_set_rejected(resolver):
 def test_invalid_test_set_id_rejected(resolver, bad_id):
     index, _ = resolver
     with pytest.raises(Exception, match="Invalid test set id"):
-        index.handler(
-            _event("getTestSetDocuments", {"testSetId": bad_id}), None
-        )
+        index.handler(_event("getTestSetDocuments", {"testSetId": bad_id}), None)
 
 
 @pytest.mark.unit
@@ -242,6 +243,76 @@ ANNOTATOR = "ann@example.com"
 
 def _caller(groups, email):
     return {"claims": {"cognito:groups": list(groups), "email": email}}
+
+
+# --------------------------------------------------------------------------
+# claimTestSetDocument: the dispatch group set is the expectations entry's
+# --------------------------------------------------------------------------
+
+_REPO = Path(__file__).resolve().parents[5]
+_ROLES = ("Admin", "Author", "Reviewer", "Annotator", "Viewer")
+
+
+def _claim_entry():
+    spec = yaml.safe_load(
+        (_REPO / "scripts" / "api_rbac_expectations.yaml").read_text(encoding="utf-8")
+    )
+    return spec["operations"]["claimTestSetDocument"]
+
+
+def _claim_event(groups, entry):
+    return {
+        "info": {"fieldName": "claimTestSetDocument"},
+        "arguments": dict(entry["args"]),
+        "identity": _caller(groups, ANNOTATOR),
+    }
+
+
+@pytest.fixture
+def scoped_resolver(resolver, monkeypatch):
+    """The resolver with the probe's test set in every Annotator's scope."""
+    index, _ = resolver
+    entry = _claim_entry()
+    monkeypatch.setattr(
+        testset_scope,
+        "get_allowed_test_sets",
+        lambda email, users_table=None: [entry["args"]["testSetId"]],
+    )
+    return index
+
+
+@pytest.mark.unit
+def test_each_group_the_claim_entry_lists_reaches_not_found(scoped_resolver):
+    """A listed group passes every group check and reaches the missing test set.
+
+    This drives the resolver with the groups the expectations file declares, so
+    a dispatch table or a resolver check that refuses a declared group fails here
+    rather than in the live matrix.
+    """
+    index = scoped_resolver
+    entry = _claim_entry()
+    test_set_id = entry["args"]["testSetId"]
+    for groups in [[g] for g in entry["groups"]] + [["Admin", "Annotator"]]:
+        with pytest.raises(index.ResourceNotFound, match=test_set_id):
+            index.handler(_claim_event(groups, entry), None)
+
+
+_OMITTED_ROLES = [r for r in _ROLES if r not in _claim_entry()["groups"]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("role", _OMITTED_ROLES)
+def test_a_group_the_claim_entry_omits_is_refused_by_the_dispatch(
+    scoped_resolver, role
+):
+    index = scoped_resolver
+    entry = _claim_entry()
+    with pytest.raises(
+        Exception,
+        match=rf"^Unauthorized: 'claimTestSetDocument' requires "
+        rf"{' or '.join(entry['groups'])} group$",
+    ):
+        index.handler(_claim_event([role], entry), None)
 
 
 @pytest.fixture
@@ -324,6 +395,8 @@ def test_an_admin_updates_the_queue_settings(queues):
         "claimLeaseMinutes": 120,
         "eligibleAnnotators": [ANNOTATOR],
         "checklist": ["Check totals", "Check dates"],
+        # Never saved for this set, so the review queues' defaults.
+        "skipReasons": list(DEFAULT_SKIP_REASONS),
     }
     meta = _metadata(tracking)
     assert meta["QueuePriority"] == 70
@@ -337,6 +410,7 @@ def test_an_admin_updates_the_queue_settings(queues):
         ({"priority": 101}, "priority must be 0-100"),
         ({"eligibleAnnotators": ["not-an-email"]}, "must contain email addresses"),
         ({"checklist": [f"item {i}" for i in range(21)]}, "at most 20 items"),
+        ({"skipReasons": [f"r{i}" for i in range(21)]}, "1 to 20 reasons"),
         ({}, "Nothing to update"),
     ],
 )
@@ -480,14 +554,71 @@ def test_skipping_hands_the_document_back_to_the_queue(queues):
     )
 
     result = index.skip_test_set_document(
-        {"testSetId": TEST_SET_ID, "objectKey": "a.pdf"}, event
+        {
+            "testSetId": TEST_SET_ID,
+            "objectKey": "a.pdf",
+            "reason": "Out of time",
+            "note": "  back tomorrow  ",
+        },
+        event,
     )
 
     assert result == {"testSetId": TEST_SET_ID, "objectKey": "a.pdf", "skipped": True}
     item = hitl.get_item(Key={"PK": f"TSDOC#{TEST_SET_ID}", "SK": "D#a.pdf"})["Item"]
     assert "Assignee" not in item and "OwnerPK" not in item
+    # The skip is recorded with the document: who, why, and the note.
+    [skip] = item["SkipHistory"]
+    assert (skip["by"], skip["reason"], skip["note"]) == (
+        ANNOTATOR.lower(),
+        "Out of time",
+        "back tomorrow",
+    )
     meta = _metadata(tracking)
     assert (meta["QueueAssignedDocs"], meta["QueuePendingDocs"]) == (0, 1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reason", [None, "", "Lunch"])
+def test_a_skip_needs_a_reason_from_the_sets_list(queues, reason):
+    """Refused before the assignment ends."""
+    index, hitl, _ = queues
+    _put_doc_item(hitl, "b.pdf")
+    event = {"identity": _caller(["Annotator"], ANNOTATOR)}
+    index.claim_test_set_document(
+        {"testSetId": TEST_SET_ID, "objectKey": "b.pdf"}, event
+    )
+    with pytest.raises(ValueError, match="REASON_REQUIRED"):
+        index.skip_test_set_document(
+            {"testSetId": TEST_SET_ID, "objectKey": "b.pdf", "reason": reason}, event
+        )
+    item = hitl.get_item(Key={"PK": f"TSDOC#{TEST_SET_ID}", "SK": "D#b.pdf"})["Item"]
+    assert "Assignee" in item and "SkipHistory" not in item
+
+
+@pytest.mark.unit
+def test_a_set_with_its_own_skip_reasons_checks_against_them(queues):
+    index, hitl, _ = queues
+    index.update_test_set_queue(
+        {"input": {"testSetId": TEST_SET_ID, "skipReasons": ["Needs a tax expert"]}}
+    )
+    _put_doc_item(hitl, "c.pdf")
+    event = {"identity": _caller(["Annotator"], ANNOTATOR)}
+    index.claim_test_set_document(
+        {"testSetId": TEST_SET_ID, "objectKey": "c.pdf"}, event
+    )
+    with pytest.raises(ValueError, match="REASON_REQUIRED"):
+        index.skip_test_set_document(
+            {"testSetId": TEST_SET_ID, "objectKey": "c.pdf", "reason": "Out of time"},
+            event,
+        )
+    index.skip_test_set_document(
+        {
+            "testSetId": TEST_SET_ID,
+            "objectKey": "c.pdf",
+            "reason": "Needs a tax expert",
+        },
+        event,
+    )
 
 
 @pytest.mark.unit
@@ -528,3 +659,17 @@ def test_my_tasks_lists_only_sets_the_caller_may_still_open(queues, monkeypatch)
 def test_my_tasks_is_empty_for_a_caller_with_no_email(queues):
     index, _, _ = queues
     assert index.list_my_test_set_tasks({"identity": {"claims": {}}}) == []
+
+
+@pytest.mark.unit
+def test_get_annotation_queue_returns_the_set_name(queues, monkeypatch):
+    """The breadcrumb names the set from the metadata this query already reads."""
+    index, _, _ = queues
+    monkeypatch.setattr(index, "_harvest_active_label_job", lambda *a: None)
+    monkeypatch.setattr(index, "_ensure_summaries", lambda *a: ("READY", 0))
+
+    result = index.handler(
+        _event("getAnnotationQueue", {"testSetId": TEST_SET_ID}), None
+    )
+
+    assert (result["testSetId"], result["name"]) == (TEST_SET_ID, "my set")

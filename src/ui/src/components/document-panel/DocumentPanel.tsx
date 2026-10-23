@@ -49,8 +49,9 @@ import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-e
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
 import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
-import { normalizeHitlStatus } from '../common/review-status';
-import { reviewItemHref } from '../../routes/constants';
+import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
+import { documentEditHref, reviewItemHref } from '../../routes/constants';
+import { PROCESSING_REASON, isEditableStatus } from '../review-workspace/direct-edit-status';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
 // import { debugDocumentStructure } from '../common/debug-utils';
@@ -281,11 +282,11 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     contextGroups[item.context].push(item);
   });
 
-  // Sort contexts in pipeline order. 'Segmentation' and 'Labeling' are the two
+  // Sort contexts in pipeline order. 'Segmentation' and 'SectionClassification' are the two
   // halves of two-stage classification (classification.strategy: two_stage) and
   // appear in place of 'Classification', never alongside it — they sit where it
   // sits so the cost table reads in pipeline order either way.
-  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Segmentation', 'Labeling', 'Extraction', 'Summarization'];
+  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Segmentation', 'SectionClassification', 'Extraction', 'Summarization'];
   const sortedContexts = Object.keys(contextGroups).sort((a, b) => {
     const aIndex = contextOrder.indexOf(a);
     const bIndex = contextOrder.indexOf(b);
@@ -451,7 +452,10 @@ const MeteringExpandableSection = ({ meteringData, documentItem }: MeteringExpan
   );
 };
 
+const isHitlSkippedStatus = (raw: string | null | undefined): boolean => normalizeHitlStatus(raw).kind === 'skipped';
+
 const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.JSX.Element => {
+  const skipAll = isHitlSkippedStatus(item.hitlStatus) ? lastSkipAllReason(item.hitlReviewHistory) : null;
   return (
     <Container>
       <ColumnLayout columns={8} variant="text-grid">
@@ -570,6 +574,22 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
             <div>{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</div>
           </div>
         </SpaceBetween>
+
+        {skipAll && (
+          <SpaceBetween size="xs">
+            <div>
+              <Box margin={{ bottom: 'xxxs' }} color="text-label">
+                <strong>Skip Reason</strong>
+              </Box>
+              <div>{skipAll.reason}</div>
+              {skipAll.note && (
+                <Box variant="small" color="text-body-secondary">
+                  {skipAll.note}
+                </Box>
+              )}
+            </div>
+          </SpaceBetween>
+        )}
 
         <SpaceBetween size="xs">
           <div>
@@ -759,7 +779,7 @@ export const DocumentPanel = ({
   const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : 'default');
   // Use the separate fetch result only when the version differs; otherwise reuse the default config
   const documentVersionConfig = needsSeparateVersionFetch ? separateVersionConfig : mergedConfig;
-  const { isReviewer, isAdmin } = useUserRole();
+  const { isReviewer, canWorkReviewQueues, canWrite, canReview } = useUserRole();
 
   // Check if document can be aborted
   const canAbort = ABORTABLE_STATUSES.includes(localItem?.objectStatus);
@@ -773,7 +793,9 @@ export const DocumentPanel = ({
   const hitlView = normalizeHitlStatus(localItem?.hitlStatus);
   const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !hitlView.queueManaged;
   const showStartReview = isReviewer && hasPendingHITL && !hasReviewOwner;
-  const showOpenInQueue = hitlView.queueManaged && hitlView.kind === 'in_review' && isAdmin;
+  // One way in for a queued document: Edit opens its queue item, for everyone who can
+  // work queue items; anyone else gets the direct edit, which opens it read-only.
+  const editInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
 
   // Handle Start Review button click
   const handleStartReview = async () => {
@@ -933,11 +955,6 @@ export const DocumentPanel = ({
               variant="h2"
               actions={
                 <SpaceBetween direction="horizontal" size="xs">
-                  {showOpenInQueue && (
-                    <Button iconName="external" variant="primary" href={reviewItemHref(localItem.objectKey)}>
-                      Open in review queue
-                    </Button>
-                  )}
                   {showStartReview && (
                     <Button
                       iconName="user-profile"
@@ -948,6 +965,29 @@ export const DocumentPanel = ({
                     >
                       Start Review
                     </Button>
+                  )}
+                  {/* The unified editor: the queue item for a queued document, otherwise
+                      the direct edit, which decides what is editable. */}
+                  {editInQueue ? (
+                    <Button
+                      iconName="edit"
+                      variant="primary"
+                      href={reviewItemHref(localItem.objectKey)}
+                      ariaLabel="Edit this document in its review queue"
+                    >
+                      Edit
+                    </Button>
+                  ) : (
+                    (canWrite || canReview) && (
+                      <Button
+                        iconName="edit"
+                        href={documentEditHref(localItem.objectKey)}
+                        disabled={!isEditableStatus(localItem.objectStatus)}
+                        disabledReason={isEditableStatus(localItem.objectStatus) ? undefined : PROCESSING_REASON}
+                      >
+                        Edit
+                      </Button>
+                    )
                   )}
                   <Button
                     iconName="gen-ai"

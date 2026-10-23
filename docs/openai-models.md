@@ -121,7 +121,7 @@ Astra out of `CACHEPOINT_SUPPORTED_MODELS`.
 | Capability | Supported? | Notes |
 |---|---|---|
 | OCR (Bedrock backend) | ✅ | Image + text input |
-| Classification | ✅ | Page-level and holistic |
+| Classification | ✅ | Both strategies, both granularities |
 | Extraction (standard) | ✅ | Text + page images |
 | **Agentic / advanced extraction** | ✅ | Astra reaches Converse and emits `toolUse` under a forced `toolChoice`. **This is the key difference from GPT-5.x.** |
 | Confidence (assessment) | ✅ | |
@@ -243,7 +243,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 | Capability | Supported? | Notes |
 |---|---|---|
 | OCR (Bedrock backend) | ✅ | Image + text input |
-| Classification | ✅ | Page-level and holistic |
+| Classification | ✅ | Both strategies, both granularities |
 | Extraction (standard) | ✅ | Text + page images |
 | Confidence (assessment) | ✅ | `separate` and `integrated` modes on the simple (non-agentic) path |
 | Summarization | ✅ | |

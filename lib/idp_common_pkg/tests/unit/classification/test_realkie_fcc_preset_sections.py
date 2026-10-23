@@ -112,7 +112,7 @@ def test_every_page_lands_in_one_invoice_section_without_a_model_call(
 ):
     """Eleven pages, so ids 10 and 11 would expose a string sort of the page ids."""
     config = _stored_config(_load(relative_path))
-    assert config.classification.sectionSplitting == "disabled"
+    assert config.classification.file_shape.sectionSplitting == "disabled"
 
     service = _service(config)
     document = _document(11)
@@ -140,10 +140,10 @@ def test_without_the_setting_a_page_called_a_start_splits_the_invoice(
     """The default strategy reproduces the split: pages [1, 2], [3, 4] and [5]."""
     raw = _load(relative_path)
     classification = raw.get("classification") or {}
-    classification.pop("sectionSplitting", None)
+    (classification.get("file_shape") or {}).pop("sectionSplitting", None)
     raw["classification"] = classification
     config = _stored_config(raw)
-    assert config.classification.sectionSplitting == "llm_determined"
+    assert config.classification.file_shape.sectionSplitting == "llm_determined"
 
     assert _sections_under_page_level_boundaries(config) == (
         5,
@@ -164,7 +164,7 @@ def test_the_deploy_time_preset_keeps_the_default_strategy():
     assert "sectionSplitting" not in (raw.get("classification") or {})
 
     config = _stored_config(raw)
-    assert config.classification.sectionSplitting == "llm_determined"
+    assert config.classification.file_shape.sectionSplitting == "llm_determined"
     assert _sections_under_page_level_boundaries(config) == (
         5,
         [["1", "2"], ["3", "4"], ["5"]],
