@@ -322,12 +322,12 @@ ADMIN_ONLY_FIELDS = (
 
 
 # Admin and Annotator, not Author: the Test Studio queues (Admins see every set, an
-# Annotator only the sets whose queue lists them: My Work › Queues), and an
-# Annotator claiming a document of such a set, which assigns it to them.
-ADMIN_AND_ANNOTATOR_FIELDS = (
-    "listTestSetQueues",
-    "claimTestSetDocument",
-)
+# Annotator only the sets whose queue lists them: My Work › Queues).
+ADMIN_AND_ANNOTATOR_FIELDS = ("listTestSetQueues",)
+
+# Annotator only: an Annotator listed on a set's queue claims one of its documents,
+# which assigns it to them. Admins assign (assignTestSetDocuments) rather than claim.
+ANNOTATOR_ONLY_FIELDS = ("claimTestSetDocument",)
 
 #: Operations slower than this are logged at WARNING, so slow pages can be traced.
 SLOW_OP_MS = 3000
@@ -349,7 +349,8 @@ def _dispatch(event, context):
     logger.info(f"Test set resolver invoked with field_name: {field_name}")
 
     # Defense-in-depth: test-set operations are Admin+Author, plus the
-    # ANNOTATOR_ALLOWED_FIELDS allowlist.
+    # ANNOTATOR_ALLOWED_FIELDS allowlist; ADMIN_ONLY_FIELDS, ADMIN_AND_ANNOTATOR_FIELDS
+    # and ANNOTATOR_ONLY_FIELDS narrow or replace that default.
     # Allow direct Lambda invocations (no 'identity' field or identity=None) for CI/automation.
     # AppSync invocations always have 'identity' with non-None value, so RBAC is still enforced for UI users.
     # Security: Direct invocation path is gated by IAM (lambda:InvokeFunction permission on this ARN),
@@ -360,6 +361,8 @@ def _dispatch(event, context):
             allowed_groups = ["Admin"]
         elif field_name in ADMIN_AND_ANNOTATOR_FIELDS:
             allowed_groups = ["Admin", "Annotator"]
+        elif field_name in ANNOTATOR_ONLY_FIELDS:
+            allowed_groups = [ANNOTATOR_GROUP]
         else:
             allowed_groups = ["Admin", "Author"]
             if field_name in ANNOTATOR_ALLOWED_FIELDS:
@@ -3069,6 +3072,7 @@ def get_annotation_queue(args, event=None):
 
     result = {
         "testSetId": test_set_id,
+        "name": meta.get("name"),
         "claimLeaseMinutes": time_limit_minutes(meta),
         # What a Skip may give as its reason (skipTestSetDocument).
         "skipReasons": _skip_reasons(meta),

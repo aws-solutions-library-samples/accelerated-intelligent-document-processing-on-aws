@@ -19,6 +19,7 @@ import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
+import QueueAnnotatorsTable, { queueAnnotatorRows } from './QueueAnnotatorsTable';
 import WorkItemsTable from './WorkItemsTable';
 import useSupervisorActions, { isAssignable, isRemovable, isSupervisorAction, isUnassignable } from './use-supervisor-actions';
 import useWorkItemActions from './use-work-item-actions';
@@ -41,6 +42,9 @@ const CLAIM_NEXT_REASONS: Record<string, string> = {
 };
 
 const isClaimable = (item: ReviewItem): boolean => item.state === QueueItemState.OPEN;
+
+/** The Items table: Document, Source, Queue, Priority and State, then the row Actions menu. */
+const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state'] as const;
 
 const ReviewQueuePage = (): React.JSX.Element => {
   const { queue: rawQueue = '' } = useParams();
@@ -103,6 +107,12 @@ const ReviewQueuePage = (): React.JSX.Element => {
   const summary = health?.summary ?? mySummary;
   const { run: runRowAction } = useWorkItemActions();
   const supervisor = useSupervisorActions({ queues: definitions, onChanged: load });
+  // Move targets, computed the way the row menu computes them.
+  const otherQueues = useMemo(() => definitions.filter((d) => d.id !== queueId), [definitions, queueId]);
+  const annotatorRows = useMemo(
+    () => queueAnnotatorRows(definition?.eligibleAnnotators ?? [], health?.reviewers ?? []),
+    [definition?.eligibleAnnotators, health?.reviewers],
+  );
 
   const refreshNow = async () => {
     setRefreshing(true);
@@ -288,47 +298,26 @@ const ReviewQueuePage = (): React.JSX.Element => {
             )
           ) : summary || definition ? (
             <KeyValuePairs
-              columns={4}
+              columns={5}
               items={[
                 { label: 'Pending', value: summary?.unclaimed ?? '—' },
                 {
                   label: 'Assigned',
                   value: summary ? Math.max(0, summary.claimed - (summary.inProgress ?? 0)) : '—',
                 },
-                { label: 'In progress', value: summary?.inProgress ?? '—' },
-                { label: 'Annotators', value: summary?.annotators ?? '—' },
-                {
-                  label: 'Oldest waiting',
-                  value: summary?.oldestEnqueuedAt ? (
-                    <span title={formatDateTime(summary.oldestEnqueuedAt)}>{formatRelativeTime(summary.oldestEnqueuedAt)}</span>
-                  ) : (
-                    '—'
-                  ),
-                },
+                { label: 'In Progress', value: summary?.inProgress ?? '—' },
+                { label: 'Annotators', value: definition ? eligible.length : (summary?.annotators ?? '—') },
                 { label: 'Priority', value: definition?.priority ?? summary?.priority ?? '—' },
-                { label: 'Time limit', value: definition ? `${definition.timeLimitMinutes} min (then a reminder)` : '—' },
-                { label: 'Eligible Annotators', value: eligible.length === 0 ? 'None listed (Admins only)' : eligible.join(', ') },
-                {
-                  label: 'Assigned per Annotator',
-                  value:
-                    !health || health.reviewers.length === 0 ? (
-                      '—'
-                    ) : (
-                      <SpaceBetween size="xxxs">
-                        {health.reviewers.map((r) => (
-                          <Box key={r.email} variant="small">{`${r.email}: ${r.claimed}`}</Box>
-                        ))}
-                      </SpaceBetween>
-                    ),
-                },
               ]}
             />
           ) : (
             <Box color="text-body-secondary">{items ? 'This queue is not defined in Queue Management.' : 'Loading…'}</Box>
           )}
         </Container>
+        {isAdmin && <QueueAnnotatorsTable rows={annotatorRows} loading={definition == null && health == null && error == null} />}
         <WorkItemsTable
           items={items ?? []}
+          columns={ITEM_COLUMNS}
           loading={(items == null && error == null) || (refreshing && (items ?? []).length === 0)}
           title="Items"
           onRowAction={handleRowAction}
@@ -352,7 +341,11 @@ const ReviewQueuePage = (): React.JSX.Element => {
                   </Button>
                 </span>
                 <span title={selectedItems.length === 0 ? 'Select items to move' : undefined}>
-                  <Button disabled={selectedItems.length === 0} onClick={() => supervisor.open('move', selectedItems)}>
+                  <Button
+                    disabled={selectedItems.length === 0 || otherQueues.length === 0}
+                    disabledReason={otherQueues.length === 0 ? 'There is no other queue' : undefined}
+                    onClick={() => supervisor.open('move', selectedItems)}
+                  >
                     {counted('Move…', selectedItems.length)}
                   </Button>
                 </span>

@@ -802,3 +802,108 @@ class TestUnknownGroupRefused:
 
         with pytest.raises(PermissionError, match="updateDocumentSections"):
             _call(resolver, document, event)
+
+
+@pytest.mark.unit
+class TestRegroupInReview:
+    """A document in a review queue is regrouped only by the holder of its item.
+
+    Regrouping is part of review. Phase 1 has ended and the finalize run hasn't
+    started, so nothing is running on the document; the finalize run reprocesses the
+    tracked document, so the grouping saved here is the one it finishes with. Anyone
+    but the holder is refused, so a regroup never lands on work someone else holds.
+    """
+
+    HOLDER = "ann@example.com"
+
+    @staticmethod
+    def _in_review(module, hitl_status="in_review"):
+        document = _document(
+            module,
+            [_section(module, "1", [1, 2], "Invoice")],
+            status="HITL_IN_PROGRESS",
+        )
+        document.hitl_status = hitl_status
+        return document
+
+    def _event(self, email=HOLDER, groups=("Admin",)):
+        event = _event(
+            sections=[{"sectionId": "1", "pageIds": ["2", "1"]}], groups=groups
+        )
+        event["identity"]["claims"]["email"] = email
+        return event
+
+    @staticmethod
+    def _store(state, owner_key=None, missing=False):
+        from types import SimpleNamespace
+
+        store = MagicMock()
+        store.get_item.return_value = (
+            None if missing else SimpleNamespace(state=state, owner_key=owner_key)
+        )
+        return store
+
+    def _run(self, module, document, event, store):
+        with patch.object(module, "_REVIEW_STORE", store):
+            return _call(module, document, event)
+
+    def test_the_holder_may_regroup(self, resolver):
+        store = self._store("CLAIMED", self.HOLDER)
+        result, service = self._run(
+            resolver, self._in_review(resolver), self._event(), store
+        )
+        assert result["success"] is True, result
+        service.update_document.assert_called_once()
+        store.get_item.assert_called_once_with("packet.pdf")
+
+    @pytest.mark.parametrize(
+        ("state", "owner", "code"),
+        [
+            ("OPEN", None, "NOT_ASSIGNED"),
+            ("CLAIMED", "someone@example.com", "NOT_LEASE_HOLDER"),
+            ("FINALIZING", HOLDER, "FINALIZING"),
+        ],
+    )
+    def test_anyone_but_the_holder_is_refused_and_nothing_is_written(
+        self, resolver, state, owner, code
+    ):
+        result, service = self._run(
+            resolver,
+            self._in_review(resolver),
+            self._event(),
+            self._store(state, owner),
+        )
+        assert result["success"] is False
+        assert result["message"].startswith(code)
+        service.update_document.assert_not_called()
+
+    def test_a_missing_review_item_is_refused(self, resolver):
+        result, service = self._run(
+            resolver,
+            self._in_review(resolver),
+            self._event(),
+            self._store(None, missing=True),
+        )
+        assert result["message"].startswith("NO_REVIEW_ITEM")
+        service.update_document.assert_not_called()
+
+    def test_a_stack_without_review_queues_is_refused(self, resolver):
+        result, service = self._run(
+            resolver, self._in_review(resolver), self._event(), None
+        )
+        assert result["message"].startswith("REVIEW_UNAVAILABLE")
+        service.update_document.assert_not_called()
+
+    def test_a_legacy_review_in_progress_is_still_refused_as_in_flight(self, resolver):
+        """Only queue-managed review is regroupable; the legacy flow is unchanged."""
+        store = self._store("CLAIMED", self.HOLDER)
+        result, service = self._run(
+            resolver,
+            self._in_review(resolver, hitl_status="InProgress"),
+            self._event(),
+            store,
+        )
+        assert result["success"] is False
+        assert "Wait for processing to finish" in result["message"]
+        store.get_item.assert_not_called()
+        service.update_document.assert_not_called()

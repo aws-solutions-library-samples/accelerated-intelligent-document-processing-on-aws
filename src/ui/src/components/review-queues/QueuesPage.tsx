@@ -1,8 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// HITL › Queue Management (Admin): the system-wide production review queues, which
-// Admins create, edit and delete here, and the Test Studio queues, one per test set.
+// HITL › Queue Management (Admin): Admins edit the Default queue's settings and see
+// every queue here, along with the Test Studio queues, one per test set.
 // Open a queue to assign its items to Annotators, unassign, move or remove them.
 // Deleting a queue moves its items to the Default queue.
 import React, { useCallback, useMemo, useState } from 'react';
@@ -93,7 +93,7 @@ const QueuesPage = (): React.JSX.Element => {
   const [listingTestSets, setListingTestSets] = useState(false);
   const [annotators, setAnnotators] = useState<string[] | null>(null);
   const [annotatorsLoading, setAnnotatorsLoading] = useState(false);
-  const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition | null } | null>(null);
+  const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition } | null>(null);
   const [deleting, setDeleting] = useState<{ queue: ReviewQueueDefinition; depth: number } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -198,7 +198,7 @@ const QueuesPage = (): React.JSX.Element => {
     filtering: {
       empty: (
         <Box textAlign="center" color="inherit" padding="s">
-          No queues yet. Create one to start reviewing documents.
+          No queues found. The Default queue is created automatically; reload the page.
         </Box>
       ),
       noMatch: <TableNoMatchState onClearFilter={() => production.actions.setFiltering('')} />,
@@ -219,7 +219,7 @@ const QueuesPage = (): React.JSX.Element => {
   });
 
   // ------------------------------------------------------------- actions
-  const openEditor = (queue: ReviewQueueDefinition | null) => {
+  const openEditor = (queue: ReviewQueueDefinition) => {
     setEditing({ queue });
     void loadAnnotators();
   };
@@ -427,7 +427,7 @@ const QueuesPage = (): React.JSX.Element => {
       header={
         <Header
           variant="h1"
-          description="Define the production review queues, list the Annotators who work each one, and assign their documents. Each test set is also a Test Studio queue."
+          description="Set up the Default review queue and list the Annotators who work it."
           actions={
             <Button iconName="refresh" loading={anyLoading} onClick={() => void refresh()} ariaLabel="Refresh queues">
               Refresh
@@ -459,12 +459,7 @@ const QueuesPage = (): React.JSX.Element => {
           header={
             <Header
               counter={productionInitial ? undefined : `(${productionRows.length})`}
-              description="System-wide queues for processed documents with low-confidence fields. While the Default queue is enabled, documents with a field below its threshold arrive there."
-              actions={
-                <Button variant="primary" onClick={() => openEditor(null)}>
-                  Create queue
-                </Button>
-              }
+              description="System-wide queues for processed documents. When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue."
             >
               Production Queues
             </Header>
@@ -529,7 +524,7 @@ const QueuesPage = (): React.JSX.Element => {
         onDismiss={() => setEditing(null)}
         onSaved={(q) => {
           if (q) {
-            setSuccessMessage(editing?.queue ? `Saved the queue ${q.name}.` : `Created the queue ${q.name}.`);
+            setSuccessMessage(`Saved the queue ${q.name}.`);
             // Show the saved definition at once; the reload below confirms it.
             setDefinitions((defs) =>
               defs && defs.some((d) => d.id === q.id) ? defs.map((d) => (d.id === q.id ? q : d)) : [...(defs ?? []), q],

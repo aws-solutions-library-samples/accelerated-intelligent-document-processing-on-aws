@@ -1819,11 +1819,10 @@ Four routes can still take part of that stack:
   reaper's age gate. Nothing creates one for that stack.
 - Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
   disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
-  so that stack's distribution survives only while it stays enabled. The same
-  teardown tries to delete `idp-ux-nightly-security-headers-policy` whenever
-  that stack reads as failed (`UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`, or a
-  creation that failed or rolled back), which CloudFront refuses only while a
-  distribution still uses the policy.
+  so that stack's distribution survives only while it stays enabled. Its
+  response headers policy is not at risk: a teardown deletes only the policy
+  its own stack's resource list records, so another stack's policy is never a
+  candidate.
 - The set protects names, not dependencies. A run's `-iam` service role and
   permissions boundary go at that run's teardown, which deletes every `idp-`
   role that names the boundary before the boundary itself, so a stack deployed

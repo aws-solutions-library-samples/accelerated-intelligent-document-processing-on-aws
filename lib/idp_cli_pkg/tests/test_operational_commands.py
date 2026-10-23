@@ -923,6 +923,51 @@ class TestRemoveDeletedStackResourcesScope:
         assert "Skipped (" not in result.output
 
 
+@pytest.mark.usefixtures("sweep_console", "cloudfront_policies_unavailable")
+def test_an_unconfirmable_region_check_exits_non_zero_and_names_the_resource(
+    monkeypatch,
+):
+    """A denied ``ec2:DescribeRegions`` leaves every global resource in place,
+    which is the safe outcome, but it must not read as a clean account. Before the
+    region check reported through ``errors`` this run printed "No resources found"
+    and exited 0, having deleted nothing it was asked to (#1533)."""
+    real_client = boto3.session.Session.client
+
+    def client(self, service_name, *args, **kwargs):
+        if service_name == "ec2":
+            raise RuntimeError("UnauthorizedOperation")
+        return real_client(self, service_name, *args, **kwargs)
+
+    with mock_aws():
+        _idp_stack("IDP-Gone", deleted=True)
+        iam = boto3.client("iam")
+        iam.create_policy(
+            PolicyName="IDP-Gone-PermissionsBoundary",
+            PolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+                }
+            ),
+        )
+        monkeypatch.setattr(boto3.session.Session, "client", client)
+
+        result = CliRunner().invoke(
+            cli,
+            ["remove-deleted-stack-resources", "--region", "us-east-1", "--yes"],
+        )
+        monkeypatch.undo()
+        surviving = [
+            p["PolicyName"]
+            for p in boto3.client("iam").list_policies(Scope="Local")["Policies"]
+        ]
+
+    assert result.exit_code == 1
+    assert "Not deleted IDP-Gone-PermissionsBoundary (stack: IDP-Gone)" in result.output
+    assert "could not list enabled Regions" in result.output
+    assert "IDP-Gone-PermissionsBoundary" in surviving
+
+
 class TestRemoveDeletedStackResourcesReporting:
     """The summary the command renders, and the exit code it derives from it.
 

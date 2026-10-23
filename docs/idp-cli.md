@@ -646,7 +646,7 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
    - CloudWatch Log Groups (Lambda functions, Glue crawlers)
    - AppSync APIs and their log groups (only ever present in stacks created before AppSync was removed; current stacks create none)
    - CloudFront distributions (two-phase cleanup - initiates disable, takes 15-20 minutes to propagate globally)
-   - CloudFront Response Headers Policies (from previously deleted stacks)
+   - This stack's own CloudFront Response Headers Policy, identified from the stack's resource list rather than by name. No other stack's policy is touched: CloudFront is global, so the account's policy list includes those of IDP stacks in every Region, and sweeping orphans out of it is `remove-deleted-stack-resources`'s job. A policy is usually already gone, because CloudFormation deletes it with the stack; one left by a failed stack deletion cannot be deleted until its distribution has finished deleting (15-20 minutes after it is disabled), and the CLI logs that and says to re-run rather than reporting a failure
    - IAM custom policies and permissions boundaries
    - CloudWatch Logs resource policies
 3. **Retained Resource Cleanup Phase** (only with `--force-delete-all`): Deletes remaining resources in order:
@@ -663,7 +663,7 @@ from one that deleted cleanly.
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
-- CloudFront response header policies (custom)
+- This stack's own CloudFront response headers policy, once its distribution is gone
 - CloudWatch Logs resource policies (stack-specific)
 - AppSync log groups (pre-migration stacks only)
 - Additional log groups containing stack name
@@ -2377,6 +2377,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 2. **IDP Stack Identification** - Identifies IDP stacks by their Description ("AWS GenAI IDP Accelerator") or naming patterns (IDP-*, PATTERN1/2/3)
 3. **Active Stack Protection** - Tracks both ACTIVE and DELETED stacks; resources from active stacks are NEVER touched
 4. **Safe Cleanup** - Only targets resources belonging to stacks in DELETE_COMPLETE state
+5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is left in place and reported under **Errors** with the reason, and the command exits 1. A resource left because its stack still exists in another Region is a deliberate skip: it is recorded in the SDK result's `skipped` list, which the CLI summary does not print
 
 **Safety Features:**
 - Resources from ACTIVE stacks are protected and skipped
@@ -2402,6 +2403,8 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 - `--dry-run`: Preview changes without making them **(RECOMMENDED first step)**
 - `--yes`, `-y`: Auto-approve all deletions (skip confirmations)
 - `--check-stack-regions`: Comma-separated regions to check for stacks (default: `us-east-1,us-west-2,eu-central-1`). Pass `ca-central-1` explicitly to sweep a Canada deployment
+
+**Permissions:** besides delete permissions for the resources it cleans, the global resource check needs `ec2:DescribeRegions` and `cloudformation:DescribeStacks` in every enabled Region. A `DescribeStacks` grant scoped to one Region counts as missing for the others. Without them, every CloudFront distribution, response headers policy, IAM policy and S3 bucket is left in place and reported as an error, and the command exits 1.
 
 **Examples:**
 

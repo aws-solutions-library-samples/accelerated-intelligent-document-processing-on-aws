@@ -241,6 +241,7 @@
         "idp_common/review_queues/notify.py": 95.89,
         "idp_common/review_queues/queue_defs.py": 90.54,
         "idp_common/review_queues/reasons.py": 95.31,
+        "idp_common/review_queues/regrouping.py": 100.0,
         "idp_common/review_queues/routing.py": 78.57,
         "idp_common/review_queues/service.py": 29.3,
         "idp_common/review_queues/status_object.py": 100.0,

@@ -55,7 +55,7 @@ describe('leaving a document does not wait for the queue reload', () => {
   it('is positioned in the source where this test expects to find it', () => {
     // Guards the assertions below from silently passing on an empty slice.
     expect(handleAction).toContain('await adapter.skip(reason, note)');
-    expect(handleSaved).toContain('setSavedSections(next)');
+    expect(handleSaved).toContain('savedSections.current.add(sectionId)');
   });
 
   it('exits as soon as the mutation lands, without awaiting a queue reload', () => {
@@ -72,7 +72,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     // The server marks a document reviewed only once every section carries a human
     // verdict, so one section's save on a packet must not announce the document
     // reviewed — the claim the test set's own Review state column contradicted.
-    const everyAt = handleSaved.indexOf('if (sections.every((s) => next.has(s.sectionId)))');
+    const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
     expect(everyAt).toBeGreaterThan(-1);
     expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
     expect(handleSaved).toContain('Check the other sections, then choose Complete.');

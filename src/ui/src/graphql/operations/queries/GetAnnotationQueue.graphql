@@ -1,6 +1,7 @@
 query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Boolean) {
   getAnnotationQueue(testSetId: $testSetId, limit: $limit, includeCompleted: $includeCompleted) {
     testSetId
+    name
     claimLeaseMinutes
     skipReasons
     summaryStatus
