@@ -3110,6 +3110,34 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py::GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "(dotted configuration path, exact model id) pair in the merged GovCloud preset",
+      "turnsOff": "the 'every merged model value is GovCloud-verified' check for one setting holding one specific value: discovery.multi_document.embedding_model_id = us.cohere.embed-v4:0. Any other value at that path, or that id at any other path, is still reported",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py",
+      "issues": [
+        1529
+      ],
+      "reason": "Whether a model exists in GovCloud is a fact about live Bedrock, not about this tree. Multi-Doc Discovery needs a multimodal embedding model, the preset's own comment records that GovCloud offered none when it was checked, the setting has no enable flag the preset could turn off, and pinning an id nobody has confirmed with a Converse call would contradict the preset header. So the preset leaves the system default in place and says so. test_each_exempt_value_is_still_needed fails when the merged value at the path is no longer the excused one, so the entry goes stale the moment the default or the preset changes rather than excusing whatever lands there next."
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py::GOVCLOUD_ALLOWED_MODELS": {
+      "kind": "exemption",
+      "memberKind": "Bedrock model id",
+      "turnsOff": "the 'every merged model value in the GovCloud preset is GovCloud-available' check, for each listed model id at any configuration path",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py",
+      "issues": [
+        1529
+      ],
+      "reason": "Whether a model id can be invoked in GovCloud is a fact about live Bedrock that this tree cannot compute, and the preset header admits a model only after a real Converse call succeeds in us-gov-west-1. Per member: amazon.nova-pro-v1:0 and amazon.nova-lite-v1:0 are the in-region Nova ids the preset already pinned for classification, extraction and confidence under the header's 2026-07-17 Converse verification; us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0 is the GovCloud inference profile the preset's chat comment records as verified with Converse, including tool use, on the same date (the bare anthropic. id is rejected for on-demand use). test_the_verified_list_is_exactly_what_the_preset_pins asserts this set equals the set the raw preset pins in both directions, so an id cannot be allowed here without being shipped, and a dropped id leaves no dead allowance. What it cannot check is that a newly added id was actually verified; that remains the reviewer's judgement on this entry."
     }
   }
 }
