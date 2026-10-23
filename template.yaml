@@ -1325,6 +1325,9 @@ Conditions:
   # private DNS condition (IsPrivateApiAndApi) existed solely to protect /
   # expose the former GraphQL API and were removed along with it. The REST API
   # WAF + private-endpoint wiring now lives in the nested/api-resolvers stack.
+  # Same definition as IsMLflowEnabled in patterns/unified/template.yaml, which
+  # receives EnableMLflow from this stack and gates MLflowLoggerFunction on it.
+  IsMLflowEnabled: !Equals [ !Ref EnableMLflow, "true" ]
   ShouldCreateDocumentKnowledgeBase:
     !Equals [ !Ref DocumentKnowledgeBase, "BEDROCK_KNOWLEDGE_BASE (Create)" ]
   ShouldUseDocumentKnowledgeBase: !Condition ShouldCreateDocumentKnowledgeBase
@@ -3004,6 +3007,13 @@ Resources:
         ChatWithDocumentProcessorFunctionArn: !GetAtt ChatWithDocumentProcessorFunction.Arn
         AgentProcessorFunctionArn: !GetAtt AgentProcessorFunction.Arn
         TestExecutionAggregationFunctionArn: !GetAtt PATTERNSTACK.Outputs.TestExecutionAggregationFunctionArn
+        # The pattern stack creates MLflowLoggerFunction, and its output, only when
+        # EnableMLflow is true, so the GetAtt must sit behind the same condition.
+        # Without this parameter the test-results resolver never invokes the logger.
+        MLflowLoggerFunctionArn: !If
+          - IsMLflowEnabled
+          - !GetAtt PATTERNSTACK.Outputs.MLflowLoggerFunctionArn
+          - ""
         
         # DynamoDB Tables
         TrackingTableName: !Ref TrackingTable

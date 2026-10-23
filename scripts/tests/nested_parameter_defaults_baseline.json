@@ -114,14 +114,6 @@
     }
   },
   "knownDefects": {
-    "APIRESOLVERSTACK::MLflowLoggerFunctionArn": {
-      "template": "nested/api-resolvers/template.yaml",
-      "referenced": true,
-      "defect": "Declared with Default \"\" at nested/api-resolvers/template.yaml:24; HasMLflowLoggerFunction is derived from it at :405, the resolver's env var is set behind that condition at :2700 and the lambda:InvokeFunction grant at :2794. The parent passes nothing, so the condition is permanently false and nested/api-resolvers/src/lambda/test_results_resolver/index.py:86 returns immediately on every test run -- no deploy error and no log line. The sibling parameter declared beside it, TestExecutionAggregationFunctionArn, IS passed from a PATTERNSTACK output at template.yaml:3006. git log -S shows this parameter was passed when it was added and lost as collateral in 9c247f9bd.",
-      "issues": [
-        "1553"
-      ]
-    },
     "DOCUMENTKB::pEmbedModel": {
       "template": "nested/bedrockkb/template.yaml",
       "referenced": true,
