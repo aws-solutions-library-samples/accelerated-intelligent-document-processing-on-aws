@@ -43,12 +43,14 @@ defaults, so a run against it would use a configuration nobody chose.
 So, before anything else, census both. For a stack you can reach (read-only):
 
 ```python
+import os
+
 import boto3
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.migrations._version import is_at_or_after
 
 manager = ConfigurationManager()      # needs CONFIGURATION_TABLE_NAME and CONFIGURATION_BUCKET
-table = boto3.resource("dynamodb").Table(TABLE_NAME)
+table = boto3.resource("dynamodb").Table(os.environ["CONFIGURATION_TABLE_NAME"])
 
 # Heads. Read the item and decompress it: get_raw_configuration() relocates
 # keys and restamps the version, so it reports the CURRENT format for a head
@@ -66,16 +68,34 @@ for row in table.scan(ProjectionExpression="Configuration").get("Items", []):
 for profile in manager.list_config_versions():
     name = profile["versionName"]
     for entry in manager.list_revisions(name):
-        body = manager.get_revision(name, entry["revision"]) or {}
+        # The STORED body, deliberately: `get_revision()` converts on read, so
+        # it answers 0.9 for every revision and cannot see the stamp this audit
+        # is looking for. `get_body()` is the raw reader.
+        body = manager.revisions.get_body(name, entry["revision"])
+        if body is None:
+            continue              # expired or pruned: nothing stored to convert
         if not is_at_or_after(body.get("config_format_version"), "0.9"):
             print("REVISION", name, entry["revision"], body.get("config_format_version"))
 ```
 
-Check the method names against `configuration_manager.py` before running it. Two
-things about the head half: `config_format_version` lives **inside** the gzipped
-`_compressed_config` blob rather than as a top-level attribute, so it is neither
-projected by `list_config_versions` nor queryable and every record has to be
-fetched and decompressed; and `_is_rollback_to_older_format` in
+Check the method names against `configuration_manager.py` and `revisions.py`
+before running it. ⚠️ **Each half has a reader that gives a confidently clean
+answer, and neither is the obvious one.**
+
+- For a **revision**, do not substitute `get_revision()` — which is what the
+  revision-history panel and `config-download --config-revision` use. It converts
+  the body to the current format on the way out, so the condition above is never
+  true and the audit reports a clean stack whatever it holds.
+- For a **head**, do not substitute `get_raw_configuration()`. "Raw" there means
+  "no Pydantic defaults", not "the stored bytes": it runs the migration chain to
+  relocate keys and restamps `config_format_version`, so it reports the current
+  format for a head stored at an older one. Read the item and decompress it, as
+  above.
+
+Two further things about the head half. `config_format_version` lives **inside**
+the gzipped `_compressed_config` blob rather than as a top-level attribute, so it
+is neither projected by `list_config_versions` nor queryable and every record has
+to be fetched and decompressed. And `_is_rollback_to_older_format` in
 `src/lambda/update_configuration/index.py` is the in-tree precedent for exactly
 that walk, so read it rather than reinventing the decompression.
 
@@ -92,9 +112,9 @@ Then the two bounds on what a green census means:
   no schema field exposing the stamp — so a census proves a property of the one
   stack you ran it on and says nothing about any other. This repository ships to
   customers, so the release that removes the conversion must come after one that
-  told them, in its migration notes, to re-save the profiles and revisions they
-  still need, re-saving being what stores a profile converted. If that notice
-  has not shipped, stop here and ship it first.
+  told them, in its migration notes, to re-save or delete the profiles and
+  revisions they still hold, re-saving being what stores a profile converted. If
+  that notice has not shipped, stop here and ship it first.
 
 ## 2. Make an old body refuse, never degrade
 
