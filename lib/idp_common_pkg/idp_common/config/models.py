@@ -1804,10 +1804,12 @@ _REASONING_EFFORT_DESCRIPTION = (
 
 #: Every effort level any supported family accepts — the union of the per-family
 #: lists in :data:`_REASONING_EFFORT_DESCRIPTION`, and the same set the editor's
-#: picklist offers. Validated as the union rather than per family because which
-#: levels a model takes is a fact about that model, and the client already drops a
-#: level the chosen model does not accept with a warning. What is refused here is a
-#: value **no** model accepts, which today reaches Bedrock verbatim.
+#: picklist offers (asserted against the template in
+#: ``scripts/sdlc/tests/test_config_ui_schema_parity.py``). Checked as the union
+#: rather than per family because which levels a model takes is a fact about that
+#: model, and the client already drops a level the chosen model does not accept with
+#: a warning. What is caught here is a value **no** model accepts, which previously
+#: reached Bedrock verbatim.
 REASONING_EFFORT_VALUES = (
     "none",
     "minimal",
@@ -1821,16 +1823,43 @@ REASONING_EFFORT_VALUES = (
 DEFAULT_REASONING_EFFORT = "medium"
 
 
-def _normalise_reasoning_effort(v: Any, path: str) -> str:
-    """One of :data:`REASONING_EFFORT_VALUES`; empty is the default; else raises."""
+def normalise_reasoning_effort(v: Any, path: str) -> str:
+    """One of :data:`REASONING_EFFORT_VALUES`; anything else is the default.
+
+    ⚠️ **Normalised rather than refused, and the reason is the same one
+    ``FileShapeConfig.parse_max_pages`` gives**: this field has never had a
+    validator, and ``save_configuration`` coerces through ``IDPConfig`` without
+    touching it, so a typo written by hand or through the API **is stored
+    verbatim today**. Raising on it would make such a profile fail validation on
+    read — and because it is the stored profile itself that no longer validates,
+    there is no resolved-config fallback to return, so every document fails at
+    config load and the editor cannot render the profile to correct it. The worst
+    case is a stack on Nova, which ignores effort entirely, running happily on a
+    misspelled value right now.
+
+    Contrast ``FileShapeConfig.validate_section_splitting``, which *does* raise:
+    that validator already normalised on the way in, so an unrecognised value was
+    never stored and raising cannot wedge anything. The two settings differ in
+    whether the bad state is reachable in stored data, which is the whole question.
+
+    The point of checking at all is that the value is forwarded to the provider as
+    written, so the typo must not reach it; substituting the default achieves that
+    and is what a family with no effort control did with it anyway.
+    """
     if v is None or (isinstance(v, str) and not v.strip()):
         return DEFAULT_REASONING_EFFORT
     v_str = str(v).strip().lower()
     if v_str not in REASONING_EFFORT_VALUES:
-        raise ValueError(
-            f"{path} must be one of {', '.join(REASONING_EFFORT_VALUES)} (or empty "
-            f"for the default, {DEFAULT_REASONING_EFFORT}), got {v!r}"
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "%s is %r, which no model family accepts; using %s. Valid values: %s.",
+            path,
+            v,
+            DEFAULT_REASONING_EFFORT,
+            ", ".join(REASONING_EFFORT_VALUES),
         )
+        return DEFAULT_REASONING_EFFORT
     return v_str
 
 
@@ -1961,14 +1990,16 @@ class ClassificationModelSettings(BaseModel):
     @field_validator("reasoning_effort", mode="before")
     @classmethod
     def validate_reasoning_effort(cls, v: Any) -> str:
-        """Refuse a level no model family accepts, rather than sending it.
+        """Keep a level no model family accepts from reaching the provider.
 
         The value is forwarded to ``bedrock.invoke_model`` as written, so an
         unrecognised one previously reached the provider and failed the document —
-        or, worse, was dropped by a family that ignores effort entirely, leaving the
-        typo in the stored profile for the next model change to surface.
+        or was dropped by a family that ignores effort entirely, leaving the typo in
+        the stored profile for the next model change to surface. See
+        :func:`normalise_reasoning_effort` for why this substitutes rather than
+        raises, and why the sibling ``sectionSplitting`` validator does raise.
         """
-        return _normalise_reasoning_effort(v, "classification reasoning_effort")
+        return normalise_reasoning_effort(v, "classification reasoning_effort")
 
     @field_validator("model", mode="before")
     @classmethod

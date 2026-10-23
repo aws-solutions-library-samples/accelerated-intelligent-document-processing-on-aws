@@ -596,6 +596,80 @@ def test_the_two_verdicts_do_not_overlap():
     )
 
 
+def _classification_controls(field_name: str) -> dict[str, dict]:
+    """Every control called ``field_name`` under the classification schema, by path.
+
+    Carries its own non-vacuity guard: a parity test that silently reads zero
+    controls is the same defect as no parity test at all, and the loader is the part
+    most likely to stop finding anything.
+    """
+    schemas = [
+        schema
+        for label, schema in _schemas()
+        if label.startswith(f"{_UI_SCHEMA_TEMPLATE}::")
+    ]
+    assert schemas, (
+        f"no Schema block found in {_UI_SCHEMA_TEMPLATE}, so this check would pass "
+        "by reading nothing"
+    )
+
+    def walk(node, path="classification"):
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for name, child in properties.items():
+                if name == field_name and isinstance(child, dict):
+                    yield f"{path}.{name}", child
+                yield from walk(child, f"{path}.{name}")
+
+    controls = dict(walk(schemas[0]["properties"]["classification"]))
+    assert controls, (
+        f"found no {field_name!r} control under the classification schema, so this "
+        "check would pass by reading nothing"
+    )
+    return controls
+
+
+def test_the_reasoning_effort_picklist_matches_the_checked_set():
+    """The editor's levels and the ones the config layer accepts are one list.
+
+    ``REASONING_EFFORT_VALUES`` is what ``normalise_reasoning_effort`` accepts; a
+    level the editor offers and the config layer does not would be silently replaced
+    with the default the moment it was saved, and a level the config layer accepts
+    and the editor does not is unreachable from the UI. Compared as sets, per
+    control, so the three classification calls cannot drift apart from each other
+    either.
+    """
+    checked = set(_models.REASONING_EFFORT_VALUES)
+    problems = []
+    for path, control in sorted(_classification_controls("reasoning_effort").items()):
+        offered = control.get("enum")
+        if not isinstance(offered, list):
+            problems.append(f"{path}: no enum, so the editor offers free text")
+            continue
+        if set(offered) != checked:
+            problems.append(
+                f"{path}: editor offers {sorted(set(offered))}, the config layer "
+                f"accepts {sorted(checked)}"
+            )
+    assert not problems, "\n".join(problems)
+
+
+def test_the_reasoning_effort_picklist_default_is_the_one_the_code_substitutes():
+    """A cleared field takes the code's default, so the control must offer that one."""
+    expected = _models.DEFAULT_REASONING_EFFORT
+    wrong = sorted(
+        f"{path}: {control.get('default')!r}"
+        for path, control in _classification_controls("reasoning_effort").items()
+        if control.get("default") != expected
+    )
+    assert not wrong, (
+        f"these controls default to something other than {expected!r}, which is what "
+        f"the config layer substitutes for an empty or unrecognised value: {wrong}"
+    )
+
+
 def test_the_model_field_help_names_the_default_the_code_falls_back_to():
     """Clearing a call's model substitutes a model, so the help must name that one.
 
@@ -611,31 +685,12 @@ def test_the_model_field_help_names_the_default_the_code_falls_back_to():
     wrong answer in the editor.
     """
     default = _models.DEFAULT_CLASSIFICATION_MODEL
-    schemas = [
-        schema
-        for label, schema in _schemas()
-        if label.startswith(f"{_UI_SCHEMA_TEMPLATE}::")
-    ]
-    assert schemas, (
-        f"no Schema block found in {_UI_SCHEMA_TEMPLATE}, so this check would pass "
-        "by reading nothing"
+    controls = _classification_controls("model")
+    silent = sorted(
+        path
+        for path, control in controls.items()
+        if default not in control.get("description", "")
     )
-    schema = schemas[0]
-
-    def model_controls(node, path="classification"):
-        if not isinstance(node, dict):
-            return
-        properties = node.get("properties")
-        if isinstance(properties, dict):
-            for name, child in properties.items():
-                if name == "model" and isinstance(child, dict):
-                    yield f"{path}.model", child.get("description", "")
-                yield from model_controls(child, f"{path}.{name}")
-
-    classification = schema["properties"]["classification"]
-    controls = dict(model_controls(classification))
-    assert controls, "found no model control under the classification schema"
-    silent = sorted(path for path, text in controls.items() if default not in text)
     assert not silent, (
         "these classification model controls do not say what clearing the field "
         f"does, or name a model other than the code's fallback ({default}): {silent}"

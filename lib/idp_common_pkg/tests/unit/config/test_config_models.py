@@ -629,13 +629,23 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
 
 
 @pytest.mark.unit
-class TestReasoningEffortIsValidated:
+class TestReasoningEffortIsChecked:
     """An unrecognised effort level used to reach Bedrock verbatim.
 
-    The legal values are family-specific and were written out in the field's own
-    description and enforced nowhere, so a typo was accepted by the model, stored, and
-    either failed the document at the provider or was dropped by a family that ignores
-    effort — leaving the typo to surface on the next model change.
+    The legal values are family-specific, were written out in the field's own
+    description, and were enforced nowhere — so a typo was accepted, **stored**, and
+    either failed the document at the provider or was dropped by a family that
+    ignores effort, leaving the typo to surface on the next model change.
+
+    ⚠️ **It substitutes the default rather than raising, and that is not a weaker
+    version of the sibling `sectionSplitting` check — it is the opposite situation.**
+    Because this field never had a validator, a typo is already storable and may sit
+    in a profile right now; raising would make that profile fail validation on read,
+    with no fallback to return, so every document would fail at config load. The
+    `sectionSplitting` validator normalised on the way in, so a bad value could never
+    be stored and raising there cannot wedge anything. See
+    `TestAStoredTypoDoesNotWedgeAProfile` in `test_v08_to_v09_migration.py` for the
+    read path that makes this concrete.
     """
 
     @pytest.mark.parametrize(
@@ -649,26 +659,41 @@ class TestReasoningEffortIsValidated:
             == value.lower()
         )
 
-    def test_a_level_no_family_accepts_is_refused(self):
-        from idp_common.config.models import ClassificationModelSettings
-
-        with pytest.raises(ValueError, match="reasoning_effort"):
-            ClassificationModelSettings(reasoning_effort="bogus")
-
-    @pytest.mark.parametrize("value", ["", None])
-    def test_clearing_it_takes_the_default(self, value):
+    def test_a_level_no_family_accepts_is_replaced_and_reported(self, caplog):
         from idp_common.config.models import (
             DEFAULT_REASONING_EFFORT,
             ClassificationModelSettings,
         )
 
-        assert (
-            ClassificationModelSettings(reasoning_effort=value).reasoning_effort
-            == DEFAULT_REASONING_EFFORT
+        with caplog.at_level(logging.WARNING):
+            settings = ClassificationModelSettings(reasoning_effort="bogus")
+        assert settings.reasoning_effort == DEFAULT_REASONING_EFFORT
+        assert "reasoning_effort" in caplog.text
+        assert "bogus" in caplog.text
+
+    @pytest.mark.parametrize("value", ["", None])
+    def test_clearing_it_takes_the_default_silently(self, value, caplog):
+        from idp_common.config.models import (
+            DEFAULT_REASONING_EFFORT,
+            ClassificationModelSettings,
         )
 
-    def test_the_validated_set_is_what_the_editor_offers(self):
-        """The picklist and the validator are one list, not two that agree today."""
+        with caplog.at_level(logging.WARNING):
+            settings = ClassificationModelSettings(reasoning_effort=value)
+        assert settings.reasoning_effort == DEFAULT_REASONING_EFFORT
+        assert "reasoning_effort" not in caplog.text
+
+    def test_the_checked_set_is_pinned_against_casual_change(self):
+        """A literal, and deliberately only that.
+
+        ⚠️ This does **not** establish parity with the editor's picklist — it cannot,
+        because it never opens the template. What it buys is that widening the set
+        here is a visible edit rather than a one-character change. The parity
+        assertion is `test_the_reasoning_effort_picklist_matches_the_checked_set` in
+        `scripts/sdlc/tests/test_config_ui_schema_parity.py`, which reads the
+        template's own Schema block; this docstring used to claim that job and the
+        assertion below has never done it.
+        """
         from idp_common.config.models import REASONING_EFFORT_VALUES
 
         assert set(REASONING_EFFORT_VALUES) == {

@@ -959,3 +959,100 @@ class TestTheUnreadablePacketConfidenceBlocksAreNotCarriedOver:
                 node = node[key]
             assert node["confidence"]["task_prompt_topk"] == "PAGE"
             assert node["confidence"]["mode"] == "topk"
+
+
+# --------------------------------------------------------------------------
+# A stored value no validator ever checked must not wedge the profile
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAStoredTypoDoesNotWedgeAProfile:
+    """⚠️ The hazard a stricter validator creates, and the reason this one warns.
+
+    `reasoning_effort` shipped with **no validator**, and `save_configuration`
+    coerces through `IDPConfig` without touching it — so a value written by hand or
+    through the API is stored verbatim, and a stack on a model family that ignores
+    effort entirely (Nova) is processing documents happily on a misspelled one right
+    now. Had the new check *raised*, reading that profile would fail validation; and
+    because it is the stored profile itself that no longer validates, there is no
+    resolved-config fallback to return, so `get_merged_configuration` re-raises and
+    every document fails at config load — with the editor unable to render the
+    profile to correct it.
+
+    So the check substitutes the default and reports it, and the migration repairs
+    the stored value as well. These tests are about the **read path**, which is
+    where the damage would have been; the unit-level behaviour is pinned in
+    `test_config_models.py::TestReasoningEffortIsChecked`.
+    """
+
+    TYPO = "medum"
+
+    def _plant(self, manager, profile, classification):
+        full = merge_config_with_defaults({}, validate=False)
+        full["classification"] = classification
+        item = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}", **full}
+        item["_config_format"] = "full"
+        manager.table.put_item(Item=ConfigurationManager._compress_item(item))
+
+    def _nested_with_typo(self):
+        cls = copy.deepcopy(
+            merge_config_with_defaults({}, validate=False)["classification"]
+        )
+        cls["one_stage"]["llm"]["reasoning_effort"] = self.TYPO
+        cls["two_stage"]["segmentation"]["llm"]["reasoning_effort"] = self.TYPO
+        return cls
+
+    def test_a_nested_profile_holding_a_typo_still_reads(self, monkeypatch):
+        """The 0.9-shaped case, where this hop is a no-op and only the model acts."""
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(), version="default")
+        self._plant(manager, "p", self._nested_with_typo())
+
+        resolved = manager.get_merged_configuration("p")
+
+        assert isinstance(resolved, IDPConfig), (
+            "the stored profile no longer validates, so the read path has nothing to "
+            "fall back to and every document fails at config load"
+        )
+        assert resolved.classification.one_stage.llm.reasoning_effort == "medium"
+        assert (
+            resolved.classification.two_stage.segmentation.llm.reasoning_effort
+            == "medium"
+        )
+
+    def test_a_flat_profile_holding_a_typo_is_repaired_in_the_converted_body(
+        self, monkeypatch
+    ):
+        """The pre-0.9 case, where the migration heals the value rather than
+        leaving it for the model layer to paper over on every read."""
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(), version="default")
+
+        converted = migrate_v08_to_v09(
+            {
+                "config_format_version": "0.8",
+                "classification": {"model": "m", "reasoning_effort": self.TYPO},
+            }
+        )["classification"]
+        for path in (
+            ("one_stage", "llm"),
+            ("two_stage", "segmentation", "llm"),
+            ("two_stage", "section_classification", "llm"),
+        ):
+            node = converted
+            for key in path:
+                node = node[key]
+            assert node["reasoning_effort"] == "medium", path
+
+    def test_the_profile_is_usable_rather_than_merely_readable(self, monkeypatch):
+        """Guard the guard: a profile that reads back but carries empty prompts
+        would satisfy the assertion above while still failing every document."""
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(), version="default")
+        self._plant(manager, "p", self._nested_with_typo())
+
+        cls = manager.get_merged_configuration("p").classification
+        assert cls.one_stage.page.task_prompt, "the profile's prompts did not survive"
+        assert cls.one_stage.llm.model

@@ -238,6 +238,44 @@ def _known_section_splitting(value: Any) -> str | None:
     return text if text in SECTION_SPLITTING_VALUES else None
 
 
+def _repair_reasoning_effort(out: Dict[str, Any]) -> None:
+    """Replace a `reasoning_effort` no model family accepts with the default.
+
+    ``reasoning_effort`` shipped with no validator at all, so a value written by hand
+    or through the API was **stored verbatim** and forwarded to the provider. The
+    model layer now substitutes the default on read, which stops it reaching the
+    provider — but only in the validated view. Repairing it here puts the correct
+    value in the **converted body** as well, which is what the write-back persists
+    and what the surfaces that read a migrated dict without validating it (revision
+    comparison, ``conversion_notices``) see. So a stored typo is healed rather than
+    tolerated for the life of the profile.
+
+    What this does not reach is a profile already in the 0.9 layout with no flat
+    keys: that is a no-op for this hop by design, and the validator is the backstop
+    for it. The two halves are deliberate, not redundant.
+    """
+    from ..models import normalise_reasoning_effort
+
+    for path in (ONE_STAGE_LLM, SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+        node = _dict_or_empty(_walk(out, path))
+        if "reasoning_effort" not in node:
+            continue
+        node["reasoning_effort"] = normalise_reasoning_effort(
+            node["reasoning_effort"],
+            "classification." + ".".join(path) + ".reasoning_effort",
+        )
+
+
+def _walk(root: Dict[str, Any], path: Iterable[str]) -> Any:
+    """The value at ``path``, or ``None``. Unlike ``_node``, creates nothing."""
+    node: Any = root
+    for key in path:
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
 def conversion_notices(config: Any) -> List[str]:
     """What this hop would change about ``config``, worded for the person who wrote it.
 
@@ -352,6 +390,8 @@ def migrate_v08_to_v09(config: Any) -> Any:
             for path in (SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
                 if _follows_one_stage(_node(out, path).get(key), previous):
                     _put(out, path, key, value)
+
+    _repair_reasoning_effort(out)
 
     # ── Granularity and page input apply to one stage and to segmentation.
     if "granularity" in flat:
