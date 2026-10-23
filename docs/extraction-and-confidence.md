@@ -504,7 +504,7 @@ extraction:
 > this value's spelling first. The environment variable `EXTRACTION_RUNTIME` is
 > read the same way when the config key is unset.
 
-- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer`, minus an output reserve and an image reserve, **minus the estimated prompt overhead** for the class (system prompt, the task prompt with the schema rendered in, few-shot text, the tool schema and the Advanced-path restatement; the other agent tool specs are not counted; #775) — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically, and a prompt-heavy class shards smaller instead of failing at the window. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's column count and the geometry mode — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes, including `prompt_overhead_tokens`, are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
+- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer`, minus an output reserve and an image reserve, **minus the estimated prompt overhead** for the class (system prompt, the task prompt with the schema rendered in, few-shot text, the tool schema and the Advanced-path restatement; the other agent tool specs are not counted; #775) — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically, and a prompt-heavy class shards smaller instead of failing at the window. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's width in confidence leaves, the geometry mode and the other fields every batch repeats — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes, including `prompt_overhead_tokens`, are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
@@ -1424,7 +1424,7 @@ and the inline-confidence retry (`integrated`) all share one implementation:
 So large lists are handled with no extra configuration regardless of the
 Simple/Advanced or separate/integrated choice. The one knob is `list_batch_size`,
 and it is a **ceiling**: the size actually used is derived per list from the
-confidence model's output cap, the row's column count and the geometry mode, and is
+confidence model's output cap, the row's width in confidence leaves, the geometry mode and the other fields every batch repeats, and is
 only ever smaller. **Lower** it to force smaller batches than the derivation;
 raising it above the derived size has no effect.
 
@@ -1445,9 +1445,12 @@ extraction:
 > `0.5` to every field and leave list rows unscored. Advanced mode now heals this
 > automatically, cheapest-first:
 >
-> 1. **Token-aware first-pass sizing.** The first batch is sized from three inputs:
->    the confidence model's output cap, the **column count** of the list's widest
->    row, and whether the geometry mode adds a bounding box per cell. On a
+> 1. **Token-aware first-pass sizing.** The first batch is sized from four inputs:
+>    the confidence model's output cap, the **width** of the list's widest row —
+>    every confidence leaf it emits, including the fields of a nested group and the
+>    items of a nested list — whether the geometry mode adds a bounding box per
+>    cell, and the output of everything else the call repeats on every batch (the
+>    section's other fields and lists), which is reserved before rows are fitted. On a
 >    10,000-token-cap model (Nova Pro) with `llm_grounded` that is 13 rows for a
 >    3-column list and 5 for 8 columns; without bounding boxes three times as many
 >    fit. This only ever
@@ -1499,13 +1502,12 @@ extraction:
 >    The known trigger is a **multi-instance class**
 >    (`x-aws-idp-multi-instance: true`): the wrapper makes the *instance* array the
 >    outer list, so one "row" is a whole document instance carrying its own long
->    inner list (e.g. a 100-row `Transactions` table). ⚠️ **Such a class still
->    cannot be fully assessed.** The batch sizer measures only the outer row's
->    column count (it reports `cols=2 per_row~80` for a row holding 100
->    transactions) and derives a batch size that is wrong by orders of magnitude;
->    fixing the sizer to descend into inner lists is tracked as open issue #894.
->    What this guard changes is the reporting, and the wasted calls on shapes that
->    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
+>    inner list (e.g. a 100-row `Transactions` table). The batch sizer counts such
+>    an instance by every leaf it emits, inner rows included, so the first pass is
+>    sized for it; but no batch is smaller than one instance, so ⚠️ **an instance
+>    whose own confidence output exceeds the model's cap still cannot be fully
+>    assessed** on that model. What this guard changes is the reporting, and the
+>    wasted calls on shapes that batch — not the outcome for such an instance. ⚠️ The symptom originally reported on
 >    #894 (an Assessment Lambda hitting its 900 s limit three times,
 >    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
 >    extraction) is **not explained by this loop**. What bounds the wall clock is a

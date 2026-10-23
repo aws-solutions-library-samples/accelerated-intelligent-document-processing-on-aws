@@ -99,12 +99,12 @@ cannot help here.
 The known trigger is a class marked `x-aws-idp-multi-instance: true` whose instance
 carries a long inner list — a 100-row bank statement, for example. The wrapper makes
 the *instance* array the outer list, so one row of that list is a whole document
-instance, and the batch sizer (which measures only the outer row's columns, logging
-`cols=2 per_row~80`) derives a batch size that is wrong by orders of magnitude.
-⚠️ **That sizing bug is not fixed** — it is tracked as open issue
-[#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894),
-so such a class still cannot be fully assessed; what it now gets is an actionable
-message naming the real cause.
+instance. The batch sizer counts that row by every confidence leaf it emits, inner
+rows included (its log line reports `leaves/row=`), so the first pass is sized for
+it — but no batch is smaller than one instance, so ⚠️ **an instance whose own
+confidence output exceeds the model's cap still cannot be fully assessed on that
+model** ([#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894));
+what it gets is an actionable message naming the real cause.
 
 ⚠️ If your symptom is instead **the document stuck in `ASSESSING` with the Assessment
 Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**,
@@ -135,10 +135,10 @@ buys smaller calls by making more of them.
 Two things that will still produce this symptom. **An out-of-memory kill is
 equally exception-free and nothing above bounds memory** — read the kill reason in
 the function's log rather than assuming the wall clock. And the multi-instance
-sizing bug #894 reports is a different route: its wrapper makes the batch sizer
-measure the outer row, so it derives a batch size far too large and the pass makes
-*few* big calls rather than many small ones, which is not the shape #1488
-bounds. For that class, either point it at a large-output-cap confidence model
+shape #894 reports is a different route: each outer row is a whole instance, so the
+pass makes *few* big calls rather than many small ones, which is not the shape
+#1488 bounds, and one instance whose output exceeds the cap cannot be split. For
+that class, either point it at a large-output-cap confidence model
 (`extraction.confidence.escalation_model`, or the per-class
 `x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
 class rather than a field inside a multi-instance instance; attach your Assessment
