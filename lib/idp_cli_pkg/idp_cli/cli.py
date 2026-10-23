@@ -4851,6 +4851,16 @@ def remove_residual_resources_from_deleted_stacks(
     3. Tracks both ACTIVE stacks (protected) and DELETED stacks (cleanup targets)
     4. Only targets resources that belong to stacks in DELETE_COMPLETE state
     5. Resources from active stacks are NEVER touched
+    6. Before deleting a global resource (CloudFront distribution, response
+       headers policy, IAM policy, S3 bucket), confirms in EVERY enabled
+       region that no stack of that name still exists. A region that cannot
+       be read leaves the resource in place and is reported as an error
+       (exit 1).
+
+    PERMISSIONS:
+    Besides delete permissions for what it cleans, the region confirmation
+    needs ec2:DescribeRegions and cloudformation:DescribeStacks in every
+    enabled region.
 
     SAFETY FEATURES:
     - Multi-region stack discovery (customizable with --check-stack-regions)
