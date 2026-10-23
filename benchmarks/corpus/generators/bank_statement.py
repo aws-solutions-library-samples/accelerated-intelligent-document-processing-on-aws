@@ -14,6 +14,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    Flowable,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -48,6 +49,88 @@ FIELDS = {
     "Account Number": "000123456789",
     "Statement Period": "01/01/2024 - 12/31/2024",
 }
+
+
+# --- Per-copy pagination ------------------------------------------------------
+#
+# ``documents=N`` emits N complete statements in one file and the truth records
+# ``expected_sections: N``. A footer numbering pages across the WHOLE FILE
+# contradicts that: a 3-copy file reads "Page 1 of 3 / Page 2 of 3 / Page 3 of 3",
+# which is the single most decisive "this is one 3-page document" signal a page can
+# carry, and the classification boundary rules check it FIRST. A correct classifier
+# then returns 1 section against a truth file claiming 3 — a right answer scored as
+# wrong, with the model's own reason citing the footer. So pagination is scoped to
+# the copy: each statement is numbered "Page k of <its own pages>", which both
+# agrees with ``expected_sections`` and makes the combination a usable over-merge
+# fixture instead of a trap.
+#
+# The page map has to come from the real layout rather than from an assumption
+# about how many pages a copy takes, so it is recorded by a marker flowable during
+# the pass that ``paginate`` already runs to learn the total page count.
+
+
+def _account_number(index):
+    """The account number document copy ``index`` carries — distinct per copy.
+
+    A distinct number is what makes "this is a new document" recoverable from the
+    page's own evidence, which is what the boundary rules are told to look for.
+    """
+    if index == 0:
+        return FIELDS["Account Number"]
+    return f"{int(FIELDS['Account Number']) + index:012d}"
+
+
+class _CopyStart(Flowable):
+    """Zero-size marker recording which page a document copy starts on.
+
+    It keeps a reference to the caller's dict rather than its own state, so it
+    still reports into that dict through the shallow copy of every flowable that
+    the measuring pass makes.
+    """
+
+    def __init__(self, index, starts):
+        Flowable.__init__(self)
+        self._index = index
+        self._starts = starts
+
+    def wrap(self, *_args):
+        return (0, 0)
+
+    def draw(self):
+        self._starts[self._index] = self.canv.getPageNumber()
+
+
+def _page_spans(starts, total, documents):
+    """``[(first_page, pages)]`` per copy, derived from the measured layout.
+
+    Raises rather than guessing. Every copy but the first is preceded by a
+    ``PageBreak``, so the first pages are strictly increasing and a map that is not
+    says the markers did not all draw — in which case the footers would silently
+    revert to file-wide numbering, which is the defect this exists to prevent.
+    """
+    firsts = [starts.get(index) for index in range(documents)]
+    if None in firsts or sorted(firsts) != firsts or len(set(firsts)) != documents:
+        raise RuntimeError(
+            f"pagination page map is incomplete: {documents} document copies but "
+            f"recorded start pages {firsts}. Per-copy footers cannot be numbered "
+            "from this, and numbering them across the file would contradict "
+            "expected_sections."
+        )
+    spans = []
+    for index in range(documents):
+        after = firsts[index + 1] if index + 1 < documents else total + 1
+        spans.append((firsts[index], max(1, after - firsts[index])))
+    return spans
+
+
+def _locate(page, spans):
+    """``(copy index, page within that copy, pages in that copy)`` for ``page``."""
+    for index, (first, pages) in enumerate(spans):
+        if first <= page < first + pages:
+            return index, page - first + 1, pages
+    index = len(spans) - 1
+    first, pages = spans[index]
+    return index, page - first + 1, pages
 
 
 def _noise(s, seq, level):
@@ -227,8 +310,9 @@ def build(
     number, statement period, but NOT the account holder's name and address — at the
     top of every page after the first (the #750 shape, and the boundary rules'
     known failure mode). It composes with ``paginate`` (header at the top, "Page N of
-    M" at the bottom). Meant for ``documents=1``: the header carries the FIRST
-    statement's account number on every page.
+    M" at the bottom). The header carries the account number of the copy whose page
+    it is on, so with ``documents > 1`` it reprints each statement's own identity
+    rather than the first statement's.
 
     This is the over-MERGE direction of boundary detection, and it is the case a
     naive over-split fix regresses: a prompt biased toward ``continue`` collapses
@@ -237,9 +321,10 @@ def build(
     made this worse.
 
     Each copy carries its own opening identity block (distinct account number)
-    and per-copy pagination footers, so the correct answer is unambiguous:
-    exactly ``documents`` sections. The truth records that as
-    ``expected_sections``.
+    and, under ``paginate``, its own pagination footers restarting at "Page 1 of
+    <its own pages>" — see the per-copy pagination note above for why file-wide
+    numbering made this combination unusable. So the correct answer is unambiguous:
+    exactly ``documents`` sections. The truth records that as ``expected_sections``.
     """
     styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(
@@ -258,17 +343,19 @@ def build(
     seq_ids, per_list = [], {}
     rows_typed = {}
     rpl = rows // lists
+    # Both page-drawn signals — the pagination footer and the running identity
+    # header — have to say which COPY a page belongs to once there is more than one,
+    # or they assert the opposite of `expected_sections`. Only then is the marker
+    # needed, which keeps every single-document fixture byte-identical.
+    needs_page_map = documents > 1 and (paginate or repeat_header)
+    copy_starts = {}
     for di in range(documents):
         if di:
             story.append(PageBreak())
-        # Opening identity block. A DISTINCT account number per copy is what makes
-        # "this is a new document" recoverable from the page's own evidence, which
-        # is what the boundary rules are told to look for.
-        acct = (
-            FIELDS["Account Number"]
-            if di == 0
-            else f"{int(FIELDS['Account Number']) + di:012d}"
-        )
+        if needs_page_map:
+            story.append(_CopyStart(di, copy_starts))
+        # Opening identity block.
+        acct = _account_number(di)
         story += [
             Paragraph("<b>AnyBank Monthly Statement</b>", styles["Title"]),
             Paragraph(f"Account Number: {acct}", styles["Normal"]),
@@ -317,33 +404,22 @@ def build(
             story.append(Spacer(1, 0.15 * inch))
             per_list[f"list{li + 1}"] = ids
 
-    def _running_header(canvas, _doc):
-        # The OTHER common real-world shape (#726 counter-case, #750): many statements
-        # print a running identity header — bank name, account number, statement
-        # period — at the top of EVERY page, with no addressee name or address. A
-        # boundary rule that keys on "carries an identity block => start" over-splits
-        # exactly this shape; drawn on the canvas so it does not disturb the table.
-        canvas.saveState()
-        canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
-        canvas.setFont("Helvetica", 8)
-        canvas.drawString(
-            0.4 * inch,
-            10.45 * inch,
-            f"Account Number: {FIELDS['Account Number']}    "
-            "Statement Period: 01/01/2024 - 12/31/2024",
-        )
-        canvas.restoreState()
-
     top_margin = 0.85 * inch if repeat_header else 0.5 * inch
+    total, spans = 1, []
 
-    if paginate:
+    if paginate or needs_page_map:
         # Real statements paginate, and "Page 2 of 3" is the single most decisive
         # boundary signal a page can carry — the classification boundary rules
         # check it FIRST (#653). A corpus document without it tests those rules
         # with their primary evidence removed, which is a legitimate hard case but
-        # not the common one. Two passes, because the total page count is not known
-        # until the document has been laid out once.
+        # not the common one. Two passes, because neither the total page count nor
+        # which pages belong to which copy is known until the story has been laid
+        # out once.
+        #
+        # The measuring pass uses the SAME margins as the real one. It used to lay
+        # out at the default top margin while `repeat_header` raised it for the real
+        # build, so the two passes could disagree on the page count and the footer
+        # would then quote a total the file does not have.
         from copy import copy as _shallow
 
         counter = {"total": 0}
@@ -351,15 +427,48 @@ def build(
         def _count(canvas, _doc):
             counter["total"] = max(counter["total"], canvas.getPageNumber())
 
-        doc.build([_shallow(f) for f in story], onFirstPage=_count, onLaterPages=_count)
+        SimpleDocTemplate(
+            out,
+            pagesize=letter,
+            topMargin=top_margin,
+            bottomMargin=0.5 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        ).build([_shallow(f) for f in story], onFirstPage=_count, onLaterPages=_count)
         total = counter["total"] or 1
+        spans = (
+            _page_spans(copy_starts, total, documents)
+            if needs_page_map
+            else [(1, total)]
+        )
 
-        def _footer(canvas, doc_):
+    def _running_header(canvas, _doc):
+        # The OTHER common real-world shape (#726 counter-case, #750): many statements
+        # print a running identity header — bank name, account number, statement
+        # period — at the top of EVERY page, with no addressee name or address. A
+        # boundary rule that keys on "carries an identity block => start" over-splits
+        # exactly this shape; drawn on the canvas so it does not disturb the table.
+        index = _locate(canvas.getPageNumber(), spans)[0] if spans else 0
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(
+            0.4 * inch,
+            10.45 * inch,
+            f"Account Number: {_account_number(index)}    "
+            "Statement Period: 01/01/2024 - 12/31/2024",
+        )
+        canvas.restoreState()
+
+    if paginate:
+
+        def _footer(canvas, _doc):
+            # Numbered within the COPY, not across the file.
+            _, page, pages = _locate(canvas.getPageNumber(), spans)
             canvas.saveState()
             canvas.setFont("Helvetica", 8)
-            canvas.drawRightString(
-                7.9 * inch, 0.32 * inch, f"Page {canvas.getPageNumber()} of {total}"
-            )
+            canvas.drawRightString(7.9 * inch, 0.32 * inch, f"Page {page} of {pages}")
             canvas.restoreState()
 
         def _later(canvas, doc_):
