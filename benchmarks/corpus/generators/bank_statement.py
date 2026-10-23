@@ -103,10 +103,21 @@ class _CopyStart(Flowable):
 def _page_spans(starts, total, documents):
     """``[(first_page, pages)]`` per copy, derived from the measured layout.
 
-    Raises rather than guessing. Every copy but the first is preceded by a
-    ``PageBreak``, so the first pages are strictly increasing and a map that is not
-    says the markers did not all draw — in which case the footers would silently
-    revert to file-wide numbering, which is the defect this exists to prevent.
+    Raises rather than guessing, in two ways. Every copy but the first is preceded
+    by a ``PageBreak``, so the first pages are strictly increasing and a map that
+    is not says the markers did not all draw — in which case the footers would
+    silently revert to file-wide numbering, which is the defect this exists to
+    prevent. And a copy cannot start after the last page of the layout it was
+    measured in; ``total`` disagreeing with the start pages that way is a
+    contradiction, not a short final statement.
+
+    Both refusals cover inputs that cannot arise from a correct layout, which is
+    the argument for refusing them rather than against it: there is no plausible
+    span to compute for an impossible map, so computing one only makes the
+    contradiction look like a measurement. The second check is what the arithmetic
+    below would otherwise absorb — once increasing, distinct, non-``None`` starts
+    are established, the only span that can come out non-positive is the final
+    one, and only when ``total`` is below the last start page.
     """
     firsts = [starts.get(index) for index in range(documents)]
     if None in firsts or sorted(firsts) != firsts or len(set(firsts)) != documents:
@@ -116,10 +127,18 @@ def _page_spans(starts, total, documents):
             "from this, and numbering them across the file would contradict "
             "expected_sections."
         )
+    if firsts and total < firsts[-1]:
+        raise RuntimeError(
+            f"pagination page map is impossible: the last of {documents} document "
+            f"copies starts on page {firsts[-1]} of a {total}-page layout "
+            f"(recorded start pages {firsts}). Giving it a one-page span would "
+            "turn a contradictory map into a plausible-looking one, which is the "
+            "opposite of what this function is for."
+        )
     spans = []
     for index in range(documents):
         after = firsts[index + 1] if index + 1 < documents else total + 1
-        spans.append((firsts[index], max(1, after - firsts[index])))
+        spans.append((firsts[index], after - firsts[index]))
     return spans
 
 

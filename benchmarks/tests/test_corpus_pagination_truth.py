@@ -329,6 +329,34 @@ class TestPageMapRefusesToGuess:
         with pytest.raises(RuntimeError, match="page map is incomplete"):
             bank_statement._page_spans(starts, total, documents)
 
+    @pytest.mark.parametrize(
+        ("starts", "total", "note"),
+        [
+            ({0: 1, 1: 4}, 3, "the last copy starts past the final page"),
+            ({0: 1, 1: 4}, 0, "no pages at all"),
+            ({0: 2, 1: 5}, 4, "one page short of the last copy's start"),
+        ],
+    )
+    def test_a_map_whose_total_contradicts_its_start_pages_raises(
+        self, bank_statement, starts, total, note
+    ):
+        """A copy cannot start after the last page of the layout it was measured in.
+
+        Reachable only from a map that is already self-contradictory, which is the
+        argument for refusing it: the span arithmetic would otherwise hand the
+        final copy a one-page span, and a plausible-looking span computed from an
+        impossible map is indistinguishable downstream from a measured one.
+        """
+        with pytest.raises(RuntimeError, match="page map is impossible"):
+            bank_statement._page_spans(starts, total, 2)
+
+    def test_the_last_copy_keeps_its_real_length_when_the_total_is_consistent(
+        self, bank_statement
+    ):
+        """The boundary case either side: the clamp is gone, not merely relocated."""
+        assert bank_statement._page_spans({0: 1, 1: 4}, 4, 2) == [(1, 3), (4, 1)]
+        assert bank_statement._page_spans({0: 1, 1: 4}, 9, 2) == [(1, 3), (4, 6)]
+
     def test_a_page_inside_a_span_is_located(self, bank_statement):
         spans = [(1, 3), (4, 2)]
         located = [bank_statement._locate(page, spans) for page in range(1, 6)]
