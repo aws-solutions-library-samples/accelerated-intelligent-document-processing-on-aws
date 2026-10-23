@@ -207,7 +207,11 @@ def _is_page_limit(value: Any) -> bool:
     if value is None or isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
-        return value > 0
+        # Truncated first: a fraction below one page is not a page count, and
+        # ``0.4 > 0`` would otherwise answer True here while ``parse_max_pages``
+        # rendered it as no limit at all — the same shape as the ``bool`` trap,
+        # with the same consequence of taking boundary detection with it.
+        return int(value) > 0
     text = str(value).strip().upper()
     if text in ("", "ALL", "0"):
         return False

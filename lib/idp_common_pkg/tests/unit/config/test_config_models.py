@@ -518,7 +518,22 @@ class TestRuleClassesMigrationIsLoud:
 #: `int` subclass, so an unquoted YAML `maxPagesForClassification: true` was read as a
 #: one-page limit — and in the migration it took `sectionSplitting` to `disabled` with
 #: it, turning boundary detection off for a setting the operator never wrote.
-NO_PAGE_LIMIT_SPELLINGS = ["ALL", "all", "0", 0, "", None, "abc", -1, True, False]
+NO_PAGE_LIMIT_SPELLINGS = [
+    "ALL",
+    "all",
+    "0",
+    0,
+    "",
+    None,
+    "abc",
+    -1,
+    True,
+    False,
+    # A fraction below one page: not a page count either. It was stored as "0"
+    # while the migration read it as a limit and took boundary detection with it,
+    # which is the boolean trap in a second spelling.
+    0.4,
+]
 
 
 @pytest.mark.unit
@@ -575,7 +590,17 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
         )
 
     @pytest.mark.parametrize(
-        ("value", "expected"), [(3, "3"), ("3", "3"), (" 7 ", "7"), ("ALL", "ALL")]
+        ("value", "expected"),
+        [
+            (3, "3"),
+            ("3", "3"),
+            (" 7 ", "7"),
+            ("ALL", "ALL"),
+            # A float that truncates to a usable page count still does, which is
+            # what it has always done; only one that truncates to zero changes.
+            (2.5, "2"),
+            (2.0, "2"),
+        ],
     )
     def test_a_real_page_limit_is_kept(self, value, expected):
         from idp_common.config.models import FileShapeConfig
@@ -691,8 +716,7 @@ class TestReasoningEffortIsChecked:
         here is a visible edit rather than a one-character change. The parity
         assertion is `test_the_reasoning_effort_picklist_matches_the_checked_set` in
         `scripts/sdlc/tests/test_config_ui_schema_parity.py`, which reads the
-        template's own Schema block; this docstring used to claim that job and the
-        assertion below has never done it.
+        template's own Schema block.
         """
         from idp_common.config.models import REASONING_EFFORT_VALUES
 

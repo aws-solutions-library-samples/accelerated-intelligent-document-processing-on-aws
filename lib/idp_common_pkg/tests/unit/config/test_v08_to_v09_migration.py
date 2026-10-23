@@ -381,7 +381,11 @@ class TestThePageLimit:
         assert out["classification"]["file_shape"]["sectionSplitting"] == "disabled"
 
     @pytest.mark.parametrize(
-        "value", ["ALL", "all", "0", 0, "", None, "abc", -1, True, False]
+        "value",
+        # 0.4 is the boolean trap in a second spelling: `0.4 > 0` answered True
+        # while the validator rendered it as no limit at all, so boundary
+        # detection was turned off by a value asking for no limit.
+        ["ALL", "all", "0", 0, "", None, "abc", -1, True, False, 0.4],
     )
     def test_no_limit_leaves_splitting_alone(self, value, caplog):
         with caplog.at_level(logging.WARNING):

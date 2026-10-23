@@ -2431,7 +2431,14 @@ class FileShapeConfig(BaseModel):
             # The long-documented legacy spelling of "ALL". Silent, like every other
             # "this field is unset, take the default" case here.
             return "ALL"
-        return str(int(v)) if v > 0 else _unusable_page_limit(v)
+        pages = int(v)
+        if pages <= 0:
+            # Negative, or a fraction below one page — which is not a page count.
+            # `0.4` used to be stored as `"0"` while the migration read it as a
+            # limit and took `sectionSplitting` to `disabled` with it, which is the
+            # bool trap above in a second spelling.
+            return _unusable_page_limit(v)
+        return str(pages)
 
 
 class ClassificationConfig(BaseModel):
