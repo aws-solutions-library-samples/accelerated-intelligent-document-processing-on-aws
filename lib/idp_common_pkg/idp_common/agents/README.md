@@ -349,6 +349,28 @@ The system includes several specialized agents:
 
 All agents are automatically available to the orchestrator - no manual selection needed.
 
+### A system prompt names only tools its agent registers
+
+An agent's system prompt is the model's only guide to choosing among its tools,
+and Strands gives the model nothing beyond the tools passed to `strands.Agent`. A
+prompt that names any other tool sends the model after something it does not have,
+with no error anywhere. For the Error Analyzer the registered names are the
+function names in `error_analyzer/tools/` (there is no `@tool(name=...)` aliasing),
+and the shipped prompt lives in `config/system_defaults/base-agents.yaml` with a
+mirror in the `ErrorAnalyzerConfig` and `ChatCompanionConfig` defaults in
+`config/models.py`.
+
+`tests/unit/agents/error_analyzer/test_prompt_tool_names.py` builds the real agent,
+reads the tool names and parameters out of its Strands registry, and checks every
+shipped copy of the prompt — those model defaults plus every YAML file git sees
+(tracked, or untracked and not ignored) that sets `agents.error_analyzer.system_prompt`
+or `agents.chat_companion.system_prompt` — in both directions: every
+underscore-joined identifier must be a registered tool, a parameter of one, or a
+listed data field, every registered tool must be named, and an argument list
+written as `tool (a, b)` may hold only that tool's own parameters. When you add, rename or remove a tool,
+update the prompt in the same change. Prefer a preset that inherits the default
+prompt to one that carries a copy, because a copy is what went stale here.
+
 ## Usage Examples
 
 ### Basic Conversation

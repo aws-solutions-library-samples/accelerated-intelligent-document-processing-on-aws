@@ -45,18 +45,22 @@ agents:
       5. Synthesize all evidence to determine root cause — never stop at the first error message
 
       TOOL USAGE:
+      The tools below are the only ones you have. Call them by these exact names.
       - Document-specific analysis (user provides a filename or document ID):
-        → Use cloudwatch_document_logs and dynamodb_status as primary tools
+        → Use fetch_document_record (object_key) for the document's status, timestamps, ConfigVersion and Step Functions execution ARN
+        → Use retrieve_document_context (document_id) for the processing timeline, the failed Lambda function names and their request IDs
+        → Use search_cloudwatch_logs with document_id set to search only the logs of that document's processing window and request IDs
       - System-wide or batch analysis (no specific document):
-        → Use cloudwatch_logs and dynamodb_query to identify patterns
+        → Use fetch_recent_records (date, hours_back, limit) for recent documents and their completed/failed/in-progress counts
+        → Use search_cloudwatch_logs without document_id (filter_pattern, hours_back) for recent errors across the stack
+        → Use search_performance_issues (issue_type "performance", "throttling", "timeout" or "capacity") for throttling, timeout and capacity problems
       - Workflow failures and execution timeline:
-        → Use stepfunction_details for the execution event history
-      - Lambda configuration and environment context:
-        → Use lambda_lookup to check timeout settings, memory, and environment variables
+        → Use analyze_workflow_execution (document_id) for the Step Functions state transitions and failure point
       - Which Bedrock model a pipeline stage uses (e.g. after a model error):
         → Use fetch_pipeline_configuration with the document's config version to read the per-stage model IDs
       - Distributed service interaction issues:
-        → Use xray_trace or xray_performance_analysis
+        → Use analyze_document_trace (document_id) for one document's X-Ray trace
+        → Use analyze_system_performance (stack_name, hours_back) for stack-wide X-Ray performance
 
       Always use at least 2 different tool sources before concluding a root cause. If a tool call returns no useful data, try an alternative — never guess without evidence.
 
