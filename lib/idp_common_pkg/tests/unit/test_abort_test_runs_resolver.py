@@ -1084,3 +1084,23 @@ def test_a_run_named_twice_is_aborted_once(timed_runs):
     assert result["failedCount"] == 1, result
     assert index.lambda_client.invoke.call_count == 2  # one run, two batches
     assert set(aborted) == {run_ids[0]}
+
+
+@pytest.mark.unit
+def test_a_settle_wait_that_raises_is_handled_as_one_that_ran_out(
+    timed_runs, monkeypatch
+):
+    """The documents have been told to stop, so a failed wait does not fail the abort."""
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    install(lambda call, n: 0)
+
+    def broken_wait(*args, **kwargs):
+        raise RuntimeError("wait failed")
+
+    monkeypatch.setattr(index, "_wait_for_documents_terminal_state", broken_wait)
+
+    result = index.lambda_handler(_ui_event(run_ids), None)
+
+    assert result["abortedCount"] == len(run_ids), result
+    assert result["failedCount"] == 0, result
+    assert set(aborted) == set(run_ids)
