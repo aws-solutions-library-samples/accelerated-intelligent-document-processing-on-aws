@@ -926,27 +926,58 @@ def test_preset_discovery_reaches_the_nested_config_files():
 # ---------------------------------------------------------------------------
 
 
+def _cfn_refs(node: object) -> set[str]:
+    """Names read through ``Ref`` or ``Fn::Sub`` anywhere under ``node``."""
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ("Ref", "Fn::Ref") and isinstance(value, str):
+                found.add(value)
+            elif key == "Fn::Sub":
+                text = value[0] if isinstance(value, list) and value else value
+                if isinstance(text, str):
+                    found.update(re.findall(r"\$\{([A-Za-z0-9:]+)[.}]", text))
+            found |= _cfn_refs(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _cfn_refs(item)
+    return found
+
+
 def _kb_embed_model_offerings() -> tuple[str, ...]:
     """Enum-path prefixes that offer the Knowledge Base embedding model, derived.
 
-    The nested template's ``pEmbedModel``, plus the root parameter ``template.yaml``
+    The nested template's ``pEmbedModel``, plus a root parameter ``template.yaml``
     passes to it -- read from the nested-stack resource whose ``TemplateURL`` is the
-    knowledge-base stack, so a root parameter offering embedding models that is NOT
-    wired to ``pEmbedModel`` is still reported.
+    knowledge-base stack -- and only if that resource is the parameter's ONLY reader
+    in ``template.yaml``. A root parameter that offers embedding models and also
+    feeds anything else is no longer just the knowledge base's setting, so it stays
+    reported.
     """
     prefixes = [f"{KB_EMBED_TEMPLATE}.Parameters.pEmbedModel."]
     parent = yaml.load(
         (REPO_ROOT / "template.yaml").read_text(encoding="utf-8"), Loader=_CfnLoader
     )
+    resources = parent.get("Resources") or {}
     kb_dir = "./" + KB_EMBED_TEMPLATE.rsplit("/", 1)[0] + "/"
-    for resource in (parent.get("Resources") or {}).values():
+    for logical_id, resource in resources.items():
         properties = resource.get("Properties") or {}
         url = properties.get("TemplateURL")
         if not (isinstance(url, str) and url.startswith(kb_dir)):
             continue
         passed = (properties.get("Parameters") or {}).get("pEmbedModel")
-        if isinstance(passed, dict) and isinstance(passed.get("Fn::Ref"), str):
-            prefixes.append(f"template.yaml.Parameters.{passed['Fn::Ref']}.")
+        if not (isinstance(passed, dict) and isinstance(passed.get("Fn::Ref"), str)):
+            continue
+        name = passed["Fn::Ref"]
+        elsewhere = _cfn_refs(
+            {
+                key: value
+                for key, value in parent.items()
+                if key not in ("Resources", "Metadata", "Parameters")
+            }
+        ) | _cfn_refs({k: v for k, v in resources.items() if k != logical_id})
+        if name not in elsewhere:
+            prefixes.append(f"template.yaml.Parameters.{name}.")
     return tuple(prefixes)
 
 
