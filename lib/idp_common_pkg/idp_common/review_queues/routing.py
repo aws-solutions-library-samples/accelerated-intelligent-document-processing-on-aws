@@ -22,6 +22,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
+from idp_common.utils import finite_float
+
 from . import keys
 from .finalize import apply_corrections
 from .models import ReviewDecision, ReviewItemRecord
@@ -120,16 +122,16 @@ def bda_segment_triggers(
 ) -> Optional[bool]:
     """BDA mode's trigger for a custom-output segment (``None`` when HITL is off).
 
-    A null or non-numeric blueprint confidence is an unscored match and reads as
-    0.0, so the segment routes to review rather than raising: ``float(None)``
-    raised TypeError, which escaped ``process_segments`` into the BDA handler's
-    catch-all and abandoned the rest of the document's segments.
+    A null, non-numeric or non-finite (NaN, infinite) blueprint confidence is an
+    unscored match and reads as 0.0, so the segment routes to review:
+    ``float(None)`` raised TypeError, which escaped ``process_segments`` into the
+    BDA handler's catch-all and abandoned the rest of the document's segments,
+    and a NaN compared directly never triggered, since ``nan < t`` is False.
     """
     if not hitl_enabled:
         return None
-    try:
-        confidence = float(bp_confidence)
-    except (TypeError, ValueError):
+    confidence = finite_float(bp_confidence)
+    if confidence is None:
         confidence = 0.0
     return len(alerts) > 0 or confidence < threshold
 

@@ -23,7 +23,12 @@ from idp_common.review_queues.routing import (
 from idp_common.review_queues.statuses import LEGACY_DONE, LegacyHitlStatus
 from idp_common.review_queues.store import create_review_store
 from idp_common.s3 import get_s3_client, write_content
-from idp_common.utils import build_s3_uri, parse_confidence, parse_s3_uri
+from idp_common.utils import (
+    build_s3_uri,
+    finite_float,
+    parse_confidence,
+    parse_s3_uri,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -1102,17 +1107,15 @@ def create_confidence_threshold_alerts(
         "key_value_details", {}
     ).items():
         for kv_entry in kv_details:
-            # A null (or non-numeric) confidence is an unscored field, read as
-            # 0.0 so it alerts and goes to review — the rule Pipeline's default
-            # ``separate`` confidence mode applies, and the fail-safe direction.
-            # A missing key already reads as 0.0 via ``process_keyvalue_details``.
-            # Comparing a null directly raised TypeError, which escaped
-            # process_segments into the handler's catch-all and abandoned the
-            # rest of the document's segments.
-            try:
-                # float(None) raises TypeError, so a null lands here too.
-                confidence = float(kv_entry.get("confidence", 0.0))
-            except (TypeError, ValueError):
+            # A null, non-numeric or non-finite (NaN, infinite) confidence is
+            # an unscored field, read as 0.0 so it alerts and goes to review,
+            # which is the fail-safe direction. A missing key already reads as 0.0
+            # via ``process_keyvalue_details``. Comparing a null directly raised
+            # TypeError, which escaped process_segments into the handler's
+            # catch-all and abandoned the rest of the document's segments; a NaN
+            # compared directly raised no alert, since ``nan < t`` is False.
+            confidence = finite_float(kv_entry.get("confidence", 0.0))
+            if confidence is None:
                 confidence = 0.0
             # Use the entry's per-field threshold (schema-resolved) when present
             entry_threshold = kv_entry.get(
