@@ -869,6 +869,8 @@ re-extracted and only those are merged back, so an over-eager escalation cannot
 overwrite fields that already validated; if escalation fails, the original
 extraction is kept unchanged.
 
+![Processing report for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
+
 ⚠️ **All three actions are visibility settings — none of them rejects a section.**
 `reject` records `parsing_succeeded: false`, which is read by the section's
 Processing Report and the UI's **Processing Report** tab and by nothing in the
@@ -1680,6 +1682,8 @@ displayed either way — they are about whether its *position* is known:
 |---|---|
 | 🔍 **Highlight _field_ on the page image** | The field has a bounding box. Activating it outlines the value on the page image. |
 | ⓘ **Why _field_ has no bounding box** | The explanation names which of the four causes applies, since they have different remedies. |
+
+![Document editor for a payslip: the Gross Pay value outlined on the page image, with each field's confidence and threshold in the Visual Editor](../images/extraction-document-editor-bounding-box.png)
 
 The causes, which have different remedies:
 
