@@ -13,6 +13,7 @@ This function handles aborting test runs by:
 import json
 import logging
 import os
+import random
 import time
 from datetime import datetime, timezone
 
@@ -26,6 +27,20 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 dynamodb = boto3.resource('dynamodb')
 lambda_client = boto3.client('lambda')
 sqs_client = boto3.client('sqs')
+
+# BatchGetItem answers a throttled or oversized read with UnprocessedKeys, which
+# the caller must resubmit. The same bound and backoff as idp_common's
+# DynamoDBClient.batch_get_items (this function has no idp_common layer, so it
+# cannot call it): up to this many calls per chunk, with exponential backoff and
+# full jitter between them. Keys still held back after that are reported as
+# unread, not as missing.
+BATCH_GET_MAX_ATTEMPTS = 6
+
+
+def _backoff_sleep(attempt):
+    """Exponential backoff with full jitter, capped at one second."""
+    time.sleep(random.uniform(0, min(1.0, 0.05 * 2**attempt)))  # nosec B311
+
 
 # Test run statuses that can be aborted (before processing completes)
 ABORTABLE_STATUSES = {'QUEUED', 'RUNNING'}
@@ -319,46 +334,63 @@ def _batch_get_document_items(tracking_table, object_keys):
         object_keys: List of document object keys (S3 paths)
 
     Returns:
-        Dict mapping object_key to item dict
+        ``(items_by_key, unread_keys)``: a dict mapping object_key to item dict
+        for every record read, and the set of object keys whose record could
+        not be read — still unprocessed after ``BATCH_GET_MAX_ATTEMPTS`` calls,
+        or in a batch the service refused. A key in neither was read and does
+        not exist.
     """
     if not object_keys:
-        return {}
+        return {}, set()
 
     table_name = tracking_table.table_name
     items_by_key = {}
+    unread_keys = set()
 
     # DynamoDB batch_get_item supports up to 100 keys per batch
     batch_size = 100
     for i in range(0, len(object_keys), batch_size):
         batch = object_keys[i:i + batch_size]
         keys = [{'PK': f"doc#{key}", 'SK': 'none'} for key in batch]
+        request_items = {table_name: {'Keys': keys}}
+        attempt = 0
 
         try:
-            response = dynamodb.batch_get_item(
-                RequestItems={
-                    table_name: {
-                        'Keys': keys
-                    }
-                }
-            )
+            while request_items:
+                response = dynamodb.batch_get_item(RequestItems=request_items)
 
-            # Map responses back to object keys
-            for item in response.get('Responses', {}).get(table_name, []):
-                # Extract object_key from PK (format: "doc#object_key")
-                pk = item.get('PK', '')
-                if pk.startswith('doc#'):
-                    obj_key = pk[4:]  # Remove "doc#" prefix
-                    items_by_key[obj_key] = item
+                # Map responses back to object keys
+                for item in response.get('Responses', {}).get(table_name, []):
+                    # Extract object_key from PK (format: "doc#object_key")
+                    pk = item.get('PK', '')
+                    if pk.startswith('doc#'):
+                        obj_key = pk[4:]  # Remove "doc#" prefix
+                        items_by_key[obj_key] = item
 
-            # Handle unprocessed keys (throttling, etc.)
-            unprocessed = response.get('UnprocessedKeys', {}).get(table_name, {})
-            if unprocessed:
-                logger.warning(f"Batch get had {len(unprocessed.get('Keys', []))} unprocessed keys")
+                # Keys held back (throttling, or the 16 MB response cap) are
+                # resubmitted with backoff, a bounded number of times.
+                request_items = response.get('UnprocessedKeys') or {}
+                if not request_items:
+                    break
+                attempt += 1
+                if attempt >= BATCH_GET_MAX_ATTEMPTS:
+                    held = request_items.get(table_name, {}).get('Keys', [])
+                    unread_keys.update(
+                        k['PK'][4:] for k in held
+                        if str(k.get('PK', '')).startswith('doc#')
+                    )
+                    logger.warning(
+                        f"Batch get left {len(held)} keys unprocessed after "
+                        f"{BATCH_GET_MAX_ATTEMPTS} attempts; their status is unknown"
+                    )
+                    break
+                _backoff_sleep(attempt)
 
         except Exception as e:
             logger.error(f"Batch get failed for batch starting at index {i}: {str(e)}")
+            unread_keys.update(k for k in batch if k not in items_by_key)
 
-    return items_by_key
+    return items_by_key, unread_keys
 
 
 def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys, max_wait_time=25):
@@ -387,20 +419,34 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
     # Initialize counters
     pending_count = 0
     terminal_count = 0
+    unknown_count = 0
 
     while time.time() - start_time < max_wait_time:
         pending_count = 0
         terminal_count = 0
+        unknown_count = 0
 
         # Use batch_get_item for efficiency (100 keys per batch vs 100 sequential GETs)
-        items_by_key = _batch_get_document_items(tracking_table, object_keys)
+        items_by_key, unread_keys = _batch_get_document_items(
+            tracking_table, object_keys
+        )
 
         for object_key in object_keys:
             try:
                 item = items_by_key.get(object_key)
                 if not item:
-                    logger.warning(f"Document {object_key} not found in tracking table")
-                    pending_count += 1
+                    if object_key in unread_keys:
+                        # The read was throttled or refused, so nothing is known
+                        # about this document. It is not terminal, so keep
+                        # waiting; the next poll may read it.
+                        logger.warning(
+                            f"Status of document {object_key} is unknown: its "
+                            "tracking record could not be read this poll"
+                        )
+                        unknown_count += 1
+                    else:
+                        logger.warning(f"Document {object_key} not found in tracking table")
+                        pending_count += 1
                     continue
 
                 doc_status = item.get('ObjectStatus', '').upper()
@@ -431,11 +477,12 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
                 pending_count += 1
 
         logger.info(
-            f"Document status check: {terminal_count} terminal, {pending_count} pending"
+            f"Document status check: {terminal_count} terminal, {pending_count} pending, "
+            f"{unknown_count} unknown"
         )
 
         # All documents reached terminal state
-        if pending_count == 0:
+        if pending_count == 0 and unknown_count == 0:
             logger.info(
                 f"All documents reached terminal state for test run {test_run_id} "
                 f"({terminal_count} terminal)"
@@ -449,5 +496,6 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
     logger.warning(
         f"Timeout waiting for documents to reach terminal state for test run {test_run_id}. "
         f"Proceeding with metrics calculation anyway. "
-        f"Final status: {terminal_count} terminal, {pending_count} pending"
+        f"Final status: {terminal_count} terminal, {pending_count} pending, "
+        f"{unknown_count} unknown (tracking record could not be read)"
     )

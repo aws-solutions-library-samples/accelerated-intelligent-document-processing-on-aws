@@ -14,6 +14,7 @@ making it suitable for custom date ranges of any length.
 import json
 import logging
 import os
+import random
 import sys
 import time
 from datetime import datetime, timedelta
@@ -107,6 +108,28 @@ HOURS_PER_SHARD = 24 // SHARDS_PER_DAY  # 4 hours
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 BATCH_GET_LIMIT = 100  # DynamoDB BatchGetItem limit
+
+# BatchGetItem answers a throttled or oversized read with UnprocessedKeys, which
+# the caller must resubmit. The same bound and backoff as idp_common's
+# DynamoDBClient.batch_get_items (this function has no idp_common layer, so it
+# cannot call it): up to this many calls per chunk, with exponential backoff and
+# full jitter between them, then fail the request rather than return a page that
+# is silently missing documents.
+BATCH_GET_MAX_ATTEMPTS = 6
+
+
+class UnprocessedKeysError(RuntimeError):
+    """BatchGetItem still held keys back after ``BATCH_GET_MAX_ATTEMPTS`` calls.
+
+    A ``RuntimeError`` rather than a ``ValueError`` on purpose: the dispatcher
+    reports ``ValueError`` as a 400, which would blame the caller's request for
+    the table's throttling. Anything else surfaces as a 500.
+    """
+
+
+def _backoff_sleep(attempt):
+    """Exponential backoff with full jitter, capped at one second."""
+    time.sleep(random.uniform(0, min(1.0, 0.05 * 2**attempt)))  # nosec B311
 
 # Work budget: the most sequential DynamoDB Queries one invocation may issue.
 #
@@ -311,6 +334,7 @@ def _batch_get_documents(table_name, object_keys):
         ]
 
         request_items = {table_name: {"Keys": keys}}
+        attempt = 0
 
         while request_items:
             response = ddb_client.batch_get_item(RequestItems=request_items)
@@ -321,8 +345,25 @@ def _batch_get_documents(table_name, object_keys):
                 if doc and doc.get("ObjectKey"):
                     documents[doc["ObjectKey"]] = doc
 
-            # Handle unprocessed keys (throttling)
-            request_items = response.get("UnprocessedKeys", {})
+            # Keys held back (throttling, or the 16 MB response cap) are resubmitted
+            # with backoff, a bounded number of times. Without the bound a key that
+            # stays unprocessed spins here until the function times out.
+            request_items = response.get("UnprocessedKeys") or {}
+            if not request_items:
+                break
+            attempt += 1
+            if attempt >= BATCH_GET_MAX_ATTEMPTS:
+                remaining = len(request_items.get(table_name, {}).get("Keys", []))
+                logger.error(
+                    "BatchGetItem: %d unprocessed keys remain after %d attempts",
+                    remaining,
+                    BATCH_GET_MAX_ATTEMPTS,
+                )
+                raise UnprocessedKeysError(
+                    f"Could not read {remaining} document records: the tracking "
+                    "table is throttling reads. Retry the request."
+                )
+            _backoff_sleep(attempt)
 
     return documents
 
