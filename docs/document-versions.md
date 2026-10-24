@@ -112,6 +112,10 @@ can:
   another retained version is kept, so deleting one version never corrupts
   another.
 
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
+
+![Compare versions dialog: one changed field in the Bank-Statement section, every other section identical](../images/webui-document-versions-compare.png)
+
 ### CLI
 
 ```bash
