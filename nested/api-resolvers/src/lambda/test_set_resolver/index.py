@@ -24,7 +24,10 @@ from idp_common.config_scope import (  # type: ignore
     user_row_key,
 )
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
-from idp_common.dynamodb.client import DynamoDBError  # type: ignore
+from idp_common.dynamodb.client import (  # type: ignore
+    DynamoDBError,
+    DynamoDBUnprocessedKeysError,
+)
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
     DEFAULT_PAGES_PER_DOC,
@@ -3135,8 +3138,6 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     if not per_doc_run and not default_run:
         return {}
 
-    table_name = os.environ["TRACKING_TABLE"]
-    resource = boto3.resource("dynamodb")
     state = {}
 
     # BatchGetItem rather than a GetItem per document; batches cap at 100 keys.
@@ -3153,25 +3154,28 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     for start in range(0, len(all_keys), 100):
         batch = [{"PK": pk, "SK": "none"} for pk in all_keys[start : start + 100]]
         try:
-            pending = {table_name: {"Keys": batch}}
-            # UnprocessedKeys is normal under throttling; unretried keys would
-            # silently report their documents as unclaimed.
-            for _ in range(4):
-                response = resource.batch_get_item(RequestItems=pending)
-                for item in response.get("Responses", {}).get(table_name, []):
-                    object_key = keys_by_pk.get(item.get("PK", ""))
-                    if not object_key:
-                        continue
-                    state[object_key] = {
-                        "owner": item.get("HITLReviewOwner") or "",
-                        "status": item.get("HITLStatus") or "",
-                        # The item's presence proves the run processed this
-                        # document, which is a precondition for claiming it.
-                        "exists": True,
-                    }
-                pending = response.get("UnprocessedKeys") or {}
-                if not pending:
-                    break
+            # UnprocessedKeys is normal under throttling. The helper retries them
+            # with backoff and raises if any remain; the rows it did read are
+            # still used, so only the documents left unread lose their state.
+            try:
+                rows = db_client.batch_get_items(batch)
+            except DynamoDBUnprocessedKeysError as e:
+                logger.warning(
+                    f"Could not read claim state for every document in a batch "
+                    f"of {len(batch)}: {e}"
+                )
+                rows = e.items
+            for item in rows:
+                object_key = keys_by_pk.get(item.get("PK", ""))
+                if not object_key:
+                    continue
+                state[object_key] = {
+                    "owner": item.get("HITLReviewOwner") or "",
+                    "status": item.get("HITLStatus") or "",
+                    # The item's presence proves the run processed this
+                    # document, which is a precondition for claiming it.
+                    "exists": True,
+                }
         except Exception as e:  # noqa: BLE001 — a missing claim is not an error
             logger.warning(
                 f"Could not read claim state for {len(batch)} document(s): {e}"
@@ -4719,17 +4723,10 @@ def _load_test_set_records():
         if gsi_items:
             # Step 2: BatchGetItem to fetch full records from base table
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi_items]
-            # DynamoDB BatchGetItem supports max 100 keys per call
-            for i in range(0, len(keys), 100):
-                batch_keys = keys[i : i + 100]
-                batch_response = boto3.resource("dynamodb").batch_get_item(
-                    RequestItems={os.environ["TRACKING_TABLE"]: {"Keys": batch_keys}}
-                )
-                items.extend(
-                    batch_response.get("Responses", {}).get(
-                        os.environ["TRACKING_TABLE"], []
-                    )
-                )
+            # The helper chunks at 100 and retries UnprocessedKeys with backoff.
+            # Dropping them would silently omit sets from the listing; if any
+            # remain after its retries it raises, and the scan below runs instead.
+            items = db_client.batch_get_items(keys)
             logger.info(f"BatchGetItem returned {len(items)} full testset records")
     except Exception as e:
         logger.warning(f"GSI+BatchGet failed, falling back to scan: {e}")
