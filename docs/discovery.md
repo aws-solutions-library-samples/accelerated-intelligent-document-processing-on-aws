@@ -791,6 +791,8 @@ discovery:
 
 ### Web UI Interface
 
+![Single Document Discovery form: configuration profile, save mode and document file](../images/discovery-single-document.png)
+
 **Accessing Discovery:**
 1. Navigate to the main application dashboard
 2. Click on the "Discovery" tab or panel

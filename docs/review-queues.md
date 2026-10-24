@@ -148,6 +148,8 @@ Regrouping pages is, from the queue item.
 **Items**, **Pending**, **Assigned**, **Annotators** and an actions menu. A queue's
 other settings, such as its priority and Enabled switch, are in its **Settings**.
 
+![Queue Management page with the Default production queue and one Test Studio queue per test set](../images/review-queues-queue-management.png)
+
 **Who the Annotators are.** Work can be assigned only to members of the Cognito
 **Annotator** group, the same group that authorizes the Annotator's API calls. A user
 joins it when User Management gives them the Annotator role, or when the external
