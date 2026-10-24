@@ -250,8 +250,17 @@ def test_delete_reports_failed_when_the_index_cannot_be_deleted(s3vectors):
     assert "DeleteIndex" in _reason(s3vectors.send)
 
 
+def _rebuild_old_properties() -> dict:
+    """Previous properties that differ from ``_event``'s in an index setting.
+
+    The handler recreates the index on Update only when its dimension, distance
+    metric or metadata configuration changed, so these tests change one of them.
+    """
+    return dict(_event("Delete")["ResourceProperties"], DistanceMetric="euclidean")
+
+
 def test_update_with_unchanged_names_recreates_a_missing_index(s3vectors):
-    """Update recreates the index, and a missing one must not fail the update."""
+    """An index rebuild recreates a missing index rather than failing the update."""
     s3vectors.stubber.add_response(
         "get_vector_bucket",
         {
@@ -275,9 +284,7 @@ def test_update_with_unchanged_names_recreates_a_missing_index(s3vectors):
     _delete_index(s3vectors.stubber, **NOT_FOUND)
     s3vectors.stubber.add_response("create_index", {"indexArn": "arn:aws:s3vectors:x"})
 
-    event = _event(
-        "Update", OldResourceProperties=_event("Delete")["ResourceProperties"]
-    )
+    event = _event("Update", OldResourceProperties=_rebuild_old_properties())
     handler.lambda_handler(event, SimpleNamespace(log_stream_name="ls"))
 
     assert _status(s3vectors.send) == "SUCCESS"
@@ -403,9 +410,7 @@ def test_update_rebuild_does_not_skip_an_index_it_could_not_delete(s3vectors):
     _caller_identity(s3vectors.sts)
     _delete_index(s3vectors.stubber, **INVALID)
 
-    event = _event(
-        "Update", OldResourceProperties=_event("Delete")["ResourceProperties"]
-    )
+    event = _event("Update", OldResourceProperties=_rebuild_old_properties())
     handler.lambda_handler(event, SimpleNamespace(log_stream_name="ls"))
 
     assert _status(s3vectors.send) == "FAILED"
