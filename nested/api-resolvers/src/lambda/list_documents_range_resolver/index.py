@@ -452,9 +452,11 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
         hitl_triggered = doc.get("HITLTriggered", False)
         hitl_status = doc.get("HITLStatus", "")
         # Finished by the legacy flag or by the status itself: a review queue
-        # records its outcome only in HITLStatus.
-        hitl_completed = (
-            doc.get("HITLCompleted", False) or hitl_status in _FINISHED_HITL_STATUSES
+        # records its outcome only in HITLStatus. Only a string can be a stored
+        # status; anything else (a list or map is unhashable) is not finished, as
+        # the listDocuments FilterExpression reads it.
+        hitl_completed = doc.get("HITLCompleted", False) or (
+            isinstance(hitl_status, str) and hitl_status in _FINISHED_HITL_STATUSES
         )
         hitl_owner = doc.get("HITLReviewOwner", "")
         reviewer_id = caller["username"]

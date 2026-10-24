@@ -322,3 +322,29 @@ def test_both_document_lists_agree_on_a_spelling_no_writer_stores(env, status):
     listed, counted = _gsi_listed_and_counted(gsi)
     assert counted == len(listed)
     assert (listed == ["d.pdf"]) is _range_includes(rng, item)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status", [["complete"], {"S": "complete"}, 1, b"complete"], ids=repr
+)
+def test_a_status_that_is_not_a_string_does_not_fail_either_list(env, status):
+    """No writer stores one, but a row in the range must not fail the request: the
+    date-range resolver reads it as the listDocuments FilterExpression does."""
+    table, gsi, rng = env
+    table.put_item(
+        Item={
+            "PK": "doc#d.pdf",
+            "SK": "none",
+            "ObjectKey": "d.pdf",
+            "ItemType": "document",
+            "InitialEventTime": "2026-10-01T00:00:00Z",
+            "HITLTriggered": True,
+            "HITLStatus": status,
+        }
+    )
+    item = table.get_item(Key={"PK": "doc#d.pdf", "SK": "none"})["Item"]
+
+    listed, counted = _gsi_listed_and_counted(gsi)
+    assert counted == len(listed)
+    assert (listed == ["d.pdf"]) is _range_includes(rng, item)
