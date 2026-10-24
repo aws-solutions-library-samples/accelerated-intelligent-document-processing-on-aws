@@ -30,6 +30,7 @@ import pytest
 
 PARENT = gate_premises.PARENT_TEMPLATE
 PATTERN = "patterns/unified/template.yaml"
+API = "nested/api-resolvers/template.yaml"
 KB = "nested/bedrockkb/template.yaml"
 
 
@@ -130,6 +131,81 @@ def test_mlflow_logger_arn_is_the_pattern_output_exactly_when_it_exists() -> Non
         "GetAtt names an output that does not exist, or the ARN is withheld while "
         "the logger exists."
     )
+
+
+@pytest.mark.unit
+def test_the_pattern_output_is_the_mlflow_logger_function() -> None:
+    """The output the parent forwards must be the logger, created under its condition.
+
+    The parent-side test above proves the output is forwarded; it cannot see what the
+    output names. Pointing it at another function deploys cleanly and invokes the
+    wrong Lambda on every test run.
+    """
+    pattern = _template(PATTERN)
+    output = pattern["Outputs"]["MLflowLoggerFunctionArn"]
+    target = _get_att(output.get("Value"))
+    assert target is not None and target[1] == "Arn", (
+        f"the MLflowLoggerFunctionArn output must be a GetAtt <function>.Arn, got "
+        f"{output.get('Value')!r}"
+    )
+    function = pattern["Resources"].get(target[0]) or {}
+    environment = (
+        ((function.get("Properties") or {}).get("Environment") or {}).get("Variables")
+    ) or {}
+    assert "MLFLOW_TRACKING_URI" in environment, (
+        f"the output names {target[0]}, which is not the MLflow logger: it has no "
+        "MLFLOW_TRACKING_URI in its environment"
+    )
+    assert function.get("Condition") == output.get("Condition"), (
+        f"{target[0]} is created under {function.get('Condition')!r} but the output "
+        f"under {output.get('Condition')!r}; the output would name a function that "
+        "does not exist, or the function would exist with no output"
+    )
+
+
+@pytest.mark.unit
+def test_the_api_stack_hands_the_received_arn_to_the_resolver() -> None:
+    """The receiving side: a non-empty ARN must reach the resolver's environment.
+
+    ``nested/api-resolvers`` gates the environment variable and the invoke grant on
+    a condition derived from the parameter. Inverting that condition leaves the
+    feature inert exactly as the unpassed parameter did, with every parent-side
+    assertion still green.
+    """
+    nested = _template(API)
+    expected = _normalise(
+        {"Fn::Not": [{"Fn::Equals": [{"Ref": "MLflowLoggerFunctionArn"}, ""]}]}
+    )
+    uses: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            value = node.get("MLFLOW_LOGGER_FUNCTION_ARN")
+            if value is not None:
+                branches = value.get("Fn::If") if isinstance(value, dict) else None
+                assert (
+                    isinstance(branches, list)
+                    and len(branches) == 3
+                    and _ref(branches[1]) == "MLflowLoggerFunctionArn"
+                    and branches[2] == ""
+                ), (
+                    "MLFLOW_LOGGER_FUNCTION_ARN must be Fn::If [<condition>, Ref "
+                    f"MLflowLoggerFunctionArn, ''], got {value!r}"
+                )
+                actual = _normalise(nested["Conditions"][branches[0]])
+                assert actual == expected, (
+                    f"MLFLOW_LOGGER_FUNCTION_ARN is gated on {branches[0]} = "
+                    f"{actual!r}; it must be true exactly when the ARN is non-empty"
+                )
+                uses.append(branches[0])
+            for item in node.values():
+                walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(nested.get("Resources") or {})
+    assert uses, f"no resource in {API} sets MLFLOW_LOGGER_FUNCTION_ARN"
 
 
 @pytest.mark.unit
