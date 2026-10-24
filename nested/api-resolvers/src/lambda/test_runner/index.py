@@ -16,8 +16,8 @@ from botocore.exceptions import ClientError
 from idp_common.api_adapter import ResourceNotFound  # type: ignore
 from idp_common.config.migrations import migrate_config  # type: ignore
 from idp_common.review_queues.statuses import (  # type: ignore
-    LEGACY_DONE,
     LegacyHitlStatus,
+    normalize_hitl_status,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -36,6 +36,29 @@ sqs = boto3.client("sqs")
 # kept because the UI and the GSI backfill parse ``-\d{8}-\d{6}`` out of object
 # keys; a millisecond or random suffix would change every consumer of the id.
 _MAX_TEST_RUN_ID_ATTEMPTS = 10
+
+
+def _review_finished(hitl_status):
+    """Whether a stored ``HITLStatus`` says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected, read through ``normalize_hitl_status`` rather than a list of
+    spellings. ``COMPLETED`` is the one finished spelling a real writer stored that
+    the exact-match normaliser does not know: the earlier SageMaker A2I flow wrote
+    it, and retained test-run rows may still carry it. The document-list resolvers
+    and the web UI's ``isHitlReviewFinished`` apply the same rule. A current Test
+    Studio document is never queue-routed, so a queue outcome appears only on a
+    test-run row copied before the copier stamped Test Studio provenance.
+
+    The ProcessResults handlers' ``legacy_review_finished`` deliberately does not
+    count a queue outcome as finished, because reprocessing a document starts a
+    fresh review cycle. Sending a test run to review reprocesses nothing, so here a
+    finished queue review is a finished review and is not reopened.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
 
 
 class TestRunIdTaken(Exception):
@@ -329,10 +352,9 @@ def send_test_run_to_review(args):
             skipped += 1
             continue
 
-        # Never reopen a review that is already completed or skipped.
+        # Never reopen a review that has already finished.
         alert_count = int(doc.get("ConfidenceAlertCount", 0) or 0)
-        status = doc.get("HITLStatus", "")
-        if alert_count <= 0 or status in LEGACY_DONE:
+        if alert_count <= 0 or _review_finished(doc.get("HITLStatus")):
             skipped += 1
             continue
 
