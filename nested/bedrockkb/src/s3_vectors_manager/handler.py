@@ -183,24 +183,13 @@ def handle_s3_vector_resources(event, context, properties):
     kms_key_arn = properties.get('KmsKeyArn', '')
     
     # Extract configurable index properties
-    vector_dimension = properties.get('VectorDimension', 1024)
-    distance_metric = properties.get('DistanceMetric', 'cosine')
-    metadata_configuration = properties.get('MetadataConfiguration', {
-        'nonFilterableMetadataKeys': ['AMAZON_BEDROCK_METADATA', 'AMAZON_BEDROCK_TEXT']
-    })
+    index_config = index_config_from_properties(properties)
     
     logger.info(f"Raw bucket name: {raw_bucket_name}, Sanitized bucket name: {bucket_name}")
-    logger.info(f"Index properties - Dimension: {vector_dimension}, Metric: {distance_metric}, Metadata: {metadata_configuration}")
+    logger.info(f"Index properties - Dimension: {index_config['dimension']}, Metric: {index_config['distance_metric']}, Metadata: {index_config['metadata_configuration']}")
     
     # Initialize S3 Vectors client
     s3vectors_client = boto3.client('s3vectors', region_name=region)
-    
-    # Create index config for passing to functions
-    index_config = {
-        'dimension': vector_dimension,
-        'distance_metric': distance_metric,
-        'metadata_configuration': metadata_configuration
-    }
     
     if request_type == 'Create':
         logger.info(f"Creating S3 Vector bucket: {bucket_name}")
@@ -221,13 +210,53 @@ def handle_s3_vector_resources(event, context, properties):
                 )
             return create_s3_vector_resources(s3vectors_client, bucket_name, index_name, embedding_model, kms_key_arn, index_config)
         else:
-            # Names haven't changed - update existing resources (recreate index)
-            return update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config)
+            # Names haven't changed. S3 Vectors has no UpdateIndex, so a changed
+            # dimension, distance metric or metadata configuration can only be
+            # applied by recreating the index, which deletes its vectors. Any
+            # other property change (embedding model, KMS key) keeps the index,
+            # recreating it only if it is missing.
+            old_index_config = index_config_from_properties(old_properties)
+            recreate = index_config_differs(old_index_config, index_config)
+            return update_s3_vector_info(
+                s3vectors_client, bucket_name, index_name, index_config, recreate_index=recreate
+            )
             
     elif request_type == 'Delete':
         logger.info(f"Deleting S3 Vector bucket: {bucket_name}")
         delete_s3_vector_resources(s3vectors_client, bucket_name, index_name)
         return {'Status': 'Deleted'}
+
+
+DEFAULT_METADATA_CONFIGURATION = {
+    'nonFilterableMetadataKeys': ['AMAZON_BEDROCK_METADATA', 'AMAZON_BEDROCK_TEXT']
+}
+
+
+def index_config_from_properties(properties):
+    """The CreateIndex settings a resource's properties ask for, with the defaults applied."""
+    return {
+        'dimension': properties.get('VectorDimension', 1024),
+        'distance_metric': properties.get('DistanceMetric', 'cosine'),
+        'metadata_configuration': properties.get(
+            'MetadataConfiguration', DEFAULT_METADATA_CONFIGURATION
+        ),
+    }
+
+
+def _normalized_index_config(index_config):
+    """Compare as CreateIndex would receive them: CloudFormation sends numbers as
+    strings, so ``"1024"`` and ``1024`` are the same dimension, and the order of
+    the non-filterable metadata keys does not change the index."""
+    metadata = dict(index_config['metadata_configuration'] or {})
+    keys = metadata.get('nonFilterableMetadataKeys')
+    if isinstance(keys, list):
+        metadata['nonFilterableMetadataKeys'] = sorted(keys)
+    return (int(index_config['dimension']), str(index_config['distance_metric']), metadata)
+
+
+def index_config_differs(old_index_config, new_index_config):
+    """True when an Update changes a setting that only recreating the index can apply."""
+    return _normalized_index_config(old_index_config) != _normalized_index_config(new_index_config)
 
 
 def sanitize_bucket_name(bucket_name):
@@ -918,8 +947,13 @@ def get_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config=N
         raise
 
 
-def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config):
-    """Update existing S3 Vector resources by recreating the index."""
+def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config, recreate_index=True):
+    """Return the existing S3 Vector resources, recreating the index if asked.
+
+    Recreating the index deletes every vector in it, so the handler asks for it
+    only when the index settings changed (see ``index_config_differs``).
+    Otherwise the index is created only if it is missing.
+    """
     try:
         # Get bucket info
         bucket_response = s3vectors_client.get_vector_bucket(vectorBucketName=bucket_name)
@@ -937,9 +971,22 @@ def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_confi
 
         logger.info(f"Found existing vector bucket ARN: {bucket_arn}")
 
-        # For updates, always recreate the index to ensure fresh configuration
-        logger.info(f"Recreating vector index for update: {index_name}")
-        recreate_vector_index(s3vectors_client, bucket_name, index_name, index_config)
+        if recreate_index:
+            logger.info(f"Index settings changed; recreating vector index: {index_name}")
+            recreate_vector_index(s3vectors_client, bucket_name, index_name, index_config)
+        else:
+            # Keep the index and its vectors. CreateIndex still runs, so an index
+            # deleted outside the stack comes back; an existing one answers
+            # ConflictException, which create_vector_index reads as "exists".
+            logger.info(f"Index settings unchanged; keeping vector index and its vectors: {index_name}")
+            create_vector_index(
+                s3vectors_client,
+                bucket_name,
+                index_name,
+                dimension=index_config['dimension'],
+                distance_metric=index_config['distance_metric'],
+                metadata_configuration=index_config['metadata_configuration']
+            )
 
         # Construct index ARN (required for Knowledge Base configuration)
         index_arn = f"arn:{partition}:s3vectors:{region}:{account_id}:bucket/{bucket_name}/index/{index_name}"
@@ -952,7 +999,7 @@ def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_confi
             'BucketArn': bucket_arn,
             'IndexName': index_name,
             'IndexArn': index_arn,
-            'Status': 'Updated'
+            'Status': 'Updated' if recreate_index else 'Existing'
         }
         
     except ClientError as e:
