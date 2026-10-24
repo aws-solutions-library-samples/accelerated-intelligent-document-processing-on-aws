@@ -517,27 +517,46 @@ def handler(event, context):
 
                 # Mark all pending sections as completed
                 pending_sections = document.hitl_sections_pending or []
-                completed_sections = list(document.hitl_sections_completed or [])
-                completed_sections.extend(pending_sections)
+                completed_sections = list(
+                    dict.fromkeys(
+                        list(document.hitl_sections_completed or [])
+                        + list(pending_sections)
+                    )
+                )
 
                 document.hitl_status = LegacyHitlStatus.REVIEW_COMPLETED.value
                 document.hitl_sections_pending = []
                 document.hitl_sections_completed = completed_sections
 
                 # Update review fields in DynamoDB (not in document model)
-                # HITLReviewedBy tracks who completed the review via Process Changes
+                # HITLReviewedBy tracks who completed the review via Process Changes.
+                # The two section lists are written in this same statement. The
+                # status write at the end of the handler also carries them, but it
+                # is best-effort and swallows its own failure, and the pipeline
+                # cannot carry an empty pending list (`to_dict` omits it), so without
+                # them here a failed status write left a completed review still
+                # listing its sections as pending.
                 tracking_table = os.environ.get("TRACKING_TABLE")
                 if tracking_table:
                     dynamodb_resource = boto3.resource("dynamodb")
                     table = dynamodb_resource.Table(tracking_table)
                     table.update_item(
                         Key={"PK": f"doc#{object_key}", "SK": "none"},
-                        UpdateExpression="SET HITLStatus = :status, HITLReviewedBy = :reviewedBy, HITLReviewedByEmail = :reviewedByEmail, HITLCompleted = :completed REMOVE HITLPendingReview",
+                        UpdateExpression=(
+                            "SET HITLStatus = :status, HITLReviewedBy = :reviewedBy, "
+                            "HITLReviewedByEmail = :reviewedByEmail, "
+                            "HITLCompleted = :completed, "
+                            "HITLSectionsPending = :pendingSections, "
+                            "HITLSectionsCompleted = :completedSections "
+                            "REMOVE HITLPendingReview"
+                        ),
                         ExpressionAttributeValues={
                             ":status": LegacyHitlStatus.REVIEW_COMPLETED.value,
                             ":reviewedBy": username,
                             ":reviewedByEmail": user_email,
                             ":completed": True,
+                            ":pendingSections": [],
+                            ":completedSections": completed_sections,
                         },
                     )
 
