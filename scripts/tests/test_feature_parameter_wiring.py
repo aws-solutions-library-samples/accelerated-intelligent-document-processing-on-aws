@@ -163,49 +163,87 @@ def test_the_pattern_output_is_the_mlflow_logger_function() -> None:
     )
 
 
+RESOLVER_CODE = "src/lambda/test_results_resolver"
+
+
+def _actions(statement: dict) -> set[str]:
+    action = statement.get("Action")
+    return {action} if isinstance(action, str) else set(action or [])
+
+
 @pytest.mark.unit
 def test_the_api_stack_hands_the_received_arn_to_the_resolver() -> None:
-    """The receiving side: a non-empty ARN must reach the resolver's environment.
+    """The receiving side: a non-empty ARN must reach the resolver, with the grant.
 
-    ``nested/api-resolvers`` gates the environment variable and the invoke grant on
-    a condition derived from the parameter. Inverting that condition leaves the
-    feature inert exactly as the unpassed parameter did, with every parent-side
-    assertion still green.
+    The resolver is identified by its code, not by its logical id, because it is the
+    function whose handler invokes the logger. Its environment variable and its
+    ``lambda:InvokeFunction`` grant must both be gated on a condition that is true
+    exactly when the ARN is non-empty. Inverting that condition, moving the variable
+    to another function, or dropping the grant each leaves the feature inert with
+    every parent-side assertion still green.
     """
     nested = _template(API)
+    resources = nested.get("Resources") or {}
     expected = _normalise(
         {"Fn::Not": [{"Fn::Equals": [{"Ref": "MLflowLoggerFunctionArn"}, ""]}]}
     )
-    uses: list[str] = []
+    resolvers = [
+        logical_id
+        for logical_id, resource in resources.items()
+        if str((resource.get("Properties") or {}).get("CodeUri", ""))
+        .strip()
+        .removeprefix("./")
+        .rstrip("/")
+        == RESOLVER_CODE
+    ]
+    assert len(resolvers) == 1, (
+        f"expected exactly one function in {API} built from {RESOLVER_CODE}, found "
+        f"{resolvers}"
+    )
+    properties = resources[resolvers[0]]["Properties"]
 
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            value = node.get("MLFLOW_LOGGER_FUNCTION_ARN")
-            if value is not None:
-                branches = value.get("Fn::If") if isinstance(value, dict) else None
-                assert (
-                    isinstance(branches, list)
-                    and len(branches) == 3
-                    and _ref(branches[1]) == "MLflowLoggerFunctionArn"
-                    and branches[2] == ""
-                ), (
-                    "MLFLOW_LOGGER_FUNCTION_ARN must be Fn::If [<condition>, Ref "
-                    f"MLflowLoggerFunctionArn, ''], got {value!r}"
-                )
-                actual = _normalise(nested["Conditions"][branches[0]])
-                assert actual == expected, (
-                    f"MLFLOW_LOGGER_FUNCTION_ARN is gated on {branches[0]} = "
-                    f"{actual!r}; it must be true exactly when the ARN is non-empty"
-                )
-                uses.append(branches[0])
-            for item in node.values():
-                walk(item)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
+    value = ((properties.get("Environment") or {}).get("Variables") or {}).get(
+        "MLFLOW_LOGGER_FUNCTION_ARN"
+    )
+    branches = value.get("Fn::If") if isinstance(value, dict) else None
+    assert (
+        isinstance(branches, list)
+        and len(branches) == 3
+        and _ref(branches[1]) == "MLflowLoggerFunctionArn"
+        and branches[2] == ""
+    ), (
+        f"{resolvers[0]} must set MLFLOW_LOGGER_FUNCTION_ARN to Fn::If [<condition>, "
+        f"Ref MLflowLoggerFunctionArn, ''], got {value!r}"
+    )
+    actual = _normalise(nested["Conditions"][branches[0]])
+    assert actual == expected, (
+        f"MLFLOW_LOGGER_FUNCTION_ARN is gated on {branches[0]} = {actual!r}; it must "
+        "be true exactly when the ARN is non-empty"
+    )
 
-    walk(nested.get("Resources") or {})
-    assert uses, f"no resource in {API} sets MLFLOW_LOGGER_FUNCTION_ARN"
+    grants = []
+    for policy in properties.get("Policies") or []:
+        branch = policy.get("Fn::If") if isinstance(policy, dict) else None
+        if not (isinstance(branch, list) and len(branch) == 3):
+            continue
+        statements = (branch[1] or {}).get("Statement") or []
+        if any(
+            isinstance(statement, dict)
+            and statement.get("Effect") == "Allow"
+            and "lambda:InvokeFunction" in _actions(statement)
+            and _ref(statement.get("Resource")) == "MLflowLoggerFunctionArn"
+            for statement in statements
+        ):
+            grants.append(branch[0])
+    assert grants, (
+        f"{resolvers[0]} has no conditional lambda:InvokeFunction grant on "
+        "MLflowLoggerFunctionArn, so the invoke is denied at run time"
+    )
+    for condition in grants:
+        assert _normalise(nested["Conditions"][condition]) == expected, (
+            f"the invoke grant is gated on {condition}, which is not true exactly "
+            "when the ARN is non-empty"
+        )
 
 
 @pytest.mark.unit

@@ -949,8 +949,8 @@ def _kb_embed_model_offerings() -> tuple[str, ...]:
 
     The nested template's ``pEmbedModel``, plus a root parameter ``template.yaml``
     passes to it -- read from the nested-stack resource whose ``TemplateURL`` is the
-    knowledge-base stack -- and only if that resource is the parameter's ONLY reader
-    in ``template.yaml``. A root parameter that offers embedding models and also
+    knowledge-base stack -- and only if that resource's ``pEmbedModel`` is the
+    parameter's ONLY reader in ``template.yaml``. A root parameter that offers embedding models and also
     feeds anything else is no longer just the knowledge base's setting, so it stays
     reported.
     """
@@ -969,13 +969,25 @@ def _kb_embed_model_offerings() -> tuple[str, ...]:
         if not (isinstance(passed, dict) and isinstance(passed.get("Fn::Ref"), str)):
             continue
         name = passed["Fn::Ref"]
+        others = {k: v for k, v in resources.items() if k != logical_id}
+        others[logical_id] = {
+            **resource,
+            "Properties": {
+                **properties,
+                "Parameters": {
+                    key: value
+                    for key, value in (properties.get("Parameters") or {}).items()
+                    if key != "pEmbedModel"
+                },
+            },
+        }
         elsewhere = _cfn_refs(
             {
                 key: value
                 for key, value in parent.items()
                 if key not in ("Resources", "Metadata", "Parameters")
             }
-        ) | _cfn_refs({k: v for k, v in resources.items() if k != logical_id})
+        ) | _cfn_refs(others)
         if name not in elsewhere:
             prefixes.append(f"template.yaml.Parameters.{name}.")
     return tuple(prefixes)
