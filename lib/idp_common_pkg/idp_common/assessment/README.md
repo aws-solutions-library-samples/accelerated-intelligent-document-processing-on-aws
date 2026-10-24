@@ -1185,7 +1185,8 @@ enhanced_assessment = ground_assessment_geometry(
 Key behaviors:
 
 - **Tiered matching** of each extracted value to OCR `lines[]`: exact → value-in-line →
-  multi-line span (boxes unioned) → line fragment covering at least half the value →
+  **number found only inside a longer number** → multi-line span (boxes unioned) →
+  same date/number/phone by type → line fragment covering at least half the value →
   token-overlap fuzzy (≥ 0.6) → character similarity (≥ 0.8) → **fragment covering less
   than half the value**, ranked last.
 
@@ -1214,6 +1215,71 @@ Key behaviors:
   (`similarity ≤ min(len)/max(len)`, computed over the same stripping the scorer
   applies), without which grounding went from 4.6s to 25.4s over those sections, 98%
   of it in that one function. Keep the guard if you touch the tiers.
+
+  The **number inside a longer number** tier (`_TIER_SUBSTRING_EMBEDDED`) is
+  [#1565](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1565).
+  A number value is searched in several surface forms (`75.0` also as `75` and
+  `75.00`), and a short form is contained by coincidence in any longer number — `75`
+  in an invoice id `08337510`, `6.0` in `126.00`. As an ordinary value-in-line hit it
+  tied with the line that prints the value, so reading order or proximity to the LLM
+  box chose between them. A hit now counts as a whole token only when neither
+  neighbour continues a digit run: an ASCII digit, or a `.` `,` or date `/`
+  followed by a digit, joins the run; a space, `$`, `%`, a unit, a sign, a hyphen, a
+  colon, a ratio's slash or closing punctuation does not. Three refinements keep
+  correct boxes that rule alone would demote:
+
+  - A comma followed by one or two digits is a **decimal comma**, so `1250` in
+    `1250,00` is whole. No surface form renders a decimal comma, so for a European
+    amount the integer part is the only form that matches at all.
+  - An occurrence inside a longer number that *is* the value with more zeros
+    (`075.00`, `75.000`, an item number `0075`; compared unsigned) is whole.
+  - Only a **date's slash** joins: two slashes (`12/17/2024`), or one beside a
+    four-digit year (`12/2024`). `120/80`, `75/100`, `10/325` and `3/12` print
+    numbers that are values in their own right, so their slash is a boundary.
+
+  **It is demoted by exactly one place, not rejected.** A digit run holding the value
+  is sometimes the right line — the model dropped the cents (`272243` for
+  `272243.34`) or misread one digit of a long number — and there the box is how a
+  reviewer finds the error. Placed directly below value-in-line and above span, the
+  tier changes one comparison only: a whole-token line beats an embedded one. With
+  nothing better the embedded line still supplies the box, and the same passes are
+  skipped as for any value-in-line hit. A date's slash is in the joining set because
+  a date component is not a free-standing number; without it, `17` for `$17.49` found
+  a "whole" `17` inside `12/17/2024`. A colon (times) was measured in the joining set
+  as well and did worse, so it is a boundary.
+
+  ⚠️ **The rule reads one line at a time, so it has a known cost.** Where the right
+  line holds the value embedded and another line prints the same digits whole, the
+  whole line now wins even when the LLM box points at the right one. That is the
+  intended outcome for a coincidence, and the wrong one for three shapes the rule
+  cannot tell apart from it: a list written without spaces (`20` in `10,20,30` reads
+  as part of one number), a value that is itself a date component (a month `12` in
+  `12/2024`), and a value the model truncated (`14` for `14.8` beside `14 days`).
+  The date-slash test also accepts a residual: a ratio written in a date's shape
+  (`1/1000`, `FY 2024/25`) is read as a date, so in a section that also prints a
+  date with a slash suffix it can lose its box to that line.
+
+  **Measured on lines derived from the PDF text layer of the repository's sample
+  documents, not on Textract output.** Over the text-layer PDFs in `samples/` (97
+  pages, cut into sections of up to 3 pages), every printed number of two or more
+  digits outside a date was grounded as a value, as a string and as a float, with
+  `schema_hint={"type": "number"}`, plus two perturbed sets — decimals dropped, and a
+  long number missing a digit — that model values no line prints. With no
+  disambiguator 1,608 boxes moved onto a line printing the value and 4 moved off
+  one; with a noisy LLM box (proximity), 70 moved on and 31 off. Every loss was a
+  perturbed value. That zero for printed values is weak evidence on its own: the
+  measurement judges a box by whether its line prints the value as a whole token,
+  so it cannot tell two lines printing the same number apart, and its value set has
+  no space-free lists, date components, ratios, European decimal commas or
+  zero-padded amounts. Those shapes are pinned by the tests in
+  `test_ocr_grounding.py` instead. The harness was ad hoc and is not kept in the
+  repository.
+
+  `geometry_source` changes only where a line holds the value's own form embedded
+  and another of its forms whole (`1250` against `Ref 12500 total 1,250`): the box is
+  the same, and the tag now names the form that matched whole, `"ocr-normalized"`.
+  Over the same sample documents (all but the 17-page fund factsheet, left out of
+  that pass for time) none of 11,466 unchanged boxes changed tag.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).
