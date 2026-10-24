@@ -67,7 +67,15 @@ def _run(bodies: list[bytes], class_schema: Optional[dict[str, Any]] = None):
     with (
         patch.object(bda_index.s3_client, "get_object", side_effect=get_object),
         patch.object(bda_index, "legacy_hitl_enabled", return_value=True),
-        patch.object(bda_index, "resolve_class_schema", return_value=class_schema),
+        patch.object(
+            bda_index,
+            "resolve_class_schema",
+            # Only the result's own class resolves, so a test using a schema
+            # also pins that ``document_class.type`` reaches the resolver.
+            side_effect=lambda doc_class, config: (
+                class_schema if doc_class == "invoice" else None
+            ),
+        ),
         patch.dict("os.environ", {"DB_NAME": ""}, clear=False),
         patch.object(bda_index, "boto3"),
         patch.object(bda_index, "metrics"),
@@ -114,13 +122,10 @@ def _schema(threshold_literal: str) -> dict[str, Any]:
 
 
 class TestUnusableFieldThreshold:
-    @pytest.mark.parametrize(
-        "literal", ["NaN", "-Infinity", "Infinity", '"NaN"', '"-inf"', '"inf"']
-    )
-    def test_a_non_finite_schema_threshold_falls_back_and_still_alerts(self, literal):
-        """The schema resolver passes a non-finite threshold through, and
-        ``0.1 < nan`` is False, so with NaN or -inf a low-confidence field raised
-        no alert and skipped review (and with +inf every field alerted). The
+    @pytest.mark.parametrize("literal", ["NaN", "-Infinity", '"NaN"', '"-inf"'])
+    def test_a_nan_or_negative_infinite_schema_threshold_falls_back(self, literal):
+        """The schema resolver passes these through, and ``0.1 < nan`` is False,
+        so a low-confidence field raised no alert and skipped review. The
         default threshold applies instead."""
         result, hitl = _run([_body(0, field_conf="0.1")], _schema(literal))
         assert result.sections[0].confidence_threshold_alerts == [
@@ -128,6 +133,21 @@ class TestUnusableFieldThreshold:
                 "attribute_name": "InvoiceTotal",
                 "confidence": 0.1,
                 "confidence_threshold": 0.8,
+            }
+        ]
+        assert hitl is True
+
+    @pytest.mark.parametrize("literal", ["Infinity", '"inf"'])
+    def test_a_positive_infinite_schema_threshold_still_alerts_every_field(
+        self, literal
+    ):
+        """Unchanged: falling back would review less than before."""
+        result, hitl = _run([_body(0, field_conf="0.95")], _schema(literal))
+        assert result.sections[0].confidence_threshold_alerts == [
+            {
+                "attribute_name": "InvoiceTotal",
+                "confidence": 0.95,
+                "confidence_threshold": float("inf"),
             }
         ]
         assert hitl is True
@@ -191,24 +211,28 @@ class TestUnusableCustomOutput:
         assert hitl is True
 
     @pytest.mark.parametrize(
-        ("key", "literal"),
+        ("key", "literal", "middle"),
         [
-            ("split_document", "null"),
-            ("split_document", '"pages"'),
-            ("split_document", '{"page_indices": null}'),
-            ("split_document", '{"page_indices": []}'),
-            ("split_document", '{"page_indices": ["a", null, true]}'),
-            ("explainability_info", "null"),
-            ("explainability_info", "5"),
-            ("document_class", '"invoice"'),
+            # With no usable page index the segment matches no section, so the
+            # middle section is left unscored.
+            ("split_document", "null", None),
+            ("split_document", '"pages"', None),
+            ("split_document", '{"page_indices": null}', None),
+            ("split_document", '{"page_indices": 5}', None),
+            ("split_document", '{"page_indices": []}', None),
+            ("split_document", '{"page_indices": ["a", null]}', None),
+            # A bool is kept as an index, as before: ``true + 1`` is page 2.
+            ("split_document", '{"page_indices": ["a", null, true]}', 0.99),
+            ("explainability_info", "null", 0.99),
+            ("explainability_info", "5", 0.99),
+            ("document_class", '"invoice"', 0.99),
         ],
     )
-    def test_a_malformed_member_does_not_stop_later_segments(self, key, literal):
+    def test_a_malformed_member_does_not_stop_later_segments(
+        self, key, literal, middle
+    ):
         result, _ = _run([_body(0), _with(1, key, literal), _body(2)])
         assert len(result.hitl_metadata) == 3
-        # With no usable page index the segment matches no section, so the
-        # middle section is left as it was; ``true`` is not a page index.
-        middle = None if key == "split_document" else 0.99
         assert [s.confidence for s in result.sections] == [0.99, middle, 0.99]
         assert [m.hitl_triggered for m in result.hitl_metadata] == [
             False,

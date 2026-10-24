@@ -1084,6 +1084,14 @@ def process_keyvalue_details(
     return results
 
 
+def _is_positive_infinity(value) -> bool:
+    """True for a value ``float()`` reads as +inf (``inf``, ``"Infinity"``)."""
+    try:
+        return float(value) == float("inf")
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def create_confidence_threshold_alerts(
     pagespecific_details: dict, confidence_threshold: float
 ) -> list:
@@ -1120,14 +1128,19 @@ def create_confidence_threshold_alerts(
             if confidence is None:
                 confidence = 0.0
             # Use the entry's per-field threshold (schema-resolved) when present
-            # A null, non-numeric or non-finite threshold falls back to the
-            # default, as Pipeline mode does for a non-finite schema threshold:
-            # a NaN or -inf one (the schema resolver passes either through)
-            # suppressed the alert, since ``c < nan`` is False, and a
-            # non-numeric one raised TypeError out of process_segments.
-            entry_threshold = finite_float(kv_entry.get("confidence_threshold"))
+            # A null, non-numeric, NaN or -inf threshold falls back to the
+            # default: a NaN or -inf one (the schema resolver passes either
+            # through) suppressed the alert, since ``c < nan`` is False, and a
+            # non-numeric one raised TypeError. A +inf threshold is kept: it
+            # alerts on every field, and falling back would review less.
+            raw_threshold = kv_entry.get("confidence_threshold")
+            entry_threshold = finite_float(raw_threshold)
             if entry_threshold is None:
-                entry_threshold = confidence_threshold
+                entry_threshold = (
+                    float("inf")
+                    if _is_positive_infinity(raw_threshold)
+                    else confidence_threshold
+                )
             if confidence < entry_threshold:
                 alert = {
                     "attribute_name": kv_entry.get("key", ""),
@@ -1216,11 +1229,9 @@ def process_segments(
             )
             if not isinstance(page_indices, list):
                 page_indices = []
-            page_indices = [
-                idx
-                for idx in page_indices
-                if isinstance(idx, int) and not isinstance(idx, bool)
-            ]
+            # Integers only. A bool is kept, as before (``true + 1`` is 2), since
+            # dropping it would leave the segment matching no section.
+            page_indices = [idx for idx in page_indices if isinstance(idx, int)]
             # Convert page_indices from 0-based (BDA) to 1-based for consistency
             page_indices_1based = [idx + 1 for idx in page_indices]
             # Resolve this segment's class schema so per-field thresholds
