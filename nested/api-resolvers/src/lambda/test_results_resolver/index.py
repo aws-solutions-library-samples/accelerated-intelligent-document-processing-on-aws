@@ -22,6 +22,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from idp_common.config.migrations import migrate_config
+from idp_common.dynamodb import DynamoDBClient, DynamoDBError
 
 sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
@@ -1145,7 +1146,11 @@ def compare_test_runs(test_run_ids):
 
         for test_run_id in test_run_ids:
             logger.info(f"Getting results for test run: {test_run_id}")
-            test_result = get_test_results(test_run_id)
+            # One aborted run's unreadable count must not fail the comparison of
+            # the others (the comparison view does not display aborted runs).
+            test_result = get_test_results(
+                test_run_id, unreadable_count_as_none=True
+            )
             if test_result:
                 logger.info(f"Found results for {test_run_id}: {test_result.keys()}")
                 results.append(test_result)
@@ -1255,8 +1260,6 @@ def _count_completed_documents(table, test_run_id, files):
     """
     Count how many documents reached a settled, non-failed evaluation state.
 
-    Uses batch_get_item for efficiency instead of sequential get_item calls.
-
     Counts the same ``_EVAL_STATUS_SETTLED`` set ``get_test_run_status`` counts
     as completed, so the "N of M completed" an aborted run reports agrees with
     the figure every other run reports. Matching only ``COMPLETED`` made this
@@ -1272,6 +1275,13 @@ def _count_completed_documents(table, test_run_id, files):
     an aborted run that predates the ``DISABLED`` stamp and ran with evaluation
     off still reports 0 of N here, where the status loop reports N.
 
+    Reads through the shared ``batch_get_items`` helper, which retries
+    ``UnprocessedKeys`` with backoff and raises when keys remain. Any read that
+    does not cover every document raises rather than returning a count: the
+    caller persists this figure with ``CompletedFilesCounted`` set, which stops
+    it ever being recounted, so a partial count would be permanent. Raising
+    leaves the flag unset and the next request counts again.
+
     Args:
         table: DynamoDB table resource
         test_run_id: Test run identifier
@@ -1279,49 +1289,40 @@ def _count_completed_documents(table, test_run_id, files):
 
     Returns:
         int: Number of documents whose evaluation settled without failing
+
+    Raises:
+        DynamoDBError: The documents could not all be read, including
+            ``DynamoDBUnprocessedKeysError`` when retries are exhausted.
     """
     if not files:
         return 0
 
+    keys = [
+        {"PK": f"doc#{test_run_id}/{file_name}", "SK": "none"} for file_name in files
+    ]
+    items = DynamoDBClient(table_name=table.table_name).batch_get_items(keys)
+
     completed_count = 0
-    table_name = table.table_name
-    dynamodb_client = boto3.client("dynamodb")
-
-    # Build object keys
-    object_keys = [f"{test_run_id}/{file_name}" for file_name in files]
-
-    # DynamoDB batch_get_item supports up to 100 keys per batch
-    batch_size = 100
-    for i in range(0, len(object_keys), batch_size):
-        batch = object_keys[i : i + batch_size]
-        keys = [{"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}} for key in batch]
-
-        try:
-            response = dynamodb_client.batch_get_item(
-                RequestItems={table_name: {"Keys": keys}}
-            )
-
-            # Count completed evaluations
-            for item in response.get("Responses", {}).get(table_name, []):
-                eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
-                if eval_status in _EVAL_STATUS_SETTLED:
-                    completed_count += 1
-
-            # Handle unprocessed keys (throttling, etc.)
-            unprocessed = response.get("UnprocessedKeys", {}).get(table_name, {})
-            if unprocessed:
-                logger.warning(
-                    f"Batch get had {len(unprocessed.get('Keys', []))} unprocessed keys"
-                )
-
-        except Exception as e:
-            logger.error(f"Batch get failed for batch starting at index {i}: {str(e)}")
-
+    for item in items:
+        eval_status = item.get("EvaluationStatus")
+        if (
+            isinstance(eval_status, str)
+            and eval_status.upper() in _EVAL_STATUS_SETTLED
+        ):
+            completed_count += 1
     return completed_count
 
 
-def get_test_results(test_run_id):
-    """Get detailed test results for a specific test run"""
+def get_test_results(test_run_id, *, unreadable_count_as_none=False):
+    """Get detailed test results for a specific test run.
+
+    For an aborted run whose completed-document count has not been taken yet,
+    a count that cannot read every document raises by default, and nothing is
+    saved. With ``unreadable_count_as_none`` the run is returned with
+    ``completedFiles`` null instead, still unsaved, so a caller assembling
+    several runs is not failed by one of them. Only ``DynamoDBError`` is
+    degraded; any other error still propagates.
+    """
     table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
     # Get test run metadata
@@ -1404,9 +1405,23 @@ def get_test_results(test_run_id):
         if current_status == "ABORTED" and not completed_files_counted:
             files = metadata.get("Files", [])
             if files:
-                completed_files_count = _count_completed_documents(
-                    table, test_run_id, files
-                )
+                # A count that cannot read every document is never persisted:
+                # persisting sets CompletedFilesCounted, after which it is never
+                # recounted, so a partial figure would be permanent.
+                try:
+                    completed_files_count = _count_completed_documents(
+                        table, test_run_id, files
+                    )
+                except DynamoDBError as e:
+                    if not unreadable_count_as_none:
+                        raise
+                    logger.warning(
+                        f"Could not count completed documents for aborted test "
+                        f"run {test_run_id}; returning no count: {e}"
+                    )
+                    completed_files_count = None
+
+            if files and completed_files_count is not None:
                 logger.info(
                     f"Counted {completed_files_count} completed documents for aborted test run {test_run_id}"
                 )

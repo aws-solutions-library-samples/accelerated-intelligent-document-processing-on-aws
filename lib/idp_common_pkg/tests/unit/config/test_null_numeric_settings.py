@@ -18,6 +18,11 @@ field declared as a number (``int``/``float``, constrained or ``Annotated``,
 ``Optional`` or a union of them) must load as its declared default, or as
 ``None`` when it is Optional.
 
+The second half of the file applies the same rule to malformed non-null values
+(``[]``, ``{}``, infinities, NaN, ``10**400``), which made validators raise
+``TypeError`` or ``OverflowError``. It also checks, field by field, that turning
+those into a ``ValidationError`` changed no outcome any value had before.
+
 What this does not reach: validators pydantic does not list in
 ``__pydantic_decorators__.field_validators`` (an ``Annotated[..., BeforeValidator]``
 or a ``model_validator``), and models that are not module-level classes of
@@ -314,3 +319,176 @@ def test_an_in_range_float_parses_exactly():
         for stored in (value, repr(value)):
             parsed = models.ExtractionConfig.model_validate({"top_p": stored}).top_p
             assert parsed == float(stored), stored
+
+
+# -- Malformed non-null values (class of #1583 / #1585) -----------------------
+#
+# ``temperature: []`` or ``{}`` made ``float()`` raise ``TypeError``, and
+# ``ocr.max_workers: .inf`` or ``top_k: 10**400`` made ``int()`` or ``float()``
+# raise ``OverflowError``. Pydantic converts neither, so the whole configuration
+# failed to load with an error naming no setting. ``models.field_validator``
+# re-raises both as ``ValueError``. The rule is the same as for a null: a
+# validator may answer with a ``ValidationError`` and nothing else, and nothing
+# that parsed before may parse differently.
+
+MALFORMED = {
+    "empty list": [],
+    "empty dict": {},
+    "inf": float("inf"),
+    "-inf": float("-inf"),
+    "nan": float("nan"),
+    "10**400": 10**400,
+}
+
+#: Values a stored configuration ordinarily carries. Driven through every
+#: validator next to ``MALFORMED`` to show the guard changes no outcome they had.
+ORDINARY = [0, 1, -1, 0.5, 8, "", "  ", "0.25", "8", "abc", True, False, 10**18]
+
+
+def _outcome(cls: type, name: str, value: Any) -> Tuple[str, Any]:
+    try:
+        return "ok", repr(
+            getattr(cls.model_validate({name: value}, by_name=True), name)
+        )
+    except ValidationError as exc:
+        return "invalid", [(e["loc"], e["type"], e["msg"]) for e in exc.errors()]
+    except Exception as exc:  # the defect under test; reported, not swallowed
+        return "raw", type(exc)
+
+
+def test_the_malformed_cases_reach_every_validated_numeric_field():
+    numeric = {(cls, name) for cls, name, _ in CASES}
+    assert numeric  # an empty derivation would collect as a skip, not a failure
+    assert numeric <= set(ALL_VALIDATED)
+
+
+@pytest.mark.parametrize("label", sorted(MALFORMED))
+@pytest.mark.parametrize(
+    "cls,name", ALL_VALIDATED, ids=[f"{c.__name__}.{n}" for c, n in ALL_VALIDATED]
+)
+def test_a_malformed_value_raises_at_most_a_validation_error(cls, name, label):
+    try:
+        cls.model_validate({name: MALFORMED[label]}, by_name=True)
+    except ValidationError:
+        pass
+
+
+@pytest.mark.parametrize(
+    "cls,name", ALL_VALIDATED, ids=[f"{c.__name__}.{n}" for c, n in ALL_VALIDATED]
+)
+def test_the_guard_changes_only_what_used_to_crash(cls, name, monkeypatch):
+    """Each value's outcome with the guard disabled is the previous behaviour.
+
+    A value that parsed must parse to the same thing, and one that was rejected
+    must be rejected with the same errors. One that raised ``TypeError`` or
+    ``OverflowError`` must now be a ``ValidationError`` naming this field, and
+    must not have been turned into a parsed value or a default.
+    """
+    field = cls.model_fields[name]
+    names = {name, field.alias, field.validation_alias} - {None}
+    for value in [*MALFORMED.values(), *ORDINARY]:
+        with monkeypatch.context() as patched:
+            patched.setattr(models, "_UNCONVERTED_INPUT_ERRORS", ())
+            before = _outcome(cls, name, value)
+        after = _outcome(cls, name, value)
+        if before[0] == "raw":
+            assert before[1] in (TypeError, OverflowError), (value, before)
+            assert after[0] == "invalid", (value, after)
+            assert {loc[0] for loc, _, _ in after[1]} <= names, (value, after)
+        else:
+            assert after == before, value
+
+
+def test_the_comparison_has_crashes_to_compare(monkeypatch):
+    """Without the guard the malformed values do crash, so the comparison above
+    exercises the conversion rather than only the unchanged branch."""
+    monkeypatch.setattr(models, "_UNCONVERTED_INPUT_ERRORS", ())
+    crashed = {
+        type_
+        for cls, name in ALL_VALIDATED
+        for value in MALFORMED.values()
+        for kind, type_ in [_outcome(cls, name, value)]
+        if kind == "raw"
+    }
+    assert crashed == {TypeError, OverflowError}
+
+
+def test_the_guard_converted_the_reported_crashes():
+    """The four reported inputs, as a whole-configuration load."""
+    for document, loc in [
+        ({"ocr": {"max_workers": float("inf")}}, ("ocr", "max_workers")),
+        ({"extraction": {"temperature": []}}, ("extraction", "temperature")),
+        ({"extraction": {"temperature": {}}}, ("extraction", "temperature")),
+        ({"extraction": {"top_k": 10**400}}, ("extraction", "top_k")),
+    ]:
+        with pytest.raises(ValidationError) as caught:
+            IDPConfig.model_validate(document)
+        assert [e["loc"] for e in caught.value.errors()] == [loc], document
+
+
+@pytest.mark.parametrize(
+    "path,cls,name,kind", ROOT_PATHS, ids=[".".join(p[0]) for p in ROOT_PATHS]
+)
+def test_a_malformed_numeric_setting_fails_the_load_only_as_a_validation_error(
+    path, cls, name, kind
+):
+    for value in MALFORMED.values():
+        document: Dict[str, Any] = {}
+        cursor = document
+        for segment in path[:-1]:
+            cursor = cursor.setdefault(segment, {})
+        cursor[path[-1]] = value
+        try:
+            IDPConfig.model_validate(document, by_name=True)
+        except ValidationError:
+            pass
+
+
+def test_every_validator_in_the_module_is_guarded():
+    """Capability, not spelling: a validator declared with pydantic's own
+    ``field_validator`` lacks the guard, whatever field or type it covers."""
+    validators = [
+        (cls.__name__, decorator.func)
+        for cls in _config_models()
+        for decorator in cls.__pydantic_decorators__.field_validators.values()
+    ]
+    assert validators
+    unguarded = [
+        (owner, getattr(func, "__name__", func))
+        for owner, func in validators
+        if not getattr(func, "__idp_input_errors_converted__", False)
+    ]
+    assert unguarded == []
+
+
+def _probe_models() -> List[type]:
+    """Two models whose field accepts anything, so pydantic's own type check can
+    never be what rejects the value: only the guard can turn the crash into a
+    ``ValidationError``. One validator is a classmethod, as every validator in
+    ``models`` is today, and one a plain function, which pydantic also accepts."""
+
+    class ClassmethodProbe(BaseModel):
+        loose: Any = None
+
+        @models.field_validator("loose", mode="before")
+        @classmethod
+        def parse(cls, v: Any) -> Any:
+            return int(v)
+
+    class FunctionProbe(BaseModel):
+        loose: Any = None
+
+        @models.field_validator("loose", mode="before")
+        def parse(cls, v: Any) -> Any:  # noqa: N805 - pydantic passes the class
+            return int(v)
+
+    return [ClassmethodProbe, FunctionProbe]
+
+
+@pytest.mark.parametrize("probe", _probe_models(), ids=lambda c: c.__name__)
+@pytest.mark.parametrize("label", ["empty list", "empty dict", "inf", "-inf"])
+def test_the_guard_does_not_rely_on_the_field_type_to_reject(probe, label):
+    with pytest.raises(ValidationError) as caught:
+        probe.model_validate({"loose": MALFORMED[label]})
+    assert [e["loc"] for e in caught.value.errors()] == [("loose",)]
+    assert probe.model_validate({"loose": "7"}).loose == 7
