@@ -392,7 +392,8 @@ Three things `lookback_hours` does not control. A document-specific
 `search_cloudwatch_logs` call searches a window derived from the document's
 tracking record, whatever this is set to: a few minutes either side of the
 completion time for a failed document, the processing run from start to
-completion for one that finished, and the last 30 minutes for one still in
+completion for one that finished, the 30 minutes before completion for one that
+finished with no recorded start time, and the last 30 minutes for one still in
 progress or with no completion time. `fetch_recent_records`
 counts its `hours_back` back from the end of the requested date rather than from
 now, and keeps its own 24-hour default. `analyze_system_performance` keeps its

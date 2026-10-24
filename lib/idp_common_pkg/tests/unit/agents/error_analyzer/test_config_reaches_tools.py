@@ -25,7 +25,7 @@ decision cannot be reversed by accident.
 """
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
@@ -155,6 +155,10 @@ def _invoke(agent, tool_name: str, config: IDPConfig, **kwargs: Any) -> Dict[str
         result = getattr(agent.tool, tool_name)(record_direct_tool_call=False, **kwargs)
     assert result["status"] == "success", result
     return result
+
+
+def _epoch_ms(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
 
 
 def _groups(calls: List[Dict[str, Any]]) -> List[str]:
@@ -324,6 +328,93 @@ class TestDocumentSearch:
         # FAILED with a CompletionTime: a 2.5-minute buffer either side of it.
         self._search(agent, _config(lookback_hours=72))
         assert _windows_hours(filter_calls) == {5 / 60}
+
+    def _window_for(self, agent, filter_calls, document: Dict[str, Any]) -> set:
+        record = {"document_found": True, "document": document}
+        with patch(
+            "idp_common.agents.error_analyzer.tools.cloudwatch_tool"
+            ".fetch_document_record",
+            return_value=record,
+        ):
+            _invoke(agent, "search_cloudwatch_logs", IDPConfig(), document_id="d.pdf")
+        assert filter_calls, "no FilterLogEvents request was made"
+        return {(c["startTime"], c["endTime"]) for c in filter_calls}
+
+    def test_a_finished_run_is_searched_from_start_to_completion(
+        self, agent, filter_calls
+    ):
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "COMPLETED",
+                "InitialEventTime": "2026-01-01T00:00:00Z",
+                "CompletionTime": "2026-01-01T00:10:00Z",
+            },
+        )
+        start = _epoch_ms("2026-01-01T00:00:00Z") - 30_000
+        end = _epoch_ms("2026-01-01T00:10:00Z") + 30_000
+        assert window == {(start, end)}
+
+    def test_a_run_in_progress_is_searched_over_the_last_half_hour(
+        self, agent, filter_calls
+    ):
+        before = int(datetime.now().timestamp() * 1000)
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "IN_PROGRESS",
+                "InitialEventTime": "2026-01-01T00:00:00Z",
+            },
+        )
+        after = int(datetime.now().timestamp() * 1000)
+        assert len(window) == 1, window
+        ((start, end),) = window
+        assert before <= end <= after
+        assert end - start == 30 * 60_000
+
+    def test_a_run_in_progress_with_an_old_completion_time_is_searched_now(
+        self, agent, filter_calls
+    ):
+        # A reprocessed document is IN_PROGRESS while its record still carries the
+        # previous run's CompletionTime; the status, not the missing end, has to
+        # select the last half hour.
+        before = int(datetime.now().timestamp() * 1000)
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "IN_PROGRESS",
+                "InitialEventTime": "2026-01-01T00:00:00Z",
+                "CompletionTime": "2026-01-01T00:10:00Z",
+            },
+        )
+        after = int(datetime.now().timestamp() * 1000)
+        ((start, end),) = window
+        assert before <= end <= after
+        assert end - start == 30 * 60_000
+
+    def test_a_finished_run_with_no_start_ends_at_its_completion(
+        self, agent, filter_calls
+    ):
+        # With no InitialEventTime the window used to carry no start, and
+        # search_log_group then ignored the completion time as well and searched the
+        # 24 hours before now -- days away from the run for an older document.
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "COMPLETED",
+                "CompletionTime": "2026-01-01T00:10:00Z",
+            },
+        )
+        completion = _epoch_ms("2026-01-01T00:10:00Z")
+        assert window == {(completion - 30 * 60_000, completion + 30_000)}
 
 
 class TestSearchPerformanceIssues:

@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 MAX_HOURS_BACK = 168
 MAX_LOG_GROUPS = 50
 
+#: The processing span searched when the tracking record does not bound the run
+#: on both sides: the last half hour while it runs, or the half hour before completion.
+_DEFAULT_PROCESSING_SPAN = timedelta(minutes=30)
+
 
 def _resolve_max_log_events(requested: int, configured: int) -> int:
     """Return the per-group event count a search should use.
@@ -490,12 +494,19 @@ def _get_processing_time_window(document_record: Dict[str, Any]) -> Dict[str, An
         return {"start_time": end_time - buffer, "end_time": end_time + buffer}
     elif document_status == "IN_PROGRESS" or not end_time:
         now = datetime.now()
-        return {"start_time": now - timedelta(minutes=30), "end_time": now}
-    elif start_time and end_time:
-        buffer = timedelta(seconds=30)
-        return {"start_time": start_time - buffer, "end_time": end_time + buffer}
+        return {"start_time": now - _DEFAULT_PROCESSING_SPAN, "end_time": now}
 
-    return {"start_time": start_time, "end_time": end_time}
+    buffer = timedelta(seconds=30)
+    if start_time:
+        return {"start_time": start_time - buffer, "end_time": end_time + buffer}
+    # Finished, with a completion time but no recorded start. A window with no
+    # start is not a window: search_log_group would discard the completion time
+    # too and search the hours before now instead. Search the same span the
+    # in-progress branch assumes, ending at completion.
+    return {
+        "start_time": end_time - _DEFAULT_PROCESSING_SPAN,
+        "end_time": end_time + buffer,
+    }
 
 
 def _prioritize_request_ids(
