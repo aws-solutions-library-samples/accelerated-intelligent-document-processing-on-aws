@@ -6,11 +6,13 @@ Unit tests for Error Analyzer configuration.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from idp_common.agents.error_analyzer.config import get_aws_service_capabilities
 from idp_common.config.models import (
     ErrorAnalyzerConfig,
     ErrorAnalyzerParameters,
+    IDPConfig,
 )
 
 
@@ -83,6 +85,29 @@ class TestErrorAnalyzerConfig:
         assert len(config.system_prompt) > 0
         assert isinstance(config.parameters, ErrorAnalyzerParameters)
         assert config.parameters.max_log_events == 5
+
+    @pytest.mark.parametrize("stored", [None, "", "   "])
+    def test_an_empty_stored_lookback_hours_loads_as_the_default(self, stored):
+        """A stored profile may carry ``lookback_hours: null`` (a YAML key with no
+        value, or a JSON null) or an empty string. Loading it must fall back to the
+        field default as the other required-int fields do, not raise: ``int(None)``
+        is a TypeError, which pydantic does not convert, so the whole configuration
+        failed to load."""
+        config = IDPConfig.model_validate(
+            {"agents": {"error_analyzer": {"lookback_hours": stored}}}
+        )
+        assert config.agents.error_analyzer is not None
+        assert config.agents.error_analyzer.lookback_hours == 24
+
+    def test_a_stored_lookback_hours_string_is_still_parsed(self):
+        assert (
+            ErrorAnalyzerConfig.model_validate({"lookback_hours": "12"}).lookback_hours
+            == 12
+        )
+
+    def test_a_non_positive_lookback_hours_is_still_rejected(self):
+        with pytest.raises(ValidationError):
+            ErrorAnalyzerConfig.model_validate({"lookback_hours": 0})
 
     def test_get_error_analyzer_model_id_uses_error_analyzer_not_chat_companion(self):
         """MR-02 bug fix: model ID must come from error_analyzer, not chat_companion."""

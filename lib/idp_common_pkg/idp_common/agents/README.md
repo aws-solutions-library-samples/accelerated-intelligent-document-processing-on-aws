@@ -371,6 +371,26 @@ written as `tool (a, b)` may hold only that tool's own parameters. When you add,
 update the prompt in the same change. Prefer a preset that inherits the default
 prompt to one that carries a copy, because a copy is what went stale here.
 
+### A configured default reaches a tool only through a `None` signature default
+
+Strands invokes a tool with only the arguments the model supplied, so Python fills
+the rest from the function signature. A tool that declares `hours_back: int = 24`
+and then falls back to configuration can never reach the configuration: the
+signature default is always present. For a setting meant to supply the default,
+declare the argument `Optional[...] = None` and resolve `None` to the configured
+value inside the tool. The Error Analyzer's `search_cloudwatch_logs` and
+`search_performance_issues` resolve `hours_back` from
+`agents.error_analyzer.lookback_hours` this way, and `search_cloudwatch_logs`
+resolves `max_log_groups` from `parameters.max_log_groups`. A configured value is
+clamped to the maximum the tool description advertises (168 hours, 50 groups),
+because the configuration model accepts any positive value and a saved profile must
+still load.
+`tests/unit/agents/error_analyzer/test_config_reaches_tools.py` invokes both through
+the real agent with no arguments and asserts the window and group count on the
+CloudWatch Logs requests. `parameters.max_log_events` and
+`parameters.time_range_hours_default` are not wired; see
+[Advanced parameters](../../../../docs/error-analyzer.md#advanced-parameters-config-file-only).
+
 ## Usage Examples
 
 ### Basic Conversation

@@ -13,6 +13,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
+from idp_common.dynamodb.client import DynamoDBClient as RealDynamoDBClient
 from idp_common.dynamodb.client import DynamoDBError
 from idp_common.review_queues.testset_docs import (
     SUMMARY_BUILDING,
@@ -308,7 +309,22 @@ def _db_client_on(table):
                 break
         return items
 
+    def _batch_get_items(*args, **kwargs):
+        """The real helper, not a double: its chunking and UnprocessedKeys retry
+        are what the resolver relies on, so the tests run that code against moto.
+
+        Built per call so that a handler a test registers on the default session's
+        events after this fixture is entered still sees the BatchGetItem calls.
+        """
+        real = RealDynamoDBClient(table_name=table.name, region="us-east-1")
+        return real.batch_get_items(*args, **kwargs)
+
     return _MultiPatch(
+        patch.object(
+            test_set_index.db_client,
+            "batch_get_items",
+            side_effect=_batch_get_items,
+        ),
         patch.object(test_set_index.db_client, "get_item", side_effect=_get_item),
         patch.object(test_set_index.db_client, "put_item", side_effect=_put_item),
         patch.object(test_set_index.db_client, "update_item", side_effect=_update_item),
@@ -692,7 +708,12 @@ class TestTestSetResolver:
         with patch.object(test_set_index, "find_matching_files") as mock_find_files:
             mock_find_files.return_value = ["file1.pdf", "file2.pdf", "file3.pdf"]
 
-            with patch.object(test_set_index, "boto3") as mock_boto3:
+            with (
+                patch.object(test_set_index, "boto3") as mock_boto3,
+                patch.object(
+                    test_set_index.db_client, "batch_get_items"
+                ) as mock_batch_get,
+            ):
                 # Mock GSI query returning keys
                 mock_table = MagicMock()
                 mock_table.query.return_value = {
@@ -701,25 +722,24 @@ class TestTestSetResolver:
                 mock_boto3.resource.return_value.Table.return_value = mock_table
 
                 # Mock BatchGetItem returning full records
-                mock_boto3.resource.return_value.batch_get_item.return_value = {
-                    "Responses": {
-                        "test-table": [
-                            {
-                                "PK": "testset#test-id",
-                                "SK": "metadata",
-                                "id": "test-id",
-                                "name": "test-name",
-                                "filePattern": "*.pdf",
-                                "fileCount": 5,
-                                "createdAt": "2025-10-17T16:00:00Z",
-                            }
-                        ]
+                mock_batch_get.return_value = [
+                    {
+                        "PK": "testset#test-id",
+                        "SK": "metadata",
+                        "id": "test-id",
+                        "name": "test-name",
+                        "filePattern": "*.pdf",
+                        "fileCount": 5,
+                        "createdAt": "2025-10-17T16:00:00Z",
                     }
-                }
+                ]
 
                 result = test_set_index.get_test_sets()
 
                 mock_table.query.assert_called_once()
+                mock_batch_get.assert_called_once_with(
+                    [{"PK": "testset#test-id", "SK": "metadata"}]
+                )
                 assert len(result) == 1
                 assert result[0]["id"] == "test-id"
                 # 'source' maps through; absent on this record -> None (back-compat)
@@ -743,26 +763,27 @@ class TestTestSetResolver:
         """A record's 'source' attribute is returned in the mapped result."""
         with patch.object(test_set_index, "find_matching_files") as mock_find_files:
             mock_find_files.return_value = []
-            with patch.object(test_set_index, "boto3") as mock_boto3:
+            with (
+                patch.object(test_set_index, "boto3") as mock_boto3,
+                patch.object(
+                    test_set_index.db_client, "batch_get_items"
+                ) as mock_batch_get,
+            ):
                 mock_table = MagicMock()
                 mock_table.query.return_value = {
                     "Items": [{"PK": "testset#syn-id", "SK": "metadata"}]
                 }
                 mock_boto3.resource.return_value.Table.return_value = mock_table
-                mock_boto3.resource.return_value.batch_get_item.return_value = {
-                    "Responses": {
-                        "test-table": [
-                            {
-                                "PK": "testset#syn-id",
-                                "SK": "metadata",
-                                "id": "syn-id",
-                                "name": "syn-name",
-                                "source": "synthetic",
-                                "createdAt": "2025-10-17T16:00:00Z",
-                            }
-                        ]
+                mock_batch_get.return_value = [
+                    {
+                        "PK": "testset#syn-id",
+                        "SK": "metadata",
+                        "id": "syn-id",
+                        "name": "syn-name",
+                        "source": "synthetic",
+                        "createdAt": "2025-10-17T16:00:00Z",
                     }
-                }
+                ]
 
                 result = test_set_index.get_test_sets()
                 assert result[0]["source"] == "synthetic"
@@ -778,27 +799,28 @@ class TestTestSetResolver:
         with patch.object(test_set_index, "find_matching_files") as mock_find_files:
             mock_find_files.return_value = []
 
-            with patch.object(test_set_index, "boto3") as mock_boto3:
+            with (
+                patch.object(test_set_index, "boto3") as mock_boto3,
+                patch.object(
+                    test_set_index.db_client, "batch_get_items"
+                ) as mock_batch_get,
+            ):
                 mock_table = MagicMock()
                 mock_table.query.return_value = {
                     "Items": [{"PK": "testset#confbench-clean", "SK": "metadata"}]
                 }
                 mock_boto3.resource.return_value.Table.return_value = mock_table
-                mock_boto3.resource.return_value.batch_get_item.return_value = {
-                    "Responses": {
-                        "test-table": [
-                            {
-                                "PK": "testset#confbench-clean",
-                                "SK": "metadata",
-                                "id": "confbench-clean",
-                                "name": "ConfBench (clean baseline)",
-                                "fileCount": 75,
-                                "createdAt": "2026-08-05T16:00:00Z",
-                                "configVersion": "confbench-testset-v0.1.0",
-                            }
-                        ]
+                mock_batch_get.return_value = [
+                    {
+                        "PK": "testset#confbench-clean",
+                        "SK": "metadata",
+                        "id": "confbench-clean",
+                        "name": "ConfBench (clean baseline)",
+                        "fileCount": 75,
+                        "createdAt": "2026-08-05T16:00:00Z",
+                        "configVersion": "confbench-testset-v0.1.0",
                     }
-                }
+                ]
 
                 result = test_set_index.get_test_sets()
 

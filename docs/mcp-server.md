@@ -519,7 +519,8 @@ Confidence scores mirror the field structure:
 
 The tool returns scores, not alerts. In Pipeline mode, a field's confidence alert
 is raised for any numeric score below its threshold, whether or not the field has
-a value; a field with no numeric score raises none. See
+a value, and a NaN or infinite score is read as 0.0 and raises one. A field with a
+null or non-numeric score raises none. See
 [Human review](human-review.md) for how alerts route a document to review.
 
 Example:

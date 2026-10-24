@@ -45,6 +45,19 @@ QuerySelect = Literal[
 ]
 
 
+class DynamoDBUnprocessedKeysError(DynamoDBError):
+    """``batch_get_items`` ran out of attempts with keys still unprocessed.
+
+    ``error_code`` is ``"UnprocessedKeys"``. ``items`` holds the rows that were
+    read before the call gave up, for a caller that can act on a partial answer
+    deliberately; the call itself never returns one.
+    """
+
+    def __init__(self, message: str, items: List[Dict[str, Any]]):
+        super().__init__(message, "UnprocessedKeys")
+        self.items = items
+
+
 class DynamoDBTransactionCanceledError(DynamoDBError):
     """A TransactWriteItems call was cancelled.
 
@@ -358,8 +371,9 @@ class DynamoDBClient:
             The items found, in no particular order. Missing keys are absent.
 
         Raises:
-            DynamoDBError: On a service error, or with error_code
-                ``UnprocessedKeys`` when retries are exhausted.
+            DynamoDBError: On a service error.
+            DynamoDBUnprocessedKeysError: When retries are exhausted, with
+                error_code ``UnprocessedKeys`` and the rows read so far.
         """
         if not keys:
             return []
@@ -399,9 +413,9 @@ class DynamoDBClient:
                         f"DynamoDB batch_get_item: {remaining} unprocessed keys "
                         f"remain after {max_attempts} attempts"
                     )
-                    raise DynamoDBError(
+                    raise DynamoDBUnprocessedKeysError(
                         f"Batch get failed: {remaining} unprocessed keys remain",
-                        "UnprocessedKeys",
+                        results,
                     )
                 _backoff_sleep(attempt)
         return results

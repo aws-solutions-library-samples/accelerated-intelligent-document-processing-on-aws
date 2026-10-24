@@ -144,7 +144,12 @@ def _extraction_class_not_configured(extraction_data: Dict[str, Any]) -> bool:
 
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
     """
-    Safely convert a value to float, handling strings and None values.
+    Safely convert a value to float, handling strings, None and non-finite values.
+
+    NaN and the infinities return ``default`` like any other unusable value
+    (``utils.finite_float``): ``json.loads`` accepts them in a model response,
+    and a NaN confidence compared with its threshold raised no alert, because
+    ``nan < threshold`` is False.
 
     Args:
         value: Value to convert to float
@@ -153,32 +158,16 @@ def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
     Returns:
         Float value or default if conversion fails
     """
-    if value is None:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return default
-
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    if isinstance(value, str):
-        # Handle empty strings
-        if not value.strip():
-            return default
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            logger.warning(
-                f"Could not convert string '{value}' to float, using default {default}"
-            )
-            return default
-
-    # Handle other types by attempting conversion
-    try:
-        return float(value)
-    except (ValueError, TypeError):
+    number = utils.finite_float(value)
+    if number is None:
         logger.warning(
-            f"Could not convert {type(value)} '{value}' to float, using default {default}"
+            f"Could not convert {type(value)} '{value}' to a finite float, "
+            f"using default {default}"
         )
         return default
+    return number
 
 
 @dataclass

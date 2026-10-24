@@ -185,3 +185,246 @@ def test_the_lists_are_written_by_the_completion_write_itself(env):
     assert item["HITLSectionsPending"] == []
     assert item["HITLSectionsCompleted"] == ["2", "1"]
     assert "HITLPendingReview" not in item
+
+
+def _seed_finished_queue_review(table, status, **attributes):
+    """A queue-routed document whose review cycle has ended.
+
+    The shape the review-queue tracker leaves: ``apply_overrides`` sets
+    ``HITLStatus`` to the ``ReviewStatus`` value for the outcome, and
+    ``after_completion`` writes ``HITLReviewedBy`` from the item's ``disposed_by``
+    (the disposing caller's email) together with the cycle attributes, and
+    ``ReviewRejectReason`` on a reject. It writes no ``HITLReviewedByEmail``.
+    """
+    table.put_item(
+        Item={
+            **DOC_KEY,
+            "ObjectKey": OBJECT_KEY,
+            "ObjectStatus": "COMPLETED",
+            "HITLTriggered": True,
+            "HITLStatus": status,
+            "HITLReviewedBy": "annotator@example.com",
+            "ReviewQueue": "default",
+            "ReviewCycleId": "cycle-1",
+            "ReviewDisposedAt": "2026-10-01T00:00:00+00:00",
+            "ReviewStatusUri": f"s3://output-bucket/{OBJECT_KEY}/review/status.json",
+            "Sections": [
+                {"Id": "1", "PageIds": [1], "Class": "invoice", "OutputJSONUri": ""},
+            ],
+            "Pages": [{"Id": 1, "Class": "invoice"}],
+            **attributes,
+        }
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status, extra",
+    [
+        ("complete", {}),
+        ("rejected", {"ReviewRejectReason": "Wrong document type"}),
+    ],
+)
+def test_a_finished_queue_review_keeps_its_status_and_reviewer(env, status, extra):
+    """Process Changes is allowed on a finished queue document, and it must not
+    re-finish the review: the terminal outcome and who reached it stay as the
+    review queue recorded them (#1568)."""
+    from idp_common.review_queues.statuses import ReviewStatus
+
+    assert status in {s.value for s in ReviewStatus}  # the writer's own values
+    mod, table = env
+    _seed_finished_queue_review(table, status, **extra)
+
+    assert _process_changes(mod)["success"] is True
+
+    item = _stored(table)
+    assert item["HITLStatus"] == status
+    assert item["HITLReviewedBy"] == "annotator@example.com"
+    assert "HITLReviewedByEmail" not in item
+    assert "HITLCompleted" not in item
+    for name, value in extra.items():
+        assert item[name] == value
+
+
+@pytest.mark.unit
+def test_a_finished_queue_review_keeps_its_status_when_the_status_write_fails(env):
+    """The completion write is the only writer once the trailing status write
+    fails, so this pins that the resolver itself does not rewrite the status."""
+    mod, table = env
+    _seed_finished_queue_review(table, "rejected")
+
+    real = mod.create_document_service
+    calls = {"n": 0}
+
+    def service_whose_status_write_fails(*args, **kwargs):
+        service = real(*args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] > 1:
+
+            def fail(document):
+                raise RuntimeError("status write failed")
+
+            service.update_document = fail
+        return service
+
+    with patch.object(
+        mod, "create_document_service", side_effect=service_whose_status_write_fails
+    ):
+        assert _process_changes(mod)["success"] is True
+
+    assert calls["n"] == 2
+    item = _stored(table)
+    assert item["HITLStatus"] == "rejected"
+    assert item["HITLReviewedBy"] == "annotator@example.com"
+    assert "HITLCompleted" not in item
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status",
+    [
+        "Completed",
+        "Review Completed",
+        "Skipped",
+        "Review Skipped",
+        # The earlier A2I flow's spelling, which the exact-match normaliser does
+        # not recognise; rows written by it may still be retained.
+        "COMPLETED",
+    ],
+)
+def test_a_finished_legacy_review_keeps_its_status_and_reviewer(env, status):
+    """The legacy finished spellings, which were already handled, stay handled."""
+    mod, table = env
+    _seed(
+        table,
+        HITLStatus=status,
+        HITLCompleted=True,
+        HITLReviewedBy="earlier-reviewer",
+        HITLReviewedByEmail="earlier@example.com",
+    )
+    # A finished legacy review carries no pending marker (completeSectionReview
+    # and skipAllReviews both remove it).
+    table.update_item(Key=DOC_KEY, UpdateExpression="REMOVE HITLPendingReview")
+
+    assert _process_changes(mod)["success"] is True
+
+    item = _stored(table)
+    assert item["HITLStatus"] == status
+    assert item["HITLReviewedBy"] == "earlier-reviewer"
+    assert item["HITLReviewedByEmail"] == "earlier@example.com"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status, writer",
+    [
+        ("PendingReview", "the pipeline's result processing, on a HITL trigger"),
+        ("Review Pending", "releaseReview"),
+        ("InProgress", "claimReview and a partial completeSectionReview"),
+    ],
+)
+def test_an_open_legacy_review_is_completed_by_process_changes(env, status, writer):
+    """Every spelling a legacy writer stores for a review still owed is finished by
+    Process Changes, and the caller is recorded as the reviewer."""
+    mod, table = env
+    _seed(table, HITLStatus=status, HITLSectionsPending=["1"])
+
+    assert _process_changes(mod)["success"] is True
+
+    item = _stored(table)
+    assert item["HITLStatus"] == "Review Completed", writer
+    assert item["HITLReviewedBy"] == "rev"
+    assert item["HITLReviewedByEmail"] == "rev@example.com"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["Completed", "COMPLETED"])
+def test_a_finished_legacy_review_with_no_reviewer_records_the_caller(env, status):
+    """A legacy review finished without a recorded reviewer gets this caller, name
+    and email together. ``COMPLETED`` is the earlier A2I flow's row, which recorded
+    no reviewer."""
+    mod, table = env
+    _seed(table, HITLStatus=status, HITLCompleted=True)
+    table.update_item(
+        Key=DOC_KEY,
+        UpdateExpression="REMOVE HITLPendingReview, HITLReviewOwner, "
+        "HITLReviewOwnerEmail",
+    )
+
+    assert _process_changes(mod)["success"] is True
+
+    item = _stored(table)
+    assert item["HITLStatus"] == status
+    assert item["HITLReviewedBy"] == "rev"
+    assert item["HITLReviewedByEmail"] == "rev@example.com"
+
+
+@pytest.mark.unit
+def test_a_failed_reviewer_fill_is_not_swallowed(env):
+    """Only the condition failure means "a reviewer is already recorded". Any other
+    error from the fill write fails the request, as it did before the fill was
+    conditional."""
+    from botocore.exceptions import ClientError
+
+    mod, table = env
+    _seed(table, HITLStatus="Completed", HITLCompleted=True)
+    table.update_item(Key=DOC_KEY, UpdateExpression="REMOVE HITLPendingReview")
+
+    throttled = ClientError(
+        {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+    )
+    real_resource = mod.boto3.resource
+
+    def resource(*args, **kwargs):
+        res = real_resource(*args, **kwargs)
+        real_table = res.Table
+
+        def table_with_failing_writes(name):
+            t = real_table(name)
+
+            def update_item(**_):
+                raise throttled
+
+            t.update_item = update_item
+            return t
+
+        res.Table = table_with_failing_writes
+        return res
+
+    with patch.object(mod.boto3, "resource", side_effect=resource):
+        result = _process_changes(mod)
+
+    assert result["success"] is False
+    assert "ProvisionedThroughputExceeded" in result["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        # A queue item disposed with no disposed_by: the tracker writes "".
+        {"HITLReviewedBy": ""},
+        # Only the email half recorded. No current writer leaves this on a
+        # finished review; the email is kept rather than replaced.
+        {"HITLReviewedByEmail": "earlier@example.com"},
+    ],
+)
+def test_a_partly_recorded_reviewer_is_not_replaced(env, recorded):
+    mod, table = env
+    _seed_finished_queue_review(table, "complete")
+    table.update_item(Key=DOC_KEY, UpdateExpression="REMOVE HITLReviewedBy")
+    for name, value in recorded.items():
+        table.update_item(
+            Key=DOC_KEY,
+            UpdateExpression="SET #a = :v",
+            ExpressionAttributeNames={"#a": name},
+            ExpressionAttributeValues={":v": value},
+        )
+
+    assert _process_changes(mod)["success"] is True
+
+    item = _stored(table)
+    assert item["HITLStatus"] == "complete"
+    assert {
+        k: item[k] for k in ("HITLReviewedBy", "HITLReviewedByEmail") if k in item
+    } == recorded

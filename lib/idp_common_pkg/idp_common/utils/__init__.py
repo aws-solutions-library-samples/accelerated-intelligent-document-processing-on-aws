@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import math
 import random
 import time
 import logging
@@ -529,6 +530,31 @@ def detect_format(text: str) -> str:
         return "yaml"
     else:
         return "unknown"
+
+
+def finite_float(value: Any) -> Optional[float]:
+    """A score as a finite float, or ``None`` when there is no usable number.
+
+    ``None``, a blank string, anything ``float()`` rejects, NaN and both
+    infinities all return ``None``; every other value returns ``float(value)``,
+    unclamped. It is how the confidence alert builders recognise a non-finite
+    score; what they do with any unusable score is each builder's own rule (BDA
+    mode reads it as 0.0; ``enrich_assessment_with_thresholds`` reads a
+    non-finite score as 0.0 but leaves a null or non-numeric one unalerted). Of
+    the threshold readers, only ``_safe_float_conversion`` uses it. NaN is the case that motivates it: ``json.loads``
+    accepts ``NaN`` and ``Infinity``, so a model response or a stored result can
+    carry one, and ``nan < threshold`` is ``False``, so a NaN score compared
+    directly raises no alert at all.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)  # a blank string raises ValueError here
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
