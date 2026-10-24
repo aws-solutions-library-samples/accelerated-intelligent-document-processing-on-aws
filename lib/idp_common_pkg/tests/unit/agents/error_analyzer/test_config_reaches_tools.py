@@ -208,6 +208,14 @@ class TestSearchCloudwatchLogs:
         assert _groups(filter_calls) == LOG_GROUPS[:50]
         assert _windows_hours(filter_calls) == {168}
 
+    def test_a_stored_null_lookback_searches_the_default_window(
+        self, agent, filter_calls
+    ):
+        # A saved profile carrying ``lookback_hours: null`` used to fail to load at
+        # all (``int(None)``), so the tool never reached CloudWatch.
+        _invoke(agent, "search_cloudwatch_logs", _config(lookback_hours=None))
+        assert _windows_hours(filter_calls) == {24}
+
     def test_explicit_arguments_still_win(self, agent, filter_calls):
         _invoke(
             agent,

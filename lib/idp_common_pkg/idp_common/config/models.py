@@ -2944,11 +2944,9 @@ class ErrorAnalyzerConfig(BaseModel):
 
     @field_validator("lookback_hours", mode="before")
     @classmethod
-    def parse_lookback_hours(cls, v: Any) -> int:
-        """Parse lookback_hours from string or number"""
-        if isinstance(v, str):
-            return int(v) if v else 24
-        return int(v)
+    def parse_lookback_hours(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse lookback_hours from string or number (empty/None -> field default)."""
+        return _parse_required_int(v, info, cls)
 
     error_patterns: list[str] = Field(
         default=[
