@@ -46,10 +46,12 @@ def legacy_review_finished(hitl_status):
 
     Finishing a legacy review (completed or skipped) triggers a reprocess, so the
     run it starts must keep that status rather than ask for the review again. The
-    rule is the one ``process_changes_resolver`` applies, read through
-    ``normalize_hitl_status`` rather than a list of spellings. ``COMPLETED`` is the
-    one finished spelling a real writer stored that the exact-match normaliser does
-    not know: the earlier A2I flow wrote it, and retained rows may still carry it.
+    status is read through ``normalize_hitl_status`` rather than a list of spellings:
+    a legacy (not queue-managed) completed or skipped review is finished.
+    ``COMPLETED`` is the one finished spelling a real writer stored that the
+    exact-match normaliser does not know: the earlier A2I flow wrote it, and
+    retained rows may still carry it. ``process_changes_resolver`` makes the same
+    exception, but it also counts a queue outcome as finished, which this does not.
     A queue outcome (``complete`` / ``rejected``) is not a legacy review: in the
     legacy flow such a document is asked for a review again, as reprocessing it
     under review queues starts a fresh cycle.
