@@ -24,7 +24,7 @@ from idp_common.review_queues.routing import (
     review_mode,
     route_for_review,
 )
-from idp_common.review_queues.statuses import LEGACY_DONE, LegacyHitlStatus
+from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
 from idp_common.review_queues.store import create_review_store
 
 logger = logging.getLogger()
@@ -39,6 +39,25 @@ s3_client = boto3.client("s3")
 # Review queues (idp_common.review_queues): None when HITL_TABLE_NAME is
 # unset (headless), which keeps every profile on the legacy HITL flow.
 _REVIEW_STORE = create_review_store()
+
+
+def legacy_review_finished(hitl_status):
+    """True when a stored ``HITLStatus`` records a finished legacy review.
+
+    Finishing a legacy review (completed or skipped) triggers a reprocess, so the
+    run it starts must keep that status rather than ask for the review again. The
+    rule is the one ``process_changes_resolver`` applies, read through
+    ``normalize_hitl_status`` rather than a list of spellings. ``COMPLETED`` is the
+    one finished spelling a real writer stored that the exact-match normaliser does
+    not know: the earlier A2I flow wrote it, and retained rows may still carry it.
+    A queue outcome (``complete`` / ``rejected``) is not a legacy review: in the
+    legacy flow such a document is asked for a review again, as reprocessing it
+    under review queues starts a fresh cycle.
+    """
+    view = normalize_hitl_status(hitl_status)
+    return (
+        not view.queue_managed and view.kind in ("complete", "skipped")
+    ) or hitl_status == "COMPLETED"
 
 
 def handler(event, context):
@@ -187,7 +206,7 @@ def handler(event, context):
     if hitl_triggered:
         document.hitl_triggered = True
         existing_status = document.hitl_status
-        if existing_status not in LEGACY_DONE:
+        if not legacy_review_finished(existing_status):
             for section in document.sections:
                 if section.confidence_threshold_alerts:
                     hitl_sections_pending.append(section.section_id)
