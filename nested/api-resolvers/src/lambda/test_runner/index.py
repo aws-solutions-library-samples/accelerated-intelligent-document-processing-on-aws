@@ -46,7 +46,9 @@ def _review_finished(hitl_status):
     spellings. ``COMPLETED`` is the one finished spelling a real writer stored that
     the exact-match normaliser does not know: the earlier SageMaker A2I flow wrote
     it, and retained test-run rows may still carry it. The document-list resolvers
-    and the web UI's ``isHitlReviewFinished`` apply the same rule.
+    and the web UI's ``isHitlReviewFinished`` apply the same rule. A current Test
+    Studio document is never queue-routed, so a queue outcome appears only on a
+    test-run row copied before the copier stamped Test Studio provenance.
 
     The ProcessResults handlers' ``legacy_review_finished`` deliberately does not
     count a queue outcome as finished, because reprocessing a document starts a

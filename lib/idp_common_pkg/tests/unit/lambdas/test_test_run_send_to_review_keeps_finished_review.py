@@ -6,15 +6,17 @@
 ``sendTestRunToReview`` (``nested/api-resolvers/src/lambda/test_runner``) walks a
 run's documents and flips each one with confidence alerts to ``PendingReview``,
 skipping a review that has already finished. It decided "finished" from a list of
-four legacy spellings (``LEGACY_DONE``), so two stored states a real writer leaves
-on a test-run document read as unfinished and were reopened:
+four legacy spellings (``LEGACY_DONE``), so ``COMPLETED`` -- the spelling the
+earlier SageMaker A2I flow stored -- read as unfinished and the review was reopened.
+Test runs predate that flow's removal and their rows are kept for the stack's
+retention period, so a retained run can still carry it.
 
-* ``complete`` and ``rejected``, the outcomes a review queue records. ProcessResults
-  routes a test-run document with alerts into a review queue like any other, so
-  under review queues these are the ordinary finished states;
-* ``COMPLETED``, the spelling the earlier SageMaker A2I flow stored. Test runs
-  predate that flow's removal and their rows are kept for the stack's retention
-  period, so a retained run can still carry it.
+The resolver now applies the document lists' finished rule, which also counts a
+review queue's ``complete`` and ``rejected`` as finished. Current Test Studio
+documents are never queue-routed (``routing.review_mode`` reads them as legacy), so
+those two are reachable only on a test-run row copied before the copier stamped
+Test Studio provenance; they are pinned here so the rule stays the same as the
+lists'.
 
 Each case seeds the stored state with the real writer (``DocumentDynamoDBService``
 over a ``moto`` tracking table; ``tracker.apply_overrides`` for the queue outcomes;
@@ -238,6 +240,19 @@ def test_a_review_still_owed_is_sent_to_review(aws, case):
 def test_runs_against_the_resolver_in_this_checkout():
     expected = REPO_ROOT / "nested/api-resolvers/src/lambda/test_runner/index.py"
     assert os.path.samefile(str(test_runner_index.__file__), expected)
+
+
+@pytest.mark.unit
+def test_a_document_without_alerts_is_not_sent_to_review(aws):
+    _seed(aws.service, None)
+    boto3.resource("dynamodb", region_name=REGION).Table(TRACKING).update_item(
+        Key={"PK": f"doc#{OBJECT_KEY}", "SK": "none"},
+        UpdateExpression="SET ConfidenceAlertCount = :z",
+        ExpressionAttributeValues={":z": 0},
+    )
+    result = test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+    assert (result["queuedCount"], result["skippedCount"]) == (0, 1)
+    assert _stored().get("HITLStatus") is None
 
 
 @pytest.mark.unit
