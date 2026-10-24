@@ -951,12 +951,34 @@ def test_an_admin_may_save_edits_on_a_review_owned_by_someone_else(mod, table):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("status", ["Completed", "Review Completed", "Review Skipped"])
+@pytest.mark.parametrize(
+    "status",
+    # COMPLETED is the earlier A2I flow's finished spelling.
+    ["Completed", "Review Completed", "Skipped", "Review Skipped", "COMPLETED"],
+)
 def test_edits_may_not_be_saved_once_the_review_is_finished(mod, table, status):
     put_doc(table, HITLStatus=status, HITLReviewOwner="rev")
     with pytest.raises(ValueError, match="already finished"):
         run_save(mod, ["Reviewer"])
     assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["Review Completed", "COMPLETED"])
+def test_an_admin_may_not_save_edits_once_the_review_is_finished(mod, table, status):
+    """The finished check comes before the owner check, so Admin is refused too."""
+    put_doc(table, HITLStatus=status, HITLReviewOwner="someone-else")
+    with pytest.raises(ValueError, match="already finished"):
+        run_save(mod, ["Admin"], email="admin@example.com")
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["InProgress", "PendingReview", "Review Pending"])
+def test_the_owner_may_save_edits_while_the_review_is_open(mod, table, status):
+    put_doc(table, HITLStatus=status, HITLReviewOwner="rev")
+    run_save(mod, ["Reviewer"])
+    assert s3_json(mod, OUTPUT_BUCKET, OUTPUT_KEY) == EDITED_RESULT
 
 
 @pytest.mark.unit

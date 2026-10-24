@@ -302,7 +302,15 @@ def save_section_review_edits(
         ).get("Item")
         or {}
     )
-    if normalize_hitl_status(doc.get("HITLStatus")).kind in ("complete", "skipped"):
+    # "COMPLETED" is the one finished spelling a real writer stored that the
+    # exact-match normaliser does not know: the earlier A2I flow wrote it, and
+    # retained rows may still carry it. processChanges and the document lists make
+    # the same exception. Queue statuses never reach here (_assert_not_queue_managed).
+    hitl_status = doc.get("HITLStatus")
+    if (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    ):
         logger.warning(
             f"Rejecting save of review edits on finished review {object_key}"
         )
