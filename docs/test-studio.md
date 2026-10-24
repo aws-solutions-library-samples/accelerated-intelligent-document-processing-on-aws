@@ -1481,6 +1481,8 @@ be able to discard the team's annotation work.
 6. Monitor progress via TestRunnerStatus
 7. View results in integrated listing
 
+![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
+
 ### Configuration Versioning
 The Test Studio supports running tests with specific Configuration Profiles and
 revisions:
@@ -1547,6 +1549,9 @@ The abort then waits for the run's documents to reach a final status. A document
 - SQS-based asynchronous processing
 
 ### Results Analysis
+
+![Test results for a Fake-W2-Tax-Forms run: cost, confidence and accuracy summary above the weighted overall score distribution](../images/test-studio-results.png)
+
 - Comprehensive metrics display including:
   - **Test run metadata**: Configuration version, duration, context, file counts
   - **Overall accuracy and confidence metrics**
@@ -1689,6 +1694,8 @@ because the model filled in the wrong schema competently. Worse, a misclassified
 document can be *confidently* wrong, which means it raises few confidence alerts
 and therefore ranks **low priority** in the annotation queue's worst-first order.
 Without this panel it is the failure most likely to go unnoticed.
+
+![Classification errors panel for a DocSplit-Poly-Seq run, listing each wrong class and unmatched section with its expected and predicted class and pages](../images/test-studio-classification-errors.png)
 
 Three kinds are distinguished, because they call for different fixes:
 
