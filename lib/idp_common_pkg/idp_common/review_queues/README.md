@@ -82,7 +82,9 @@ the stack has a `HITLTable`, and its Default queue is `enabled` (read through
 fresh run in that state never holds. Anything else is `"legacy"`, logged at DEBUG as
 `event=review_mode_legacy reason=<hitl_disabled|default_queue_disabled|no_store>`.
 In legacy mode routing writes nothing, and the HITL marking is reproduced by
-`legacy_section_triggers` and `bda_segment_triggers`. In queue mode:
+`legacy_section_triggers` and `bda_segment_triggers`; the latter reads a null or
+non-numeric blueprint confidence as 0.0, so an unscored match is marked for review.
+In queue mode:
 
 - **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
   assessment or extraction in Pipeline mode, and by BDA processing in BDA mode, with
