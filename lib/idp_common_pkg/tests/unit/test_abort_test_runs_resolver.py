@@ -4,6 +4,7 @@
 Unit tests for abort_test_runs resolver Lambda function
 """
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -49,7 +50,7 @@ _SETTLE_SECONDS = 2
 
 
 def _assert_settled(settle):
-    """The handler paused for the settle interval, once per aborted run."""
+    """The handler paused for the settle interval, once per request."""
     assert settle.call_args_list, (
         "the handler did not pause after queueing the cache update, so the "
         "metrics Lambda can be asked to read a run already marked ABORTED"
@@ -840,7 +841,65 @@ def _ui_event(run_ids):
     }
 
 
+class _RecordingTable:
+    """The real table, recording on the fake clock when each run is marked ABORTED."""
+
+    def __init__(self, real, clock, aborted):
+        self._real = real
+        self._clock = clock
+        self._aborted = aborted
+        self.table_name = real.table_name
+
+    def get_item(self, **kwargs):
+        return self._real.get_item(**kwargs)
+
+    def update_item(self, **kwargs):
+        self._clock.now += _CALL_LATENCY
+        response = self._real.update_item(**kwargs)
+        run_id = kwargs["Key"]["PK"].split("#", 1)[1]
+        self._aborted[run_id] = self._clock.now
+        return response
+
+
+@pytest.fixture
+def timed_runs(in_flight_runs, monkeypatch):
+    """``in_flight_runs``, recording each run's dispatch and ABORTED times.
+
+    Each abort-workflow invoke and each status update costs one call latency of
+    the fake clock, like every BatchGetItem call.
+    """
+    index, table, run_ids, install, clock = in_flight_runs
+    dispatched = {}
+    aborted = {}
+
+    def invoke(**kwargs):
+        clock.now += _CALL_LATENCY
+        first_key = json.loads(kwargs["Payload"])["arguments"]["objectKeys"][0]
+        dispatched.setdefault(first_key.split("/", 1)[0], clock.now)
+
+    lambda_client = MagicMock()
+    lambda_client.invoke.side_effect = invoke
+    monkeypatch.setattr(index, "lambda_client", lambda_client)
+
+    def install_timed(hold):
+        stub = install(hold)
+        recording = _RecordingTable(table, clock, aborted)
+        monkeypatch.setattr(stub, "Table", lambda name: recording)
+        return stub
+
+    return index, table, run_ids, install_timed, clock, dispatched, aborted
+
+
+# How much of the dispatcher's read timeout the handler must leave unused, for
+# what the fake clock cannot see: cold start, real API latency, and the trip
+# back through the dispatcher. ABORT_WAIT_BUDGET_SECONDS is chosen against it.
+# Held here rather than beside the budget in the resolver, so that a change to
+# the resolver cannot also loosen the test that bounds it.
+_DISPATCHER_HEADROOM_SECONDS = 5
+
+
 @pytest.mark.unit
+@pytest.mark.parametrize("n_runs", [1, 2, 3])
 @pytest.mark.parametrize(
     "hold",
     [
@@ -849,10 +908,18 @@ def _ui_event(run_ids):
     ],
 )
 def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeout(
-    in_flight_runs, hold
+    timed_runs, hold, n_runs
 ):
-    """Three never-settling runs, one request: bounded by one budget, not three."""
-    index, table, run_ids, install, clock = in_flight_runs
+    """Never-settling runs, one request: one budget, and every run gets the wait.
+
+    Every run's documents must get the settle wait before the run is marked
+    ABORTED, not only the first run's: an early ABORTED lets the first read of
+    the run persist its completed-file count, and its metrics are not computed
+    again. The floor is the settle wait (the budget less the metrics pause),
+    less however long the dispatch phase took.
+    """
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    run_ids = run_ids[:n_runs]
     stub = install(hold)
     started = clock.now
 
@@ -860,14 +927,23 @@ def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeou
 
     elapsed = clock.now - started
     read_timeout = _dispatcher_read_timeout()
-    # The handler is done inside the dispatcher's bound. How much room it leaves
-    # for cold start and the trip back is a choice recorded beside
-    # ABORT_WAIT_BUDGET_SECONDS; this clock cannot see either.
-    assert elapsed < read_timeout, (elapsed, read_timeout)
-    # Every wait ends at the deadline; at most one call is in flight past it.
-    assert elapsed <= index.ABORT_WAIT_BUDGET_SECONDS + _CALL_LATENCY, elapsed
+    assert elapsed <= read_timeout - _DISPATCHER_HEADROOM_SECONDS, (
+        elapsed,
+        read_timeout,
+    )
     # The documents were polled at all (the bound is not met by skipping work).
     assert stub.calls
+    assert set(dispatched) == set(run_ids)
+    assert set(aborted) == set(run_ids)
+    dispatch_phase = max(dispatched.values()) - started
+    floor = (
+        index.ABORT_WAIT_BUDGET_SECONDS
+        - index.METRICS_START_PAUSE_SECONDS
+        - dispatch_phase
+    )
+    assert floor > 0, dispatch_phase
+    windows = {run_id: aborted[run_id] - dispatched[run_id] for run_id in run_ids}
+    assert all(window >= floor for window in windows.values()), (floor, windows)
     assert result["success"] is True
     assert result["abortedCount"] == len(run_ids)
     assert result["failedCount"] == 0
@@ -950,3 +1026,61 @@ def test_one_run_that_never_settles_still_gets_its_pause_before_aborted(
     index.lambda_handler(_ui_event(run_ids[:1]), None)
 
     assert clock.sleeps[-1] == index.METRICS_START_PAUSE_SECONDS, clock.sleeps[-3:]
+
+
+@pytest.mark.unit
+def test_the_settle_wait_with_no_bound_given_stops_at_the_budget(in_flight_runs):
+    """With neither max_wait_time nor deadline, the wait is the request budget."""
+    index, table, run_ids, install, clock = in_flight_runs
+    install(lambda call, n: 0)
+    keys = [f"{run_ids[0]}/doc-{n:03d}.pdf" for n in range(120)]
+    started = clock.now
+
+    index._wait_for_documents_terminal_state(table, run_ids[0], keys)
+
+    elapsed = clock.now - started
+    budget = index.ABORT_WAIT_BUDGET_SECONDS
+    assert budget <= elapsed <= budget + _CALL_LATENCY, elapsed
+
+
+@pytest.mark.unit
+def test_a_dispatch_that_outlasts_the_budget_still_marks_the_runs_aborted(
+    timed_runs,
+):
+    """No time left for the wait or the pause: the abort proceeds without them.
+
+    The pause is clamped at zero rather than computed negative, which would
+    raise from time.sleep outside any per-run handling and report every run as
+    failed with none of them marked ABORTED.
+    """
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    stub = install(lambda call, n: 0)
+    invoke = index.lambda_client.invoke.side_effect
+
+    def slow_invoke(**kwargs):
+        invoke(**kwargs)
+        clock.now += index.ABORT_WAIT_BUDGET_SECONDS
+
+    index.lambda_client.invoke.side_effect = slow_invoke
+
+    result = index.lambda_handler(_ui_event(run_ids), None)
+
+    assert result["abortedCount"] == len(run_ids), result
+    assert result["failedCount"] == 0, result
+    assert not stub.calls
+    assert all(seconds == 0 for seconds in clock.sleeps), clock.sleeps
+    assert set(aborted) == set(run_ids)
+
+
+@pytest.mark.unit
+def test_a_run_named_twice_is_aborted_once(timed_runs):
+    """A repeated id is refused rather than dispatched and waited on twice."""
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    install(lambda call, n: 0)
+
+    result = index.lambda_handler(_ui_event([run_ids[0], run_ids[0]]), None)
+
+    assert result["abortedCount"] == 1, result
+    assert result["failedCount"] == 1, result
+    assert index.lambda_client.invoke.call_count == 2  # one run, two batches
+    assert set(aborted) == {run_ids[0]}
