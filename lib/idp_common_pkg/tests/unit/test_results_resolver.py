@@ -2706,17 +2706,14 @@ def test_the_completed_count_matches_what_the_status_loop_calls_completed():
     status loop counted the same documents as completed."""
     files = ["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"]
     statuses = ["COMPLETED", "NO_BASELINE", "DISABLED", "FAILED", "RUNNING"]
-    responses = {
-        "Responses": {
-            "tracking": [{"EvaluationStatus": {"S": status}} for status in statuses]
-        }
-    }
     mock_client = Mock()
-    mock_client.batch_get_item.return_value = responses
+    mock_client.batch_get_items.return_value = [
+        {"EvaluationStatus": status} for status in statuses
+    ]
     mock_table = Mock()
     mock_table.table_name = "tracking"
 
-    with patch.object(index.boto3, "client", return_value=mock_client):
+    with patch.object(index, "DynamoDBClient", return_value=mock_client):
         counted = index._count_completed_documents(mock_table, "run", files)
 
     # The three settled states, and neither the failure nor the one in flight.
