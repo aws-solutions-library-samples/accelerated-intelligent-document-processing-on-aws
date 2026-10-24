@@ -103,9 +103,12 @@ either vector store type. It accepts `amazon.titan-embed-text-v2:0` (the default
 1024-dimension vectors, which is the size the vector index is created with.
 
 Choose it when the knowledge base is first created. Changing it on an existing stack is
-not supported. The update rebuilds the vector index, discarding the vectors already in it,
-and with S3 Vectors the knowledge base keeps the embedding model it was created with, so
-the new choice does not take effect.
+not supported. With OpenSearch Serverless the update rebuilds the vector index, discarding
+the vectors already in it. With S3 Vectors the knowledge base keeps the embedding model it
+was created with, so the new choice does not take effect, and the vector index and its
+vectors are kept. The S3 Vectors index is rebuilt, which discards its vectors, only when
+an update changes its dimension, distance metric or metadata configuration, and the
+template sets all three to fixed values, so a stack parameter change does not rebuild it.
 
 Grant model access for the model you choose in Amazon Bedrock, in the deployment region,
 before deploying with this feature enabled — without it, ingestion fails. When GovCloud

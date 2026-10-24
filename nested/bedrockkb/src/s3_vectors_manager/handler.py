@@ -3,11 +3,13 @@
 
 import boto3
 import cfnresponse
+import hashlib
 import json
 import logging
 import os
 import time
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import ClientError, ConnectionError as BotocoreConnectionError, HTTPClientError
 
 # Set up logging
 logger = logging.getLogger()
@@ -35,6 +37,52 @@ BUCKET_NOT_EMPTY_CODES = frozenset({'ConflictException'})
 BUCKET_DELETE_ATTEMPTS = 8
 BUCKET_DELETE_BACKOFF_SECONDS = 2
 BUCKET_DELETE_MAX_BACKOFF_SECONDS = 30
+
+# Error codes from the bedrock-agent service model. DeleteKnowledgeBase and
+# GetKnowledgeBase both declare ResourceNotFoundException for a missing knowledge
+# base; their only parameter is the id, so ValidationException (an id the service
+# rejects) cannot name an existing one either. Conflict, throttling and internal
+# errors are the transient codes DeleteKnowledgeBase declares and are retried.
+KB_ABSENT_CODES = frozenset({'ResourceNotFoundException', 'ValidationException'})
+KB_DELETE_RETRYABLE_CODES = frozenset(
+    {'ConflictException', 'ThrottlingException', 'InternalServerException'}
+)
+
+# DeleteKnowledgeBase retries: 2 + 4 + 8 + 16 + 8 x 30 = 270 seconds of backoff
+# across thirteen attempts, long enough for a knowledge base still CREATING after
+# a failed Create to settle before the delete gives up. Then up to 12 polls 10
+# seconds apart (120 seconds) for the asynchronous delete to finish. How long
+# Bedrock takes to create or delete a knowledge base has not been measured.
+#
+# Those sleeps are not the whole time a delete takes, because each call can also
+# wait on the network and on botocore's own retries. The Delete request's client
+# is therefore built with KB_CLIENT_CONFIG, which bounds one call at about
+# KB_CALL_SECONDS: two attempts, each at most a 5-second connect plus a 20-second
+# wait for data, plus botocore's backoff between them. The read timeout applies
+# to each read, so a peer that keeps sending a byte at a time is not bounded by it. The handler then sleeps, and so
+# makes another call, only while that would still leave KB_DEADLINE_MARGIN_SECONDS
+# of the invocation: room for the next call, one GetKnowledgeBase check after it,
+# and the CloudFormation response.
+KB_CLIENT_CONFIG = Config(
+    retries={'mode': 'standard', 'total_max_attempts': 2},
+    connect_timeout=5,
+    read_timeout=20,
+)
+KB_CALL_SECONDS = 55
+KB_RESPONSE_SECONDS = 20
+# Errors that end a call without an answer from Bedrock: the connection failed,
+# timed out or closed. They are transient, and they say nothing about whether
+# the knowledge base exists.
+TRANSPORT_ERRORS = (BotocoreConnectionError, HTTPClientError)
+KB_DELETE_ATTEMPTS = 13
+KB_DELETE_BACKOFF_SECONDS = 2
+KB_DELETE_MAX_BACKOFF_SECONDS = 30
+KB_DELETE_WAIT_POLLS = 12
+KB_DELETE_WAIT_SECONDS = 10
+# GetKnowledgeBase reads that decide a delete's outcome retry transient errors
+# three times (2 + 4 seconds of backoff).
+KB_STATUS_ATTEMPTS = 3
+KB_DEADLINE_MARGIN_SECONDS = 2 * KB_CALL_SECONDS + KB_RESPONSE_SECONDS
 
 
 def get_partition(region):
@@ -135,24 +183,13 @@ def handle_s3_vector_resources(event, context, properties):
     kms_key_arn = properties.get('KmsKeyArn', '')
     
     # Extract configurable index properties
-    vector_dimension = properties.get('VectorDimension', 1024)
-    distance_metric = properties.get('DistanceMetric', 'cosine')
-    metadata_configuration = properties.get('MetadataConfiguration', {
-        'nonFilterableMetadataKeys': ['AMAZON_BEDROCK_METADATA', 'AMAZON_BEDROCK_TEXT']
-    })
+    index_config = index_config_from_properties(properties)
     
     logger.info(f"Raw bucket name: {raw_bucket_name}, Sanitized bucket name: {bucket_name}")
-    logger.info(f"Index properties - Dimension: {vector_dimension}, Metric: {distance_metric}, Metadata: {metadata_configuration}")
+    logger.info(f"Index properties - Dimension: {index_config['dimension']}, Metric: {index_config['distance_metric']}, Metadata: {index_config['metadata_configuration']}")
     
     # Initialize S3 Vectors client
     s3vectors_client = boto3.client('s3vectors', region_name=region)
-    
-    # Create index config for passing to functions
-    index_config = {
-        'dimension': vector_dimension,
-        'distance_metric': distance_metric,
-        'metadata_configuration': metadata_configuration
-    }
     
     if request_type == 'Create':
         logger.info(f"Creating S3 Vector bucket: {bucket_name}")
@@ -173,13 +210,53 @@ def handle_s3_vector_resources(event, context, properties):
                 )
             return create_s3_vector_resources(s3vectors_client, bucket_name, index_name, embedding_model, kms_key_arn, index_config)
         else:
-            # Names haven't changed - update existing resources (recreate index)
-            return update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config)
+            # Names haven't changed. S3 Vectors has no UpdateIndex, so a changed
+            # dimension, distance metric or metadata configuration can only be
+            # applied by recreating the index, which deletes its vectors. Any
+            # other property change (embedding model, KMS key) keeps the index,
+            # recreating it only if it is missing.
+            old_index_config = index_config_from_properties(old_properties)
+            recreate = index_config_differs(old_index_config, index_config)
+            return update_s3_vector_info(
+                s3vectors_client, bucket_name, index_name, index_config, recreate_index=recreate
+            )
             
     elif request_type == 'Delete':
         logger.info(f"Deleting S3 Vector bucket: {bucket_name}")
         delete_s3_vector_resources(s3vectors_client, bucket_name, index_name)
         return {'Status': 'Deleted'}
+
+
+DEFAULT_METADATA_CONFIGURATION = {
+    'nonFilterableMetadataKeys': ['AMAZON_BEDROCK_METADATA', 'AMAZON_BEDROCK_TEXT']
+}
+
+
+def index_config_from_properties(properties):
+    """The CreateIndex settings a resource's properties ask for, with the defaults applied."""
+    return {
+        'dimension': properties.get('VectorDimension', 1024),
+        'distance_metric': properties.get('DistanceMetric', 'cosine'),
+        'metadata_configuration': properties.get(
+            'MetadataConfiguration', DEFAULT_METADATA_CONFIGURATION
+        ),
+    }
+
+
+def _normalized_index_config(index_config):
+    """Compare as CreateIndex would receive them: CloudFormation sends numbers as
+    strings, so ``"1024"`` and ``1024`` are the same dimension, and the order of
+    the non-filterable metadata keys does not change the index."""
+    metadata = dict(index_config['metadata_configuration'] or {})
+    keys = metadata.get('nonFilterableMetadataKeys')
+    if isinstance(keys, list):
+        metadata['nonFilterableMetadataKeys'] = sorted(keys)
+    return (int(index_config['dimension']), str(index_config['distance_metric']), metadata)
+
+
+def index_config_differs(old_index_config, new_index_config):
+    """True when an Update changes a setting that only recreating the index can apply."""
+    return _normalized_index_config(old_index_config) != _normalized_index_config(new_index_config)
 
 
 def sanitize_bucket_name(bucket_name):
@@ -239,13 +316,18 @@ def handle_knowledge_base_resources(event, context, properties):
     kms_key_arn = properties.get('KmsKeyArn', '')
     
     # Initialize Bedrock Agent client
-    bedrock_agent_client = boto3.client('bedrock-agent', region_name=region)
+    # Only Delete gets the bounded client: its own retries and deadline sit on
+    # top of it. Create and Update have no retries of their own, so they keep
+    # botocore's default retry budget.
+    client_kwargs = {'config': KB_CLIENT_CONFIG} if request_type == 'Delete' else {}
+    bedrock_agent_client = boto3.client('bedrock-agent', region_name=region, **client_kwargs)
     
     if request_type == 'Create':
         logger.info(f"Creating Knowledge Base with S3 Vectors: {kb_name}")
         return create_knowledge_base_s3_vectors(
             bedrock_agent_client, kb_name, description, role_arn, 
-            embedding_model_arn, index_arn, kms_key_arn
+            embedding_model_arn, index_arn, kms_key_arn,
+            client_token=knowledge_base_client_token(event)
         )
         
     elif request_type == 'Update':
@@ -260,7 +342,8 @@ def handle_knowledge_base_resources(event, context, properties):
         # Fallback: create new if we can't find existing
         return create_knowledge_base_s3_vectors(
             bedrock_agent_client, kb_name, description, role_arn, 
-            embedding_model_arn, index_arn, kms_key_arn
+            embedding_model_arn, index_arn, kms_key_arn,
+            client_token=knowledge_base_client_token(event)
         )
             
     elif request_type == 'Delete':
@@ -269,7 +352,7 @@ def handle_knowledge_base_resources(event, context, properties):
         if physical_resource_id:
             kb_id = extract_knowledge_base_id_from_physical_id(physical_resource_id)
             if kb_id:
-                delete_knowledge_base(bedrock_agent_client, kb_id)
+                delete_knowledge_base(bedrock_agent_client, kb_id, context)
         return {'Status': 'Deleted'}
 
 
@@ -290,18 +373,41 @@ def extract_knowledge_base_id_from_physical_id(physical_id):
         return None
 
 
+def knowledge_base_client_token(event):
+    """Derive CreateKnowledgeBase's idempotency token from the CloudFormation request.
+
+    A retry of the same request (Lambda retrying the invocation, or the handler
+    re-running after a timeout) carries the same StackId, LogicalResourceId and
+    RequestId, so it sends the same token and Bedrock returns the knowledge base
+    the first attempt created instead of creating a second one. A different
+    request gets a different token. The service model requires 33 to 256
+    characters matching ``[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}``; ``cfn-`` plus a
+    64-character hex digest is 68 characters of that alphabet.
+    """
+    identity = '|'.join(
+        str(event.get(key, '')) for key in ('StackId', 'LogicalResourceId', 'RequestId')
+    )
+    return f"cfn-{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+
 def create_knowledge_base_s3_vectors(bedrock_agent_client, name, description, role_arn, 
-                                   embedding_model_arn, index_arn, kms_key_arn=None):
-    """Create Knowledge Base with S3 Vectors using Console-proven approach."""
+                                   embedding_model_arn, index_arn, kms_key_arn=None,
+                                   client_token=None):
+    """Create Knowledge Base with S3 Vectors using Console-proven approach.
+
+    ``client_token`` is the idempotency token (see ``knowledge_base_client_token``);
+    the handler always passes one.
+    """
     try:
         logger.info(f"Creating Knowledge Base: {name} with S3 Vectors")
         logger.info(f"Using index ARN: {index_arn}")
         
         # Use the working Console payload structure
-        import time
-        
+        create_params = {}
+        if client_token:
+            create_params['clientToken'] = client_token
         response = bedrock_agent_client.create_knowledge_base(
-            clientToken=f"cfn-{int(time.time())}-{'a' * 20}",  # 33+ chars required
+            **create_params,
             name=name,
             description=description,
             roleArn=role_arn,
@@ -342,16 +448,154 @@ def create_knowledge_base_s3_vectors(bedrock_agent_client, name, description, ro
         raise
 
 
-def delete_knowledge_base(bedrock_agent_client, kb_id):
-    """Delete Knowledge Base using Bedrock Agent API."""
-    try:
-        logger.info(f"Deleting Knowledge Base: {kb_id}")
-        bedrock_agent_client.delete_knowledge_base(knowledgeBaseId=kb_id)
-        logger.info(f"Deleted Knowledge Base: {kb_id}")
-        
-    except ClientError as e:
-        if e.response['Error']['Code'] != 'ResourceNotFoundException':
-            logger.warning(f"Error deleting Knowledge Base: {e}")
+def knowledge_base_status(bedrock_agent_client, kb_id, attempts=KB_STATUS_ATTEMPTS, context=None):
+    """Return ``(status, failure_reasons)`` for a knowledge base, or None if it is gone.
+
+    ResourceNotFoundException means the knowledge base does not exist, and so
+    does ValidationException: the only parameter is the id, so an id the service
+    rejects cannot name a knowledge base. Throttling, internal and transport
+    errors are retried up to ``attempts`` times while the invocation has time
+    (see ``has_time_for``), so a transient read error is not what decides whether
+    a delete fails; the deletion wait polls on its own schedule and passes 1.
+    The last such error, and any other error, is raised.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            kb = bedrock_agent_client.get_knowledge_base(knowledgeBaseId=kb_id)['knowledgeBase']
+        except ClientError as e:
+            code = e.response['Error']['Code']
+            if code in KB_ABSENT_CODES:
+                return None
+            if code not in KB_DELETE_RETRYABLE_CODES:
+                raise
+            error = e
+        except TRANSPORT_ERRORS as e:
+            error = e
+        else:
+            return kb['status'], kb.get('failureReasons') or []
+        delay = KB_DELETE_BACKOFF_SECONDS * attempt
+        if attempt == attempts or not has_time_for(context, delay):
+            raise error
+        logger.warning(f"GetKnowledgeBase for {kb_id} failed ({error}); retrying in {delay}s")
+        time.sleep(delay)
+
+
+def has_time_for(context, seconds):
+    """True if sleeping ``seconds`` would still leave KB_DEADLINE_MARGIN_SECONDS of the invocation.
+
+    The margin is what the call after the sleep, one GetKnowledgeBase check and
+    the CloudFormation response can take. A context without
+    ``get_remaining_time_in_millis`` has no deadline to keep.
+    """
+    remaining = getattr(context, 'get_remaining_time_in_millis', None)
+    left_ms = remaining() if callable(remaining) else None
+    if not isinstance(left_ms, (int, float)):
+        return True
+    return left_ms / 1000 - seconds >= KB_DEADLINE_MARGIN_SECONDS
+
+
+def wait_for_knowledge_base_deletion(bedrock_agent_client, kb_id, context=None):
+    """Poll GetKnowledgeBase a bounded time after DeleteKnowledgeBase was accepted.
+
+    DeleteKnowledgeBase is asynchronous: it answers with status DELETING and the
+    knowledge base disappears later. Returns when it is gone. Raises
+    ``RuntimeError`` only on DELETE_UNSUCCESSFUL, the status in which the service
+    reports that the deletion failed and the knowledge base still exists. If it
+    is still DELETING when the wait runs out, or GetKnowledgeBase keeps erroring,
+    the delete has been accepted and is in progress, so this returns rather than
+    leaving the stack in DELETE_FAILED for a transient state.
+    """
+    for poll in range(1, KB_DELETE_WAIT_POLLS + 1):
+        if not has_time_for(context, KB_DELETE_WAIT_SECONDS):
+            logger.warning(f"Stopping the wait for Knowledge Base {kb_id} to keep within the function timeout")
+            break
+        time.sleep(KB_DELETE_WAIT_SECONDS)
+        try:
+            state = knowledge_base_status(bedrock_agent_client, kb_id, attempts=1)
+        except (ClientError, *TRANSPORT_ERRORS) as e:
+            logger.warning(f"Could not read Knowledge Base {kb_id} while it deletes (poll {poll}): {e}")
+            continue
+        if state is None:
+            logger.info(f"Deleted Knowledge Base: {kb_id}")
+            return
+        status, failure_reasons = state
+        if status == 'DELETE_UNSUCCESSFUL':
+            raise RuntimeError(
+                f"Deleting Knowledge Base {kb_id} failed (status DELETE_UNSUCCESSFUL: "
+                f"{'; '.join(failure_reasons) or 'no reason given'}). The knowledge base "
+                f"still exists; resolve the reason above, then retry the stack delete."
+            )
+        logger.info(f"Knowledge Base {kb_id} is {status} (poll {poll})")
+    logger.warning(
+        f"Knowledge Base {kb_id} was still being deleted when the wait ended; the "
+        f"delete was accepted and continues in Bedrock"
+    )
+
+
+def delete_knowledge_base(bedrock_agent_client, kb_id, context=None):
+    """Delete a Knowledge Base, treating one that is already gone as deleted.
+
+    The data sources that belong to it are separate stack resources that depend
+    on it, so CloudFormation has deleted them before this runs; DeleteKnowledgeBase
+    does not require anything else to be deleted first.
+
+    Conflict, throttling, internal and transport errors are retried with bounded
+    backoff.
+    Any other refusal is checked with GetKnowledgeBase: if the knowledge base is
+    gone the delete succeeds, and if it still exists ``RuntimeError`` names it, so
+    the stack delete reports FAILED instead of reporting SUCCESS and leaking it.
+    A knowledge base already DELETING counts as deleted. After a successful
+    call, waits a bounded time for the deletion to finish (see
+    ``wait_for_knowledge_base_deletion``). Retries and the wait both stop early
+    when the invocation is running out of time (see ``has_time_for``).
+    """
+    last_error = None
+    for attempt in range(1, KB_DELETE_ATTEMPTS + 1):
+        try:
+            logger.info(f"Deleting Knowledge Base: {kb_id} (attempt {attempt})")
+            response = bedrock_agent_client.delete_knowledge_base(knowledgeBaseId=kb_id)
+        except ClientError as e:
+            code = e.response['Error']['Code']
+            if code == 'ResourceNotFoundException':
+                logger.info(f"Knowledge Base {kb_id} not found (already deleted)")
+                return
+            if code not in KB_DELETE_RETRYABLE_CODES:
+                state = knowledge_base_status(bedrock_agent_client, kb_id, context=context)
+                if state is None:
+                    logger.info(f"Knowledge Base {kb_id} does not exist ({code} on delete)")
+                    return
+                if state[0] == 'DELETING':
+                    logger.warning(f"Knowledge Base {kb_id} is already being deleted ({code} on delete)")
+                    return
+                raise RuntimeError(
+                    f"Knowledge Base {kb_id} still exists (status {state[0]}) and "
+                    f"DeleteKnowledgeBase was refused: {e}"
+                ) from e
+            last_error = e
+        except TRANSPORT_ERRORS as e:
+            code = type(e).__name__
+            last_error = e
+        else:
+            logger.info(f"Knowledge Base {kb_id} delete accepted (status {response.get('status')})")
+            wait_for_knowledge_base_deletion(bedrock_agent_client, kb_id, context)
+            return
+        delay = min(KB_DELETE_BACKOFF_SECONDS * (2 ** (attempt - 1)), KB_DELETE_MAX_BACKOFF_SECONDS)
+        if attempt == KB_DELETE_ATTEMPTS or not has_time_for(context, delay):
+            break
+        logger.warning(f"DeleteKnowledgeBase for {kb_id} failed ({code}); retrying in {delay}s")
+        time.sleep(delay)
+    state = knowledge_base_status(bedrock_agent_client, kb_id, context=context)
+    if state is None:
+        logger.info(f"Knowledge Base {kb_id} not found (already deleted)")
+        return
+    if state[0] == 'DELETING':
+        logger.warning(f"Knowledge Base {kb_id} is already being deleted ({last_error})")
+        return
+    raise RuntimeError(
+        f"Knowledge Base {kb_id} still exists (status {state[0]}) after "
+        f"{attempt} delete attempts ({last_error}). Retry the stack delete "
+        f"once it is no longer {state[0]}."
+    )
 
 
 def get_knowledge_base_info(bedrock_agent_client, kb_id):
@@ -703,8 +947,13 @@ def get_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config=N
         raise
 
 
-def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config):
-    """Update existing S3 Vector resources by recreating the index."""
+def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config, recreate_index=True):
+    """Return the existing S3 Vector resources, recreating the index if asked.
+
+    Recreating the index deletes every vector in it, so the handler asks for it
+    only when the index settings changed (see ``index_config_differs``).
+    Otherwise the index is created only if it is missing.
+    """
     try:
         # Get bucket info
         bucket_response = s3vectors_client.get_vector_bucket(vectorBucketName=bucket_name)
@@ -722,9 +971,22 @@ def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_confi
 
         logger.info(f"Found existing vector bucket ARN: {bucket_arn}")
 
-        # For updates, always recreate the index to ensure fresh configuration
-        logger.info(f"Recreating vector index for update: {index_name}")
-        recreate_vector_index(s3vectors_client, bucket_name, index_name, index_config)
+        if recreate_index:
+            logger.info(f"Index settings changed; recreating vector index: {index_name}")
+            recreate_vector_index(s3vectors_client, bucket_name, index_name, index_config)
+        else:
+            # Keep the index and its vectors. CreateIndex still runs, so an index
+            # deleted outside the stack comes back; an existing one answers
+            # ConflictException, which create_vector_index reads as "exists".
+            logger.info(f"Index settings unchanged; keeping vector index and its vectors: {index_name}")
+            create_vector_index(
+                s3vectors_client,
+                bucket_name,
+                index_name,
+                dimension=index_config['dimension'],
+                distance_metric=index_config['distance_metric'],
+                metadata_configuration=index_config['metadata_configuration']
+            )
 
         # Construct index ARN (required for Knowledge Base configuration)
         index_arn = f"arn:{partition}:s3vectors:{region}:{account_id}:bucket/{bucket_name}/index/{index_name}"
@@ -737,7 +999,7 @@ def update_s3_vector_info(s3vectors_client, bucket_name, index_name, index_confi
             'BucketArn': bucket_arn,
             'IndexName': index_name,
             'IndexArn': index_arn,
-            'Status': 'Updated'
+            'Status': 'Updated' if recreate_index else 'Existing'
         }
         
     except ClientError as e:
