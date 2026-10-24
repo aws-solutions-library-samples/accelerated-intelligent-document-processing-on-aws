@@ -39,7 +39,7 @@ from config_scope import (  # noqa: E402
 
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
-from review_statuses import LegacyHitlStatus  # noqa: E402
+from review_statuses import LegacyHitlStatus, normalize_hitl_status  # noqa: E402
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
 _REVIEWER_ACTIVE_STATUSES = (
@@ -47,6 +47,22 @@ _REVIEWER_ACTIVE_STATUSES = (
     LegacyHitlStatus.IN_PROGRESS.value,
     LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
 )
+
+
+def _review_finished(hitl_status):
+    """Whether a stored HITLStatus says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
+    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
+    writer stored that the exact-match normaliser does not know (the earlier
+    SageMaker A2I flow). The listDocuments resolver and the web UI's
+    ``isHitlReviewFinished`` apply the same rule.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
 
 # Same story for the log redactor: byte-identical copy of
 # idp_common/utils/log_sanitizer.py, kept in step by
@@ -415,7 +431,11 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
     if reviewer_only:
         hitl_triggered = doc.get("HITLTriggered", False)
         hitl_status = doc.get("HITLStatus", "")
-        hitl_completed = doc.get("HITLCompleted", False)
+        # Finished by the legacy flag or by the status itself: a review queue
+        # records its outcome only in HITLStatus.
+        hitl_completed = doc.get("HITLCompleted", False) or _review_finished(
+            hitl_status
+        )
         hitl_owner = doc.get("HITLReviewOwner", "")
         reviewer_id = caller["username"]
         reviewer_email = caller["email"]
