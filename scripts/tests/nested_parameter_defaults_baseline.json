@@ -113,23 +113,6 @@
       "reason": "Declared at patterns/unified/template.yaml:202 and read by nothing in that template -- it is the only entry here with referenced false, and the default therefore decides nothing. Vestigial rather than disabled: the extraction and classification model ids come from the configuration in DynamoDB. The parameter should be deleted, and until it is, `referenced: false` is what the gate re-checks -- wiring it to anything makes this a live default and fails."
     }
   },
-  "knownDefects": {
-    "APIRESOLVERSTACK::MLflowLoggerFunctionArn": {
-      "template": "nested/api-resolvers/template.yaml",
-      "referenced": true,
-      "defect": "Declared with Default \"\" at nested/api-resolvers/template.yaml:24; HasMLflowLoggerFunction is derived from it at :405, the resolver's env var is set behind that condition at :2700 and the lambda:InvokeFunction grant at :2794. The parent passes nothing, so the condition is permanently false and nested/api-resolvers/src/lambda/test_results_resolver/index.py:86 returns immediately on every test run -- no deploy error and no log line. The sibling parameter declared beside it, TestExecutionAggregationFunctionArn, IS passed from a PATTERNSTACK output at template.yaml:3006. git log -S shows this parameter was passed when it was added and lost as collateral in 9c247f9bd.",
-      "issues": [
-        "1553"
-      ]
-    },
-    "DOCUMENTKB::pEmbedModel": {
-      "template": "nested/bedrockkb/template.yaml",
-      "referenced": true,
-      "defect": "Declared at nested/bedrockkb/template.yaml:90 with three AllowedValues and an amazon.titan-embed-text-v2:0 default. The parent passes nine other parameters to this resource and not this one, so the nested default decides the embedding model for every deployment and the two Cohere models docs/knowledge-base.md lists as supported cannot be selected. Unlike the MLflow entry nothing silently returns early -- the knowledge base works -- so what is lost is a documented choice rather than a feature.",
-      "issues": [
-        "1558"
-      ]
-    }
-  },
+  "knownDefects": {},
   "newEntryJustifications": []
 }

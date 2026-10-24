@@ -64,13 +64,14 @@ The Knowledge Base feature supports two vector storage backends to optimize for 
 
 ## Configuration
 
-The Document Knowledge Base Query feature is configured with three stack parameters at
+The Document Knowledge Base Query feature is configured with these stack parameters at
 deployment time:
 
 | Parameter | Values | Purpose |
 |---|---|---|
 | `DocumentKnowledgeBase` | `DISABLED`, `BEDROCK_KNOWLEDGE_BASE (Create)` (default) | Turns the feature on. The "Create" value is what provisions the knowledge base and its vector store. |
 | `KnowledgeBaseVectorStore` | `S3_VECTORS` (default), `OPENSEARCH_SERVERLESS` | Which vector store backs the knowledge base. See the comparison above. |
+| `KnowledgeBaseEmbeddingModel` | `amazon.titan-embed-text-v2:0` (default), `cohere.embed-english-v3`, `cohere.embed-multilingual-v3` | The Bedrock model that embeds documents into the vector store. See [Embedding Model](#embedding-model). |
 | `KnowledgeBaseModelId` | A Bedrock model id, default `us.amazon.nova-pro-v1:0` | The model that generates the answer from the retrieved passages. |
 
 `KnowledgeBaseModelId` has an explicit `AllowedValues` list, so the picker in the
@@ -96,15 +97,21 @@ deployment region.
 
 ### Embedding Model
 
-The embedding model is **fixed at `amazon.titan-embed-text-v2:0`** and is not selectable
-at deployment time, for either vector store type. The nested knowledge base template
-declares a `pEmbedModel` parameter offering `amazon.titan-embed-text-v2:0`,
-`cohere.embed-english-v3` and `cohere.embed-multilingual-v3`, but the parent stack does not
-pass it, so the nested default always applies. Choosing a Cohere embedding model therefore
-requires editing the templates; it is not reachable from a stack parameter.
+`KnowledgeBaseEmbeddingModel` selects the model that turns documents into vectors, for
+either vector store type. It accepts `amazon.titan-embed-text-v2:0` (the default),
+`cohere.embed-english-v3` and `cohere.embed-multilingual-v3`. All three produce
+1024-dimension vectors, which is the size the vector index is created with.
 
-Grant model access for `amazon.titan-embed-text-v2:0` in Amazon Bedrock before deploying
-with this feature enabled — without it, ingestion fails.
+Choose it when the knowledge base is first created. Changing it on an existing stack is
+not supported. The update rebuilds the vector index, discarding the vectors already in it,
+and with S3 Vectors the knowledge base keeps the embedding model it was created with, so
+the new choice does not take effect.
+
+Grant model access for the model you choose in Amazon Bedrock, in the deployment region,
+before deploying with this feature enabled — without it, ingestion fails. When GovCloud
+model availability was checked on 2026-07-17, `amazon.titan-embed-text-v2:0` was the only
+embedding model offered there, so keep the default in GovCloud unless you have confirmed
+the alternative is available.
 
 When the feature is enabled, the solution:
 - Creates the selected vector storage resources (OpenSearch or S3 Vectors)
