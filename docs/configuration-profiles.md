@@ -148,6 +148,8 @@ retained revision newest-first with who saved it and when. The same panel is
 reachable from **Actions → Configuration revisions…** while you have a profile open
 in the editor, which is where you are standing when you want to undo a save.
 
+![Configuration revisions dialog listing every retained revision of the default profile, newest first, with who saved it and when](../images/config-profiles-revisions.png)
+
 From the panel you can:
 
 - **Compare any two revisions** — select two rows and choose *Compare revisions*
@@ -382,6 +384,8 @@ sits above the configuration editor, so every column it does not need is vertica
 space taken from the thing you came to edit.
 
 The table includes a **type filter** (All / Managed / Custom) and a **preferences gear** to configure page size and visible columns.
+
+![Configuration Profiles table filtered to Managed profiles, with the History column showing each profile's revision count](../images/config-profiles-table.png)
 
 #### Available Actions
 
