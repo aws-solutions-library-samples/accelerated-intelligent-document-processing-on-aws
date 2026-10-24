@@ -11,7 +11,7 @@ The solution includes a responsive web-based user interface built with React tha
 
 ![Web UI Screenshot](../images/WebUI.png)
 
-_The GenAIIDP Web Interface showing the document tracking dashboard with status information, classification results, and extracted data._
+_The Document List, filtered to a folder of processed sample documents, with status, configuration profile, duration and confidence-alert columns._
 
 ## Features
 
@@ -106,6 +106,8 @@ The **Upload Documents** panel accepts documents from two sources, selected with
 - **Sample documents** — choose from the sample documents bundled with the deployment (e.g. a multi-page bank statement, a lending package, a batch of W-2 forms). Selecting a sample copies it server-side into the InputBucket — no local download required. This is the easiest way to try the accelerator or evaluate a configuration preset end-to-end.
 
 In both modes you can set an optional **folder prefix** and pick the **Configuration Version** used to process the document(s).
+
+![Upload Documents panel with a folder prefix, configuration profile and revision selected, and three files queued](../images/webui-upload.png)
 
 ### One-click config for samples
 
@@ -270,6 +272,8 @@ being preserved matters most because they are the annotations being built.
 
 The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization.
 
+![Document Details page for a six-page lending package, showing the Document Sections panel with each section's class, pages, low-confidence field count and status](../images/webui-document-sections.png)
+
 ### Key Capabilities
 
 - **Section Management**: Create, update, and delete document sections with validation
@@ -337,6 +341,8 @@ touching the structure or requeueing anything.
 ## Edit Pages
 
 The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing.
+
+![Document Pages panel listing each page with its class, classification confidence and thumbnail](../images/webui-document-pages.png)
 
 ### Key Capabilities
 
@@ -424,6 +430,8 @@ which changes nothing.
 
 The **Document Schema** tab on the Configuration page provides a visual **Schema Builder** for defining the document types (classes) and fields (attributes) that extraction produces — a JSON Schema Draft 2020-12 editor that requires no hand-editing of JSON. (The same builder powers the **Policy Schema** tab for rule validation.)
 
+![Schema Builder with the Payslip document type selected: the class list, its attributes, and the class inspector](../images/webui-schema-builder.png)
+
 ### Layout
 
 A three-pane master-detail: the **class list** (left, split into **Document Types** and reusable **Shared Classes**), the **attribute list** for the selected class (middle), and a **property inspector** for the selected class or attribute (right). Document types become top-level schemas; shared classes are referenced from attributes via `$ref` (single object) or `items.$ref` (array/list of that class).
@@ -444,6 +452,8 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 ## Prompt Preview
 
 The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
+
+![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
 
 ### Key Capabilities
 
@@ -599,11 +609,15 @@ From the panel you can:
 - **Compare** any two versions — a section-by-section, field-level diff of their extraction results.
 - **Delete** a version (Admin only) — permanently removes that run's pinned object versions; the current version cannot be deleted, and versions still referenced by another retained run are preserved.
 
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
+
 See the [Document Versions guide](document-versions.md) for how versioning works, retention, the CLI/API surfaces, and caveats.
 
 ## Chat with Document
 
 The "Chat with Document" feature is available at the bottom of the Document Detail view. It provides an interactive Q&A interface grounded in the text of the single document you are viewing — no other documents are considered. The feature is only available after the document's status is **COMPLETE**.
+
+![Chat with the Document panel answering a question that compares the payslip and W-2 in a lending package](../images/webui-chat-with-document.png)
 
 ### Model selection
 
