@@ -6,12 +6,35 @@ import cfnresponse
 import json
 import logging
 import os
+import time
 from botocore.exceptions import ClientError
 
 # Set up logging
 logger = logging.getLogger()
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
 logger.setLevel(getattr(logging, log_level))
+
+# Error codes from the s3vectors service model (botocore data/s3vectors). A missing
+# bucket or index is NotFoundException on both DeleteVectorBucket and DeleteIndex.
+# On the stack Delete's DeleteIndex, ValidationException is read the same way: the only parameters
+# sent are the names, and an index whose name the service rejects cannot exist.
+# On DeleteVectorBucket it is not trusted on its own, because the model does not
+# say which code a non-empty bucket gets: delete_vector_bucket asks GetVectorBucket
+# whether the bucket still exists before treating it as gone. ConflictException is the one conflict-class error DeleteVectorBucket declares;
+# the model documents that all indexes must be deleted first but does not name the
+# code for a bucket that still holds one, so treating it as "not empty" is an
+# inference from the model, not a measurement against the service.
+NOT_FOUND_CODES = frozenset({'NotFoundException'})
+ABSENT_ON_DELETE_CODES = NOT_FOUND_CODES | {'ValidationException'}
+BUCKET_NOT_EMPTY_CODES = frozenset({'ConflictException'})
+
+# Bounded wait for a bucket to become deletable after its index is deleted:
+# 2 + 4 + 8 + 16 + 30 + 30 + 30 = 120 seconds of backoff across eight attempts,
+# inside the function's 600-second timeout. How long the service takes to
+# release a bucket after DeleteIndex has not been measured.
+BUCKET_DELETE_ATTEMPTS = 8
+BUCKET_DELETE_BACKOFF_SECONDS = 2
+BUCKET_DELETE_MAX_BACKOFF_SECONDS = 30
 
 
 def get_partition(region):
@@ -145,7 +168,9 @@ def handle_s3_vector_resources(event, context, properties):
         # If bucket or index name changed, delete old and create new
         if old_bucket_name != bucket_name or old_index_name != index_name:
             if old_bucket_name and old_index_name:
-                delete_s3_vector_resources(s3vectors_client, old_bucket_name, old_index_name)
+                delete_s3_vector_resources(
+                    s3vectors_client, old_bucket_name, old_index_name, strict=False
+                )
             return create_s3_vector_resources(s3vectors_client, bucket_name, index_name, embedding_model, kms_key_arn, index_config)
         else:
             # Names haven't changed - update existing resources (recreate index)
@@ -346,8 +371,16 @@ def get_knowledge_base_info(bedrock_agent_client, kb_id):
         raise
 
 
-def delete_vector_index(s3vectors_client, bucket_name, index_name):
-    """Delete a vector index from an S3 Vectors bucket."""
+def delete_vector_index(s3vectors_client, bucket_name, index_name, absent_codes=NOT_FOUND_CODES):
+    """Delete a vector index from an S3 Vectors bucket.
+
+    ``absent_codes`` are the error codes read as "the index does not exist". The
+    stack Delete also passes ValidationException (an index whose name the
+    service rejects cannot exist; if it did, the bucket delete that follows is
+    refused and the handler reports FAILED). The Update rebuild keeps the
+    default, so an unexpected refusal there fails the update instead of
+    skipping the rebuild.
+    """
     try:
         logger.info(f"Deleting vector index: {index_name} from bucket: {bucket_name}")
         
@@ -359,7 +392,7 @@ def delete_vector_index(s3vectors_client, bucket_name, index_name):
         return True
         
     except ClientError as e:
-        if e.response['Error']['Code'] in ['IndexNotFound', 'ResourceNotFoundException', 'NoSuchIndex']:
+        if e.response['Error']['Code'] in absent_codes:
             # Index doesn't exist, which is fine for delete operations
             logger.info(f"Index {index_name} not found (already deleted or never existed)")
             return False
@@ -506,27 +539,115 @@ def is_valid_s3_bucket_name(bucket_name):
     return True
 
 
-def delete_s3_vector_resources(s3vectors_client, bucket_name, index_name):
-    """Delete S3 Vector bucket. Note: Bedrock manages the index lifecycle."""
+def vector_bucket_exists(s3vectors_client, bucket_name):
+    """Ask GetVectorBucket whether the bucket exists.
+
+    NotFoundException means it does not, and so does ValidationException: the
+    only parameter is the name, and GetVectorBucket has no not-empty condition
+    for that code to stand for. Any other error is raised.
+    """
     try:
-        # For S3 Vectors with Bedrock integration, Bedrock manages the index lifecycle
-        # We only need to delete the vector bucket, which should be done after 
-        # the Knowledge Base is deleted to avoid dependency issues
-        if bucket_name:
-            try:
-                logger.info(f"Deleting vector bucket: {bucket_name}")
-                s3vectors_client.delete_vector_bucket(
-                    vectorBucketName=bucket_name
+        s3vectors_client.get_vector_bucket(vectorBucketName=bucket_name)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] in ABSENT_ON_DELETE_CODES:
+            return False
+        raise
+
+
+def delete_vector_bucket(s3vectors_client, bucket_name):
+    """Delete a vector bucket, waiting a bounded time for it to become empty.
+
+    Returns True when this call deleted the bucket and False when it was already
+    gone. S3 Vectors refuses to delete a bucket that still holds an index and
+    answers ``ConflictException``; that is retried with backoff, because the
+    index this resource owns has just been deleted and the refusal can outlast
+    the ``DeleteIndex`` call briefly. ``ValidationException`` is checked with
+    GetVectorBucket: if the bucket does not exist it counts as gone, and if it
+    does it is retried like a refusal, so neither guess about which code the
+    service uses for a non-empty bucket can report a bucket gone while it
+    exists. Every other error is raised at once.
+
+    Raises ``RuntimeError`` when the bucket is still not empty after the last
+    attempt. On a stack Delete the handler then reports FAILED, which leaves the
+    stack in DELETE_FAILED; that is deliberate, because reporting SUCCESS here is what
+    silently leaked the bucket and its index (issue #1589). Once this
+    resource's own index is gone, the expected cause is another index, which the
+    handler's role is not permitted to list or delete, so the message says how to
+    clear it.
+    """
+    last_error = None
+    for attempt in range(1, BUCKET_DELETE_ATTEMPTS + 1):
+        try:
+            logger.info(f"Deleting vector bucket: {bucket_name} (attempt {attempt})")
+            s3vectors_client.delete_vector_bucket(vectorBucketName=bucket_name)
+            logger.info(f"Deleted vector bucket: {bucket_name}")
+            return True
+        except ClientError as e:
+            code = e.response['Error']['Code']
+            if code in NOT_FOUND_CODES:
+                logger.info(f"Vector bucket {bucket_name} not found (already deleted)")
+                return False
+            if code in ABSENT_ON_DELETE_CODES and not vector_bucket_exists(
+                s3vectors_client, bucket_name
+            ):
+                logger.info(
+                    f"Vector bucket {bucket_name} does not exist ({code} on delete)"
                 )
-                logger.info(f"Deleted vector bucket: {bucket_name}")
-            except ClientError as e:
-                if e.response['Error']['Code'] not in ['NoSuchBucket', 'BucketNotEmpty']:
-                    logger.warning(f"Error deleting vector bucket: {e}")
-                else:
-                    logger.info(f"Vector bucket {bucket_name} not found or not empty (expected): {e}")
-                    
+                return False
+            if code not in ABSENT_ON_DELETE_CODES | BUCKET_NOT_EMPTY_CODES:
+                raise
+            last_error = e
+            if attempt < BUCKET_DELETE_ATTEMPTS:
+                delay = min(
+                    BUCKET_DELETE_BACKOFF_SECONDS * (2 ** (attempt - 1)),
+                    BUCKET_DELETE_MAX_BACKOFF_SECONDS,
+                )
+                logger.warning(
+                    f"Vector bucket {bucket_name} is not empty yet ({code}); "
+                    f"retrying in {delay}s"
+                )
+                time.sleep(delay)
+    raise RuntimeError(
+        f"Vector bucket {bucket_name} still holds an index after "
+        f"{BUCKET_DELETE_ATTEMPTS} delete attempts ({last_error}). The index this "
+        f"stack created was deleted or not found, so the bucket most likely holds "
+        f"another index: one this stack did not create, one left under an earlier "
+        f"IndexName, or one whose deletion has not yet taken effect. Delete the bucket's remaining indexes "
+        f"(aws s3vectors list-indexes --vector-bucket-name {bucket_name}), then "
+        f"retry the stack delete."
+    )
+
+
+def delete_s3_vector_resources(s3vectors_client, bucket_name, index_name, strict=True):
+    """Delete the vector index this resource created, then its vector bucket.
+
+    S3 Vectors will not delete a bucket that still holds an index, so the index
+    goes first. A bucket or index that is already gone counts as deleted.
+
+    With ``strict`` (the stack Delete), any failure is raised, so the handler
+    reports FAILED instead of SUCCESS while the bucket still exists. Without it
+    (cleaning up the previous bucket and index during an Update that renamed
+    them) a failure is logged and the update proceeds: the role's DeleteIndex
+    grant names the index from the *current* template, so deleting an index
+    under its old name is denied, and failing the update over that would block a
+    rename that otherwise works.
+    """
+    if not bucket_name:
+        return
+    try:
+        if index_name:
+            delete_vector_index(
+                s3vectors_client, bucket_name, index_name, ABSENT_ON_DELETE_CODES
+            )
+        delete_vector_bucket(s3vectors_client, bucket_name)
     except Exception as e:
-        logger.warning(f"Error during deletion (continuing): {e}")
+        if strict:
+            raise
+        logger.warning(
+            f"Could not delete previous vector bucket {bucket_name} / index "
+            f"{index_name} during update (continuing): {e}"
+        )
 
 
 def get_s3_vector_info(s3vectors_client, bucket_name, index_name, index_config=None):
