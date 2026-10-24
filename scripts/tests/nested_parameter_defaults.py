@@ -10,19 +10,22 @@ parameter the parent never passes is outside both by construction, and it is the
 quiet one — the stack deploys, nothing logs, and whatever the default decides is
 what ships.
 
-Two live instances were verified by hand, and they are the shape worth describing
-because neither is visible to any other check in this tree:
+The scan was written after two instances of exactly this shape shipped, neither of
+them visible to any other check in this tree:
 
 * ``nested/api-resolvers/template.yaml`` declares ``MLflowLoggerFunctionArn`` with
   ``Default: ""``, derives a condition from it, and puts both an environment
   variable and a ``lambda:InvokeFunction`` grant behind that condition. The parent
-  passes nothing, so the condition is permanently false and the resolver returns
-  immediately on every test run. The sibling parameter declared beside it *is*
-  passed. Issue 1553.
+  stopped passing it, so the condition was permanently false and the resolver
+  returned immediately on every test run. Issue 1553.
 * ``nested/bedrockkb/template.yaml`` declares ``pEmbedModel`` with three
-  ``AllowedValues`` and a Titan default. The parent passes nine other parameters to
-  the same resource and not this one, so the two Cohere embedding models that
-  ``docs/knowledge-base.md`` lists as supported cannot be selected at all.
+  ``AllowedValues`` and a Titan default. The parent passed nine other parameters to
+  the same resource and not this one, so the two Cohere embedding models could not
+  be selected. Issue 1558.
+
+Both are now passed, and ``test_feature_parameter_wiring.py`` asserts the value
+each one receives, which this scan cannot: it only sees that a parameter is passed,
+and passing ``""`` for the MLflow ARN would satisfy it while reproducing the defect.
 
 **Reported against a baseline, not failed outright.** Most of these are deliberate:
 an optional knob a deployment is expected to leave alone, or a value the solution

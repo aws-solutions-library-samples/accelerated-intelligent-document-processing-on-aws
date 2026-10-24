@@ -301,7 +301,9 @@ its queue item:
 - In the document list, the **In Review** status links to the queue item for Admins
   and Annotators.
 
-Once the review finishes, the document page can be edited as usual.
+Once the review finishes, the document page can be edited as usual. **Process Changes**
+on a finished review doesn't mark it completed again or replace the reviewer the queue
+recorded.
 
 ## Turning review queues on
 

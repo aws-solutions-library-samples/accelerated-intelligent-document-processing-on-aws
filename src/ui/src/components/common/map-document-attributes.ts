@@ -4,6 +4,7 @@
 import { getDocumentConfidenceAlertCount } from './confidence-alerts-utils';
 import { getDocumentProcessingIssueCount } from './processing-issues-utils';
 import { parseMetering, parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
+import { isHitlReviewFinished } from './review-status';
 
 interface DocumentApiItem {
   ObjectKey: string;
@@ -67,13 +68,6 @@ const getHitlStatus = (status: string | undefined): string => {
     return 'N/A';
   }
   return status;
-};
-
-// Helper function to check if HITL is completed (includes skipped as review is done)
-const isHitlCompleted = (status: string | undefined): boolean => {
-  if (!status) return false;
-  const statusLower = status.toLowerCase();
-  return statusLower === 'completed' || statusLower === 'skipped' || statusLower.includes('complete') || statusLower.includes('skipped');
 };
 
 /* Maps document attributes from API to a format that can be used in tables and panel */
@@ -150,7 +144,8 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
 
     // Extract HITL metadata - use HITLTriggered from backend, fallback to status check
     const hitlTriggered = item.HITLTriggered === true || (hitlStatus && hitlStatus !== 'N/A');
-    const hitlCompleted = isHitlCompleted(hitlStatus);
+    // Finished means completed, skipped, or (for a queue review) rejected.
+    const hitlCompleted = isHitlReviewFinished(hitlStatus);
 
     // Create a unique ID combining PK and SK for proper row tracking
     const uniqueId = listPK && listSK ? `${listPK}#${listSK}` : objectKey;
