@@ -473,7 +473,10 @@ neither: an absent value has no place on the page for a box to sit, and a missin
 box is the correct outcome rather than a finding. ⚠️ That narrows the list half as
 well — a section whose only box-less scored leaves sit in empty cells reported
 before and is silent now. Neither half reports at all when no page carried OCR
-geometry, since no match was attempted there.
+geometry: every scored leaf is box-less there, so a list section would
+otherwise report through the row count and blame `geometry.mode` for a match
+that was never attempted. Both callers — the assessment service and the
+extraction service — pass that fact through.
 
 The scalar side was counted in neither half before
 ([#1520](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1520)) —

@@ -1201,6 +1201,14 @@ def match_value_to_geometry(
     # already disambiguates those rows, so the preference has nothing to add there —
     # it exists for the scalar case, which passes no index.
     #
+    # ⚠️ **Nor when a spatial signal exists.** Under ``llm_grounded`` the model's own
+    # box arrives as ``preferred_geometry`` and the branch below picks the candidate
+    # nearest it. Filtering first could discard a separator-bridged candidate sitting
+    # exactly where the model said the value was, in favour of a verbatim one
+    # elsewhere on the page — which is the opposite of what that signal is for. So the
+    # preference runs only when neither disambiguator is present, which is the
+    # ``ocr_only`` scalar case it was measured on.
+    #
     # ⚠️ **Bounded by what it is NOT asked to decide.** For a number the primary
     # rendering is arbitrary — ``str(6.0)`` is ``"6.0"``, a substring of
     # ``"126.00 total"`` — so below EXACT this preference can favour a coincidence
@@ -1211,7 +1219,7 @@ def match_value_to_geometry(
     # token-boundary rule cost 73 account numbers the model had transcribed one digit
     # short, where the box was on the right field and the highlight is what would
     # have caught the error). It wants its own change and its own measurement.
-    if occurrence_index is None:
+    if occurrence_index is None and ref is None:
         verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
         if verbatim_at_tier:
             best = verbatim_at_tier

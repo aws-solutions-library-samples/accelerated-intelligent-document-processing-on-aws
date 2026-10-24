@@ -2049,12 +2049,14 @@ def audit_explainability(
     # rather than reporting it with a cause it cannot support. ``None`` means the
     # caller did not say, and is treated as available so an existing caller keeps
     # its behaviour.
-    nothing_located = (
-        geometry_available is not False
-        and geometry_total > 0
-        and geometry_missing == geometry_total
-    )
-    if missing_geometry_rows or nothing_located:
+    nothing_located = geometry_total > 0 and geometry_missing == geometry_total
+    # Gating the WHOLE emission, not just ``nothing_located``: with no geometry
+    # anywhere, every scored populated leaf is box-less, so a section holding a list
+    # would still report through ``missing_geometry_rows`` and blame
+    # ``geometry.mode`` for a match that was never attempted. Suppressing one half
+    # and not the other is the shape that makes a note hard to read rather than
+    # merely noisy.
+    if geometry_available is not False and (missing_geometry_rows or nothing_located):
         issues.append(
             ProcessingIssue(
                 stage="assessment",

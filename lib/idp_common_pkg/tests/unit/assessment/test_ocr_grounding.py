@@ -2040,3 +2040,49 @@ class TestRowOrderSurvivesMixedRendering:
         geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
         assert source == "ocr"
         assert geom["page"] == 2
+
+
+class TestTheSpatialSignalOutranksTheVerbatimPreference:
+    """Under ``llm_grounded`` the model's own box is the disambiguator.
+
+    ``preferred_geometry`` is why that mode exists: the model says roughly where the
+    value is, and the nearest candidate wins. Filtering by provenance first could
+    discard a separator-bridged candidate sitting exactly where the model pointed,
+    in favour of a verbatim one elsewhere on the page — the opposite of what the
+    spatial signal is for. The preference therefore runs only when neither
+    disambiguator is present.
+    """
+
+    def test_the_candidate_nearest_the_model_box_wins_over_a_verbatim_one(self):
+        pd = {
+            1: _page(
+                [
+                    _line("Apr 15, 2011", 0.20, 0.80),
+                    _line("4-15-11", 0.20, 0.10),
+                ]
+            )
+        }
+        # The model put the value near the BOTTOM of the page, where the variant is.
+        preferred = {
+            "boundingBox": {"left": 0.20, "top": 0.80, "width": 0.1, "height": 0.02},
+            "page": 1,
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd, preferred)
+        assert geom["boundingBox"]["top"] == pytest.approx(0.80), (
+            "the spatial signal must decide, not provenance"
+        )
+        assert source == g._SOURCE_NORMALIZED
+
+    def test_without_a_model_box_the_verbatim_line_wins(self):
+        """ocr_only: no spatial signal, so the preference applies as designed."""
+        pd = {
+            1: _page(
+                [
+                    _line("Apr 15, 2011", 0.20, 0.80),
+                    _line("4-15-11", 0.20, 0.10),
+                ]
+            )
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert geom["boundingBox"]["top"] == pytest.approx(0.10)
+        assert source == "ocr"

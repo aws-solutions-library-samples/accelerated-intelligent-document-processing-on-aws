@@ -365,3 +365,53 @@ class TestADocumentWithNoOcrGeometry:
             assessment, extraction, geometry_mode="ocr_only", section_id="1"
         )
         assert "assessment_geometry_incomplete" in _codes(issues)
+
+
+class TestNoGeometrySuppressesBothHalves:
+    """The LIST half too, which a scalar-only fixture cannot reach.
+
+    ``geometry_available`` gates the whole emission rather than only the
+    "nothing located" condition. With no geometry anywhere, every scored populated
+    leaf is box-less, so a section holding a list would otherwise report through
+    ``missing_geometry_rows`` — with the per-leaf message, blaming ``geometry.mode``
+    for a match that was never attempted. Suppressing one half and not the other is
+    the shape that makes a note hard to read rather than merely noisy.
+    """
+
+    def test_a_list_section_is_suppressed_too(self):
+        extraction = {"Items": [{"Name": "Widget"}, {"Name": "Gadget"}]}
+        assessment = {"Items": [{"Name": _scored()}, {"Name": _scored()}]}
+        _gaps, issues = audit_explainability(
+            assessment,
+            extraction,
+            geometry_mode="ocr_only",
+            section_id="1",
+            geometry_available=False,
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
+
+    def test_the_same_list_section_reports_when_geometry_exists(self):
+        """So the suppression is doing the work, not the fixture."""
+        extraction = {"Items": [{"Name": "Widget"}, {"Name": "Gadget"}]}
+        assessment = {"Items": [{"Name": _scored()}, {"Name": _scored()}]}
+        _gaps, issues = audit_explainability(
+            assessment,
+            extraction,
+            geometry_mode="ocr_only",
+            section_id="1",
+            geometry_available=True,
+        )
+        issue = _issue(issues, "assessment_geometry_incomplete")
+        assert issue.details["missing_geometry_rows"] == 2
+
+    def test_a_mixed_section_is_suppressed_too(self):
+        extraction = {"Items": [{"Name": "Widget"}], "Language": "English"}
+        assessment = {"Items": [{"Name": _scored()}], "Language": _scored()}
+        _gaps, issues = audit_explainability(
+            assessment,
+            extraction,
+            geometry_mode="ocr_only",
+            section_id="1",
+            geometry_available=False,
+        )
+        assert "assessment_geometry_incomplete" not in _codes(issues)
