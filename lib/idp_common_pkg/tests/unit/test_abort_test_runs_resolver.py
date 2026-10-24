@@ -1104,3 +1104,56 @@ def test_a_settle_wait_that_raises_is_handled_as_one_that_ran_out(
     assert result["abortedCount"] == len(run_ids), result
     assert result["failedCount"] == 0, result
     assert set(aborted) == set(run_ids)
+
+
+@pytest.mark.unit
+def test_every_run_waits_for_its_own_documents_not_only_the_first_runs(
+    timed_runs,
+):
+    """The one settle wait covers every run's documents.
+
+    The first run's documents are already settled and the second's never
+    settle, so a wait over the first run's documents alone would return at
+    once and mark the second run ABORTED a moment after its dispatch.
+    """
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    install(lambda call, n: 0)
+    settled, unsettled = run_ids[:2]
+    for n in range(120):
+        table.update_item(
+            Key={"PK": f"doc#{settled}/doc-{n:03d}.pdf", "SK": "none"},
+            UpdateExpression="SET ObjectStatus = :s",
+            ExpressionAttributeValues={":s": "ABORTED"},
+        )
+    started = clock.now
+
+    result = index.lambda_handler(_ui_event([settled, unsettled]), None)
+
+    assert result["abortedCount"] == 2, result
+    floor = (
+        index.ABORT_WAIT_BUDGET_SECONDS
+        - index.METRICS_START_PAUSE_SECONDS
+        - (max(dispatched.values()) - started)
+    )
+    window = aborted[unsettled] - dispatched[unsettled]
+    assert window >= floor, (window, floor)
+
+
+@pytest.mark.unit
+def test_every_document_is_told_to_stop_once_in_batches_of_at_most_100(
+    timed_runs,
+):
+    """Each of a run's documents is in exactly one abort-workflow invoke."""
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    install(lambda call, n: 0)
+
+    index.lambda_handler(_ui_event(run_ids[:1]), None)
+
+    batches = [
+        json.loads(call.kwargs["Payload"])["arguments"]["objectKeys"]
+        for call in index.lambda_client.invoke.call_args_list
+    ]
+    assert all(0 < len(batch) <= 100 for batch in batches), [len(b) for b in batches]
+    sent = [key for batch in batches for key in batch]
+    expected = [f"{run_ids[0]}/doc-{n:03d}.pdf" for n in range(120)]
+    assert sent == expected
