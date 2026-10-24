@@ -40,6 +40,18 @@ MAX_HOURS_BACK = 168
 MAX_LOG_GROUPS = 50
 
 
+def _resolve_max_log_events(requested: int, configured: int) -> int:
+    """Return the per-group event count a search should use.
+
+    A requested count below 1 cannot be sent to CloudWatch Logs, whose
+    ``FilterLogEvents`` ``limit`` has a minimum of 1, and a rejected request reads
+    as "no events found". Such a value resolves to the configured
+    ``parameters.max_log_events``, which the configuration model holds above 0.
+    A count of 1 or more is used as given.
+    """
+    return requested if requested >= 1 else configured
+
+
 def _get_params() -> Dict[str, Any]:
     """
     Load error-analyzer parameters from IDPConfig.
@@ -121,7 +133,9 @@ def search_cloudwatch_logs(
         effective_max_log_groups = max_log_groups or min(
             params["max_log_groups"], MAX_LOG_GROUPS
         )
-        effective_max_log_events = max_log_events or params["max_log_events"]
+        effective_max_log_events = _resolve_max_log_events(
+            max_log_events, params["max_log_events"]
+        )
         msg_max_len = params["max_log_message_length"]
         ttl = params["settings_cache_ttl_seconds"]
 
@@ -185,6 +199,9 @@ def search_performance_issues(
             if hours_back is None
             else hours_back
         )
+        effective_max_log_events = _resolve_max_log_events(
+            max_log_events, params["max_log_events"]
+        )
         msg_max_len = params["max_log_message_length"]
         ttl = params["settings_cache_ttl_seconds"]
 
@@ -214,7 +231,7 @@ def search_performance_issues(
                 log_group_name=log_group["name"],
                 filter_pattern=combined_pattern,
                 hours_back=effective_hours_back,
-                max_events=max_log_events,
+                max_events=effective_max_log_events,
                 log_message_max_length=msg_max_len,
             )
 

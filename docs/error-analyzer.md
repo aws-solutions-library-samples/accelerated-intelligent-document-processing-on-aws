@@ -480,8 +480,8 @@ These take effect as written:
 default.** `search_cloudwatch_logs` and `search_performance_issues` declare
 `max_log_events: int = 10` in their own signatures, so when the model omits the
 argument a search returns up to 10 events per log group whatever this is set to.
-`search_cloudwatch_logs` falls through to the configured value only if a caller
-passes `0`, and `search_performance_issues` never reads it. The configured
+Both tools fall through to the configured value only when the model passes a
+count below 1, which CloudWatch Logs would reject. The configured
 default is `5`, and every saved configuration profile stores that `5`, so making
 the setting take effect would change the number of events every existing
 deployment receives; that is an open decision on
