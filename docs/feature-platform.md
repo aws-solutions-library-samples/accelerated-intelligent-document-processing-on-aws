@@ -103,6 +103,8 @@ and seller buckets permit `GetObject` only, not `ListObjectsV2`).
   **Extensions → Browse catalog** only until installed — the bundled reference
   samples do this).
 
+![Extensions catalog listing installed extensions and the two reference samples available to install](../images/feature-platform-extensions-catalog.png)
+
 ### Region availability
 
 Marketplace extensions are **Region-scoped**. `sam package` bakes an absolute,
