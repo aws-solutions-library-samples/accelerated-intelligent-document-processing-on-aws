@@ -332,7 +332,7 @@ agents:
         order: 0
       lookback_hours:
         type: integer
-        description: How far back the error analyzer searches logs, traces, and execution history (in hours)
+        description: Default window, in hours, for the error analyzer's CloudWatch log searches when the question names none
         default: 24
         order: 1
       system_prompt:
@@ -374,17 +374,30 @@ include them, so a configuration naming one is rejected.
 
 #### lookback_hours
 
-**Purpose**: How far back the agent is meant to search logs, traces and
-execution history.
+**Purpose**: The default search window, in hours, for the two CloudWatch log
+tools.
 
 **Default**: `24` hours
 
-Each tool takes its own `hours_back` argument, and the model supplies that
-argument per call — so in practice the window comes from the query ("errors in
-the last hour", "what failed yesterday") and from each tool's own default,
-which is also 24 hours. Setting `lookback_hours` records your intent in the
-configuration, but no tool currently reads it, so changing it alone will not
-widen or narrow a search. To search a different window, say so in the query.
+`search_cloudwatch_logs` (in its system-wide mode, without a `document_id`) and
+`search_performance_issues` each take an `hours_back` argument. When the model
+omits it, the tool searches the last `lookback_hours` hours. When the model
+passes it — because the query asked for a window, as in "errors in the last
+hour" or "what failed yesterday" — the model's value is used instead. Both tools
+tell the model to omit the argument unless the user asked for a window. A
+configured value above 168 hours, the maximum the tools advertise, is treated as
+168.
+
+Three things `lookback_hours` does not control. A document-specific
+`search_cloudwatch_logs` call searches a window derived from the document's
+tracking record, whatever this is set to: a few minutes either side of the
+completion time for a failed document, the processing run from start to
+completion for one that finished, and the last 30 minutes for one still in
+progress or with no completion time. `fetch_recent_records`
+counts its `hours_back` back from the end of the requested date rather than from
+now, and keeps its own 24-hour default. `analyze_system_performance` keeps its
+own 1-hour default, because the X-Ray service graph it reads is bounded
+separately (see `xray_analysis_hours` below).
 
 #### system_prompt
 
@@ -461,20 +474,24 @@ These take effect as written:
 | `xray_response_time_threshold_ms` | `10000` | Response time treated as slow |
 | `xray_analysis_hours` | `3` | Window for X-Ray service-graph analysis (max 6) |
 | `xray_error_rate_threshold` | `0.05` | Error rate treated as significant |
+| `max_log_groups` | `20` | Log groups `search_cloudwatch_logs` searches when the model passes no `max_log_groups`; a value the model passes is used instead. A configured value above 50, the maximum the tool advertises, is treated as 50 |
 
-⚠️ **`max_log_events` and `max_log_groups` are read but cannot currently
-override the tool defaults.** `search_cloudwatch_logs` declares
-`max_log_events: int = 10` and `max_log_groups: int = 20` in its own signature
-and then resolves the effective value as `max_log_events or params[...]`. When
-the model omits the argument Python supplies the signature default, which is
-truthy, so the `or` never falls through to the configured value. The configured
-value wins only if a caller passes `0`. To change how many events come back,
-ask for it in the query — the model passes the argument through — rather than
-by setting the parameter.
+⚠️ **`max_log_events` is read but cannot currently override the tool
+default.** `search_cloudwatch_logs` and `search_performance_issues` declare
+`max_log_events: int = 10` in their own signatures, so when the model omits the
+argument a search returns up to 10 events per log group whatever this is set to.
+`search_cloudwatch_logs` falls through to the configured value only if a caller
+passes `0`, and `search_performance_issues` never reads it. The configured
+default is `5`, and every saved configuration profile stores that `5`, so making
+the setting take effect would change the number of events every existing
+deployment receives; that is an open decision on
+[issue #1555](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1555).
+To change how many events come back, ask for it in the query — the model passes
+the argument through.
 
 `time_range_hours_default` is declared and validated by the configuration
 model, so setting it is accepted, but nothing in the agent or its tools reads
-it. Use the query to set a window, as described under `lookback_hours` above.
+it. Set the default window with `lookback_hours`, described above.
 
 ### Configuration Example (config.yaml)
 
@@ -894,11 +911,15 @@ selected here.
 
 #### Scoping how much evidence is gathered
 
-Ask for it in the query rather than reaching for a configuration setting. The
-model passes `hours_back`, `max_log_events` and `max_log_groups` to the tools
-per call, so "check the last 6 hours" or "show me more log events" changes the
-search directly. The matching `parameters` fields cannot override the tool
-defaults — see
+For a single question, ask for it in the query. The model passes `hours_back`,
+`max_log_events` and `max_log_groups` to the tools per call, so "check the last
+6 hours" or "show me more log events" changes the search directly, and a value
+the model passes always wins over configuration.
+
+To change the default for every question, set
+[`lookback_hours`](#lookback_hours) for the log-search window and
+`parameters.max_log_groups` for the number of log groups searched.
+`parameters.max_log_events` cannot override the tool default — see
 [Advanced parameters](#advanced-parameters-config-file-only) for why.
 
 What you *can* set usefully in `parameters` is how much of each result is
@@ -1139,8 +1160,8 @@ that package's `__init__.py`, and is registered on the agent in
 
 | Tool | Module | Signature |
 |---|---|---|
-| `search_cloudwatch_logs` | `cloudwatch_tool.py` | `(document_id="", filter_pattern="ERROR", hours_back=24, max_log_events=10, max_log_groups=20)` |
-| `search_performance_issues` | `cloudwatch_tool.py` | `(issue_type="performance", hours_back=24, max_log_events=10)` |
+| `search_cloudwatch_logs` | `cloudwatch_tool.py` | `(document_id="", filter_pattern="ERROR", hours_back=None, max_log_events=10, max_log_groups=None)` |
+| `search_performance_issues` | `cloudwatch_tool.py` | `(issue_type="performance", hours_back=None, max_log_events=10)` |
 | `fetch_document_record` | `dynamodb_tool.py` | `(object_key)` |
 | `fetch_recent_records` | `dynamodb_tool.py` | `(date="", hours_back=24, limit=100)` |
 | `fetch_pipeline_configuration` | `config_tool.py` | `(config_version="")` |
@@ -1163,7 +1184,9 @@ supplied:
   across the stack's log groups for the given `filter_pattern`.
 
 Both paths truncate individual messages at `max_log_message_length` and cap
-the number of log groups searched.
+the number of log groups searched. An omitted `hours_back` resolves to the
+configured `lookback_hours` and an omitted `max_log_groups` to
+`parameters.max_log_groups`.
 
 #### retrieve_document_context
 
