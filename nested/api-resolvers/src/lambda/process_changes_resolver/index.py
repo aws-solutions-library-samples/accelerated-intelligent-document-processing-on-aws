@@ -503,14 +503,18 @@ def handler(event, context):
 
             # Mark HITL review as completed when processing changes
             # This handles the case where user edits data and clicks "Process Changes"
-            hitl_status_lower = (document.hitl_status or "").lower().replace(" ", "")
-            completed_statuses = [
-                "completed",
-                "reviewcompleted",
-                "skipped",
-                "reviewskipped",
-            ]
-            if document.hitl_status and hitl_status_lower not in completed_statuses:
+            # on a review that is still owed. A finished review — legacy completed or
+            # skipped, or a queue review that ended complete or rejected — is not
+            # finished again: its outcome and reviewer stay as recorded (#1568).
+            # "COMPLETED" is the one finished spelling a real writer stored that the
+            # exact-match normaliser does not know: the earlier A2I flow wrote it,
+            # and retained rows may still carry it.
+            review_finished = (
+                normalize_hitl_status(document.hitl_status).kind
+                in ("complete", "rejected", "skipped")
+                or document.hitl_status == "COMPLETED"
+            )
+            if document.hitl_status and not review_finished:
                 identity = event.get("identity", {})
                 username = identity.get("username", "system")
                 user_email = identity.get("claims", {}).get("email", "")
@@ -566,24 +570,35 @@ def handler(event, context):
             elif document.hitl_status:
                 # Already finished. A review completed section by section used to
                 # finish without recording who did it; fill that in from this caller,
-                # never overwriting a recorded reviewer.
+                # never overwriting a recorded reviewer. The name and email are one
+                # record, written together or not at all: a review queue records its
+                # reviewer in HITLReviewedBy and writes no HITLReviewedByEmail, and
+                # filling only the email would pair that reviewer with this caller's
+                # address. Either half recorded means a reviewer is recorded.
                 identity = event.get("identity", {})
                 tracking_table = os.environ.get("TRACKING_TABLE")
                 if tracking_table:
                     table = boto3.resource("dynamodb").Table(tracking_table)
-                    table.update_item(
-                        Key={"PK": f"doc#{object_key}", "SK": "none"},
-                        UpdateExpression=(
-                            "SET HITLReviewedBy = if_not_exists(HITLReviewedBy, :reviewedBy), "
-                            "HITLReviewedByEmail = if_not_exists(HITLReviewedByEmail, :reviewedByEmail)"
-                        ),
-                        ExpressionAttributeValues={
-                            ":reviewedBy": identity.get("username", "system"),
-                            ":reviewedByEmail": identity.get("claims", {}).get(
-                                "email", ""
+                    try:
+                        table.update_item(
+                            Key={"PK": f"doc#{object_key}", "SK": "none"},
+                            UpdateExpression=(
+                                "SET HITLReviewedBy = :reviewedBy, "
+                                "HITLReviewedByEmail = :reviewedByEmail"
                             ),
-                        },
-                    )
+                            ConditionExpression=(
+                                "attribute_not_exists(HITLReviewedBy) AND "
+                                "attribute_not_exists(HITLReviewedByEmail)"
+                            ),
+                            ExpressionAttributeValues={
+                                ":reviewedBy": identity.get("username", "system"),
+                                ":reviewedByEmail": identity.get("claims", {}).get(
+                                    "email", ""
+                                ),
+                            },
+                        )
+                    except table.meta.client.exceptions.ConditionalCheckFailedException:
+                        pass  # a reviewer is already recorded
 
         except ValueError as e:
             if str(e) == _QUEUE_MANAGED_MESSAGE:

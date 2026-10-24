@@ -94,9 +94,6 @@ TYPE_DATE_INDEX = "TypeDateIndex"
 ITEM_TYPE_DOCUMENT = "document"
 ITEM_TYPE_TEST_DOCUMENT = "test-document"
 
-# HITL statuses that indicate a completed/skipped review
-COMPLETED_HITL_STATUSES = {"skipped", "reviewskipped", "completed", "reviewcompleted"}
-
 
 class DecimalEncoder(json.JSONEncoder):
     """JSON encoder that handles Decimal objects from DynamoDB."""
