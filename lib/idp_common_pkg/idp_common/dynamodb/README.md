@@ -45,8 +45,10 @@ single `query` response.
 
 **`batch_get_items` raises instead of returning a partial result.** Keys DynamoDB
 leaves in `UnprocessedKeys` are re-submitted with exponential backoff and full
-jitter; when `max_attempts` runs out the call raises `DynamoDBError` with
-`error_code == "UnprocessedKeys"`. `batch_write_items` does the same with
+jitter; when `max_attempts` runs out the call raises
+`DynamoDBUnprocessedKeysError`, a `DynamoDBError` with
+`error_code == "UnprocessedKeys"` whose `items` holds the rows read before it gave
+up, for a caller that can use a partial answer on purpose. `batch_write_items` does the same with
 `error_code == "UnprocessedItems"`. A batch of up to 100 keys with nothing
 unprocessed behaves as it always did.
 
