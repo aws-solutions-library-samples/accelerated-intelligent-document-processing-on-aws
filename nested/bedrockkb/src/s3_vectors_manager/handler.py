@@ -7,7 +7,8 @@ import json
 import logging
 import os
 import time
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import ClientError, ConnectionError as BotocoreConnectionError, HTTPClientError
 
 # Set up logging
 logger = logging.getLogger()
@@ -35,6 +36,52 @@ BUCKET_NOT_EMPTY_CODES = frozenset({'ConflictException'})
 BUCKET_DELETE_ATTEMPTS = 8
 BUCKET_DELETE_BACKOFF_SECONDS = 2
 BUCKET_DELETE_MAX_BACKOFF_SECONDS = 30
+
+# Error codes from the bedrock-agent service model. DeleteKnowledgeBase and
+# GetKnowledgeBase both declare ResourceNotFoundException for a missing knowledge
+# base; their only parameter is the id, so ValidationException (an id the service
+# rejects) cannot name an existing one either. Conflict, throttling and internal
+# errors are the transient codes DeleteKnowledgeBase declares and are retried.
+KB_ABSENT_CODES = frozenset({'ResourceNotFoundException', 'ValidationException'})
+KB_DELETE_RETRYABLE_CODES = frozenset(
+    {'ConflictException', 'ThrottlingException', 'InternalServerException'}
+)
+
+# DeleteKnowledgeBase retries: 2 + 4 + 8 + 16 + 8 x 30 = 270 seconds of backoff
+# across thirteen attempts, long enough for a knowledge base still CREATING after
+# a failed Create to settle before the delete gives up. Then up to 12 polls 10
+# seconds apart (120 seconds) for the asynchronous delete to finish. How long
+# Bedrock takes to create or delete a knowledge base has not been measured.
+#
+# Those sleeps are not the whole time a delete takes, because each call can also
+# wait on the network and on botocore's own retries. The Delete request's client
+# is therefore built with KB_CLIENT_CONFIG, which bounds one call at about
+# KB_CALL_SECONDS: two attempts, each at most a 5-second connect plus a 20-second
+# wait for data, plus botocore's backoff between them. The read timeout applies
+# to each read, so a peer that keeps sending a byte at a time is not bounded by it. The handler then sleeps, and so
+# makes another call, only while that would still leave KB_DEADLINE_MARGIN_SECONDS
+# of the invocation: room for the next call, one GetKnowledgeBase check after it,
+# and the CloudFormation response.
+KB_CLIENT_CONFIG = Config(
+    retries={'mode': 'standard', 'total_max_attempts': 2},
+    connect_timeout=5,
+    read_timeout=20,
+)
+KB_CALL_SECONDS = 55
+KB_RESPONSE_SECONDS = 20
+# Errors that end a call without an answer from Bedrock: the connection failed,
+# timed out or closed. They are transient, and they say nothing about whether
+# the knowledge base exists.
+TRANSPORT_ERRORS = (BotocoreConnectionError, HTTPClientError)
+KB_DELETE_ATTEMPTS = 13
+KB_DELETE_BACKOFF_SECONDS = 2
+KB_DELETE_MAX_BACKOFF_SECONDS = 30
+KB_DELETE_WAIT_POLLS = 12
+KB_DELETE_WAIT_SECONDS = 10
+# GetKnowledgeBase reads that decide a delete's outcome retry transient errors
+# three times (2 + 4 seconds of backoff).
+KB_STATUS_ATTEMPTS = 3
+KB_DEADLINE_MARGIN_SECONDS = 2 * KB_CALL_SECONDS + KB_RESPONSE_SECONDS
 
 
 def get_partition(region):
@@ -239,7 +286,11 @@ def handle_knowledge_base_resources(event, context, properties):
     kms_key_arn = properties.get('KmsKeyArn', '')
     
     # Initialize Bedrock Agent client
-    bedrock_agent_client = boto3.client('bedrock-agent', region_name=region)
+    # Only Delete gets the bounded client: its own retries and deadline sit on
+    # top of it. Create and Update have no retries of their own, so they keep
+    # botocore's default retry budget.
+    client_kwargs = {'config': KB_CLIENT_CONFIG} if request_type == 'Delete' else {}
+    bedrock_agent_client = boto3.client('bedrock-agent', region_name=region, **client_kwargs)
     
     if request_type == 'Create':
         logger.info(f"Creating Knowledge Base with S3 Vectors: {kb_name}")
@@ -269,7 +320,7 @@ def handle_knowledge_base_resources(event, context, properties):
         if physical_resource_id:
             kb_id = extract_knowledge_base_id_from_physical_id(physical_resource_id)
             if kb_id:
-                delete_knowledge_base(bedrock_agent_client, kb_id)
+                delete_knowledge_base(bedrock_agent_client, kb_id, context)
         return {'Status': 'Deleted'}
 
 
@@ -342,16 +393,154 @@ def create_knowledge_base_s3_vectors(bedrock_agent_client, name, description, ro
         raise
 
 
-def delete_knowledge_base(bedrock_agent_client, kb_id):
-    """Delete Knowledge Base using Bedrock Agent API."""
-    try:
-        logger.info(f"Deleting Knowledge Base: {kb_id}")
-        bedrock_agent_client.delete_knowledge_base(knowledgeBaseId=kb_id)
-        logger.info(f"Deleted Knowledge Base: {kb_id}")
-        
-    except ClientError as e:
-        if e.response['Error']['Code'] != 'ResourceNotFoundException':
-            logger.warning(f"Error deleting Knowledge Base: {e}")
+def knowledge_base_status(bedrock_agent_client, kb_id, attempts=KB_STATUS_ATTEMPTS, context=None):
+    """Return ``(status, failure_reasons)`` for a knowledge base, or None if it is gone.
+
+    ResourceNotFoundException means the knowledge base does not exist, and so
+    does ValidationException: the only parameter is the id, so an id the service
+    rejects cannot name a knowledge base. Throttling, internal and transport
+    errors are retried up to ``attempts`` times while the invocation has time
+    (see ``has_time_for``), so a transient read error is not what decides whether
+    a delete fails; the deletion wait polls on its own schedule and passes 1.
+    The last such error, and any other error, is raised.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            kb = bedrock_agent_client.get_knowledge_base(knowledgeBaseId=kb_id)['knowledgeBase']
+        except ClientError as e:
+            code = e.response['Error']['Code']
+            if code in KB_ABSENT_CODES:
+                return None
+            if code not in KB_DELETE_RETRYABLE_CODES:
+                raise
+            error = e
+        except TRANSPORT_ERRORS as e:
+            error = e
+        else:
+            return kb['status'], kb.get('failureReasons') or []
+        delay = KB_DELETE_BACKOFF_SECONDS * attempt
+        if attempt == attempts or not has_time_for(context, delay):
+            raise error
+        logger.warning(f"GetKnowledgeBase for {kb_id} failed ({error}); retrying in {delay}s")
+        time.sleep(delay)
+
+
+def has_time_for(context, seconds):
+    """True if sleeping ``seconds`` would still leave KB_DEADLINE_MARGIN_SECONDS of the invocation.
+
+    The margin is what the call after the sleep, one GetKnowledgeBase check and
+    the CloudFormation response can take. A context without
+    ``get_remaining_time_in_millis`` has no deadline to keep.
+    """
+    remaining = getattr(context, 'get_remaining_time_in_millis', None)
+    left_ms = remaining() if callable(remaining) else None
+    if not isinstance(left_ms, (int, float)):
+        return True
+    return left_ms / 1000 - seconds >= KB_DEADLINE_MARGIN_SECONDS
+
+
+def wait_for_knowledge_base_deletion(bedrock_agent_client, kb_id, context=None):
+    """Poll GetKnowledgeBase a bounded time after DeleteKnowledgeBase was accepted.
+
+    DeleteKnowledgeBase is asynchronous: it answers with status DELETING and the
+    knowledge base disappears later. Returns when it is gone. Raises
+    ``RuntimeError`` only on DELETE_UNSUCCESSFUL, the status in which the service
+    reports that the deletion failed and the knowledge base still exists. If it
+    is still DELETING when the wait runs out, or GetKnowledgeBase keeps erroring,
+    the delete has been accepted and is in progress, so this returns rather than
+    leaving the stack in DELETE_FAILED for a transient state.
+    """
+    for poll in range(1, KB_DELETE_WAIT_POLLS + 1):
+        if not has_time_for(context, KB_DELETE_WAIT_SECONDS):
+            logger.warning(f"Stopping the wait for Knowledge Base {kb_id} to keep within the function timeout")
+            break
+        time.sleep(KB_DELETE_WAIT_SECONDS)
+        try:
+            state = knowledge_base_status(bedrock_agent_client, kb_id, attempts=1)
+        except (ClientError, *TRANSPORT_ERRORS) as e:
+            logger.warning(f"Could not read Knowledge Base {kb_id} while it deletes (poll {poll}): {e}")
+            continue
+        if state is None:
+            logger.info(f"Deleted Knowledge Base: {kb_id}")
+            return
+        status, failure_reasons = state
+        if status == 'DELETE_UNSUCCESSFUL':
+            raise RuntimeError(
+                f"Deleting Knowledge Base {kb_id} failed (status DELETE_UNSUCCESSFUL: "
+                f"{'; '.join(failure_reasons) or 'no reason given'}). The knowledge base "
+                f"still exists; resolve the reason above, then retry the stack delete."
+            )
+        logger.info(f"Knowledge Base {kb_id} is {status} (poll {poll})")
+    logger.warning(
+        f"Knowledge Base {kb_id} was still being deleted when the wait ended; the "
+        f"delete was accepted and continues in Bedrock"
+    )
+
+
+def delete_knowledge_base(bedrock_agent_client, kb_id, context=None):
+    """Delete a Knowledge Base, treating one that is already gone as deleted.
+
+    The data sources that belong to it are separate stack resources that depend
+    on it, so CloudFormation has deleted them before this runs; DeleteKnowledgeBase
+    does not require anything else to be deleted first.
+
+    Conflict, throttling, internal and transport errors are retried with bounded
+    backoff.
+    Any other refusal is checked with GetKnowledgeBase: if the knowledge base is
+    gone the delete succeeds, and if it still exists ``RuntimeError`` names it, so
+    the stack delete reports FAILED instead of reporting SUCCESS and leaking it.
+    A knowledge base already DELETING counts as deleted. After a successful
+    call, waits a bounded time for the deletion to finish (see
+    ``wait_for_knowledge_base_deletion``). Retries and the wait both stop early
+    when the invocation is running out of time (see ``has_time_for``).
+    """
+    last_error = None
+    for attempt in range(1, KB_DELETE_ATTEMPTS + 1):
+        try:
+            logger.info(f"Deleting Knowledge Base: {kb_id} (attempt {attempt})")
+            response = bedrock_agent_client.delete_knowledge_base(knowledgeBaseId=kb_id)
+        except ClientError as e:
+            code = e.response['Error']['Code']
+            if code == 'ResourceNotFoundException':
+                logger.info(f"Knowledge Base {kb_id} not found (already deleted)")
+                return
+            if code not in KB_DELETE_RETRYABLE_CODES:
+                state = knowledge_base_status(bedrock_agent_client, kb_id, context=context)
+                if state is None:
+                    logger.info(f"Knowledge Base {kb_id} does not exist ({code} on delete)")
+                    return
+                if state[0] == 'DELETING':
+                    logger.warning(f"Knowledge Base {kb_id} is already being deleted ({code} on delete)")
+                    return
+                raise RuntimeError(
+                    f"Knowledge Base {kb_id} still exists (status {state[0]}) and "
+                    f"DeleteKnowledgeBase was refused: {e}"
+                ) from e
+            last_error = e
+        except TRANSPORT_ERRORS as e:
+            code = type(e).__name__
+            last_error = e
+        else:
+            logger.info(f"Knowledge Base {kb_id} delete accepted (status {response.get('status')})")
+            wait_for_knowledge_base_deletion(bedrock_agent_client, kb_id, context)
+            return
+        delay = min(KB_DELETE_BACKOFF_SECONDS * (2 ** (attempt - 1)), KB_DELETE_MAX_BACKOFF_SECONDS)
+        if attempt == KB_DELETE_ATTEMPTS or not has_time_for(context, delay):
+            break
+        logger.warning(f"DeleteKnowledgeBase for {kb_id} failed ({code}); retrying in {delay}s")
+        time.sleep(delay)
+    state = knowledge_base_status(bedrock_agent_client, kb_id, context=context)
+    if state is None:
+        logger.info(f"Knowledge Base {kb_id} not found (already deleted)")
+        return
+    if state[0] == 'DELETING':
+        logger.warning(f"Knowledge Base {kb_id} is already being deleted ({last_error})")
+        return
+    raise RuntimeError(
+        f"Knowledge Base {kb_id} still exists (status {state[0]}) after "
+        f"{attempt} delete attempts ({last_error}). Retry the stack delete "
+        f"once it is no longer {state[0]}."
+    )
 
 
 def get_knowledge_base_info(bedrock_agent_client, kb_id):
