@@ -1231,3 +1231,428 @@ class TestWeakBoxProvenance:
             "PO Box 307, Shortland Street, Auckland 1140", pd
         )
         assert source == "ocr"
+
+
+# A line holding the coincidence ("75" inside an invoice id) placed FIRST in reading
+# order and right where the LLM estimated the box, so every tie-break that existed
+# before #1565 — reading order, row order, proximity — picks it.
+_INVOICE_ID = _line("Invoice No. 08337510", 0.1, 0.1)
+_NEAR_INVOICE_ID = {
+    "page": 1,
+    "boundingBox": {"left": 0.1, "top": 0.1, "width": 0.1, "height": 0.02},
+}
+
+
+class TestNumberInsideALongerNumber:
+    """A number found only inside a longer digit run ranks below a whole token (#1565).
+
+    A NUMBER value is searched in several surface forms (``75.0`` as ``"75"``,
+    ``"75.00"``, ``"$75"``...), and a short one is contained by coincidence in
+    any longer number. Ranked as an ordinary substring hit, it tied with the line
+    that prints the value, and the tie-break — not evidence — chose the box.
+
+    It is demoted one place rather than rejected, because a digit run containing
+    the value is sometimes the right line: a value whose cents were dropped, or a
+    long number with one digit misread. Those keep their box wherever nothing
+    printing the value as a whole token exists — see ``TestKeepsTheBoxWhen...``.
+    """
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},  # ocr_only scalar: first in reading order
+            {"occurrence_index": 0},  # ocr_only list row
+            {"preferred_geometry": _NEAR_INVOICE_ID},  # llm_grounded proximity
+        ],
+        ids=["reading-order", "row-order", "proximity"],
+    )
+    @pytest.mark.parametrize(
+        "value, genuine",
+        [
+            (75.0, "Rate $75.00 NM"),  # the variant "75" is inside 08337510
+            (6.0, "Fee $6.00 each"),  # the primary "6.0" is inside 126.00
+        ],
+    )
+    def test_the_whole_token_wins_over_the_embedded_one(self, value, genuine, kwargs):
+        pd = {
+            1: _page(
+                [
+                    _INVOICE_ID,
+                    _line("126.00 total", 0.1, 0.2),
+                    _line(genuine, 0.1, 0.6),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}, **kwargs
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.6)
+
+    def test_a_later_row_maps_to_the_later_whole_token(self):
+        """Row order counts whole-token occurrences only. Before, the embedded id
+        between the two rows took the second slot, so row 1 landed on it."""
+        pd = {
+            1: _page(
+                [
+                    _line("Line 1 $75.00", 0.1, 0.1),
+                    _line("Invoice No. 08337510", 0.1, 0.3),
+                    _line("Line 2 $75.00", 0.1, 0.5),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            75.0, pd, schema_hint={"type": "number"}, occurrence_index=1
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+
+    def test_the_tie_existed_on_the_substring_tier(self):
+        """Pins the mechanism: the embedded line is a candidate at its own tier,
+        not dropped, and the genuine line is an ordinary substring hit."""
+        page = _page([_INVOICE_ID, _line("Rate $75.00 NM", 0.1, 0.6)])
+        variants = g._value_variants(75.0, g.HINT_NUMBER)
+        candidates = g._collect_candidates_in_page(
+            g._normalize(75.0),
+            g._tokens(g._normalize(75.0)),
+            page,
+            1,
+            norm_variants=variants,
+            raw_value=75.0,
+            hint=g.HINT_NUMBER,
+        )
+        by_top = {round(c[1]["boundingBox"]["top"], 3): c[0] for c in candidates}
+        assert by_top == {
+            0.1: g._TIER_SUBSTRING_EMBEDDED,
+            0.6: g._TIER_SUBSTRING,
+        }
+
+    def test_the_tier_sits_between_substring_and_span(self):
+        assert g._TIER_SUBSTRING < g._TIER_SUBSTRING_EMBEDDED < g._TIER_SPAN
+
+    @pytest.mark.parametrize(
+        "value, coincidence, genuine",
+        [
+            (75, "Ref 0833751", "Total: 75%"),
+            (75, "Ref 0833751", "Weight 75 kg"),
+            (75, "Ref 0833751", "Weight 75kg"),
+            (75, "Ref 0833751", "Qty 75, 80"),
+            (75, "Ref 0833751", "Paid in full at 75."),
+            (75, "Ref 0833751", "USD75.00"),
+            (-75.0, "Ref 2-75001", "Credit (75.00)"),
+            (-75.0, "Ref 2-75001", "Credit -75.00"),
+            (1234.5, "Acct 11234.50", "Total $1,234.50"),
+            (275.0, "Subtotal 1,275.00", "Discount $275.00"),
+            (34, "Balance 272243.34", "Qty 34"),
+            # Padded with zeros the substring is embedded, but the whole line is
+            # the value numerically, so it is not demoted.
+            (75, "Ref 0833751", "075.00"),
+            # ... and so is the number around it, inside a longer line.
+            (75, "Ref 0833751", "Amount 075.00"),
+            (75, "Ref 0833751", "Rate 75.000 per hour"),
+            # A sign given only by accounting parentheses.
+            (-75.0, "Ref 2-75001", "(075.00)"),
+            # A negative value printed unsigned inside a longer line, as the
+            # unsigned variant already matches it when it stands alone.
+            (-75.0, "Ref 2-75001", "Credit 075.00 CR"),
+        ],
+    )
+    def test_symbols_units_and_separators_are_token_boundaries(
+        self, value, coincidence, genuine
+    ):
+        pd = {1: _page([_line(coincidence, 0.1, 0.1), _line(genuine, 0.1, 0.6)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.6)
+
+
+class TestAZeroPaddedIntegerIsTheValue:
+    """``001`` for 1 is a whole token, so the LLM box still chooses between it and
+    another whole ``1`` exactly as before, instead of the tier overriding it."""
+
+    def test_proximity_still_decides(self):
+        pd = {
+            1: _page(
+                [_line("Item 001 Widget", 0.1, 0.1), _line("Page 1 of 3", 0.1, 0.6)]
+            )
+        }
+        near_item = {
+            "page": 1,
+            "boundingBox": {"left": 0.1, "top": 0.1, "width": 0.1, "height": 0.02},
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            1, pd, schema_hint={"type": "integer"}, preferred_geometry=near_item
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestARatioIsNotADate:
+    """Only a date's slash joins digits. A ratio, score, dose or "page n/m" prints
+    numbers that are values in their own right, so they keep competing as whole
+    tokens and the LLM box still chooses between them and any other line."""
+
+    @pytest.mark.parametrize(
+        "value, ratio, other",
+        [
+            (120, "BP 120/80 mmHg", "Heart rate 120 bpm"),
+            (75, "Score: 75/100", "Page 75"),
+            (325, "Hydrocodone 10/325 mg", "Ref 325"),
+            (3, "Page 3/12", "Qty 3"),
+        ],
+    )
+    def test_proximity_still_decides(self, value, ratio, other):
+        pd = {1: _page([_line(ratio, 0.1, 0.1), _line(other, 0.1, 0.6)])}
+        near = {
+            "page": 1,
+            "boundingBox": {"left": 0.1, "top": 0.1, "width": 0.1, "height": 0.02},
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}, preferred_geometry=near
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestEuropeanDecimalCommaIsNotDemoted:
+    """A decimal comma ends the integer part, so ``1250`` in ``1250,00`` is whole.
+
+    No surface form of a number renders a decimal comma, so for a European amount
+    the integer part is the only form that matches at all. Read as embedded, it
+    lost the box to any other line printing that integer — a page number, a
+    quantity — even with the LLM's box on the amount."""
+
+    @pytest.mark.parametrize(
+        "value, amount, decoy, kwargs",
+        [
+            (1250.0, "Summe 1250,00 €", "Seite 1250", {"preferred_geometry": True}),
+            (75, "Gesamtbetrag 75,00 EUR", "Menge 75 Stk", {}),
+            (75, "Gesamtbetrag 75,00 EUR", "Menge 75 Stk", {"occurrence_index": 0}),
+            (75, "Gesamtbetrag 75,5 EUR", "Menge 75 Stk", {}),
+        ],
+    )
+    def test_the_amount_keeps_its_box(self, value, amount, decoy, kwargs):
+        pd = {1: _page([_line(amount, 0.1, 0.1), _line(decoy, 0.1, 0.6)])}
+        if kwargs.get("preferred_geometry"):
+            kwargs = {
+                "preferred_geometry": {
+                    "page": 1,
+                    "boundingBox": {
+                        "left": 0.1,
+                        "top": 0.1,
+                        "width": 0.1,
+                        "height": 0.02,
+                    },
+                }
+            }
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}, **kwargs
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestProvenanceIsUnchangedForAWholeNumber:
+    """A value whose own form sits inside the printed one keeps ``"ocr"``.
+
+    ``75.0`` is inside ``75.00``; the number around it is the value, so the primary
+    form counts as whole and the hit is not reported as a format-normalized one."""
+
+    @pytest.mark.parametrize(
+        "value, text, schema_type",
+        [
+            (75.0, "Total: $75.00 due", "number"),
+            (75, "Total: $75.00 due", "number"),
+            ("75", "Total: $75.00 due", "number"),
+            (-75, "Refund (75.00) issued", "number"),
+            (3, "Worked 3.0 hrs", "integer"),
+            (1654.8, "Net 1654.80 USD", "number"),
+        ],
+    )
+    def test_tag(self, value, text, schema_type):
+        pd = {1: _page([_line(text, 0.1, 0.4)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": schema_type}
+        )
+        assert source == "ocr"
+
+
+class TestKeepsTheBoxWhenOnlyAnEmbeddedHitExists:
+    """Demotion, not rejection: with nothing better, the embedded line still wins.
+
+    These are the shapes a token-boundary *gate* would lose: a value whose
+    precision the model dropped, and a long number with a digit misread. The box
+    is on the right line in both, and it is the box that lets a reviewer see the
+    value is wrong.
+    """
+
+    @pytest.mark.parametrize(
+        "value, line",
+        [
+            ("272243", "Wages 272243.34"),  # cents dropped
+            ("26667", "Local income tax 26667.02"),  # cents dropped
+            ("919133317", "⑆604632435⑆ 9191333178 ⑈3218⑈"),  # MICR
+        ],
+    )
+    def test_the_only_candidate_is_kept(self, value, line):
+        pd = {1: _page([_line("Header", 0.1, 0.05), _line(line, 0.1, 0.5)])}
+        geom, source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+        assert source == "ocr"
+
+    def test_a_date_component_does_not_take_the_box(self):
+        """A dropped-decimals value must not find a 'whole' token inside a date.
+
+        Measured on the repository's sample PDFs: with the slash read as a
+        boundary, ``17`` for ``$17.49`` landed on ``12/17/2024`` instead."""
+        pd = {
+            1: _page(
+                [_line("Price as of 12/17/2024", 0.1, 0.1), _line("$17.49", 0.6, 0.5)]
+            )
+        }
+        near_price = {
+            "page": 1,
+            "boundingBox": {"left": 0.6, "top": 0.5, "width": 0.1, "height": 0.02},
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "17", pd, schema_hint={"type": "number"}, preferred_geometry=near_price
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+
+    def test_it_still_outranks_a_character_level_near_miss(self):
+        """Placed above SPAN, the embedded hit keeps short-circuiting the fuzzy
+        sweeps as a substring hit did. Ranked any lower, the near-miss "272248"
+        (similarity 0.83) would take the box from the line that holds the value."""
+        pd = {1: _page([_line("272248", 0.1, 0.1), _line("Wages 272243.34", 0.1, 0.5)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            "272243", pd, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+
+
+class TestTheDemotionIsScopedToNumbers:
+    """Only a NUMBER value is demoted, and that is a scope decision.
+
+    The coincidence this addresses comes from the numeric surface forms
+    (``_value_variants``), and its effect was measured over numeric values only.
+    A string value that contains digits ("Suite 75") is left exactly as it was;
+    extending the rule to strings would need its own measurement, so this test
+    pins the current scope rather than asserting it is the ideal one."""
+
+    def test_a_string_value_keeps_reading_order(self):
+        pd = {
+            1: _page(
+                [_line("Suite 750", 0.1, 0.1), _line("Suite 75, Floor 2", 0.1, 0.5)]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Suite 75", pd, schema_hint={"type": "string"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestOnlyInsideLongerNumber:
+    @pytest.mark.parametrize(
+        "variant, text, embedded",
+        [
+            ("75", "08337510", True),
+            ("75", "175", True),  # the joining digit is the first character
+            ("17", "12/17/2024", True),  # a date component
+            ("12", "exp 12/2024", True),  # month and four-digit year
+            ("2024", "2024/12/17", True),
+            ("78", "bp 128/78.", False),  # a ratio, not a date
+            ("120", "bp 120/80 mmhg", False),
+            ("75", "score: 75/100", False),
+            ("3", "page 3/12", False),
+            ("65", "tire 205/65r15", False),
+            ("7", "7/7/7/7/7/7/7", False),  # too long to be a date
+            ("75", "75/hr", False),  # a slash before a unit is a boundary
+            ("6.0", "126.00 total", True),
+            ("75", "75.34", True),  # decimal tail
+            ("34", "272243.34", True),  # decimal head
+            ("275", "1,275", True),  # thousands comma
+            ("75", "1,750", True),
+            ("75", "$75", False),
+            ("75", "75%", False),
+            ("75", "75 kg", False),
+            ("75", "75kg", False),
+            ("75", "(75)", False),
+            ("75", "-75", False),
+            ("75", "75.", False),  # sentence-final full stop
+            ("75", "75, 80", False),  # list comma followed by a space
+            ("75", "0751 then 75 again", False),  # one whole occurrence suffices
+            ("-75", "2-750", True),  # the sign is the variant's own, only right checked
+            ("-75", "2-75 x", False),  # ... so a digit before the sign is not a join
+            ("75", "no number here", False),  # absent: not "embedded"
+            ("", "08337510", False),  # an empty variant is never embedded
+            ("75", "/75 x9", False),  # a leading slash must not wrap to the end
+            ("75", "no.75", False),  # a full stop after a letter is no join
+            ("1250", "1250,00", False),  # decimal comma
+            ("75", "75,5 kg", False),  # decimal comma, one digit
+            ("75", "75,000", True),  # thousands group
+            ("75", "75,0001", True),  # not a two-digit decimal tail
+            ("50", "75,50", True),  # the fraction of a decimal-comma amount
+            ("75", "75²", False),  # a superscript is not an ASCII digit
+            ("18", "9:18", False),  # a colon is a boundary (measured; see README)
+            ("75", "10-75", False),  # a hyphen is a boundary
+            # Known cost of the rule: a list written without spaces reads as one
+            # number, so its later items are embedded.
+            ("20", "10,20,30", True),
+        ],
+    )
+    def test_boundaries(self, variant, text, embedded):
+        assert g._only_inside_longer_number(variant, text) is embedded
+
+    @pytest.mark.parametrize(
+        "variant, text, value, embedded",
+        [
+            ("75.00", "amount 075.00", 75.0, False),
+            ("75", "rate 75.000 per hour", 75.0, False),
+            ("6.0", "126.00 total", 6.0, True),
+            ("17", "12/17/2024", 17.0, True),  # a slash join is never re-read
+            ("17.5", "3/17.5", 17.5, False),  # a ratio's slash is a boundary
+            ("10 10", "110 10 10", 1010.0, False),  # a spaced variant is not skipped
+            ("272243", "wages 272243.34", 272243.0, True),
+            # A zero-padded integer is the value too: an item or line number.
+            ("75", "qty 0075 units", 75.0, False),
+            ("1", "item 001 widget", 1.0, False),
+            ("75", "075,000", 75.0, True),  # 75,000: the comma is part of it
+        ],
+    )
+    def test_the_number_around_it(self, variant, text, value, embedded):
+        assert g._only_inside_longer_number(variant, text, value) is embedded
+
+    def test_a_long_digit_run_is_read_once(self):
+        """Every occurrence inside one longer number shares it, so it is read once.
+
+        Read per occurrence, a line of 20,000 zeros took about 37 seconds for the
+        value 0 — a quadratic scan in the Lambda's wall-clock budget."""
+        with patch.object(g, "_containing_number", wraps=g._containing_number) as spy:
+            assert g._only_inside_longer_number("0", "1" + "0" * 5000, 0.0)
+        assert spy.call_count == 1
+
+
+class TestTheDateShapeOfASlash:
+    """Pins which slash-joined runs read as dates, input by input.
+
+    Each case is one where a plausible variant of ``_slash_in_date`` decides
+    differently, so each assertion records today's outcome rather than an ideal.
+    ``fy 2024/25`` reading as a date is an accepted residual: a ratio written in a
+    date's shape is treated as one (see the module README)."""
+
+    @pytest.mark.parametrize(
+        "variant, text, embedded",
+        [
+            # Eleven characters: longer than any date, so not one.
+            ("12", "123/12/2024", False),
+            # A trailing slash makes the whole run something other than a date.
+            ("12", "1/12/2024/", False),
+            # One slash beside a leading four-digit year is a date shape.
+            ("25", "fy 2024/25", True),
+            ("12", "2024/12", True),
+            # The run is read across every slash on both sides of this one.
+            ("3", "3/12/2024", True),
+            ("1", "1/1/2024", True),
+            ("24", "12/17/24", True),
+        ],
+    )
+    def test_outcome(self, variant, text, embedded):
+        assert g._only_inside_longer_number(variant, text) is embedded
