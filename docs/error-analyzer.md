@@ -392,7 +392,8 @@ Three things `lookback_hours` does not control. A document-specific
 `search_cloudwatch_logs` call searches a window derived from the document's
 tracking record, whatever this is set to: a few minutes either side of the
 completion time for a failed document, the processing run from start to
-completion for one that finished, and the last 30 minutes for one still in
+completion for one that finished, the 30 minutes before completion for one that
+finished with no recorded start time, and the last 30 minutes for one still in
 progress or with no completion time. `fetch_recent_records`
 counts its `hours_back` back from the end of the requested date rather than from
 now, and keeps its own 24-hour default. `analyze_system_performance` keeps its
@@ -480,8 +481,8 @@ These take effect as written:
 default.** `search_cloudwatch_logs` and `search_performance_issues` declare
 `max_log_events: int = 10` in their own signatures, so when the model omits the
 argument a search returns up to 10 events per log group whatever this is set to.
-`search_cloudwatch_logs` falls through to the configured value only if a caller
-passes `0`, and `search_performance_issues` never reads it. The configured
+Both tools fall through to the configured value only when the model passes a
+count below 1, which CloudWatch Logs would reject. The configured
 default is `5`, and every saved configuration profile stores that `5`, so making
 the setting take effect would change the number of events every existing
 deployment receives; that is an open decision on

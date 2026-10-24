@@ -39,6 +39,22 @@ logger = logging.getLogger(__name__)
 MAX_HOURS_BACK = 168
 MAX_LOG_GROUPS = 50
 
+#: The processing span searched when the tracking record does not bound the run
+#: on both sides: the last half hour while it runs, or the half hour before completion.
+_DEFAULT_PROCESSING_SPAN = timedelta(minutes=30)
+
+
+def _resolve_max_log_events(requested: int, configured: int) -> int:
+    """Return the per-group event count a search should use.
+
+    A requested count below 1 cannot be sent to CloudWatch Logs, whose
+    ``FilterLogEvents`` ``limit`` has a minimum of 1, and a rejected request reads
+    as "no events found". Such a value resolves to the configured
+    ``parameters.max_log_events``, which the configuration model holds above 0.
+    A count of 1 or more is used as given.
+    """
+    return requested if requested >= 1 else configured
+
 
 def _get_params() -> Dict[str, Any]:
     """
@@ -121,7 +137,9 @@ def search_cloudwatch_logs(
         effective_max_log_groups = max_log_groups or min(
             params["max_log_groups"], MAX_LOG_GROUPS
         )
-        effective_max_log_events = max_log_events or params["max_log_events"]
+        effective_max_log_events = _resolve_max_log_events(
+            max_log_events, params["max_log_events"]
+        )
         msg_max_len = params["max_log_message_length"]
         ttl = params["settings_cache_ttl_seconds"]
 
@@ -185,6 +203,9 @@ def search_performance_issues(
             if hours_back is None
             else hours_back
         )
+        effective_max_log_events = _resolve_max_log_events(
+            max_log_events, params["max_log_events"]
+        )
         msg_max_len = params["max_log_message_length"]
         ttl = params["settings_cache_ttl_seconds"]
 
@@ -214,7 +235,7 @@ def search_performance_issues(
                 log_group_name=log_group["name"],
                 filter_pattern=combined_pattern,
                 hours_back=effective_hours_back,
-                max_events=max_log_events,
+                max_events=effective_max_log_events,
                 log_message_max_length=msg_max_len,
             )
 
@@ -473,12 +494,19 @@ def _get_processing_time_window(document_record: Dict[str, Any]) -> Dict[str, An
         return {"start_time": end_time - buffer, "end_time": end_time + buffer}
     elif document_status == "IN_PROGRESS" or not end_time:
         now = datetime.now()
-        return {"start_time": now - timedelta(minutes=30), "end_time": now}
-    elif start_time and end_time:
-        buffer = timedelta(seconds=30)
-        return {"start_time": start_time - buffer, "end_time": end_time + buffer}
+        return {"start_time": now - _DEFAULT_PROCESSING_SPAN, "end_time": now}
 
-    return {"start_time": start_time, "end_time": end_time}
+    buffer = timedelta(seconds=30)
+    if start_time:
+        return {"start_time": start_time - buffer, "end_time": end_time + buffer}
+    # Finished, with a completion time but no recorded start. A window with no
+    # start is not a window: search_log_group would discard the completion time
+    # too and search the hours before now instead. Search the same span the
+    # in-progress branch assumes, ending at completion.
+    return {
+        "start_time": end_time - _DEFAULT_PROCESSING_SPAN,
+        "end_time": end_time + buffer,
+    }
 
 
 def _prioritize_request_ids(

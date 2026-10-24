@@ -25,7 +25,7 @@ decision cannot be reversed by accident.
 """
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
@@ -157,6 +157,10 @@ def _invoke(agent, tool_name: str, config: IDPConfig, **kwargs: Any) -> Dict[str
     return result
 
 
+def _epoch_ms(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+
 def _groups(calls: List[Dict[str, Any]]) -> List[str]:
     return [c["logGroupName"] for c in calls]
 
@@ -207,6 +211,14 @@ class TestSearchCloudwatchLogs:
         )
         assert _groups(filter_calls) == LOG_GROUPS[:50]
         assert _windows_hours(filter_calls) == {168}
+
+    def test_a_stored_null_lookback_searches_the_default_window(
+        self, agent, filter_calls
+    ):
+        # A saved profile carrying ``lookback_hours: null`` used to fail to load at
+        # all (``int(None)``), so the tool never reached CloudWatch.
+        _invoke(agent, "search_cloudwatch_logs", _config(lookback_hours=None))
+        assert _windows_hours(filter_calls) == {24}
 
     def test_explicit_arguments_still_win(self, agent, filter_calls):
         _invoke(
@@ -301,10 +313,108 @@ class TestDocumentSearch:
         self._search(agent, _config(parameters={"max_log_groups": 2}), max_log_groups=4)
         assert _groups(filter_calls) == LOG_GROUPS[:4]
 
+    @pytest.mark.parametrize("requested", [0, -1])
+    def test_a_count_below_one_uses_the_configured_count(
+        self, agent, filter_calls, requested
+    ):
+        # The document branch has its own route to search_log_group; without the
+        # resolution there, the service's floor would quietly turn 0 into 1.
+        self._search(
+            agent, _config(parameters={"max_log_events": 3}), max_log_events=requested
+        )
+        assert _limits(filter_calls) == {3}
+
     def test_window_comes_from_the_record_not_lookback_hours(self, agent, filter_calls):
         # FAILED with a CompletionTime: a 2.5-minute buffer either side of it.
         self._search(agent, _config(lookback_hours=72))
         assert _windows_hours(filter_calls) == {5 / 60}
+
+    def _window_for(self, agent, filter_calls, document: Dict[str, Any]) -> set:
+        record = {"document_found": True, "document": document}
+        with patch(
+            "idp_common.agents.error_analyzer.tools.cloudwatch_tool"
+            ".fetch_document_record",
+            return_value=record,
+        ):
+            _invoke(agent, "search_cloudwatch_logs", IDPConfig(), document_id="d.pdf")
+        assert filter_calls, "no FilterLogEvents request was made"
+        return {(c["startTime"], c["endTime"]) for c in filter_calls}
+
+    def test_a_finished_run_is_searched_from_start_to_completion(
+        self, agent, filter_calls
+    ):
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "COMPLETED",
+                "InitialEventTime": "2026-01-01T00:00:00Z",
+                "CompletionTime": "2026-01-01T00:10:00Z",
+            },
+        )
+        start = _epoch_ms("2026-01-01T00:00:00Z") - 30_000
+        end = _epoch_ms("2026-01-01T00:10:00Z") + 30_000
+        assert window == {(start, end)}
+
+    def test_a_run_in_progress_is_searched_over_the_last_half_hour(
+        self, agent, filter_calls
+    ):
+        before = int(datetime.now().timestamp() * 1000)
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "IN_PROGRESS",
+                "InitialEventTime": "2026-01-01T00:00:00Z",
+            },
+        )
+        after = int(datetime.now().timestamp() * 1000)
+        assert len(window) == 1, window
+        ((start, end),) = window
+        assert before <= end <= after
+        assert end - start == 30 * 60_000
+
+    def test_a_run_in_progress_with_an_old_completion_time_is_searched_now(
+        self, agent, filter_calls
+    ):
+        # A reprocessed document is IN_PROGRESS while its record still carries the
+        # previous run's CompletionTime; the status, not the missing end, has to
+        # select the last half hour.
+        before = int(datetime.now().timestamp() * 1000)
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "IN_PROGRESS",
+                "InitialEventTime": "2026-01-01T00:00:00Z",
+                "CompletionTime": "2026-01-01T00:10:00Z",
+            },
+        )
+        after = int(datetime.now().timestamp() * 1000)
+        ((start, end),) = window
+        assert before <= end <= after
+        assert end - start == 30 * 60_000
+
+    def test_a_finished_run_with_no_start_ends_at_its_completion(
+        self, agent, filter_calls
+    ):
+        # With no InitialEventTime the window used to carry no start, and
+        # search_log_group then ignored the completion time as well and searched the
+        # 24 hours before now -- days away from the run for an older document.
+        window = self._window_for(
+            agent,
+            filter_calls,
+            {
+                "ObjectKey": "d.pdf",
+                "ObjectStatus": "COMPLETED",
+                "CompletionTime": "2026-01-01T00:10:00Z",
+            },
+        )
+        completion = _epoch_ms("2026-01-01T00:10:00Z")
+        assert window == {(completion - 30 * 60_000, completion + 30_000)}
 
 
 class TestSearchPerformanceIssues:
@@ -355,3 +465,111 @@ class TestSearchPerformanceIssues:
             _config(parameters={"max_log_events": 3}),
         )
         assert _limits(filter_calls) == {10}
+
+
+def _events_limit_range() -> tuple:
+    """The ``FilterLogEvents`` ``limit`` range, read from the botocore service model."""
+    shape = (
+        botocore.session.get_session()
+        .get_service_model("logs")
+        .operation_model("FilterLogEvents")
+        .input_shape.members["limit"]
+    )
+    assert "min" in shape.metadata and "max" in shape.metadata, shape.metadata
+    return shape.metadata["min"], shape.metadata["max"]
+
+
+class TestEventLimitStaysInRange:
+    """Every ``FilterLogEvents`` request carries a ``limit`` in the declared range.
+
+    Below the service model's minimum, botocore rejects the request before it is
+    sent, and ``search_log_group`` reports the rejection as a log group with no
+    events, so the tool says "nothing found" rather than failing. botocore does not
+    check the maximum, so a value above it would be sent to the service. The
+    captured parameters are the ones handed to the client, before botocore's
+    validation, so an out-of-range limit is visible here either way.
+    """
+
+    def test_the_service_bounds_match_the_service_model(self):
+        assert _events_limit_range() == (
+            cloudwatch_logs_service.FILTER_LOG_EVENTS_MIN_LIMIT,
+            cloudwatch_logs_service.FILTER_LOG_EVENTS_MAX_LIMIT,
+        )
+
+    @pytest.mark.parametrize("requested", [0, -1])
+    def test_a_performance_search_below_one_uses_the_configured_count(
+        self, agent, filter_calls, requested
+    ):
+        _invoke(
+            agent,
+            "search_performance_issues",
+            _config(parameters={"max_log_events": 3}),
+            max_log_events=requested,
+        )
+        assert _limits(filter_calls) == {3}
+
+    @pytest.mark.parametrize("requested", [0, -1])
+    def test_a_log_search_below_one_uses_the_configured_count(
+        self, agent, filter_calls, requested
+    ):
+        _invoke(
+            agent,
+            "search_cloudwatch_logs",
+            _config(parameters={"max_log_events": 3}),
+            max_log_events=requested,
+        )
+        assert _limits(filter_calls) == {3}
+
+    def test_a_count_of_one_is_used_as_given(self, agent, filter_calls):
+        _invoke(agent, "search_performance_issues", IDPConfig(), max_log_events=1)
+        assert _limits(filter_calls) == {1}
+
+    def test_a_widened_limit_above_the_service_maximum_is_capped(
+        self, agent, filter_calls
+    ):
+        # "Exception" widens the request limit to five times the event count, so a
+        # count the model may pass (the tool's maximum is advisory) can exceed what
+        # the service accepts.
+        low, high = _events_limit_range()
+        _invoke(
+            agent,
+            "search_cloudwatch_logs",
+            IDPConfig(),
+            filter_pattern="Exception",
+            max_log_events=high // 5 + 1,
+        )
+        assert _limits(filter_calls) == {high}
+
+    def test_every_request_stays_in_range_whatever_the_count(self, monkeypatch):
+        low, high = _events_limit_range()
+        counts = (-5, 0, 1, high, high + 1)
+        logs = _client("logs")
+        captured: List[Dict[str, Any]] = []
+        logs.meta.events.register(
+            "provide-client-params.logs.FilterLogEvents",
+            lambda params, **_: captured.append(dict(params)),
+        )
+        stub = Stubber(logs)
+        for _ in counts:
+            stub.add_response(
+                "filter_log_events",
+                {"events": []},
+                {
+                    "logGroupName": ANY,
+                    "startTime": ANY,
+                    "endTime": ANY,
+                    "limit": ANY,
+                    "filterPattern": ANY,
+                },
+            )
+        stub.activate()
+        monkeypatch.setattr(
+            cloudwatch_logs_service.boto3, "client", lambda service, **_: logs
+        )
+        for max_events in counts:
+            result = cloudwatch_logs_service.search_log_group(
+                LOG_GROUPS[0], filter_pattern="Exception", max_events=max_events
+            )
+            assert "error" not in result, (max_events, result)
+        stub.assert_no_pending_responses()
+        assert [c["limit"] for c in captured] == [low, low, 5, high, high]
