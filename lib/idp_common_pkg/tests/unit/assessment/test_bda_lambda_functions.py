@@ -30,6 +30,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _INDEX_PATH = os.path.join(
     os.path.dirname(__file__),
     "../../../../../patterns/unified/src/bda_processresults_function/index.py",
@@ -513,3 +515,81 @@ class TestBDAUnscoredConfidenceGoesToReview:
         assert [s.confidence for s in result.sections] == [0.99, None, 0.99]
         assert [m.hitl_triggered for m in result.hitl_metadata] == [False, True, False]
         assert hitl
+
+
+# ---------------------------------------------------------------------------
+# Tests: a MATCH segment with no usable matched_blueprint is an unscored match
+# ---------------------------------------------------------------------------
+
+
+def _without_blueprint(page_index, matched_blueprint):
+    """``_custom_output`` with ``matched_blueprint`` replaced, or removed when
+    ``matched_blueprint`` is the ``_ABSENT`` sentinel."""
+    output = _custom_output(page_index, 0.95)
+    if matched_blueprint is _ABSENT:
+        del output["matched_blueprint"]
+    else:
+        output["matched_blueprint"] = matched_blueprint
+    return output
+
+
+_ABSENT = object()
+
+
+class TestBDAMatchWithoutBlueprint:
+    """A MATCH segment whose custom output has no usable ``matched_blueprint``
+    used to raise KeyError or TypeError out of ``process_segments``, which the
+    handler's catch-all swallowed: that segment and every later one lost their
+    confidence alerts, class confidence and HITL metadata, and the HITL decision
+    already reached for earlier segments was lost too. Every segment is now
+    processed. A missing name reads "None" (what the standard-output branch
+    records for an unclassified segment). A missing confidence leaves the section
+    unscored and legacy HITL marks it for review; a present confidence with no
+    name keeps the ordinary threshold comparison."""
+
+    @pytest.mark.parametrize(
+        ("matched_blueprint", "expected_name"),
+        [
+            (_ABSENT, "None"),
+            (None, "None"),
+            ({}, "None"),
+            ("invoice-bp", "None"),
+            ({"name": "invoice-bp"}, "invoice-bp"),
+            ({"name": "invoice-bp", "confidence": None}, "invoice-bp"),
+            ({"confidence": 0.99}, "None"),
+        ],
+    )
+    def test_every_segment_is_processed(self, matched_blueprint, expected_name):
+        result, hitl = _run_segments(
+            [
+                _custom_output(0, 0.95),
+                _without_blueprint(1, matched_blueprint),
+                _custom_output(2, 0.95),
+            ]
+        )
+        # The third segment still got its metadata: the loop did not abort.
+        assert len(result.hitl_metadata) == 3
+        assert [m.extraction_bp_name for m in result.hitl_metadata] == [
+            "invoice-bp",
+            expected_name,
+            "invoice-bp",
+        ]
+        expected_confidence = (
+            0.99
+            if isinstance(matched_blueprint, dict)
+            and matched_blueprint.get("confidence") is not None
+            else None
+        )
+        assert [s.confidence for s in result.sections] == [
+            0.99,
+            expected_confidence,
+            0.99,
+        ]
+        # An unscored match is marked for review; a scored one with no name
+        # keeps the ordinary comparison (0.99 is above the 0.8 threshold).
+        assert [m.hitl_triggered for m in result.hitl_metadata] == [
+            False,
+            expected_confidence is None,
+            False,
+        ]
+        assert hitl is (expected_confidence is None)
