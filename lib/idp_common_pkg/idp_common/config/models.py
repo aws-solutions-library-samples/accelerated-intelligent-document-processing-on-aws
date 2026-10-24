@@ -2844,7 +2844,12 @@ class ErrorAnalyzerParameters(BaseModel):
         default=5, gt=0, description="Maximum number of log events to retrieve"
     )
     time_range_hours_default: int = Field(
-        default=24, gt=0, description="Default time range in hours for log searches"
+        default=24,
+        gt=0,
+        description=(
+            "Not read by the agent or its tools. The default log-search window is "
+            "agents.error_analyzer.lookback_hours."
+        ),
     )
 
     max_log_message_length: int = Field(
@@ -2931,16 +2936,17 @@ class ErrorAnalyzerConfig(BaseModel):
     lookback_hours: int = Field(
         default=24,
         gt=0,
-        description="How far back the error analyzer searches logs, traces, and execution history (in hours). Default: 24.",
+        description=(
+            "Default window, in hours, for the error analyzer's CloudWatch log "
+            "searches when the question names none. Default: 24."
+        ),
     )
 
     @field_validator("lookback_hours", mode="before")
     @classmethod
-    def parse_lookback_hours(cls, v: Any) -> int:
-        """Parse lookback_hours from string or number"""
-        if isinstance(v, str):
-            return int(v) if v else 24
-        return int(v)
+    def parse_lookback_hours(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse lookback_hours from string or number (empty/None -> field default)."""
+        return _parse_required_int(v, info, cls)
 
     error_patterns: list[str] = Field(
         default=[

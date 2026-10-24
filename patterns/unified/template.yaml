@@ -4115,7 +4115,7 @@ Resources:
                     order: 0
                   lookback_hours:
                     type: integer
-                    description: How far back the error analyzer searches logs, traces, and execution history (in hours)
+                    description: Default window, in hours, for the error analyzer's CloudWatch log searches when the question names none
                     default: 24
                     order: 1
                   system_prompt:

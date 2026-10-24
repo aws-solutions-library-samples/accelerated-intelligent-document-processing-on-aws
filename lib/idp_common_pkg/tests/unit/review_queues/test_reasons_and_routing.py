@@ -315,6 +315,15 @@ class TestLegacyTriggers:
         assert routing.bda_segment_triggers([], 0.5, 0.8, hitl_enabled=True) is True
         assert routing.bda_segment_triggers([], 0.9, 0.8, hitl_enabled=True) is False
 
+    def test_bda_trigger_routes_an_unscored_blueprint_to_review(self):
+        """``matched_blueprint.confidence`` read as null or non-numeric is an
+        unscored match: it triggers review instead of raising TypeError."""
+        assert routing.bda_segment_triggers([], None, 0.8, hitl_enabled=True) is True
+        assert routing.bda_segment_triggers([], "n/a", 0.8, hitl_enabled=True) is True
+        assert routing.bda_segment_triggers([], "0.9", 0.8, hitl_enabled=True) is False
+        assert routing.bda_segment_triggers([], 0.8, 0.8, hitl_enabled=True) is False
+        assert routing.bda_segment_triggers([], None, 0.8, hitl_enabled=False) is None
+
 
 @pytest.mark.unit
 class TestRouteForReview:
