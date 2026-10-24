@@ -347,3 +347,169 @@ class TestBDASectionClassConfidence:
             status="NO_MATCH",
         )
         assert result.sections[0].confidence is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: unscored (null / non-numeric) confidences go to review, never crash
+# ---------------------------------------------------------------------------
+
+
+def _bda_leaf(**fields):
+    """One BDA explainability leaf, shaped like the custom output the parity
+    goldens use (``test_bda_processresults_feature_off_parity._custom_output``)."""
+    leaf = {"value": "12.00", "geometry": [{"page": 1}]}
+    leaf.update(fields)
+    return leaf
+
+
+def _alerts_for(explainability_info, threshold=0.8):
+    details = bda_index.process_keyvalue_details(
+        explainability_info, [1], threshold, None
+    )
+    return bda_index.create_confidence_threshold_alerts(details, threshold)
+
+
+def _custom_output(page_index, field_confidence, bp_confidence=0.99):
+    return {
+        "matched_blueprint": {"name": "invoice-bp", "confidence": bp_confidence},
+        "split_document": {"page_indices": [page_index]},
+        "document_class": {"type": "invoice"},
+        "explainability_info": [
+            {
+                "InvoiceTotal": _bda_leaf(
+                    confidence=field_confidence,
+                    geometry=[{"page": page_index + 1}],
+                )
+            }
+        ],
+    }
+
+
+def _run_segments(outputs):
+    """Drive ``process_segments`` over one MATCH segment per custom output, with
+    legacy HITL on, and return ``(document, hitl_triggered)``."""
+    from idp_common.models import Document, Section
+
+    doc = Document(id="pkg.pdf", input_key="pkg.pdf")
+    doc.sections = [
+        Section(section_id=str(n), classification="invoice", page_ids=[str(n)])
+        for n in range(1, len(outputs) + 1)
+    ]
+    by_uri = {f"s3://bda/out/{n}.json": o for n, o in enumerate(outputs, start=1)}
+    segments = [
+        {"custom_output_status": "MATCH", "custom_output_path": uri} for uri in by_uri
+    ]
+
+    def _download(bucket, key):
+        return by_uri[f"s3://{bucket}/{key}"]
+
+    with (
+        patch.object(bda_index, "download_json", side_effect=_download),
+        patch.object(bda_index, "download_decimal", side_effect=_download),
+        patch.object(bda_index, "legacy_hitl_enabled", return_value=True),
+        patch.object(bda_index, "resolve_class_schema", return_value=None),
+        patch.dict(os.environ, {"DB_NAME": ""}, clear=False),
+        patch.object(bda_index, "boto3", MagicMock()),
+        patch.object(bda_index, "metrics", MagicMock()),
+    ):
+        return bda_index.process_segments(
+            input_bucket="in",
+            output_bucket="out",
+            object_key="pkg.pdf",
+            segment_metadata=segments,
+            confidence_threshold=0.8,
+            execution_id="exec-1",
+            document=doc,
+        )
+
+
+class TestBDAUnscoredConfidenceGoesToReview:
+    """An unscored confidence reads as 0.0 and goes to review — the rule
+    Pipeline's default ``separate`` confidence mode applies. Comparing a null
+    directly used to raise TypeError, which the handler's catch-all swallowed,
+    abandoning the rest of the document's segments."""
+
+    def test_null_field_confidence_alerts_at_zero(self):
+        alerts = _alerts_for(
+            [
+                {
+                    "InvoiceTotal": _bda_leaf(confidence=None),
+                    "InvoiceDate": _bda_leaf(confidence=0.95),
+                }
+            ]
+        )
+        assert alerts == [
+            {
+                "attribute_name": "InvoiceTotal",
+                "confidence": 0.0,
+                "confidence_threshold": 0.8,
+            }
+        ]
+
+    def test_non_numeric_field_confidence_alerts_at_zero(self):
+        alerts = _alerts_for([{"InvoiceTotal": _bda_leaf(confidence="n/a")}])
+        assert [(a["attribute_name"], a["confidence"]) for a in alerts] == [
+            ("InvoiceTotal", 0.0)
+        ]
+
+    def test_numeric_string_confidence_is_read_as_a_number(self):
+        """The alert carries the number rather than the string."""
+        assert _alerts_for([{"InvoiceTotal": _bda_leaf(confidence="0.5")}]) == [
+            {
+                "attribute_name": "InvoiceTotal",
+                "confidence": 0.5,
+                "confidence_threshold": 0.8,
+            }
+        ]
+
+    def test_numeric_scores_keep_alerting_below_threshold_only(self):
+        alerts = _alerts_for(
+            [
+                {
+                    "Low": _bda_leaf(confidence=0.79),
+                    "AtThreshold": _bda_leaf(confidence=0.8),
+                    "High": _bda_leaf(confidence=0.95),
+                }
+            ]
+        )
+        assert [a["attribute_name"] for a in alerts] == ["Low"]
+
+    def test_missing_field_confidence_reads_as_zero(self):
+        alerts = _alerts_for([{"InvoiceTotal": _bda_leaf()}])
+        assert [(a["attribute_name"], a["confidence"]) for a in alerts] == [
+            ("InvoiceTotal", 0.0)
+        ]
+
+    def test_a_null_field_alerts_and_every_segment_is_processed(self):
+        """Three segments, the middle one holding a null field among otherwise
+        confident scores: the middle one alerts, every section still gets its
+        class confidence and HITL metadata, and HITL triggers."""
+        result, hitl = _run_segments(
+            [
+                _custom_output(0, 0.95),
+                _custom_output(1, None),
+                _custom_output(2, 0.95),
+            ]
+        )
+        assert [len(s.confidence_threshold_alerts or []) for s in result.sections] == [
+            0,
+            1,
+            0,
+        ]
+        assert [s.confidence for s in result.sections] == [0.99, 0.99, 0.99]
+        assert [m.hitl_triggered for m in result.hitl_metadata] == [False, True, False]
+        assert hitl
+
+    def test_a_null_blueprint_confidence_routes_to_review_without_crashing(self):
+        """A null matched-blueprint confidence: the segment routes to review,
+        is recorded as unscored, and the segments after it are still processed."""
+        result, hitl = _run_segments(
+            [
+                _custom_output(0, 0.95),
+                _custom_output(1, 0.95, bp_confidence=None),
+                _custom_output(2, 0.95),
+            ]
+        )
+        assert [s.confidence for s in result.sections] == [0.99, None, 0.99]
+        assert [m.hitl_triggered for m in result.hitl_metadata] == [False, True, False]
+        assert hitl
