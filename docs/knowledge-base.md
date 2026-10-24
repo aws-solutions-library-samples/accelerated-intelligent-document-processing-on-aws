@@ -126,6 +126,8 @@ When the feature is enabled, the solution:
 2. Navigate to the "Knowledge Base" section in the main navigation
 3. You'll see a chat-like interface for querying your document collection
 
+![Knowledge Base Query Tool answering a question about a bank statement, with its source document cited](../images/knowledge-base-query.png)
+
 ### Asking Questions
 
 1. Type your question in the input field at the bottom of the screen
