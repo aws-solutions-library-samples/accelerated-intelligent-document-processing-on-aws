@@ -1732,6 +1732,18 @@ that resembles the value as a whole. Without that ordering, a value whose OCR te
 carried a single misread character could be matched to an unrelated column header
 that happened to share one word with it, and the box would land on the header.
 
+**A number printed on its own beats one buried in a longer number.** An amount is
+also searched for in its other common forms (`75.0` as `75` and `75.00`), and a
+short form can appear by coincidence inside an unrelated figure — `75` inside an
+invoice id `08337510`. A line that prints the number as a whole token now outranks
+one that only contains its digits inside a longer number, so the box lands on the
+amount rather than on whichever line came first. The embedded line is still used
+when nothing better exists, so a value whose cents the model dropped, or a long
+number with one digit misread, keeps its box on the line it came from. Because the
+rule reads one line at a time, a value written inside a list with no spaces
+(`10,20,30`) or inside a date, or a value the model shortened (`14` for `14.8`),
+now gets the box of another line that prints the same digits on their own.
+
 **Format-aware matching.** Extraction often canonicalizes a value to a schema
 format that differs from how it appears in the document (a date extracted as
 `2022-04-04` but printed `04/04/2022`; an amount `1234.00` printed `$1,234.00`; a
@@ -1814,7 +1826,7 @@ S3 and matches each extracted value to an OCR line.
 For each assessed leaf field, the service:
 
 1. Loads `pageData.json` for the section's pages via `Page.ocr_page_data_uri` (older documents without this artifact are skipped — see fallback).
-2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **fragment covering at least half the value** → **token-overlap fuzzy** (Jaccard ≥ 0.6) → **character similarity** (≥ 0.8) → **fragment covering less than half the value** (last).
+2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **a number contained only inside a longer number** → **multi-line span** (boxes unioned) → **fragment covering at least half the value** → **token-overlap fuzzy** (Jaccard ≥ 0.6) → **character similarity** (≥ 0.8) → **fragment covering less than half the value** (last).
 3. **Disambiguates repeated values spatially** (for `llm_grounded`): all candidates are collected and the one whose box center is nearest the LLM-estimated box is chosen. Without a usable LLM reference box, an ambiguous match keeps the LLM box rather than risk attaching the wrong row's geometry.
 4. On a confident match, **replaces** the field's `geometry` with the real OCR box and adds provenance keys.
 
