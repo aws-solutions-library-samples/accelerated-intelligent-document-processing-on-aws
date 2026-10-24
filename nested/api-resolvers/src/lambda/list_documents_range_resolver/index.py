@@ -39,13 +39,49 @@ from config_scope import (  # noqa: E402
 
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
-from review_statuses import LegacyHitlStatus  # noqa: E402
+from review_statuses import (  # noqa: E402
+    LegacyHitlStatus,
+    ReviewStatus,
+    normalize_hitl_status,
+)
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
 _REVIEWER_ACTIVE_STATUSES = (
     LegacyHitlStatus.PENDING_REVIEW.value,
     LegacyHitlStatus.IN_PROGRESS.value,
     LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
+
+def _review_finished(hitl_status):
+    """Whether a stored HITLStatus says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
+    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
+    writer stored that the exact-match normaliser does not know (the earlier
+    SageMaker A2I flow). The listDocuments resolver and the web UI's
+    ``isHitlReviewFinished`` apply the same rule.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+#: Every stored HITLStatus value that reads as a finished review, derived from the
+#: declared vocabularies through ``_review_finished``. Matched exactly, as the
+#: listDocuments resolver must match it in its FilterExpression, so the two document
+#: lists agree row for row; the normaliser also accepts surrounding whitespace, which
+#: no writer stores.
+_FINISHED_HITL_STATUSES = frozenset(
+    value
+    for value in (
+        *(s.value for s in ReviewStatus),
+        *(s.value for s in LegacyHitlStatus),
+        "COMPLETED",
+    )
+    if _review_finished(value)
 )
 
 # Same story for the log redactor: byte-identical copy of
@@ -415,7 +451,13 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
     if reviewer_only:
         hitl_triggered = doc.get("HITLTriggered", False)
         hitl_status = doc.get("HITLStatus", "")
-        hitl_completed = doc.get("HITLCompleted", False)
+        # Finished by the legacy flag or by the status itself: a review queue
+        # records its outcome only in HITLStatus. Only a string can be a stored
+        # status; anything else (a list or map is unhashable) is not finished, as
+        # the listDocuments FilterExpression reads it.
+        hitl_completed = doc.get("HITLCompleted", False) or (
+            isinstance(hitl_status, str) and hitl_status in _FINISHED_HITL_STATUSES
+        )
         hitl_owner = doc.get("HITLReviewOwner", "")
         reviewer_id = caller["username"]
         reviewer_email = caller["email"]

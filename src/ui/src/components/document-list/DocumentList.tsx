@@ -151,8 +151,7 @@ const DocumentList = (): React.JSX.Element => {
   // Filter documents for reviewers - show only pending HITL reviews (not finished)
   // Note: Server-side RBAC filtering is now applied in the listDocuments resolver.
   // Reviewer-only users receive only HITL-pending + their own completed reviews from the API.
-  // This client-side filter is a secondary safety net, and the only check that reads the
-  // review queue's finished statuses (see isPendingForReviewer).
+  // This client-side filter is a secondary safety net (see isPendingForReviewer).
   const filteredDocumentList = useMemo(() => {
     if (isReviewerOnly) {
       return documentList.filter((doc) => isPendingForReviewer(doc, currentUsername));
