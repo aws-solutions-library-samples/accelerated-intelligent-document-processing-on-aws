@@ -426,8 +426,8 @@ def _run_segments(outputs):
 
 
 class TestBDAUnscoredConfidenceGoesToReview:
-    """An unscored confidence reads as 0.0 and goes to review — the rule
-    Pipeline's default ``separate`` confidence mode applies. Comparing a null
+    """An unscored confidence reads as 0.0 and goes to review. (Pipeline mode's
+    stored alerts skip an unscored field instead.) Comparing a null
     directly used to raise TypeError, which the handler's catch-all swallowed,
     abandoning the rest of the document's segments."""
 
