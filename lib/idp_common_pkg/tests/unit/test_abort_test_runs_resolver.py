@@ -491,9 +491,15 @@ def test_the_abort_wait_reads_a_status_the_way_the_run_status_reader_does(
         patch.object(
             index,
             "_batch_get_document_items",
-            return_value={
-                "run/a.pdf": {"ObjectStatus": "COMPLETED", "EvaluationStatus": stored}
-            },
+            return_value=(
+                {
+                    "run/a.pdf": {
+                        "ObjectStatus": "COMPLETED",
+                        "EvaluationStatus": stored,
+                    }
+                },
+                set(),
+            ),
         ),
         patch.object(index.time, "sleep") as slept,
     ):
@@ -504,3 +510,214 @@ def test_the_abort_wait_reads_a_status_the_way_the_run_status_reader_does(
     # Returned on the first poll, rather than sleeping out the budget waiting
     # for a document that had already finished.
     slept.assert_not_called()
+
+
+# --- BatchGetItem UnprocessedKeys ------------------------------------------------
+#
+# The wait loop reads every document's status with BatchGetItem, which may hold
+# keys back as UnprocessedKeys under throttling. Those are resubmitted with backoff
+# a bounded number of times; a key still held back after that is reported as
+# unknown, never as "not found". The table is moto's; only the hold-back is
+# injected, by a wrapper around the real resource that caps its own call count so
+# an unbounded loop fails instead of hanging.
+
+_TABLE = "test-tracking-table"
+_STUB_CALL_CAP = 200
+
+
+def _load_abort_index():
+    import importlib.util
+    import os
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "index",
+        os.path.join(
+            os.path.dirname(__file__),
+            "../../../../nested/api-resolvers/src/lambda/abort_test_runs/index.py",
+        ),
+    )
+    index = importlib.util.module_from_spec(spec)
+    sys.modules["index"] = index
+    spec.loader.exec_module(index)
+    return index
+
+
+class _HoldBackResource:
+    """A real moto resource whose batch_get_item holds items back on chosen calls."""
+
+    def __init__(self, real, hold):
+        self._real = real
+        self._hold = hold
+        self.calls = []
+
+    def batch_get_item(self, RequestItems):
+        self.calls.append(len(RequestItems[_TABLE]["Keys"]))
+        if len(self.calls) > _STUB_CALL_CAP:
+            raise AssertionError(
+                f"batch_get_item called more than {_STUB_CALL_CAP} times"
+            )
+        response = self._real.batch_get_item(RequestItems=RequestItems)
+        items = response["Responses"][_TABLE]
+        held = min(self._hold(len(self.calls), len(items)), len(items))
+        if held:
+            kept, back = items[: len(items) - held], items[len(items) - held :]
+            response["Responses"][_TABLE] = kept
+            response["UnprocessedKeys"] = {
+                _TABLE: {"Keys": [{"PK": i["PK"], "SK": i["SK"]} for i in back]}
+            }
+        return response
+
+
+class _Clock:
+    """Stands in for the module's ``time``: sleeping advances the clock."""
+
+    def __init__(self):
+        self.now = 1_000.0
+        self.sleeps = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def abort_table(monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    with mock_aws():
+        real = boto3.resource("dynamodb", region_name="us-east-1")
+        table = real.create_table(
+            TableName=_TABLE,
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        keys = [f"run/doc-{n:03d}.pdf" for n in range(120)]
+        for key in keys:
+            table.put_item(
+                Item={
+                    "PK": f"doc#{key}",
+                    "SK": "none",
+                    "ObjectStatus": "ABORTED",
+                }
+            )
+        index = _load_abort_index()
+        clock = _Clock()
+        monkeypatch.setattr(index, "time", clock)
+
+        def install(hold):
+            stub = _HoldBackResource(real, hold)
+            monkeypatch.setattr(index, "dynamodb", stub)
+            return stub
+
+        yield index, table, keys, install, clock
+
+
+def _cap(attempt):
+    return min(1.0, 0.05 * 2**attempt)
+
+
+@pytest.mark.unit
+def test_the_abort_wait_resubmits_keys_held_back_by_batch_get(
+    abort_table, caplog, monkeypatch
+):
+    """A transient hold-back is retried inside the poll, not left to the next one."""
+    index, table, keys, install, clock = abort_table
+    drawn = []
+    real_uniform = index.random.uniform
+    monkeypatch.setattr(
+        index.random,
+        "uniform",
+        lambda low, high: drawn.append((low, high)) or real_uniform(low, high),
+    )
+    # Chunk 1 (100 keys) is held back on calls 1 and 2, chunk 2 (20) on call 4.
+    stub = install(lambda call, n: 25 if call in (1, 2, 4) else 0)
+
+    with caplog.at_level("WARNING"):
+        index._wait_for_documents_terminal_state(table, "run", keys, max_wait_time=25)
+
+    assert stub.calls == [100, 25, 25, 20, 20]
+    # Only backoff sleeps, each within its attempt's cap: the documents were
+    # all terminal, so the wait returned on its first poll.
+    assert len(clock.sleeps) == 3
+    for attempt, slept in zip([1, 2, 1], clock.sleeps):
+        assert 0 <= slept <= _cap(attempt)
+    # Full jitter: each delay is drawn uniformly from zero to that attempt's cap.
+    assert drawn == [(0, _cap(a)) for a in [1, 2, 1]]
+    assert "not found" not in caplog.text
+
+
+@pytest.mark.unit
+def test_keys_that_stay_unprocessed_are_unknown_not_missing(
+    abort_table, caplog, monkeypatch
+):
+    """Persistent throttling: bounded per poll, and reported as unknown."""
+    index, table, keys, install, clock = abort_table
+    drawn = []
+    real_uniform = index.random.uniform
+    monkeypatch.setattr(
+        index.random,
+        "uniform",
+        lambda low, high: drawn.append((low, high)) or real_uniform(low, high),
+    )
+    stub = install(lambda call, n: 1 if n else 0)
+
+    with caplog.at_level("WARNING"):
+        index._wait_for_documents_terminal_state(
+            table, "run", keys[:3], max_wait_time=25
+        )
+
+    # The held-back document was never read, so it is unknown -- not "not found",
+    # which it is not -- and the wait did not treat it as terminal.
+    assert "not found" not in caplog.text
+    assert f"Status of document {keys[2]} is unknown" in caplog.text
+    assert "1 unknown" in caplog.text
+    poll_sleeps = [s for s in clock.sleeps if s == 2]
+    polls = len(poll_sleeps)
+    assert polls >= 2, clock.sleeps
+    # Each poll makes at most BATCH_GET_MAX_ATTEMPTS calls for its one chunk.
+    assert len(stub.calls) == polls * index.BATCH_GET_MAX_ATTEMPTS
+    # The backoff grows to, and stops at, one second (0.05 * 2**5 would be 1.6).
+    assert [high for _, high in drawn[:5]] == [0.1, 0.2, 0.4, 0.8, 1.0]
+
+
+@pytest.mark.unit
+def test_a_refused_batch_marks_its_documents_unknown(abort_table, caplog, monkeypatch):
+    """A service error on a batch is an unread batch, not missing documents."""
+    from botocore.exceptions import ClientError
+
+    index, table, keys, install, clock = abort_table
+
+    class _Refusing:
+        calls = 0
+
+        def batch_get_item(self, RequestItems):
+            type(self).calls += 1
+            if type(self).calls > _STUB_CALL_CAP:
+                raise AssertionError("unbounded")
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "x"}},
+                "BatchGetItem",
+            )
+
+    monkeypatch.setattr(index, "dynamodb", _Refusing())
+
+    with caplog.at_level("WARNING"):
+        index._wait_for_documents_terminal_state(
+            table, "run", keys[:2], max_wait_time=5
+        )
+
+    assert "not found" not in caplog.text
+    assert f"Status of document {keys[0]} is unknown" in caplog.text
