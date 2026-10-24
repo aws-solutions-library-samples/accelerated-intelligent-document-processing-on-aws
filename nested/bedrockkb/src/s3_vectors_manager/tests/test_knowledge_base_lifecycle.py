@@ -16,6 +16,8 @@ code is one that model declares for the operation. Each stub is consumed once an
 
 from __future__ import annotations
 
+import itertools
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -29,7 +31,7 @@ from botocore.exceptions import (
     EndpointConnectionError,
     ReadTimeoutError,
 )
-from botocore.stub import Stubber
+from botocore.stub import ANY, Stubber
 
 REGION = "us-east-1"
 KB_ID = "KB12345678"
@@ -365,6 +367,77 @@ def test_delete_of_a_resource_whose_create_failed_makes_no_call(agent):
 
     assert _run(event, agent)[0] == "SUCCESS"
     assert agent.calls == []
+
+
+def _create_response():
+    return {
+        "knowledgeBase": _knowledge_base("CREATING")["knowledgeBase"],
+    }
+
+
+def _expect_create(stubber):
+    stubber.add_response(
+        "create_knowledge_base",
+        _create_response(),
+        {
+            "clientToken": ANY,
+            "name": ANY,
+            "description": ANY,
+            "roleArn": ANY,
+            "knowledgeBaseConfiguration": ANY,
+            "storageConfiguration": ANY,
+        },
+    )
+
+
+def test_a_retried_create_sends_the_same_token(agent, monkeypatch):
+    """The token must not depend on when the attempt ran."""
+    clock = itertools.count(1_761_300_000)
+    monkeypatch.setattr("time.time", lambda: float(next(clock)))
+    _expect_create(agent.stubber)
+    _expect_create(agent.stubber)
+
+    for _ in range(2):
+        agent.send.reset_mock()
+        assert _run(_event("Create"), agent)[0] == "SUCCESS"
+
+    assert len(agent.tokens) == 2
+    assert agent.tokens[0] == agent.tokens[1]
+
+
+@pytest.mark.parametrize("field", ["RequestId", "StackId", "LogicalResourceId"])
+def test_a_different_request_sends_a_different_token(agent, field):
+    _expect_create(agent.stubber)
+    _expect_create(agent.stubber)
+
+    _run(_event("Create"), agent)
+    agent.send.reset_mock()
+    _run(_event("Create", **{field: "other"}), agent)
+
+    assert len(agent.tokens) == 2
+    assert agent.tokens[0] != agent.tokens[1]
+
+
+def test_the_token_meets_the_service_model_constraints(agent):
+    """botocore checks the length but not the pattern, so the pattern is checked here."""
+    _expect_create(agent.stubber)
+    _run(_event("Create"), agent)
+
+    shape = MODEL.operation_model("CreateKnowledgeBase").input_shape.members[
+        "clientToken"
+    ]
+    token = agent.tokens[0]
+    assert shape.metadata["min"] <= len(token) <= shape.metadata["max"]
+    assert re.fullmatch(shape.metadata["pattern"], token), token
+
+
+def test_the_update_fallback_create_also_sends_a_derived_token(agent):
+    _expect_create(agent.stubber)
+
+    event = _event("Update", PhysicalResourceId="")
+    assert _run(event, agent)[0] == "SUCCESS"
+
+    assert agent.tokens == [handler.knowledge_base_client_token(event)]
 
 
 class _SlowBedrock:

@@ -3,6 +3,7 @@
 
 import boto3
 import cfnresponse
+import hashlib
 import json
 import logging
 import os
@@ -296,7 +297,8 @@ def handle_knowledge_base_resources(event, context, properties):
         logger.info(f"Creating Knowledge Base with S3 Vectors: {kb_name}")
         return create_knowledge_base_s3_vectors(
             bedrock_agent_client, kb_name, description, role_arn, 
-            embedding_model_arn, index_arn, kms_key_arn
+            embedding_model_arn, index_arn, kms_key_arn,
+            client_token=knowledge_base_client_token(event)
         )
         
     elif request_type == 'Update':
@@ -311,7 +313,8 @@ def handle_knowledge_base_resources(event, context, properties):
         # Fallback: create new if we can't find existing
         return create_knowledge_base_s3_vectors(
             bedrock_agent_client, kb_name, description, role_arn, 
-            embedding_model_arn, index_arn, kms_key_arn
+            embedding_model_arn, index_arn, kms_key_arn,
+            client_token=knowledge_base_client_token(event)
         )
             
     elif request_type == 'Delete':
@@ -341,18 +344,41 @@ def extract_knowledge_base_id_from_physical_id(physical_id):
         return None
 
 
+def knowledge_base_client_token(event):
+    """Derive CreateKnowledgeBase's idempotency token from the CloudFormation request.
+
+    A retry of the same request (Lambda retrying the invocation, or the handler
+    re-running after a timeout) carries the same StackId, LogicalResourceId and
+    RequestId, so it sends the same token and Bedrock returns the knowledge base
+    the first attempt created instead of creating a second one. A different
+    request gets a different token. The service model requires 33 to 256
+    characters matching ``[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}``; ``cfn-`` plus a
+    64-character hex digest is 68 characters of that alphabet.
+    """
+    identity = '|'.join(
+        str(event.get(key, '')) for key in ('StackId', 'LogicalResourceId', 'RequestId')
+    )
+    return f"cfn-{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+
 def create_knowledge_base_s3_vectors(bedrock_agent_client, name, description, role_arn, 
-                                   embedding_model_arn, index_arn, kms_key_arn=None):
-    """Create Knowledge Base with S3 Vectors using Console-proven approach."""
+                                   embedding_model_arn, index_arn, kms_key_arn=None,
+                                   client_token=None):
+    """Create Knowledge Base with S3 Vectors using Console-proven approach.
+
+    ``client_token`` is the idempotency token (see ``knowledge_base_client_token``);
+    the handler always passes one.
+    """
     try:
         logger.info(f"Creating Knowledge Base: {name} with S3 Vectors")
         logger.info(f"Using index ARN: {index_arn}")
         
         # Use the working Console payload structure
-        import time
-        
+        create_params = {}
+        if client_token:
+            create_params['clientToken'] = client_token
         response = bedrock_agent_client.create_knowledge_base(
-            clientToken=f"cfn-{int(time.time())}-{'a' * 20}",  # 33+ chars required
+            **create_params,
             name=name,
             description=description,
             roleArn=role_arn,
