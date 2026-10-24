@@ -103,3 +103,54 @@ class TestHugeIntegerBlueprintConfidence:
             False,
         ]
         assert hitl is True
+
+
+def _schema(threshold_literal: str) -> dict[str, Any]:
+    """A class schema as the configuration reader would load it."""
+    return json.loads(
+        '{"type": "object", "properties": {"InvoiceTotal": {"type": "string",'
+        f' "x-aws-idp-confidence-threshold": {threshold_literal}}}}}}}'
+    )
+
+
+class TestUnusableFieldThreshold:
+    @pytest.mark.parametrize("literal", ["NaN", "-Infinity", '"NaN"', '"-inf"'])
+    def test_a_non_finite_schema_threshold_falls_back_and_still_alerts(self, literal):
+        """The schema resolver passes a NaN or -inf threshold through, and
+        ``0.1 < nan`` is False, so a low-confidence field raised no alert and
+        skipped review. The default threshold applies instead."""
+        result, hitl = _run([_body(0, field_conf="0.1")], _schema(literal))
+        assert result.sections[0].confidence_threshold_alerts == [
+            {
+                "attribute_name": "InvoiceTotal",
+                "confidence": 0.1,
+                "confidence_threshold": 0.8,
+            }
+        ]
+        assert hitl is True
+
+    def test_a_finite_schema_threshold_is_still_used(self):
+        result, _ = _run([_body(0, field_conf="0.85")], _schema("0.9"))
+        assert result.sections[0].confidence_threshold_alerts == [
+            {
+                "attribute_name": "InvoiceTotal",
+                "confidence": 0.85,
+                "confidence_threshold": 0.9,
+            }
+        ]
+
+    @pytest.mark.parametrize("threshold", ["high", "0.9x", [], {}, float("nan")])
+    def test_an_unusable_entry_threshold_falls_back_without_raising(self, threshold):
+        """The schema resolver already turns a non-numeric schema value into the
+        default, so this is the builder's own guard: a non-numeric threshold
+        raised TypeError when compared."""
+        details = {
+            "key_value_details": {
+                "1": [
+                    {"key": "A", "confidence": 0.5, "confidence_threshold": threshold}
+                ]
+            }
+        }
+        assert bda_index.create_confidence_threshold_alerts(details, 0.8) == [
+            {"attribute_name": "A", "confidence": 0.5, "confidence_threshold": 0.8}
+        ]

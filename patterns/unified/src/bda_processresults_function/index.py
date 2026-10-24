@@ -1118,9 +1118,12 @@ def create_confidence_threshold_alerts(
             if confidence is None:
                 confidence = 0.0
             # Use the entry's per-field threshold (schema-resolved) when present
-            entry_threshold = kv_entry.get(
-                "confidence_threshold", confidence_threshold
-            )
+            # A null, non-numeric or non-finite threshold falls back to the
+            # default, as Pipeline mode does for a non-finite schema threshold:
+            # a NaN or -inf one (the schema resolver passes either through)
+            # suppressed the alert, since ``c < nan`` is False, and a
+            # non-numeric one raised TypeError out of process_segments.
+            entry_threshold = finite_float(kv_entry.get("confidence_threshold"))
             if entry_threshold is None:
                 entry_threshold = confidence_threshold
             if confidence < entry_threshold:
