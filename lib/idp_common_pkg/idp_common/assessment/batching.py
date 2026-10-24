@@ -846,15 +846,23 @@ def _schema_field_mismatch_reason(
 
 
 def count_row_columns(rows: Any) -> int | None:
-    """Widest scalar column count across a list's rows, or None if not countable.
+    """Widest confidence-leaf count across a list's rows, or None if not countable.
 
     Takes the whole row list (not one row) and returns the MAXIMUM count over
     EVERY dict row. Sizing off ``rows[0]`` alone under-counts whenever extraction
     omitted a key on that row, and under-counting the width inflates the batch —
     the direction that truncates. A bare dict is accepted and treated as a single
-    row. Returns None when no dict row is found, which tells the caller to use the
-    value-length fallback.
+    row. Returns None when no dict row yields a leaf, which tells the caller to use
+    the value-length fallback.
+
+    A row's width is the number of confidence leaves it emits, counted at every
+    depth (:func:`idp_common.bedrock.sizing.confidence_leaf_count`), not its
+    top-level scalar keys: the model scores a nested group or a nested list leaf
+    by leaf, so a row holding six scalars and a group of seven emits thirteen
+    leaves. Counting only the six sized such a row at under half its output.
     """
+    from idp_common.bedrock.sizing import confidence_leaf_count
+
     if isinstance(rows, dict):
         candidates: list[Any] = [rows]
     elif isinstance(rows, (list, tuple)):
@@ -865,10 +873,7 @@ def count_row_columns(rows: Any) -> int | None:
     for row in candidates:
         if not isinstance(row, dict):
             continue
-        widest = max(
-            widest,
-            sum(1 for v in row.values() if not isinstance(v, (dict, list))),
-        )
+        widest = max(widest, confidence_leaf_count(row))
     return widest or None
 
 
@@ -877,12 +882,20 @@ def compute_token_aware_batch_size(
     sample_row: Any,
     geometry_mode: str | None,
     configured_batch_size: int,
+    fixed_results: Any = None,
 ) -> int:
     """Derive a list-batch size that fits the confidence model's output cap.
 
     ``sample_row`` should be the list's ROW LIST; a single dict is accepted and
-    treated as one row. The column count is measured across a sample of rows
+    treated as one row. The row width is measured across every row
     (:func:`count_row_columns`) rather than off row 0.
+
+    ``fixed_results`` is everything else the call carries — the section's scalars,
+    groups and every other list, all of which ride every batch unsliced. When
+    given, its estimated output is reserved before rows are fitted, so a section
+    whose fixed part is larger than the safety fraction leaves free is sized to
+    what actually remains (see
+    :func:`idp_common.bedrock.sizing.confidence_rows_for_per_row_tokens`).
 
     Why this exists: when the confidence model has a small output ceiling (Nova
     Lite: 10,000) and each row emits a confidence leaf per column — tripled again
@@ -903,6 +916,7 @@ def compute_token_aware_batch_size(
     reached a small-cap model.
     """
     from idp_common.bedrock.sizing import (
+        confidence_leaf_count,
         confidence_per_row_tokens,
         confidence_rows_for_per_row_tokens,
         confidence_rows_per_call,
@@ -936,10 +950,21 @@ def compute_token_aware_batch_size(
             configured_batch_size,
         )
 
+    fixed_tokens: float | None = None
+    if fixed_results is not None:
+        fixed_tokens = confidence_leaf_count(fixed_results) * confidence_per_row_tokens(
+            1, geometry_mode
+        )
+
     num_columns = count_row_columns(sample_row)
     if num_columns is not None:
         result = confidence_rows_per_call(
-            output_cap, num_columns, geometry_mode, ceiling, model_id=model_id
+            output_cap,
+            num_columns,
+            geometry_mode,
+            ceiling,
+            model_id=model_id,
+            fixed_tokens=fixed_tokens,
         )
         per_row_tokens = confidence_per_row_tokens(num_columns, geometry_mode)
     else:
@@ -977,7 +1002,9 @@ def compute_token_aware_batch_size(
             per_row_tokens = max(
                 per_row_tokens, confidence_per_row_tokens(1, geometry_mode)
             )
-        result = confidence_rows_for_per_row_tokens(output_cap, per_row_tokens, ceiling)
+        result = confidence_rows_for_per_row_tokens(
+            output_cap, per_row_tokens, ceiling, fixed_tokens=fixed_tokens
+        )
         family = model_list_batch_ceiling(model_id)
         if family is not None:
             result = max(1, min(result, family))
@@ -986,13 +1013,14 @@ def compute_token_aware_batch_size(
     # configured value, which hid the sizing decision from exactly the operator most
     # likely to be debugging it — someone who pinned a ceiling.
     logger.info(
-        "Token-aware batch sizing: model=%s cap=%s geometry=%s cols=%s "
-        "per_row~%d -> batch %d (configured ceiling %s)",
+        "Token-aware batch sizing: model=%s cap=%s geometry=%s leaves/row=%s "
+        "per_row~%d fixed~%s -> batch %d (configured ceiling %s)",
         model_id or "(none)",
         output_cap if output_cap else "unknown",
         geometry_mode,
         num_columns if num_columns is not None else "n/a",
         int(per_row_tokens),
+        int(fixed_tokens) if fixed_tokens is not None else "n/a",
         result,
         ceiling if ceiling is not None else "none",
     )
@@ -1065,8 +1093,7 @@ def _record_oversized_row(
     with ``stopReason=max_tokens``, that row's own confidence output exceeds the
     model's max-output-token cap and **no batch size can work** — the row itself is
     too big (the observed case: a multi-instance wrapper makes one "row" a whole
-    bank statement carrying a 100-row inner ``Transactions`` list, so the sizer's
-    ``cols=2 per_row~80`` estimate is off by two orders of magnitude; see #894).
+    bank statement carrying a 100-row inner ``Transactions`` list; see #894).
 
     Recording it here lets the ladder skip the futile same-model retry rung and lets
     :func:`build_assessment_issues` report the ACTUAL cause with the numbers an
@@ -2367,11 +2394,27 @@ def assess_results_batched(
     # ``extraction.sharding`` for the opaque-row fallback, pulling the whole
     # extraction package (and strands) into the Assessment Lambda for a number it
     # never reads.
+    #
+    # The longest list is the one sliced below; everything else in
+    # ``extraction_results`` rides every batch unsliced (``_assess_slice_adaptive``
+    # copies ``base_results`` and replaces only that list), so it is passed as the
+    # fixed part of every call's output.
     effective_batch_size = batch_size
+    widest_list: list[Any] = []
+    fixed_results: dict[str, Any] = {}
     if all_list_fields_probe:
-        widest_list = max(all_list_fields_probe, key=len)
+        sliced_key = max(
+            (k for k, v in extraction_results.items() if isinstance(v, list) and v),
+            key=lambda k: len(extraction_results[k]),
+        )
+        widest_list = extraction_results[sliced_key]
+        fixed_results = {k: v for k, v in extraction_results.items() if k != sliced_key}
         effective_batch_size = compute_token_aware_batch_size(
-            confidence_model_id, widest_list, geometry_mode, batch_size
+            confidence_model_id,
+            widest_list,
+            geometry_mode,
+            batch_size,
+            fixed_results=fixed_results,
         )
         split_stats["derived_batch_size"] = effective_batch_size
 
@@ -2417,9 +2460,10 @@ def assess_results_batched(
         if all_list_fields_probe:
             escalation_batch_size = compute_token_aware_batch_size(
                 ladder_escalation_model,
-                max(all_list_fields_probe, key=len),
+                widest_list,
                 geometry_mode,
                 batch_size,
+                fixed_results=fixed_results,
             )
 
     # All list fields (any size) — used to target missing-row retries even when
@@ -2519,8 +2563,9 @@ def assess_results_batched(
             "split_stats": split_stats,
         }
 
-    # Batch by the largest list field; other (smaller) list fields ride the
-    # first batch and are reconciled afterward.
+    # Batch by the largest list field; the other list fields ride EVERY batch
+    # unsliced (which is why the sizer reserves them), and their assessments are
+    # taken from the first batch.
     big_field = max(list_fields, key=lambda k: len(list_fields[k]))
     rows = extraction_results[big_field]
     merged_assessment: dict[str, Any] = {}

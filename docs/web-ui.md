@@ -322,13 +322,14 @@ Editing the structure is offered in every deployment, whichever processing mode 
 document ran through. Section records look the same in the output either way, so the
 editor does not distinguish them, and there is no data-only variant of it.
 
-⚠️ **In BDA mode, check what the reprocess will actually regenerate.** Bedrock Data
+⚠️ **In BDA mode, a structural edit loses the edited section's values.** Bedrock Data
 Automation decided the section boundaries and the extracted values in the first place,
-and a changed section's values are cleared before the document is requeued. The BDA
-step then skips itself whenever *any* section still holds extraction data, which is the
-ordinary state after editing one section of several — so on a multi-section document the
-section you edited can come back with its values gone and nothing to replace them. Edit
-the structure of a BDA-mode document only when you are prepared for that, and prefer
+and a changed or added section's values are cleared before the document is requeued.
+The workflow then skips Bedrock Data Automation for any document that still has at least
+one section, whatever state that section's extraction data is in, and nothing else in
+the BDA branch extracts values. So the section you edited comes back with its values gone
+and nothing to replace them, on a single-section document as much as on a multi-section
+one. Edit the structure of a BDA-mode document only when you are prepared for that, and prefer
 **Edit Data** on the section row when what you want is to correct a value rather than a
 boundary: that opens the document editor on the section and writes the value without
 touching the structure or requeueing anything.
@@ -411,13 +412,13 @@ The Edit Pages feature uses intelligent selective reprocessing:
 Page editing is offered in every deployment, whichever processing mode the document ran
 through, and the editor does not distinguish between them.
 
-⚠️ **In BDA mode, both page edits clear data that the reprocess may not replace.**
+⚠️ **In BDA mode, both page edits clear data that the reprocess does not replace.**
 Resetting a page's classification removes every section containing that page, and
 editing a page's text clears the extraction results of the sections containing it.
-Bedrock Data Automation produced those values, and the BDA step skips itself whenever
-any section still holds extraction data — so on a multi-section document the affected
-sections can come back empty. If you only want to read a page as BDA saw it, use **View
-Page Text**, which changes nothing.
+Bedrock Data Automation produced those values, and the workflow skips it for any
+document that still has at least one section — so a section whose page text you edited
+comes back empty. If you only want to read a page as BDA saw it, use **View Page Text**,
+which changes nothing.
 
 ## Document Schema Builder
 
