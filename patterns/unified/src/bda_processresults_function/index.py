@@ -1039,8 +1039,10 @@ def process_keyvalue_details(
                         for k in ["top", "left", "width", "height"]
                     }
                     break
-        results["key_value_details"][target_page].append(kv_entry)
-        results["bounding_box_details"][target_page].append(
+        # setdefault: with no page indices the fallback page "0" has no list,
+        # and indexing it raised KeyError out of process_segments.
+        results["key_value_details"].setdefault(target_page, []).append(kv_entry)
+        results["bounding_box_details"].setdefault(target_page, []).append(
             {"key": format_key_path(key_path), "bounding_box": bbox}
         )
 
@@ -1191,16 +1193,43 @@ def process_segments(
             custom_bucket, custom_key = parse_s3_path(segment["custom_output_path"])
             custom_output = download_json(custom_bucket, custom_key)
             custom_decimal_output = download_decimal(custom_bucket, custom_key)
-            explainability_data = custom_output.get("explainability_info", [])
-            page_indices = custom_output.get("split_document", {}).get(
-                "page_indices", []
+            # An unusable result (not a JSON object, or with a malformed
+            # ``split_document``, ``explainability_info`` or ``document_class``)
+            # is processed with whatever is usable rather than raising: ``.get``
+            # on it raised AttributeError, which escaped this loop into the
+            # handler's catch-all and abandoned every later segment.
+            if not isinstance(custom_output, dict):
+                logger.warning(
+                    f"Segment {record_number} custom output is a "
+                    f"{type(custom_output).__name__}, not an object; "
+                    "processing it with no fields"
+                )
+                custom_output = {}
+            explainability_data = custom_output.get("explainability_info")
+            if not isinstance(explainability_data, list):
+                explainability_data = []
+            split_document = custom_output.get("split_document")
+            page_indices = (
+                split_document.get("page_indices")
+                if isinstance(split_document, dict)
+                else None
             )
+            if not isinstance(page_indices, list):
+                page_indices = []
+            page_indices = [
+                idx
+                for idx in page_indices
+                if isinstance(idx, int) and not isinstance(idx, bool)
+            ]
             # Convert page_indices from 0-based (BDA) to 1-based for consistency
             page_indices_1based = [idx + 1 for idx in page_indices]
             # Resolve this segment's class schema so per-field thresholds
             # (including $ref/$defs array items) are honored instead of a flat one
-            segment_doc_class = (custom_output.get("document_class") or {}).get(
-                "type", ""
+            document_class = custom_output.get("document_class")
+            segment_doc_class = (
+                document_class.get("type", "")
+                if isinstance(document_class, dict)
+                else ""
             )
             segment_class_schema = resolve_class_schema(segment_doc_class, config)
             pagespecific_details = process_keyvalue_details(

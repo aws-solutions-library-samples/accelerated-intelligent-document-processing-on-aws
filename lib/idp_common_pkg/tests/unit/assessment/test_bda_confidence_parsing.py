@@ -154,3 +154,59 @@ class TestUnusableFieldThreshold:
         assert bda_index.create_confidence_threshold_alerts(details, 0.8) == [
             {"attribute_name": "A", "confidence": 0.5, "confidence_threshold": 0.8}
         ]
+
+
+def _with(page_index: int, key: str, literal: str) -> bytes:
+    """``_body(page_index)`` with the top-level ``key`` replaced by ``literal``."""
+    output = json.loads(_body(page_index))
+    output[key] = "__REPLACED__"
+    return json.dumps(output).replace('"__REPLACED__"', literal).encode()
+
+
+class TestUnusableCustomOutput:
+    """An unusable custom-output result raised AttributeError or TypeError out of
+    ``process_segments``, which the handler's catch-all swallowed, so every later
+    segment lost its alerts, class confidence and HITL metadata."""
+
+    @pytest.mark.parametrize("raw", [b"[]", b"null", b"42", b'"x"', b"true"])
+    def test_a_result_that_is_not_an_object_is_an_unscored_match(self, raw):
+        result, hitl = _run([_body(0), raw, _body(2)])
+        assert len(result.hitl_metadata) == 3
+        assert [m.extraction_bp_name for m in result.hitl_metadata] == [
+            "invoice-bp",
+            "None",
+            "invoice-bp",
+        ]
+        assert result.sections[0].confidence == 0.99
+        assert result.sections[2].confidence == 0.99
+        # No blueprint confidence, so legacy HITL marks it for review.
+        assert [m.hitl_triggered for m in result.hitl_metadata] == [
+            False,
+            True,
+            False,
+        ]
+        assert hitl is True
+
+    @pytest.mark.parametrize(
+        ("key", "literal"),
+        [
+            ("split_document", "null"),
+            ("split_document", '"pages"'),
+            ("split_document", '{"page_indices": null}'),
+            ("split_document", '{"page_indices": []}'),
+            ("split_document", '{"page_indices": ["a", null, true]}'),
+            ("explainability_info", "null"),
+            ("explainability_info", "5"),
+            ("document_class", '"invoice"'),
+        ],
+    )
+    def test_a_malformed_member_does_not_stop_later_segments(self, key, literal):
+        result, _ = _run([_body(0), _with(1, key, literal), _body(2)])
+        assert len(result.hitl_metadata) == 3
+        assert result.sections[0].confidence == 0.99
+        assert result.sections[2].confidence == 0.99
+        assert [m.hitl_triggered for m in result.hitl_metadata] == [
+            False,
+            False,
+            False,
+        ]
