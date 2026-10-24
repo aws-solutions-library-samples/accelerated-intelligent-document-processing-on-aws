@@ -20,7 +20,7 @@ from idp_common.review_queues.routing import (
     review_mode,
     route_for_review,
 )
-from idp_common.review_queues.statuses import LEGACY_DONE, LegacyHitlStatus
+from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
 from idp_common.review_queues.store import create_review_store
 from idp_common.s3 import get_s3_client, write_content
 from idp_common.utils import (
@@ -53,6 +53,27 @@ s3_client = get_s3_client()
 # Review queues (idp_common.review_queues): None when HITL_TABLE_NAME is
 # unset (headless), which keeps every profile on the legacy HITL flow.
 _REVIEW_STORE = create_review_store()
+
+
+def legacy_review_finished(hitl_status):
+    """True when a stored ``HITLStatus`` records a finished legacy review.
+
+    Finishing a legacy review (completed or skipped) triggers a reprocess, so the
+    run it starts must keep that status rather than ask for the review again. The
+    status is read through ``normalize_hitl_status`` rather than a list of spellings:
+    a legacy (not queue-managed) completed or skipped review is finished.
+    ``COMPLETED`` is the one finished spelling a real writer stored that the
+    exact-match normaliser does not know: the earlier A2I flow wrote it, and
+    retained rows may still carry it. ``process_changes_resolver`` makes the same
+    exception, but it also counts a queue outcome as finished, which this does not.
+    A queue outcome (``complete`` / ``rejected``) is not a legacy review: in the
+    legacy flow such a document is asked for a review again, as reprocessing it
+    under review queues starts a fresh cycle.
+    """
+    view = normalize_hitl_status(hitl_status)
+    return (
+        not view.queue_managed and view.kind in ("complete", "skipped")
+    ) or hitl_status == "COMPLETED"
 
 
 def legacy_hitl_enabled(config, document=None):
@@ -1806,7 +1827,7 @@ def handler(event, context):
     # Only set to PendingReview if not already reviewed (preserve completed/skipped status on reprocess)
     if hitl_triggered and document.sections and legacy_hitl_enabled(config, document):
         existing_status = document.hitl_status
-        if existing_status not in LEGACY_DONE:
+        if not legacy_review_finished(existing_status):
             hitl_sections_pending = [section.section_id for section in document.sections]
             document.hitl_status = LegacyHitlStatus.PENDING_REVIEW.value
             document.hitl_triggered = True
