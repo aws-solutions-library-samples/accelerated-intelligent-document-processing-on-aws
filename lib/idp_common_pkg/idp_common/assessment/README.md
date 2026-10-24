@@ -141,7 +141,7 @@ extraction:
     reasoning_effort: low               # only if a reasoning-capable model is selected
     list_batch_size: 25                 # CEILING on rows per batch; the size used is
                                         # derived from the confidence model's output
-                                        # cap, column count and geometry mode
+                                        # cap, row width and geometry mode
     # NOTE: no max_tokens knob — each confidence call requests an OUTPUT BUDGET:
     # what a correct answer over its fields needs (one leaf per scalar and per list
     # cell, ~40 tokens each, x3 with LLM bounding boxes, plus 1,500 overhead),
@@ -203,8 +203,8 @@ depend on granular assessment for large lists.
 `idp_common.assessment.batching.assess_results_batched`, which:
 
 1. Finds the single largest list field whose length exceeds the effective batch
-   size (derived from the confidence model's output cap, the row's column count and
-   the geometry mode; never larger than the `extraction.confidence.list_batch_size`
+   size (derived from the confidence model's output cap, the row's width in
+   confidence leaves, the geometry mode and the fields every batch repeats; never larger than the `extraction.confidence.list_batch_size`
    ceiling, default 25; and never larger than a **per-family loop ceiling** where one
    was measured — 12 rows for Amazon Nova Lite/Micro, see
    `bedrock.sizing._MODEL_LIST_BATCH_CEILINGS`).
@@ -284,13 +284,25 @@ left 34/68 transaction rows with `confidence: null`). Two additions make advance
 mode complete correctly on the first try:
 
 1. **Token-aware first-pass sizing** (`compute_token_aware_batch_size`). Before
-   the first call the batch size is derived from three inputs: the confidence
+   the first call the batch size is derived from four inputs: the confidence
    model's output cap (`bedrock.model_utils.get_model_max_output_tokens`), the
-   **column count** of the list's widest sampled row, and whether `geometry.mode`
+   **confidence-leaf count** of the list's widest row, whether `geometry.mode`
    is `llm`/`llm_grounded` (a per-cell bounding box roughly triples per-row
-   output). The estimator itself lives in `bedrock.sizing`
+   output), and the estimated output of **everything else the call carries**.
+   The estimator itself lives in `bedrock.sizing`
    (`confidence_rows_per_call`) so this module and `compute_sizing_plan` cannot
    drift apart. Recorded as `derived_batch_size`.
+
+   A row's width is counted at every depth (`bedrock.sizing.confidence_leaf_count`,
+   the same count `confidence_output_budget` uses): the model scores a nested group
+   field by field and a nested list item by item, so a line item holding six scalars
+   and a seven-field group is thirteen wide, not six. And every batch repeats the
+   section's scalars, groups and every other list unsliced, so their output is
+   reserved first: the rows must fit both in the safety fraction of the cap and in
+   what the cap leaves after that fixed part and the per-call overhead. When the
+   fixed part is small the fraction is the tighter bound and nothing changes; a
+   section heavy in scalars, or carrying a second list, gets a smaller batch instead
+   of one planned to overrun the cap.
 
    There is no correct fixed value. On a 10,000-token-cap model without a loop
    ceiling (Nova Pro) with bounding boxes the batch that fits is 41 rows for a
@@ -390,9 +402,10 @@ count there is unchanged (2 before, 2 after) and the gain is purely diagnostic.
 The observed trigger is a class marked `x-aws-idp-multi-instance: true`: the wrapper
 makes the *instance list* the outer list field, so one "row" is a whole document
 instance carrying its own long inner list (a 100-row `Transactions` table). The
-sizer reports that row as `cols=2 per_row~80` and derives a 12-row batch, which is
-wrong by orders of magnitude — **that sizing bug is not fixed** and #894 stays open
-for it.
+sizer counts such a row by every leaf it emits, inner cells included, so it is sized
+as the 201-leaf row it is rather than as a one-column one. That makes the first pass
+batch it correctly; it cannot make a single instance whose own output exceeds the
+cap fit, which is the case this guard reports.
 
 ⚠️ **The 900s timeout reported on #894 is not explained by this loop.** The observed
 failure was an Assessment Lambda hitting its 900s wall three times
@@ -410,7 +423,7 @@ bisection did, so a sequence of rounds that each recovered *something* while nev
 bisecting was bounded only by `max_retries`, at a real model call per round. All
 three rungs now consult the deadline before starting work. Whether that was the
 cause of the observed 900s timeouts is still **not established** — no reproduction
-exists — so #894 remains open for it, and for the batch sizer.
+exists.
 
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the

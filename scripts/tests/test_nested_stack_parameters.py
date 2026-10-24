@@ -29,7 +29,7 @@ Both failure modes are real deployment breakers:
 A **third** direction breaks nothing at deploy time and so is not covered by either
 of those: a nested parameter that declares a ``Default`` the parent never overrides.
 CloudFormation accepts it, and whatever the default decides is what ships — in the
-two verified cases, a feature that silently self-disables. That is asserted at the
+two cases that shipped (issues 1553 and 1558), a feature that silently self-disabled. That is asserted at the
 end of this module, against the recorded baseline
 ``nested_parameter_defaults_baseline.json``, because unlike the two above it is not a
 defect in every instance. :mod:`nested_parameter_defaults` holds the scan.

@@ -403,6 +403,10 @@ It covers:
 - the distinction between a stage Lambda's generic wrapper message and the
   underlying exception, which is the single most common way an analysis goes
   shallow
+- a tool-usage section that names each of the agent's tools by its registered
+  name (listed under [Tool Ecosystem](#tool-ecosystem)), says when to
+  use it and which arguments to pass, split by document-specific, system-wide,
+  workflow, configuration and X-Ray questions
 - a catalogue of recurring error patterns (throttling, timeout, configuration,
   permissions, input quality, BDA-specific, Bedrock model errors, and retired
   or unavailable models) with the likely cause and what to check for each
@@ -416,6 +420,25 @@ It covers:
 If you replace the prompt, keep the three-section output format: the UI parses
 it to render the result, and the Evidence panel depends on the `<details>`
 block.
+
+Name tools by the names the agent registers, which are the function names in
+`idp_common/agents/error_analyzer/tools/`. The model is given only those tools,
+so a prompt that directs it to any other name sends it after a tool it does not
+have. `tests/unit/agents/error_analyzer/test_prompt_tool_names.py` in the
+`idp_common` package checks every shipped copy of the prompt against the
+registered set in both directions.
+
+⚠️ **A configuration profile you created keeps the prompt it was saved with.**
+Every profile is saved as a full, independent snapshot, and an upgrade re-seeds
+only `default` and the stack-managed profiles. So a profile created before this
+release carries the earlier prompt whether or not anyone edited it, and that
+prompt directs the model to tools that never existed (`cloudwatch_document_logs`,
+`dynamodb_status`, `cloudwatch_logs`, `dynamodb_query`, `stepfunction_details`,
+`lambda_lookup`, `xray_trace`, `xray_performance_analysis`). To update one, open
+the profile in the Configuration panel, use **Restore default** on the Error
+Analysis Agent's `system_prompt` field and save. If the prompt was customised on
+purpose, rewrite its tool-usage section against the registered tools instead, so
+the customisation is kept.
 
 #### Advanced parameters (config-file only)
 

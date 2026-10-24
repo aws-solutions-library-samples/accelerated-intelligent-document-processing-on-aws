@@ -10,9 +10,9 @@ retried the 900-second Lambda five times (~6,200s) before the document ended
 ABORTED.
 
 The central property under test is that there is NO correct constant. The batch
-size that fits one confidence call is a function of three inputs — the confidence
-model's output cap, the row's column count, and whether the geometry mode adds a
-per-cell bounding box — so any fixed number is right for one shape and wrong for
+size that fits one confidence call is a function of its inputs — the confidence
+model's output cap, the row's width in confidence leaves, whether the geometry mode
+adds a per-cell bounding box, and the output of the fields every batch repeats — so any fixed number is right for one shape and wrong for
 the rest. ``extraction.confidence.list_batch_size`` is therefore a CEILING on the
 derivation, never a target.
 
@@ -25,7 +25,11 @@ change, with a live upgrade test.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
+import yaml
 
 from idp_common.assessment.batching import (
     compute_token_aware_batch_size,
@@ -33,6 +37,8 @@ from idp_common.assessment.batching import (
 )
 from idp_common.bedrock.sizing import (
     _ABS_MAX_LIST_BATCH,
+    _CONFIDENCE_OUTPUT_OVERHEAD_TOKENS,
+    confidence_leaf_count,
     confidence_per_row_tokens,
     confidence_rows_per_call,
 )
@@ -114,8 +120,11 @@ def test_null_values_still_count_as_columns():
 
 
 @pytest.mark.unit
-def test_nested_values_are_not_counted_as_scalar_columns():
-    assert count_row_columns([{"A": "x", "B": {"nested": 1}, "C": [1, 2]}]) == 1
+def test_nested_values_are_counted_leaf_by_leaf():
+    """A nested group emits one confidence leaf per scalar inside it, and a nested
+    list one per item, so they count toward the row's width rather than being
+    dropped: 1 scalar + a 1-leaf group + a 2-item list = 4."""
+    assert count_row_columns([{"A": "x", "B": {"nested": 1}, "C": [1, 2]}]) == 4
 
 
 @pytest.mark.unit
@@ -333,6 +342,218 @@ def test_reliability_ceiling_binds_on_a_huge_output_model():
         compute_token_aware_batch_size(SONNET5_1M, rows, "ocr_only", 0)
         == _ABS_MAX_LIST_BATCH
     )
+
+
+# ---------------------------------------------------------------------------
+# What one batched call actually carries: nested row leaves, and the fixed part
+# ---------------------------------------------------------------------------
+#
+# The shapes below are DERIVED from the shipped config_library schemas rather than
+# hand-written, so the tests cover the rows real classes produce. Every slice call
+# carries the sliced rows PLUS everything else in the section (scalars, groups and
+# every other list, unsliced), so the planned call is "that, with the sliced list
+# replaced by ``batch`` rows".
+
+_CONFIG_LIBRARY = Path(__file__).resolve().parents[5] / "config_library"
+
+
+def _deref(node: Any, root: dict[str, Any]) -> dict[str, Any]:
+    from idp_common.config.schema_utils import deref_schema
+
+    return deref_schema(node, root) if isinstance(node, dict) else {}
+
+
+def _instance(node: Any, root: dict[str, Any]) -> Any:
+    """A fully populated instance of a schema node: every property present, one
+    item per array, a short string per scalar."""
+    node = _deref(node, root)
+    if node.get("type") == "object":
+        return {
+            k: _instance(v, root) for k, v in (node.get("properties") or {}).items()
+        }
+    if node.get("type") == "array":
+        return [_instance(node.get("items"), root)]
+    return "x" * 12
+
+
+def _sections_with_object_lists() -> list[tuple[str, str, dict[str, Any]]]:
+    """(label, sliced list key, section instance) for every list of objects in
+    every class of every shipped preset."""
+    out: list[tuple[str, str, dict[str, Any]]] = []
+    for path in sorted(_CONFIG_LIBRARY.glob("**/config.yaml")):
+        cfg = yaml.safe_load(path.read_text())
+        for cls in (cfg or {}).get("classes") or []:
+            doc = _instance(cls, cls)
+            if not isinstance(doc, dict):
+                continue
+            for key, value in doc.items():
+                if not (isinstance(value, list) and isinstance(value[0], dict)):
+                    continue
+                label = (
+                    f"{path.parent.relative_to(_CONFIG_LIBRARY)}:{cls.get('$id')}.{key}"
+                )
+                out.append((label, key, doc))
+    return out
+
+
+_SECTIONS = _sections_with_object_lists()
+
+
+def _section(label: str) -> tuple[str, dict[str, Any]]:
+    matches = [(k, d) for lbl, k, d in _SECTIONS if lbl == label]
+    assert matches, f"no shipped class is labelled {label!r}"
+    return matches[0]
+
+
+def _planned_call_tokens(
+    doc: dict[str, Any], key: str, batch: int, geometry: str
+) -> float:
+    """Estimated output of one call over ``batch`` rows of ``doc[key]``, in the
+    estimator's own units, including the per-call overhead the output budget adds."""
+    planned = dict(doc)
+    planned[key] = doc[key][:1] * batch
+    return (
+        confidence_leaf_count(planned) * confidence_per_row_tokens(1, geometry)
+        + _CONFIDENCE_OUTPUT_OVERHEAD_TOKENS
+    )
+
+
+@pytest.mark.unit
+def test_the_shipped_schemas_include_nested_rows_and_heavy_fixed_parts():
+    """Guards the two tests below against going vacuous: the derivation must find
+    shipped classes, at least one whose rows are wider in leaves than in top-level
+    scalars, and at least one whose fixed part exceeds the half of a 10,000-token
+    cap that the safety fraction leaves free."""
+    assert len(_SECTIONS) >= 10
+    nested = [
+        lbl
+        for lbl, key, doc in _SECTIONS
+        if confidence_leaf_count(doc[key][0])
+        > sum(1 for v in doc[key][0].values() if not isinstance(v, (dict, list)))
+    ]
+    assert nested
+    heavy = [
+        lbl
+        for lbl, key, doc in _SECTIONS
+        if confidence_leaf_count({k: v for k, v in doc.items() if k != key})
+        * confidence_per_row_tokens(1, "llm_grounded")
+        > 5_000
+    ]
+    assert heavy
+
+
+@pytest.mark.unit
+def test_a_nested_row_is_sized_by_every_leaf_it_emits():
+    """The ocr-benchmark DELIVERY_NOTE line item carries six top-level scalars and
+    a product-spec group holding seven more. Sized off the six, its batch was
+    planned at under half its real output."""
+    key, doc = _section("unified/ocr-benchmark:DELIVERY_NOTE.items")
+    row = doc[key][0]
+    assert sum(1 for v in row.values() if not isinstance(v, (dict, list))) == 6
+    assert count_row_columns([row]) == 13
+    # 13 leaves x 40 tokens, no box: floor(5000 / 520) = 9 on a model with no
+    # measured loop ceiling (it was 20 when only the six were counted).
+    assert compute_token_aware_batch_size(NOVA_PRO, [row] * 100, "ocr_only", 25) == 9
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", [NOVA_LITE, NOVA_PRO, CLAUDE3])
+@pytest.mark.parametrize("geometry", ["llm_grounded", "ocr_only"])
+def test_every_shipped_section_plans_a_call_that_fits_the_cap(model, geometry):
+    """For every shipped class with a list of objects, the call the sizer plans —
+    the sliced rows plus everything that rides with them — must fit the model's
+    output cap in the estimator's own units. Whenever it does not, the requested
+    output budget is clamped to the cap and the call is planned to truncate.
+
+    A batch of one is exempt: no batch size can do better than one row, and that
+    case is the oversized-row terminal condition's to report."""
+    from idp_common.bedrock.model_utils import get_model_max_output_tokens
+
+    cap = get_model_max_output_tokens(model)
+    over: list[str] = []
+    for label, key, doc in _SECTIONS:
+        fixed = {k: v for k, v in doc.items() if k != key}
+        batch = compute_token_aware_batch_size(
+            model, doc[key] * 100, geometry, 25, fixed_results=fixed
+        )
+        planned = _planned_call_tokens(doc, key, batch, geometry)
+        if batch > 1 and planned > cap:
+            over.append(f"{label}: batch {batch} plans {planned:.0f} > {cap}")
+    assert not over, "\n".join(over)
+
+
+@pytest.mark.unit
+def test_the_fixed_part_of_the_call_is_reserved_before_rows_are_fitted():
+    """The shipped Payslip class carries enough scalars and secondary lists that,
+    with bounding boxes, its fixed output alone is more than half a 10,000-token
+    cap. The rows must be fitted into what is left, not into the full half."""
+    key, doc = _section("unified/lending-package-sample:Payslip.FederalTaxes")
+    fixed = {k: v for k, v in doc.items() if k != key}
+    rows = doc[key] * 100
+    without = compute_token_aware_batch_size(NOVA_PRO, rows, "llm_grounded", 25)
+    with_fixed = compute_token_aware_batch_size(
+        NOVA_PRO, rows, "llm_grounded", 25, fixed_results=fixed
+    )
+    assert with_fixed < without
+    assert _planned_call_tokens(doc, key, with_fixed, "llm_grounded") <= 10_000
+    assert _planned_call_tokens(doc, key, without, "llm_grounded") > 10_000
+
+
+@pytest.mark.unit
+def test_a_small_fixed_part_leaves_the_batch_unchanged():
+    """When the fixed part fits inside the headroom the safety fraction already
+    leaves, reserving it changes nothing — the fraction is the tighter bound."""
+    rows = [_row(3) for _ in range(100)]
+    fixed = {"AccountHolder": "Jane", "AccountNumber": "123"}
+    for model in (NOVA_LITE, NOVA_PRO, CLAUDE3, SONNET5_1M):
+        for geometry in ("llm_grounded", "ocr_only"):
+            assert compute_token_aware_batch_size(
+                model, rows, geometry, 25, fixed_results=fixed
+            ) == compute_token_aware_batch_size(model, rows, geometry, 25)
+
+
+@pytest.mark.unit
+def test_a_fixed_part_larger_than_the_cap_still_yields_one_row():
+    """The result is never 0, even when the fixed part alone exhausts the cap."""
+    fixed = {f"F{i}": "x" for i in range(1_000)}
+    assert (
+        compute_token_aware_batch_size(
+            NOVA_PRO, [_row(3)] * 10, "llm_grounded", 25, fixed_results=fixed
+        )
+        == 1
+    )
+
+
+@pytest.mark.unit
+def test_an_instance_carrying_its_own_list_is_sized_by_that_list():
+    """A multi-instance class makes each document instance one outer row, and an
+    instance carrying a 100-row inner table emits a leaf per inner cell. Counted by
+    its top-level scalars it was one column wide and sized at the ceiling; counted
+    by leaves it is 201 wide, so even a 128K-output model takes only a few."""
+    instance = {
+        "AccountNumber": "1",
+        "Transactions": [{"Date": "d", "Amount": "1"} for _ in range(100)],
+    }
+    assert count_row_columns([instance] * 3) == 201
+    assert compute_token_aware_batch_size(NOVA_PRO, [instance] * 3, "ocr_only", 25) == 1
+    # floor(128,000 x 0.5 / (201 x 40)) = 7, against the ceiling of 25 before.
+    assert (
+        compute_token_aware_batch_size(SONNET5_1M, [instance] * 3, "ocr_only", 25) == 7
+    )
+
+
+@pytest.mark.unit
+def test_the_fixed_part_is_reserved_for_scalar_rows_too():
+    """A list of bare scalars has no countable row width and is sized from the
+    value-length fallback; the fixed part still rides every call and must still be
+    reserved there."""
+    rows = ["2024-01-05 opening balance"] * 100
+    fixed = {f"F{i}": "x" for i in range(60)}  # 60 x 120 = 7,200 with boxes
+    without = compute_token_aware_batch_size(NOVA_PRO, rows, "llm_grounded", 25)
+    with_fixed = compute_token_aware_batch_size(
+        NOVA_PRO, rows, "llm_grounded", 25, fixed_results=fixed
+    )
+    assert with_fixed < without
 
 
 if __name__ == "__main__":

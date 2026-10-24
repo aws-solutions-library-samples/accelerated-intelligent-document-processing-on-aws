@@ -1286,7 +1286,12 @@ per field, its **top-K guesses with probabilities** rather than a single value:
 `idp_common.extraction.topk_resolver.resolve_candidates` then splits this into:
 
 - **`inference_result`** — the top guess `G1` per field (numbers coerced per schema).
-- **raw confidence leaves** — `{"confidence": P1}` per field, stashed in
+- **raw confidence leaves** — `{"confidence": P1}` per field (clamped to [0, 1]).
+  A candidate with no usable `P1` (missing, null, not a number, or NaN) gets
+  `{"confidence": 0.0, "confidence_reason": "No usable probability (P1) …"}`, so
+  it still falls below its threshold and alerts, and the reason marks the 0.0 as a
+  stand-in rather than the model's verdict. NaN in particular used to clamp to
+  1.0, because `min(1.0, nan)` is `1.0`. The leaves are stashed in
   `metering["_integrated_field_assessment"]`. `_save_results` runs these through the
   **shared** `enrich_assessment_with_thresholds` (attaches
   `confidence_threshold` from each field's `x-aws-idp-confidence-threshold` or the
