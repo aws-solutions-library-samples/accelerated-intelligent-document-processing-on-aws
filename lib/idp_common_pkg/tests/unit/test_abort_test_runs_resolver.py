@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 
 @pytest.fixture
@@ -849,14 +850,23 @@ class _RecordingTable:
         self._clock = clock
         self._aborted = aborted
         self.table_name = real.table_name
+        # Run id -> exception raised instead of serving that call, per method.
+        self.get_item_errors = {}
+        self.update_item_errors = {}
 
     def get_item(self, **kwargs):
+        self._clock.now += _CALL_LATENCY
+        run_id = kwargs["Key"]["PK"].split("#", 1)[1]
+        if run_id in self.get_item_errors:
+            raise self.get_item_errors[run_id]
         return self._real.get_item(**kwargs)
 
     def update_item(self, **kwargs):
         self._clock.now += _CALL_LATENCY
-        response = self._real.update_item(**kwargs)
         run_id = kwargs["Key"]["PK"].split("#", 1)[1]
+        if run_id in self.update_item_errors:
+            raise self.update_item_errors[run_id]
+        response = self._real.update_item(**kwargs)
         self._aborted[run_id] = self._clock.now
         return response
 
@@ -865,8 +875,10 @@ class _RecordingTable:
 def timed_runs(in_flight_runs, monkeypatch):
     """``in_flight_runs``, recording each run's dispatch and ABORTED times.
 
-    Each abort-workflow invoke and each status update costs one call latency of
-    the fake clock, like every BatchGetItem call.
+    Every API call the handler makes -- each run read, abort-workflow invoke,
+    metrics message and status update -- costs one call latency of the fake
+    clock, like every BatchGetItem call. ``install`` returns the recording table
+    as well as the resource stub.
     """
     index, table, run_ids, install, clock = in_flight_runs
     dispatched = {}
@@ -881,10 +893,18 @@ def timed_runs(in_flight_runs, monkeypatch):
     lambda_client.invoke.side_effect = invoke
     monkeypatch.setattr(index, "lambda_client", lambda_client)
 
+    def send_message(**kwargs):
+        clock.now += _CALL_LATENCY
+
+    sqs_client = MagicMock()
+    sqs_client.send_message.side_effect = send_message
+    monkeypatch.setattr(index, "sqs_client", sqs_client)
+
     def install_timed(hold):
         stub = install(hold)
         recording = _RecordingTable(table, clock, aborted)
         monkeypatch.setattr(stub, "Table", lambda name: recording)
+        stub.recording = recording
         return stub
 
     return index, table, run_ids, install_timed, clock, dispatched, aborted
@@ -896,6 +916,11 @@ def timed_runs(in_flight_runs, monkeypatch):
 # Held here rather than beside the budget in the resolver, so that a change to
 # the resolver cannot also loosen the test that bounds it.
 _DISPATCHER_HEADROOM_SECONDS = 5
+
+# The shortest settle wait the documents are given, the other side of the same
+# choice: shrinking the budget to make room would mark runs ABORTED before
+# documents that settle in a few seconds have done so.
+_MIN_SETTLE_WAIT_SECONDS = 10
 
 
 @pytest.mark.unit
@@ -912,11 +937,13 @@ def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeou
 ):
     """Never-settling runs, one request: one budget, and every run gets the wait.
 
-    Every run's documents must get the settle wait before the run is marked
-    ABORTED, not only the first run's: an early ABORTED lets the first read of
-    the run persist its completed-file count, and its metrics are not computed
-    again. The floor is the settle wait (the budget less the metrics pause),
-    less however long the dispatch phase took.
+    Every run's documents must get the settle wait, and its metrics must be
+    queued with the pause taken, before the run is marked ABORTED -- not only the
+    first run's: an early ABORTED lets the first read of the run persist its
+    completed-file count, and its metrics are not computed again. Documents that
+    never settle hold every wait to its end, so no run can be marked ABORTED
+    before the request's deadline: each run's window from dispatch is at least
+    the budget less how far into the request its dispatch came.
     """
     index, table, run_ids, install, clock, dispatched, aborted = timed_runs
     run_ids = run_ids[:n_runs]
@@ -935,15 +962,22 @@ def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeou
     assert stub.calls
     assert set(dispatched) == set(run_ids)
     assert set(aborted) == set(run_ids)
-    dispatch_phase = max(dispatched.values()) - started
-    floor = (
-        index.ABORT_WAIT_BUDGET_SECONDS
-        - index.METRICS_START_PAUSE_SECONDS
-        - dispatch_phase
+    assert (
+        index.ABORT_WAIT_BUDGET_SECONDS - index.METRICS_START_PAUSE_SECONDS
+        >= _MIN_SETTLE_WAIT_SECONDS
     )
-    assert floor > 0, dispatch_phase
-    windows = {run_id: aborted[run_id] - dispatched[run_id] for run_id in run_ids}
-    assert all(window >= floor for window in windows.values()), (floor, windows)
+    deadline = started + index.ABORT_WAIT_BUDGET_SECONDS
+    for run_id in run_ids:
+        floor = deadline - dispatched[run_id]
+        window = aborted[run_id] - dispatched[run_id]
+        assert window >= floor, (run_id, window, floor)
+    # One metrics message per run, each naming its own run, all before any
+    # run is marked ABORTED.
+    messages = [
+        json.loads(call.kwargs["MessageBody"])["testRunId"]
+        for call in index.sqs_client.send_message.call_args_list
+    ]
+    assert messages == run_ids, messages
     assert result["success"] is True
     assert result["abortedCount"] == len(run_ids)
     assert result["failedCount"] == 0
@@ -1157,3 +1191,50 @@ def test_every_document_is_told_to_stop_once_in_batches_of_at_most_100(
     sent = [key for batch in batches for key in batch]
     expected = [f"{run_ids[0]}/doc-{n:03d}.pdf" for n in range(120)]
     assert sent == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "boom"}},
+                "GetItem",
+            ),
+            "Database error: ",
+            id="client-error",
+        ),
+        pytest.param(RuntimeError("connection reset"), "connection reset", id="other"),
+    ],
+)
+def test_a_run_that_cannot_be_read_fails_alone(timed_runs, error, expected):
+    """One run's read failing does not fail the runs around it."""
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    stub = install(lambda call, n: 0)
+    stub.recording.get_item_errors[run_ids[1]] = error
+
+    result = index.lambda_handler(_ui_event(run_ids), None)
+
+    assert result["abortedCount"] == 2, result
+    assert result["failedCount"] == 1, result
+    assert len(result["errors"]) == 1, result
+    assert result["errors"][0].startswith(f"{run_ids[1]}: {expected}"), result
+    assert set(aborted) == {run_ids[0], run_ids[2]}
+    assert run_ids[1] not in dispatched
+
+
+@pytest.mark.unit
+def test_a_status_update_that_fails_is_counted_as_a_failure(timed_runs):
+    """The conditional ABORTED update failing for one run fails that run only."""
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    stub = install(lambda call, n: 0)
+    stub.recording.update_item_errors[run_ids[0]] = RuntimeError("condition")
+
+    result = index.lambda_handler(_ui_event(run_ids), None)
+
+    assert result["success"] is True
+    assert result["abortedCount"] == 2, result
+    assert result["failedCount"] == 1, result
+    assert result["errors"] == [f"{run_ids[0]}: Failed to update status: condition"]
+    assert result["message"] == "Aborted 2 test run(s), 1 failed"
