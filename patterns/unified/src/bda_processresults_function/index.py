@@ -1209,8 +1209,32 @@ def process_segments(
                 pagespecific_details, confidence_threshold
             )
 
-            blueprint_name = custom_output["matched_blueprint"]["name"]
-            bp_confidence = custom_output["matched_blueprint"]["confidence"]
+            # A MATCH segment whose custom output carries no usable
+            # ``matched_blueprint`` (absent, null, not an object, or missing
+            # its name or confidence) is processed rather than raising:
+            # subscripting it raised KeyError/TypeError, which escaped this
+            # loop into the handler's catch-all and abandoned every later
+            # segment. A missing name reads as "None", the value the
+            # standard-output branch below records for an unclassified
+            # segment. A missing confidence stays None, so the section is left
+            # unscored and legacy HITL marks the segment for review; a present
+            # confidence is compared with the threshold as usual.
+            matched_blueprint = custom_output.get("matched_blueprint")
+            if not isinstance(matched_blueprint, dict):
+                matched_blueprint = {}
+            blueprint_name = matched_blueprint.get("name") or "None"
+            bp_confidence = matched_blueprint.get("confidence")
+            if not matched_blueprint.get("name"):
+                logger.warning(
+                    f"Segment {record_number} is a MATCH but its custom output "
+                    "names no blueprint "
+                    f"({custom_output.get('matched_blueprint')!r}); recording None"
+                )
+            if bp_confidence is None:
+                logger.warning(
+                    f"Segment {record_number} is a MATCH but its custom output "
+                    "has no blueprint confidence; leaving it unscored"
+                )
 
             # Update the corresponding document section with confidence alerts
             # Find the section that contains these page indices (now 1-based)
