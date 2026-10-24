@@ -499,3 +499,17 @@ class TestBDAUnscoredConfidenceGoesToReview:
         assert [s.confidence for s in result.sections] == [0.99, 0.99, 0.99]
         assert [m.hitl_triggered for m in result.hitl_metadata] == [False, True, False]
         assert hitl
+
+    def test_a_null_blueprint_confidence_routes_to_review_without_crashing(self):
+        """A null matched-blueprint confidence: the segment routes to review,
+        is recorded as unscored, and the segments after it are still processed."""
+        result, hitl = _run_segments(
+            [
+                _custom_output(0, 0.95),
+                _custom_output(1, 0.95, bp_confidence=None),
+                _custom_output(2, 0.95),
+            ]
+        )
+        assert [s.confidence for s in result.sections] == [0.99, None, 0.99]
+        assert [m.hitl_triggered for m in result.hitl_metadata] == [False, True, False]
+        assert hitl
