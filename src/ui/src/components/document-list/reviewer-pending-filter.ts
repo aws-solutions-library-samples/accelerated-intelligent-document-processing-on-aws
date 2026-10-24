@@ -10,10 +10,9 @@ interface ReviewerListItem {
 
 /**
  * Whether a Reviewer-only user's document list shows this document: a review is owed
- * on it and it is unassigned or assigned to them. The listDocuments resolver applies a
- * similar restriction server-side, but it reads only the HITLCompleted flag, which no
- * review queue writes, so a finished queue review on a row carrying HITLTriggered
- * reaches the client and is hidden here.
+ * on it and it is unassigned or assigned to them. The document-list resolvers apply the
+ * same restriction server-side, with the same reading of a finished review, except that
+ * they also return a finished review the Reviewer owns; this filter hides that too.
  */
 export const isPendingForReviewer = (doc: ReviewerListItem, currentUsername: string | undefined): boolean => {
   if (!doc.hitlTriggered) return false;

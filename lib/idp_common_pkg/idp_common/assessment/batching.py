@@ -238,7 +238,9 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         if v is None or (isinstance(v, str) and not v.strip()):
             return default
         return float(v)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError: an integer literal too large for a float, which
+        # json.loads returns as an int.
         return default
 
 
@@ -360,6 +362,15 @@ def enrich_assessment_with_thresholds(
 
     def _enrich_leaf_container(node: Any, threshold: float, path: str) -> Any:
         """Recursively add threshold to every {confidence,...} leaf under node."""
+        # A NaN or infinite threshold (a malformed schema value) falls back to
+        # the default, as ``_safe_float_conversion`` does for the leaf the
+        # separate step stores, so the stored leaf and alert agree.
+        finite_threshold = utils.finite_float(threshold)
+        threshold = (
+            default_confidence_threshold
+            if finite_threshold is None
+            else finite_threshold
+        )
         if isinstance(node, dict):
             if "confidence" in node:
                 conf = (
@@ -367,6 +378,14 @@ def enrich_assessment_with_thresholds(
                     if node.get("confidence") is not None
                     else None
                 )
+                # A NaN or infinite score is malformed rather than absent: read
+                # it as 0.0 so it alerts, as BDA mode does and as 1S-TopK's
+                # stand-in does for a NaN probability (it clamps an infinite one
+                # instead). This builder produces the stored alerts for the
+                # separate confidence step too. Compared directly,
+                # ``nan < threshold`` is False and raised no alert.
+                if conf is not None and utils.finite_float(conf) is None:
+                    conf = 0.0
                 out = {**node, "confidence_threshold": threshold}
                 if conf is not None and conf < threshold:
                     alerts.append(

@@ -44,7 +44,7 @@ import { documentEditHref } from '../../routes/constants';
 import { useDocumentVersion } from '../../contexts/document-version';
 import { getFilePresignedUrl, skipAllSectionsReview } from '../../graphql/generated';
 import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
-import { SKIP_ALL_REASONS, isInReviewQueue, isQueueManaged } from '../common/review-status';
+import { SKIP_ALL_REASONS, isHitlReviewFinished, isInReviewQueue, isQueueManaged } from '../common/review-status';
 import ReasonModal from '../common/ReasonModal';
 
 const client = generateClient();
@@ -905,18 +905,20 @@ const SectionsPanel = ({
 
   // Disable edit mode if:
   // - User has no write or review permissions (Viewer role), OR
-  // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL completed/skipped
+  // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL finished
+  //   (a legacy review completed or skipped, or a queue review that ended complete or rejected)
   // Admins and Authors can always edit
   // - Viewing a historical version (read-only snapshot)
   // - In a review queue, for every role: it is reviewed from its queue item
   const inReviewQueue = isInReviewQueue(documentItem?.hitlStatus);
+  const isHitlFinished = isHitlReviewFinished(documentItem?.hitlStatus);
   const isEditModeDisabled =
     isHistorical ||
     inReviewQueue ||
     (!canWrite && !canReview) ||
-    (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlCompleted || isHitlSkipped));
+    (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlFinished));
 
-  logger.debug('Edit Mode Check:', { isReviewerOnly, isEditModeDisabled, isHitlCompleted, isHitlSkipped });
+  logger.debug('Edit Mode Check:', { isReviewerOnly, isEditModeDisabled, isHitlFinished });
 
   // Handle skip all sections review (Admin or Reviewer); the reason and note are
   // recorded with the skip in the review history.

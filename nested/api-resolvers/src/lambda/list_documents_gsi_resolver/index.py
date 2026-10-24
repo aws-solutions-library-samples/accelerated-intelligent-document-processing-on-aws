@@ -46,13 +46,49 @@ from config_scope import (  # noqa: E402
 
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
-from review_statuses import LegacyHitlStatus  # noqa: E402
+from review_statuses import (  # noqa: E402
+    LegacyHitlStatus,
+    ReviewStatus,
+    normalize_hitl_status,
+)
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
 _REVIEWER_ACTIVE_STATUSES = (
     LegacyHitlStatus.PENDING_REVIEW.value,
     LegacyHitlStatus.IN_PROGRESS.value,
     LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
+
+def _review_finished(hitl_status):
+    """Whether a stored HITLStatus says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
+    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
+    writer stored that the exact-match normaliser does not know (the earlier
+    SageMaker A2I flow). The web UI's ``isHitlReviewFinished`` is the same rule.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+#: Every stored HITLStatus value that reads as a finished review, derived from the
+#: declared vocabularies through ``_review_finished`` so a FilterExpression can test
+#: it. Exact values: the normaliser also accepts surrounding whitespace, which no
+#: writer stores.
+_FINISHED_HITL_STATUSES = tuple(
+    sorted(
+        value
+        for value in (
+            *(s.value for s in ReviewStatus),
+            *(s.value for s in LegacyHitlStatus),
+            "COMPLETED",
+        )
+        if _review_finished(value)
+    )
 )
 
 logger = logging.getLogger()
@@ -190,13 +226,19 @@ def _caller_scope_or_deny(caller, operation):
 def _reviewer_filter_expression(caller):
     """The server-side filter that reduces the index to a reviewer's own work.
 
-    A Reviewer sees HITL-pending documents (not completed/skipped) that are
-    either unassigned or assigned to them, PLUS completed documents they own:
+    A Reviewer sees HITL-pending documents (not finished) that are either
+    unassigned or assigned to them, PLUS finished documents they own:
 
         HITL is active AND (
-            (not completed AND (no owner OR owner is me))
-            OR owner is me      # in-progress + completed reviews they own
+            (not finished AND (no owner OR owner is me))
+            OR owner is me      # in-progress + finished reviews they own
         )
+
+    Finished is `HITLCompleted` OR a `HITLStatus` that `_review_finished` reads as
+    finished. The flag alone is not enough: a review queue records its outcome
+    (`complete` or `rejected`) only in `HITLStatus`, so a finished queue review on a
+    row still carrying the legacy `HITLTriggered` flag read as owed to every
+    Reviewer.
 
     HITL counts as active when `HITLTriggered` is true OR `HITLStatus` names a
     pending/in-progress review — defence in depth for items where the boolean
@@ -227,9 +269,12 @@ def _reviewer_filter_expression(caller):
         Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[1]) |
         Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[2])
     )
+    review_finished = Attr("HITLCompleted").eq(True) | Attr("HITLStatus").is_in(
+        list(_FINISHED_HITL_STATUSES)
+    )
     return hitl_active & (
         (
-            ~Attr("HITLCompleted").eq(True) &
+            ~review_finished &
             (
                 Attr("HITLReviewOwner").not_exists() |
                 Attr("HITLReviewOwner").eq("") |

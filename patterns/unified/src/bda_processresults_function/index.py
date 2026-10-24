@@ -23,7 +23,12 @@ from idp_common.review_queues.routing import (
 from idp_common.review_queues.statuses import LEGACY_DONE, LegacyHitlStatus
 from idp_common.review_queues.store import create_review_store
 from idp_common.s3 import get_s3_client, write_content
-from idp_common.utils import build_s3_uri, parse_confidence, parse_s3_uri
+from idp_common.utils import (
+    build_s3_uri,
+    finite_float,
+    parse_confidence,
+    parse_s3_uri,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -1102,17 +1107,15 @@ def create_confidence_threshold_alerts(
         "key_value_details", {}
     ).items():
         for kv_entry in kv_details:
-            # A null (or non-numeric) confidence is an unscored field, read as
-            # 0.0 so it alerts and goes to review — the rule Pipeline's default
-            # ``separate`` confidence mode applies, and the fail-safe direction.
-            # A missing key already reads as 0.0 via ``process_keyvalue_details``.
-            # Comparing a null directly raised TypeError, which escaped
-            # process_segments into the handler's catch-all and abandoned the
-            # rest of the document's segments.
-            try:
-                # float(None) raises TypeError, so a null lands here too.
-                confidence = float(kv_entry.get("confidence", 0.0))
-            except (TypeError, ValueError):
+            # A null, non-numeric or non-finite (NaN, infinite) confidence is
+            # an unscored field, read as 0.0 so it alerts and goes to review,
+            # which is the fail-safe direction. A missing key already reads as 0.0
+            # via ``process_keyvalue_details``. Comparing a null directly raised
+            # TypeError, which escaped process_segments into the handler's
+            # catch-all and abandoned the rest of the document's segments; a NaN
+            # compared directly raised no alert, since ``nan < t`` is False.
+            confidence = finite_float(kv_entry.get("confidence", 0.0))
+            if confidence is None:
                 confidence = 0.0
             # Use the entry's per-field threshold (schema-resolved) when present
             entry_threshold = kv_entry.get(
@@ -1209,8 +1212,32 @@ def process_segments(
                 pagespecific_details, confidence_threshold
             )
 
-            blueprint_name = custom_output["matched_blueprint"]["name"]
-            bp_confidence = custom_output["matched_blueprint"]["confidence"]
+            # A MATCH segment whose custom output carries no usable
+            # ``matched_blueprint`` (absent, null, not an object, or missing
+            # its name or confidence) is processed rather than raising:
+            # subscripting it raised KeyError/TypeError, which escaped this
+            # loop into the handler's catch-all and abandoned every later
+            # segment. A missing name reads as "None", the value the
+            # standard-output branch below records for an unclassified
+            # segment. A missing confidence stays None, so the section is left
+            # unscored and legacy HITL marks the segment for review; a present
+            # confidence is compared with the threshold as usual.
+            matched_blueprint = custom_output.get("matched_blueprint")
+            if not isinstance(matched_blueprint, dict):
+                matched_blueprint = {}
+            blueprint_name = matched_blueprint.get("name") or "None"
+            bp_confidence = matched_blueprint.get("confidence")
+            if not matched_blueprint.get("name"):
+                logger.warning(
+                    f"Segment {record_number} is a MATCH but its custom output "
+                    "names no blueprint "
+                    f"({custom_output.get('matched_blueprint')!r}); recording None"
+                )
+            if bp_confidence is None:
+                logger.warning(
+                    f"Segment {record_number} is a MATCH but its custom output "
+                    "has no blueprint confidence; leaving it unscored"
+                )
 
             # Update the corresponding document section with confidence alerts
             # Find the section that contains these page indices (now 1-based)
