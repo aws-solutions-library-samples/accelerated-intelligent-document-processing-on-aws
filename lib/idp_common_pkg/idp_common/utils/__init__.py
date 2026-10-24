@@ -590,18 +590,12 @@ def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
         value = value.strip().rstrip("%").strip()
         if not value:
             return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
+    # finite_float also covers an integer too large for a float, which
+    # json.loads returns as an int and float() rejects with OverflowError.
+    number = finite_float(value)
+    if number is None:
         logger.warning(
-            "Ignoring unparseable classification confidence %r%s",
-            value,
-            f" ({context})" if context else "",
-        )
-        return None
-    if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
-        logger.warning(
-            "Ignoring non-finite classification confidence %r%s",
+            "Ignoring unparseable or non-finite classification confidence %r%s",
             value,
             f" ({context})" if context else "",
         )
