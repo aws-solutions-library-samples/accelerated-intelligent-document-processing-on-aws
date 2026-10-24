@@ -580,6 +580,10 @@ class _Clock:
         return self.now
 
     def sleep(self, seconds):
+        # As time.sleep does: a negative length is an error, not a no-op, so a
+        # caller that computes one fails here as it would in production.
+        if seconds < 0:
+            raise ValueError("sleep length must be non-negative")
         self.sleeps.append(seconds)
         self.now += seconds
 
@@ -688,7 +692,10 @@ def test_keys_that_stay_unprocessed_are_unknown_not_missing(
     polls = len(poll_sleeps)
     assert polls >= 2, clock.sleeps
     # Each poll makes at most BATCH_GET_MAX_ATTEMPTS calls for its one chunk.
-    assert len(stub.calls) == polls * index.BATCH_GET_MAX_ATTEMPTS
+    # Every poll followed by a full interval made all of them; the last one may
+    # be cut short by the end of the wait (#1606), so it makes at most that many.
+    attempts = index.BATCH_GET_MAX_ATTEMPTS
+    assert polls * attempts <= len(stub.calls) <= (polls + 1) * attempts
     # The backoff grows to, and stops at, one second (0.05 * 2**5 would be 1.6).
     assert [high for _, high in drawn[:5]] == [0.1, 0.2, 0.4, 0.8, 1.0]
 
@@ -721,3 +728,225 @@ def test_a_refused_batch_marks_its_documents_unknown(abort_table, caplog, monkey
 
     assert "not found" not in caplog.text
     assert f"Status of document {keys[0]} is unknown" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The whole request fits inside the REST dispatcher's read timeout (#1606).
+#
+# The dispatcher stops reading a resolver after _RESOLVER_READ_TIMEOUT_SECONDS
+# and answers 504 although the resolver runs on and completes the abort. These
+# drive the real handler against a moto table, with the module's clock replaced
+# so that sleeping and every BatchGetItem call advance it: the elapsed figure is
+# the handler's own wall clock, measured, not a sum of constants.
+
+_REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[4]
+_DISPATCHER = (
+    _REPO_ROOT / "nested/api-resolvers/src/lambda/http_api_dispatcher/index.py"
+)
+_UI_ABORT_MUTATION = (
+    _REPO_ROOT / "src/ui/src/graphql/operations/mutations/AbortTestRuns.graphql"
+)
+# Each BatchGetItem call costs this much of the fake clock.
+_CALL_LATENCY = 0.05
+
+
+def _dispatcher_read_timeout():
+    """The dispatcher's read timeout, read from its source rather than restated."""
+    import re
+
+    found = re.findall(
+        r"^_RESOLVER_READ_TIMEOUT_SECONDS\s*=\s*(\d+)\s*$",
+        _DISPATCHER.read_text(),
+        re.MULTILINE,
+    )
+    assert len(found) == 1, "the dispatcher's read timeout could not be read"
+    return int(found[0])
+
+
+class _SlowResource(_HoldBackResource):
+    """The hold-back resource, with a clock that every call advances."""
+
+    def __init__(self, real, hold, clock, cap=2_000):
+        super().__init__(real, hold)
+        self._clock = clock
+        self._cap = cap
+
+    def Table(self, name):  # noqa: N802 - mirrors the boto3 resource method
+        return self._real.Table(name)
+
+    def batch_get_item(self, RequestItems):
+        self._clock.now += _CALL_LATENCY
+        if len(self.calls) >= self._cap:
+            raise AssertionError(f"batch_get_item called more than {self._cap} times")
+        self.calls.append(len(RequestItems[_TABLE]["Keys"]))
+        response = self._real.batch_get_item(RequestItems=RequestItems)
+        items = response["Responses"][_TABLE]
+        held = min(self._hold(len(self.calls), len(items)), len(items))
+        if held:
+            kept, back = items[: len(items) - held], items[len(items) - held :]
+            response["Responses"][_TABLE] = kept
+            response["UnprocessedKeys"] = {
+                _TABLE: {"Keys": [{"PK": i["PK"], "SK": i["SK"]} for i in back]}
+            }
+        return response
+
+
+@pytest.fixture
+def in_flight_runs(abort_table, monkeypatch):
+    """Three RUNNING runs of 120 documents each, none of which ever settles."""
+    index, table, _keys, _install, clock = abort_table
+    run_ids = ["run-a", "run-b", "run-c"]
+    files = [f"doc-{n:03d}.pdf" for n in range(120)]
+    for run_id in run_ids:
+        table.put_item(
+            Item={
+                "PK": f"testrun#{run_id}",
+                "SK": "metadata",
+                "Status": "RUNNING",
+                "Files": files,
+            }
+        )
+        for name in files:
+            table.put_item(
+                Item={
+                    "PK": f"doc#{run_id}/{name}",
+                    "SK": "none",
+                    "ObjectStatus": "RUNNING",
+                }
+            )
+    monkeypatch.setenv("TRACKING_TABLE_NAME", _TABLE)
+    monkeypatch.setenv("ABORT_WORKFLOW_FUNCTION_NAME", "abort-workflow")
+    monkeypatch.setenv("TEST_RESULT_CACHE_UPDATE_QUEUE_URL", "https://queue")
+    monkeypatch.setattr(index, "lambda_client", MagicMock())
+    monkeypatch.setattr(index, "sqs_client", MagicMock())
+    # Every backoff draws its cap: deterministic, and the worst case.
+    monkeypatch.setattr(index.random, "uniform", lambda low, high: high)
+
+    def install(hold):
+        import boto3
+
+        real = boto3.resource("dynamodb", region_name="us-east-1")
+        stub = _SlowResource(real, hold, clock)
+        monkeypatch.setattr(index, "dynamodb", stub)
+        return stub
+
+    return index, table, run_ids, install, clock
+
+
+def _ui_event(run_ids):
+    return {
+        "arguments": {"testRunIds": run_ids},
+        "identity": {"claims": {"cognito:groups": ["Admin"]}},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "hold",
+    [
+        pytest.param(lambda call, n: 0, id="every-read-succeeds"),
+        pytest.param(lambda call, n: n, id="every-read-throttled"),
+    ],
+)
+def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeout(
+    in_flight_runs, hold
+):
+    """Three never-settling runs, one request: bounded by one budget, not three."""
+    index, table, run_ids, install, clock = in_flight_runs
+    stub = install(hold)
+    started = clock.now
+
+    result = index.lambda_handler(_ui_event(run_ids), None)
+
+    elapsed = clock.now - started
+    read_timeout = _dispatcher_read_timeout()
+    # The handler is done inside the dispatcher's bound. How much room it leaves
+    # for cold start and the trip back is a choice recorded beside
+    # ABORT_WAIT_BUDGET_SECONDS; this clock cannot see either.
+    assert elapsed < read_timeout, (elapsed, read_timeout)
+    # Every wait ends at the deadline; at most one call is in flight past it.
+    assert elapsed <= index.ABORT_WAIT_BUDGET_SECONDS + _CALL_LATENCY, elapsed
+    # The documents were polled at all (the bound is not met by skipping work).
+    assert stub.calls
+    assert result["success"] is True
+    assert result["abortedCount"] == len(run_ids)
+    assert result["failedCount"] == 0
+    for run_id in run_ids:
+        item = table.get_item(Key={"PK": f"testrun#{run_id}", "SK": "metadata"})
+        assert item["Item"]["Status"] == "ABORTED"
+
+
+@pytest.mark.unit
+def test_the_response_still_carries_every_field_the_ui_reads(in_flight_runs):
+    """The UI's abort mutation selects fields the bounded handler still returns.
+
+    The selection set is read from the UI's own operation document, and the run
+    is ABORTED in the table by the time the response exists, which is what the
+    UI's refetch after a successful abort displays.
+    """
+    import re
+
+    index, table, run_ids, install, _clock = in_flight_runs
+    install(lambda call, n: 0)
+
+    result = index.lambda_handler(_ui_event(run_ids[:1]), None)
+
+    body = _UI_ABORT_MUTATION.read_text()
+    selection = body[body.index("abortTestRuns(") :]
+    selection = selection[selection.index("{") + 1 : selection.index("}")]
+    selected = set(re.findall(r"[A-Za-z_]\w*", selection))
+    assert selected >= {"success", "abortedCount", "failedCount", "message"}, selected
+    assert selected <= set(result), selected - set(result)
+    assert result["success"] is True
+    assert result["abortedCount"] == 1
+    assert result["failedCount"] == 0
+    assert result["message"] == "Aborted 1 test run(s)"
+    item = table.get_item(Key={"PK": f"testrun#{run_ids[0]}", "SK": "metadata"})
+    assert item["Item"]["Status"] == "ABORTED"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "hold",
+    [
+        pytest.param(lambda call, n: 0, id="every-read-succeeds"),
+        pytest.param(lambda call, n: n, id="every-read-throttled"),
+    ],
+)
+def test_the_settle_wait_itself_ends_at_its_deadline(in_flight_runs, hold, caplog):
+    """The wait, measured alone: no poll, retry or sleep carries it past the deadline.
+
+    Measured without the handler around it, because there the pause after
+    queueing metrics comes out of the same deadline and absorbs an overshoot of
+    up to its own length -- which would leave an unbounded retry or a full final
+    poll interval invisible. Three runs' documents in one wait makes four chunks
+    of BatchGetItem, so a chunk started past the deadline shows up as more than
+    one call's latency of overshoot.
+    """
+    index, table, run_ids, install, clock = in_flight_runs
+    install(hold)
+    keys = [f"{run_id}/doc-{n:03d}.pdf" for run_id in run_ids for n in range(120)]
+    started = clock.now
+    deadline = started + 4
+
+    with caplog.at_level("WARNING"):
+        index._wait_for_documents_terminal_state(
+            table, "run-a", keys, deadline=deadline
+        )
+
+    assert clock.now <= deadline + _CALL_LATENCY, clock.now - started
+    # A chunk left unread for want of time is unknown, never "not found".
+    assert "not found" not in caplog.text
+
+
+@pytest.mark.unit
+def test_one_run_that_never_settles_still_gets_its_pause_before_aborted(
+    in_flight_runs,
+):
+    """The wait stops early enough to leave the metrics pause inside the deadline."""
+    index, table, run_ids, install, clock = in_flight_runs
+    install(lambda call, n: 0)
+
+    index.lambda_handler(_ui_event(run_ids[:1]), None)
+
+    assert clock.sleeps[-1] == index.METRICS_START_PAUSE_SECONDS, clock.sleeps[-3:]

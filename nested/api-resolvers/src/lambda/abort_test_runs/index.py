@@ -37,9 +37,51 @@ sqs_client = boto3.client('sqs')
 BATCH_GET_MAX_ATTEMPTS = 6
 
 
-def _backoff_sleep(attempt):
-    """Exponential backoff with full jitter, capped at one second."""
-    time.sleep(random.uniform(0, min(1.0, 0.05 * 2**attempt)))  # nosec B311
+def _backoff_sleep(attempt, deadline=None):
+    """Exponential backoff with full jitter, capped at one second.
+
+    Never sleeps past ``deadline`` (an absolute ``time.time()`` value), so a
+    retry cannot carry the handler beyond its wait budget.
+    """
+    delay = random.uniform(0, min(1.0, 0.05 * 2**attempt))  # nosec B311
+    if deadline is not None:
+        delay = min(delay, max(0.0, deadline - time.time()))
+    if delay > 0:
+        time.sleep(delay)
+
+
+# The REST API reaches this resolver through http_api_dispatcher, which stops
+# reading the invoke after its _RESOLVER_READ_TIMEOUT_SECONDS (20 s) and answers
+# 504 -- while this function runs on and completes the abort, so the caller is
+# told an abort that succeeded has failed (#1606). The settle wait below was
+# sized for AppSync (25 s plus a 2 s pause) and outlived that bound whenever the
+# documents did not settle quickly.
+#
+# So every wait in one invocation -- the document settle poll for every run in
+# the request, the pause after queueing metrics, and BatchGetItem backoff --
+# shares a single deadline this many seconds after the handler starts. It is one
+# deadline for the whole request rather than one per run, because the runs are
+# aborted one after another and a per-run bound multiplies by their count. The
+# rest of the dispatcher's 20 s is left for what this clock does not see: cold
+# start before the handler runs, the API calls made around the waits (at most one
+# DynamoDB call can be in flight when the deadline passes), and the response's
+# trip back through the dispatcher. The API calls themselves are not bounded by
+# it, so a request naming very many runs can still outlast the dispatcher.
+#
+# Shortening the wait does not change what the abort does; it changes how long
+# the documents get to settle before the run is marked ABORTED and its metrics
+# are queued, which matters because both are taken once. A run whose documents
+# have not settled by the deadline is handled exactly as one that outlasted the
+# previous 25 s: the abort proceeds and a warning is logged.
+ABORT_WAIT_BUDGET_SECONDS = 12
+
+# Pause after queueing the run's metrics calculation, before marking it ABORTED.
+# Taken from the same deadline, so it shortens (to nothing) when the settle wait
+# has used the budget.
+METRICS_START_PAUSE_SECONDS = 2
+
+# Seconds between document status polls during the settle wait.
+SETTLE_POLL_INTERVAL_SECONDS = 2
 
 
 # Test run statuses that can be aborted (before processing completes)
@@ -135,6 +177,9 @@ def lambda_handler(event, context):
 
         tracking_table = dynamodb.Table(tracking_table_name)  # type: ignore[attr-defined]
 
+        # One wait budget for the whole request; see ABORT_WAIT_BUDGET_SECONDS.
+        deadline = time.time() + ABORT_WAIT_BUDGET_SECONDS
+
         aborted_count = 0
         failed_count = 0
         errors = []
@@ -145,7 +190,8 @@ def lambda_handler(event, context):
                 result = abort_single_test_run(
                     test_run_id,
                     tracking_table,
-                    abort_workflow_function_name
+                    abort_workflow_function_name,
+                    deadline=deadline,
                 )
 
                 if result['success']:
@@ -198,7 +244,9 @@ def lambda_handler(event, context):
         }
 
 
-def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_name):
+def abort_single_test_run(
+    test_run_id, tracking_table, abort_workflow_function_name, deadline=None
+):
     """
     Abort a single test run and its documents.
 
@@ -206,10 +254,14 @@ def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_n
         test_run_id: Test run identifier
         tracking_table: DynamoDB table resource
         abort_workflow_function_name: Name of the abort workflow Lambda function
+        deadline: Absolute ``time.time()`` value by which every wait for this
+            run must end. Defaults to ABORT_WAIT_BUDGET_SECONDS from now.
 
     Returns:
         Dict with 'success' boolean and optional 'error' message
     """
+    if deadline is None:
+        deadline = time.time() + ABORT_WAIT_BUDGET_SECONDS
     try:
         # Get test run metadata
         response = tracking_table.get_item(
@@ -265,9 +317,15 @@ def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_n
 
             logger.info(f"Invoked {batch_count} abort workflow batches for total of {len(object_keys)} documents")
 
-        # Wait for documents to reach terminal state (max 25 seconds to stay within AppSync timeout)
+        # Wait for documents to reach terminal state, leaving room inside the
+        # request's deadline for the pause after queueing metrics.
         logger.info(f"Waiting for documents to reach terminal state for test run {test_run_id}")
-        _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys, max_wait_time=25)
+        _wait_for_documents_terminal_state(
+            tracking_table,
+            test_run_id,
+            object_keys,
+            deadline=deadline - METRICS_START_PAUSE_SECONDS,
+        )
 
         # Queue metrics calculation for any completed documents
         try:
@@ -282,9 +340,13 @@ def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_n
                 )
 
                 # Wait briefly to give the metrics calculation Lambda time to start processing
-                # before we mark the test run as ABORTED
-                time.sleep(2)
-                logger.info("Waited 2 seconds for metrics calculation to start")
+                # before we mark the test run as ABORTED -- within the deadline.
+                pause = min(
+                    METRICS_START_PAUSE_SECONDS, max(0.0, deadline - time.time())
+                )
+                if pause > 0:
+                    time.sleep(pause)
+                logger.info(f"Waited {pause:.1f} seconds for metrics calculation to start")
         except Exception as e:
             logger.warning(
                 f"Failed to queue cache update for {test_run_id}: {e}"
@@ -325,13 +387,16 @@ def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_n
         return {"success": False, "error": str(e)}
 
 
-def _batch_get_document_items(tracking_table, object_keys):
+def _batch_get_document_items(tracking_table, object_keys, deadline=None):
     """
     Batch get document items from DynamoDB.
 
     Args:
         tracking_table: DynamoDB table resource
         object_keys: List of document object keys (S3 paths)
+        deadline: Optional absolute ``time.time()`` value. Once it has passed,
+            no further call is made: held-back keys are not resubmitted and
+            chunks not yet read are reported unread.
 
     Returns:
         ``(items_by_key, unread_keys)``: a dict mapping object_key to item dict
@@ -351,6 +416,9 @@ def _batch_get_document_items(tracking_table, object_keys):
     batch_size = 100
     for i in range(0, len(object_keys), batch_size):
         batch = object_keys[i:i + batch_size]
+        if deadline is not None and time.time() >= deadline:
+            unread_keys.update(batch)
+            continue
         keys = [{'PK': f"doc#{key}", 'SK': 'none'} for key in batch]
         request_items = {table_name: {'Keys': keys}}
         attempt = 0
@@ -373,7 +441,8 @@ def _batch_get_document_items(tracking_table, object_keys):
                 if not request_items:
                     break
                 attempt += 1
-                if attempt >= BATCH_GET_MAX_ATTEMPTS:
+                out_of_time = deadline is not None and time.time() >= deadline
+                if attempt >= BATCH_GET_MAX_ATTEMPTS or out_of_time:
                     held = request_items.get(table_name, {}).get('Keys', [])
                     unread_keys.update(
                         k['PK'][4:] for k in held
@@ -381,10 +450,10 @@ def _batch_get_document_items(tracking_table, object_keys):
                     )
                     logger.warning(
                         f"Batch get left {len(held)} keys unprocessed after "
-                        f"{BATCH_GET_MAX_ATTEMPTS} attempts; their status is unknown"
+                        f"{attempt} attempts; their status is unknown"
                     )
                     break
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
 
         except Exception as e:
             logger.error(f"Batch get failed for batch starting at index {i}: {str(e)}")
@@ -393,7 +462,9 @@ def _batch_get_document_items(tracking_table, object_keys):
     return items_by_key, unread_keys
 
 
-def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys, max_wait_time=25):
+def _wait_for_documents_terminal_state(
+    tracking_table, test_run_id, object_keys, max_wait_time=None, deadline=None
+):
     """
     Wait for all documents in the test run to reach a terminal state.
 
@@ -408,10 +479,18 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
         tracking_table: DynamoDB table resource
         test_run_id: Test run identifier
         object_keys: List of document object keys (S3 paths)
-        max_wait_time: Maximum time to wait in seconds (default 25 for AppSync timeout)
+        max_wait_time: Maximum time to wait in seconds, from now.
+        deadline: Absolute ``time.time()`` value by which the wait ends. With
+            both given, the earlier wins; with neither, the wait is bounded by
+            ABORT_WAIT_BUDGET_SECONDS. No poll starts, and no sleep runs, past it.
     """
-    poll_interval = 2  # Check every 2 seconds
+    poll_interval = SETTLE_POLL_INTERVAL_SECONDS
     start_time = time.time()
+    end_time = start_time + (
+        ABORT_WAIT_BUDGET_SECONDS if max_wait_time is None else max_wait_time
+    )
+    if deadline is not None:
+        end_time = min(end_time, deadline)
 
     # Terminal statuses: documents that won't change further
     terminal_statuses = {'COMPLETED', 'ABORTED', 'FAILED'}
@@ -421,14 +500,14 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
     terminal_count = 0
     unknown_count = 0
 
-    while time.time() - start_time < max_wait_time:
+    while time.time() < end_time:
         pending_count = 0
         terminal_count = 0
         unknown_count = 0
 
         # Use batch_get_item for efficiency (100 keys per batch vs 100 sequential GETs)
         items_by_key, unread_keys = _batch_get_document_items(
-            tracking_table, object_keys
+            tracking_table, object_keys, deadline=end_time
         )
 
         for object_key in object_keys:
@@ -489,8 +568,11 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
             )
             return
 
-        # Wait before next poll
-        time.sleep(poll_interval)
+        # Wait before next poll, but not past the end of the wait
+        remaining = end_time - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
 
     # Timeout reached
     logger.warning(
