@@ -31,7 +31,7 @@ from tests.unit.assessment.test_bda_lambda_functions import bda_index
 
 pytestmark = pytest.mark.unit
 
-NON_FINITE = ["NaN", "Infinity", "-Infinity"]
+NONFINITE_TOKENS = ["NaN", "Infinity", "-Infinity"]
 
 
 def _model_response(token: str) -> dict:
@@ -46,7 +46,7 @@ def _model_response(token: str) -> dict:
 
 
 class TestFiniteFloat:
-    @pytest.mark.parametrize("token", NON_FINITE)
+    @pytest.mark.parametrize("token", NONFINITE_TOKENS)
     def test_the_reader_really_yields_a_non_finite_float(self, token):
         value = _model_response(token)["InvoiceTotal"]["confidence"]
         assert isinstance(value, float) and not math.isfinite(value)
@@ -172,7 +172,7 @@ class TestSeparateModeAlerts:
     ``enrich_assessment_with_thresholds`` regenerates, not the ones
     ``assess_results`` builds through ``_safe_float_conversion``."""
 
-    @pytest.mark.parametrize("token", NON_FINITE)
+    @pytest.mark.parametrize("token", NONFINITE_TOKENS)
     def test_the_stored_alert_reads_a_non_finite_score_as_zero(self, token):
         stored, _ = _separate_step_alerts(token)
         assert stored == _ZERO_ALERT
@@ -210,7 +210,7 @@ class TestSeparateModeAlerts:
             ("InvoiceTotal", 0.1)
         ]
 
-    @pytest.mark.parametrize("token", NON_FINITE)
+    @pytest.mark.parametrize("token", NONFINITE_TOKENS)
     def test_conversion_reads_non_finite_as_the_default(self, token):
         """``_safe_float_conversion`` also reads the thresholds the separate
         step stores on each leaf, so it applies the same rule."""
@@ -227,7 +227,7 @@ class TestIntegratedModeAlerts:
     separate step's parser; the integrated path receives the same JSON values
     from its own ``json.loads`` of the response or tool input."""
 
-    @pytest.mark.parametrize("token", NON_FINITE)
+    @pytest.mark.parametrize("token", NONFINITE_TOKENS)
     def test_a_non_finite_field_alerts_at_zero(self, token):
         enriched, alerts = enrich_assessment_with_thresholds(
             _model_response(token), {"properties": {}}, 0.8
@@ -254,14 +254,14 @@ class TestIntegratedModeAlerts:
 
 
 class TestBDAAlerts:
-    @pytest.mark.parametrize("token", NON_FINITE)
+    @pytest.mark.parametrize("token", NONFINITE_TOKENS)
     def test_a_non_finite_blueprint_confidence_triggers_review(self, token):
         value = json.loads(f'{{"confidence": {token}}}')["confidence"]
         assert routing.bda_segment_triggers([], value, 0.8, hitl_enabled=True)
         assert routing.bda_segment_triggers([], value, 0.8, hitl_enabled=False) is None
 
     @pytest.mark.parametrize("where", ["field", "blueprint"])
-    @pytest.mark.parametrize("token", NON_FINITE)
+    @pytest.mark.parametrize("token", NONFINITE_TOKENS)
     def test_a_non_finite_score_reaches_review_through_the_real_reader(
         self, token, where
     ):
