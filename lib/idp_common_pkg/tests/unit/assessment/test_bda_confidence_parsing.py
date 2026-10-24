@@ -114,11 +114,14 @@ def _schema(threshold_literal: str) -> dict[str, Any]:
 
 
 class TestUnusableFieldThreshold:
-    @pytest.mark.parametrize("literal", ["NaN", "-Infinity", '"NaN"', '"-inf"'])
+    @pytest.mark.parametrize(
+        "literal", ["NaN", "-Infinity", "Infinity", '"NaN"', '"-inf"', '"inf"']
+    )
     def test_a_non_finite_schema_threshold_falls_back_and_still_alerts(self, literal):
-        """The schema resolver passes a NaN or -inf threshold through, and
-        ``0.1 < nan`` is False, so a low-confidence field raised no alert and
-        skipped review. The default threshold applies instead."""
+        """The schema resolver passes a non-finite threshold through, and
+        ``0.1 < nan`` is False, so with NaN or -inf a low-confidence field raised
+        no alert and skipped review (and with +inf every field alerted). The
+        default threshold applies instead."""
         result, hitl = _run([_body(0, field_conf="0.1")], _schema(literal))
         assert result.sections[0].confidence_threshold_alerts == [
             {
@@ -203,10 +206,29 @@ class TestUnusableCustomOutput:
     def test_a_malformed_member_does_not_stop_later_segments(self, key, literal):
         result, _ = _run([_body(0), _with(1, key, literal), _body(2)])
         assert len(result.hitl_metadata) == 3
-        assert result.sections[0].confidence == 0.99
-        assert result.sections[2].confidence == 0.99
+        # With no usable page index the segment matches no section, so the
+        # middle section is left as it was; ``true`` is not a page index.
+        middle = None if key == "split_document" else 0.99
+        assert [s.confidence for s in result.sections] == [0.99, middle, 0.99]
         assert [m.hitl_triggered for m in result.hitl_metadata] == [
             False,
             False,
             False,
+        ]
+
+
+class TestKeyValuePagePlacement:
+    def test_a_field_is_placed_on_its_own_page(self):
+        explainability = json.loads(_body(1))["explainability_info"]
+        details = bda_index.process_keyvalue_details(explainability, [1, 2], 0.8)
+        assert [e["key"] for e in details["key_value_details"]["2"]] == ["InvoiceTotal"]
+        assert details["key_value_details"]["1"] == []
+
+    def test_with_no_page_indices_fields_land_on_page_zero(self):
+        """Indexing the fallback page "0" raised KeyError before."""
+        explainability = json.loads(_body(1))["explainability_info"]
+        details = bda_index.process_keyvalue_details(explainability, [], 0.8)
+        assert [e["key"] for e in details["key_value_details"]["0"]] == ["InvoiceTotal"]
+        assert [e["key"] for e in details["bounding_box_details"]["0"]] == [
+            "InvoiceTotal"
         ]
