@@ -247,6 +247,10 @@ class TestKeyValuePagePlacement:
         details = bda_index.process_keyvalue_details(explainability, [1, 2], 0.8)
         assert [e["key"] for e in details["key_value_details"]["2"]] == ["InvoiceTotal"]
         assert details["key_value_details"]["1"] == []
+        assert [e["key"] for e in details["bounding_box_details"]["2"]] == [
+            "InvoiceTotal"
+        ]
+        assert details["bounding_box_details"]["1"] == []
 
     def test_with_no_page_indices_fields_land_on_page_zero(self):
         """Indexing the fallback page "0" raised KeyError before."""
