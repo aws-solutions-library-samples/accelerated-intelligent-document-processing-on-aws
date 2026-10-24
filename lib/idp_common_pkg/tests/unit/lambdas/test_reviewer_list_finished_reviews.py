@@ -261,3 +261,64 @@ def test_the_count_matches_the_list_over_a_mixed_table(env):
     listed, counted = _gsi_listed_and_counted(gsi)
     assert listed == sorted(f"{s}.pdf" for s in OPEN)
     assert counted == len(OPEN)
+
+
+def _record_completion(table, key):
+    """completeSectionReview's write on the last section: HITLCompleted with no
+    status change of its own. A later re-review can leave an open status beside it
+    (#1214's shape), so the flag has to count on its own."""
+    table.update_item(
+        Key={"PK": f"doc#{key}", "SK": "none"},
+        UpdateExpression="SET HITLCompleted = :t",
+        ExpressionAttributeValues={":t": True},
+    )
+    return table.get_item(Key={"PK": f"doc#{key}", "SK": "none"})["Item"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["PendingReview", "InProgress", "in_review"])
+def test_a_recorded_completion_is_finished_whatever_the_status(env, status):
+    table, gsi, rng = env
+    _seed(table, "d.pdf", status)
+    item = _record_completion(table, "d.pdf")
+
+    assert _gsi_listed_and_counted(gsi) == ([], 0)
+    assert _range_includes(rng, item) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["PendingReview", "InProgress"])
+def test_a_recorded_completion_this_reviewer_owns_is_still_listed(env, status):
+    table, gsi, rng = env
+    _seed(table, "d.pdf", status, HITLReviewOwner=REVIEWER["username"])
+    item = _record_completion(table, "d.pdf")
+
+    assert _gsi_listed_and_counted(gsi) == (["d.pdf"], 1)
+    assert _range_includes(rng, item) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status", [" complete ", "Complete", "REJECTED", "rejected\n", "review completed"]
+)
+def test_both_document_lists_agree_on_a_spelling_no_writer_stores(env, status):
+    """The listDocuments FilterExpression can only match exact values, so the
+    date-range resolver matches the same exact set: the two lists show a Reviewer
+    the same rows. Which way such a row goes is not what is pinned here."""
+    table, gsi, rng = env
+    table.put_item(
+        Item={
+            "PK": "doc#d.pdf",
+            "SK": "none",
+            "ObjectKey": "d.pdf",
+            "ItemType": "document",
+            "InitialEventTime": "2026-10-01T00:00:00Z",
+            "HITLTriggered": True,
+            "HITLStatus": status,
+        }
+    )
+    item = table.get_item(Key={"PK": "doc#d.pdf", "SK": "none"})["Item"]
+
+    listed, counted = _gsi_listed_and_counted(gsi)
+    assert counted == len(listed)
+    assert (listed == ["d.pdf"]) is _range_includes(rng, item)

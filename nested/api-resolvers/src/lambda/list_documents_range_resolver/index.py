@@ -39,7 +39,11 @@ from config_scope import (  # noqa: E402
 
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
-from review_statuses import LegacyHitlStatus, normalize_hitl_status  # noqa: E402
+from review_statuses import (  # noqa: E402
+    LegacyHitlStatus,
+    ReviewStatus,
+    normalize_hitl_status,
+)
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
 _REVIEWER_ACTIVE_STATUSES = (
@@ -63,6 +67,22 @@ def _review_finished(hitl_status):
         normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
         or hitl_status == "COMPLETED"
     )
+
+
+#: Every stored HITLStatus value that reads as a finished review, derived from the
+#: declared vocabularies through ``_review_finished``. Matched exactly, as the
+#: listDocuments resolver must match it in its FilterExpression, so the two document
+#: lists agree row for row; the normaliser also accepts surrounding whitespace, which
+#: no writer stores.
+_FINISHED_HITL_STATUSES = frozenset(
+    value
+    for value in (
+        *(s.value for s in ReviewStatus),
+        *(s.value for s in LegacyHitlStatus),
+        "COMPLETED",
+    )
+    if _review_finished(value)
+)
 
 # Same story for the log redactor: byte-identical copy of
 # idp_common/utils/log_sanitizer.py, kept in step by
@@ -433,8 +453,8 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
         hitl_status = doc.get("HITLStatus", "")
         # Finished by the legacy flag or by the status itself: a review queue
         # records its outcome only in HITLStatus.
-        hitl_completed = doc.get("HITLCompleted", False) or _review_finished(
-            hitl_status
+        hitl_completed = (
+            doc.get("HITLCompleted", False) or hitl_status in _FINISHED_HITL_STATUSES
         )
         hitl_owner = doc.get("HITLReviewOwner", "")
         reviewer_id = caller["username"]
