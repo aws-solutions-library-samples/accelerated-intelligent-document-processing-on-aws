@@ -22,12 +22,22 @@ Each case seeds the stored state with the real writer (``DocumentDynamoDBService
 over a ``moto`` tracking table; ``tracker.apply_overrides`` for the queue outcomes;
 a raw ``update_item`` for the A2I spelling, which no live writer stores), runs the
 real resolver function, and reads ``HITLStatus`` back from the table. ``moto``
-stands in for DynamoDB; the property measured is the resolver's branch, not
-expression-language behaviour.
+stands in for DynamoDB. The resolver's write is conditional on the status it read,
+and the tests that depend on that condition measure moto's evaluation of it, not
+DynamoDB's.
 
 Still reopened, and pinned so a widening is a visible decision: every pending or
-in-progress spelling, a document with no status, and ``in_review`` (a queue review
-still under way).
+in-progress legacy spelling, and a document with no status.
+
+Never touched: ``in_review``, a queue review still under way. Such a row is
+reachable only on a test-run document copied before the copier stamped Test Studio
+provenance and then reprocessed with the Default queue on. Writing the legacy
+``PendingReview`` (and ``TestSetId``) over it left the document in both flows, so
+the resolver skips it, counts it in ``skippedCount`` and leaves the row as the
+queue wrote it -- skipped rather than refused, because one queue-managed document
+must not fail the rest of the run. The write is also conditional on the status the
+resolver read, so a review a queue opens between the read and the write is not
+overwritten either.
 """
 
 from __future__ import annotations
@@ -87,8 +97,12 @@ REOPENED = {
     "Review Pending": ("legacy", LegacyHitlStatus.REVIEW_PENDING.value),
     "InProgress": ("legacy", LegacyHitlStatus.IN_PROGRESS.value),
     "ReviewInProgress": ("legacy", LegacyHitlStatus.REVIEW_IN_PROGRESS.value),
-    "queue in_review": ("queue", "in_review"),
     "IN_PROGRESS (A2I)": ("raw", "IN_PROGRESS"),
+    "empty string": ("raw", ""),
+}
+#: Queue-managed and still under review: left exactly as the queue wrote it.
+QUEUE_MANAGED = {
+    "queue in_review": ("queue", "in_review"),
 }
 
 
@@ -96,9 +110,11 @@ def test_every_declared_status_is_classified():
     """A status added to either vocabulary fails here until it is placed."""
     declared = {s.value for s in LegacyHitlStatus} | {s.value for s in ReviewStatus}
     assert declared  # an empty derivation would collect as a skip, not a failure
-    seeded = {spec[1] for spec in (*KEPT.values(), *REOPENED.values()) if spec}
+    groups = (KEPT, REOPENED, QUEUE_MANAGED)
+    seeded = {spec[1] for group in groups for spec in group.values() if spec}
     assert declared <= seeded
-    assert not set(KEPT) & set(REOPENED)
+    names = [name for group in groups for name in group]
+    assert len(names) == len(set(names))
 
 
 @pytest.fixture
@@ -267,3 +283,157 @@ def test_a_listed_document_with_no_row_is_skipped(aws):
     result = test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
     assert (result["queuedCount"], result["skippedCount"]) == (1, 1)
     assert _stored().get("HITLStatus") == PENDING
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", sorted(QUEUE_MANAGED))
+def test_a_queue_review_in_progress_is_left_to_the_queue(aws, case, caplog):
+    spec = QUEUE_MANAGED[case]
+    _seed(aws.service, spec)
+    before = _stored()
+    with caplog.at_level("INFO", logger=test_runner_index.logger.name):
+        result = test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+    assert (result["queuedCount"], result["skippedCount"]) == (0, 1)
+    assert "queue_managed=1 changed_during_send=0" in caplog.text
+    # Not one attribute changed: no PendingReview, no HITLTriggered, no TestSetId
+    # (which would make routing read the document as Test Studio work).
+    assert _stored() == before
+
+
+@pytest.mark.unit
+def test_one_queue_managed_document_does_not_stop_the_rest_of_the_run(aws):
+    """The run's other documents are still sent to review (skip, not refuse)."""
+    _seed(aws.service, ("queue", "in_review"))
+    other = f"{RUN_ID}/other.pdf"
+    table = boto3.resource("dynamodb", region_name=REGION).Table(TRACKING)
+    owed = dict(_stored(), PK=f"doc#{other}", HITLStatus=REOPENED["PendingReview"][1])
+    table.put_item(Item=owed)
+    table.update_item(
+        Key={"PK": f"testrun#{RUN_ID}", "SK": "metadata"},
+        UpdateExpression="SET Files = :f",
+        ExpressionAttributeValues={":f": [FILE, "other.pdf"]},
+    )
+    result = test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+    assert (result["queuedCount"], result["skippedCount"]) == (1, 1)
+    assert _stored().get("HITLStatus") == "in_review"
+    row = table.get_item(Key={"PK": f"doc#{other}", "SK": "none"})["Item"]
+    assert (row.get("HITLStatus"), row.get("HITLTriggered")) == (PENDING, True)
+
+
+class _QueueOpensAfterTheRead:
+    """A resource whose table lets a queue open a review after the resolver reads
+    the document row and before it writes, so the read-time check alone cannot
+    see it."""
+
+    def __init__(self, resource, service):
+        self._resource, self._service = resource, service
+        self.opened = 0
+
+    def Table(self, name):  # noqa: N802 - mirrors boto3's resource API
+        real = self._resource.Table(name)
+        outer = self
+
+        class _Table:
+            def __getattr__(self, attr):
+                return getattr(real, attr)
+
+            def get_item(self, **kwargs):
+                response = real.get_item(**kwargs)
+                if kwargs["Key"]["PK"].startswith("doc#") and not outer.opened:
+                    outer.opened += 1
+                    _seed(outer._service, ("queue", "in_review"))
+                return response
+
+        return _Table()
+
+
+@pytest.mark.unit
+def test_a_queue_review_opened_after_the_read_is_not_overwritten(aws, caplog):
+    _seed(aws.service, REOPENED["PendingReview"])
+    racing = _QueueOpensAfterTheRead(
+        boto3.resource("dynamodb", region_name=REGION), aws.service
+    )
+    with (
+        patch.object(test_runner_index, "dynamodb", racing),
+        caplog.at_level("INFO", logger=test_runner_index.logger.name),
+    ):
+        result = test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+    assert "queue_managed=0 changed_during_send=1" in caplog.text
+    assert racing.opened == 1
+    assert (result["queuedCount"], result["skippedCount"]) == (0, 1)
+    assert _stored().get("HITLStatus") == "in_review"
+    assert "TestSetId" not in _stored()
+
+
+@pytest.mark.unit
+def test_a_failed_write_that_is_not_the_condition_still_fails_the_call(aws):
+    """Only the status-changed refusal is a skip; any other error propagates."""
+    from botocore.exceptions import ClientError
+
+    _seed(aws.service, REOPENED["PendingReview"])
+    real = boto3.resource("dynamodb", region_name=REGION)
+
+    class _Throttled:
+        def Table(self, name):  # noqa: N802 - mirrors boto3's resource API
+            table = real.Table(name)
+
+            class _T:
+                def __getattr__(self, attr):
+                    return getattr(table, attr)
+
+                def update_item(self, **kwargs):
+                    raise ClientError(
+                        {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                        "UpdateItem",
+                    )
+
+            return _T()
+
+    with patch.object(test_runner_index, "dynamodb", _Throttled()):
+        with pytest.raises(ClientError):
+            test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+
+
+@pytest.mark.unit
+def test_a_status_stored_as_null_is_still_sent_to_review(aws):
+    """No current writer stores a NULL ``HITLStatus``; boto3 reads one as ``None``
+    like an absent attribute, so the condition must accept both."""
+    _seed(aws.service, None)
+    boto3.client("dynamodb", region_name=REGION).update_item(
+        TableName=TRACKING,
+        Key={"PK": {"S": f"doc#{OBJECT_KEY}"}, "SK": {"S": "none"}},
+        UpdateExpression="SET HITLStatus = :n",
+        ExpressionAttributeValues={":n": {"NULL": True}},
+    )
+    result = test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+    assert (result["queuedCount"], result["skippedCount"]) == (1, 0)
+    assert _stored().get("HITLStatus") == PENDING
+
+
+@pytest.mark.unit
+def test_the_document_read_is_strongly_consistent(aws):
+    """moto is always consistent, so this is asserted on the call: an eventually
+    consistent read could fail the conditional write and skip an owed review."""
+    _seed(aws.service, REOPENED["PendingReview"])
+    real = boto3.resource("dynamodb", region_name=REGION)
+    reads = []
+
+    class _Recording:
+        def Table(self, name):  # noqa: N802 - mirrors boto3's resource API
+            table = real.Table(name)
+
+            class _T:
+                def __getattr__(self, attr):
+                    return getattr(table, attr)
+
+                def get_item(self, **kwargs):
+                    reads.append(kwargs)
+                    return table.get_item(**kwargs)
+
+            return _T()
+
+    with patch.object(test_runner_index, "dynamodb", _Recording()):
+        test_runner_index.send_test_run_to_review({"testRunId": RUN_ID})
+    doc_reads = [r for r in reads if r["Key"]["PK"].startswith("doc#")]
+    assert doc_reads
+    assert all(r.get("ConsistentRead") is True for r in doc_reads)

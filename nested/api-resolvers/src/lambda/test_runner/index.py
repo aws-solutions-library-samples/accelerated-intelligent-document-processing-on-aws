@@ -331,6 +331,14 @@ def send_test_run_to_review(args):
     This flips those docs into the review hopper (HITLTriggered /
     HITLStatus=PendingReview) without waiting for the confidence-only
     auto-trigger. Only docs that have confidence alerts are queued.
+
+    A document whose review a review queue manages (``in_review``) is skipped and
+    counted in ``skippedCount``, not refused: the operation works a whole run, and
+    one such document must not stop the rest. It is reachable only on a test-run
+    row copied before the copier stamped Test Studio provenance and reprocessed
+    with the Default queue on; writing the legacy marking over it would leave the
+    document in both review flows, as ``_assert_not_queue_managed`` in
+    complete_section_review refuses to do for a single document.
     """
     test_run_id = args["testRunId"]
     tracking_table = os.environ["TRACKING_TABLE"]
@@ -345,34 +353,69 @@ def send_test_run_to_review(args):
     files = run.get("Files") or []
     queued = 0
     skipped = 0
+    queue_managed = 0
+    changed = 0
     for file_name in files:
         object_key = f"{test_run_id}/{file_name}"
-        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item")
+        # Strongly consistent, so the conditional write below compares against
+        # the current status rather than a stale replica's.
+        doc = table.get_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+        ).get("Item")
         if not doc:
             skipped += 1
             continue
 
         # Never reopen a review that has already finished.
         alert_count = int(doc.get("ConfidenceAlertCount", 0) or 0)
-        if alert_count <= 0 or _review_finished(doc.get("HITLStatus")):
+        hitl_status = doc.get("HITLStatus")
+        if alert_count <= 0 or _review_finished(hitl_status):
             skipped += 1
             continue
 
-        table.update_item(
-            Key={"PK": f"doc#{object_key}", "SK": "none"},
-            UpdateExpression=(
-                "SET HITLTriggered = :t, HITLStatus = :s, TestSetId = :tsid"
-            ),
-            ExpressionAttributeValues={
-                ":t": True,
-                ":s": LegacyHitlStatus.PENDING_REVIEW.value,
-                ":tsid": run.get("TestSetId"),
-            },
-        )
+        # A review queue owns this document's review: leave it to the queue.
+        if normalize_hitl_status(hitl_status).queue_managed:
+            queue_managed += 1
+            skipped += 1
+            continue
+
+        # Conditional on the status read above, so a review a queue opens in
+        # between is not overwritten with the legacy marking either.
+        if hitl_status is None:
+            # boto3 reads both an absent attribute and a stored NULL as None.
+            condition = (
+                "attribute_not_exists(HITLStatus) OR attribute_type(HITLStatus, :null)"
+            )
+            condition_values = {":null": "NULL"}
+        else:
+            condition, condition_values = "HITLStatus = :read", {":read": hitl_status}
+        try:
+            table.update_item(
+                Key={"PK": f"doc#{object_key}", "SK": "none"},
+                UpdateExpression=(
+                    "SET HITLTriggered = :t, HITLStatus = :s, TestSetId = :tsid"
+                ),
+                ConditionExpression=condition,
+                ExpressionAttributeValues={
+                    ":t": True,
+                    ":s": LegacyHitlStatus.PENDING_REVIEW.value,
+                    ":tsid": run.get("TestSetId"),
+                    **condition_values,
+                },
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != (
+                "ConditionalCheckFailedException"
+            ):
+                raise
+            changed += 1
+            skipped += 1
+            continue
         queued += 1
 
     logger.info(
         f"send_test_run_to_review: run={test_run_id} queued={queued} skipped={skipped}"
+        f" queue_managed={queue_managed} changed_during_send={changed}"
     )
     return {
         "testRunId": test_run_id,
