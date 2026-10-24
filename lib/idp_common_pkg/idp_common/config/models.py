@@ -19,6 +19,7 @@ Usage:
 """
 
 import difflib
+import functools
 import math
 import re
 from functools import lru_cache
@@ -42,9 +43,9 @@ from pydantic import (
     Discriminator,
     Field,
     ValidationInfo,
-    field_validator,
     model_validator,
 )
+from pydantic import field_validator as _pydantic_field_validator
 from typing_extensions import Self
 
 # Current config schema/shape version. Bump when the stored config shape changes
@@ -63,6 +64,48 @@ from typing_extensions import Self
 # moved the file-shape assertions under `file_shape`, and replaced
 # `invalidClassFallback` with `fallback_class`.
 CONFIG_FORMAT_VERSION = "0.9"
+
+
+#: Exceptions a field validator here can raise on malformed input that pydantic
+#: does not convert into a ``ValidationError``: ``int([])`` and ``float({})`` raise
+#: ``TypeError``, and ``int(float("inf"))`` and ``float(10**400)`` raise
+#: ``OverflowError``. Pydantic converts only ``ValueError`` and ``AssertionError``.
+_UNCONVERTED_INPUT_ERRORS = (TypeError, OverflowError)
+
+
+def field_validator(*fields: str, **kwargs: Any) -> Any:
+    """``pydantic.field_validator`` whose validator cannot fail the whole load.
+
+    A stored value of the wrong shape (``temperature: []``, ``top_k: 1e400``,
+    ``ocr.max_workers: .inf``) made a validator raise ``TypeError`` or
+    ``OverflowError``. Pydantic lets those propagate, so ``IDPConfig`` raised
+    something that is not a ``ValidationError``, naming no setting, and callers
+    that report invalid configuration did not recognise it. This wraps every
+    validator in this module so those two errors are re-raised as ``ValueError``,
+    which pydantic reports as a ``ValidationError`` naming the field.
+
+    Nothing that parsed before parses differently: the wrapper acts only when the
+    validator has already raised, and it does not substitute a default. Every
+    validator in this module is declared through this name, which
+    ``tests/unit/config/test_null_numeric_settings.py`` checks per field.
+    """
+    decorate = _pydantic_field_validator(*fields, **kwargs)
+
+    def wrap(validator: Any) -> Any:
+        is_classmethod = isinstance(validator, classmethod)
+        func = validator.__func__ if is_classmethod else validator
+
+        @functools.wraps(func)
+        def guarded(*args: Any, **kw: Any) -> Any:
+            try:
+                return func(*args, **kw)
+            except _UNCONVERTED_INPUT_ERRORS as exc:
+                raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+
+        guarded.__idp_input_errors_converted__ = True  # type: ignore[attr-defined]
+        return decorate(classmethod(guarded) if is_classmethod else guarded)
+
+    return wrap
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
