@@ -532,11 +532,94 @@ def test_a_refused_abort_is_reported_not_hidden(stack, monkeypatch):
     )
 
     assert result["abortedCount"] == 1, result
+    # Counted once: the three refused documents are also still EXTRACTING, and
+    # are not reported a second time as unsettled.
     assert result["message"].endswith("; 3 document(s) not confirmed stopped"), result
     (error,) = result["errors"]
     assert error.startswith(f"{stack['run_id']}: 3 of 3 document(s)"), error
     assert "PermissionError" in error and "Admin or Author" in error, error
+    assert "terminal state" not in error, error
     assert set(_execution_statuses(stack).values()) == {"RUNNING"}
+
+
+def test_a_document_reported_stopped_that_goes_on_running_is_reported(stack):
+    """The settle wait's last reading decides, not the abort workflow's answer.
+
+    abortWorkflow can answer that it stopped a QUEUED document that the queue
+    processor then started anyway (#1612). Here it answers that it stopped all
+    three while one stays in flight; the response must say so rather than
+    report a clean abort.
+    """
+    workflow = stack["workflow"]
+    still_running = sorted(stack["executions"])[0]
+
+    def handler(event, context):
+        keys = event["arguments"]["objectKeys"]
+        for key in keys:
+            if key != still_running:
+                document = workflow.document_service.get_document(key)
+                document.status = Status.ABORTED
+                workflow.document_service.update_document(document)
+        return {
+            "success": True,
+            "message": f"Aborted {len(keys)} document(s)",
+            "abortedCount": len(keys),
+            "failedCount": 0,
+            "errors": None,
+        }
+
+    stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = handler
+
+    result = stack["abort"].lambda_handler(
+        {"arguments": {"testRunIds": [stack["run_id"]]}}, None
+    )
+
+    assert result["abortedCount"] == 1, result
+    assert result["message"].endswith("; 1 document(s) still processing"), result
+    assert result["errors"] == [
+        f"{stack['run_id']}: 1 of 3 document(s) had not reached a terminal state "
+        "when the abort returned and may still be processing"
+    ], result
+    # The wait ran to its deadline rather than giving up early.
+    assert sum(stack["clock"].sleeps) >= 8, stack["clock"].sleeps
+
+
+def test_unconfirmed_and_unsettled_documents_are_each_counted_once(stack):
+    """One document refused by name, another reported stopped but still running.
+
+    The refused one is still in flight too; it is reported once, as not
+    confirmed stopped, and the other is reported as one more still processing.
+    """
+    workflow = stack["workflow"]
+    refused, still_running, stopped = sorted(stack["executions"])
+
+    def handler(event, context):
+        document = workflow.document_service.get_document(stopped)
+        document.status = Status.ABORTED
+        workflow.document_service.update_document(document)
+        return {
+            "success": True,
+            "message": "Aborted 2 document(s), 1 failed",
+            "abortedCount": 2,
+            "failedCount": 1,
+            "errors": [f"{refused}: Failed to update status: boom"],
+        }
+
+    stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = handler
+
+    result = stack["abort"].lambda_handler(
+        {"arguments": {"testRunIds": [stack["run_id"]]}}, None
+    )
+
+    assert result["message"].endswith(
+        "; 1 document(s) not confirmed stopped; 1 more document(s) still processing"
+    ), result
+    (error,) = result["errors"]
+    assert error.startswith(f"{stack['run_id']}: 1 of 3 document(s) were not"), error
+    assert error.endswith(
+        "; 1 other of 3 document(s) had not reached a terminal state when the "
+        "abort returned and may still be processing"
+    ), error
 
 
 def test_an_invoke_with_no_answer_in_time_is_reported(stack):
@@ -563,6 +646,8 @@ def test_documents_already_finished_are_not_reported_as_unstopped(stack):
     finished = sorted(stack["executions"])[0]
     document = stack["workflow"].document_service.get_document(finished)
     document.status = Status.COMPLETED
+    # Finished includes its evaluation, which is what the settle wait reads.
+    document.evaluation_status = "COMPLETED"
     stack["workflow"].document_service.update_document(document)
 
     result = stack["abort"].lambda_handler(
@@ -808,6 +893,9 @@ def test_a_document_abort_workflow_declines_is_reported_unless_it_had_finished(
     key = sorted(stack["executions"])[0]
     document = workflow.document_service.get_document(key)
     document.status = Status(status)
+    # A COMPLETED document has also finished evaluating; for every other status
+    # the settle wait does not read this attribute.
+    document.evaluation_status = "COMPLETED"
     workflow.document_service.update_document(document)
 
     result = abort.lambda_handler(
@@ -934,6 +1022,11 @@ def test_a_request_of_500_documents_is_confirmed_in_one_round(stack, monkeypatch
         keys = event["arguments"]["objectKeys"]
         assert len(keys) <= 25
         together.wait()
+        # Stopped, as the answer says: the settle wait then reads them ABORTED.
+        for key in keys:
+            table.put_item(
+                Item={"PK": f"doc#{key}", "SK": "none", "ObjectStatus": "ABORTED"}
+            )
         return {"abortedCount": len(keys), "failedCount": 0, "errors": None}
 
     lam.handlers[_ABORT_WORKFLOW_ARN] = handler

@@ -294,6 +294,7 @@ def lambda_handler(event, context):
             confirm_by=deadline - METRICS_START_PAUSE_SECONDS,
         )
 
+        unsettled = set()  # document keys the settle wait last saw unfinished
         if dispatched:
             # Phase 2: one settle wait over every dispatched run's documents,
             # leaving room inside the deadline for the pause after queueing
@@ -303,7 +304,7 @@ def lambda_handler(event, context):
             run_label = ", ".join(dispatched)
             logger.info(f"Waiting for documents to reach terminal state for test run(s) {run_label}")
             try:
-                _wait_for_documents_terminal_state(
+                unsettled = _wait_for_documents_terminal_state(
                     tracking_table,
                     run_label,
                     all_keys,
@@ -314,6 +315,9 @@ def lambda_handler(event, context):
                     f"Settle wait failed for test run(s) {run_label}: {e}. "
                     "Proceeding with the abort anyway."
                 )
+                # Nothing was observed to settle, so nothing is reported as
+                # settled.
+                unsettled = set(all_keys)
 
             # Phase 3: queue each run's metrics calculation, pause once so the
             # metrics Lambda has started reading, then mark each run ABORTED.
@@ -338,17 +342,38 @@ def lambda_handler(event, context):
                 else:
                     record_failure(test_run_id, error_msg)
 
-        # Documents the abort workflow did not confirm stopping. Their run is
+        # Documents the abort workflow did not confirm stopping, and documents
+        # the settle wait still saw unfinished at its deadline. Their run is
         # still marked ABORTED -- that is what the caller asked for, and the run
         # counts as aborted -- but the response says which documents may still
-        # be processing, rather than reporting a clean abort.
+        # be processing, rather than reporting a clean abort. The second count
+        # is needed as well as the first because the abort workflow can report
+        # a document stopped that then goes on processing (#1612): what the
+        # wait last read is what was observed. One line per run.
         unstopped_count = 0
-        for test_run_id, (count, total, reasons) in not_stopped.items():
-            unstopped_count += count
-            errors.append(
-                f"{test_run_id}: {count} of {total} document(s) were not confirmed "
-                f"stopped and may still be processing: {'; '.join(reasons)}"
-            )
+        unsettled_count = 0
+        for test_run_id, keys in dispatched.items():
+            parts = []
+            named = set()
+            if test_run_id in not_stopped:
+                count, total, reasons, named = not_stopped[test_run_id]
+                unstopped_count += count
+                parts.append(
+                    f"{count} of {total} document(s) were not confirmed "
+                    f"stopped and may still be processing: {'; '.join(reasons)}"
+                )
+            # Not counted twice: a document already reported above as not
+            # confirmed stopped is not reported again here.
+            count = sum(1 for key in keys if key in unsettled and key not in named)
+            if count:
+                unsettled_count += count
+                parts.append(
+                    f"{count} {'other ' if parts else ''}of {len(keys)} "
+                    f"document(s) had not reached a terminal state when the "
+                    f"abort returned and may still be processing"
+                )
+            if parts:
+                errors.append(f"{test_run_id}: " + "; ".join(parts))
 
         # Prepare response
         success = aborted_count > 0
@@ -357,6 +382,9 @@ def lambda_handler(event, context):
             message += f", {failed_count} failed"
         if unstopped_count > 0:
             message += f"; {unstopped_count} document(s) not confirmed stopped"
+        if unsettled_count > 0:
+            more = "more " if unstopped_count > 0 else ""
+            message += f"; {unsettled_count} {more}document(s) still processing"
 
         logger.info(f"Abort test runs complete: {message}")
 
@@ -438,9 +466,10 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
     to the abort workflow unchanged.
 
     Returns:
-        ``{test_run_id: (count, total, reasons)}`` for every run with documents
-        the abort workflow did not confirm stopping: how many, out of how many,
-        and why. A document that had already finished is not counted.
+        ``{test_run_id: (count, total, reasons, keys)}`` for every run with
+        documents the abort workflow did not confirm stopping: how many, out of
+        how many, why, and the object keys of those it can name (see
+        ``_stop_batch``). A document that had already finished is not counted.
     """
     per_run = [
         [
@@ -510,29 +539,32 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
     not_stopped = {}
     for test_run_id, batch, future in futures:
         if future.done() and future.exception() is None:
-            count, reasons = future.result()
+            count, reasons, keys = future.result()
         elif future.done():
             count, reasons = len(batch), [
                 f"the abort workflow's result could not be read: {future.exception()}"
             ]
+            keys = list(batch)
         elif future.running():
             count, reasons = len(batch), ["no answer from the abort workflow in time"]
+            keys = list(batch)
         else:
             # Still queued behind slower sends when the wait ended; it goes out
             # if and when the runtime next runs this sandbox.
             count, reasons = len(batch), [
                 "the stop request had not been sent when the abort returned"
             ]
+            keys = list(batch)
         if not count:
             continue
-        previous, _total, seen = not_stopped.get(
-            test_run_id, (0, len(dispatched[test_run_id]), [])
+        previous, _total, seen, named = not_stopped.get(
+            test_run_id, (0, len(dispatched[test_run_id]), [], set())
         )
         for reason in reasons:
             if reason not in seen and len(seen) < 3:
                 seen.append(reason)
         not_stopped[test_run_id] = (
-            previous + count, len(dispatched[test_run_id]), seen
+            previous + count, len(dispatched[test_run_id]), seen, named | set(keys)
         )
     return not_stopped
 
@@ -543,8 +575,10 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
     ``confirm_by`` is the time by which a synchronous invoke must end, or None to
     send the batch asynchronously without waiting for an answer.
 
-    Returns ``(count, reasons)``: how many of the batch's documents were not
-    confirmed stopped, and why.
+    Returns ``(count, reasons, keys)``: how many of the batch's documents were
+    not confirmed stopped, why, and which of them can be named -- every one when
+    the whole batch is unconfirmed, and otherwise those the abort workflow's
+    errors name, which may be fewer than ``count``.
     """
     payload = json.dumps({'arguments': {'objectKeys': batch}, 'identity': identity})
     bound = ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS + ABORT_INVOKE_READ_TIMEOUT_SECONDS
@@ -562,7 +596,8 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
                 "more batches than are waited for" if confirm_by is None
                 else "no time left to wait"
             )
-            return len(batch), [f"sent without waiting for a result: {why}"]
+            reasons = [f"sent without waiting for a result: {why}"]
+            return len(batch), reasons, list(batch)
 
         response = lambda_client.invoke(
             FunctionName=abort_workflow_function_name,
@@ -574,7 +609,7 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
         logger.warning(
             f"Abort workflow invoke for {len(batch)} document(s) failed: {e}"
         )
-        return len(batch), [f"no result from the abort workflow: {e}"]
+        return len(batch), [f"no result from the abort workflow: {e}"], list(batch)
 
     if response.get('FunctionError'):
         detail = result if isinstance(result, dict) else {}
@@ -583,10 +618,11 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
             f"{detail.get('errorType', 'error')}: {detail.get('errorMessage', '')}"
         )
         logger.warning(f"Abort workflow did not stop {len(batch)} document(s): {reason}")
-        return len(batch), [reason]
+        return len(batch), [reason], list(batch)
     if not isinstance(result, dict):
         logger.warning(f"Abort workflow returned an unreadable result: {result!r}")
-        return len(batch), ["the abort workflow returned an unreadable result"]
+        reasons = ["the abort workflow returned an unreadable result"]
+        return len(batch), reasons, list(batch)
 
     failures = [
         str(error) for error in (result.get('errors') or [])
@@ -599,12 +635,17 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
             f"Abort workflow did not stop {count} of {len(batch)} document(s): "
             f"{failures[:3]}"
         )
-        return count, failures[:3] or ["the abort workflow reported a failure"]
+        named = [
+            key for key in batch
+            if any(failure.startswith(f"{key}: ") for failure in failures)
+        ]
+        reasons = failures[:3] or ["the abort workflow reported a failure"]
+        return count, reasons, named
     logger.info(
         f"Abort workflow stopped {result.get('abortedCount', 0)} of "
         f"{len(batch)} document(s)"
     )
-    return 0, []
+    return 0, [], []
 
 
 def _already_finished(error):
@@ -754,8 +795,8 @@ def _wait_for_documents_terminal_state(
     - COMPLETED with a terminal EvaluationStatus (see
       TERMINAL_EVALUATION_STATUSES — evaluation finished, failed, timed out,
       had no baseline, or was disabled for the run)
-    - ABORTED (stopped by abort workflow)
-    - FAILED (processing failed)
+    - any other status in FINISHED_DOCUMENT_STATUSES (ABORTED, FAILED,
+      REJECTED and the other final statuses)
 
     Args:
         tracking_table: DynamoDB table resource
@@ -765,6 +806,11 @@ def _wait_for_documents_terminal_state(
         deadline: Absolute ``time.time()`` value by which the wait ends. With
             both given, the earlier wins; with neither, the wait is bounded by
             ABORT_WAIT_BUDGET_SECONDS. No poll starts, and no sleep runs, past it.
+
+    Returns:
+        The set of object keys the last poll did not see in a terminal state --
+        still processing, missing, or unread -- or every key if no poll ran.
+        Empty when every document settled.
     """
     poll_interval = SETTLE_POLL_INTERVAL_SECONDS
     start_time = time.time()
@@ -774,18 +820,25 @@ def _wait_for_documents_terminal_state(
     if deadline is not None:
         end_time = min(end_time, deadline)
 
-    # Terminal statuses: documents that won't change further
-    terminal_statuses = {'COMPLETED', 'ABORTED', 'FAILED'}
+    # Terminal statuses: documents that won't change further. COMPLETED is
+    # decided below, by its evaluation; every other final status is terminal as
+    # it stands. The same set the response's "had finished" reading uses, so a
+    # document the abort workflow declined because it had finished is never
+    # reported as still processing.
+    terminal_statuses = FINISHED_DOCUMENT_STATUSES - {'COMPLETED'}
 
     # Initialize counters
     pending_count = 0
     terminal_count = 0
     unknown_count = 0
 
+    unsettled = set(object_keys)
+
     while time.time() < end_time:
         pending_count = 0
         terminal_count = 0
         unknown_count = 0
+        settled = set()
 
         # Use batch_get_item for efficiency (100 keys per batch vs 100 sequential GETs)
         items_by_key, unread_keys = _batch_get_document_items(
@@ -823,12 +876,15 @@ def _wait_for_documents_terminal_state(
                     # Document processing finished, check if evaluation is also done
                     if eval_status in TERMINAL_EVALUATION_STATUSES:
                         terminal_count += 1
+                        settled.add(object_key)
                     else:
                         # Still evaluating (or evaluation not started yet)
                         pending_count += 1
                 elif doc_status in terminal_statuses:
-                    # ABORTED or FAILED - no evaluation happens, already terminal
+                    # ABORTED, FAILED or another final status - no evaluation
+                    # happens, already terminal
                     terminal_count += 1
+                    settled.add(object_key)
                 else:
                     # Still processing (QUEUED, RUNNING, OCR, EXTRACTING, etc.)
                     pending_count += 1
@@ -837,6 +893,7 @@ def _wait_for_documents_terminal_state(
                 logger.warning(f"Failed to check status for {object_key}: {str(e)}")
                 pending_count += 1
 
+        unsettled = set(object_keys) - settled
         logger.info(
             f"Document status check: {terminal_count} terminal, {pending_count} pending, "
             f"{unknown_count} unknown"
@@ -848,7 +905,7 @@ def _wait_for_documents_terminal_state(
                 f"All documents reached terminal state for test run {test_run_id} "
                 f"({terminal_count} terminal)"
             )
-            return
+            return unsettled
 
         # Wait before next poll, but not past the end of the wait
         remaining = end_time - time.time()
@@ -863,3 +920,4 @@ def _wait_for_documents_terminal_state(
         f"Final status: {terminal_count} terminal, {pending_count} pending, "
         f"{unknown_count} unknown (tracking record could not be read)"
     )
+    return unsettled

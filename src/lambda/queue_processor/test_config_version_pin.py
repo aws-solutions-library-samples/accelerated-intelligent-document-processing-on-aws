@@ -87,6 +87,7 @@ class _Doc:
 
     def __init__(self, config_version=None, config_revision=None):
         self.id = "w2.pdf"
+        self.input_key = self.id
         self.config_version = config_version
         self.config_revision = config_revision
         self.status = None
