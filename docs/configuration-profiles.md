@@ -108,6 +108,15 @@ Configuration versions fall into two categories, indicated by a **Type** badge i
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
+- **Stays managed when other features write to it** — class discovery, BDA blueprint
+  sync and optimization, the Quick Start bootstrap, a discovery Replace and an update
+  through the API or `idp-cli config-upload` can all save a managed profile, and none
+  of them makes it a custom one. A save never clears the flag, including one whose
+  configuration says `managed: false`, and an update through the editor, API, SDK or
+  CLI cannot set it either. The stack's presets set it, and so does restoring a
+  revision saved while the profile was managed. A profile created by copying a
+  managed one (**Create profile**, **Save current edits as new profile…**) is always
+  custom.
 - **Editable copies** — use **Create profile** to create a custom, editable copy from any managed profile
 - **Test Studio integration** — when a test set is selected in Test Studio, the matching managed config version is auto-selected
 

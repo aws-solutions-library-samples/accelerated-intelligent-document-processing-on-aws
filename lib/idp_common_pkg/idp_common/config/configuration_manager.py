@@ -281,13 +281,15 @@ class ConfigurationManager:
         Supports both compressed and legacy inline storage formats.
 
         The head item's metadata attributes (`_DYNAMODB_METADATA_FIELDS`) are not
-        part of the result, `Managed` included. That is deliberate for this
-        method's callers: its result is the editor's `Custom` delta, which the UI
-        merges into what it sends back on Save as Profile and Save as default,
-        and nothing on that write path strips `managed` — so carrying it here
-        would make a copy of a stack-managed profile stack-managed itself.
-        `get_merged_configuration` needs it and reads it through
-        `_read_raw_configuration` instead.
+        part of the result, `Managed` included. Its result is the editor's
+        `Custom` delta, which the UI merges into what it sends back on Save as
+        Profile and Save as default, so the result is kept free of record
+        metadata; `handle_update_custom_configuration` also drops any `managed`
+        it is sent, so a copy of a stack-managed profile is a user profile.
+        Saving this result back to the profile it was read from does not
+        un-manage it: `save_configuration` keeps the flag on a profile stored
+        as managed. `get_merged_configuration` needs the attribute and reads it
+        through `_read_raw_configuration`.
 
         Args:
             config_type: Configuration type
@@ -785,6 +787,29 @@ class ConfigurationManager:
                 else None
             )
             is_active_status = existing_record.is_active if existing_record else False
+
+            # ⚠️ A save never clears `managed` on a profile stored as
+            # stack-managed. The flag is the head's `Managed` attribute, not part
+            # of the body, so every caller that reads a profile raw
+            # (`get_raw_configuration`, which the discovery, BDA, bootstrap and
+            # editor-update paths all use) and saves it back passes a body
+            # without it — and the model's `False` default then un-managed the
+            # profile on every such save. A save CAN set it: the stack's own
+            # presets carry `managed: true`. The rule is a property of the
+            # profile, not of the save, so it applies to a body that spells out
+            # `managed: false` and to the stack's own saves too. "Stored as
+            # managed" is what the validated read says (`from_dynamodb_item`:
+            # the attribute, else a body key an older writer left), so a head
+            # written by such a writer is kept managed and gains the attribute.
+            # A new profile name has no head, so a copy takes the body's value.
+            # Issue #1613.
+            if (
+                isinstance(config, IDPConfig)
+                and not config.managed
+                and existing_record is not None
+                and getattr(existing_record.config, "managed", False) is True
+            ):
+                config = config.model_copy(update={"managed": True})
 
             if existing_record:
                 # Existing config - preserve created_at, update updated_at
@@ -1867,6 +1892,13 @@ class ConfigurationManager:
         if isinstance(config_dict, dict):
             config_dict.pop("pricing", None)
             config_dict.pop(_FULL_CONFIG_MARKER, None)
+            # Whether a profile is stack-managed is decided by the stack, which
+            # writes through `save_configuration` directly, and is kept by that
+            # method on a profile already stored as managed. It is not a setting
+            # this operation edits: honoured here, a delta or a Save as carrying
+            # `managed: true` would make a user profile, or a copy of a managed
+            # one, stack-managed and undeletable in the web UI (#1613).
+            config_dict.pop("managed", None)
 
         # Migrate an incoming legacy-shaped config/delta to the current format BEFORE
         # it is merged onto a v0.6 default/current config below. If a v0.5-shaped upload
