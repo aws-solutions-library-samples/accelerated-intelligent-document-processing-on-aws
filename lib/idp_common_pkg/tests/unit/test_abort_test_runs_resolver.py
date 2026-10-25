@@ -883,6 +883,7 @@ def timed_runs(in_flight_runs, monkeypatch):
     index, table, run_ids, install, clock = in_flight_runs
     dispatched = {}
     aborted = {}
+    queued = []  # fake-clock time of each metrics message
 
     def invoke(**kwargs):
         clock.now += _CALL_LATENCY
@@ -895,6 +896,7 @@ def timed_runs(in_flight_runs, monkeypatch):
 
     def send_message(**kwargs):
         clock.now += _CALL_LATENCY
+        queued.append(clock.now)
 
     sqs_client = MagicMock()
     sqs_client.send_message.side_effect = send_message
@@ -905,6 +907,16 @@ def timed_runs(in_flight_runs, monkeypatch):
         recording = _RecordingTable(table, clock, aborted)
         monkeypatch.setattr(stub, "Table", lambda name: recording)
         stub.recording = recording
+        stub.queued = queued
+        stub.first_read = None
+        batch_get_item = stub.batch_get_item
+
+        def first_read_recorded(RequestItems):
+            if stub.first_read is None:
+                stub.first_read = clock.now
+            return batch_get_item(RequestItems=RequestItems)
+
+        monkeypatch.setattr(stub, "batch_get_item", first_read_recorded)
         return stub
 
     return index, table, run_ids, install_timed, clock, dispatched, aborted
@@ -940,10 +952,11 @@ def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeou
     Every run's documents must get the settle wait, and its metrics must be
     queued with the pause taken, before the run is marked ABORTED -- not only the
     first run's: an early ABORTED lets the first read of the run persist its
-    completed-file count, and its metrics are not computed again. Documents that
-    never settle hold every wait to its end, so no run can be marked ABORTED
-    before the request's deadline: each run's window from dispatch is at least
-    the budget less how far into the request its dispatch came.
+    completed-file count, and its metrics are not computed again. So every run
+    is dispatched before any document is read, every run's window from dispatch
+    to ABORTED is at least _MIN_SETTLE_WAIT_SECONDS, no run is marked ABORTED
+    before the request's deadline, and every metrics message is sent before
+    the first run is marked ABORTED.
     """
     index, table, run_ids, install, clock, dispatched, aborted = timed_runs
     run_ids = run_ids[:n_runs]
@@ -966,13 +979,16 @@ def test_an_abort_of_runs_that_never_settle_returns_inside_the_dispatcher_timeou
         index.ABORT_WAIT_BUDGET_SECONDS - index.METRICS_START_PAUSE_SECONDS
         >= _MIN_SETTLE_WAIT_SECONDS
     )
+    # Every run is dispatched before the one settle wait begins.
+    assert max(dispatched.values()) <= stub.first_read, (dispatched, stub.first_read)
     deadline = started + index.ABORT_WAIT_BUDGET_SECONDS
     for run_id in run_ids:
-        floor = deadline - dispatched[run_id]
         window = aborted[run_id] - dispatched[run_id]
-        assert window >= floor, (run_id, window, floor)
+        assert window >= _MIN_SETTLE_WAIT_SECONDS, (run_id, window)
+        assert aborted[run_id] >= deadline, (run_id, aborted[run_id] - started)
     # One metrics message per run, each naming its own run, all before any
     # run is marked ABORTED.
+    assert max(stub.queued) < min(aborted.values()), (stub.queued, aborted)
     messages = [
         json.loads(call.kwargs["MessageBody"])["testRunId"]
         for call in index.sqs_client.send_message.call_args_list
@@ -1141,36 +1157,35 @@ def test_a_settle_wait_that_raises_is_handled_as_one_that_ran_out(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "settled_first", [True, False], ids=["settled-first", "settled-last"]
+)
 def test_every_run_waits_for_its_own_documents_not_only_the_first_runs(
-    timed_runs,
+    timed_runs, settled_first
 ):
     """The one settle wait covers every run's documents.
 
-    The first run's documents are already settled and the second's never
-    settle, so a wait over the first run's documents alone would return at
-    once and mark the second run ABORTED a moment after its dispatch.
+    One run's documents are already settled and the other's never settle, so a
+    wait over the settled run's documents alone -- whichever end of the request
+    it is at -- would return at once and mark the other run ABORTED a moment
+    after its dispatch.
     """
     index, table, run_ids, install, clock, dispatched, aborted = timed_runs
     install(lambda call, n: 0)
     settled, unsettled = run_ids[:2]
+    order = [settled, unsettled] if settled_first else [unsettled, settled]
     for n in range(120):
         table.update_item(
             Key={"PK": f"doc#{settled}/doc-{n:03d}.pdf", "SK": "none"},
             UpdateExpression="SET ObjectStatus = :s",
             ExpressionAttributeValues={":s": "ABORTED"},
         )
-    started = clock.now
 
-    result = index.lambda_handler(_ui_event([settled, unsettled]), None)
+    result = index.lambda_handler(_ui_event(order), None)
 
     assert result["abortedCount"] == 2, result
-    floor = (
-        index.ABORT_WAIT_BUDGET_SECONDS
-        - index.METRICS_START_PAUSE_SECONDS
-        - (max(dispatched.values()) - started)
-    )
     window = aborted[unsettled] - dispatched[unsettled]
-    assert window >= floor, (window, floor)
+    assert window >= _MIN_SETTLE_WAIT_SECONDS, window
 
 
 @pytest.mark.unit
