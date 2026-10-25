@@ -296,6 +296,28 @@ def reconcile_run(run_item):
         return verdict
 
     docs = _load_documents(test_run_id, files)
+
+    # ⚠️ A tally over documents none of which exist says "nothing has started",
+    # which is indistinguishable from "they were here and have since expired".
+    # For a run whose stored status is already terminal the second reading is the
+    # likely one — the `doc#` items carry the tracking table's TTL while the
+    # `testrun#` metadata item outlives them — and acting on the first would
+    # regress a finished run to QUEUED and write it back. On a timer, unattended,
+    # with no signal. The default window sits well inside the TTL so this is
+    # latent today, but the window is an environment variable and widening it
+    # past the TTL would make it live, so the refusal is here rather than being
+    # left to the window's default.
+    #
+    # A genuinely new run is unaffected: its stored status is not terminal, and
+    # deriving QUEUED from QUEUED changes nothing.
+    if files and not docs and stored_status in trs.RUN_STATUS_TERMINAL:
+        logger.warning(
+            f"Test run {test_run_id} is {stored_status} and none of its "
+            f"{len(files)} document(s) could be read; leaving its status alone "
+            "rather than deriving a fresh one from an empty tally"
+        )
+        return verdict
+
     tally = trs.tally_documents(files, docs.get, run_item)
     overall_status = trs.derive_overall_status(
         tally, int(files_count), int(baseline_failed), stored_status
@@ -425,6 +447,14 @@ def handler(event, context):
 
     examined = 0
     due_seen = 0
+    #: Every run ``reconcile_run`` was called for, whatever came back. This is
+    #: what the budget counts, because the cost being bounded is the per-document
+    #: fan-out, and that is paid on entry — a run whose status turns out not to
+    #: move has already read every one of its documents. Counting only the runs
+    #: whose status *changed* bounded the outcome rather than the work, so a
+    #: window of 900 status-preserving runs performed 900 fan-outs under a budget
+    #: of 50, leaving only ``max_examined`` and the deadline as real limits.
+    attempted = 0
     reconciled = 0
     queued = 0
     unrecognised = 0
@@ -447,7 +477,7 @@ def handler(event, context):
                 # from scratch each time, so there is no progress to lose.
                 if _running_out_of_time(context):
                     stopped_early = "deadline"
-                elif reconciled + failures >= max_reconciled:
+                elif attempted >= max_reconciled:
                     stopped_early = "budget"
                 if stopped_early:
                     deferred += 1
@@ -456,6 +486,7 @@ def handler(event, context):
                 # One run's failure must not end the sweep: the next run may be
                 # the one that is stuck, and the sweep is the only thing that
                 # will look at it.
+                attempted += 1
                 try:
                     verdict = reconcile_run(run_item)
                 except Exception as e:
@@ -482,7 +513,8 @@ def handler(event, context):
 
     logger.info(
         f"Test run sweep: examined {examined} run(s) in the last {window_days}d, "
-        f"{due_seen} needed reconciliation, advanced {reconciled}, "
+        f"{due_seen} needed reconciliation, attempted {attempted}, "
+        f"advanced {reconciled}, "
         f"queued {queued} aggregation(s), deferred {deferred}"
         + (f" (stopped early: {stopped_early})" if stopped_early else "")
     )
@@ -498,6 +530,7 @@ def handler(event, context):
     return {
         "runsExamined": examined,
         "runsDue": due_seen,
+        "runsReconcileAttempted": attempted,
         "statusesAdvanced": reconciled,
         "metricsQueued": queued,
         "unrecognisedEvalStatuses": unrecognised,

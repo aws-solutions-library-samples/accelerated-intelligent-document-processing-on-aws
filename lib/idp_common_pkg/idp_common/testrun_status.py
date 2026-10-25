@@ -60,7 +60,21 @@ METRICS_ELIGIBLE_STATUSES = frozenset({"COMPLETE", "PARTIAL_COMPLETE"})
 # ⚠️ **All three ``BASELINE_*`` values are settled, and the honest reason is that
 # the run can no longer be told anything by them — not that they are good news.**
 # A promotion *overwrites* this attribute, so whatever evaluation recorded is
-# gone. ``BASELINE_COPYING`` is settled **despite naming work in progress**,
+# gone, and two things follow that are worth knowing before reading a run's
+# figures. **A promoted document whose evaluation had FAILED stops counting as a
+# failed file**, so a run can move from PARTIAL_COMPLETE to COMPLETE with
+# ``failedFiles`` 0 while its cached metrics still cover only the documents that
+# were scored; the information needed to prevent that was destroyed by the
+# overwrite, and separating the two would take a second attribute.
+#
+# A third consequence, older than any of this and listed because it is in the
+# same family: the aggregation selects documents by ``EvaluationStatus ==
+# "COMPLETED"``, so a promoted document drops out of a run's metrics on any
+# *re*-aggregation even when its evaluation had succeeded — and a release that
+# adds a metrics key re-aggregates every historical run once. The cause is the
+# overwrite rather than anything here.
+#
+# ``BASELINE_COPYING`` is settled **despite naming work in progress**,
 # because the copy is invoked as an async Lambda whose terminal write is
 # best-effort — an invocation that never lands leaves the attribute there with
 # nothing to reconcile it. Waiting on it is unbounded, and it would be a wait for

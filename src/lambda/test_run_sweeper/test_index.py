@@ -297,6 +297,29 @@ class TestReconcileRun:
         _stub_client(mod, [run], docs)
         assert mod.reconcile_run(run)["unrecognisedEvalStatuses"] == 1
 
+    def test_a_terminal_run_whose_documents_are_all_gone_is_left_alone(self, mod):
+        """Expired `doc#` items must not regress a finished run to QUEUED.
+
+        The `doc#` rows carry the tracking table's TTL; the `testrun#` metadata
+        row outlives them. A tally over documents none of which exist reads as
+        "nothing has started", which for a run already terminal is almost
+        certainly "they expired" — and acting on it would rewrite a finished run
+        as QUEUED, on a timer, with nothing to notice it.
+        """
+        run = _run(status="COMPLETE", files=("a", "b"))
+        client = _stub_client(mod, [run], {})
+        verdict = mod.reconcile_run(run)
+        assert verdict["status"] == "COMPLETE"
+        assert verdict["statusChanged"] is False
+        client.table.update_item.assert_not_called()
+
+    def test_a_new_run_with_no_documents_yet_is_unaffected_by_that_guard(self, mod):
+        # The guard is scoped to terminal statuses precisely so a run whose
+        # documents have not been created yet still reads as QUEUED.
+        run = _run(status="QUEUED", files=("a",))
+        _stub_client(mod, [run], {})
+        assert mod.reconcile_run(run)["status"] == "QUEUED"
+
     def test_a_missing_document_does_not_advance_the_run(self, mod):
         run = _run(status="QUEUED", files=("a",))
         _stub_client(mod, [run], {})
@@ -427,6 +450,7 @@ class TestHandlerResilience:
         assert result == {
             "runsExamined": 0,
             "runsDue": 0,
+            "runsReconcileAttempted": 0,
             "statusesAdvanced": 0,
             "metricsQueued": 0,
             "unrecognisedEvalStatuses": 0,
@@ -487,5 +511,38 @@ class TestDiscovery:
         # Every due run is still counted, and what was not done is reported as
         # deferred rather than silently skipped.
         assert result["runsDue"] == 4
+        assert result["deferredToNextSweep"] == 2
+        assert result["stoppedEarly"] == "budget"
+
+    def test_the_budget_counts_attempts_not_status_changes(self, mod):
+        """The budget must bound the work, not the outcome.
+
+        ⚠️ This is the case the sibling test above cannot see. Its runs have no
+        document items, so each one derives to QUEUED and so each *changes
+        status* — the one input shape where "runs reconciled" and "runs whose
+        status moved" agree. Here every run is reconciled and every run holds
+        its status, which is the ordinary shape on a healthy stack: the fan-out
+        over each run's documents is paid in full and the budget has to charge
+        for it. Counting status changes instead let a window of status-preserving
+        runs perform an unbounded number of fan-outs.
+        """
+        runs = [_run(f"r{i}", status="COMPLETE", files=("a",)) for i in range(4)]
+        docs = {
+            f"doc#r{i}/a": {
+                "ObjectStatus": "COMPLETED",
+                "EvaluationStatus": "COMPLETED",
+            }
+            for i in range(4)
+        }
+        _stub_client(mod, runs, docs)
+        result = mod.handler({"maxReconciled": 2}, _Context())
+
+        # Due because they are terminal with no cached metrics, and each derives
+        # back to COMPLETE — so nothing changes status.
+        assert result["runsDue"] == 4
+        assert result["statusesAdvanced"] == 0
+        # The budget still stopped at two, charged for the reads rather than the
+        # writes.
+        assert result["runsReconcileAttempted"] == 2
         assert result["deferredToNextSweep"] == 2
         assert result["stoppedEarly"] == "budget"
