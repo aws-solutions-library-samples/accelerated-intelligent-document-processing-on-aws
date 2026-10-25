@@ -1448,3 +1448,27 @@ def test_a_failed_status_write_in_the_document_abort_is_reported(
         f"still be processing: {failing}: Failed to update status: boom"
     ), error
     assert "terminal state" not in error, error
+
+
+def test_a_document_with_no_tracking_record_is_not_seen_to_finish(stack):
+    """A document the settle wait finds no record for has not been seen to finish.
+
+    abortWorkflow is made to answer that it stopped every document, including
+    one the run lists that has no tracking record, so nothing names it; the
+    other three are stopped. It must still be reported.
+    """
+    run = stack["run_id"]
+    stack["table"].update_item(
+        Key={"PK": f"testrun#{run}", "SK": "metadata"},
+        UpdateExpression="SET Files = list_append(Files, :late)",
+        ExpressionAttributeValues={":late": ["not-yet-recorded.pdf"]},
+    )
+    _answer_and_stop(stack, 0, None, {"a.pdf", "b.pdf", "c.pdf"})
+
+    result = stack["abort"].lambda_handler({"arguments": {"testRunIds": [run]}}, None)
+
+    assert result["message"] == "Aborted 1 test run(s)" + _tail(0, 1), result
+    assert result["errors"] == [
+        f"{run}: 1 of 4 document(s) had not been seen to reach a terminal state "
+        "when the abort returned and may still be processing"
+    ], result

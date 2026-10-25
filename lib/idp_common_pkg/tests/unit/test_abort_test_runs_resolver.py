@@ -681,10 +681,12 @@ def test_keys_that_stay_unprocessed_are_unknown_not_missing(
     stub = install(lambda call, n: 1 if n else 0)
 
     with caplog.at_level("WARNING"):
-        index._wait_for_documents_terminal_state(
+        unsettled = index._wait_for_documents_terminal_state(
             table, "run", keys[:3], max_wait_time=25
         )
 
+    # Reported as not seen to finish: what the response says of it (#1612).
+    assert unsettled == {keys[2]}
     # The held-back document was never read, so it is unknown -- not "not found",
     # which it is not -- and the wait did not treat it as terminal.
     assert "not found" not in caplog.text
