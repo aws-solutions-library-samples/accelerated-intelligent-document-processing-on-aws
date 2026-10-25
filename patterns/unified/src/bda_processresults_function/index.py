@@ -108,9 +108,15 @@ def _apply_review(response, document, config, execution_arn, document_service=No
 
 
 def is_rule_validation_enabled(config_version=None, config_revision=None):
-    """Check if rule validation is enabled and has rules configured."""
+    """Check if rule validation is enabled and has rules configured.
+
+    Reads the document's pinned revision, like this handler's other
+    configuration reads. An unpinned read resolves the profile head instead.
+    """
     try:
-        config = get_config(as_model=True, version=config_version)
+        config = get_config(
+            as_model=True, version=config_version, revision=config_revision
+        )
         if hasattr(config, 'rule_validation') and config.rule_validation:
             enabled = config.rule_validation.enabled
             if enabled:
