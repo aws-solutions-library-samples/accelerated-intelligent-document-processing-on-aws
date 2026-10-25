@@ -895,6 +895,9 @@ rather than failing the read.
   boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
   published revision predates the `storedHash` field**, because rewriting the head
   would destroy the only integrity proof such a revision has.
+- **Whether a profile is stack-managed is not resolved from `default`.** It is the
+  profile's own record attribute, so reading a profile never changes it, and a
+  write-back keeps it as stored.
 - **Transparent**: no manual intervention required.
 - ⚠️ **The backfill source is `default`,** which an administrator can overwrite
   with *Save as Default*. A field your profile lacks therefore adopts whatever
