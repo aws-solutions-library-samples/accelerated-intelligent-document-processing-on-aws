@@ -121,8 +121,8 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: 24 Lambda functions
-across the two main templates — 9 in `template.yaml` and 15 in
+Distributed tracing is instrumented, not merely recommended: 25 Lambda functions
+across the two main templates — 10 in `template.yaml` and 15 in
 `patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
 optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
 section (`seller-entitlement-service` is the exception). In the two main templates the
@@ -347,7 +347,7 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 130 IAM policy statements are written against `Resource: "*"` — 54 in
+extensions, 131 IAM policy statements are written against `Resource: "*"` — 55 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
@@ -457,7 +457,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 350 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 354 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

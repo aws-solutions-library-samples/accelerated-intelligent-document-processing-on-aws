@@ -421,6 +421,7 @@
         "start_codebuild/index.py": 66.49,
         "start_codebuild/log_sanitizer.py": 28.0,
         "test_file_copier/index.py": 40.83,
+        "test_run_sweeper/index.py": 97.44,
         "update_configuration/index.py": 39.61,
         "user_management/index.py": 83.07,
         "user_management/log_sanitizer.py": 28.0,
