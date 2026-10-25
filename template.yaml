@@ -10266,11 +10266,13 @@ Resources:
       # the key takes Lambda's x86_64 default, which is what every other
       # layer-carrying function here does.
       # `scripts/sdlc/tests/test_resolver_layer_coverage.py` enforces this.
-      # Deliberately under the 5-minute schedule interval rather than equal to
-      # it: with ReservedConcurrentExecutions 1, a timeout equal to the interval
-      # lets one sweep still be running when the next fires. The handler also
-      # stops starting runs with 15s left, so it yields before this bites.
-      Timeout: 240
+      # 300 matches ReviewQueueSweeperFunction, the other scheduled sweeper here,
+      # which runs on the same rate(5 minutes) with the same reserved
+      # concurrency of 1. Overlap is handled in the handler rather than by
+      # shortening the timeout: it stops starting runs with 15s of the
+      # invocation left, which bounds the work precisely instead of relying on
+      # the gap between the timeout and the schedule.
+      Timeout: 300
       MemorySize: 512
       # Single sweep writer. Two concurrent sweeps would race on the same run
       # records, and the conditional claim on CacheUpdateQueuedAt only protects
