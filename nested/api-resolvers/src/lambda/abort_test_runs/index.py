@@ -6,7 +6,8 @@ Lambda function to abort test runs and their associated document processing.
 
 For every test run named in the request, this function:
 1. Retrieves the test run metadata from DynamoDB and invokes the abort workflow
-   Lambda for all of the run's documents
+   Lambda for all of the run's documents, reporting any it did not confirm
+   stopping
 2. Waits, once for all of the runs together, for those documents to settle
 3. Queues the run's metrics calculation and updates its status to ABORTED
 """
@@ -16,18 +17,71 @@ import logging
 import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+# The abort workflow Lambda is invoked synchronously, so that a batch it refuses
+# or fails is seen here and reported, rather than lost in an asynchronous invoke
+# nobody reads the result of (#1609). Each call is bounded so that the answers
+# arrive inside the request's wait budget (see ABORT_WAIT_BUDGET_SECONDS), and
+# is made once: a retried invoke would repeat work the first attempt may already
+# have done, and would spend the budget doing it.
+ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS = 2
+ABORT_INVOKE_READ_TIMEOUT_SECONDS = 6
+
+# Documents per abort workflow invoke, and how many invokes are waited for. The
+# workflow Lambda stops its batch's documents one after another, so a smaller
+# batch answers sooner. Up to this many batches -- every run's first batch
+# before any run's second -- are invoked synchronously and at once, so a request
+# of up to 500 documents is confirmed in one round. Every further batch is sent
+# asynchronously at the same moment rather than queued behind them, so that no
+# run's documents are told to stop later than the others' (each run's settle
+# window is measured from that moment; see ABORT_WAIT_BUDGET_SECONDS), and is
+# reported as unconfirmed.
+ABORT_BATCH_SIZE = 25
+ABORT_INVOKE_CONCURRENCY = 20
+
 dynamodb = boto3.resource('dynamodb')
-lambda_client = boto3.client('lambda')
+lambda_client = boto3.client(
+    'lambda',
+    config=Config(
+        connect_timeout=ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS,
+        read_timeout=ABORT_INVOKE_READ_TIMEOUT_SECONDS,
+        retries={'mode': 'standard', 'total_max_attempts': 1},
+        # The synchronous invokes and the asynchronous sends run side by side.
+        max_pool_connections=2 * ABORT_INVOKE_CONCURRENCY,
+    ),
+)
 sqs_client = boto3.client('sqs')
+
+# The abort workflow's refusal of a document whose status it cannot abort. The
+# wording is abort_workflow_resolver's; test_abort_test_run_stops_documents.py
+# drives that handler to keep the two in step.
+_NOT_ABORTABLE_ERROR = "Cannot abort document with status"
+
+# Document statuses that are final. A refusal naming one of these is not a
+# failure to stop the document -- it had already finished. A refusal naming any
+# other status is: the abort workflow does not abort every in-flight status (the
+# rule-validation and malware-scanning steps among them), and such a document is
+# still processing. The test that holds this list against idp_common's Status
+# enum is in test_abort_test_run_stops_documents.py.
+FINISHED_DOCUMENT_STATUSES = {
+    'COMPLETED',
+    'FAILED',
+    'ABORTED',
+    'REJECTED',
+    'REDACTED_SUPERSEDED',
+    'QUARANTINED',
+    'MALWARE_SCAN_FAILED',
+}
 
 # BatchGetItem answers a throttled or oversized read with UnprocessedKeys, which
 # the caller must resubmit. The same bound and backoff as idp_common's
@@ -58,9 +112,12 @@ def _backoff_sleep(attempt, deadline=None):
 # sized for AppSync (25 s plus a 2 s pause) and outlived that bound whenever the
 # documents did not settle quickly.
 #
-# So every wait in one invocation -- the document settle poll, the pause after
-# queueing metrics, and BatchGetItem backoff -- shares a single deadline this
-# many seconds after the handler starts. It is one deadline for the whole
+# So every wait in one invocation -- the answers from the abort workflow invokes,
+# the document settle poll, the pause after queueing metrics, and BatchGetItem
+# backoff -- shares a single deadline this many seconds after the handler
+# starts. The invokes come first and must end by the time the pause would begin
+# (see _stop_documents); once the abort workflow has answered, the documents it
+# stopped are already ABORTED, so the settle wait that follows is usually short. It is one deadline for the whole
 # request rather than one per run, so a request naming several runs aborts them
 # in phases: every run's documents are told to stop first, then one settle wait
 # covers all of them, then every run is marked ABORTED. Each run therefore gets
@@ -203,15 +260,16 @@ def lambda_handler(event, context):
         # moment after its documents were told to stop (see
         # ABORT_WAIT_BUDGET_SECONDS for why that ordering matters).
         #
-        # Phase 1: tell every abortable run's documents to stop.
+        # Phase 1: read every run, then tell every abortable run's documents to
+        # stop, all of them at once.
         dispatched = {}  # test run id -> its document object keys, request order
         for test_run_id in test_run_ids:
             if test_run_id in dispatched:
                 record_failure(test_run_id, "Test run named more than once in the request")
                 continue
             try:
-                object_keys, error_msg = _dispatch_abort(
-                    test_run_id, tracking_table, abort_workflow_function_name
+                object_keys, error_msg = _read_abortable_run(
+                    test_run_id, tracking_table
                 )
             except Exception as e:
                 logger.error(
@@ -223,6 +281,18 @@ def lambda_handler(event, context):
                 record_failure(test_run_id, error_msg)
             else:
                 dispatched[test_run_id] = object_keys
+
+        # The abort workflow re-checks the caller's groups, so it is handed the
+        # identity this invocation was authorized on above: the one the REST
+        # dispatcher built from the authorizer's verified claims, or None on the
+        # IAM-gated direct path. It is read from the event's own `identity`, never
+        # from `arguments`, which is the only part a REST caller writes.
+        not_stopped = _stop_documents(
+            dispatched,
+            event.get('identity'),
+            abort_workflow_function_name,
+            confirm_by=deadline - METRICS_START_PAUSE_SECONDS,
+        )
 
         if dispatched:
             # Phase 2: one settle wait over every dispatched run's documents,
@@ -268,11 +338,25 @@ def lambda_handler(event, context):
                 else:
                     record_failure(test_run_id, error_msg)
 
+        # Documents the abort workflow did not confirm stopping. Their run is
+        # still marked ABORTED -- that is what the caller asked for, and the run
+        # counts as aborted -- but the response says which documents may still
+        # be processing, rather than reporting a clean abort.
+        unstopped_count = 0
+        for test_run_id, (count, total, reasons) in not_stopped.items():
+            unstopped_count += count
+            errors.append(
+                f"{test_run_id}: {count} of {total} document(s) were not confirmed "
+                f"stopped and may still be processing: {'; '.join(reasons)}"
+            )
+
         # Prepare response
         success = aborted_count > 0
         message = f"Aborted {aborted_count} test run(s)"
         if failed_count > 0:
             message += f", {failed_count} failed"
+        if unstopped_count > 0:
+            message += f"; {unstopped_count} document(s) not confirmed stopped"
 
         logger.info(f"Abort test runs complete: {message}")
 
@@ -300,19 +384,17 @@ def lambda_handler(event, context):
         }
 
 
-def _dispatch_abort(test_run_id, tracking_table, abort_workflow_function_name):
+def _read_abortable_run(test_run_id, tracking_table):
     """
-    Phase 1 for one run: read it, check it can be aborted, and tell its
-    documents to stop.
+    Phase 1 for one run: read it and check it can be aborted.
 
     Args:
         test_run_id: Test run identifier
         tracking_table: DynamoDB table resource
-        abort_workflow_function_name: Name of the abort workflow Lambda function
 
     Returns:
-        ``(object_keys, None)`` when the run's documents were told to stop, or
-        ``(None, error_message)`` when the run cannot be aborted.
+        ``(object_keys, None)`` when the run can be aborted, or
+        ``(None, error_message)`` when it cannot.
     """
     try:
         # Get test run metadata
@@ -340,36 +422,198 @@ def _dispatch_abort(test_run_id, tracking_table, abort_workflow_function_name):
             object_key = f"{test_run_id}/{file_name}"
             object_keys.append(object_key)
 
-    # Abort all documents in the test run (async invocation in batches)
-    # Note: abort_workflow_resolver handles completed/failed gracefully
-    if object_keys:
-        logger.info(
-            f"Aborting {len(object_keys)} documents for test run {test_run_id}"
-        )
-
-        # Process in batches of 100 to avoid Lambda timeout
-        # All batches run in parallel (InvocationType='Event')
-        batch_size = 100
-        batch_count = 0
-        for i in range(0, len(object_keys), batch_size):
-            batch = object_keys[i:i + batch_size]
-            try:
-                lambda_client.invoke(
-                    FunctionName=abort_workflow_function_name,
-                    InvocationType='Event',  # Async - runs in parallel
-                    Payload=json.dumps({
-                        'arguments': {'objectKeys': batch}
-                    })
-                )
-                batch_count += 1
-                logger.info(f"Invoked abort workflow batch {batch_count} with {len(batch)} documents")
-            except Exception as e:
-                logger.error(f"Failed to invoke abort workflow batch {batch_count}: {str(e)}")
-                # Continue with next batch
-
-        logger.info(f"Invoked {batch_count} abort workflow batches for total of {len(object_keys)} documents")
-
     return object_keys, None
+
+
+def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_by):
+    """Tell every dispatched run's documents to stop, and collect what failed.
+
+    Each run's documents go to the abort workflow Lambda in batches of
+    ABORT_BATCH_SIZE, all of them at once: the first ABORT_INVOKE_CONCURRENCY
+    batches, taken round-robin across the runs, synchronously and bounded (see
+    ABORT_INVOKE_READ_TIMEOUT_SECONDS), and the rest asynchronously. A
+    synchronous invoke is made only if its bound ends by ``confirm_by`` (an
+    absolute ``time.time()`` value); otherwise that batch is sent asynchronously
+    too. Asynchronous batches are reported as unconfirmed. ``identity`` is passed
+    to the abort workflow unchanged.
+
+    Returns:
+        ``{test_run_id: (count, total, reasons)}`` for every run with documents
+        the abort workflow did not confirm stopping: how many, out of how many,
+        and why. A document that had already finished is not counted.
+    """
+    per_run = [
+        [
+            (test_run_id, keys[i:i + ABORT_BATCH_SIZE])
+            for i in range(0, len(keys), ABORT_BATCH_SIZE)
+        ]
+        for test_run_id, keys in dispatched.items()
+    ]
+    # Round-robin: every run's first batch, then every run's second, and so on.
+    batches = [
+        run_batches[n]
+        for n in range(max((len(b) for b in per_run), default=0))
+        for run_batches in per_run
+        if n < len(run_batches)
+    ]
+    if not batches:
+        return {}
+    for test_run_id, keys in dispatched.items():
+        logger.info(f"Aborting {len(keys)} documents for test run {test_run_id}")
+
+    # Every synchronous invoke ends by confirm_by. The asynchronous sends are
+    # waited for a little longer -- up to the connect bound past confirm_by --
+    # because once the handler returns the runtime may freeze its threads, and a
+    # batch whose request had not left would not be told to stop until the
+    # sandbox next runs. A send still unfinished after that (only on a degraded
+    # Lambda endpoint) is reported as unconfirmed, not waited for: the request's
+    # deadline comes first. That grace is the only part of the request that can
+    # run past confirm_by, and it is taken out of the metrics pause, which is
+    # clamped at the deadline. The wait is computed before any invoke starts, so
+    # it is not shortened by them.
+    wait_seconds = (
+        max(0.0, confirm_by - time.time()) + ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS
+    )
+    waited_for = batches[:ABORT_INVOKE_CONCURRENCY]
+    sent_only = batches[ABORT_INVOKE_CONCURRENCY:]
+    executors = [
+        ThreadPoolExecutor(max_workers=min(ABORT_INVOKE_CONCURRENCY, len(group)))
+        for group in (waited_for, sent_only)
+        if group
+    ]
+    try:
+        futures = []
+        for executor, group, answer in zip(
+            executors, (waited_for, sent_only), (True, False)
+        ):
+            futures += [
+                (
+                    test_run_id,
+                    batch,
+                    executor.submit(
+                        _stop_batch,
+                        abort_workflow_function_name,
+                        batch,
+                        identity,
+                        confirm_by if answer else None,
+                    ),
+                )
+                for test_run_id, batch in group
+            ]
+        wait([future for _, _, future in futures], timeout=wait_seconds)
+    finally:
+        # Do not block on an invoke still in flight: it has been sent, so the
+        # abort workflow runs whether or not this function hears the answer.
+        for executor in executors:
+            executor.shutdown(wait=False)
+
+    not_stopped = {}
+    for test_run_id, batch, future in futures:
+        if future.done() and future.exception() is None:
+            count, reasons = future.result()
+        elif future.done():
+            count, reasons = len(batch), [
+                f"the abort workflow's result could not be read: {future.exception()}"
+            ]
+        elif future.running():
+            count, reasons = len(batch), ["no answer from the abort workflow in time"]
+        else:
+            # Still queued behind slower sends when the wait ended; it goes out
+            # if and when the runtime next runs this sandbox.
+            count, reasons = len(batch), [
+                "the stop request had not been sent when the abort returned"
+            ]
+        if not count:
+            continue
+        previous, _total, seen = not_stopped.get(
+            test_run_id, (0, len(dispatched[test_run_id]), [])
+        )
+        for reason in reasons:
+            if reason not in seen and len(seen) < 3:
+                seen.append(reason)
+        not_stopped[test_run_id] = (
+            previous + count, len(dispatched[test_run_id]), seen
+        )
+    return not_stopped
+
+
+def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
+    """Invoke the abort workflow for one batch of documents.
+
+    ``confirm_by`` is the time by which a synchronous invoke must end, or None to
+    send the batch asynchronously without waiting for an answer.
+
+    Returns ``(count, reasons)``: how many of the batch's documents were not
+    confirmed stopped, and why.
+    """
+    payload = json.dumps({'arguments': {'objectKeys': batch}, 'identity': identity})
+    bound = ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS + ABORT_INVOKE_READ_TIMEOUT_SECONDS
+    try:
+        if confirm_by is None or time.time() + bound > confirm_by:
+            # Not waited for: beyond the batches answered synchronously, or too
+            # late to wait for an answer inside the budget. Still tell the
+            # documents to stop; the caller hears that it is unconfirmed.
+            lambda_client.invoke(
+                FunctionName=abort_workflow_function_name,
+                InvocationType='Event',
+                Payload=payload,
+            )
+            why = (
+                "more batches than are waited for" if confirm_by is None
+                else "no time left to wait"
+            )
+            return len(batch), [f"sent without waiting for a result: {why}"]
+
+        response = lambda_client.invoke(
+            FunctionName=abort_workflow_function_name,
+            InvocationType='RequestResponse',
+            Payload=payload,
+        )
+        result = json.loads(response['Payload'].read() or b'null')
+    except Exception as e:
+        logger.warning(
+            f"Abort workflow invoke for {len(batch)} document(s) failed: {e}"
+        )
+        return len(batch), [f"no result from the abort workflow: {e}"]
+
+    if response.get('FunctionError'):
+        detail = result if isinstance(result, dict) else {}
+        reason = (
+            f"the abort workflow refused or failed: "
+            f"{detail.get('errorType', 'error')}: {detail.get('errorMessage', '')}"
+        )
+        logger.warning(f"Abort workflow did not stop {len(batch)} document(s): {reason}")
+        return len(batch), [reason]
+    if not isinstance(result, dict):
+        logger.warning(f"Abort workflow returned an unreadable result: {result!r}")
+        return len(batch), ["the abort workflow returned an unreadable result"]
+
+    failures = [
+        str(error) for error in (result.get('errors') or [])
+        if not _already_finished(str(error))
+    ]
+    not_abortable = len(result.get('errors') or []) - len(failures)
+    count = max(0, int(result.get('failedCount') or 0) - not_abortable)
+    if count:
+        logger.warning(
+            f"Abort workflow did not stop {count} of {len(batch)} document(s): "
+            f"{failures[:3]}"
+        )
+        return count, failures[:3] or ["the abort workflow reported a failure"]
+    logger.info(
+        f"Abort workflow stopped {result.get('abortedCount', 0)} of "
+        f"{len(batch)} document(s)"
+    )
+    return 0, []
+
+
+def _already_finished(error):
+    """True for an abort workflow refusal naming a final document status."""
+    marker = error.find(_NOT_ABORTABLE_ERROR)
+    if marker < 0:
+        return False
+    status = error[marker + len(_NOT_ABORTABLE_ERROR):].strip().upper()
+    return status in FINISHED_DOCUMENT_STATUSES
 
 
 def _queue_metrics_calculation(test_run_id):

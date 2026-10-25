@@ -752,6 +752,46 @@ _UI_ABORT_MUTATION = (
 _CALL_LATENCY = 0.05
 
 
+_INVOKE_OUTPUT_SHAPE = None  # the Lambda model's Invoke output, loaded once
+
+
+def _workflow_answer(**kwargs):
+    """What a synchronous abort-workflow invoke returns when it stops its batch.
+
+    The abort resolver reads the answer (#1609), so the doubles below return one:
+    the abortWorkflow handler's success result, in the Invoke response shape,
+    checked against the Lambda service model's output shape. The documents'
+    tracking records are left as they are -- these tests are about documents
+    that never settle.
+    """
+    import io
+
+    import botocore.session
+    from botocore.response import StreamingBody
+    from botocore.validate import validate_parameters
+
+    global _INVOKE_OUTPUT_SHAPE
+    if _INVOKE_OUTPUT_SHAPE is None:
+        model = botocore.session.get_session().get_service_model("lambda")
+        _INVOKE_OUTPUT_SHAPE = model.operation_model("Invoke").output_shape
+    keys = json.loads(kwargs["Payload"])["arguments"]["objectKeys"]
+    body = json.dumps(
+        {
+            "success": True,
+            "message": f"Aborted {len(keys)} document(s)",
+            "abortedCount": len(keys),
+            "failedCount": 0,
+            "errors": None,
+        }
+    ).encode()
+    response = {
+        "StatusCode": 200,
+        "Payload": StreamingBody(io.BytesIO(body), len(body)),
+    }
+    validate_parameters(response, _INVOKE_OUTPUT_SHAPE)
+    return response
+
+
 def _dispatcher_read_timeout():
     """The dispatcher's read timeout, read from its source rather than restated."""
     import re
@@ -819,7 +859,9 @@ def in_flight_runs(abort_table, monkeypatch):
     monkeypatch.setenv("TRACKING_TABLE_NAME", _TABLE)
     monkeypatch.setenv("ABORT_WORKFLOW_FUNCTION_NAME", "abort-workflow")
     monkeypatch.setenv("TEST_RESULT_CACHE_UPDATE_QUEUE_URL", "https://queue")
-    monkeypatch.setattr(index, "lambda_client", MagicMock())
+    monkeypatch.setattr(
+        index, "lambda_client", MagicMock(**{"invoke.side_effect": _workflow_answer})
+    )
     monkeypatch.setattr(index, "sqs_client", MagicMock())
     # Every backoff draws its cap: deterministic, and the worst case.
     monkeypatch.setattr(index.random, "uniform", lambda low, high: high)
@@ -885,10 +927,17 @@ def timed_runs(in_flight_runs, monkeypatch):
     aborted = {}
     queued = []  # fake-clock time of each metrics message
 
+    lock = __import__("threading").Lock()
+
     def invoke(**kwargs):
-        clock.now += _CALL_LATENCY
-        first_key = json.loads(kwargs["Payload"])["arguments"]["objectKeys"][0]
-        dispatched.setdefault(first_key.split("/", 1)[0], clock.now)
+        # The invokes are made from worker threads, so the shared clock and the
+        # record of each run's first dispatch are updated under a lock.
+        with lock:
+            clock.now += _CALL_LATENCY
+            first_key = json.loads(kwargs["Payload"])["arguments"]["objectKeys"][0]
+            run_id = first_key.split("/", 1)[0]
+            dispatched[run_id] = min(dispatched.get(run_id, clock.now), clock.now)
+        return _workflow_answer(**kwargs)
 
     lambda_client = MagicMock()
     lambda_client.invoke.side_effect = invoke
@@ -1108,8 +1157,9 @@ def test_a_dispatch_that_outlasts_the_budget_still_marks_the_runs_aborted(
     invoke = index.lambda_client.invoke.side_effect
 
     def slow_invoke(**kwargs):
-        invoke(**kwargs)
+        answer = invoke(**kwargs)
         clock.now += index.ABORT_WAIT_BUDGET_SECONDS
+        return answer
 
     index.lambda_client.invoke.side_effect = slow_invoke
 
@@ -1132,7 +1182,8 @@ def test_a_run_named_twice_is_aborted_once(timed_runs):
 
     assert result["abortedCount"] == 1, result
     assert result["failedCount"] == 1, result
-    assert index.lambda_client.invoke.call_count == 2  # one run, two batches
+    # One run's 120 documents, in batches, once.
+    assert index.lambda_client.invoke.call_count == -(-120 // index.ABORT_BATCH_SIZE)
     assert set(aborted) == {run_ids[0]}
 
 
@@ -1189,10 +1240,13 @@ def test_every_run_waits_for_its_own_documents_not_only_the_first_runs(
 
 
 @pytest.mark.unit
-def test_every_document_is_told_to_stop_once_in_batches_of_at_most_100(
+def test_every_document_is_told_to_stop_once_in_batches(
     timed_runs,
 ):
-    """Each of a run's documents is in exactly one abort-workflow invoke."""
+    """Each of a run's documents is in exactly one abort-workflow invoke.
+
+    The invokes are concurrent, so the order they arrive in is not asserted.
+    """
     index, table, run_ids, install, clock, dispatched, aborted = timed_runs
     install(lambda call, n: 0)
 
@@ -1202,8 +1256,10 @@ def test_every_document_is_told_to_stop_once_in_batches_of_at_most_100(
         json.loads(call.kwargs["Payload"])["arguments"]["objectKeys"]
         for call in index.lambda_client.invoke.call_args_list
     ]
-    assert all(0 < len(batch) <= 100 for batch in batches), [len(b) for b in batches]
-    sent = [key for batch in batches for key in batch]
+    assert all(0 < len(batch) <= index.ABORT_BATCH_SIZE for batch in batches), [
+        len(b) for b in batches
+    ]
+    sent = sorted(key for batch in batches for key in batch)
     expected = [f"{run_ids[0]}/doc-{n:03d}.pdf" for n in range(120)]
     assert sent == expected
 
@@ -1253,3 +1309,75 @@ def test_a_status_update_that_fails_is_counted_as_a_failure(timed_runs):
     assert result["failedCount"] == 1, result
     assert result["errors"] == [f"{run_ids[0]}: Failed to update status: condition"]
     assert result["message"] == "Aborted 2 test run(s), 1 failed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("read_latency", "waited_for"),
+    [
+        pytest.param(0.0, "all", id="fast"),
+        pytest.param(0.3, "all", id="0.3s-per-run"),
+        # The cut falls among the invokes: the first are waited for, the rest
+        # are sent asynchronously (each invoke costs one call latency here).
+        pytest.param(0.6, "some", id="0.6s-per-run"),
+        pytest.param(3.0, "none", id="3s-per-run"),
+    ],
+)
+def test_every_synchronous_invoke_is_bounded_to_end_before_the_pause(
+    timed_runs, read_latency, waited_for
+):
+    """The abort-workflow answers are waited for only inside the budget (#1609).
+
+    Every synchronous invoke must start early enough that its connect and read
+    bounds -- which botocore enforces, and which the module's client is asserted
+    to carry -- end by the time the metrics pause begins; a batch reached later is
+    sent asynchronously instead. The run reads here each cost ``read_latency`` of
+    the fake clock, so the later cases leave less of the budget when the invokes
+    begin. Whatever the split, every batch is sent, and the request still ends
+    inside the dispatcher's read timeout.
+    """
+    index, table, run_ids, install, clock, dispatched, aborted = timed_runs
+    stub = install(lambda call, n: 0)
+    recording = stub.recording
+    get_item = recording.get_item
+
+    def slow_get_item(**kwargs):
+        clock.now += read_latency
+        return get_item(**kwargs)
+
+    recording.get_item = slow_get_item
+    starts = []
+    invoke = index.lambda_client.invoke.side_effect
+
+    def recording_invoke(**kwargs):
+        starts.append((kwargs["InvocationType"], clock.now))
+        return invoke(**kwargs)
+
+    index.lambda_client.invoke.side_effect = recording_invoke
+    started = clock.now
+
+    result = index.lambda_handler(_ui_event(run_ids), None)
+
+    bound = (
+        index.ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS
+        + index.ABORT_INVOKE_READ_TIMEOUT_SECONDS
+    )
+    pause_starts = (
+        started + index.ABORT_WAIT_BUDGET_SECONDS - index.METRICS_START_PAUSE_SECONDS
+    )
+    sync = [at for kind, at in starts if kind == "RequestResponse"]
+    late = [at for kind, at in starts if kind == "Event"]
+    assert set(kind for kind, _ in starts) <= {"RequestResponse", "Event"}
+    assert all(at + bound <= pause_starts for at in sync), (sync, pause_starts)
+    assert all(at + bound > pause_starts for at in late), (late, pause_starts)
+    assert len(starts) == len(run_ids) * -(-120 // index.ABORT_BATCH_SIZE)
+    if waited_for == "all":
+        assert sync and not late and result["errors"] is None, (starts, result)
+    else:
+        assert late and bool(sync) == (waited_for == "some"), starts
+        assert result["errors"], result
+        assert all("sent without waiting" in e for e in result["errors"]), result
+    assert clock.now - started <= (
+        _dispatcher_read_timeout() - _DISPATCHER_HEADROOM_SECONDS
+    ), clock.now - started
+    assert set(aborted) == set(run_ids)
