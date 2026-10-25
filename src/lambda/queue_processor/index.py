@@ -144,6 +144,56 @@ class ExecutionAlreadyStarted(Exception):
         self.execution_arn = execution_arn
 
 
+class DocumentAbortedBeforeStart(Exception):
+    """The document was aborted after this message read it, before its start.
+
+    Raised by ``start_workflow`` when ``claim_start`` finds the document ABORTED
+    at the moment the execution would have been started, so that no execution
+    is created; ``process_message`` hands back the concurrency slot it took and
+    acks the message.
+    """
+
+
+def claim_start(object_key: str) -> bool:
+    """Whether the document may be started now: False only if it is ABORTED.
+
+    ``process_message`` checks for ABORTED when it reads the message, but that
+    read is eventually consistent and is taken before the circuit breaker, the
+    counter increment and the configuration reads. ``abortWorkflow`` stops a
+    QUEUED document by writing ABORTED and nothing else, so an abort landing
+    after that read used to be started anyway, and its success then overwrote
+    ABORTED (#1612). This is the same decision taken again, at the last moment,
+    by a conditional write DynamoDB evaluates against the current item.
+
+    Every other outcome allows the start, exactly as before this check existed:
+    a document with no tracking record, and a claim or re-read that fails. A
+    document that was not aborted is never held back by it.
+    """
+    try:
+        if document_service.claim_for_execution(object_key):
+            return True
+    except Exception as e:
+        logger.warning(
+            f"Could not confirm that {object_key} was not aborted before starting "
+            f"it: {e}. Starting it.",
+            exc_info=True,
+        )
+        return True
+    # Refused: the document is ABORTED, or it has no tracking record. Read it to
+    # tell which -- consistently, since the write that refused the claim may be
+    # the one an eventually consistent read would miss.
+    try:
+        current = document_service.get_document(object_key, consistent_read=True)
+    except Exception as e:
+        logger.warning(
+            f"Start claim for {object_key} was refused and the document could not "
+            f"be re-read: {e}. Starting it.",
+            exc_info=True,
+        )
+        return True
+    return not (current is not None and current.status == Status.ABORTED)
+
+
 def execution_arn_for(execution_name: str) -> str:
     """The ARN Step Functions gives an execution of our state machine by name."""
     return _execution_arn_for(state_machine_arn, execution_name)
@@ -1241,6 +1291,8 @@ def start_workflow(
         Dict containing execution details
 
     Raises:
+        DocumentAbortedBeforeStart: If the document reads ABORTED immediately
+            before the start (see ``claim_start``); no execution is created
         ExecutionAlreadyStarted: If an execution with this name already exists,
             i.e. an earlier delivery of the same message already started it
         ClientError: If Step Functions operation fails
@@ -1386,6 +1438,10 @@ def start_workflow(
     }
     if execution_name:
         start_args["name"] = execution_name
+
+    # Last, so that an abort written during the preparation above is seen.
+    if not claim_start(document.input_key):
+        raise DocumentAbortedBeforeStart(document.input_key)
 
     try:
         execution = sfn.start_execution(**start_args)
@@ -1538,6 +1594,23 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     execution_name_for(object_key, finalize_token or message_id),
                     review_finalize_token=finalize_token,
                 )
+            except DocumentAbortedBeforeStart:
+                # Aborted after the check at the top of this function read it.
+                # No execution exists, so the slot taken above is this
+                # function's to hand back, as on the duplicate path below.
+                logger.info(
+                    f"Document {object_key} was aborted while its start was being "
+                    f"prepared; skipping workflow start"
+                )
+                try:
+                    update_counter(increment=False)
+                except Exception as counter_error:
+                    logger.error(
+                        f"Failed to decrement counter: {counter_error}", exc_info=True
+                    )
+                    _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
+                ack_message(receipt_handle)
+                return True, message_id
             except ExecutionAlreadyStarted as dup:
                 # An earlier delivery of this same message already started the
                 # workflow, and the invocation handling it died before SQS

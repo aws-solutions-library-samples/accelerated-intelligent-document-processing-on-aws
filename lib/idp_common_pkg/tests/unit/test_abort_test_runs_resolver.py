@@ -681,10 +681,12 @@ def test_keys_that_stay_unprocessed_are_unknown_not_missing(
     stub = install(lambda call, n: 1 if n else 0)
 
     with caplog.at_level("WARNING"):
-        index._wait_for_documents_terminal_state(
+        unsettled = index._wait_for_documents_terminal_state(
             table, "run", keys[:3], max_wait_time=25
         )
 
+    # Reported as not seen to finish: what the response says of it (#1612).
+    assert unsettled == {keys[2]}
     # The held-back document was never read, so it is unknown -- not "not found",
     # which it is not -- and the wait did not treat it as terminal.
     assert "not found" not in caplog.text
@@ -884,6 +886,33 @@ def _ui_event(run_ids):
     }
 
 
+_SETTLE_REPORT = __import__("re").compile(
+    r"(?:^|; )(\d+) (?:other )?of (\d+) document\(s\) had not been seen to reach a "
+    r"terminal state when the abort returned and may still be processing$"
+)
+
+
+def _split_settle_reports(errors):
+    """Separate the settle wait's report (#1612) from the rest of ``errors``.
+
+    The documents in ``in_flight_runs`` never settle, so every run whose
+    documents were waited on carries that report. Returns the errors with it
+    removed (None when nothing else is left, as the response itself would
+    have it) and ``{run id: (unsettled, total)}``.
+    """
+    others, unsettled = [], {}
+    for error in errors or []:
+        run_id, _, rest = error.partition(": ")
+        match = _SETTLE_REPORT.search(rest)
+        if match:
+            unsettled[run_id] = (int(match.group(1)), int(match.group(2)))
+            rest = rest[: match.start()]
+            if not rest:
+                continue
+        others.append(f"{run_id}: {rest}")
+    return others or None, unsettled
+
+
 class _RecordingTable:
     """The real table, recording on the fake clock when each run is marked ABORTED."""
 
@@ -1075,7 +1104,11 @@ def test_the_response_still_carries_every_field_the_ui_reads(in_flight_runs):
     assert result["success"] is True
     assert result["abortedCount"] == 1
     assert result["failedCount"] == 0
-    assert result["message"] == "Aborted 1 test run(s)"
+    # None of the run's documents settles, so the response says so (#1612).
+    assert (
+        result["message"] == "Aborted 1 test run(s); 120 document(s) not seen to finish"
+    )
+    assert _split_settle_reports(result["errors"]) == (None, {run_ids[0]: (120, 120)})
     item = table.get_item(Key={"PK": f"testrun#{run_ids[0]}", "SK": "metadata"})
     assert item["Item"]["Status"] == "ABORTED"
 
@@ -1205,6 +1238,11 @@ def test_a_settle_wait_that_raises_is_handled_as_one_that_ran_out(
     assert result["abortedCount"] == len(run_ids), result
     assert result["failedCount"] == 0, result
     assert set(aborted) == set(run_ids)
+    # No document was seen to settle, so none is reported as settled (#1612).
+    assert _split_settle_reports(result["errors"]) == (
+        None,
+        {run_id: (120, 120) for run_id in run_ids},
+    ), result
 
 
 @pytest.mark.unit
@@ -1289,8 +1327,10 @@ def test_a_run_that_cannot_be_read_fails_alone(timed_runs, error, expected):
 
     assert result["abortedCount"] == 2, result
     assert result["failedCount"] == 1, result
-    assert len(result["errors"]) == 1, result
-    assert result["errors"][0].startswith(f"{run_ids[1]}: {expected}"), result
+    errors, unsettled = _split_settle_reports(result["errors"])
+    assert len(errors) == 1, result
+    assert errors[0].startswith(f"{run_ids[1]}: {expected}"), result
+    assert unsettled == {run_ids[0]: (120, 120), run_ids[2]: (120, 120)}, result
     assert set(aborted) == {run_ids[0], run_ids[2]}
     assert run_ids[1] not in dispatched
 
@@ -1307,8 +1347,12 @@ def test_a_status_update_that_fails_is_counted_as_a_failure(timed_runs):
     assert result["success"] is True
     assert result["abortedCount"] == 2, result
     assert result["failedCount"] == 1, result
-    assert result["errors"] == [f"{run_ids[0]}: Failed to update status: condition"]
-    assert result["message"] == "Aborted 2 test run(s), 1 failed"
+    errors, unsettled = _split_settle_reports(result["errors"])
+    assert errors == [f"{run_ids[0]}: Failed to update status: condition"]
+    assert unsettled == {run_id: (120, 120) for run_id in run_ids}, result
+    assert result["message"] == (
+        "Aborted 2 test run(s), 1 failed; 360 document(s) not seen to finish"
+    )
 
 
 @pytest.mark.unit
@@ -1371,12 +1415,22 @@ def test_every_synchronous_invoke_is_bounded_to_end_before_the_pause(
     assert all(at + bound <= pause_starts for at in sync), (sync, pause_starts)
     assert all(at + bound > pause_starts for at in late), (late, pause_starts)
     assert len(starts) == len(run_ids) * -(-120 // index.ABORT_BATCH_SIZE)
+    errors, unsettled = _split_settle_reports(result["errors"])
+    # The documents never settle, so every one of them is reported -- once:
+    # either as not confirmed stopped or, failing that, as unsettled.
+    unconfirmed = {
+        e.split(": ", 1)[0]: int(e.split(": ", 1)[1].split(" ", 1)[0])
+        for e in errors or []
+    }
+    for run_id in run_ids:
+        reported = unconfirmed.get(run_id, 0) + unsettled.get(run_id, (0, 120))[0]
+        assert reported == 120, (run_id, result)
     if waited_for == "all":
-        assert sync and not late and result["errors"] is None, (starts, result)
+        assert sync and not late and errors is None, (starts, result)
     else:
         assert late and bool(sync) == (waited_for == "some"), starts
-        assert result["errors"], result
-        assert all("sent without waiting" in e for e in result["errors"]), result
+        assert errors, result
+        assert all("sent without waiting" in e for e in errors), result
     assert clock.now - started <= (
         _dispatcher_read_timeout() - _DISPATCHER_HEADROOM_SECONDS
     ), clock.now - started
