@@ -349,22 +349,21 @@ def lambda_handler(event, context):
         # be processing, rather than reporting a clean abort. The second count
         # is needed as well as the first because the abort workflow can report
         # a document stopped that then goes on processing (#1612): what the
-        # wait last read is what was observed. One line per run.
+        # wait last read is what was observed. One line per run, and each
+        # document counted at most once (see _still_processing_beyond).
         unstopped_count = 0
         unsettled_count = 0
         for test_run_id, keys in dispatched.items():
             parts = []
-            named = set()
-            if test_run_id in not_stopped:
-                count, total, reasons, named = not_stopped[test_run_id]
+            reasons, named, unnamed = not_stopped.get(test_run_id, ([], set(), []))
+            count = len(named) + sum(n for n, _ in unnamed)
+            if count:
                 unstopped_count += count
                 parts.append(
-                    f"{count} of {total} document(s) were not confirmed "
+                    f"{count} of {len(keys)} document(s) were not confirmed "
                     f"stopped and may still be processing: {'; '.join(reasons)}"
                 )
-            # Not counted twice: a document already reported above as not
-            # confirmed stopped is not reported again here.
-            count = sum(1 for key in keys if key in unsettled and key not in named)
+            count = _still_processing_beyond(keys, unsettled, named, unnamed)
             if count:
                 unsettled_count += count
                 parts.append(
@@ -466,10 +465,12 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
     to the abort workflow unchanged.
 
     Returns:
-        ``{test_run_id: (count, total, reasons, keys)}`` for every run with
-        documents the abort workflow did not confirm stopping: how many, out of
-        how many, why, and the object keys of those it can name (see
-        ``_stop_batch``). A document that had already finished is not counted.
+        ``{test_run_id: (reasons, named, unnamed)}`` for every run with
+        documents the abort workflow did not confirm stopping: why (at most
+        three reasons), the object keys of those it can name, and, for each
+        batch with a failure, ``(n, batch)``: that ``n`` more of that batch's
+        documents, not named, were not confirmed stopped (see ``_stop_batch``). A document that had already finished is not
+        counted.
     """
     per_run = [
         [
@@ -538,35 +539,54 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
 
     not_stopped = {}
     for test_run_id, batch, future in futures:
+        # Every path but the first names the whole batch: none of it is
+        # confirmed stopped.
         if future.done() and future.exception() is None:
-            count, reasons, keys = future.result()
+            reasons, keys, unnamed = future.result()
         elif future.done():
-            count, reasons = len(batch), [
+            reasons = [
                 f"the abort workflow's result could not be read: {future.exception()}"
             ]
-            keys = list(batch)
+            keys, unnamed = list(batch), 0
         elif future.running():
-            count, reasons = len(batch), ["no answer from the abort workflow in time"]
-            keys = list(batch)
+            reasons = ["no answer from the abort workflow in time"]
+            keys, unnamed = list(batch), 0
         else:
             # Still queued behind slower sends when the wait ended; it goes out
             # if and when the runtime next runs this sandbox.
-            count, reasons = len(batch), [
-                "the stop request had not been sent when the abort returned"
-            ]
-            keys = list(batch)
-        if not count:
+            reasons = ["the stop request had not been sent when the abort returned"]
+            keys, unnamed = list(batch), 0
+        if not keys and not unnamed:
             continue
-        previous, _total, seen, named = not_stopped.get(
-            test_run_id, (0, len(dispatched[test_run_id]), [], set())
+        seen, named, unnamed_batches = not_stopped.setdefault(
+            test_run_id, ([], set(), [])
         )
         for reason in reasons:
             if reason not in seen and len(seen) < 3:
                 seen.append(reason)
-        not_stopped[test_run_id] = (
-            previous + count, len(dispatched[test_run_id]), seen, named | set(keys)
-        )
+        named.update(keys)
+        unnamed_batches.append((unnamed, batch))
     return not_stopped
+
+
+def _still_processing_beyond(keys, unsettled, named, unnamed):
+    """How many of a run's unsettled documents are not already counted as unstopped.
+
+    ``keys`` are the run's documents, ``unsettled`` the documents the settle wait
+    last saw unfinished, and ``named``/``unnamed`` what ``_stop_documents``
+    returned for the run. A named document is already counted. A batch's
+    ``n`` unnamed documents are some ``n`` of that batch's documents that were
+    not named, so up to ``n`` of the batch's unsettled ones may be the same
+    documents; they are assumed to be, which makes the two counts together the
+    fewest documents consistent with both readings rather than a sum that can
+    count a document twice. The unnamed of one batch never stand for the
+    unsettled of another.
+    """
+    remaining = {key for key in keys if key in unsettled and key not in named}
+    for n, batch in unnamed:
+        in_batch = [key for key in batch if key in remaining]
+        remaining.difference_update(in_batch[:n])
+    return len(remaining)
 
 
 def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
@@ -575,10 +595,10 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
     ``confirm_by`` is the time by which a synchronous invoke must end, or None to
     send the batch asynchronously without waiting for an answer.
 
-    Returns ``(count, reasons, keys)``: how many of the batch's documents were
-    not confirmed stopped, why, and which of them can be named -- every one when
-    the whole batch is unconfirmed, and otherwise those the abort workflow's
-    errors name, which may be fewer than ``count``.
+    Returns ``(reasons, keys, unnamed)``: why documents of the batch were not
+    confirmed stopped, which of them can be named -- every one when the whole
+    batch is unconfirmed, and otherwise those the abort workflow's errors name
+    -- and how many more it counted as failed without naming them.
     """
     payload = json.dumps({'arguments': {'objectKeys': batch}, 'identity': identity})
     bound = ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS + ABORT_INVOKE_READ_TIMEOUT_SECONDS
@@ -597,7 +617,7 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
                 else "no time left to wait"
             )
             reasons = [f"sent without waiting for a result: {why}"]
-            return len(batch), reasons, list(batch)
+            return reasons, list(batch), 0
 
         response = lambda_client.invoke(
             FunctionName=abort_workflow_function_name,
@@ -609,7 +629,7 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
         logger.warning(
             f"Abort workflow invoke for {len(batch)} document(s) failed: {e}"
         )
-        return len(batch), [f"no result from the abort workflow: {e}"], list(batch)
+        return [f"no result from the abort workflow: {e}"], list(batch), 0
 
     if response.get('FunctionError'):
         detail = result if isinstance(result, dict) else {}
@@ -618,11 +638,11 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
             f"{detail.get('errorType', 'error')}: {detail.get('errorMessage', '')}"
         )
         logger.warning(f"Abort workflow did not stop {len(batch)} document(s): {reason}")
-        return len(batch), [reason], list(batch)
+        return [reason], list(batch), 0
     if not isinstance(result, dict):
         logger.warning(f"Abort workflow returned an unreadable result: {result!r}")
         reasons = ["the abort workflow returned an unreadable result"]
-        return len(batch), reasons, list(batch)
+        return reasons, list(batch), 0
 
     failures = [
         str(error) for error in (result.get('errors') or [])
@@ -635,17 +655,23 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
             f"Abort workflow did not stop {count} of {len(batch)} document(s): "
             f"{failures[:3]}"
         )
-        named = [
-            key for key in batch
-            if any(failure.startswith(f"{key}: ") for failure in failures)
-        ]
+        named = set()
+        for failure in failures:
+            # The abort workflow prefixes an error with "<key>: ". A key can
+            # itself be another key followed by ": ", so an error is attributed
+            # to the longest key it starts with, never to both.
+            matches = [key for key in batch if failure.startswith(f"{key}: ")]
+            if matches:
+                named.add(max(matches, key=len))
         reasons = failures[:3] or ["the abort workflow reported a failure"]
-        return count, reasons, named
+        # Counted but not named: some of the batch's other documents.
+        unnamed = min(max(0, count - len(named)), len(set(batch) - named))
+        return reasons, sorted(named), unnamed
     logger.info(
         f"Abort workflow stopped {result.get('abortedCount', 0)} of "
         f"{len(batch)} document(s)"
     )
-    return 0, [], []
+    return [], [], 0
 
 
 def _already_finished(error):

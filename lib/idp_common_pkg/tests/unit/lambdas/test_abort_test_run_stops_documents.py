@@ -741,14 +741,21 @@ def test_a_late_batch_has_left_before_the_handler_returns(stack, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "answer",
+    ("answer", "reason"),
     [
-        pytest.param(None, id="null"),
-        pytest.param(["not", "a", "result"], id="list"),
-        pytest.param({"errors": 7, "failedCount": "x"}, id="malformed-dict"),
+        pytest.param(None, "returned an unreadable result", id="null"),
+        pytest.param(
+            ["not", "a", "result"], "returned an unreadable result", id="list"
+        ),
+        # Read as a result, then failing on its fields.
+        pytest.param(
+            {"errors": 7, "failedCount": "x"},
+            "result could not be read",
+            id="malformed-dict",
+        ),
     ],
 )
-def test_an_unreadable_abort_workflow_result_is_reported(stack, answer):
+def test_an_unreadable_abort_workflow_result_is_reported(stack, answer, reason):
     """A result the abort resolver cannot read is unconfirmed, not a clean abort."""
     stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = lambda event, context: answer
 
@@ -758,7 +765,11 @@ def test_an_unreadable_abort_workflow_result_is_reported(stack, answer):
 
     assert result["abortedCount"] == 1, result
     (error,) = result["errors"]
-    assert error.startswith(f"{stack['run_id']}: 3 of 3 document(s)"), error
+    assert error.startswith(
+        f"{stack['run_id']}: 3 of 3 document(s) were not confirmed stopped"
+    ), error
+    assert "terminal state" not in error, error
+    assert reason in error, error
 
 
 def test_a_batch_still_unanswered_when_the_wait_ends_is_reported(stack, monkeypatch):
@@ -1079,3 +1090,229 @@ def test_the_wait_for_late_sends_is_the_connect_bound_and_no_longer(stack, monke
     assert 0.3 <= elapsed < 1.0, elapsed
     (error,) = result["errors"]
     assert "3 of 3 document(s)" in error, error
+
+
+def _answer_and_stop(stack, failed_count, errors, stop):
+    """An abortWorkflow that stops the documents named in ``stop`` and answers so."""
+    workflow = stack["workflow"]
+
+    def handler(event, context):
+        keys = event["arguments"]["objectKeys"]
+        for key in keys:
+            if key.rsplit("/", 1)[-1] in stop:
+                document = workflow.document_service.get_document(key)
+                document.status = Status.ABORTED
+                workflow.document_service.update_document(document)
+        return {
+            "success": True,
+            "abortedCount": len(keys) - failed_count,
+            "failedCount": failed_count,
+            "errors": [error.format(run=stack["run_id"]) for error in errors]
+            if errors is not None
+            else None,
+        }
+
+    stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = handler
+
+
+def _tail(unstopped, more):
+    tail = f"; {unstopped} document(s) not confirmed stopped" if unstopped else ""
+    if more:
+        tail += f"; {more} {'more ' if unstopped else ''}document(s) still processing"
+    return tail
+
+
+@pytest.mark.parametrize(
+    ("failed_count", "errors", "stop", "unstopped", "more"),
+    [
+        # abortWorkflow's own catch-all: every document counted, none named.
+        pytest.param(3, ["boom"], set(), 3, 0, id="catch-all"),
+        pytest.param(3, None, set(), 3, 0, id="count-without-errors"),
+        # One counted unnamed, three unfinished: two of them are certainly others.
+        pytest.param(1, None, set(), 1, 2, id="fewer-unnamed-than-unsettled"),
+        # Two counted unnamed, one unfinished: it may be one of the two.
+        pytest.param(
+            2, None, {"b.pdf", "c.pdf"}, 2, 0, id="more-unnamed-than-unsettled"
+        ),
+        # A count larger than the batch counts the batch, not the count.
+        pytest.param(5, None, set(), 3, 0, id="count-beyond-the-batch"),
+        # ... and the named one is not counted again among the unnamed.
+        pytest.param(5, ["{run}/a.pdf: boom"], set(), 3, 0, id="beyond-with-a-name"),
+        # Named and still unfinished: counted once, as not confirmed stopped.
+        pytest.param(1, ["{run}/a.pdf: boom"], {"b.pdf"}, 1, 1, id="named-unsettled"),
+        # Named but then settled: the two unfinished ones are other documents.
+        pytest.param(1, ["{run}/a.pdf: boom"], {"a.pdf"}, 1, 2, id="named-settled"),
+    ],
+)
+def test_each_document_is_counted_once_whatever_the_abort_workflow_names(
+    stack, failed_count, errors, stop, unstopped, more
+):
+    """The two counts together never count a document twice, nor drop one.
+
+    A failure abortWorkflow counts without naming the document is some document
+    of that batch it did not name, so an unfinished document there may be the
+    same one. The report gives the fewest documents consistent with both
+    readings: every unfinished document is either named, or one an unnamed
+    failure may stand for, or reported as one more.
+    """
+    _answer_and_stop(stack, failed_count, errors, stop)
+
+    result = stack["abort"].lambda_handler(
+        {"arguments": {"testRunIds": [stack["run_id"]]}}, None
+    )
+
+    assert result["abortedCount"] == 1, result
+    assert result["message"] == "Aborted 1 test run(s)" + _tail(unstopped, more), result
+    (error,) = result["errors"]
+    assert error.startswith(
+        f"{stack['run_id']}: {unstopped} of 3 document(s) were not confirmed stopped"
+    ), error
+    if more:
+        assert error.endswith(
+            f"; {more} other of 3 document(s) had not reached a terminal state when "
+            "the abort returned and may still be processing"
+        ), error
+    else:
+        assert "terminal state" not in error, error
+
+
+def test_an_unnamed_failure_never_stands_for_another_batchs_document(
+    stack, monkeypatch
+):
+    """Batches are disjoint, so one batch's unnamed failure is not another's document.
+
+    The run's three documents go in two batches, [a, b] and [c]. The first batch
+    answers one failure without naming it, and both of its documents then
+    settle; the second answers that it stopped c, which goes on running. c
+    cannot be the first batch's unnamed failure, so it is one more.
+    """
+    monkeypatch.setattr(stack["abort"], "ABORT_BATCH_SIZE", 2)
+    workflow = stack["workflow"]
+    run = stack["run_id"]
+
+    def handler(event, context):
+        keys = event["arguments"]["objectKeys"]
+        if f"{run}/b.pdf" in keys:
+            for key in keys:
+                document = workflow.document_service.get_document(key)
+                document.status = Status.ABORTED
+                workflow.document_service.update_document(document)
+            return {"abortedCount": 1, "failedCount": 1, "errors": None}
+        return {"abortedCount": len(keys), "failedCount": 0, "errors": None}
+
+    stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = handler
+
+    result = stack["abort"].lambda_handler({"arguments": {"testRunIds": [run]}}, None)
+
+    assert len(_workflow_events(stack)) == 2
+    assert result["message"] == "Aborted 1 test run(s)" + _tail(1, 1), result
+
+
+def test_an_error_is_attributed_to_the_longest_key_it_names(stack):
+    """A key can be another key followed by ": "; only the longer one failed.
+
+    The run gains a fourth document, ``a.pdf: copy.pdf``. abortWorkflow answers
+    that it stopped all but that one, while a.pdf goes on running. The error
+    names ``a.pdf: copy.pdf``; a.pdf must still be reported as unfinished
+    rather than taken to be the failed one.
+    """
+    run = stack["run_id"]
+    stack["table"].update_item(
+        Key={"PK": f"testrun#{run}", "SK": "metadata"},
+        UpdateExpression="SET Files = list_append(Files, :more)",
+        ExpressionAttributeValues={":more": ["a.pdf: copy.pdf"]},
+    )
+    _answer_and_stop(
+        stack,
+        1,
+        ["{run}/a.pdf: copy.pdf: Failed to update status: boom"],
+        {"b.pdf", "c.pdf"},
+    )
+
+    result = stack["abort"].lambda_handler({"arguments": {"testRunIds": [run]}}, None)
+
+    assert result["message"] == "Aborted 1 test run(s)" + _tail(1, 1), result
+    (error,) = result["errors"]
+    assert error.startswith(f"{run}: 1 of 4 document(s) were not confirmed"), error
+
+
+@pytest.mark.parametrize(
+    ("errors", "named"),
+    [
+        pytest.param(
+            ["run/a.pdf: copy.pdf: boom"], ["run/a.pdf: copy.pdf"], id="longer"
+        ),
+        pytest.param(["run/a.pdf: boom"], ["run/a.pdf"], id="shorter"),
+        pytest.param(
+            ["run/a.pdf: boom", "run/a.pdf: copy.pdf: boom"],
+            ["run/a.pdf", "run/a.pdf: copy.pdf"],
+            id="both",
+        ),
+        # Only a "<key>: " prefix names a key; abortWorkflow's catch-all error
+        # is the exception's text, which can begin with anything.
+        pytest.param(["run/a.pdf is not a key"], [], id="no-separator"),
+    ],
+)
+def test_the_batch_answer_names_each_failed_key_once(stack, monkeypatch, errors, named):
+    """``_stop_batch`` names exactly the keys the errors belong to."""
+    abort = stack["abort"]
+    batch = ["run/a.pdf", "run/a.pdf: copy.pdf", "run/b.pdf"]
+    answer = {
+        "abortedCount": 3 - len(errors),
+        "failedCount": len(errors),
+        "errors": errors,
+    }
+
+    class _Answer:
+        def invoke(self, **kwargs):
+            return {"Payload": io.BytesIO(json.dumps(answer).encode())}
+
+    monkeypatch.setattr(abort, "lambda_client", _Answer())
+
+    reasons, keys, unnamed = abort._stop_batch(
+        "fn", batch, None, confirm_by=stack["clock"].time() + 3600
+    )
+
+    assert (keys, unnamed) == (named, len(errors) - len(named))
+    assert reasons == errors
+
+
+def test_a_send_still_queued_when_the_wait_ends_is_reported(stack, monkeypatch):
+    """A batch whose send had not even started is counted, with its reason.
+
+    One document per batch and one send at a time: with the budget spent every
+    batch goes asynchronously, the first of each group hangs in its send, and
+    the third is still queued behind the second when the wait ends.
+    """
+    abort = stack["abort"]
+    monkeypatch.setattr(abort, "ABORT_BATCH_SIZE", 1)
+    monkeypatch.setattr(abort, "ABORT_INVOKE_CONCURRENCY", 1)
+    monkeypatch.setattr(abort, "ABORT_WAIT_BUDGET_SECONDS", 0)
+    monkeypatch.setattr(abort, "ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS", 0.2)
+    release = threading.Event()
+    stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = lambda event, context: (
+        release.wait(5) and {}
+    )
+    try:
+        result = abort.lambda_handler(
+            {"arguments": {"testRunIds": [stack["run_id"]]}}, None
+        )
+        sent_by_return = len(_workflow_events(stack))
+    finally:
+        release.set()
+        # The queued send goes out once the one ahead of it returns. Wait for
+        # it here, while the patched client is still in place, so that it never
+        # reaches the module's real client after this test.
+        import time as real_time
+
+        give_up = real_time.monotonic() + 5
+        while len(_workflow_events(stack)) < 3 and real_time.monotonic() < give_up:
+            real_time.sleep(0.01)
+
+    assert sent_by_return == 2
+    assert len(_workflow_events(stack)) == 3
+    (error,) = result["errors"]
+    assert error.startswith(f"{stack['run_id']}: 3 of 3 document(s)"), error
+    assert "no answer from the abort workflow in time" in error, error
+    assert "the stop request had not been sent when the abort returned" in error, error
+    assert result["message"].endswith("; 3 document(s) not confirmed stopped"), result
