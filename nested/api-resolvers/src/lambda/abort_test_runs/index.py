@@ -72,7 +72,7 @@ def _backoff_sleep(attempt, deadline=None):
 # DynamoDB call can be in flight when the deadline passes), and the response's
 # trip back through the dispatcher. The unit tests hold that room at no less
 # than 5 s (_DISPATCHER_HEADROOM_SECONDS there), so the budget can grow by
-# about 2 s before they fail. The API calls themselves are not bounded by it, so
+# less than 3 s before they fail. The API calls themselves are not bounded by it, so
 # a request naming very many runs can still outlast the dispatcher.
 #
 # Shortening the wait does not change what the abort does; it changes how long
