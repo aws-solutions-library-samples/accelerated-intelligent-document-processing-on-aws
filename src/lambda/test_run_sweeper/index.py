@@ -131,8 +131,17 @@ def _iter_runs_in_window(window_days, max_examined):
 
     client = _client()
     now = datetime.now(timezone.utc)
-    start_iso = (now - timedelta(days=window_days)).isoformat()
-    end_iso = now.isoformat()
+    # Spelled with a trailing Z, matching how ``test_runner`` writes
+    # ``InitialEventTime`` and how the Executions-list query builds its own
+    # bounds. ``isoformat()`` alone renders the UTC offset as ``+00:00``, and
+    # DynamoDB compares a string range key byte-wise: ``+`` (0x2B) sorts below
+    # every digit where ``Z`` (0x5A) sorts above them, so the two spellings
+    # disagree about a record whose timestamp matches a bound to the second.
+    # Harmless here — such a run is picked up by the next sweep — but three call
+    # sites spelling one index key two ways is a question the next reader has to
+    # re-answer.
+    start_iso = (now - timedelta(days=window_days)).isoformat().replace("+00:00", "Z")
+    end_iso = now.isoformat().replace("+00:00", "Z")
 
     query_kwargs = {
         "IndexName": "TypeDateIndex",

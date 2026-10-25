@@ -596,6 +596,23 @@ def test_cloudwatch_alarm_counts() -> None:
         "{n} of the {} alarms publish to".format(NUMBER_WORDS[len(alarms)], n="{n}"),
         f"{len(to_alerts)} of them reference AlertsTopic.",
     )
+    # ⚠️ The unconditional figure is asserted too, and separately, because it is
+    # the half of this passage that drifted: adding an unconditional alarm moves
+    # the total AND the default-deployment count, and a check on the total alone
+    # passes while the page contradicts itself two lines further down. The page
+    # states it twice, so both spellings are demanded.
+    unconditional = [n for n, body in alarms.items() if "Condition:" not in body]
+    word = NUMBER_WORDS[len(unconditional)]
+    _assert_phrase(
+        f"a default deployment has {word}",
+        f"{len(unconditional)} of the {len(alarms)} alarms declare no Condition.",
+    )
+    _assert_phrase(
+        # Not "The other <word>": the page wraps between the two, so a phrase
+        # spanning the break would be asserting the line width.
+        f"{word} are unconditional",
+        f"{len(unconditional)} alarms declare no Condition.",
+    )
 
 
 @pytest.mark.unit

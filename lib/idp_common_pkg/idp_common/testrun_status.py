@@ -14,7 +14,17 @@ release cycle (``TIMED_OUT``, then ``DISABLED``; see
 `#1330 <https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1330>`_),
 and the remedy adopted then was a closure test over the copies. A closure test
 keeps the copies honest; it does not stop a third consumer being written against
-its own copy. The derivation now has one definition and every consumer calls it.
+its own copy.
+
+Two of the three consumers now call this module: the read resolver and the
+scheduled sweeper. ⚠️ **The abort path still carries its own literal set**, in
+``nested/api-resolvers/src/lambda/abort_test_runs/index.py``, and not by
+oversight — that Lambda is deployed with no ``idp_common`` layer and no
+``requirements.txt``, so importing from here would deploy cleanly and fail at
+import. What holds it to this module is
+``test_results_resolver.py::test_both_readers_of_an_evaluation_status_agree``,
+which asserts its set equals the union of the settled and unsuccessful sets
+here. Change the sets and that test tells you the abort path needs the same edit.
 
 The functions here are **pure**: they take already-fetched DynamoDB items and
 return verdicts. Fetching stays with the caller, because the callers legitimately

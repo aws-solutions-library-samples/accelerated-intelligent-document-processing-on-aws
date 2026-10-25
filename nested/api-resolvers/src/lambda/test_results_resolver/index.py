@@ -309,9 +309,11 @@ def handler(event, context):
 # which happened twice in one release cycle (``TIMED_OUT``, then ``DISABLED``
 # — #1330). The remedy adopted then was a closure test over the copies, which
 # keeps the copies honest but does not stop a third consumer being written
-# against its own. There is now one definition and every consumer calls it —
-# this resolver, the scheduled sweeper that advances runs no client is watching
-# (#1620), and the abort path.
+# against its own. This resolver and the scheduled sweeper that advances runs no
+# client is watching (#1620) both call it. The abort path does not: it runs
+# without an idp_common layer, so it keeps a literal set, held to this one by
+# ``test_both_readers_of_an_evaluation_status_agree``. Editing the shared sets is
+# therefore not sufficient on its own — that test names the second site.
 #
 # The names below stay private to this module so its remaining call sites and
 # tests read unchanged; the sets they point at are the shared ones. Read the
