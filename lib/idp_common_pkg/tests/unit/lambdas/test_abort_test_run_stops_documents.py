@@ -575,9 +575,9 @@ def test_a_document_reported_stopped_that_goes_on_running_is_reported(stack):
     )
 
     assert result["abortedCount"] == 1, result
-    assert result["message"].endswith("; 1 document(s) still processing"), result
+    assert result["message"].endswith("; 1 document(s) not seen to finish"), result
     assert result["errors"] == [
-        f"{stack['run_id']}: 1 of 3 document(s) had not reached a terminal state "
+        f"{stack['run_id']}: 1 of 3 document(s) had not been seen to reach a terminal state "
         "when the abort returned and may still be processing"
     ], result
     # The wait ran to its deadline rather than giving up early.
@@ -612,12 +612,12 @@ def test_unconfirmed_and_unsettled_documents_are_each_counted_once(stack):
     )
 
     assert result["message"].endswith(
-        "; 1 document(s) not confirmed stopped; 1 more document(s) still processing"
+        "; 1 document(s) not confirmed stopped; 1 more document(s) not seen to finish"
     ), result
     (error,) = result["errors"]
     assert error.startswith(f"{stack['run_id']}: 1 of 3 document(s) were not"), error
     assert error.endswith(
-        "; 1 other of 3 document(s) had not reached a terminal state when the "
+        "; 1 other of 3 document(s) had not been seen to reach a terminal state when the "
         "abort returned and may still be processing"
     ), error
 
@@ -1118,7 +1118,7 @@ def _answer_and_stop(stack, failed_count, errors, stop):
 def _tail(unstopped, more):
     tail = f"; {unstopped} document(s) not confirmed stopped" if unstopped else ""
     if more:
-        tail += f"; {more} {'more ' if unstopped else ''}document(s) still processing"
+        tail += f"; {more} {'more ' if unstopped else ''}document(s) not seen to finish"
     return tail
 
 
@@ -1169,7 +1169,7 @@ def test_each_document_is_counted_once_whatever_the_abort_workflow_names(
     ), error
     if more:
         assert error.endswith(
-            f"; {more} other of 3 document(s) had not reached a terminal state when "
+            f"; {more} other of 3 document(s) had not been seen to reach a terminal state when "
             "the abort returned and may still be processing"
         ), error
     else:
@@ -1316,3 +1316,124 @@ def test_a_send_still_queued_when_the_wait_ends_is_reported(stack, monkeypatch):
     assert "no answer from the abort workflow in time" in error, error
     assert "the stop request had not been sent when the abort returned" in error, error
     assert result["message"].endswith("; 3 document(s) not confirmed stopped"), result
+
+
+def test_a_document_the_wait_never_read_is_reported_as_not_seen_to_finish(
+    stack, monkeypatch
+):
+    """With a send still unanswered, the settle wait has no time left to read.
+
+    The grace for a late send ends at the request's deadline, after the point
+    the settle wait must end, so no status is read. Every document not already
+    counted is then reported as not seen to finish -- here a.pdf, which was
+    confirmed stopped and is ABORTED -- and the wording says only that. Real
+    clock, bounds scaled down; one document per batch and one send at a time,
+    so a is waited for and b and c are sent, c's send hanging.
+    """
+    import time as real_time
+
+    abort = stack["abort"]
+    monkeypatch.setattr(abort, "time", real_time)
+    monkeypatch.setattr(abort, "ABORT_BATCH_SIZE", 1)
+    monkeypatch.setattr(abort, "ABORT_INVOKE_CONCURRENCY", 1)
+    monkeypatch.setattr(abort, "ABORT_WAIT_BUDGET_SECONDS", 3)
+    monkeypatch.setattr(abort, "ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(abort, "ABORT_INVOKE_READ_TIMEOUT_SECONDS", 0.5)
+    run = stack["run_id"]
+    workflow = stack["workflow"]
+    release = threading.Event()
+    reads = []
+    real_batch_get = abort._batch_get_document_items
+    monkeypatch.setattr(
+        abort,
+        "_batch_get_document_items",
+        lambda *a, **k: reads.append(1) or real_batch_get(*a, **k),
+    )
+
+    def handler(event, context):
+        (key,) = event["arguments"]["objectKeys"]
+        if key.endswith("c.pdf"):
+            release.wait(5)
+        if key.endswith("a.pdf"):
+            document = workflow.document_service.get_document(key)
+            document.status = Status.ABORTED
+            workflow.document_service.update_document(document)
+        return {"abortedCount": 1, "failedCount": 0, "errors": None}
+
+    stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = handler
+    try:
+        result = abort.lambda_handler({"arguments": {"testRunIds": [run]}}, None)
+    finally:
+        release.set()
+
+    assert not reads, "the premise: the settle wait read nothing"
+    assert _document_statuses(stack)[f"{run}/a.pdf"] == "ABORTED"
+    assert result["message"] == "Aborted 1 test run(s)" + _tail(2, 1), result
+    (error,) = result["errors"]
+    assert error.startswith(f"{run}: 2 of 3 document(s) were not confirmed"), error
+    assert error.endswith(
+        "; 1 other of 3 document(s) had not been seen to reach a terminal state "
+        "when the abort returned and may still be processing"
+    ), error
+
+
+def test_a_completed_document_still_evaluating_is_not_seen_to_finish(stack):
+    """COMPLETED counts as finished only once its evaluation has a final status.
+
+    abortWorkflow declines the COMPLETED document as finished, so it is not
+    counted as unstopped; the settle wait still reads its evaluation running,
+    so it is reported as not seen to finish. The other two are stopped.
+    """
+    workflow = stack["workflow"]
+    evaluating = sorted(stack["executions"])[0]
+    document = workflow.document_service.get_document(evaluating)
+    document.status = Status.COMPLETED
+    document.evaluation_status = "RUNNING"
+    workflow.document_service.update_document(document)
+
+    result = stack["abort"].lambda_handler(
+        {"arguments": {"testRunIds": [stack["run_id"]]}}, None
+    )
+
+    assert result["message"] == "Aborted 1 test run(s)" + _tail(0, 1), result
+    assert result["errors"] == [
+        f"{stack['run_id']}: 1 of 3 document(s) had not been seen to reach a "
+        "terminal state when the abort returned and may still be processing"
+    ], result
+
+
+@pytest.mark.parametrize("dynamodb_error", [True, False], ids=["dynamodb", "other"])
+def test_a_failed_status_write_in_the_document_abort_is_reported(
+    stack, monkeypatch, dynamodb_error
+):
+    """abortWorkflow's own write of ABORTED failing is a failure, not a finish.
+
+    The write is made to fail for one document, with a DynamoDB error that is
+    not a refused condition and with any other exception. That document must be
+    reported as not confirmed stopped with the failure, and not mistaken for
+    one that had already finished.
+    """
+    workflow = stack["workflow"]
+    failing = sorted(stack["executions"])[0]
+    service = workflow.document_service
+    real_update = service.update_document
+
+    def update_document(document, *args, **kwargs):
+        if document.input_key == failing:
+            if dynamodb_error:
+                raise workflow.DynamoDBError("boom", "InternalServerError")
+            raise RuntimeError("boom")
+        return real_update(document, *args, **kwargs)
+
+    monkeypatch.setattr(service, "update_document", update_document)
+
+    result = stack["abort"].lambda_handler(
+        {"arguments": {"testRunIds": [stack["run_id"]]}}, None
+    )
+
+    (error,) = result["errors"]
+    assert error.startswith(
+        f"{stack['run_id']}: 1 of 3 document(s) were not confirmed stopped and may "
+        f"still be processing: {failing}: Failed to update status: boom"
+    ), error
+    assert "terminal state" not in error, error

@@ -368,8 +368,8 @@ def lambda_handler(event, context):
                 unsettled_count += count
                 parts.append(
                     f"{count} {'other ' if parts else ''}of {len(keys)} "
-                    f"document(s) had not reached a terminal state when the "
-                    f"abort returned and may still be processing"
+                    f"document(s) had not been seen to reach a terminal state "
+                    f"when the abort returned and may still be processing"
                 )
             if parts:
                 errors.append(f"{test_run_id}: " + "; ".join(parts))
@@ -383,7 +383,7 @@ def lambda_handler(event, context):
             message += f"; {unstopped_count} document(s) not confirmed stopped"
         if unsettled_count > 0:
             more = "more " if unstopped_count > 0 else ""
-            message += f"; {unsettled_count} {more}document(s) still processing"
+            message += f"; {unsettled_count} {more}document(s) not seen to finish"
 
         logger.info(f"Abort test runs complete: {message}")
 

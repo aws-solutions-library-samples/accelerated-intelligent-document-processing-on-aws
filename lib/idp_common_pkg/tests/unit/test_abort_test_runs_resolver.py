@@ -885,8 +885,8 @@ def _ui_event(run_ids):
 
 
 _SETTLE_REPORT = __import__("re").compile(
-    r"(?:^|; )(\d+) (?:other )?of (\d+) document\(s\) had not reached a terminal "
-    r"state when the abort returned and may still be processing$"
+    r"(?:^|; )(\d+) (?:other )?of (\d+) document\(s\) had not been seen to reach a "
+    r"terminal state when the abort returned and may still be processing$"
 )
 
 
@@ -1104,7 +1104,7 @@ def test_the_response_still_carries_every_field_the_ui_reads(in_flight_runs):
     assert result["failedCount"] == 0
     # None of the run's documents settles, so the response says so (#1612).
     assert (
-        result["message"] == "Aborted 1 test run(s); 120 document(s) still processing"
+        result["message"] == "Aborted 1 test run(s); 120 document(s) not seen to finish"
     )
     assert _split_settle_reports(result["errors"]) == (None, {run_ids[0]: (120, 120)})
     item = table.get_item(Key={"PK": f"testrun#{run_ids[0]}", "SK": "metadata"})
@@ -1349,7 +1349,7 @@ def test_a_status_update_that_fails_is_counted_as_a_failure(timed_runs):
     assert errors == [f"{run_ids[0]}: Failed to update status: condition"]
     assert unsettled == {run_id: (120, 120) for run_id in run_ids}, result
     assert result["message"] == (
-        "Aborted 2 test run(s), 1 failed; 360 document(s) still processing"
+        "Aborted 2 test run(s), 1 failed; 360 document(s) not seen to finish"
     )
 
 
