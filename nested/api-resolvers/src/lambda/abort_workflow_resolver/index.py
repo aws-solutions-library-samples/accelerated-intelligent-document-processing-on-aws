@@ -11,6 +11,7 @@ from idp_common.docs_service import create_document_service
 
 # Import IDP Common modules
 from idp_common.models import Status
+from idp_common.testset_scope import is_direct_invoke
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.settings_helper import get_setting
 
@@ -84,7 +85,26 @@ def handler(event, context):
     try:
         # Defense-in-depth: abortWorkflow is an Admin+Author operation. Raise
         # (not return a 200 dict) so the dispatcher maps it to 403/Unauthorized.
-        if not _caller_in_groups(event, ("Admin", "Author")):
+        #
+        # The one exception is an event with no identity at all, the repository's
+        # marker for a service-to-service invoke gated by IAM on this function's
+        # ARN (idp_common.testset_scope.is_direct_invoke) -- the same rule the
+        # abortTestRuns resolver applies to itself. abortTestRuns invokes this
+        # function to stop a test run's documents, and when it was itself invoked
+        # directly (the SDK and CLI path) it has no Cognito identity to forward.
+        # The REST route cannot produce that shape: the dispatcher rebuilds
+        # `identity` from the authorizer's verified claims, so every event it
+        # sends carries one, and an IAM caller handing the dispatcher a null
+        # identity is refused by its group floor for this operation, which is
+        # group-scoped. A caller able to invoke this function directly could
+        # already put any identity it liked in the payload, so accepting a null
+        # one grants it nothing.
+        if not is_direct_invoke(event) and not _caller_in_groups(
+            event, ("Admin", "Author")
+        ):
+            logger.warning(
+                "Denied abortWorkflow: caller is not in the Admin or Author group"
+            )
             raise PermissionError(
                 "Unauthorized: abortWorkflow requires Admin or Author group"
             )
