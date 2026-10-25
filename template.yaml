@@ -10361,6 +10361,44 @@ Resources:
       Principal: !Sub "events.${AWS::URLSuffix}"
       SourceArn: !GetAtt TestRunSweepRule.Arn
 
+  # The sweep publishes several counters; this is the one that means a defect
+  # rather than a workload. A non-zero value says some writer has put a value in
+  # a document's EvaluationStatus that the shared derivation in
+  # idp_common.testrun_status does not classify, and an unclassified value is
+  # counted as still-evaluating — so every run holding such a document is held
+  # short of a terminal status indefinitely. That is the shape of #1330, which
+  # reached users twice in one release cycle, each time discovered by a report
+  # rather than by the stack.
+  TestRunSweepUnclassifiedStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-test-run-unclassified-eval-status"
+      AlarmDescription: >-
+        A Test Studio document carries an EvaluationStatus that the run-status
+        derivation does not classify, so the runs holding it cannot reach a
+        terminal status. Add the value to one of the three sets in
+        idp_common/testrun_status.py — settled, unsuccessful or in-flight —
+        after deciding which it is. The sweeper's logs name the value and the
+        document.
+      Namespace: !Ref AWS::StackName
+      MetricName: TestRunsUnrecognisedEvalStatus
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # ``notBreaching`` deliberately, and the opposite choice from the
+      # data-mart absence alarm above: there the absence of data points IS the
+      # outage, whereas here the sweep publishes a sample every five minutes and
+      # a stack with no test runs legitimately reports zero. Treating missing
+      # data as breaching would alarm on every stack that does not use Test
+      # Studio.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
   # This dasboard is merged with dashboard created by the pattern stack to create an overall dashboard
   MainTemplateSubsetDashboard:
     Type: AWS::CloudWatch::Dashboard

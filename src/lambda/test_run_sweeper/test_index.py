@@ -13,6 +13,7 @@ green exit code cannot distinguish from success.
 import importlib.util
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -103,6 +104,18 @@ def _stub_client(mod, runs, docs_by_key=None, pages=None):
         return out
 
     client.batch_get_items.side_effect = batch_get_items
+
+    # Discovery projects, so the handler re-reads the full record for each run it
+    # reconciles. Serve those from the same `runs` list the GSI pages are built
+    # from, so a test cannot accidentally reconcile a record the index never
+    # offered.
+    by_pk = {run["PK"]: run for run in runs}
+
+    def get_item(Key=None, **_kwargs):
+        item = by_pk.get((Key or {}).get("PK"))
+        return {"Item": item} if item is not None else {}
+
+    client.table.get_item.side_effect = get_item
 
     # Paged like the real GSI: one page per `pages` entry, each ending with a
     # LastEvaluatedKey except the last. Placing a due run on a later page is how
@@ -330,6 +343,52 @@ class TestReconcileRun:
 
 @pytest.mark.unit
 class TestEnqueueThrottle:
+    def test_the_claim_records_an_attempt(self, mod):
+        from idp_common import testrun_status as trs
+
+        client = MagicMock()
+        mod._CLIENT["c"] = client
+        mod._claim_cache_update_slot("r1", 900)
+        kwargs = client.table.update_item.call_args.kwargs
+        # The counter is what the backoff is computed from, so the claim and the
+        # record of it have to be the same atomic write.
+        assert (
+            f"ADD {trs.CACHE_UPDATE_ATTEMPTS_ATTR} :one" in kwargs["UpdateExpression"]
+        )
+        assert kwargs["ExpressionAttributeValues"][":one"] == 1
+
+    def test_the_throttle_widens_with_recorded_attempts(self, mod):
+        from idp_common import testrun_status as trs
+
+        client = MagicMock()
+        mod._CLIENT["c"] = client
+        mod._queue_cache_update("r1", prior_attempts=3)
+        cutoff = client.table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+            ":cutoff"
+        ]
+        now = datetime.now(timezone.utc)
+        age = (now - datetime.fromisoformat(cutoff)).total_seconds()
+        # Four attempts in, the window is eight times the base, not the base.
+        assert age == pytest.approx(trs.sweep_aggregation_throttle(3), rel=0.05)
+
+    def test_a_runs_recorded_attempts_reach_the_throttle(self, mod):
+        run = _run(status="COMPLETE", files=("a",))
+        run["CacheUpdateAttempts"] = 2
+        docs = {
+            "doc#r1/a": {"ObjectStatus": "COMPLETED", "EvaluationStatus": "COMPLETED"}
+        }
+        client = _stub_client(mod, [run], docs)
+        mod.reconcile_run(run)
+        cutoff = client.table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+            ":cutoff"
+        ]
+        age = (
+            datetime.now(timezone.utc) - datetime.fromisoformat(cutoff)
+        ).total_seconds()
+        from idp_common import testrun_status as trs
+
+        assert age == pytest.approx(trs.sweep_aggregation_throttle(2), rel=0.05)
+
     def test_the_claim_uses_the_shared_attribute_name(self, mod):
         from idp_common import testrun_status as trs
 
@@ -424,8 +483,19 @@ class TestHandlerResilience:
             m["MetricName"]: m["Value"]
             for m in mod.cloudwatch.put_metric_data.call_args.kwargs["MetricData"]
         }
-        assert "TestRunsSwept" in emitted
-        assert "TestRunsUnrecognisedEvalStatus" in emitted
+        # Every counter the response reports is also emitted, under the same
+        # name — including the sweep's own failure modes, which were log-only.
+        assert emitted["TestRunsExamined"] == 1
+        assert emitted["TestRunsDue"] == 1
+        for name in (
+            "TestRunsReconcileAttempted",
+            "TestRunsReconciled",
+            "TestRunMetricsQueued",
+            "TestRunsReconcileFailed",
+            "TestRunsDeferred",
+            "TestRunsUnrecognisedEvalStatus",
+        ):
+            assert name in emitted, name
 
     def test_a_metric_failure_does_not_fail_the_sweep(self, mod):
         runs = [_run(status="RUNNING")]
@@ -473,12 +543,13 @@ class TestDiscovery:
         assert kwargs["Limit"] == mod._EXAMINE_CHUNK
 
     def test_a_due_run_beyond_the_first_page_is_still_reconciled(self, mod):
-        """The regression a single cap caused, measured on a real stack.
+        """Admission reaches the whole window, not just its first page.
 
-        1,076 runs with a cap of 100 examined the newest 9%, so a run that
-        stalled days ago sat behind a hundred newer settled ones and was never
-        swept — the bug this Lambda exists to fix, just rarer. Examination now
-        pages through the window; only the per-document work is budgeted.
+        This is the property that makes the two bounds load-bearing: a stack can
+        hold far more runs in the window than any one sweep should reconcile
+        (1,076 on one measured stack), so if examination stopped at a page the
+        oldest due runs would never be seen. Examination pages through; only the
+        per-document work is budgeted.
         """
         settled = [
             _run(f"s{i}", status="COMPLETE", testRunResult={"overallAccuracy": 1})
@@ -496,6 +567,67 @@ class TestDiscovery:
         assert result["runsExamined"] == 4
         assert result["runsDue"] == 1
         assert result["statusesAdvanced"] == 1
+
+    def test_admission_reads_a_projection_not_whole_records(self, mod):
+        """A sweep that finds nothing must not read the window in full.
+
+        A full run record carries the whole ``Files`` list and the gzipped
+        captured configuration; admission reads four attributes. Most sweeps find
+        nothing due, so reading full records to decide is the dominant cost.
+        """
+        runs = [_run(status="COMPLETE", testRunResult={"ok": 1})]
+        client = _stub_client(mod, runs)
+        mod.handler({}, _Context())
+
+        kwargs = client.batch_get_items.call_args.kwargs
+        projection = kwargs["projection_expression"]
+        names = kwargs["expression_attribute_names"]
+        # Status is a DynamoDB reserved word, so it can only appear aliased.
+        assert names["#s"] == "Status"
+        assert "#s" in projection
+        assert "Status" not in projection.replace("#s", "")
+        # Everything needs_reconciliation reads must be present, or it reads as
+        # absent — which for testRunResult admits every terminal run every sweep.
+        for attr in ("PK", "SK", "testRunResult", "Purpose", "CacheUpdateAttempts"):
+            assert attr in projection, attr
+        # And no document reads happened at all for a settled run.
+        assert client.table.get_item.call_count == 0
+
+    def test_a_due_run_is_hydrated_in_full_before_reconciliation(self, mod):
+        run = _run(status="RUNNING", files=("a",))
+        docs = {
+            "doc#r1/a": {"ObjectStatus": "COMPLETED", "EvaluationStatus": "COMPLETED"}
+        }
+        client = _stub_client(mod, [run], docs)
+        mod.handler({}, _Context())
+        # Projected for admission, then read in full for the one run that needed
+        # it — Files and the captured config are not in the projection.
+        assert client.table.get_item.call_count == 1
+
+    def test_a_run_deleted_between_discovery_and_reconciliation_is_skipped(self, mod):
+        run = _run(status="RUNNING", files=("a",))
+        client = _stub_client(mod, [run], {})
+        client.table.get_item.side_effect = lambda **_k: {}
+        result = mod.handler({}, _Context())
+        assert result["failures"] == 0
+        assert result["statusesAdvanced"] == 0
+
+    def test_the_budget_stops_paging_rather_than_counting_the_rest(self, mod):
+        """Spending the budget must stop the reads, not just the writes.
+
+        Continuing to page would query and read every remaining record in the
+        window solely to increment ``deferred`` — the expense the projection
+        exists to avoid. ``deferred`` is a floor once this fires, and
+        ``stoppedEarly`` is what says so.
+        """
+        page1 = [_run(f"a{i}", status="COMPLETE") for i in range(3)]
+        page2 = [_run(f"b{i}", status="COMPLETE") for i in range(3)]
+        client = _stub_client(mod, page1 + page2, pages=[page1, page2])
+        result = mod.handler({"maxReconciled": 2}, _Context())
+        assert result["stoppedEarly"] == "budget"
+        # The second page was never queried.
+        assert client.table.query.call_count == 1
+        assert result["runsExamined"] == 3
 
     def test_the_examination_cap_still_bounds_an_enormous_table(self, mod):
         settled = [
@@ -515,16 +647,16 @@ class TestDiscovery:
         assert result["stoppedEarly"] == "budget"
 
     def test_the_budget_counts_attempts_not_status_changes(self, mod):
-        """The budget must bound the work, not the outcome.
+        """The budget bounds the work, not the outcome.
 
-        ⚠️ This is the case the sibling test above cannot see. Its runs have no
-        document items, so each one derives to QUEUED and so each *changes
-        status* — the one input shape where "runs reconciled" and "runs whose
-        status moved" agree. Here every run is reconciled and every run holds
-        its status, which is the ordinary shape on a healthy stack: the fan-out
-        over each run's documents is paid in full and the budget has to charge
-        for it. Counting status changes instead let a window of status-preserving
-        runs perform an unbounded number of fan-outs.
+        ⚠️ Every run here is reconciled and every run holds its status, which is
+        the ordinary shape on a healthy stack and the shape the sibling test
+        above cannot exercise: its runs have no document items, so each derives
+        to QUEUED and each therefore *changes* status — the one input where "runs
+        reconciled" and "runs whose status moved" coincide. The fan-out over a
+        run's documents is paid whether or not the status moves, so the budget
+        has to charge on entry; charging for status changes would leave this
+        shape unbounded under any budget.
         """
         runs = [_run(f"r{i}", status="COMPLETE", files=("a",)) for i in range(4)]
         docs = {

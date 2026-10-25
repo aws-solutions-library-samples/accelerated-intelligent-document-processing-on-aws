@@ -88,9 +88,19 @@ def _int_env(name, default):
     return value
 
 
-# How many hydrated run records to ask for per round trip. Also the GSI page
-# size, so one page of keys becomes one BatchGetItem.
+# How many run records to ask for per round trip. Also the GSI page size, so one
+# page of keys becomes one BatchGetItem.
 _EXAMINE_CHUNK = 100
+
+# Exactly what ``needs_reconciliation`` reads, plus the keys and the throttle
+# state the enqueue decision needs. ``Status`` is a DynamoDB reserved word, hence
+# the alias. Anything added to the admission test has to be added here too, or it
+# reads as absent — which for ``testRunResult`` would mean admitting every
+# terminal run on every sweep.
+_ADMISSION_PROJECTION = (
+    "PK, SK, #s, testRunResult, Purpose, #ctx, CacheUpdateQueuedAt, CacheUpdateAttempts"
+)
+_ADMISSION_NAMES = {"#s": "Status", "#ctx": "Context"}
 
 
 def _iter_runs_in_window(window_days, max_examined):
@@ -98,19 +108,24 @@ def _iter_runs_in_window(window_days, max_examined):
 
     Queries the ``TypeDateIndex`` GSI rather than scanning, the same way the
     Executions list does. The GSI projects only a few *document* attributes, so
-    it cannot answer :func:`needs_reconciliation` — that needs ``Status`` and
-    ``testRunResult`` — and each page of keys is therefore hydrated with
-    ``BatchGetItem``.
+    it cannot answer :func:`needs_reconciliation`, and each page of keys is
+    therefore read back with ``BatchGetItem``.
+
+    ⚠️ **Projected, not hydrated.** Admission reads four attributes; a full item
+    carries the run's whole ``Files`` list — thousands of keys on a large test
+    set — and its gzipped captured configuration. Reading those for every run in
+    the window to decide whether to look at it is the dominant cost of a sweep
+    that finds nothing to do, which is most sweeps. The caller loads the full
+    record for the runs it actually reconciles.
 
     ⚠️ **Yields chunks rather than one list, because examining a run and
-    reconciling it have very different costs and must be bounded separately.**
-    An earlier version capped the number of runs *examined* and filtered to the
-    due ones afterwards, which reintroduced the bug this Lambda exists to fix in
-    a quieter form: measured on a real stack with 1,076 test runs, a cap of 100
-    examined the newest 9% of them, so a run that stalled six days ago sat behind
-    a hundred newer ones and was never swept. Examination is now bounded only by
-    ``max_examined`` (large) and the invocation deadline, while the per-document
-    fan-out is bounded by the caller's reconcile budget.
+    reconciling it have very different costs and have to be bounded
+    separately.** One cap over both would be sized by the expensive half and so
+    would truncate the cheap half: on a stack holding 1,076 runs in the window, a
+    single cap of 100 reaches only the newest 9%, which hides a run that stalled
+    days ago behind newer settled ones — the condition this Lambda exists to
+    clear. So examination is bounded by ``max_examined`` and the invocation
+    deadline, and the per-document fan-out by the caller's reconcile budget.
     """
     from boto3.dynamodb.conditions import Key
 
@@ -138,10 +153,31 @@ def _iter_runs_in_window(window_days, max_examined):
             page = page[: max_examined - examined]
             examined += len(page)
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in page]
-            yield client.batch_get_items(keys)
+            yield client.batch_get_items(
+                keys,
+                projection_expression=_ADMISSION_PROJECTION,
+                expression_attribute_names=_ADMISSION_NAMES,
+            )
         if "LastEvaluatedKey" not in response:
             return
         query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+
+def _load_run(test_run_id):
+    """The full run record, for a run admission has already selected.
+
+    Discovery projects only the admission attributes, so ``reconcile_run`` needs
+    the rest — ``Files``, ``FilesCount``, ``BaselineFailedFiles``, ``CompletedAt``
+    and the captured configuration. Paid per *due* run rather than per run in the
+    window, which is the whole point of projecting.
+
+    Returns None if the record has gone between discovery and now; a run deleted
+    mid-sweep is not an error.
+    """
+    response = _client().table.get_item(
+        Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"}
+    )
+    return response.get("Item")
 
 
 def _load_documents(test_run_id, files):
@@ -173,7 +209,8 @@ def _claim_cache_update_slot(test_run_id, throttle_seconds):
 
     The same conditional write the read resolver makes, on the same attribute, so
     a sweep and a browser poll arriving together collapse to one aggregation
-    instead of racing.
+    instead of racing — and it also records an attempt, which is what the
+    sweeper's own backoff is computed from.
 
     Fails *open* (returns True) on any unexpected DynamoDB error: a broken
     throttle must never be able to block a legitimate recompute.
@@ -181,12 +218,17 @@ def _claim_cache_update_slot(test_run_id, throttle_seconds):
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(seconds=throttle_seconds)).isoformat()
     attr = trs.CACHE_UPDATE_QUEUED_AT_ATTR
+    attempts_attr = trs.CACHE_UPDATE_ATTEMPTS_ATTR
     try:
         _client().table.update_item(
             Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"},
-            UpdateExpression=f"SET {attr} = :now",
+            UpdateExpression=f"SET {attr} = :now ADD {attempts_attr} :one",
             ConditionExpression=(f"attribute_not_exists({attr}) OR {attr} < :cutoff"),
-            ExpressionAttributeValues={":now": now.isoformat(), ":cutoff": cutoff},
+            ExpressionAttributeValues={
+                ":now": now.isoformat(),
+                ":cutoff": cutoff,
+                ":one": 1,
+            },
         )
         return True
     except ClientError as e:
@@ -205,11 +247,16 @@ def _claim_cache_update_slot(test_run_id, throttle_seconds):
         return True
 
 
-def _queue_cache_update(test_run_id):
+def _queue_cache_update(test_run_id, prior_attempts=0):
     """Enqueue an async metrics aggregation. Best-effort.
 
     Returns True only when a message was actually sent, so the sweep's own
     counters report work done rather than work attempted.
+
+    ``prior_attempts`` comes off the run record and sets the throttle: a run
+    whose aggregation keeps not completing is retried on a widening interval
+    rather than once per sweep. See
+    :func:`idp_common.testrun_status.sweep_aggregation_throttle`.
     """
     queue_url = os.environ.get("TEST_RESULT_CACHE_UPDATE_QUEUE_URL")
     if not queue_url:
@@ -218,10 +265,11 @@ def _queue_cache_update(test_run_id):
             f"update for {test_run_id}"
         )
         return False
-    if not _claim_cache_update_slot(test_run_id, trs.CACHE_UPDATE_THROTTLE_SECONDS):
+    throttle = trs.sweep_aggregation_throttle(prior_attempts)
+    if not _claim_cache_update_slot(test_run_id, throttle):
         logger.info(
-            f"Cache update for {test_run_id} already enqueued inside the throttle "
-            "window; skipping duplicate"
+            f"Cache update for {test_run_id} already enqueued inside its "
+            f"{throttle}s throttle window (attempts={prior_attempts}); skipping"
         )
         return False
     try:
@@ -343,19 +391,26 @@ def reconcile_run(run_item):
     # is not touched by the write above, so the record in hand is still current
     # for the only other field the answer depends on.
     if trs.awaiting_metrics(run_item, overall_status):
-        verdict["metricsQueued"] = _queue_cache_update(test_run_id)
+        verdict["metricsQueued"] = _queue_cache_update(
+            test_run_id, run_item.get(trs.CACHE_UPDATE_ATTEMPTS_ATTR, 0)
+        )
 
     return verdict
 
 
-def _emit_metrics(namespace, swept, reconciled, queued, unrecognised):
+def _emit_metrics(namespace, counters):
     """Publish the sweep's own counters. Best-effort.
 
-    ``TestRunsUnrecognisedEvalStatus`` is the one worth an alarm: it is non-zero
-    only when a writer has gained an ``EvaluationStatus`` value the derivation
-    does not classify, which is the defect that pinned runs at EVALUATING twice
-    before. Without a metric, the only evidence is a WARNING in a log nobody
-    reads on a schedule.
+    Everything the sweep can get wrong has to be here, not only what it found.
+    A sweep that raised on every run it attempted, or one permanently held at its
+    budget so the oldest due runs are never reached, is indistinguishable in
+    CloudWatch from a clean sweep that had nothing to do — and this Lambda exists
+    because a silent no-op is the failure nobody notices.
+
+    ``TestRunsUnrecognisedEvalStatus`` is the one with an alarm on it: it is
+    non-zero only when a writer has gained an ``EvaluationStatus`` the shared
+    derivation does not classify, which is the defect that pinned runs at
+    EVALUATING twice before.
     """
     if not namespace:
         return
@@ -363,22 +418,8 @@ def _emit_metrics(namespace, swept, reconciled, queued, unrecognised):
         cloudwatch.put_metric_data(
             Namespace=namespace,
             MetricData=[
-                {"MetricName": "TestRunsSwept", "Value": swept, "Unit": "Count"},
-                {
-                    "MetricName": "TestRunsReconciled",
-                    "Value": reconciled,
-                    "Unit": "Count",
-                },
-                {
-                    "MetricName": "TestRunMetricsQueued",
-                    "Value": queued,
-                    "Unit": "Count",
-                },
-                {
-                    "MetricName": "TestRunsUnrecognisedEvalStatus",
-                    "Value": unrecognised,
-                    "Unit": "Count",
-                },
+                {"MetricName": name, "Value": value, "Unit": "Count"}
+                for name, value in counters.items()
             ],
         )
     except Exception as e:
@@ -389,9 +430,9 @@ def _override(event, name, fallback):
     """A positive int from the invocation event, else ``fallback``.
 
     Lets a one-off manual invocation widen the sweep —
-    ``{"windowDays": 90}`` — which is the documented way to
-    recover runs that stalled before this Lambda was deployed and now sit
-    outside the scheduled window. The scheduled rule sends no overrides.
+    ``{"windowDays": 90}`` — which is the documented way to recover runs that
+    stalled before this Lambda was deployed and now sit outside the scheduled
+    window. The scheduled rule sends no overrides.
     """
     if not isinstance(event, dict):
         return fallback
@@ -447,13 +488,13 @@ def handler(event, context):
 
     examined = 0
     due_seen = 0
-    #: Every run ``reconcile_run`` was called for, whatever came back. This is
-    #: what the budget counts, because the cost being bounded is the per-document
-    #: fan-out, and that is paid on entry — a run whose status turns out not to
-    #: move has already read every one of its documents. Counting only the runs
-    #: whose status *changed* bounded the outcome rather than the work, so a
-    #: window of 900 status-preserving runs performed 900 fan-outs under a budget
-    #: of 50, leaving only ``max_examined`` and the deadline as real limits.
+    #: Every run ``reconcile_run`` was called for, whatever came back — and the
+    #: quantity the budget charges, because the cost being bounded is the
+    #: per-document fan-out and that is paid on entry: a run whose status turns
+    #: out not to move has already read every one of its documents. Charging for
+    #: status *changes* instead would bound the outcome rather than the work, and
+    #: leave a window of status-preserving runs — the ordinary shape on a healthy
+    #: stack — doing an unbounded number of fan-outs under any budget.
     attempted = 0
     reconciled = 0
     queued = 0
@@ -488,7 +529,14 @@ def handler(event, context):
                 # will look at it.
                 attempted += 1
                 try:
-                    verdict = reconcile_run(run_item)
+                    full = _load_run(run_item["PK"].split("testrun#", 1)[1])
+                    if full is None:
+                        logger.info(
+                            f"{run_item.get('PK')} went away between discovery "
+                            "and reconciliation; skipping"
+                        )
+                        continue
+                    verdict = reconcile_run(full)
                 except Exception as e:
                     failures += 1
                     logger.error(
@@ -501,8 +549,16 @@ def handler(event, context):
                 if verdict["metricsQueued"]:
                     queued += 1
                 unrecognised += verdict["unrecognisedEvalStatuses"]
-            if stopped_early == "deadline":
-                # Stop paging too: there is no time left to hydrate another page.
+            if stopped_early:
+                # Stop paging on either bound. Continuing would query and read
+                # every remaining record in the window — up to ``max_examined``
+                # of them — solely to increment ``deferred``, which is the
+                # expense the projection above exists to avoid.
+                #
+                # ⚠️ ``deferred`` is therefore a FLOOR once this fires: the runs
+                # on pages never fetched are not counted. ``stoppedEarly`` is
+                # what tells a reader which it is, and the next sweep recomputes
+                # admission from scratch so nothing is lost.
                 break
     except Exception as e:
         # Discovery failing must not look like a sweep with nothing to do. A
@@ -521,10 +577,21 @@ def handler(event, context):
 
     _emit_metrics(
         os.environ.get("METRIC_NAMESPACE"),
-        due_seen,
-        reconciled,
-        queued,
-        unrecognised,
+        {
+            # Each name matches the response field whose value it carries, so
+            # an alarm on a metric means what a reader of the response would
+            # take it to mean. A name that describes the sweep in general
+            # ("swept") rather than one counter invites being read as whichever
+            # count the reader had in mind.
+            "TestRunsExamined": examined,
+            "TestRunsDue": due_seen,
+            "TestRunsReconcileAttempted": attempted,
+            "TestRunsReconciled": reconciled,
+            "TestRunMetricsQueued": queued,
+            "TestRunsReconcileFailed": failures,
+            "TestRunsDeferred": deferred,
+            "TestRunsUnrecognisedEvalStatus": unrecognised,
+        },
     )
 
     return {

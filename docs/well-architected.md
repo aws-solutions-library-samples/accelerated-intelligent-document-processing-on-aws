@@ -94,10 +94,10 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 30 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 31 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. 29 of the thirty alarms publish to the
-`AlertsTopic` SNS topic; the thirtieth, `BedrockServiceOutageAlarm`, publishes to
+through them — the nested stacks declare none. 30 of the thirty-one alarms publish to the
+`AlertsTopic` SNS topic; the remaining one, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`.
 Eight are conditional, so a default deployment has twenty-two:
 `BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
@@ -457,7 +457,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 354 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 355 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

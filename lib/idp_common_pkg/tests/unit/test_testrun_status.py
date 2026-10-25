@@ -451,3 +451,40 @@ class TestLatestCompletionTime:
     def test_none_when_nothing_has_one(self):
         assert trs.latest_completion_time([{}, {}]) is None
         assert trs.latest_completion_time([]) is None
+
+
+@pytest.mark.unit
+class TestSweepAggregationThrottle:
+    """The sweeper's backoff. See the constant's own note for why it exists."""
+
+    def test_the_base_exceeds_the_sweep_interval(self):
+        # The whole point: a throttle equal to the sweep interval is cleared by
+        # every sweep and so damps nothing.
+        assert trs.SWEEP_AGGREGATION_BASE_SECONDS > 300
+
+    def test_it_is_longer_than_the_poll_throttle(self):
+        # The browser poll stays responsive; only the background retry backs off.
+        assert trs.SWEEP_AGGREGATION_BASE_SECONDS > trs.CACHE_UPDATE_THROTTLE_SECONDS
+
+    def test_it_doubles_per_attempt(self):
+        base = trs.SWEEP_AGGREGATION_BASE_SECONDS
+        assert trs.sweep_aggregation_throttle(0) == base
+        assert trs.sweep_aggregation_throttle(1) == base * 2
+        assert trs.sweep_aggregation_throttle(3) == base * 8
+
+    def test_it_is_capped(self):
+        assert trs.sweep_aggregation_throttle(999) == trs.SWEEP_AGGREGATION_MAX_SECONDS
+
+    @pytest.mark.parametrize("value", [None, "", "abc", -5, object()])
+    def test_an_unreadable_count_reads_as_no_attempts(self, value):
+        # Fails toward doing the work: the defect being removed is work that
+        # never happens, so a corrupt counter must not be able to stop a retry.
+        assert (
+            trs.sweep_aggregation_throttle(value) == trs.SWEEP_AGGREGATION_BASE_SECONDS
+        )
+
+    def test_a_decimal_count_is_accepted(self):
+        # DynamoDB hands numbers back as Decimal.
+        assert trs.sweep_aggregation_throttle(Decimal("2")) == (
+            trs.SWEEP_AGGREGATION_BASE_SECONDS * 4
+        )

@@ -121,6 +121,49 @@ RUN_STATUS_TERMINAL = frozenset({"COMPLETE", "PARTIAL_COMPLETE", "ABORTED", "FAI
 CACHE_UPDATE_QUEUED_AT_ATTR = "CacheUpdateQueuedAt"
 CACHE_UPDATE_THROTTLE_SECONDS = 300
 
+#: How many times a background sweep has enqueued an aggregation for a run that
+#: still has no metrics. Incremented only by the sweeper, and read only to back
+#: its own retries off.
+CACHE_UPDATE_ATTEMPTS_ATTR = "CacheUpdateAttempts"
+
+#: The sweeper's first retry interval, and the ceiling its backoff reaches.
+#:
+#: ⚠️ **It cannot be ``CACHE_UPDATE_THROTTLE_SECONDS``, and the reason is a
+#: property of the two callers rather than a preference.** That window was sized
+#: against a browser polling every 5 seconds, where 300s means "collapse sixty
+#: polls into one aggregation". A sweep runs every 300s, so the same window
+#: collapses nothing: every sweep clears it and enqueues again.
+#:
+#: That only matters for a run whose aggregation never completes.
+#: :func:`awaiting_metrics` deliberately admits a run that will never have
+#: metrics, on the grounds that the cache writer records every key whatever the
+#: aggregation found and so the condition clears on one pass — which holds for an
+#: empty aggregation but not for one that fails *before* writing, whether by
+#: raising or by exhausting the queue's redrive policy. Such a run stays
+#: admissible indefinitely, and at one aggregation per sweep that is a few
+#: hundred a day, each re-reading every document's results and running the Athena
+#: cost and split-classification queries. Backing off turns an unbounded retry
+#: loop into a handful of attempts a day.
+SWEEP_AGGREGATION_BASE_SECONDS = 900
+SWEEP_AGGREGATION_MAX_SECONDS = 86400
+
+
+def sweep_aggregation_throttle(attempts) -> int:
+    """How long a sweep should wait before re-enqueueing this run's aggregation.
+
+    Doubles per recorded attempt from :data:`SWEEP_AGGREGATION_BASE_SECONDS` up
+    to :data:`SWEEP_AGGREGATION_MAX_SECONDS`. An unreadable or negative count
+    reads as zero attempts, so a corrupt value makes the sweep *more* eager
+    rather than silently stopping it — the failure this Lambda exists to remove
+    is work that does not happen.
+    """
+    try:
+        n = int(attempts or 0)
+    except (TypeError, ValueError):
+        n = 0
+    n = max(0, min(n, 32))
+    return min(SWEEP_AGGREGATION_BASE_SECONDS * (2**n), SWEEP_AGGREGATION_MAX_SECONDS)
+
 
 def normalized_eval_status(doc_item: Mapping[str, Any]) -> Optional[str]:
     """A document's ``EvaluationStatus``, upper-cased, or None if not recorded.
