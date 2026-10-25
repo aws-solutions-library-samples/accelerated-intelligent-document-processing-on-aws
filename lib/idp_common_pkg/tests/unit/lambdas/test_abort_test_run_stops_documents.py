@@ -1142,6 +1142,16 @@ def _tail(unstopped, more):
         pytest.param(1, ["{run}/a.pdf: boom"], {"b.pdf"}, 1, 1, id="named-unsettled"),
         # Named but then settled: the two unfinished ones are other documents.
         pytest.param(1, ["{run}/a.pdf: boom"], {"a.pdf"}, 1, 2, id="named-settled"),
+        # An error saying a.pdf had already finished is not a stop failure, so
+        # the one unnamed failure is b or c, never a, which is still unfinished.
+        pytest.param(
+            2,
+            ["{run}/a.pdf: Cannot abort document with status COMPLETED"],
+            {"b.pdf", "c.pdf"},
+            1,
+            1,
+            id="finished-refusal-not-absorbed",
+        ),
     ],
 )
 def test_each_document_is_counted_once_whatever_the_abort_workflow_names(
@@ -1269,11 +1279,12 @@ def test_the_batch_answer_names_each_failed_key_once(stack, monkeypatch, errors,
 
     monkeypatch.setattr(abort, "lambda_client", _Answer())
 
-    reasons, keys, unnamed = abort._stop_batch(
+    reasons, keys, unnamed, others = abort._stop_batch(
         "fn", batch, None, confirm_by=stack["clock"].time() + 3600
     )
 
     assert (keys, unnamed) == (named, len(errors) - len(named))
+    assert others == sorted(set(batch) - set(named))
     assert reasons == errors
 
 

@@ -468,8 +468,8 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
         ``{test_run_id: (reasons, named, unnamed)}`` for every run with
         documents the abort workflow did not confirm stopping: why (at most
         three reasons), the object keys of those it can name, and, for each
-        batch with a failure, ``(n, batch)``: that ``n`` more of that batch's
-        documents, not named, were not confirmed stopped (see ``_stop_batch``). A document that had already finished is not
+        batch with a failure, ``(n, others)``: that ``n`` more of the batch's
+        documents ``others`` were not confirmed stopped (see ``_stop_batch``). A document that had already finished is not
         counted.
     """
     per_run = [
@@ -542,20 +542,20 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
         # Every path but the first names the whole batch: none of it is
         # confirmed stopped.
         if future.done() and future.exception() is None:
-            reasons, keys, unnamed = future.result()
+            reasons, keys, unnamed, others = future.result()
         elif future.done():
             reasons = [
                 f"the abort workflow's result could not be read: {future.exception()}"
             ]
-            keys, unnamed = list(batch), 0
+            keys, unnamed, others = list(batch), 0, []
         elif future.running():
             reasons = ["no answer from the abort workflow in time"]
-            keys, unnamed = list(batch), 0
+            keys, unnamed, others = list(batch), 0, []
         else:
             # Still queued behind slower sends when the wait ended; it goes out
             # if and when the runtime next runs this sandbox.
             reasons = ["the stop request had not been sent when the abort returned"]
-            keys, unnamed = list(batch), 0
+            keys, unnamed, others = list(batch), 0, []
         if not keys and not unnamed:
             continue
         seen, named, unnamed_batches = not_stopped.setdefault(
@@ -565,7 +565,7 @@ def _stop_documents(dispatched, identity, abort_workflow_function_name, confirm_
             if reason not in seen and len(seen) < 3:
                 seen.append(reason)
         named.update(keys)
-        unnamed_batches.append((unnamed, batch))
+        unnamed_batches.append((unnamed, others))
     return not_stopped
 
 
@@ -575,16 +575,16 @@ def _still_processing_beyond(keys, unsettled, named, unnamed):
     ``keys`` are the run's documents, ``unsettled`` the documents the settle wait
     last saw unfinished, and ``named``/``unnamed`` what ``_stop_documents``
     returned for the run. A named document is already counted. A batch's
-    ``n`` unnamed documents are some ``n`` of that batch's documents that were
-    not named, so up to ``n`` of the batch's unsettled ones may be the same
-    documents; they are assumed to be, which makes the two counts together the
-    fewest documents consistent with both readings rather than a sum that can
-    count a document twice. The unnamed of one batch never stand for the
-    unsettled of another.
+    ``n`` unnamed documents are some ``n`` of its ``others``, so up to ``n`` of
+    the unsettled ones among them may be the same documents; they are assumed
+    to be, which makes the two counts together the fewest documents consistent
+    with both readings rather than a sum that can count a document twice. The
+    unnamed of one batch never stand for the unsettled of another, nor for a
+    document an error says had already finished.
     """
     remaining = {key for key in keys if key in unsettled and key not in named}
-    for n, batch in unnamed:
-        in_batch = [key for key in batch if key in remaining]
+    for n, others in unnamed:
+        in_batch = [key for key in others if key in remaining]
         remaining.difference_update(in_batch[:n])
     return len(remaining)
 
@@ -595,10 +595,12 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
     ``confirm_by`` is the time by which a synchronous invoke must end, or None to
     send the batch asynchronously without waiting for an answer.
 
-    Returns ``(reasons, keys, unnamed)``: why documents of the batch were not
-    confirmed stopped, which of them can be named -- every one when the whole
-    batch is unconfirmed, and otherwise those the abort workflow's errors name
-    -- and how many more it counted as failed without naming them.
+    Returns ``(reasons, keys, unnamed, others)``: why documents of the batch
+    were not confirmed stopped, which of them can be named -- every one when the
+    whole batch is unconfirmed, and otherwise those the abort workflow's errors
+    name -- how many more it counted as failed without naming them, and the
+    batch's documents those can be among: the ones no error names, as a
+    failure or as having already finished.
     """
     payload = json.dumps({'arguments': {'objectKeys': batch}, 'identity': identity})
     bound = ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS + ABORT_INVOKE_READ_TIMEOUT_SECONDS
@@ -617,7 +619,7 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
                 else "no time left to wait"
             )
             reasons = [f"sent without waiting for a result: {why}"]
-            return reasons, list(batch), 0
+            return reasons, list(batch), 0, []
 
         response = lambda_client.invoke(
             FunctionName=abort_workflow_function_name,
@@ -629,7 +631,7 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
         logger.warning(
             f"Abort workflow invoke for {len(batch)} document(s) failed: {e}"
         )
-        return [f"no result from the abort workflow: {e}"], list(batch), 0
+        return [f"no result from the abort workflow: {e}"], list(batch), 0, []
 
     if response.get('FunctionError'):
         detail = result if isinstance(result, dict) else {}
@@ -638,40 +640,51 @@ def _stop_batch(abort_workflow_function_name, batch, identity, confirm_by):
             f"{detail.get('errorType', 'error')}: {detail.get('errorMessage', '')}"
         )
         logger.warning(f"Abort workflow did not stop {len(batch)} document(s): {reason}")
-        return [reason], list(batch), 0
+        return [reason], list(batch), 0, []
     if not isinstance(result, dict):
         logger.warning(f"Abort workflow returned an unreadable result: {result!r}")
         reasons = ["the abort workflow returned an unreadable result"]
-        return reasons, list(batch), 0
+        return reasons, list(batch), 0, []
 
-    failures = [
-        str(error) for error in (result.get('errors') or [])
-        if not _already_finished(str(error))
-    ]
-    not_abortable = len(result.get('errors') or []) - len(failures)
+    errors = [str(error) for error in (result.get('errors') or [])]
+    failures = [error for error in errors if not _already_finished(error)]
+    not_abortable = len(errors) - len(failures)
     count = max(0, int(result.get('failedCount') or 0) - not_abortable)
     if count:
         logger.warning(
             f"Abort workflow did not stop {count} of {len(batch)} document(s): "
             f"{failures[:3]}"
         )
-        named = set()
-        for failure in failures:
-            # The abort workflow prefixes an error with "<key>: ". A key can
-            # itself be another key followed by ": ", so an error is attributed
-            # to the longest key it starts with, never to both.
-            matches = [key for key in batch if failure.startswith(f"{key}: ")]
-            if matches:
-                named.add(max(matches, key=len))
+        named = _keys_named(failures, batch)
+        finished = _keys_named(
+            [error for error in errors if _already_finished(error)], batch
+        )
         reasons = failures[:3] or ["the abort workflow reported a failure"]
-        # Counted but not named: some of the batch's other documents.
-        unnamed = min(max(0, count - len(named)), len(set(batch) - named))
-        return reasons, sorted(named), unnamed
+        # Counted but not named: some of the batch's documents that no error
+        # names, neither as a failure nor as having already finished.
+        others = sorted(set(batch) - named - finished)
+        unnamed = min(max(0, count - len(named)), len(others))
+        return reasons, sorted(named), unnamed, others
     logger.info(
         f"Abort workflow stopped {result.get('abortedCount', 0)} of "
         f"{len(batch)} document(s)"
     )
-    return [], [], 0
+    return [], [], 0, []
+
+
+def _keys_named(errors, batch):
+    """The keys of ``batch`` that the abort workflow's ``errors`` are about.
+
+    The abort workflow prefixes an error with "<key>: ". A key can itself be
+    another key followed by ": ", so an error is attributed to the longest key
+    it starts with, never to both.
+    """
+    named = set()
+    for error in errors:
+        matches = [key for key in batch if error.startswith(f"{key}: ")]
+        if matches:
+            named.add(max(matches, key=len))
+    return named
 
 
 def _already_finished(error):
