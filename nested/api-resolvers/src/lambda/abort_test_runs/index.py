@@ -4,10 +4,11 @@
 """
 Lambda function to abort test runs and their associated document processing.
 
-This function handles aborting test runs by:
-1. Retrieving test run metadata from DynamoDB
-2. Invoking the abort workflow Lambda for all documents in the test run
-3. Updating the test run status to ABORTED
+For every test run named in the request, this function:
+1. Retrieves the test run metadata from DynamoDB and invokes the abort workflow
+   Lambda for all of the run's documents
+2. Waits, once for all of the runs together, for those documents to settle
+3. Queues the run's metrics calculation and updates its status to ABORTED
 """
 
 import json
@@ -37,9 +38,57 @@ sqs_client = boto3.client('sqs')
 BATCH_GET_MAX_ATTEMPTS = 6
 
 
-def _backoff_sleep(attempt):
-    """Exponential backoff with full jitter, capped at one second."""
-    time.sleep(random.uniform(0, min(1.0, 0.05 * 2**attempt)))  # nosec B311
+def _backoff_sleep(attempt, deadline=None):
+    """Exponential backoff with full jitter, capped at one second.
+
+    Never sleeps past ``deadline`` (an absolute ``time.time()`` value), so a
+    retry cannot carry the handler beyond its wait budget.
+    """
+    delay = random.uniform(0, min(1.0, 0.05 * 2**attempt))  # nosec B311
+    if deadline is not None:
+        delay = min(delay, max(0.0, deadline - time.time()))
+    if delay > 0:
+        time.sleep(delay)
+
+
+# The REST API reaches this resolver through http_api_dispatcher, which stops
+# reading the invoke after its _RESOLVER_READ_TIMEOUT_SECONDS (20 s) and answers
+# 504 -- while this function runs on and completes the abort, so the caller is
+# told an abort that succeeded has failed (#1606). The settle wait below was
+# sized for AppSync (25 s plus a 2 s pause) and outlived that bound whenever the
+# documents did not settle quickly.
+#
+# So every wait in one invocation -- the document settle poll, the pause after
+# queueing metrics, and BatchGetItem backoff -- shares a single deadline this
+# many seconds after the handler starts. It is one deadline for the whole
+# request rather than one per run, so a request naming several runs aborts them
+# in phases: every run's documents are told to stop first, then one settle wait
+# covers all of them, then every run is marked ABORTED. Each run therefore gets
+# the whole settle wait, where aborting them one after another would either
+# multiply the bound by their count or, under one deadline, leave the first run's
+# wait to use it all and mark the later runs ABORTED a moment after dispatch. The
+# rest of the dispatcher's 20 s is left for what this clock does not see: cold
+# start before the handler runs, the API calls made around the waits (at most one
+# DynamoDB call can be in flight when the deadline passes), and the response's
+# trip back through the dispatcher. The unit tests hold that room at no less
+# than 5 s (_DISPATCHER_HEADROOM_SECONDS there), so the budget can grow by
+# less than 3 s before they fail. The API calls themselves are not bounded by it, so
+# a request naming very many runs can still outlast the dispatcher.
+#
+# Shortening the wait does not change what the abort does; it changes how long
+# the documents get to settle before the run is marked ABORTED and its metrics
+# are queued, which matters because both are taken once. A run whose documents
+# have not settled by the deadline is handled exactly as one that outlasted the
+# previous 25 s: the abort proceeds and a warning is logged.
+ABORT_WAIT_BUDGET_SECONDS = 12
+
+# Pause after queueing the runs' metrics calculations, before marking them
+# ABORTED; taken once per request, not once per run. The settle wait ends this
+# long before the deadline so that the pause fits inside it.
+METRICS_START_PAUSE_SECONDS = 2
+
+# Seconds between document status polls during the settle wait.
+SETTLE_POLL_INTERVAL_SECONDS = 2
 
 
 # Test run statuses that can be aborted (before processing completes)
@@ -135,36 +184,89 @@ def lambda_handler(event, context):
 
         tracking_table = dynamodb.Table(tracking_table_name)  # type: ignore[attr-defined]
 
+        # One wait budget for the whole request; see ABORT_WAIT_BUDGET_SECONDS.
+        deadline = time.time() + ABORT_WAIT_BUDGET_SECONDS
+
         aborted_count = 0
         failed_count = 0
         errors = []
 
-        # Process each test run
+        def record_failure(test_run_id, error_msg):
+            nonlocal failed_count
+            failed_count += 1
+            errors.append(f"{test_run_id}: {error_msg}")
+            logger.error(f"Failed to abort test run {test_run_id}: {error_msg}")
+
+        # The runs are aborted in three phases rather than one after another, so
+        # that every run gets the same settle wait: run by run, the first run's
+        # wait used the whole budget and every later run was marked ABORTED a
+        # moment after its documents were told to stop (see
+        # ABORT_WAIT_BUDGET_SECONDS for why that ordering matters).
+        #
+        # Phase 1: tell every abortable run's documents to stop.
+        dispatched = {}  # test run id -> its document object keys, request order
         for test_run_id in test_run_ids:
+            if test_run_id in dispatched:
+                record_failure(test_run_id, "Test run named more than once in the request")
+                continue
             try:
-                result = abort_single_test_run(
-                    test_run_id,
+                object_keys, error_msg = _dispatch_abort(
+                    test_run_id, tracking_table, abort_workflow_function_name
+                )
+            except Exception as e:
+                logger.error(
+                    f"Exception aborting test run {test_run_id}: {str(e)}",
+                    exc_info=True
+                )
+                object_keys, error_msg = None, str(e)
+            if error_msg is not None:
+                record_failure(test_run_id, error_msg)
+            else:
+                dispatched[test_run_id] = object_keys
+
+        if dispatched:
+            # Phase 2: one settle wait over every dispatched run's documents,
+            # leaving room inside the deadline for the pause after queueing
+            # metrics. An error here is handled as a wait that ran out: the
+            # documents have been told to stop, so the abort proceeds.
+            all_keys = [key for keys in dispatched.values() for key in keys]
+            run_label = ", ".join(dispatched)
+            logger.info(f"Waiting for documents to reach terminal state for test run(s) {run_label}")
+            try:
+                _wait_for_documents_terminal_state(
                     tracking_table,
-                    abort_workflow_function_name
+                    run_label,
+                    all_keys,
+                    deadline=deadline - METRICS_START_PAUSE_SECONDS,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Settle wait failed for test run(s) {run_label}: {e}. "
+                    "Proceeding with the abort anyway."
                 )
 
-                if result['success']:
+            # Phase 3: queue each run's metrics calculation, pause once so the
+            # metrics Lambda has started reading, then mark each run ABORTED.
+            queued = [
+                test_run_id for test_run_id in dispatched
+                if _queue_metrics_calculation(test_run_id)
+            ]
+            if queued:
+                # Within the deadline, so it shortens (to nothing) once the
+                # settle wait and the queueing calls have used the budget.
+                pause = min(
+                    METRICS_START_PAUSE_SECONDS, max(0.0, deadline - time.time())
+                )
+                time.sleep(pause)
+                logger.info(f"Waited {pause:.1f} seconds for metrics calculation to start")
+
+            for test_run_id in dispatched:
+                error_msg = _mark_test_run_aborted(test_run_id, tracking_table)
+                if error_msg is None:
                     aborted_count += 1
                     logger.info(f"Successfully aborted test run {test_run_id}")
                 else:
-                    failed_count += 1
-                    error_msg = result.get('error', 'Unknown error')
-                    errors.append(f"{test_run_id}: {error_msg}")
-                    logger.error(f"Failed to abort test run {test_run_id}: {error_msg}")
-
-            except Exception as e:
-                failed_count += 1
-                error_msg = str(e)
-                errors.append(f"{test_run_id}: {error_msg}")
-                logger.error(
-                    f"Exception aborting test run {test_run_id}: {error_msg}",
-                    exc_info=True
-                )
+                    record_failure(test_run_id, error_msg)
 
         # Prepare response
         success = aborted_count > 0
@@ -198,9 +300,10 @@ def lambda_handler(event, context):
         }
 
 
-def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_name):
+def _dispatch_abort(test_run_id, tracking_table, abort_workflow_function_name):
     """
-    Abort a single test run and its documents.
+    Phase 1 for one run: read it, check it can be aborted, and tell its
+    documents to stop.
 
     Args:
         test_run_id: Test run identifier
@@ -208,130 +311,130 @@ def abort_single_test_run(test_run_id, tracking_table, abort_workflow_function_n
         abort_workflow_function_name: Name of the abort workflow Lambda function
 
     Returns:
-        Dict with 'success' boolean and optional 'error' message
+        ``(object_keys, None)`` when the run's documents were told to stop, or
+        ``(None, error_message)`` when the run cannot be aborted.
     """
     try:
         # Get test run metadata
         response = tracking_table.get_item(
             Key={'PK': f"testrun#{test_run_id}", 'SK': "metadata"}
         )
-
-        if 'Item' not in response:
-            return {"success": False, "error": "Test run not found"}
-
-        item = response['Item']
-        current_status = item.get('Status', '').upper()
-
-        # Check if test run can be aborted
-        if current_status not in ABORTABLE_STATUSES:
-            return {
-                "success": False,
-                "error": f"Cannot abort test run with status {current_status}"
-            }
-
-        # Extract document object keys from Files list
-        object_keys = []
-        if 'Files' in item and item['Files']:
-            for file_name in item['Files']:
-                object_key = f"{test_run_id}/{file_name}"
-                object_keys.append(object_key)
-
-        # Abort all documents in the test run (async invocation in batches)
-        # Note: abort_workflow_resolver handles completed/failed gracefully
-        if object_keys:
-            logger.info(
-                f"Aborting {len(object_keys)} documents for test run {test_run_id}"
-            )
-
-            # Process in batches of 100 to avoid Lambda timeout
-            # All batches run in parallel (InvocationType='Event')
-            batch_size = 100
-            batch_count = 0
-            for i in range(0, len(object_keys), batch_size):
-                batch = object_keys[i:i + batch_size]
-                try:
-                    lambda_client.invoke(
-                        FunctionName=abort_workflow_function_name,
-                        InvocationType='Event',  # Async - runs in parallel
-                        Payload=json.dumps({
-                            'arguments': {'objectKeys': batch}
-                        })
-                    )
-                    batch_count += 1
-                    logger.info(f"Invoked abort workflow batch {batch_count} with {len(batch)} documents")
-                except Exception as e:
-                    logger.error(f"Failed to invoke abort workflow batch {batch_count}: {str(e)}")
-                    # Continue with next batch
-
-            logger.info(f"Invoked {batch_count} abort workflow batches for total of {len(object_keys)} documents")
-
-        # Wait for documents to reach terminal state (max 25 seconds to stay within AppSync timeout)
-        logger.info(f"Waiting for documents to reach terminal state for test run {test_run_id}")
-        _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys, max_wait_time=25)
-
-        # Queue metrics calculation for any completed documents
-        try:
-            queue_url = os.environ.get("TEST_RESULT_CACHE_UPDATE_QUEUE_URL")
-            if queue_url:
-                sqs_client.send_message(
-                    QueueUrl=queue_url,
-                    MessageBody=json.dumps({"testRunId": test_run_id}),
-                )
-                logger.info(
-                    f"Queued cache update for aborted test run: {test_run_id}"
-                )
-
-                # Wait briefly to give the metrics calculation Lambda time to start processing
-                # before we mark the test run as ABORTED
-                time.sleep(2)
-                logger.info("Waited 2 seconds for metrics calculation to start")
-        except Exception as e:
-            logger.warning(
-                f"Failed to queue cache update for {test_run_id}: {e}"
-            )
-
-        # Update test run status to ABORTED after documents have settled and metrics queued
-        # Use conditional update to prevent overwriting if test run already completed/evaluating
-        try:
-            # Format timestamp for AppSync AWSDateTime scalar (ISO 8601 with Z suffix)
-            completed_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-            tracking_table.update_item(
-                Key={'PK': f"testrun#{test_run_id}", 'SK': "metadata"},
-                UpdateExpression="SET #status = :status, CompletedAt = :completed_at",
-                ConditionExpression="#status IN (:queued, :running)",
-                ExpressionAttributeNames={'#status': 'Status'},
-                ExpressionAttributeValues={
-                    ':status': 'ABORTED',
-                    ':completed_at': completed_at,
-                    ':queued': 'QUEUED',
-                    ':running': 'RUNNING'
-                }
-            )
-            logger.info(f"Updated test run {test_run_id} status to ABORTED")
-        except Exception as e:
-            logger.error(f"Failed to update test run status: {str(e)}")
-            return {"success": False, "error": f"Failed to update status: {str(e)}"}
-
-        return {"success": True}
-
     except ClientError as e:
         logger.error(f"DynamoDB error for test run {test_run_id}: {str(e)}")
-        return {"success": False, "error": f"Database error: {str(e)}"}
-    except Exception as e:
-        logger.error(
-            f"Unexpected error for test run {test_run_id}: {str(e)}",
-            exc_info=True
+        return None, f"Database error: {str(e)}"
+
+    if 'Item' not in response:
+        return None, "Test run not found"
+
+    item = response['Item']
+    current_status = item.get('Status', '').upper()
+
+    # Check if test run can be aborted
+    if current_status not in ABORTABLE_STATUSES:
+        return None, f"Cannot abort test run with status {current_status}"
+
+    # Extract document object keys from Files list
+    object_keys = []
+    if 'Files' in item and item['Files']:
+        for file_name in item['Files']:
+            object_key = f"{test_run_id}/{file_name}"
+            object_keys.append(object_key)
+
+    # Abort all documents in the test run (async invocation in batches)
+    # Note: abort_workflow_resolver handles completed/failed gracefully
+    if object_keys:
+        logger.info(
+            f"Aborting {len(object_keys)} documents for test run {test_run_id}"
         )
-        return {"success": False, "error": str(e)}
+
+        # Process in batches of 100 to avoid Lambda timeout
+        # All batches run in parallel (InvocationType='Event')
+        batch_size = 100
+        batch_count = 0
+        for i in range(0, len(object_keys), batch_size):
+            batch = object_keys[i:i + batch_size]
+            try:
+                lambda_client.invoke(
+                    FunctionName=abort_workflow_function_name,
+                    InvocationType='Event',  # Async - runs in parallel
+                    Payload=json.dumps({
+                        'arguments': {'objectKeys': batch}
+                    })
+                )
+                batch_count += 1
+                logger.info(f"Invoked abort workflow batch {batch_count} with {len(batch)} documents")
+            except Exception as e:
+                logger.error(f"Failed to invoke abort workflow batch {batch_count}: {str(e)}")
+                # Continue with next batch
+
+        logger.info(f"Invoked {batch_count} abort workflow batches for total of {len(object_keys)} documents")
+
+    return object_keys, None
 
 
-def _batch_get_document_items(tracking_table, object_keys):
+def _queue_metrics_calculation(test_run_id):
+    """Queue the metrics calculation for any completed documents of one run.
+
+    Returns True when a message was sent, False when no queue is configured or
+    the send failed (logged as a warning; the abort proceeds).
+    """
+    try:
+        queue_url = os.environ.get("TEST_RESULT_CACHE_UPDATE_QUEUE_URL")
+        if not queue_url:
+            return False
+        sqs_client.send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps({"testRunId": test_run_id}),
+        )
+        logger.info(
+            f"Queued cache update for aborted test run: {test_run_id}"
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            f"Failed to queue cache update for {test_run_id}: {e}"
+        )
+        return False
+
+
+def _mark_test_run_aborted(test_run_id, tracking_table):
+    """Set one run's status to ABORTED, unless it has meanwhile left QUEUED/RUNNING.
+
+    Returns None on success, or an error message.
+    """
+    # Use conditional update to prevent overwriting if test run already completed/evaluating
+    try:
+        # Format timestamp for AppSync AWSDateTime scalar (ISO 8601 with Z suffix)
+        completed_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        tracking_table.update_item(
+            Key={'PK': f"testrun#{test_run_id}", 'SK': "metadata"},
+            UpdateExpression="SET #status = :status, CompletedAt = :completed_at",
+            ConditionExpression="#status IN (:queued, :running)",
+            ExpressionAttributeNames={'#status': 'Status'},
+            ExpressionAttributeValues={
+                ':status': 'ABORTED',
+                ':completed_at': completed_at,
+                ':queued': 'QUEUED',
+                ':running': 'RUNNING'
+            }
+        )
+        logger.info(f"Updated test run {test_run_id} status to ABORTED")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to update test run status: {str(e)}")
+        return f"Failed to update status: {str(e)}"
+
+
+def _batch_get_document_items(tracking_table, object_keys, deadline=None):
     """
     Batch get document items from DynamoDB.
 
     Args:
         tracking_table: DynamoDB table resource
         object_keys: List of document object keys (S3 paths)
+        deadline: Optional absolute ``time.time()`` value. Once it has passed,
+            no further call is made: held-back keys are not resubmitted and
+            chunks not yet read are reported unread.
 
     Returns:
         ``(items_by_key, unread_keys)``: a dict mapping object_key to item dict
@@ -351,6 +454,9 @@ def _batch_get_document_items(tracking_table, object_keys):
     batch_size = 100
     for i in range(0, len(object_keys), batch_size):
         batch = object_keys[i:i + batch_size]
+        if deadline is not None and time.time() >= deadline:
+            unread_keys.update(batch)
+            continue
         keys = [{'PK': f"doc#{key}", 'SK': 'none'} for key in batch]
         request_items = {table_name: {'Keys': keys}}
         attempt = 0
@@ -373,7 +479,8 @@ def _batch_get_document_items(tracking_table, object_keys):
                 if not request_items:
                     break
                 attempt += 1
-                if attempt >= BATCH_GET_MAX_ATTEMPTS:
+                out_of_time = deadline is not None and time.time() >= deadline
+                if attempt >= BATCH_GET_MAX_ATTEMPTS or out_of_time:
                     held = request_items.get(table_name, {}).get('Keys', [])
                     unread_keys.update(
                         k['PK'][4:] for k in held
@@ -381,10 +488,10 @@ def _batch_get_document_items(tracking_table, object_keys):
                     )
                     logger.warning(
                         f"Batch get left {len(held)} keys unprocessed after "
-                        f"{BATCH_GET_MAX_ATTEMPTS} attempts; their status is unknown"
+                        f"{attempt} attempts; their status is unknown"
                     )
                     break
-                _backoff_sleep(attempt)
+                _backoff_sleep(attempt, deadline)
 
         except Exception as e:
             logger.error(f"Batch get failed for batch starting at index {i}: {str(e)}")
@@ -393,7 +500,9 @@ def _batch_get_document_items(tracking_table, object_keys):
     return items_by_key, unread_keys
 
 
-def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys, max_wait_time=25):
+def _wait_for_documents_terminal_state(
+    tracking_table, test_run_id, object_keys, max_wait_time=None, deadline=None
+):
     """
     Wait for all documents in the test run to reach a terminal state.
 
@@ -408,10 +517,18 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
         tracking_table: DynamoDB table resource
         test_run_id: Test run identifier
         object_keys: List of document object keys (S3 paths)
-        max_wait_time: Maximum time to wait in seconds (default 25 for AppSync timeout)
+        max_wait_time: Maximum time to wait in seconds, from now.
+        deadline: Absolute ``time.time()`` value by which the wait ends. With
+            both given, the earlier wins; with neither, the wait is bounded by
+            ABORT_WAIT_BUDGET_SECONDS. No poll starts, and no sleep runs, past it.
     """
-    poll_interval = 2  # Check every 2 seconds
+    poll_interval = SETTLE_POLL_INTERVAL_SECONDS
     start_time = time.time()
+    end_time = start_time + (
+        ABORT_WAIT_BUDGET_SECONDS if max_wait_time is None else max_wait_time
+    )
+    if deadline is not None:
+        end_time = min(end_time, deadline)
 
     # Terminal statuses: documents that won't change further
     terminal_statuses = {'COMPLETED', 'ABORTED', 'FAILED'}
@@ -421,14 +538,14 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
     terminal_count = 0
     unknown_count = 0
 
-    while time.time() - start_time < max_wait_time:
+    while time.time() < end_time:
         pending_count = 0
         terminal_count = 0
         unknown_count = 0
 
         # Use batch_get_item for efficiency (100 keys per batch vs 100 sequential GETs)
         items_by_key, unread_keys = _batch_get_document_items(
-            tracking_table, object_keys
+            tracking_table, object_keys, deadline=end_time
         )
 
         for object_key in object_keys:
@@ -489,8 +606,11 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
             )
             return
 
-        # Wait before next poll
-        time.sleep(poll_interval)
+        # Wait before next poll, but not past the end of the wait
+        remaining = end_time - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval, remaining))
 
     # Timeout reached
     logger.warning(
