@@ -473,6 +473,37 @@ still expire.
 `restore_revision()` is forward-only: it saves the chosen revision as a *new*
 revision rather than rewinding the counter, so history is never rewritten.
 
+### Whether a profile is stack-managed
+
+`IDPConfig.managed` is stored as the profile head's `Managed` attribute, not in the
+compressed body, and the profile listing (`list_config_versions()`) reads only the
+attribute. `get_raw_configuration()` drops every head attribute, so a caller that
+reads a profile raw and saves it back passes a body with no `managed` at all. The
+rules that keep that from changing the flag:
+
+- **`save_configuration()` never clears it.** When the profile it replaces is stored
+  as managed, the saved configuration is managed, whatever the body says, `managed:
+  false` included and from the stack's own saves too. "Stored as managed" is what
+  the validated read says (`ConfigurationRecord.from_dynamodb_item`): the attribute,
+  else a body key an older writer left, so such a head gains the attribute on its
+  next save. The revision that save cuts records the profile as managed as well.
+- **A save can set it.** The stack's managed presets carry `managed: true`, which is
+  how a profile becomes managed, including one that already existed under that name.
+  So does `restore_revision()` of a revision cut while the profile was managed, since
+  the revision body records the flag. A new profile name has no stored head, so it
+  takes the body's value.
+- **`handle_update_custom_configuration()` drops `managed` from its input.** It is the
+  editor, SDK and CLI write path, and none of them decides whether a profile is
+  managed; honoured, a Save as carrying `managed: true` would make the copy
+  stack-managed and undeletable in the web UI.
+- **The configuration custom resource's direct writer**
+  (`save_configuration_bypass_manager()`, used on the update that migrates a legacy
+  table) stores the flag the same way: on the attribute, and kept when already set,
+  with a string-valued stored flag read as the validated read reads it.
+
+So the only ways a profile stops being managed are deleting it (`idp-cli
+config-delete` allows that; the web UI does not) or writing its head directly.
+
 ### Reading a pinned revision
 
 `get_config(version=…, revision=…)` (→ `ConfigurationManager.get_merged_configuration`)
