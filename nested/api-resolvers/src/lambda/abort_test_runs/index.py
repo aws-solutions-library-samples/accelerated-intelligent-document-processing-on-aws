@@ -70,8 +70,10 @@ def _backoff_sleep(attempt, deadline=None):
 # rest of the dispatcher's 20 s is left for what this clock does not see: cold
 # start before the handler runs, the API calls made around the waits (at most one
 # DynamoDB call can be in flight when the deadline passes), and the response's
-# trip back through the dispatcher. The API calls themselves are not bounded by
-# it, so a request naming very many runs can still outlast the dispatcher.
+# trip back through the dispatcher. The unit tests hold that room at no less
+# than 5 s (_DISPATCHER_HEADROOM_SECONDS there), so the budget can grow by
+# about 2 s before they fail. The API calls themselves are not bounded by it, so
+# a request naming very many runs can still outlast the dispatcher.
 #
 # Shortening the wait does not change what the abort does; it changes how long
 # the documents get to settle before the run is marked ABORTED and its metrics
