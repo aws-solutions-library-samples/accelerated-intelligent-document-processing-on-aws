@@ -794,7 +794,7 @@ When a document is processed, the configuration version used is recorded:
    column repeating "Active profile" on every row buys nothing against the horizontal
    space it costs.
 
-### Version Selector in Processing UIs
+### Profile and Revision Selectors in Processing UIs
 
 A **Configuration Profile** selector is available in:
 
