@@ -262,7 +262,7 @@ class TestPerMessageAck:
             order.append("start") or {"executionArn": "arn:e1"}
         )
         index_module.sqs.delete_message.side_effect = lambda **kw: order.append("ack")
-        index_module.document_service.update_document.side_effect = lambda d: (
+        index_module.document_service.update_document.side_effect = lambda d, **kw: (
             order.append("track") or d
         )
 

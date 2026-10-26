@@ -1167,7 +1167,11 @@ class DocumentDynamoDBService:
         return document.input_key
 
     def update_document(
-        self, document: Document, *, expected_status: Optional[Status] = None
+        self,
+        document: Document,
+        *,
+        expected_status: Optional[Status] = None,
+        unless_status: Optional[Status] = None,
     ) -> Document:
         """
         Update an existing document in DynamoDB.
@@ -1183,6 +1187,16 @@ class DocumentDynamoDBService:
                 the execution rather than write ABORTED over a running document
                 (#1612). Raises ``DynamoDBError`` with error_code
                 ``ConditionalCheckFailedException`` when it does not hold.
+            unless_status: When given, the write lands unless the stored
+                ``ObjectStatus`` is this value; a record with no status, or no
+                record at all, is written exactly as without it. The queue
+                processor uses this for its write after ``StartExecution``: an
+                abort that landed after its start claim wrote ABORTED, and that
+                write must not be overwritten with RUNNING while the processor
+                stops the execution it just started (#1612). Raises
+                ``DynamoDBError`` with error_code
+                ``ConditionalCheckFailedException`` when the stored status is
+                this value. Cannot be combined with ``expected_status``.
 
         Returns:
             Updated Document object with any data returned from DynamoDB
@@ -1200,7 +1214,18 @@ class DocumentDynamoDBService:
             self._document_to_update_expressions(document)
         )
 
+        if expected_status is not None and unless_status is not None:
+            raise ValueError("expected_status and unless_status are exclusive")
         condition_expression = None
+        if unless_status is not None:
+            # A missing attribute is allowed explicitly rather than left to how
+            # ``<>`` compares against one, so a document with no status (or no
+            # record) is written exactly as an unconditional update writes it.
+            condition_expression = (
+                "attribute_not_exists(#ObjectStatus) "
+                "OR #ObjectStatus <> :UnlessObjectStatus"
+            )
+            expression_values[":UnlessObjectStatus"] = unless_status.value
         if expected_status is not None:
             # ``#ObjectStatus`` is always registered by the SET clause above.
             condition_expression = "#ObjectStatus = :ExpectedObjectStatus"
