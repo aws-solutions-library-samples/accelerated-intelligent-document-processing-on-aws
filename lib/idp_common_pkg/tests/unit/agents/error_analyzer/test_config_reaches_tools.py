@@ -1,13 +1,14 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The error analyzer's window and log-group settings reach the CloudWatch call.
+"""The error analyzer's window, log-group and event settings reach the CloudWatch call.
 
 ``agents.error_analyzer.lookback_hours`` and
-``agents.error_analyzer.parameters.max_log_groups`` used to have no effect: each
-tool declared its own default in its signature (``hours_back: int = 24``,
-``max_log_groups: int = 20``), and Python supplies that default whenever the model
-omits the argument, so the configured value was never consulted (#1555).
+``agents.error_analyzer.parameters.max_log_groups`` and ``.max_log_events`` used to
+have no effect: each tool declared its own default in its signature
+(``hours_back: int = 24``, ``max_log_groups: int = 20``, ``max_log_events: int =
+10``), and Python supplies that default whenever the model omits the argument, so
+the configured value was never consulted (#1555).
 
 These tests build the real agent through ``create_error_analyzer_agent`` and invoke
 the tool through the agent's own Strands tool executor with no arguments -- the
@@ -17,11 +18,11 @@ requests, captured from a real ``logs`` client under a ``Stubber``. ``FilterLogE
 is issued once per log group with no pagination, so a request count is a log-group
 count.
 
-``max_log_events`` is deliberately not wired: its configured default (5) differs
-from the tool's (10), and every saved profile stores the 5, so wiring it would change
-the number of events every existing deployment receives. That is recorded on #1555 as
-a decision for the maintainers, and the tests below pin the current behaviour so the
-decision cannot be reversed by accident.
+``max_log_events`` had a configured default (5) that differed from the tool's (10),
+and every saved profile stores that 5. Its default is now 10, and the v0.9 -> v0.10
+configuration migration raises a stored 5 to 10, so a profile saved before the change
+keeps the 10 events per log group it was getting. ``TestStoredOldDefault`` drives
+that through the same loading path a saved profile takes.
 """
 
 import json
@@ -256,15 +257,47 @@ class TestSearchCloudwatchLogs:
         assert _groups(filter_calls) == LOG_GROUPS[:55]
         assert _windows_hours(filter_calls) == {200}
 
-    def test_configured_max_log_events_does_not_reach_the_call(
+    def test_configured_max_log_events_reaches_the_call(self, agent, filter_calls):
+        _invoke(
+            agent,
+            "search_cloudwatch_logs",
+            _config(parameters={"max_log_events": 3}),
+        )
+        assert _limits(filter_calls) == {3}
+
+    def test_configured_max_log_events_above_the_maximum_is_clamped(
+        self, agent, filter_calls
+    ):
+        _invoke(
+            agent,
+            "search_cloudwatch_logs",
+            _config(parameters={"max_log_events": 500}),
+        )
+        assert _limits(filter_calls) == {50}
+
+    def test_explicit_max_log_events_still_wins(self, agent, filter_calls):
+        _invoke(
+            agent,
+            "search_cloudwatch_logs",
+            _config(parameters={"max_log_events": 3}),
+            max_log_events=7,
+        )
+        assert _limits(filter_calls) == {7}
+
+    def test_explicit_null_max_log_events_resolves_to_the_configured_count(
         self, agent, filter_calls
     ):
         _invoke(
             agent,
             "search_cloudwatch_logs",
             _config(parameters={"max_log_events": 3}),
+            max_log_events=None,
         )
-        assert _limits(filter_calls) == {10}
+        assert _limits(filter_calls) == {3}
+
+    def test_explicit_max_log_events_is_not_clamped(self, agent, filter_calls):
+        _invoke(agent, "search_cloudwatch_logs", IDPConfig(), max_log_events=60)
+        assert _limits(filter_calls) == {60}
 
     def test_unreadable_section_falls_back_to_the_previous_values(
         self, agent, filter_calls
@@ -276,6 +309,7 @@ class TestSearchCloudwatchLogs:
         _invoke(agent, "search_cloudwatch_logs", config)
         assert _groups(filter_calls) == LOG_GROUPS[:20]
         assert _windows_hours(filter_calls) == {24}
+        assert _limits(filter_calls) == {10}
 
 
 class TestDocumentSearch:
@@ -312,6 +346,14 @@ class TestDocumentSearch:
     def test_explicit_group_cap_still_wins(self, agent, filter_calls):
         self._search(agent, _config(parameters={"max_log_groups": 2}), max_log_groups=4)
         assert _groups(filter_calls) == LOG_GROUPS[:4]
+
+    def test_configured_event_count_reaches_the_call(self, agent, filter_calls):
+        self._search(agent, _config(parameters={"max_log_events": 3}))
+        assert _limits(filter_calls) == {3}
+
+    def test_shipped_default_event_count_is_ten(self, agent, filter_calls):
+        self._search(agent, IDPConfig())
+        assert _limits(filter_calls) == {10}
 
     @pytest.mark.parametrize("requested", [0, -1])
     def test_a_count_below_one_uses_the_configured_count(
@@ -456,15 +498,77 @@ class TestSearchPerformanceIssues:
         _invoke(agent, "search_performance_issues", IDPConfig(), hours_back=200)
         assert _windows_hours(filter_calls) == {200}
 
-    def test_configured_max_log_events_does_not_reach_the_call(
-        self, agent, filter_calls
-    ):
+    def test_configured_max_log_events_reaches_the_call(self, agent, filter_calls):
         _invoke(
             agent,
             "search_performance_issues",
             _config(parameters={"max_log_events": 3}),
         )
+        assert _limits(filter_calls) == {3}
+
+    def test_configured_max_log_events_above_the_maximum_is_clamped(
+        self, agent, filter_calls
+    ):
+        _invoke(
+            agent,
+            "search_performance_issues",
+            _config(parameters={"max_log_events": 500}),
+        )
+        assert _limits(filter_calls) == {50}
+
+    def test_explicit_max_log_events_still_wins(self, agent, filter_calls):
+        _invoke(
+            agent,
+            "search_performance_issues",
+            _config(parameters={"max_log_events": 3}),
+            max_log_events=7,
+        )
+        assert _limits(filter_calls) == {7}
+
+
+class TestStoredOldDefault:
+    """A profile saved before v0.10 stores ``max_log_events: 5`` and keeps 10 events.
+
+    The configuration is loaded the way a stored profile head is: a raw dict, with
+    its numbers held as strings as ``ConfigurationRecord`` writes them, validated
+    through ``IDPConfig`` (whose validator runs the migration chain). The assertion
+    is on the ``limit`` of the CloudWatch request, not on the loaded model, so the
+    test measures the number of events a search asks for.
+    """
+
+    @staticmethod
+    def _stored(stamp: Any, max_log_events: Any) -> IDPConfig:
+        data: Dict[str, Any] = {
+            "agents": {
+                "error_analyzer": {"parameters": {"max_log_events": max_log_events}}
+            }
+        }
+        if stamp is not None:
+            data["config_format_version"] = stamp
+        return IDPConfig.model_validate(data)
+
+    @pytest.mark.parametrize("stamp", ["0.9", "0.6", None])
+    @pytest.mark.parametrize("stored", ["5", 5])
+    @pytest.mark.parametrize(
+        "tool", ["search_cloudwatch_logs", "search_performance_issues"]
+    )
+    def test_a_pre_v010_stored_five_searches_ten_events(
+        self, agent, filter_calls, stamp, stored, tool
+    ):
+        _invoke(agent, tool, self._stored(stamp, stored))
         assert _limits(filter_calls) == {10}
+
+    def test_a_five_saved_at_v010_is_kept(self, agent, filter_calls):
+        # A configuration saved by this release is stamped v0.10, so a 5 in it is
+        # a choice made after the setting took effect.
+        _invoke(agent, "search_cloudwatch_logs", self._stored("0.10", "5"))
+        assert _limits(filter_calls) == {5}
+
+    def test_a_pre_v010_stored_value_other_than_five_takes_effect(
+        self, agent, filter_calls
+    ):
+        _invoke(agent, "search_cloudwatch_logs", self._stored("0.9", "3"))
+        assert _limits(filter_calls) == {3}
 
 
 def _events_limit_range() -> tuple:

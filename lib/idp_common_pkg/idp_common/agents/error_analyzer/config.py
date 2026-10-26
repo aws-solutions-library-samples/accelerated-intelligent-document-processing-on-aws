@@ -27,7 +27,7 @@ def get_error_analyzer_config() -> Dict[str, Any]:
     config = get_environment_config()
 
     # Add error analyzer-specific defaults
-    config.setdefault("max_log_events", 5)
+    config.setdefault("max_log_events", 10)
     config.setdefault("lookback_hours", 24)
     # Keep legacy alias for any code that still reads time_range_hours_default
     config.setdefault("time_range_hours_default", config["lookback_hours"])

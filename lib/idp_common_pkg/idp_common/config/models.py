@@ -62,8 +62,10 @@ from typing_extensions import Self
 # nested every classification setting inside the call that uses it
 # (`one_stage`, `two_stage.segmentation`, `two_stage.section_classification`),
 # moved the file-shape assertions under `file_shape`, and replaced
-# `invalidClassFallback` with `fallback_class`.
-CONFIG_FORMAT_VERSION = "0.9"
+# `invalidClassFallback` with `fallback_class`. v0.10 made the error analyzer's
+# `parameters.max_log_events` take effect with a default of 10, and raises a stored
+# 5 (the old default, which the tools ignored in favour of 10) to 10.
+CONFIG_FORMAT_VERSION = "0.10"
 
 
 #: Exceptions a field validator here can raise on malformed input that pydantic
@@ -2902,14 +2904,21 @@ class ErrorAnalyzerParameters(BaseModel):
     """Error analyzer parameters configuration"""
 
     max_log_events: int = Field(
-        default=5, gt=0, description="Maximum number of log events to retrieve"
+        default=10,
+        gt=0,
+        description=(
+            "Log events returned per log group by the CloudWatch log searches when "
+            "the question names no count. A value above 50, the maximum the tools "
+            "advertise, is treated as 50."
+        ),
     )
     time_range_hours_default: int = Field(
         default=24,
         gt=0,
         description=(
-            "Not read by the agent or its tools. The default log-search window is "
-            "agents.error_analyzer.lookback_hours."
+            "Unused alias, kept so saved configurations that carry it still "
+            "validate. Not read by the agent or its tools. The default log-search "
+            "window is agents.error_analyzer.lookback_hours."
         ),
     )
 
