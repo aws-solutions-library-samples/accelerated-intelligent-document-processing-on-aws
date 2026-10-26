@@ -20,6 +20,7 @@ type ListRow = Pick<Document, 'ObjectKey' | 'ObjectStatus'> & Partial<Pick<Docum
 export const documentsNeedingDetail = (documents: ListRow[], limit = MAX_DOCUMENTS_TO_DETAIL): string[] =>
   documents
     .filter((doc) => doc.ObjectStatus === 'COMPLETED' && !doc.Metering)
+    // The API's timestamps are ISO-8601, which sort chronologically as strings.
     .sort((a, b) =>
       String(b.CompletionTime ?? b.InitialEventTime ?? '').localeCompare(String(a.CompletionTime ?? a.InitialEventTime ?? '')),
     )
@@ -51,3 +52,7 @@ export const fetchInChunks = async <T>(
   }
   return results;
 };
+
+/** Completed documents without metering beyond the ones a single Populate reads. */
+export const documentsBeyondCap = (documents: ListRow[], limit = MAX_DOCUMENTS_TO_DETAIL): number =>
+  Math.max(0, documents.filter((doc) => doc.ObjectStatus === 'COMPLETED' && !doc.Metering).length - limit);

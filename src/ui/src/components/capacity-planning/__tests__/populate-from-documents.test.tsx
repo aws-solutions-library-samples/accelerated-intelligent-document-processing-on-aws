@@ -16,7 +16,14 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DETAIL_FETCH_CHUNK_SIZE, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENTS_TO_DETAIL, withDetails } from '../populate-sources';
+import {
+  DETAIL_FETCH_CHUNK_SIZE,
+  documentsBeyondCap,
+  documentsNeedingDetail,
+  fetchInChunks,
+  MAX_DOCUMENTS_TO_DETAIL,
+  withDetails,
+} from '../populate-sources';
 
 const ctx = vi.hoisted(() => ({
   value: {} as Record<string, unknown>,
@@ -124,6 +131,16 @@ describe('Populate tokens from Documents', () => {
     await waitFor(() => expect(button).not.toBeDisabled());
   });
 
+  it('says when it read only the most recent documents', async () => {
+    const rows = Array.from({ length: MAX_DOCUMENTS_TO_DETAIL + 1 }, (_, i) => ({ ...LIST_ROW, ObjectKey: `docs/d${i}.pdf` }));
+    contextWith({ documents: rows, getDocumentDetailsFromIds: vi.fn(async (keys: string[]) => keys.map(() => FULL_RECORD)) });
+    render(<CapacityPlanningLayout />);
+
+    await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
+
+    expect(await screen.findByText('Sampled recent documents')).toBeInTheDocument();
+  });
+
   it('starts the document list load when no page has asked for it', () => {
     const value = contextWith({ documents: [], hasListBeenLoaded: false });
     render(<CapacityPlanningLayout />);
@@ -149,6 +166,15 @@ describe('documentsNeedingDetail', () => {
     const rows = Array.from({ length: MAX_DOCUMENTS_TO_DETAIL + 5 }, (_, i) => ({ ObjectKey: `d${i}.pdf`, ObjectStatus: 'COMPLETED' }));
 
     expect(documentsNeedingDetail(rows)).toHaveLength(MAX_DOCUMENTS_TO_DETAIL);
+  });
+});
+
+describe('documentsBeyondCap', () => {
+  it('counts the completed documents a Populate leaves unread', () => {
+    const rows = Array.from({ length: MAX_DOCUMENTS_TO_DETAIL + 3 }, (_, i) => ({ ObjectKey: `d${i}.pdf`, ObjectStatus: 'COMPLETED' }));
+
+    expect(documentsBeyondCap(rows)).toBe(3);
+    expect(documentsBeyondCap(rows.slice(0, 2))).toBe(0);
   });
 });
 

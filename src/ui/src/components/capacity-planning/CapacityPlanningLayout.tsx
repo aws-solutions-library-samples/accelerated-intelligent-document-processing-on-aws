@@ -27,7 +27,7 @@ import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useSettingsContext from '../../contexts/settings';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useDocumentsContext from '../../contexts/documents';
-import { documentsNeedingDetail, fetchInChunks, withDetails } from './populate-sources';
+import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
@@ -617,6 +617,7 @@ const CapacityPlanningLayout = () => {
 
     try {
       if (!documents || documents.length === 0) {
+        // A backstop for the mount effect's request; normally the load has started.
         if (!hasListBeenLoaded) {
           setIsDocumentsListLoading(true);
         }
@@ -634,6 +635,14 @@ const CapacityPlanningLayout = () => {
       // recent completed documents so their token counts and classes can be read.
       const detailKeys = documentsNeedingDetail(documents);
       const detailed = await fetchInChunks(detailKeys, (chunk) => getDocumentDetailsFromIds(chunk, { reportErrors: false }));
+      const beyondCap = documentsBeyondCap(documents);
+      if (beyondCap > 0) {
+        addNotification(
+          'info',
+          `Read the ${detailKeys.length} most recent completed documents; ${beyondCap} older ones were not read.`,
+          'Sampled recent documents',
+        );
+      }
       const unreadable = detailKeys.length - detailed.length;
       if (unreadable > 0) {
         addNotification(
