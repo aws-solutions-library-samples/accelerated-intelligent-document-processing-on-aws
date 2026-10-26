@@ -131,7 +131,7 @@ When the feature is enabled, the solution:
 ### Asking Questions
 
 1. Type your question in the input field at the bottom of the screen
-2. Press Enter or click the send button
+2. Press Enter or click **Submit**
 3. The system will process your question and return an answer
 4. The answer will include:
    - A direct response to your question
