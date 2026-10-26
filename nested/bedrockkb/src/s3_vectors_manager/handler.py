@@ -38,6 +38,17 @@ BUCKET_DELETE_ATTEMPTS = 8
 BUCKET_DELETE_BACKOFF_SECONDS = 2
 BUCKET_DELETE_MAX_BACKOFF_SECONDS = 30
 
+# ListIndexes returns at most 500 indexes per page (maxResults in the service
+# model) and a nextToken while more remain. The page cap only guards against a
+# service that never stops returning a token: 100 pages is 50,000 indexes.
+INDEX_LIST_PAGE_SIZE = 500
+INDEX_LIST_MAX_PAGES = 100
+# Deleting the indexes stops, and the delete reports FAILED, while this much of
+# the invocation remains: the bucket delete's 120 seconds of backoff plus its
+# eight calls and the CloudFormation response. Retrying the stack delete
+# continues where it stopped.
+INDEX_DELETE_MARGIN_SECONDS = 240
+
 # Error codes from the bedrock-agent service model. DeleteKnowledgeBase and
 # GetKnowledgeBase both declare ResourceNotFoundException for a missing knowledge
 # base; their only parameter is the id, so ValidationException (an id the service
@@ -202,12 +213,19 @@ def handle_s3_vector_resources(event, context, properties):
         old_bucket_name = sanitize_bucket_name(old_raw_bucket_name)
         old_index_name = old_properties.get('IndexName', '')
         
-        # If bucket or index name changed, delete old and create new
-        if old_bucket_name != bucket_name or old_index_name != index_name:
-            if old_bucket_name and old_index_name:
+        # If the bucket name changed, delete the old bucket and its indexes and
+        # create the new one. If only the index name changed, keep the bucket
+        # and the old index, and create the new index in it. The old index is
+        # not deleted here: the knowledge base keeps pointing at it, and if the
+        # stack update rolls back, the rollback returns to it with its vectors.
+        # The stack Delete deletes it with every other index in the bucket.
+        if old_bucket_name != bucket_name:
+            if old_bucket_name:
                 delete_s3_vector_resources(
                     s3vectors_client, old_bucket_name, old_index_name, strict=False
                 )
+            return create_s3_vector_resources(s3vectors_client, bucket_name, index_name, embedding_model, kms_key_arn, index_config)
+        if old_index_name != index_name:
             return create_s3_vector_resources(s3vectors_client, bucket_name, index_name, embedding_model, kms_key_arn, index_config)
         else:
             # Names haven't changed. S3 Vectors has no UpdateIndex, so a changed
@@ -223,7 +241,7 @@ def handle_s3_vector_resources(event, context, properties):
             
     elif request_type == 'Delete':
         logger.info(f"Deleting S3 Vector bucket: {bucket_name}")
-        delete_s3_vector_resources(s3vectors_client, bucket_name, index_name)
+        delete_s3_vector_resources(s3vectors_client, bucket_name, index_name, context=context)
         return {'Status': 'Deleted'}
 
 
@@ -815,10 +833,10 @@ def delete_vector_bucket(s3vectors_client, bucket_name):
     Raises ``RuntimeError`` when the bucket is still not empty after the last
     attempt. On a stack Delete the handler then reports FAILED, which leaves the
     stack in DELETE_FAILED; that is deliberate, because reporting SUCCESS here is what
-    silently leaked the bucket and its index (issue #1589). Once this
-    resource's own index is gone, the expected cause is another index, which the
-    handler's role is not permitted to list or delete, so the message says how to
-    clear it.
+    silently leaked the bucket and its index (issue #1589). The caller has
+    already deleted every index ListIndexes returned, so the expected cause is
+    an index created after that listing, or a listing that failed; the message
+    says how to clear it.
     """
     last_error = None
     for attempt in range(1, BUCKET_DELETE_ATTEMPTS + 1):
@@ -854,35 +872,115 @@ def delete_vector_bucket(s3vectors_client, bucket_name):
                 time.sleep(delay)
     raise RuntimeError(
         f"Vector bucket {bucket_name} still holds an index after "
-        f"{BUCKET_DELETE_ATTEMPTS} delete attempts ({last_error}). The index this "
-        f"stack created was deleted or not found, so the bucket most likely holds "
-        f"another index: one this stack did not create, one left under an earlier "
-        f"IndexName, or one whose deletion has not yet taken effect. Delete the bucket's remaining indexes "
+        f"{BUCKET_DELETE_ATTEMPTS} delete attempts ({last_error}). Every index "
+        f"the handler could list was deleted or not found, so the bucket most "
+        f"likely holds an index created after the listing, or one whose deletion "
+        f"has not yet taken effect, or the listing failed (see the log). Delete the "
+        f"bucket's remaining indexes "
         f"(aws s3vectors list-indexes --vector-bucket-name {bucket_name}), then "
         f"retry the stack delete."
     )
 
 
-def delete_s3_vector_resources(s3vectors_client, bucket_name, index_name, strict=True):
-    """Delete the vector index this resource created, then its vector bucket.
+def list_vector_index_names(s3vectors_client, bucket_name):
+    """Return the name of every index in a vector bucket, following nextToken.
 
-    S3 Vectors will not delete a bucket that still holds an index, so the index
-    goes first. A bucket or index that is already gone counts as deleted.
+    Every error is raised; ``indexes_to_delete`` decides what a failed listing
+    means. (A bucket that does not exist needs no branch of its own here: the
+    fallback deletes the named index, which is then absent, and the bucket
+    delete reads NotFoundException as already deleted.) Stops, with a warning, if the service repeats a
+    token or returns more than INDEX_LIST_MAX_PAGES pages; the bucket delete
+    that follows then fails if indexes remain, so a truncated listing cannot
+    turn into a reported success.
+    """
+    names = []
+    seen_tokens = set()
+    next_token = None
+    for _ in range(INDEX_LIST_MAX_PAGES):
+        params = {'vectorBucketName': bucket_name, 'maxResults': INDEX_LIST_PAGE_SIZE}
+        if next_token:
+            params['nextToken'] = next_token
+        page = s3vectors_client.list_indexes(**params)
+        names.extend(index['indexName'] for index in page.get('indexes', []))
+        next_token = page.get('nextToken')
+        if not next_token:
+            return names
+        if next_token in seen_tokens:
+            logger.warning(f"ListIndexes for {bucket_name} repeated a nextToken; stopping the listing")
+            return names
+        seen_tokens.add(next_token)
+    logger.warning(
+        f"ListIndexes for {bucket_name} returned more than {INDEX_LIST_MAX_PAGES} pages; "
+        f"stopping the listing"
+    )
+    return names
+
+
+def indexes_to_delete(s3vectors_client, bucket_name, index_name):
+    """The indexes to delete before a vector bucket: every index it holds.
+
+    ``index_name`` (the index named in the resource's properties) comes first
+    and is always included, so a listing that has not yet caught up with a new
+    index still deletes it. If ListIndexes fails with a service or transport
+    error, the failure is logged and only ``index_name`` is returned: the bucket
+    delete that follows is what decides the outcome, and it fails if the bucket
+    still holds an index. Any other exception is a defect and is raised.
+    """
+    names = [index_name] if index_name else []
+    try:
+        listed = list_vector_index_names(s3vectors_client, bucket_name)
+    except (ClientError, *TRANSPORT_ERRORS) as e:
+        logger.warning(
+            f"Could not list the indexes in vector bucket {bucket_name} ({e}); "
+            f"deleting only {index_name or 'no index'}"
+        )
+        return names
+    names.extend(name for name in listed if name not in names)
+    return names
+
+
+def seconds_left(context):
+    """Seconds left in the invocation, or None if ``context`` has no deadline."""
+    remaining = getattr(context, 'get_remaining_time_in_millis', None)
+    left_ms = remaining() if callable(remaining) else None
+    return left_ms / 1000 if isinstance(left_ms, (int, float)) else None
+
+
+def delete_s3_vector_resources(s3vectors_client, bucket_name, index_name, strict=True, context=None):
+    """Delete every index in the vector bucket, then the bucket.
+
+    S3 Vectors will not delete a bucket that still holds an index, so the
+    indexes go first: every index ListIndexes returns, plus ``index_name`` (see
+    ``indexes_to_delete``). A bucket or index that is already gone counts as
+    deleted.
 
     With ``strict`` (the stack Delete), any failure is raised, so the handler
     reports FAILED instead of SUCCESS while the bucket still exists. Without it
-    (cleaning up the previous bucket and index during an Update that renamed
-    them) a failure is logged and the update proceeds: the role's DeleteIndex
-    grant names the index from the *current* template, so deleting an index
-    under its old name is denied, and failing the update over that would block a
-    rename that otherwise works.
+    (cleaning up the previous bucket during an Update that renamed it) a
+    failure is logged and the update proceeds.
+
+    The handler's role may list and delete every index only in the bucket the
+    template names for this stack. For any other bucket the listing is denied,
+    and only ``index_name`` is deleted (see ``indexes_to_delete``).
+
+    The index deletes stop with ``RuntimeError`` while INDEX_DELETE_MARGIN_SECONDS
+    of the invocation remain, so a bucket holding many indexes reports FAILED,
+    and can be retried, rather than running past the function timeout.
     """
     if not bucket_name:
         return
     try:
-        if index_name:
+        names = indexes_to_delete(s3vectors_client, bucket_name, index_name)
+        for done, name in enumerate(names):
+            left = seconds_left(context)
+            if left is not None and left < INDEX_DELETE_MARGIN_SECONDS:
+                raise RuntimeError(
+                    f"Stopped deleting the indexes in vector bucket {bucket_name} "
+                    f"to stay within the function timeout, after {done} of "
+                    f"{len(names)}. Retry the stack delete to continue."
+                )
             delete_vector_index(
-                s3vectors_client, bucket_name, index_name, ABSENT_ON_DELETE_CODES
+                s3vectors_client, bucket_name, name, ABSENT_ON_DELETE_CODES
             )
         delete_vector_bucket(s3vectors_client, bucket_name)
     except Exception as e:
