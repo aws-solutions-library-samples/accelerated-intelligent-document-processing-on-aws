@@ -100,12 +100,12 @@ def _reason(send: MagicMock) -> str:
     return send.call_args.kwargs.get("reason", "")
 
 
-def _list_indexes(stubber, *names, next_token=None, token=None, bucket=BUCKET, **error):
-    """One ListIndexes page. ``token`` is the nextToken the request must carry;
-    ``next_token`` is the one the page answers with (None ends the listing)."""
+def _list_indexes(stubber, *names, then=None, after=None, bucket=BUCKET, **error):
+    """One ListIndexes page. ``after`` is the nextToken the request must carry;
+    ``then`` is the one the page answers with (None ends the listing)."""
     params = {"vectorBucketName": bucket, "maxResults": handler.INDEX_LIST_PAGE_SIZE}
-    if token:
-        params["nextToken"] = token
+    if after:
+        params["nextToken"] = after
     if error:
         stubber.add_client_error("list_indexes", expected_params=params, **error)
         return
@@ -120,8 +120,8 @@ def _list_indexes(stubber, *names, next_token=None, token=None, bucket=BUCKET, *
             for name in names
         ]
     }
-    if next_token:
-        page["nextToken"] = next_token
+    if then:
+        page["nextToken"] = then
     stubber.add_response("list_indexes", page, params)
 
 
@@ -439,8 +439,8 @@ def test_delete_removes_every_index_in_the_bucket_across_pages(s3vectors):
     name (one left by an index rename, one created outside the stack) is still
     deleted. The listing follows nextToken, and the named index, listed or not,
     is deleted exactly once."""
-    _list_indexes(s3vectors.stubber, "old-index", INDEX, next_token="page-2")
-    _list_indexes(s3vectors.stubber, "made-elsewhere", token="page-2")
+    _list_indexes(s3vectors.stubber, "old-index", INDEX, then="page-2")
+    _list_indexes(s3vectors.stubber, "made-elsewhere", after="page-2")
     _delete_index(s3vectors.stubber, INDEX)
     _delete_index(s3vectors.stubber, "old-index")
     _delete_index(s3vectors.stubber, "made-elsewhere", **NOT_FOUND)
@@ -501,8 +501,8 @@ def test_a_failed_listing_cannot_report_success_while_the_bucket_is_not_empty(
 
 def test_a_repeated_token_ends_the_listing(s3vectors, caplog):
     """A service that keeps answering the same nextToken must not loop forever."""
-    _list_indexes(s3vectors.stubber, INDEX, next_token="same")
-    _list_indexes(s3vectors.stubber, "other", next_token="same", token="same")
+    _list_indexes(s3vectors.stubber, INDEX, then="same")
+    _list_indexes(s3vectors.stubber, "other", then="same", after="same")
     _delete_index(s3vectors.stubber, INDEX)
     _delete_index(s3vectors.stubber, "other")
     _delete_bucket(s3vectors.stubber)
@@ -516,8 +516,8 @@ def test_a_repeated_token_ends_the_listing(s3vectors, caplog):
 
 def test_the_listing_stops_at_the_page_cap(s3vectors, monkeypatch, caplog):
     monkeypatch.setattr(handler, "INDEX_LIST_MAX_PAGES", 2)
-    _list_indexes(s3vectors.stubber, INDEX, next_token="t1")
-    _list_indexes(s3vectors.stubber, "second-page", next_token="t2", token="t1")
+    _list_indexes(s3vectors.stubber, INDEX, then="t1")
+    _list_indexes(s3vectors.stubber, "second-page", then="t2", after="t1")
     _delete_index(s3vectors.stubber, INDEX)
     _delete_index(s3vectors.stubber, "second-page")
     _delete_bucket(s3vectors.stubber)
