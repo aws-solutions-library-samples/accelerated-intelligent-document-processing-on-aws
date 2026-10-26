@@ -1843,9 +1843,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
         Shipped(_FRAME, "Complete"),
-        Shipped(_PRODUCTION, "Save draft", source='saveButtonText="Save draft"'),
+        Shipped(_FRAME, "Save"),
         Shipped(
-            _PRODUCTION, "Save draft", source="autosaveMs={canEdit", kind="autosave"
+            _PRODUCTION,
+            "Discard Changes",
+            source="autosaveMs={canEdit",
+            kind="autosave",
         ),
     ),
     "ClaimTestSetDocument": (
@@ -1997,7 +2000,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_BREAKER, "Probe", source="confirmLabel: 'Probe'"),
     ),
     "ProcessChanges": (
-        Shipped("components/sections-panel/SectionsPanel.tsx", "Confirm & Process"),
+        Shipped(
+            "components/common/ProcessChangesConfirmModal.tsx",
+            "Confirm & Process",
+            inside_dialog=True,
+        ),
         Shipped("components/pages-panel/PagesPanel.tsx", "Confirm & Process"),
     ),
     "PublishTestSetVersion": (
@@ -2048,9 +2055,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
     ),
     "SaveReviewDraft": (
-        Shipped(_PRODUCTION, "Save draft", source='saveButtonText="Save draft"'),
+        Shipped(_FRAME, "Save"),
         Shipped(
-            _PRODUCTION, "Save draft", source="autosaveMs={canEdit", kind="autosave"
+            _PRODUCTION,
+            "Discard Changes",
+            source="autosaveMs={canEdit",
+            kind="autosave",
         ),
     ),
     "SaveSectionReviewEdits": (
@@ -3297,16 +3307,21 @@ def test_a_click_sets_a_value_on_an_autosaving_page_only_through_a_value_control
 
 
 @pytest.mark.unit
-def test_only_a_control_named_for_saving_a_draft_marks_a_page_as_saving_itself() -> (
-    None
-):
+def test_only_a_draft_or_discard_control_marks_a_page_as_saving_itself() -> None:
     marked = judged('uid=1_0 RootWebArea "x"', '  uid=1_1 menuitem "Save draft"')
     assert marked.autosave_control == "Save draft"
+    editable = judged(
+        'uid=1_0 RootWebArea "x"',
+        '  uid=1_1 button "Discard Changes" disableable disabled',
+    )
+    assert editable.autosave_control == "Discard Changes"
     for line in (
         '  uid=1_1 StaticText "Save draft"',
         '  uid=1_1 heading "Save draft" level="2"',
         '  uid=1_1 button "Save drafts"',
         '  uid=1_1 button "Save"',
+        '  uid=1_1 StaticText "Discard Changes"',
+        '  uid=1_1 button "Discard"',
     ):
         assert judged('uid=1_0 RootWebArea "x"', line).autosave_control is None
 

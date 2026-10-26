@@ -20,9 +20,10 @@ the action and image counts on the server's own lines.
 The commit guard judges a click by the control's name, and a key that presses or
 submits (Enter, or Space on a control) by the element that has focus, whether
 ``press_key`` presses it or ``type_text`` types it: the pinned server types a line
-break as Enter and a space as Space. On a page whose editor saves its own edits,
-which the review workspace's does and marks with a "Save draft" control
-(:data:`AUTOSAVE_CONTROLS`), it also refuses every call that changes a value there:
+break as Enter and a space as Space. On a page whose editor may save its own edits,
+which the review workspace's does and marks with Discard Changes while it is
+editable (:data:`AUTOSAVE_CONTROLS`), it also refuses every call that changes a
+value there:
 the editing tools, a key other than Tab or Escape, and a click on a checkbox, option
 or another control a click sets. It judges all of these against the page as it is
 when the call arrives: after any browser call but a screenshot whose answer held no
@@ -87,7 +88,7 @@ from . import agent, processes, tool_profiles
 
 #: Bumped when the relay would serve, refuse or journal a call differently for the
 #: same page, which starts a new series for every flow.
-RELAY_REVISION = 5
+RELAY_REVISION = 6
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_NAME = "ux-story"
 CLIENT_VERSION = "1"
@@ -175,10 +176,13 @@ COMMIT_VERBS: tuple[str, ...] = (
 #: confirmation ("Create queue", "Assign to…", "Move…"), or rearranges something on
 #: the page until it is saved ("Move up").
 DIALOG_VERBS: tuple[str, ...] = ("create", "add", "new", "assign", "reassign", "move")
-#: A control so named marks a page whose editor saves each edit by itself. The review
+#: A control so named marks a page whose editor may save an edit by itself. The review
 #: workspace's editor saves a draft a moment after the last edit, and the first save
-#: of an unassigned item assigns it to the Admin who made it.
-AUTOSAVE_CONTROLS: tuple[str, ...] = ("save draft",)
+#: of an unassigned item assigns it to the Admin who made it. It shows Discard Changes
+#: whenever it is editable, as every annotation frame and the configuration editor do,
+#: so on a page that does not save by itself this refuses only an edit a story could
+#: not save anyway; Save draft is what an older deployment's editor shows.
+AUTOSAVE_CONTROLS: tuple[str, ...] = ("save draft", "discard changes")
 #: The browser tools that set a value wherever they are pointed.
 EDITING_TOOLS: tuple[str, ...] = ("fill", "fill_form", "type_text", "drag")
 #: Roles of the controls a click sets a value on.
@@ -669,13 +673,16 @@ class Snapshot:
 
         Such a page saves a value as soon as it changes, so changing one there is a
         commit point whatever control the change is made with. A line of page text
-        shaped like that control only adds refusals.
+        shaped like that control only adds refusals. Markers are tried in the order
+        :data:`AUTOSAVE_CONTROLS` lists them, so a page showing Save draft names that
+        rather than Discard Changes.
         """
-        for node in self.nodes:
-            if node.role in CONTROL_ROLES and begins_with(
-                plain(node.name), AUTOSAVE_CONTROLS
-            ):
-                return node.name
+        for marker in AUTOSAVE_CONTROLS:
+            for node in self.nodes:
+                if node.role in CONTROL_ROLES and begins_with(
+                    plain(node.name), (marker,)
+                ):
+                    return node.name
         return None
 
     def sets_a_value(self, uid: str) -> tuple[str, str] | None:

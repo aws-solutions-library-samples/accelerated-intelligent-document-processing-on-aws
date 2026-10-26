@@ -615,8 +615,11 @@ another page of the app is followed whatever it is called, so its Upload
 Document(s) opens the upload page, where the Upload button is refused; any other
 link, breadcrumbs included, and one with no address, with `#`, to the page it is on
 or in a dialog, is judged by its name like any control. On a page whose editor
-saves its own edits, which the review workspace marks with a Save draft control, it
-refuses every edit: typing, filling, dragging and ticking. It cannot see an unnamed
+may save its own edits, which the review workspace marks with Discard Changes while
+it is editable (and an older deployment with Save draft), it refuses every edit:
+typing, filling, dragging and ticking. Every annotation frame and the configuration
+editor show Discard Changes too, so edits are refused there as well, though nothing
+there is saved without a Save the guard already refuses. It cannot see an unnamed
 control anywhere else, a save an edit sets off on a page without that control, a
 full-page form submitted by a Create, Add, New, Assign or Move button (those words
 are refused only inside a dialog, because outside one they open a form or a
