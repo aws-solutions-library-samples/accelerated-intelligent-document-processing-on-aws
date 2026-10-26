@@ -10249,6 +10249,182 @@ Resources:
       Principal: !Sub "events.${AWS::URLSuffix}"
       SourceArn: !GetAtt ReviewQueueSweepRule.Arn
 
+  TestRunSweeperFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  # The server-side driver for Test Studio run records. Before this existed, a
+  # run's Status, CompletedAt and cached metrics were written only by the *read*
+  # resolvers, so a run that finished with no browser polling and no
+  # `idp-cli --wait` running stayed non-terminal indefinitely. Control plane:
+  # schedule-triggered, `test-results` component — see
+  # docs/reporting-sql-layer.md §10.4.
+  TestRunSweeperFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "cloudwatch:PutMetricData takes no resource-level permissions; it is scoped by namespace condition"
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: a scheduled sweep that runs again in 5 minutes, and admission is recomputed from scratch each time so a dropped invocation loses no progress"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names and settings - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      CodeUri: src/lambda/test_run_sweeper/
+      Handler: index.handler
+      Runtime: python3.12
+      # ⚠️ No `Architectures` here, deliberately, even though arm64 is the house
+      # default for a new Lambda: `IDPCommonBaseLayer` is built **x86_64**, and a
+      # layer built for one architecture on a function of another deploys
+      # cleanly and then fails at import on a compiled extension
+      # (`pydantic_core._pydantic_core`). Nothing in CloudFormation or cfn-lint
+      # objects, because the layer declares no CompatibleArchitectures. Omitting
+      # the key takes Lambda's x86_64 default, which is what every other
+      # layer-carrying function here does.
+      # `scripts/sdlc/tests/test_resolver_layer_coverage.py` enforces this.
+      # 300 matches ReviewQueueSweeperFunction, the other scheduled sweeper here,
+      # which runs on the same rate(5 minutes) with the same reserved
+      # concurrency of 1. Overlap is handled in the handler rather than by
+      # shortening the timeout: it stops starting runs with 15s of the
+      # invocation left, which bounds the work precisely instead of relying on
+      # the gap between the timeout and the schedule.
+      Timeout: 300
+      MemorySize: 512
+      # Single sweep writer. Two concurrent sweeps would race on the same run
+      # records, and the conditional claim on CacheUpdateQueuedAt only protects
+      # the aggregation enqueue, not the status write.
+      ReservedConcurrentExecutions: 1
+      Description: Test run sweeper - advances finished Test Studio runs with no client polling
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+      VpcConfig: !If
+        - DeployInVPC
+        - SubnetIds: !Ref PrivateSubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroupId
+        - !If
+          - UsePrivateApi
+          - SubnetIds: !Ref LambdaSubnetIds
+            SecurityGroupIds:
+              - !Ref LambdaVpcSecurityGroup
+          - !Ref AWS::NoValue
+      LoggingConfig:
+        LogGroup: !Ref TestRunSweeperFunctionLogGroup
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref AWS::StackName
+          METRIC_NAMESPACE: !Ref AWS::StackName
+          TRACKING_TABLE: !Ref TrackingTable
+          TEST_RESULT_CACHE_UPDATE_QUEUE_URL: !Ref TestResultCacheUpdateQueue
+      Policies:
+        - Statement:
+            # Discovery reads the TypeDateIndex GSI; hydration and the status
+            # write go to the base table.
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !GetAtt TrackingTable.Arn
+                - !Sub "${TrackingTable.Arn}/index/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:BatchGetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt TrackingTable.Arn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt TestResultCacheUpdateQueue.Arn
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
+
+  TestRunSweepRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Test run sweeper (advance finished Test Studio runs, enqueue their metrics)
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: TestRunSweeper
+          Arn: !GetAtt TestRunSweeperFunction.Arn
+          # No overrides: the scheduled sweep uses the window and cap from the
+          # function's environment. A manual invoke can pass
+          # {"windowDays": N} to recover runs that stalled before
+          # this Lambda was deployed and now sit outside the scheduled window.
+          Input: "{}"
+
+  TestRunSweepPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TestRunSweeperFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub "events.${AWS::URLSuffix}"
+      SourceArn: !GetAtt TestRunSweepRule.Arn
+
+  # The sweep publishes several counters; this is the one that means a defect
+  # rather than a workload. A non-zero value says some writer has put a value in
+  # a document's EvaluationStatus that the shared derivation in
+  # idp_common.testrun_status does not classify, and an unclassified value is
+  # counted as still-evaluating — so every run holding such a document is held
+  # short of a terminal status indefinitely. That is the shape of #1330, which
+  # reached users twice in one release cycle, each time discovered by a report
+  # rather than by the stack.
+  TestRunSweepUnclassifiedStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-test-run-unclassified-eval-status"
+      AlarmDescription: >-
+        A Test Studio document carries an EvaluationStatus that the run-status
+        derivation does not classify, so the runs holding it cannot reach a
+        terminal status. Add the value to one of the three sets in
+        idp_common/testrun_status.py — settled, unsuccessful or in-flight —
+        after deciding which it is. The sweeper's logs name the value and the
+        document.
+      Namespace: !Ref AWS::StackName
+      MetricName: TestRunsUnrecognisedEvalStatus
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # ``notBreaching`` deliberately, and the opposite choice from the
+      # data-mart absence alarm above: there the absence of data points IS the
+      # outage, whereas here the sweep publishes a sample every five minutes and
+      # a stack with no test runs legitimately reports zero. Treating missing
+      # data as breaching would alarm on every stack that does not use Test
+      # Studio.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
   # This dasboard is merged with dashboard created by the pattern stack to create an overall dashboard
   MainTemplateSubsetDashboard:
     Type: AWS::CloudWatch::Dashboard

@@ -1,0 +1,2 @@
+# idp_common provided by Lambda Layer 1 (base)
+# Uses only idp_common.testrun_status (pure) and idp_common.dynamodb.

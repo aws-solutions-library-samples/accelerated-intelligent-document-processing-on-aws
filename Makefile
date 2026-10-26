@@ -874,6 +874,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/review_queue_sweeper && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/test_run_sweeper && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# DockerBuildRun's ECR image verification: the bounded scan wait (#1336) and
 	@# the presence poll (#1310). `crhelper` is a Lambda-layer dependency and not a
 	@# test dependency here, so the suite stubs it in sys.modules before importing
