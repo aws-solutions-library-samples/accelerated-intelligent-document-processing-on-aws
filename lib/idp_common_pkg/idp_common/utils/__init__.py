@@ -573,12 +573,17 @@ def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
     extra. Re-exported from ``idp_common.classification.service``.
 
     Accepts a float/int, a numeric string, and a percentage: models asked for a
-    probability routinely answer ``95`` or ``"95%"`` rather than ``0.95``, so a
-    value in ``(1, 100]`` is read as a percentage. That heuristic makes ``1``
-    ambiguous (1 % or certainty?) and it is resolved as ``1.0`` — full
-    confidence — because a model emitting a bare ``1`` in a field it was told is
-    a 0-1 probability means certainty, and a genuine 1 % answer would be
-    written ``0.01``.
+    probability routinely answer ``95`` or ``"95%"`` rather than ``0.95``. A
+    string ending in ``%`` is always divided by 100, so ``"0.9%"`` is 0.009 and
+    ``"1%"`` is 0.01. A bare number in ``(1, 100]`` is also read as a
+    percentage. That heuristic makes a bare ``1`` ambiguous (1 % or certainty?)
+    and it is resolved as ``1.0`` — full confidence — because a model emitting a
+    bare ``1`` in a field it was told is a 0-1 probability means certainty, and
+    a genuine 1 % answer would be written ``0.01`` or ``"1%"``.
+
+    BDA's matched-blueprint confidence is read by
+    :func:`parse_blueprint_confidence` instead, which does not accept a
+    percentage string.
 
     Anything unparseable or out of range returns ``None`` rather than raising: a
     malformed confidence must not fail a classification that otherwise
@@ -586,8 +591,12 @@ def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
     """
     if value is None or isinstance(value, bool):
         return None
+    percent = False
     if isinstance(value, str):
-        value = value.strip().rstrip("%").strip()
+        value = value.strip()
+        if value.endswith("%"):
+            percent = True
+            value = value.rstrip("%").strip()
         if not value:
             return None
     # finite_float also covers an integer too large for a float, which
@@ -600,7 +609,7 @@ def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
             f" ({context})" if context else "",
         )
         return None
-    if 1.0 < number <= 100.0:
+    if percent or 1.0 < number <= 100.0:
         number /= 100.0
     if not 0.0 <= number <= 1.0:
         logger.warning(
@@ -610,6 +619,35 @@ def parse_confidence(value: Any, *, context: str = "") -> Optional[float]:
         )
         return None
     return number
+
+
+def parse_blueprint_confidence(value: Any, *, context: str = "") -> Optional[float]:
+    """Parse BDA's matched-blueprint confidence, or ``None`` when it is unscored.
+
+    The one reader both BDA review modes use: legacy HITL
+    (``review_queues.routing.bda_segment_triggers``) and review-queue mode, which
+    reads the section confidence ``process_segments`` stores from it. ``None``
+    means unscored, and both modes hold an unscored match for review at every
+    threshold.
+
+    It is :func:`parse_confidence` with one difference: a string is scored only
+    when ``float()`` accepts it as written. So a percentage string such as
+    ``"95%"`` is unscored rather than rescaled, and so is a string carrying a
+    character ``str.strip`` removes but ``float()`` rejects (``"0.5\x1c"``).
+    Legacy HITL used to read the value with ``float()``, which rejects both, so
+    the segment was reviewed at every threshold; reading them as numbers would
+    have skipped those reviews. A bool, a value outside ``[0, 1]`` after the
+    bare-number percentage rescaling (``95`` reads as 0.95, ``150`` and ``-0.2``
+    are unscored), and anything :func:`finite_float` rejects are unscored too.
+    """
+    if isinstance(value, str) and finite_float(value) is None:
+        logger.warning(
+            "Treating non-numeric blueprint confidence %r as unscored%s",
+            value,
+            f" ({context})" if context else "",
+        )
+        return None
+    return parse_confidence(value, context=context)
 
 
 def extract_structured_data_from_text(
