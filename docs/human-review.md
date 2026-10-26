@@ -101,7 +101,7 @@ Reviewers have limited access focused on document review tasks:
 | Discovery | ❌ Not allowed |
 | Analytics & Agents | ❌ Limited access |
 
-**Note:** Reviewers see only documents that are waiting for review and unclaimed, including a review another reviewer has released back to the queue, or documents they have claimed for review. A review leaves the Reviewer's list once it is completed or skipped. It stays listed for the reviewer who owns it only on documents processed by earlier versions, which carry the legacy `HITLTriggered` flag, or when a finished review is claimed again, which sets it back to **Review In Progress**.
+**Note:** Reviewers see only documents that are waiting for review and unclaimed, including a review another reviewer has released back to the queue, or documents they have claimed for review. A review leaves the Reviewer's list once it is completed or skipped. It stays listed for the reviewer who owns it only on documents processed by earlier versions, which carry the legacy `HITLTriggered` flag.
 
 ### Managing Users
 
@@ -199,6 +199,7 @@ HITL review is automatically triggered when:
    - Document returns to **Review Pending** status
    - Another reviewer can claim it
    - Only a claimed review can be released: releasing a document nobody has claimed is refused
+   - A finished review (completed or skipped) can be neither claimed nor released, by any user, Admins included
 
 **For Admins:**
 

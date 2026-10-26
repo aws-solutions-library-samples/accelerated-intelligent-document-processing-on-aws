@@ -119,14 +119,13 @@ LIFECYCLES = {
         ("skipAllSectionsReview", "rev"),
     ],
     "skipped-by-admin": [("pending",), ("skipAllSectionsReview", "admin")],
-    # releaseReview does not check whether the review has finished, so an owner can
-    # release a completed review. The row then reads Review Pending beside
-    # HITLCompleted, and must stay finished.
+    # A finished review keeps its owner, and releasing it is refused: it would put a
+    # finished review back in every Reviewer's queue. The row stays as finished.
     "completed-then-released-by-rev": [
         ("pending",),
         ("claimReview", "rev"),
         ("completeSectionReview", "rev"),
-        ("releaseReview", "rev"),
+        ("refused", "releaseReview", "rev", "REVIEW_FINISHED"),
     ],
     # Release gives up a claim, so a document nobody has claimed is refused: a
     # finished review the list recognises only by its status would otherwise be
@@ -372,7 +371,8 @@ def _write(table, review, index, name):
                 )
         else:
             refused = step[0] == "refused"
-            field, caller = step[1:] if refused else step
+            field, caller = step[1:3] if refused else step
+            code = step[3] if refused and len(step) > 3 else "NOT_CLAIMED"
             arguments = {"objectKey": key}
             if field == "completeSectionReview":
                 arguments["sectionId"] = "1"
@@ -384,7 +384,7 @@ def _write(table, review, index, name):
                 "identity": _identity(caller),
             }
             if refused:
-                with pytest.raises(ValueError, match="^NOT_CLAIMED: "):
+                with pytest.raises(ValueError, match=f"^{code}: "):
                     review.handler(event, None)
             else:
                 review.handler(event, None)
@@ -465,9 +465,9 @@ def test_the_writers_leave_the_rows_this_test_describes(written):
         assert rows[name]["HITLStatus"] == "Review Pending"
         assert "HITLReviewOwner" not in rows[name]
         assert "HITLCompleted" not in rows[name]
-    assert rows["completed-then-released-by-rev"]["HITLStatus"] == "Review Pending"
+    assert rows["completed-then-released-by-rev"]["HITLStatus"] == "Completed"
     assert rows["completed-then-released-by-rev"]["HITLCompleted"] is True
-    assert "HITLReviewOwner" not in rows["completed-then-released-by-rev"]
+    assert rows["completed-then-released-by-rev"]["HITLReviewOwner"] == "rev"
     assert rows["skipped-then-released-by-admin"]["HITLStatus"] == "Review Skipped"
     assert rows["pending-released-by-admin-unclaimed"]["HITLStatus"] == "PendingReview"
     assert rows["claimed-by-other"]["HITLReviewOwner"] == "other"

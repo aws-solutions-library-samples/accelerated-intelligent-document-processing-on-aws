@@ -262,6 +262,74 @@ def _assert_not_queue_managed(object_key):
         )
 
 
+def _review_finished(hitl_status):
+    """Whether a stored ``HITLStatus`` says the document's review has finished.
+
+    The document lists' rule (``list_documents_gsi_resolver._review_finished``) and
+    the web UI's ``isHitlReviewFinished``: a legacy review completed or skipped, or
+    a queue review that ended complete or rejected. ``COMPLETED`` is the one
+    finished spelling a real writer stored that the exact-match normaliser does not
+    know: the earlier A2I flow wrote it, and retained rows may still carry it.
+    """
+    from idp_common.review_queues.statuses import normalize_hitl_status
+
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+def _finished_hitl_statuses():
+    """Every stored ``HITLStatus`` value :func:`_review_finished` accepts.
+
+    Derived from the declared vocabularies through the rule itself, so a
+    ``ConditionExpression`` can test it. Exact values: the normaliser also accepts
+    surrounding whitespace, which no writer stores, and which the consistent read
+    before each guarded write refuses through the rule.
+    """
+    from idp_common.review_queues.statuses import LegacyHitlStatus, ReviewStatus
+
+    return tuple(
+        sorted(
+            value
+            for value in {
+                *(s.value for s in ReviewStatus),
+                *(s.value for s in LegacyHitlStatus),
+                "COMPLETED",
+            }
+            if _review_finished(value)
+        )
+    )
+
+
+def _not_finished_condition():
+    """``(condition, values)`` refusing a write onto a finished review.
+
+    An absent ``HITLStatus`` makes ``IN`` false, so the condition holds for it.
+    """
+    statuses = _finished_hitl_statuses()
+    values = {f":finished{i}": value for i, value in enumerate(statuses)}
+    return f"NOT (HITLStatus IN ({', '.join(values)}))", values
+
+
+def _review_finished_error(action):
+    return ValueError(
+        f"REVIEW_FINISHED: this review is already finished, so there is nothing "
+        f"to {action}"
+    )
+
+
+def _read_review_row(object_key):
+    """The tracking row, read consistently so a review finished a moment ago shows."""
+    table = dynamodb.Table(TRACKING_TABLE_NAME)
+    return (
+        table.get_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+        ).get("Item")
+        or {}
+    )
+
+
 def _save_section_edits(document, object_key, section_id, edited_data):
     """Write a section's edited result JSON to its output URI, or raise."""
     section = next((s for s in document.sections if s.section_id == section_id), None)
@@ -287,8 +355,6 @@ def save_section_review_edits(
     processChanges or skipAllSectionsReview. Only the review owner, or an Admin,
     may save, and not once the review has finished.
     """
-    from idp_common.review_queues.statuses import normalize_hitl_status
-
     document_service = create_document_service(mode="dynamodb")
     document = document_service.get_document(object_key)
     if not document:
@@ -302,15 +368,8 @@ def save_section_review_edits(
         ).get("Item")
         or {}
     )
-    # "COMPLETED" is the one finished spelling a real writer stored that the
-    # exact-match normaliser does not know: the earlier A2I flow wrote it, and
-    # retained rows may still carry it. processChanges and the document lists make
-    # the same exception. Queue statuses never reach here (_assert_not_queue_managed).
-    hitl_status = doc.get("HITLStatus")
-    if (
-        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
-        or hitl_status == "COMPLETED"
-    ):
+    # Queue statuses never reach here (_assert_not_queue_managed).
+    if _review_finished(doc.get("HITLStatus")):
         logger.warning(
             f"Rejecting save of review edits on finished review {object_key}"
         )
@@ -946,7 +1005,16 @@ def claim_review(object_key, username="", user_email=""):
     if not document:
         raise ValueError(f"Document {object_key} not found")
 
+    # A finished review stays finished: claiming it would set it back to In
+    # Progress and reopen its edits. Read consistently, so a review finished a
+    # moment ago is refused; the write's condition below holds the same rule at the
+    # moment of the write.
+    if _review_finished(_read_review_row(object_key).get("HITLStatus")):
+        logger.warning(f"Rejecting claim of finished review {object_key}")
+        raise _review_finished_error("start")
+
     table = dynamodb.Table(TRACKING_TABLE_NAME)
+    not_finished, finished_values = _not_finished_condition()
 
     # Conditional, so the claim is exclusive rather than advisory, and the condition
     # is the *only* ownership test here. A read-then-check before this write cannot
@@ -963,14 +1031,15 @@ def claim_review(object_key, username="", user_email=""):
             Key={"PK": f"doc#{object_key}", "SK": "none"},
             UpdateExpression="SET HITLStatus = :status, HITLReviewOwner = :owner, HITLReviewOwnerEmail = :email",
             ConditionExpression=(
-                "attribute_not_exists(HITLReviewOwner) OR HITLReviewOwner = :owner "
-                "OR HITLReviewOwner = :empty"
+                "(attribute_not_exists(HITLReviewOwner) OR HITLReviewOwner = :owner "
+                f"OR HITLReviewOwner = :empty) AND {not_finished}"
             ),
             ExpressionAttributeValues={
                 ":status": LegacyHitlStatus.IN_PROGRESS.value,
                 ":owner": username,
                 ":email": user_email,
                 ":empty": "",
+                **finished_values,
             },
         )
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
@@ -980,10 +1049,19 @@ def claim_review(object_key, username="", user_email=""):
         # any other, so a winner it cannot yet see degrades the name to "another
         # reviewer"; the phrase the UI keys on is there either way, which is why the
         # fallback is worded as a reviewer rather than as an error.
+        # Consistent, so a review that finished in the race is reported as finished
+        # rather than as claimed by its owner.
         current = (
-            table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item")
+            table.get_item(
+                Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+            ).get("Item")
             or {}
         )
+        if _review_finished(current.get("HITLStatus")):
+            logger.warning(
+                f"Rejecting claim of a review finished during it {object_key}"
+            )
+            raise _review_finished_error("start") from None
         winner = current.get("HITLReviewOwner") or "another reviewer"
         logger.info(f"Claim race lost on {object_key}: already claimed by {winner}")
         raise ValueError(f"Document is already claimed by {winner}") from None
@@ -1025,6 +1103,14 @@ def release_review(object_key, username="", user_email="", is_admin=False):
             "NOT_CLAIMED: nobody has claimed this review, so there is nothing to release"
         )
 
+    # A finished review keeps its owner (the reviewer who finished it), so the
+    # NOT_CLAIMED check above admits it; releasing it would write Review Pending and
+    # put a finished review back in every Reviewer's queue. Refused for every caller,
+    # as the web UI offers Release on no finished review.
+    if _review_finished(doc.get("HITLStatus")):
+        logger.warning(f"Rejecting release of finished review {object_key}")
+        raise _review_finished_error("release")
+
     if not is_admin and current_owner and current_owner != username:
         logger.warning("Forbidden: release of a review owned by another user")
         raise PermissionError(
@@ -1033,14 +1119,21 @@ def release_review(object_key, username="", user_email="", is_admin=False):
 
     # Update Review Status and remove review owner directly in DynamoDB
     # This avoids re-serializing metering data which could cause issues
-    table.update_item(
-        Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression="SET HITLStatus = :status, HITLPendingReview = :pending REMOVE HITLReviewOwner, HITLReviewOwnerEmail",
-        ExpressionAttributeValues={
-            ":status": LegacyHitlStatus.REVIEW_PENDING.value,
-            ":pending": "true",
-        },
-    )
+    not_finished, finished_values = _not_finished_condition()
+    try:
+        table.update_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"},
+            UpdateExpression="SET HITLStatus = :status, HITLPendingReview = :pending REMOVE HITLReviewOwner, HITLReviewOwnerEmail",
+            ConditionExpression=not_finished,
+            ExpressionAttributeValues={
+                ":status": LegacyHitlStatus.REVIEW_PENDING.value,
+                ":pending": "true",
+                **finished_values,
+            },
+        )
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.warning(f"Rejecting release of a review finished during it {object_key}")
+        raise _review_finished_error("release") from None
 
     logger.info(
         f"Review released for document {object_key}, HITLStatus set to Review Pending"
