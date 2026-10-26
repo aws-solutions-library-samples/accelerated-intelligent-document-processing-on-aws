@@ -19,6 +19,8 @@ from log_sanitizer import sanitize_event_for_logging
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
+# Get LOG_LEVEL from environment variable with INFO as default
 
 
 class ReportedServerError(RuntimeError):
@@ -28,8 +30,7 @@ class ReportedServerError(RuntimeError):
     dispatcher matches the class by name. The canonical class, and the rule for
     when to raise it, is ``idp_common.api_adapter.ReportedServerError``.
     """
-logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
-# Get LOG_LEVEL from environment variable with INFO as default
+
 
 # Force Signature Version 4 for presigned URLs. The IDP buckets are encrypted
 # with SSE-KMS, and S3 rejects SigV2-signed requests for KMS-encrypted objects

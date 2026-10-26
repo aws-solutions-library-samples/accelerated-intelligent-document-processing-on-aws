@@ -1100,12 +1100,10 @@ def claim_review(object_key, username="", user_email=""):
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
         # Lost the race. Re-read so the message names the actual winner, and keep the
         # "already claimed" phrasing — the UI matches on it to skip to the next
-        # document instead of dead-ending. This re-read is eventually consistent like
-        # any other, so a winner it cannot yet see degrades the name to "another
-        # reviewer"; the phrase the UI keys on is there either way, which is why the
-        # fallback is worded as a reviewer rather than as an error.
-        # Consistent, so a review that finished in the race is reported as finished
-        # rather than as claimed by its owner.
+        # document instead of dead-ending. Read consistently, so a review that
+        # finished in the race is reported as finished rather than as claimed by its
+        # owner. A winner with no recorded name is reported as "another reviewer",
+        # which keeps the phrase the UI keys on.
         current = (
             table.get_item(
                 Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
