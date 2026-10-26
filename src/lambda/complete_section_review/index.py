@@ -1006,9 +1006,24 @@ def release_review(object_key, username="", user_email="", is_admin=False):
         raise ValueError(f"Document {object_key} not found")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
-    response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
+    # Consistent, so a release straight after a claim sees the claim's owner.
+    response = table.get_item(
+        Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+    )
     doc = response.get("Item", {})
     current_owner = doc.get("HITLReviewOwner", "")
+
+    # Releasing gives up a claim, and writes Review Pending, which lists the
+    # document for every Reviewer. With no claim there is nothing to give up, and
+    # the row may be one no review was raised on or a finished review the list
+    # recognises only by its status; the web UI's bulk Release sends every selected
+    # row. So an unclaimed document is refused rather than put in every Reviewer's
+    # queue.
+    if not current_owner:
+        logger.warning("Rejecting release of a document nobody has claimed")
+        raise ValueError(
+            "NOT_CLAIMED: nobody has claimed this review, so there is nothing to release"
+        )
 
     if not is_admin and current_owner and current_owner != username:
         logger.warning("Forbidden: release of a review owned by another user")
