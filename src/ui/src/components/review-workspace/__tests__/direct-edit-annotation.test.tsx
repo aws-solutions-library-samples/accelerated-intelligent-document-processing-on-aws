@@ -51,7 +51,7 @@ vi.mock('../SectionEditor', () => ({
   },
 }));
 
-import DirectEditAnnotation from '../DirectEditAnnotation';
+import DirectEditAnnotation, { EDIT_ROLE_REASON, PROCESS_OWNER_REASON } from '../DirectEditAnnotation';
 
 const rawDoc = (over: Record<string, unknown> = {}) => ({
   ObjectKey: 'in/doc.pdf',
@@ -119,6 +119,40 @@ describe('the direct edit', () => {
     expect(bar()).toEqual(['History', 'Discard Changes', 'Save', 'Edit Page Grouping', 'Processing Report', 'Complete']);
     expect(editorProps!.isReadOnly).toBe(false);
     expect(editorProps!.actionsPlacement).toBe('external');
+  });
+
+  describe('Complete for a caller who is not an Admin', () => {
+    // The server's processChanges rule: hold the document's OPEN review.
+    const asReviewer = (extra: Partial<typeof role> = {}) =>
+      Object.assign(role, { isAdmin: false, isReviewer: true, isReviewerOnly: true, canWrite: false, ...extra });
+
+    it('is offered to the reviewer holding the open review', async () => {
+      asReviewer();
+      server.doc = rawDoc({ HITLStatus: 'InProgress', HITLReviewOwner: 'alice' });
+      await renderEditor();
+      expect(button('Complete').isDisabled()).toBe(false);
+    });
+
+    // A Reviewer who holds no review is read-only altogether, so that reason comes first.
+    it.each([
+      ['a finished review the caller holds', { HITLStatus: 'Review Completed', HITLReviewOwner: 'alice' }, PROCESS_OWNER_REASON],
+      ['an open review someone else holds', { HITLStatus: 'InProgress', HITLReviewOwner: 'bob' }, EDIT_ROLE_REASON],
+      ['a document with no review', {}, EDIT_ROLE_REASON],
+    ])('is not offered to a Reviewer on %s', async (_label, over, reason) => {
+      asReviewer();
+      server.doc = rawDoc(over);
+      await renderEditor();
+      expect(button('Complete').isDisabled()).toBe(true);
+      expect(disabledReason('Complete')).toBe(reason);
+    });
+
+    it('is not offered to a Reviewer who is also an Author, on a review they do not hold', async () => {
+      asReviewer({ isAuthor: true, isReviewerOnly: false, canWrite: true });
+      server.doc = rawDoc({ HITLStatus: 'InProgress', HITLReviewOwner: 'bob' });
+      await renderEditor();
+      expect(button('Complete').isDisabled()).toBe(true);
+      expect(disabledReason('Complete')).toBe(PROCESS_OWNER_REASON);
+    });
   });
 
   it('saves a draft through the editor', async () => {

@@ -27,7 +27,7 @@ import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGrouping } from '../common/document-grouping';
 import PageGroupingEditor from '../common/PageGroupingEditor';
 import ProcessChangesConfirmModal from '../common/ProcessChangesConfirmModal';
-import { inReviewQueueEditReason } from '../common/review-status';
+import { inReviewQueueEditReason, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
 import { documentName } from '../review-queues/review-api';
 import AnnotationFrame from './AnnotationFrame';
@@ -44,6 +44,8 @@ import useSectionEvaluation from './use-section-evaluation';
 
 export const PROCESS_ROLE_REASON = 'Complete needs the Admin or Reviewer role, because it reprocesses the document.';
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
+export const PROCESS_OWNER_REASON =
+  "Complete needs an Admin, or the reviewer who holds this document's open review. Start the review first.";
 
 /** The document's HITL review events, in the shape History's Review Activity lists. */
 export const documentReviewHistory = (
@@ -161,6 +163,11 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
 
   let processReason: string | undefined = readOnlyReason;
   if (!processReason && !(isAdmin || isReviewer)) processReason = PROCESS_ROLE_REASON;
+  // The server's rule for processChanges: a caller who is not an Admin must hold the
+  // document's OPEN review (pending or in progress). Holding a finished one is not
+  // enough, and neither is the Author role a Reviewer may also have.
+  const reviewOpen = ['pending', 'in_progress'].includes(normalizeHitlStatus(doc.hitlStatus).kind);
+  if (!processReason && !isAdmin && !(holdsReview && reviewOpen)) processReason = PROCESS_OWNER_REASON;
   if (!processReason && saving) processReason = 'Saving your changes…';
 
   const bdaMode = String((settings as Record<string, unknown>)?.IDPPattern ?? '')
