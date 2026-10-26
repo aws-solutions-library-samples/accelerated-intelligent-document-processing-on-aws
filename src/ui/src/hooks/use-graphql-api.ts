@@ -17,12 +17,17 @@ import {
 } from '../graphql/generated';
 import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS } from '../components/document-list/documents-table-config';
 import { Document } from '../types/documents';
-import { describeApiError } from './utils/graphql-error';
+import { describeApiError, isNetworkError } from './utils/graphql-error';
 
 // Under the HTTP API transport there are no GraphQL subscriptions; the document
 // list is kept fresh by polling instead. AppSync deployments keep using
 // subscriptions (real-time) unchanged.
 const DOCUMENT_LIST_POLL_INTERVAL_MS = 5000;
+// Consecutive background polls that may fail to reach the server before the list
+// says so. Error banners do not dismiss themselves, so one dropped request (a
+// network blip, a reload of the tab's connection) used to leave "Failed to list
+// documents: Failed to fetch" on screen after the very next poll had succeeded.
+export const POLL_NETWORK_FAILURES_BEFORE_REPORT = 3;
 
 /** Rows per listDocuments request (the resolver's MAX_PAGE_SIZE). */
 const PAGE_SIZE = 200;
@@ -273,6 +278,8 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
   // a non-list page (e.g., document details, config). The DocumentList
   // component triggers the initial load by calling setIsDocumentsListLoading(true).
   const hasListBeenRequestedRef = useRef<boolean>(false);
+  // Background polls in a row that failed before reaching the server.
+  const pollNetworkFailuresRef = useRef<number>(0);
 
   /**
    * Fetch documents using the GSI-based listDocuments query. A date range drains
@@ -284,7 +291,11 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
    * than read from state because the callers fire from a setTimeout and an
    * interval, where captured state goes stale.
    */
-  const sendSetDocumentsForDateRange = async (dateRange: DateRange | null, view: DocumentView): Promise<void> => {
+  const sendSetDocumentsForDateRange = async (
+    dateRange: DateRange | null,
+    view: DocumentView,
+    { background = false }: { background?: boolean } = {},
+  ): Promise<void> => {
     const isLatest = dateRange === null;
     try {
       logger.info('Fetching documents via GSI', { ...(dateRange ?? { latest: true }), view });
@@ -353,8 +364,19 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
 
       logger.info(`Total documents loaded: ${totalLoaded}`);
       setIsDocumentsListLoading(false);
+      pollNetworkFailuresRef.current = 0;
     } catch (error: unknown) {
       setIsDocumentsListLoading(false);
+      // A poll the user did not ask for, that never reached the server, is retried
+      // by the next tick; only a run of them is worth a banner. Anything the server
+      // answered (a 403, a 500) and any load the user started still reports at once.
+      if (background && isNetworkError(error)) {
+        pollNetworkFailuresRef.current += 1;
+        if (pollNetworkFailuresRef.current < POLL_NETWORK_FAILURES_BEFORE_REPORT) {
+          logger.warn('Background document refresh did not reach the server; retrying on the next poll', error);
+          return;
+        }
+      }
       // describeApiError branches on errorType: a 403 gets copy the reader can act
       // on rather than the dispatcher's own words, which name Cognito groups they
       // cannot grant themselves. Everything else still carries the server's detail.
@@ -411,7 +433,9 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
   // usePolling hook pauses while the tab is hidden.
   const pollDocuments = useCallback(() => {
     if (!hasListBeenRequestedRef.current) return;
-    void sendSetDocumentsForDateRange(resolveDateRange(periodsToLoad, customDateRangeRef.current), documentViewRef.current);
+    void sendSetDocumentsForDateRange(resolveDateRange(periodsToLoad, customDateRangeRef.current), documentViewRef.current, {
+      background: true,
+    });
   }, [periodsToLoad]);
 
   usePolling(pollDocuments, {

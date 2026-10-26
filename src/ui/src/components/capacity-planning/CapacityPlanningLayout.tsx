@@ -26,6 +26,7 @@ import useConfiguration from '../../hooks/use-configuration';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useSettingsContext from '../../contexts/settings';
 import useDocumentsContext from '../../contexts/documents';
+import { documentsNeedingDetail, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
@@ -188,6 +189,8 @@ const CapacityPlanningLayout = () => {
   const { settings: deploymentSettings } = useSettingsContext();
   const {
     documents,
+    getDocumentDetailsFromIds,
+    hasListBeenLoaded,
     isDocumentsListLoading,
     setIsDocumentsListLoading,
     periodsToLoad,
@@ -198,6 +201,15 @@ const CapacityPlanningLayout = () => {
 
   const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
   const [manualPattern, setManualPattern] = useState<string | null>(null);
+
+  // The list is loaded by whichever page asks for it first, and only the Document
+  // List used to ask, so opening Capacity Planning directly left Populate with
+  // nothing to read ("Please visit the Documents tab first").
+  useEffect(() => {
+    if (!hasListBeenLoaded) {
+      setIsDocumentsListLoading(true);
+    }
+  }, []); // Once, on mount: afterwards the list hook owns reloading
 
   // Log documents availability for debugging
   useEffect(() => {
@@ -597,30 +609,41 @@ const CapacityPlanningLayout = () => {
 
     try {
       if (!documents || documents.length === 0) {
+        if (!hasListBeenLoaded) {
+          setIsDocumentsListLoading(true);
+        }
         addNotification(
           'warning',
-          'Please visit the Documents tab first to load document data, then return to Capacity Planning.',
+          isDocumentsListLoading || !hasListBeenLoaded
+            ? 'Documents are still loading. Try again in a moment.'
+            : 'No processed documents were found in the Document List period. Choose a longer period there, then try again.',
           'No documents available',
         );
         return;
       }
 
+      // List rows carry no Metering or Sections; fetch the full record of the most
+      // recent completed documents so their token counts and classes can be read.
+      const detailKeys = documentsNeedingDetail(documents);
+      const detailed = detailKeys.length > 0 ? await getDocumentDetailsFromIds(detailKeys) : [];
+      const pool = withDetails(documents, detailed);
+
       // Get configured document types for validation
       const configuredTypes = getConfiguredDocumentTypes();
       console.log('Configured document types:', Array.from(configuredTypes));
 
-      console.log('Total documents:', documents.length);
-      if (documents.length > 0) {
-        console.log('Sample document:', documents[0]);
-        console.log('Sample document keys:', Object.keys(documents[0]));
-        console.log('Sample document Metering:', documents[0].Metering);
-        console.log('Sample document ObjectStatus:', documents[0].ObjectStatus);
+      console.log('Total documents:', pool.length);
+      if (pool.length > 0) {
+        console.log('Sample document:', pool[0]);
+        console.log('Sample document keys:', Object.keys(pool[0]));
+        console.log('Sample document Metering:', pool[0].Metering);
+        console.log('Sample document ObjectStatus:', pool[0].ObjectStatus);
       }
 
       // Check different document statuses
-      const completedDocs = documents.filter((doc) => doc.ObjectStatus === 'COMPLETED');
-      const docsWithMetering = documents.filter((doc) => doc.Metering);
-      const completedWithMetering = documents.filter((doc) => doc.ObjectStatus === 'COMPLETED' && doc.Metering);
+      const completedDocs = pool.filter((doc) => doc.ObjectStatus === 'COMPLETED');
+      const docsWithMetering = pool.filter((doc) => doc.Metering);
+      const completedWithMetering = pool.filter((doc) => doc.ObjectStatus === 'COMPLETED' && doc.Metering);
 
       console.log('Completed documents:', completedDocs.length);
       console.log('Documents with metering:', docsWithMetering.length);
@@ -644,7 +667,7 @@ const CapacityPlanningLayout = () => {
       // If still no documents, show detailed error
       if (candidateDocuments.length === 0) {
         const statusCounts: Record<string, number> = {};
-        documents.forEach((doc) => {
+        pool.forEach((doc) => {
           const status = String(doc.ObjectStatus ?? 'Unknown');
           statusCounts[status] = (statusCounts[status] || 0) + 1;
         });

@@ -104,7 +104,10 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 ### 3. Document Token Usage Population
 
 **Automatic Token Population from Processed Documents**:
-- Integration with Documents context to access processed document data
+- Reads the completed documents in the Document List's current period. The list's rows
+  carry no metering, so the full record of the most recent completed documents (up to 25)
+  is fetched when you choose **Populate tokens from Documents**, one request per document.
+  Opening Capacity Planning starts the list load if no other page has.
 - Extraction of token usage from metering data structure
 - Support for multiple document selection and batch population
 - Document picker modal with filtering and selection capabilities
@@ -588,8 +591,8 @@ part of the report.
 - **Solution**: Visit "View/Edit Configuration" tab first to load pattern configuration
 
 **No Documents Available for Token Population**:
-- **Symptom**: Alert "No documents available. Please visit the Documents tab first"
-- **Solution**: Visit Documents tab to load document data, then return to Capacity Planning
+- **Symptom**: Alert "No documents available" saying the documents are still loading, or that none were found in the Document List period
+- **Solution**: Wait for the load and try again, or choose a longer period with the Document List's **Load** menu
 
 **Document Type Not in Configuration**:
 - **Symptom**: "Document type 'X' is not defined in configuration"

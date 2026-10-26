@@ -252,7 +252,9 @@ const STAGE_TONE: Record<string, { border: string; bg: string; mark: string }> =
 
 const StageBox: React.FC<{ label: string; sub?: string; status?: string; fanout?: number }> = ({ label, sub, status = 'ok', fanout }) => {
   const tone = STAGE_TONE[status] || STAGE_TONE.ok;
-  const parallel = fanout && fanout > 1;
+  // A boolean, not `fanout && …`: the backend records `fanout: 0` for a single pass,
+  // and `{0 && …}` renders the number, a stray "0" above the stage.
+  const parallel = (fanout ?? 0) > 1;
   return (
     <div style={{ position: 'relative' }}>
       {/* Stacked "shadow" cards convey fan-out (sharded extract / concurrent confidence). */}
