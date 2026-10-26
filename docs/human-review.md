@@ -193,6 +193,10 @@ HITL review is automatically triggered when:
      editor saves your latest edits first and asks you to confirm
    - Document status changes to **Review Completed**, and **Review Completed By**
      records you
+   - Unless you are an Admin, **Process Changes** applies the same checks as saving:
+     you must be the document's review owner (click **Start Review** first), the
+     review must not already be finished, the document must not be processing, and
+     the document must be inside your configuration-profile scope
 
 5. **Release Review** (optional):
    - If you need to stop reviewing, click **Release Review**

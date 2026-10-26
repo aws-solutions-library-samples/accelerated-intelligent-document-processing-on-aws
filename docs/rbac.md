@@ -139,7 +139,10 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
   Annotators.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
-  are in a production review queue (`QUEUE_MANAGED`).
+  are in a production review queue (`QUEUE_MANAGED`). For a Reviewer who is not an
+  Admin, `processChanges` also requires owning the document's open review, refuses a
+  finished review or a document that is still processing, and applies the caller's
+  `allowedConfigVersions`.
 - **Residual access.** Like every role, an Annotator can call `getDocument` and
   read document objects through the identity pool's S3 grants, for keys it knows.
   The review pages are a convenience, not the security boundary.
@@ -803,7 +806,8 @@ enforcement itself is Layer 2.
 | `syncBdaIdp`, `uploadDiscoveryDocument`, `deleteDiscoveryJob`, `autoDetectSections` | Admin, Author |
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
-| `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
+| `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
+| `processChanges` (a caller who is not an Admin must own the document's open review, the review must not be finished, the document must not be processing, and the document must be inside the caller's configuration-profile scope — the same checks as `saveSectionReviewEdits`, plus the document-status and scope checks) | Admin, Reviewer |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |

@@ -308,8 +308,8 @@ its queue item:
   and Annotators.
 
 Once the review finishes, the document page can be edited as usual. **Process Changes**
-on a finished review doesn't mark it completed again or replace the reviewer the queue
-recorded.
+on a finished review is refused to every caller who is not an Admin; for an Admin it
+doesn't mark the review completed again or replace the reviewer the queue recorded.
 
 ## Turning review queues on
 

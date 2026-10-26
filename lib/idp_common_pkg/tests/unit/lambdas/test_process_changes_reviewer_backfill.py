@@ -44,11 +44,16 @@ def resolver():
 
 
 def _event():
+    """An Admin caller. The write shapes pinned here are reached on a finished
+    review only by an Admin — a Reviewer is refused one, as saving review edits
+    refuses it — and the document-service and table doubles below cannot answer
+    the ownership and scope reads a Reviewer's request makes. Those checks are
+    driven against moto in ``test_process_changes_caller_checks.py``."""
     return {
         "info": {"fieldName": "processChanges"},
         "identity": {
             "username": "rev",
-            "claims": {"email": "rev@example.com", "cognito:groups": ["Reviewer"]},
+            "claims": {"email": "rev@example.com", "cognito:groups": ["Admin"]},
         },
         "arguments": {"objectKey": "packet.pdf", "modifiedSections": []},
     }

@@ -1088,7 +1088,15 @@ export const DocumentPanel = ({
             classificationIndex,
           } as Record<string, unknown>)}
         />
-        <PagesPanel {...({ pages: displayedItem.pages, documentItem: displayedItem, classificationIndex } as Record<string, unknown>)} />
+        <PagesPanel
+          {...({
+            pages: displayedItem.pages,
+            documentItem: displayedItem,
+            classificationIndex,
+            // The document's own profile: its `use_bda` decides whether page edits are offered.
+            mergedConfig: documentVersionConfig,
+          } as Record<string, unknown>)}
+        />
         <DocumentVersionsPanel objectKey={localItem.objectKey} viewingRunId={viewingRunId} onViewVersion={handleViewVersion} />
         <ChatPanel objectKey={localItem.objectKey} configVersion={docConfigVersion} />
 

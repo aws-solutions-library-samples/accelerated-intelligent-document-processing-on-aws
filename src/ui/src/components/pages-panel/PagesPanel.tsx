@@ -17,7 +17,7 @@ import {
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import useSettingsContext from '../../contexts/settings';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 import useUserRole from '../../hooks/use-user-role';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
 import ClassNameText from '../common/ClassNameText';
@@ -70,6 +70,11 @@ interface PagesPanelProps {
    * which case no class is annotated.
    */
   classificationIndex?: ClassificationIndex;
+  /**
+   * The configuration profile the document was processed with. Its `use_bda` decides
+   * whether page edits are offered: in BDA mode they are not.
+   */
+  mergedConfig?: Record<string, unknown> | null;
 }
 
 // Cell renderer components
@@ -267,7 +272,12 @@ const createEditColumnDefinitions = (
   },
 ];
 
-const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFICATION_INDEX }: PagesPanelProps): React.JSX.Element => {
+const PagesPanel = ({
+  pages,
+  documentItem,
+  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
+  mergedConfig,
+}: PagesPanelProps): React.JSX.Element => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedPages, setEditedPages] = useState<PageItem[]>([]);
   const [modifiedPageIds, setModifiedPageIds] = useState<Set<string>>(new Set());
@@ -277,7 +287,6 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const { settings } = useSettingsContext();
   const { isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
   // When viewing a past version, pin page images to that run's object versions
   // and disable editing (edits write to the current objects, not the snapshot).
@@ -339,11 +348,10 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
     }
   }, [isEditMode, pages]);
 
-  // Check if current pattern is Pattern-1
-  const isPattern1 = () => {
-    const pattern = (settings as Record<string, unknown>)?.IDPPattern as string | undefined;
-    return pattern && pattern.toLowerCase().includes('pattern1');
-  };
+  // BDA mode, from the document's own configuration (`use_bda`) — not from the
+  // stack's `IDPPattern`, which names the one unified pattern for every document.
+  // Page edits (class reset, text edits) are structural and not offered there.
+  const isPattern1 = () => isBdaModeConfig(mergedConfig);
 
   // Handle Edit Pages button click
   const handleEditPagesClick = () => {
@@ -636,11 +644,11 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
         }}
       />
 
-      {/* Pattern-1 Information Modal */}
+      {/* BDA mode: page edits are not offered */}
       <Modal
         visible={showPattern1Modal}
         onDismiss={() => setShowPattern1Modal(false)}
-        header="Edit Mode - Pattern-1"
+        header="Page edits are not available in BDA mode"
         footer={
           <Box float="right">
             <Button variant="primary" onClick={() => setShowPattern1Modal(false)}>
@@ -650,40 +658,29 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
         }
       >
         <SpaceBetween size="m">
-          <Alert type="info" header="Feature Not Available for Pattern-1">
-            <Box>
-              The Edit Pages feature is currently available for <strong>Pattern-2</strong> and <strong>Pattern-3</strong> only.
-            </Box>
+          <Alert type="info">
+            This document was processed with <strong>Bedrock Data Automation (BDA)</strong>, so its page classes and page text cannot be
+            edited.
           </Alert>
-
           <Box>
-            <strong>Why is this different for Pattern-1?</strong>
+            When a BDA document is reprocessed, BDA keeps the sections the document already has. A page edit clears the extracted values of
+            the sections it touches, and nothing would regenerate them.
           </Box>
-
           <Box>
-            Pattern-1 uses <strong>Bedrock Data Automation (BDA)</strong> which has its own document processing approach that integrates
-            directly with Amazon Bedrock&apos;s blueprints. Page-level modifications are managed differently in this pattern.
+            <strong>What you can still do:</strong>
           </Box>
-
-          <Box>
-            <strong>Available alternatives for Pattern-1:</strong>
-          </Box>
-
           <ul>
             <li>
-              <strong>View Page Text</strong>: Use the &quot;View Page Text&quot; button to review page content
+              <strong>Edit field values</strong> in the Sections panel or the document editor, then process the changes to re-run evaluation
+              and summarization
             </li>
             <li>
-              <strong>Configuration</strong>: Adjust document classes and extraction rules in the Configuration tab
+              <strong>View page text</strong> with the &quot;View Page Text&quot; button
             </li>
             <li>
-              <strong>Reprocess Document</strong>: Use the &quot;Reprocess&quot; button to run the document through the pipeline again
+              <strong>Reprocess</strong> the document to run it through BDA again from the original file
             </li>
           </ul>
-
-          <Box>
-            For fine-grained page control, consider using <strong>Pattern-2</strong> or <strong>Pattern-3</strong> for future documents.
-          </Box>
         </SpaceBetween>
       </Modal>
 
