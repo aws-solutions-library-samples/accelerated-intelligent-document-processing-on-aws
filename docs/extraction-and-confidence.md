@@ -869,8 +869,6 @@ re-extracted and only those are merged back, so an over-eager escalation cannot
 overwrite fields that already validated; if escalation fails, the original
 extraction is kept unchanged.
 
-![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use. The report labels Simple extraction Standard, and Advanced extraction Agentic](../images/extraction-processing-report.png)
-
 ⚠️ **All three actions are visibility settings — none of them rejects a section.**
 `reject` records `parsing_succeeded: false`, which is read by the section's
 Processing Report and the UI's **Processing Report** tab and by nothing in the
@@ -879,6 +877,12 @@ reports `COMPLETED`. The one setting in extraction that turns a detection into a
 outcome is
 [`extraction.row_shortfall_action`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
 which fails the Step Functions execution.
+
+The document editor's **Processing report** dialog shows the validation outcome for a
+section beside the rest of its report. The report names the extraction modes
+**Standard** (Simple on this page) and **Agentic** (Advanced):
+
+![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
 
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
