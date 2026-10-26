@@ -1331,6 +1331,42 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
+def routing_configuration(
+    manager: Any, config_version: str, config_revision: Optional[int]
+) -> Any:
+    """The configuration ``use_bda`` routing is read from.
+
+    The document's pinned revision when it has one, so that a save made while
+    the document was queued cannot send it down a branch its own configuration
+    does not select (#1619). With no pin, the profile head, as before revisions
+    existed.
+
+    A pinned read that fails falls back to the profile head, with a WARNING
+    naming the revision, rather than to pipeline mode. The head is what routed
+    every document before this read was pinned, so the fallback is never worse
+    than that; defaulting to pipeline would send every BDA document on the
+    stack down the wrong branch whenever the revision cannot be read, which is
+    what an unreadable bucket did when this read was first pinned. The steps
+    after routing load the pinned revision themselves and fail the document if
+    it is gone, so a revision that is really unavailable is still reported.
+    A head read that fails as well raises, into the handling every head-read
+    failure has always had.
+    """
+    if config_revision is None:
+        return manager.get_merged_configuration(config_version)
+    try:
+        return manager.get_merged_configuration(
+            config_version, revision=config_revision
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read revision r{config_revision} of configuration profile "
+            f"'{config_version}' for routing: {e}. Routing from the profile head.",
+            exc_info=True,
+        )
+        return manager.get_merged_configuration(config_version)
+
+
 def start_workflow(
     document: Document,
     execution_name: Optional[str] = None,
@@ -1449,8 +1485,12 @@ def start_workflow(
             config_version = getattr(document, "config_version", None) or "default"
             manager = ConfigurationManager(table_name=config_table_name)
 
-            # Read use_bda from the full config (properly decompresses gzip storage)
-            config = manager.get_merged_configuration(config_version)
+            # Read use_bda from the full config (properly decompresses gzip
+            # storage), at the revision the document is pinned to, so routing
+            # agrees with every later step (#1619).
+            config = routing_configuration(
+                manager, config_version, getattr(document, "config_revision", None)
+            )
             use_bda = getattr(config, "use_bda", False) if config else False
             compressed_document["use_bda"] = bool(use_bda)
 

@@ -1,17 +1,26 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The template wiring the queue processor's abort handling depends on.
+"""The template wiring the queue processor and the reporting Lambda depend on.
 
-The queue processor stops an execution it has just started when the document
-was aborted in the window before its post-start write (#1612). Without
-``states:StopExecution`` the stop fails, and that is one ERROR log line, so no
-handler test notices. Reverting ``template.yaml`` left every other test under
-``scripts/tests`` passing, so the grant is asserted here directly.
+Two changes in the handlers need the template to deliver something, and neither
+handler fails when it is missing:
+
+- The queue processor and ``SaveReportingDataFunctionV2`` read a document's
+  pinned configuration revision (#1619). Without ``CONFIGURATION_BUCKET`` or
+  ``s3:GetObject`` on the revision prefix, the read fails and both fall back to
+  the profile head with a warning, which is the behaviour the change replaced.
+- The queue processor stops an execution it has just started when the document
+  was aborted in the window before its post-start write (#1612). Without
+  ``states:StopExecution`` the stop fails, and that is one ERROR log line.
+
+Reverting ``template.yaml`` to its state before both changes left every other
+test under ``scripts/tests`` passing, so the wiring is asserted here directly.
 """
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 from pathlib import Path
 from typing import Any
@@ -21,7 +30,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO_ROOT / "template.yaml"
+REVISIONS_MODULE = REPO_ROOT / "lib/idp_common_pkg/idp_common/config/revisions.py"
 
+REVISION_BODY_READERS = ("QueueProcessor", "SaveReportingDataFunctionV2")
 STATE_MACHINE_NAME = {"Fn::GetAtt": "PATTERNSTACK.Outputs.StateMachineName"}
 
 
@@ -43,6 +54,23 @@ _CfnLoader.add_multi_constructor("!", _tag)
 @pytest.fixture(scope="module")
 def resources() -> dict:
     return yaml.load(TEMPLATE.read_text(), Loader=_CfnLoader)["Resources"]
+
+
+def _revision_prefix() -> str:
+    """``REVISION_S3_PREFIX`` as the revision store defines it, read from source."""
+    tree = ast.parse(REVISIONS_MODULE.read_text())
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "REVISION_S3_PREFIX"
+                for t in node.targets
+            )
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            return node.value.value
+    raise AssertionError(f"REVISION_S3_PREFIX not found in {REVISIONS_MODULE}")
 
 
 def _statements(function: dict) -> list[dict]:
@@ -81,6 +109,50 @@ def _granting(function: dict, action: str) -> list[dict]:
 
 def _sub(node: Any) -> Any:
     return node.get("Fn::Sub") if isinstance(node, dict) else None
+
+
+@pytest.mark.parametrize("name", REVISION_BODY_READERS)
+def test_the_reader_is_told_the_configuration_bucket(resources, name):
+    variables = resources[name]["Properties"]["Environment"]["Variables"]
+    assert variables.get("CONFIGURATION_BUCKET") == {"Fn::Ref": "ConfigurationBucket"}
+
+
+@pytest.mark.parametrize("name", REVISION_BODY_READERS)
+def test_the_reader_can_get_exactly_the_revision_bodies(resources, name):
+    prefix = _revision_prefix()
+    assert prefix, "the revision store's prefix is empty"
+    grants = _granting(resources[name], "s3:GetObject")
+    resources_granted = [_sub(s.get("Resource")) for s in grants]
+    assert resources_granted == [
+        f"arn:${{AWS::Partition}}:s3:::${{ConfigurationBucket}}/{prefix}/*"
+    ], grants
+    assert all(s.get("Effect") == "Allow" and "Condition" not in s for s in grants)
+
+
+@pytest.mark.parametrize("name", REVISION_BODY_READERS)
+def test_the_reader_holds_no_whole_bucket_template_on_the_configuration_bucket(
+    resources, name
+):
+    """A SAM S3 policy template on the bucket would grant every object in it."""
+    templates = [
+        (key, value)
+        for policy in resources[name]["Properties"].get("Policies") or []
+        if isinstance(policy, dict)
+        for key, value in policy.items()
+        if key.startswith("S3") and "ConfigurationBucket" in repr(value)
+    ]
+    assert templates == [], templates
+
+
+@pytest.mark.parametrize("name", REVISION_BODY_READERS)
+def test_the_readers_list_grant_is_limited_to_the_revision_prefix(resources, name):
+    grants = _granting(resources[name], "s3:ListBucket")
+    assert [(_sub(s.get("Resource")), s.get("Condition")) for s in grants] == [
+        (
+            "arn:${AWS::Partition}:s3:::${ConfigurationBucket}",
+            {"StringLike": {"s3:prefix": f"{_revision_prefix()}/*"}},
+        )
+    ], grants
 
 
 def test_the_queue_processor_can_stop_only_its_own_executions(resources):
