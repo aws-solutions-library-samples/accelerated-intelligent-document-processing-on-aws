@@ -113,9 +113,9 @@ In both modes you can set an optional **folder prefix** and pick the **Configura
 
 Many bundled samples are tuned for a specific configuration preset in the [Configuration Library](configuration-profiles.md) (for example, the bank-statement sample pairs with the `bank-statement-sample` config). When you select such a sample:
 
-- If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration version and processes the sample with it. Uncheck it to process the sample under the currently selected version instead.
-- If the associated configuration is **already imported**, that version is preselected automatically.
-- Samples with no associated configuration are simply uploaded under the selected version.
+- If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration profile and processes the sample with it. Uncheck it to process the sample under the currently selected profile instead.
+- If the associated configuration is **already imported**, that profile is preselected automatically.
+- Samples with no associated configuration are simply uploaded under the selected profile.
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 

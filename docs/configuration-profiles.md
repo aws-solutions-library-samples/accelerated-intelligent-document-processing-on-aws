@@ -66,7 +66,7 @@ https://github.com/user-attachments/assets/b1e0cf16-d2c4-4927-a9ec-767b8ac49c9d
 
 ## Overview
 
-Each configuration version is a **complete, self-contained configuration snapshot**. When you create or edit a version, the full configuration is saved — there is no hidden merging or delta logic. This makes behavior predictable and debuggable: what you save is exactly what gets used at runtime.
+Each configuration profile is a **complete, self-contained configuration snapshot**. When you create or edit a profile, the full configuration is saved — there is no hidden merging or delta logic. This makes behavior predictable and debuggable: what you save is exactly what gets used at runtime.
 
 ```mermaid
 flowchart LR
@@ -96,7 +96,7 @@ flowchart LR
 
 ### Managed vs Custom Versions
 
-Configuration versions fall into two categories, indicated by a **Type** badge in the versions table:
+Configuration profiles fall into two categories, indicated by a **Type** badge in the profiles table:
 
 | Type | Badge | Description |
 |------|-------|-------------|
@@ -118,7 +118,7 @@ Configuration versions fall into two categories, indicated by a **Type** badge i
   managed one (**Create profile**, **Save current edits as new profile…**) is always
   custom.
 - **Editable copies** — use **Create profile** to create a custom, editable copy from any managed profile
-- **Test Studio integration** — when a test set is selected in Test Studio, the matching managed config version is auto-selected
+- **Test Studio integration** — when a test set is selected in Test Studio, the matching managed configuration profile is auto-selected
 
 > **Tip:** To customize a managed configuration, click **Create profile** in the Configuration Profiles table and copy the managed profile into a new one. The original managed profile remains untouched and will continue to be updated with solution upgrades. If you have already made edits in the editor against the managed profile, use **Actions → Save current edits as new profile…** instead so those edits come along.
 
@@ -401,9 +401,9 @@ The table includes a **type filter** (All / Managed / Custom) and a **preference
 - **Open/Edit**: Click a version name to open it in the configuration editor
 - **Create profile**: Create a new profile as a copy of an existing one. Pick the source profile (prefilled with the checked row, or the profile currently open in the editor), give the copy a name and optional description, and the new profile is created and opened in the editor. The source profile is not modified. This is the normal way to get an editable copy of the stack-managed `default`.
 - **Import**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
-- **Activate**: Set a selected version as the active version for processing
+- **Activate**: Set a selected profile as the active profile for processing
 - **Compare**: Select 2+ versions to view a side-by-side diff (exportable as CSV/JSON)
-- **Delete**: Remove selected versions (cannot delete the active version, `default`, or managed versions); a confirmation dialog lists the affected versions before deletion
+- **Delete**: Remove selected profiles (cannot delete the active profile, `default`, or managed profiles); a confirmation dialog lists the affected profiles before deletion
 
 > The versions table uses standard checkboxes for row selection. Managed/Custom/Active badges show a short description of what each means on hover.
 
@@ -443,7 +443,7 @@ The editor protects against accidental data loss:
 
 Select two or more versions using the checkboxes, then click **Compare Selected**:
 
-- A modal displays all settings that differ between the selected versions
+- A modal displays all settings that differ between the selected profiles
 - Differences are shown field-by-field with each version's full value in its own column (long values scroll rather than truncate)
 - When exactly **two** versions are compared, each differing value is rendered as a word-level inline diff — added text is highlighted green and removed text red — making prompt and description edits easy to spot
 - Export the comparison as **CSV** or **JSON** for offline review
@@ -785,7 +785,7 @@ When a document is processed, the configuration version used is recorded:
    | `internal-producer` | Pinned by the submitting feature | A `submission-source` producer (Test Studio, the PII anonymizer) pinned its own |
    | `rejected` | Refused at ingest | A "Refuse the conflict" mapping failed the document, and no configuration was applied to it. The row still shows the profile the **upload** declared — that is deliberate, since a document with no profile is invisible to every scope-restricted user, including the one whose upload was refused |
 
-4. **UI Display**: The config version appears in the Document List table; the version,
+4. **UI Display**: The profile appears in the Document List table; the profile,
    its source, and the mapping prefix when one applied appear in the Document Details
    panel and in all export formats
 
@@ -806,24 +806,24 @@ The selector lists every profile with its description and marks the one that is 
 
 ## Test Studio Integration
 
-The Test Studio fully supports configuration versions for systematic benchmarking:
+The Test Studio fully supports configuration profiles for systematic benchmarking:
 
-### Running Tests with Versions
+### Running Tests with Profiles
 1. In the **Test Executions** tab, select a test set
-2. Choose a **Configuration Version** from the dropdown
+2. Choose a **Configuration Profile**, and optionally a **Configuration revision**
 3. Optionally add a context description
 4. Click **Run Test**
 
-### Version Tracking in Results
-- Each test run records the configuration version used
-- The **Config Version** column appears in the test runs list (clickable link to the configuration page)
-- The test results detail view displays the config version prominently
-- The test comparison view includes config version for each compared run
+### Profile Tracking in Results
+- Each test run records the configuration profile and revision used
+- The **Config Profile** column appears in the test runs list (clickable link to the configuration page)
+- The test results detail view displays the profile prominently
+- The test comparison view includes the profile for each compared run
 
-### Export with Version Data
-- **CSV export**: Includes a `Config Version` column with the version name
-- **JSON export**: Includes `configVersion` field in each test run record
-- **Print view**: Config version displayed in the results header
+### Export with Profile Data
+- **CSV export**: Includes a `Config Profile` column with the profile name
+- **JSON export**: Includes the `configVersion` field (the API name for the profile) in each test run record
+- **Print view**: The profile is displayed in the results header
 
 ## Storage Architecture
 
