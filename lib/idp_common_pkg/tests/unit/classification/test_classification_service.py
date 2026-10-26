@@ -1200,7 +1200,7 @@ class TestClassificationService:
     ):
         """One page cannot be split, so inference would be pure waste.
 
-        This is what keeps the common "one document per file" single-class
+        This is what keeps the common "one section per document" single-class
         deployment at zero classification cost — the thing the original
         short-circuit was really protecting.
         """

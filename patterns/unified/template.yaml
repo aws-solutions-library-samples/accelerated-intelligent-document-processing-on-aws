@@ -1052,8 +1052,8 @@ Resources:
             #
             # ⚠️ Do NOT restore the old claim that classification "is skipped when only a
             # single class is defined, or when a document name matches a RegEx rule".
-            # Under the default boundary detection a multi-page file is still classified,
-            # because knowing WHAT a packet contains says nothing about WHERE each record
+            # Under the default boundary detection a multi-page document is still classified,
+            # because knowing WHAT a packet contains says nothing about WHERE each section
             # starts.
             description: "Splits the document into sections and assigns a class to each section. Strategy decides how many model calls are made; each call's settings sit inside it."
             dependsOn: { field: "use_bda", value: false }
