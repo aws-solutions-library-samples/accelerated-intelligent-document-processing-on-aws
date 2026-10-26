@@ -77,7 +77,7 @@ flowchart LR
     end
 
     subgraph "Processing"
-        ACTIVE["Active Version"] --> RT["Document Processing<br/>uses full config directly"]
+        ACTIVE["Active Profile"] --> RT["Document Processing<br/>uses full config directly"]
     end
 
     D -.->|"Stack upgrades<br/>update only default"| D
@@ -94,20 +94,20 @@ flowchart LR
 - **What you save is what you get**: No hidden merge transforms. The configuration stored in DynamoDB is the configuration used at runtime.
 - **Stack upgrades update only `default`**: When you upgrade the solution, only the `default` profile receives new settings — as a new revision, so you can diff what the upgrade changed. Your other profiles remain untouched as locked snapshots that you explicitly manage.
 
-### Managed vs Custom Versions
+### Managed vs Custom Profiles
 
 Configuration profiles fall into two categories, indicated by a **Type** badge in the profiles table:
 
 | Type | Badge | Description |
 |------|-------|-------------|
-| **Managed** | 🔵 Blue | Stack-deployed versions that ship with the solution (e.g., `fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). Each corresponds to a pre-deployed test set. |
-| **Custom** | ⚪ Grey | User-created versions — fully editable and under your control. |
+| **Managed** | 🔵 Blue | Stack-deployed profiles that ship with the solution (e.g., `fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). Each corresponds to a pre-deployed test set. |
+| **Custom** | ⚪ Grey | User-created profiles — fully editable and under your control. |
 
-**Managed versions** have special protections:
+**Managed profiles** have special protections:
 
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
-- **Delete disabled** — managed versions cannot be deleted in the UI or via the API
+- **Delete disabled** — managed profiles cannot be deleted in the UI or via the API
 - **Stays managed when other features write to it** — class discovery, BDA blueprint
   sync and optimization, the Quick Start bootstrap, a discovery Replace and an update
   through the API or `idp-cli config-upload` can all save a managed profile, and none
@@ -127,9 +127,9 @@ For full details on managed configuration deployment and the config library, see
 ### Use Cases
 
 - **A/B testing**: Compare extraction accuracy across different model or prompt configurations
-- **Environment separation**: Maintain `Production`, `Staging`, and `Experiment` versions within a single stack
+- **Environment separation**: Maintain `Production`, `Staging`, and `Experiment` profiles within a single stack
 - **Iterative tuning**: Save each prompt-engineering iteration into the same profile — every save is a revision you can diff and roll back to, so you no longer need a new profile name per attempt
-- **Safe rollback**: Keep a known-good version active while experimenting with a new one
+- **Safe rollback**: Keep a known-good profile active while experimenting with a new one
 
 ## Revision History
 
@@ -398,18 +398,18 @@ The table includes a **type filter** (All / Managed / Custom) and a **preference
 
 #### Available Actions
 
-- **Open/Edit**: Click a version name to open it in the configuration editor
+- **Open/Edit**: Click a profile name to open it in the configuration editor
 - **Create profile**: Create a new profile as a copy of an existing one. Pick the source profile (prefilled with the checked row, or the profile currently open in the editor), give the copy a name and optional description, and the new profile is created and opened in the editor. The source profile is not modified. This is the normal way to get an editable copy of the stack-managed `default`.
-- **Import**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
+- **Import**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new profile
 - **Activate**: Set a selected profile as the active profile for processing
-- **Compare**: Select 2+ versions to view a side-by-side diff (exportable as CSV/JSON)
+- **Compare**: Select 2+ profiles to view a side-by-side diff (exportable as CSV/JSON)
 - **Delete**: Remove selected profiles (cannot delete the active profile, `default`, or managed profiles); a confirmation dialog lists the affected profiles before deletion
 
-> The versions table uses standard checkboxes for row selection. Managed/Custom/Active badges show a short description of what each means on hover.
+> The Configuration Profiles table uses standard checkboxes for row selection. Managed/Custom/Active badges show a short description of what each means on hover.
 
-### Editing a Version
+### Editing a Profile
 
-When you open a version in the configuration editor:
+When you open a profile in the configuration editor:
 
 1. The full configuration is loaded and displayed in the form editor
 2. Fields that differ from the current `default` are visually highlighted
@@ -433,63 +433,63 @@ The editor protects against accidental data loss:
 
 | Operation | What It Does |
 |-----------|-------------|
-| **Save changes** | Saves the current form as the full configuration for this version |
+| **Save changes** | Saves the current form as the full configuration for this profile, recorded as a new revision |
 | **Save current edits as new profile** | (Actions menu) Saves the configuration **as it currently stands in the editor**, including unsaved edits, to a new profile; the open profile is left unchanged. Use this to keep in-progress edits — including edits made to a read-only managed profile. To copy a profile's last *saved* state instead, use **Create profile** in the profiles table. |
-| **Save as Default** | Copies this version's configuration to become the new `default`, then resets the version to match |
-| **Reset to Default** | Copies the current `default` configuration into this version, replacing all customizations |
-| **Restore field** | (Per-field) Resets an individual field to its value in the `default` version |
+| **Save as Default** | Copies this profile's configuration to become the new `default`, then resets the profile to match |
+| **Reset to Default** | Copies the current `default` configuration into this profile, replacing all customizations |
+| **Restore field** | (Per-field) Resets an individual field to its value in the `default` profile |
 
-### Version Comparison
+### Profile Comparison
 
-Select two or more versions using the checkboxes, then click **Compare Selected**:
+Select two or more profiles using the checkboxes, then click **Compare Selected**:
 
 - A modal displays all settings that differ between the selected profiles
-- Differences are shown field-by-field with each version's full value in its own column (long values scroll rather than truncate)
-- When exactly **two** versions are compared, each differing value is rendered as a word-level inline diff — added text is highlighted green and removed text red — making prompt and description edits easy to spot
+- Differences are shown field-by-field with each profile's full value in its own column (long values scroll rather than truncate)
+- When exactly **two** profiles are compared, each differing value is rendered as a word-level inline diff — added text is highlighted green and removed text red — making prompt and description edits easy to spot
 - Export the comparison as **CSV** or **JSON** for offline review
 
 ### Export and Import
 
 #### Export
-- Click **Export** to download the currently open version as a JSON or YAML file
-- The export contains the complete configuration — it can be imported into another stack or version
+- Click **Export** to download the currently open profile as a JSON or YAML file
+- The export contains the complete configuration — it can be imported into another stack or profile
 
-#### Import as New Version
-- From the Versions Table, click **Import** to create a new version from a file
-- Provide a unique version name and optional description
-- The imported configuration becomes a new independent version
+#### Import as New Profile
+- From the Configuration Profiles table, click **Import** to create a new profile from a file
+- Provide a unique profile name and optional description
+- The imported configuration becomes a new independent profile
 
 ## Managing Profiles via CLI
 
-The IDP CLI supports full configuration version management. See [idp-cli.md](idp-cli.md) for complete command reference.
+The IDP CLI supports full configuration profile management. See [idp-cli.md](idp-cli.md) for complete command reference.
 
-### Download a Specific Version
+### Download a Specific Profile
 
 ```bash
-# Download the active version
+# Download the active profile
 idp-cli config-download --stack-name my-stack --output config.yaml
 
-# Download a specific version
+# Download a specific profile
 idp-cli config-download --stack-name my-stack --config-profile Production --output config.yaml
 ```
 
-### Upload / Create a Version
+### Upload / Create a Profile
 
 ```bash
-# Upload to the active version
+# Upload to the active profile
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml
 
-# Update an existing version
+# Update an existing profile
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
     --config-profile Production
 
-# Create a new version with description
+# Create a new profile with a description
 idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
     --config-profile Experiment-A \
     --version-description "Testing nova-2-lite for extraction"
 ```
 
-### Process Documents with a Specific Version
+### Process Documents with a Specific Profile
 
 ```bash
 # Process with a specific configuration profile
@@ -500,7 +500,7 @@ idp-cli run-inference --stack-name my-stack --dir ./documents/ \
 idp-cli process --stack-name my-stack --dir ./documents/ \
     --config-profile Production --config-revision 7 --monitor
 
-# Process test set with version and context
+# Process a test set with a profile and context
 idp-cli run-inference --stack-name my-stack --test-set fcc-example-test \
     --config-profile Experiment-A \
     --context "Testing nova-2-lite extraction prompts" \
@@ -766,11 +766,11 @@ under [Revisions](#revisions) above. Do not read a quiet
 
 ## Profile Tracking in Document Processing
 
-### How Version Is Tracked
+### How the Profile Is Tracked
 
-When a document is processed, the configuration version used is recorded:
+When a document is processed, the configuration profile used is recorded:
 
-1. **S3 Metadata**: The config version is stored as object metadata on the document in S3
+1. **S3 Metadata**: The profile name is stored as object metadata on the document in S3
 2. **DynamoDB**: The `ConfigVersion` attribute is saved with the document tracking record
 3. **Provenance**: `ConfigSource` records *where* that profile came from, because the
    profile name alone does not answer "why this one?" It takes one of seven values:
@@ -829,7 +829,7 @@ The Test Studio fully supports configuration profiles for systematic benchmarkin
 
 ### DynamoDB Key Format
 
-Configuration versions are stored in the `ConfigurationTable` DynamoDB table:
+Configuration profiles are stored in the `ConfigurationTable` DynamoDB table:
 
 | Partition Key (`Configuration`) | Description |
 |------|-------------|
@@ -846,13 +846,13 @@ reserved name and cannot be used for a profile.
 
 ### Item Structure
 
-Each version item contains metadata as top-level DynamoDB attributes, plus the configuration data stored as a gzip-compressed Binary attribute:
+Each profile item contains metadata as top-level DynamoDB attributes, plus the configuration data stored as a gzip-compressed Binary attribute:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `Configuration` | String | Partition key (`Config#<versionName>`) |
-| `IsActive` | Boolean | Whether this is the active version |
-| `Description` | String | Optional version description |
+| `IsActive` | Boolean | Whether this is the active profile |
+| `Description` | String | Optional profile description |
 | `CreatedAt` | String | ISO 8601 creation timestamp |
 | `UpdatedAt` | String | ISO 8601 last-modified timestamp |
 | `_compressed_config` | Binary | Gzip-compressed JSON containing all configuration data |
@@ -935,8 +935,8 @@ rather than failing the read.
 
 | Mutation | Parameters | Description |
 |----------|-----------|-------------|
-| `updateConfiguration` | `input: AWSJSON!, versionName: String, description: String` | Update a version's configuration. Supports flags: `saveAsVersion`, `saveAsDefault`, `resetToDefault` |
-| `setActiveVersion` | `versionName: String!` | Activate a specific version (deactivates all others) |
+| `updateConfiguration` | `input: AWSJSON!, versionName: String, description: String` | Update a profile's configuration. Supports flags: `saveAsVersion`, `saveAsDefault`, `resetToDefault` |
+| `setActiveVersion` | `versionName: String!` | Activate a specific profile (deactivates all others) |
 | `deleteConfigVersion` | `versionName: String!` | Delete a profile and its revision history (fails if active or `default`) |
 | `restoreConfigProfileRevision` | `profileName: String!`, `revision: Int!` | Save an earlier revision as the profile's current configuration (as a new revision) |
 | `labelConfigProfileRevision` | `profileName: String!`, `revision: Int!`, `label: String`, `notes: String` | Label a revision (also exempts it from pruning) |
@@ -949,9 +949,9 @@ inside a profile, never its own access-control object. See [RBAC](rbac.md).
 
 ## Upgrade Considerations
 
-### Stack Upgrades and Version Independence
+### Stack Upgrades and Profile Independence
 
-When you upgrade the IDP solution to a new version:
+When you upgrade the IDP solution to a new release:
 
 1. **`default` profile is updated** with new settings, prompts, or model defaults from the deployment — recorded as a new revision, so `default` r(n-1) → r(n) is a diff of exactly what the upgrade changed
 2. **All other profiles remain unchanged** — they are locked snapshots
@@ -960,14 +960,14 @@ When you upgrade the IDP solution to a new version:
 
 ### Managing Divergence
 
-To incorporate new defaults into an existing version:
-- **Reset to Default**: Copy the entire current default into your version (replaces all customizations)
-- **Manual review**: Open your version alongside the default, compare differences, and selectively update fields
-- **UI diff highlighting**: Fields in your version that differ from the current default are visually highlighted, making it easy to spot divergence
+To incorporate new defaults into an existing profile:
+- **Reset to Default**: Copy the entire current default into your profile (replaces all customizations)
+- **Manual review**: Open your profile alongside the default, compare differences, and selectively update fields
+- **UI diff highlighting**: Fields in your profile that differ from the current default are visually highlighted, making it easy to spot divergence
 
 ### Best Practices
 
 1. **Export before upgrading**: Use the Export button to download your active profile's configuration before a stack upgrade (revision history also covers you, but an export is portable across stacks — and see the note on [`LatestRevision` and `PublishedRevision`](#item-structure) if you have ever uninstalled a feature from this stack)
-2. **Review default changes**: After upgrading, compare your version with the updated default to identify beneficial new settings
+2. **Review default changes**: After upgrading, compare your profile with the updated default to identify beneficial new settings
 3. **Profile naming**: Name profiles after the use case or environment they serve (e.g., `lending`, `production`, `experiment-nova2-lite`). You no longer need to encode iterations in the name (`usecaseA_v1`, `usecaseA_v2`) — that is what revisions are for
-4. **Document context**: Use version descriptions and test run context fields to record what each version is testing
+4. **Document context**: Use profile descriptions and test run context fields to record what each profile is testing
