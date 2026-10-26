@@ -108,6 +108,15 @@ Configuration versions fall into two categories, indicated by a **Type** badge i
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
+- **Stays managed when other features write to it** — class discovery, BDA blueprint
+  sync and optimization, the Quick Start bootstrap, a discovery Replace and an update
+  through the API or `idp-cli config-upload` can all save a managed profile, and none
+  of them makes it a custom one. A save never clears the flag, including one whose
+  configuration says `managed: false`, and an update through the editor, API, SDK or
+  CLI cannot set it either. The stack's presets set it, and so does restoring a
+  revision saved while the profile was managed. A profile created by copying a
+  managed one (**Create profile**, **Save current edits as new profile…**) is always
+  custom.
 - **Editable copies** — use **Create profile** to create a custom, editable copy from any managed profile
 - **Test Studio integration** — when a test set is selected in Test Studio, the matching managed config version is auto-selected
 
@@ -147,6 +156,8 @@ revisions a profile has. Click it to open **Configuration revisions**, listing e
 retained revision newest-first with who saved it and when. The same panel is
 reachable from **Actions → Configuration revisions…** while you have a profile open
 in the editor, which is where you are standing when you want to undo a save.
+
+![Configuration revisions dialog listing every retained revision of the default profile, newest first, with who saved it and when](../images/config-profiles-revisions.png)
 
 From the panel you can:
 
@@ -231,6 +242,17 @@ configuration under the name you asked for would look like a success, and its
 numbers would go into a comparison. A label or a test-run pin keeps a revision from
 being pruned, not from expiring `DataRetentionInDays` after it was cut; see
 [Retention](#retention) for how to keep its configuration for longer.
+
+A revision is served in the **current** configuration format, whichever release cut
+it. A revision older than a format change was stored in the shape of its own
+release, so it is converted on the way out — the same conversion a stored profile
+gets on every read — and a download, the Revision History view and a pinned run all
+see one shape for one revision number. The stored body is never rewritten: it stays
+an immutable record of what ran, so what the conversion affects is only what is
+returned to you. The practical consequence is that comparing an old revision with a
+recent one compares settings in the same places, and `config-download --config-revision
+<n> --format minimal` reports real differences from the defaults rather than every
+relocated setting.
 
 For a test run the check happens **when the run is submitted**: `startTestRun`
 (Test Studio, `idp-cli run-inference --test-set`, a direct invocation) rejects a
@@ -323,8 +345,13 @@ does not stop the revision's body expiring `DataRetentionInDays` after it was cu
 The last **20** revisions per profile are retained by default, plus — regardless of
 that limit — the current revision, any labeled revision, and any revision pinned by
 a test run. Older unprotected revisions are pruned automatically as new ones are
-cut. The limit is set by the `CONFIG_REVISION_CAP` environment variable on the
-configuration resolver and the configuration custom-resource Lambda.
+cut. **That 20 is effectively fixed.** `ConfigRevisionStore` reads a
+`CONFIG_REVISION_CAP` environment variable and falls back to a built-in default of 20
+when it is absent — and no template in this repository sets it, so the fallback is what
+every deployment gets. The Lambdas that write revisions declare explicit
+`Environment.Variables` blocks that do not include it. Changing the cap means either
+adding the variable to those Lambdas in the template or passing `cap` to the store
+directly from your own code; it is not an operator-facing setting today.
 
 Revision bodies are stored in the Configuration bucket under
 `config_revisions/<profile>/<nnnnnn>.json.gz`, with a small metadata index in the
@@ -367,11 +394,13 @@ space taken from the thing you came to edit.
 
 The table includes a **type filter** (All / Managed / Custom) and a **preferences gear** to configure page size and visible columns.
 
+![Configuration Profiles table filtered to Managed profiles, with the History column showing each profile's revision count](../images/config-profiles-table.png)
+
 #### Available Actions
 
 - **Open/Edit**: Click a version name to open it in the configuration editor
 - **Create profile**: Create a new profile as a copy of an existing one. Pick the source profile (prefilled with the checked row, or the profile currently open in the editor), give the copy a name and optional description, and the new profile is created and opened in the editor. The source profile is not modified. This is the normal way to get an editable copy of the stack-managed `default`.
-- **Create (Import)**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
+- **Import**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
 - **Activate**: Set a selected version as the active version for processing
 - **Compare**: Select 2+ versions to view a side-by-side diff (exportable as CSV/JSON)
 - **Delete**: Remove selected versions (cannot delete the active version, `default`, or managed versions); a confirmation dialog lists the affected versions before deletion
@@ -879,6 +908,9 @@ rather than failing the read.
   boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
   published revision predates the `storedHash` field**, because rewriting the head
   would destroy the only integrity proof such a revision has.
+- **Whether a profile is stack-managed is not resolved from `default`.** It is the
+  profile's own record attribute, so reading a profile never changes it, and a
+  write-back keeps it as stored.
 - **Transparent**: no manual intervention required.
 - ⚠️ **The backfill source is `default`,** which an administrator can overwrite
   with *Save as Default*. A field your profile lacks therefore adopts whatever

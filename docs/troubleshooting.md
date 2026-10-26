@@ -99,12 +99,12 @@ cannot help here.
 The known trigger is a class marked `x-aws-idp-multi-instance: true` whose instance
 carries a long inner list — a 100-row bank statement, for example. The wrapper makes
 the *instance* array the outer list, so one row of that list is a whole document
-instance, and the batch sizer (which measures only the outer row's columns, logging
-`cols=2 per_row~80`) derives a batch size that is wrong by orders of magnitude.
-⚠️ **That sizing bug is not fixed** — it is tracked as open issue
-[#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894),
-so such a class still cannot be fully assessed; what it now gets is an actionable
-message naming the real cause.
+instance. The batch sizer counts that row by every confidence leaf it emits, inner
+rows included (its log line reports `leaves/row=`), so the first pass is sized for
+it — but no batch is smaller than one instance, so ⚠️ **an instance whose own
+confidence output exceeds the model's cap still cannot be fully assessed on that
+model** ([#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894));
+what it gets is an actionable message naming the real cause.
 
 ⚠️ If your symptom is instead **the document stuck in `ASSESSING` with the Assessment
 Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**,
@@ -135,10 +135,10 @@ buys smaller calls by making more of them.
 Two things that will still produce this symptom. **An out-of-memory kill is
 equally exception-free and nothing above bounds memory** — read the kill reason in
 the function's log rather than assuming the wall clock. And the multi-instance
-sizing bug #894 reports is a different route: its wrapper makes the batch sizer
-measure the outer row, so it derives a batch size far too large and the pass makes
-*few* big calls rather than many small ones, which is not the shape #1488
-bounds. For that class, either point it at a large-output-cap confidence model
+shape #894 reports is a different route: each outer row is a whole instance, so the
+pass makes *few* big calls rather than many small ones, which is not the shape
+#1488 bounds, and one instance whose output exceeds the cap cannot be split. For
+that class, either point it at a large-output-cap confidence model
 (`extraction.confidence.escalation_model`, or the per-class
 `x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
 class rather than a field inside a multi-instance instance; attach your Assessment
@@ -193,14 +193,18 @@ exist in the configuration the document was processed under, so there was no sch
 to extract against and the section holds no data. Three causes: a class renamed or
 deleted while documents were in flight; an old document reprocessed under a
 configuration that no longer defines its class; or the classifier returned a class
-outside the configured vocabulary on a path that does not enforce one —
-`textbasedHolisticClassification`, which has no enforcement loop, or
-`multimodalPageLevelClassification` with `enforceValidClasses: false`. Add the class
-to the configuration, reclassify the document under the current one, or turn
-enforcement on. The same section also carries
+outside the configured vocabulary with `enforceValidClasses: false`, which
+stores the model's class verbatim. That setting lives inside the `validation`
+block of each call that assigns a class —
+`classification.one_stage.llm.validation.enforceValidClasses` and
+`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+— and there is no `classification.enforceValidClasses`. With enforcement on (the
+default), page and packet granularity and two-stage section classification all
+re-prompt and then assign `fallback_class` instead. Add the class to the configuration, reclassify the document
+under the current one, or turn enforcement on. The same section also carries
 `assessment_skipped_confidence_unavailable`, because it has no confidence scores
-either — so on those two non-enforcing paths these arrive at a rate set by model
-output rather than by configuration edits, and
+either — so with enforcement off these arrive at a rate set by model output rather
+than by configuration edits, and
 [`ConfidenceUnavailableThreshold`](./monitoring.md#confidence-assessment-degraded)
 is what you tune if the alarm is too sensitive for your corpus.
 
@@ -218,18 +222,26 @@ produce a usable class for one or more of the section's pages, so those pages ha
 no extraction schema and nothing was extracted from them. The codes and their
 remedies are tabulated in
 [Classification](./classification.md#pages-classification-could-not-classify).
-Briefly: `classification_failed` is an error worth investigating (check the
-ClassificationFunction log group, and endpoint health, model access and quota) and
-is reached on the SageMaker/UDOP backend — on Bedrock the equivalent failure
-propagates and fails the document instead. `classification_page_no_content` is a
+Briefly: `classification_failed` is an error worth investigating, but ⚠️ **a stack
+deployed from this repository does not produce it.** Every call site that raises it
+sits in the classification service's SageMaker path, which runs only when a library
+caller constructs `ClassificationService` with `backend="sagemaker"` and an
+endpoint name. The deployed solution creates no inference endpoint and leaves the
+backend at its `bedrock` default, so on a standard deployment this code is
+unreachable and the equivalent Bedrock failure propagates and fails the document
+instead. If you do see it, you are running the SageMaker backend against an
+endpoint you host yourself, and the remedy is about that endpoint — check its
+health, the model access and the quota, alongside the ClassificationFunction log
+group. `classification_page_no_content` is a
 warning meaning the page had **neither** usable OCR text **nor** a loadable page
 image; a blank page normally still has an image, so this points at missing page
 artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
 was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
-three you are most likely to see. These are recorded on the
-`multimodalPageLevelClassification` path only.
+three you are most likely to see. These are recorded only at one-stage page
+granularity; packet granularity and two stage still re-prompt and assign
+`fallback_class`, but record no issue for it.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit
@@ -584,15 +596,23 @@ Verbose mode provides:
 
 ### Container-Based Lambda Deployment Issues
 
+Container packaging is not mode-specific. Every image-packaged function in the
+unified pattern stack — on the BDA branch and the pipeline branch alike — plus the
+image-packaged functions in the multi-doc-discovery stack are built by a single
+CodeBuild project (`DockerBuildProject`, named `<StackName>-docker-build`). One
+build builds them all; images are
+tagged with a content-based version (`IMAGE_VERSION`), so the tag changes only when
+content does, and that is what moves the Lambda functions onto a new image.
+
+⚠️ **Those images are built in CodeBuild during stack deployment, not on your
+machine.** Publishing runs no `docker` command and needs no local Docker daemon, no
+ECR login and no local disk headroom for images. So a Docker or ECR problem seen
+during a deployment is a problem in the CodeBuild build, and its log is where the
+error is — not your local environment.
+
 | Issue | Resolution |
 |-------|------------|
-| **Lambda package exceeds 250MB limit** | Pattern-2 uses container images automatically. For Pattern-1/3, consider reducing dependency size or switching to container images in a future update. |
-| **Docker daemon not running** | Start Docker Desktop or Docker service before running container deployment |
-| **ECR login failed** | Ensure AWS credentials have ECR permissions. The script will automatically handle ECR login |
-| **Container build fails** | Check Dockerfile syntax and ensure all referenced files exist |
-| **Image push timeout** | Check network connectivity and ECR repository permissions |
-
-**Container Deployment Behavior:**
-- Pattern-2 builds and pushes container images automatically when Pattern-2 changes are detected.
-- Ensure Docker Desktop/service is running and your AWS credentials have ECR permissions.
-- Use `--verbose` to see detailed build and push logs.
+| **Lambda package exceeds 250MB limit** | The large-dependency functions are already image-packaged, which raises the limit to the 10 GB image size. If a ZIP-packaged function hits this, move it to `PackageType: Image` rather than trimming dependencies. |
+| **Docker build or push fails during deployment** | Read the CodeBuild log for the project named `<StackName>-docker-build`. Check Dockerfile syntax and that all referenced files exist |
+| **Image push timeout, or ECR access denied in the build** | The build uses the CodeBuild service role, not your credentials. In VPC-secured mode confirm the ECR API, ECR Docker and S3 endpoints exist and that the build subnets have outbound access for base images — see [VPC Secured Mode](./vpc-secured-mode.md) |
+| **Docker daemon not running** | Only affects local Lambda testing (`sam local invoke`), not publishing. Start Docker Desktop or the Docker service before invoking a function locally |

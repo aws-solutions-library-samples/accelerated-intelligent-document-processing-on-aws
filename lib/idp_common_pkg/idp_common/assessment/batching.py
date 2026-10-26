@@ -238,7 +238,9 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         if v is None or (isinstance(v, str) and not v.strip()):
             return default
         return float(v)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError: an integer literal too large for a float, which
+        # json.loads returns as an int.
         return default
 
 
@@ -360,6 +362,15 @@ def enrich_assessment_with_thresholds(
 
     def _enrich_leaf_container(node: Any, threshold: float, path: str) -> Any:
         """Recursively add threshold to every {confidence,...} leaf under node."""
+        # A NaN or infinite threshold (a malformed schema value) falls back to
+        # the default, as ``_safe_float_conversion`` does for the leaf the
+        # separate step stores, so the stored leaf and alert agree.
+        finite_threshold = utils.finite_float(threshold)
+        threshold = (
+            default_confidence_threshold
+            if finite_threshold is None
+            else finite_threshold
+        )
         if isinstance(node, dict):
             if "confidence" in node:
                 conf = (
@@ -367,6 +378,14 @@ def enrich_assessment_with_thresholds(
                     if node.get("confidence") is not None
                     else None
                 )
+                # A NaN or infinite score is malformed rather than absent: read
+                # it as 0.0 so it alerts, as BDA mode does and as 1S-TopK's
+                # stand-in does for a NaN probability (it clamps an infinite one
+                # instead). This builder produces the stored alerts for the
+                # separate confidence step too. Compared directly,
+                # ``nan < threshold`` is False and raised no alert.
+                if conf is not None and utils.finite_float(conf) is None:
+                    conf = 0.0
                 out = {**node, "confidence_threshold": threshold}
                 if conf is not None and conf < threshold:
                     alerts.append(
@@ -846,15 +865,23 @@ def _schema_field_mismatch_reason(
 
 
 def count_row_columns(rows: Any) -> int | None:
-    """Widest scalar column count across a list's rows, or None if not countable.
+    """Widest confidence-leaf count across a list's rows, or None if not countable.
 
     Takes the whole row list (not one row) and returns the MAXIMUM count over
     EVERY dict row. Sizing off ``rows[0]`` alone under-counts whenever extraction
     omitted a key on that row, and under-counting the width inflates the batch —
     the direction that truncates. A bare dict is accepted and treated as a single
-    row. Returns None when no dict row is found, which tells the caller to use the
-    value-length fallback.
+    row. Returns None when no dict row yields a leaf, which tells the caller to use
+    the value-length fallback.
+
+    A row's width is the number of confidence leaves it emits, counted at every
+    depth (:func:`idp_common.bedrock.sizing.confidence_leaf_count`), not its
+    top-level scalar keys: the model scores a nested group or a nested list leaf
+    by leaf, so a row holding six scalars and a group of seven emits thirteen
+    leaves. Counting only the six sized such a row at under half its output.
     """
+    from idp_common.bedrock.sizing import confidence_leaf_count
+
     if isinstance(rows, dict):
         candidates: list[Any] = [rows]
     elif isinstance(rows, (list, tuple)):
@@ -865,10 +892,7 @@ def count_row_columns(rows: Any) -> int | None:
     for row in candidates:
         if not isinstance(row, dict):
             continue
-        widest = max(
-            widest,
-            sum(1 for v in row.values() if not isinstance(v, (dict, list))),
-        )
+        widest = max(widest, confidence_leaf_count(row))
     return widest or None
 
 
@@ -877,12 +901,20 @@ def compute_token_aware_batch_size(
     sample_row: Any,
     geometry_mode: str | None,
     configured_batch_size: int,
+    fixed_results: Any = None,
 ) -> int:
     """Derive a list-batch size that fits the confidence model's output cap.
 
     ``sample_row`` should be the list's ROW LIST; a single dict is accepted and
-    treated as one row. The column count is measured across a sample of rows
+    treated as one row. The row width is measured across every row
     (:func:`count_row_columns`) rather than off row 0.
+
+    ``fixed_results`` is everything else the call carries — the section's scalars,
+    groups and every other list, all of which ride every batch unsliced. When
+    given, its estimated output is reserved before rows are fitted, so a section
+    whose fixed part is larger than the safety fraction leaves free is sized to
+    what actually remains (see
+    :func:`idp_common.bedrock.sizing.confidence_rows_for_per_row_tokens`).
 
     Why this exists: when the confidence model has a small output ceiling (Nova
     Lite: 10,000) and each row emits a confidence leaf per column — tripled again
@@ -903,6 +935,7 @@ def compute_token_aware_batch_size(
     reached a small-cap model.
     """
     from idp_common.bedrock.sizing import (
+        confidence_leaf_count,
         confidence_per_row_tokens,
         confidence_rows_for_per_row_tokens,
         confidence_rows_per_call,
@@ -936,10 +969,21 @@ def compute_token_aware_batch_size(
             configured_batch_size,
         )
 
+    fixed_tokens: float | None = None
+    if fixed_results is not None:
+        fixed_tokens = confidence_leaf_count(fixed_results) * confidence_per_row_tokens(
+            1, geometry_mode
+        )
+
     num_columns = count_row_columns(sample_row)
     if num_columns is not None:
         result = confidence_rows_per_call(
-            output_cap, num_columns, geometry_mode, ceiling, model_id=model_id
+            output_cap,
+            num_columns,
+            geometry_mode,
+            ceiling,
+            model_id=model_id,
+            fixed_tokens=fixed_tokens,
         )
         per_row_tokens = confidence_per_row_tokens(num_columns, geometry_mode)
     else:
@@ -977,7 +1021,9 @@ def compute_token_aware_batch_size(
             per_row_tokens = max(
                 per_row_tokens, confidence_per_row_tokens(1, geometry_mode)
             )
-        result = confidence_rows_for_per_row_tokens(output_cap, per_row_tokens, ceiling)
+        result = confidence_rows_for_per_row_tokens(
+            output_cap, per_row_tokens, ceiling, fixed_tokens=fixed_tokens
+        )
         family = model_list_batch_ceiling(model_id)
         if family is not None:
             result = max(1, min(result, family))
@@ -986,13 +1032,14 @@ def compute_token_aware_batch_size(
     # configured value, which hid the sizing decision from exactly the operator most
     # likely to be debugging it — someone who pinned a ceiling.
     logger.info(
-        "Token-aware batch sizing: model=%s cap=%s geometry=%s cols=%s "
-        "per_row~%d -> batch %d (configured ceiling %s)",
+        "Token-aware batch sizing: model=%s cap=%s geometry=%s leaves/row=%s "
+        "per_row~%d fixed~%s -> batch %d (configured ceiling %s)",
         model_id or "(none)",
         output_cap if output_cap else "unknown",
         geometry_mode,
         num_columns if num_columns is not None else "n/a",
         int(per_row_tokens),
+        int(fixed_tokens) if fixed_tokens is not None else "n/a",
         result,
         ceiling if ceiling is not None else "none",
     )
@@ -1065,8 +1112,7 @@ def _record_oversized_row(
     with ``stopReason=max_tokens``, that row's own confidence output exceeds the
     model's max-output-token cap and **no batch size can work** — the row itself is
     too big (the observed case: a multi-instance wrapper makes one "row" a whole
-    bank statement carrying a 100-row inner ``Transactions`` list, so the sizer's
-    ``cols=2 per_row~80`` estimate is off by two orders of magnitude; see #894).
+    bank statement carrying a 100-row inner ``Transactions`` list; see #894).
 
     Recording it here lets the ladder skip the futile same-model retry rung and lets
     :func:`build_assessment_issues` report the ACTUAL cause with the numbers an
@@ -1778,6 +1824,7 @@ def audit_explainability(
     geometry_mode: str | None = None,
     section_id: str | None = None,
     ladder_issues: list[Any] | None = None,
+    geometry_available: bool | None = None,
 ) -> tuple[dict[str, list[int]], list[Any]]:
     """Verify every extracted value has correctly-structured explainability.
 
@@ -1797,7 +1844,15 @@ def audit_explainability(
       it there corrupts the coverage arithmetic.
     - When ``geometry_mode not in (None, "off")``, a confidence leaf carries a
       geometry block (``bbox``/``geometry``) — flagged as a *warning*, not an
-      error, since geometry is advisory enrichment.
+      error, since geometry is advisory enrichment. The two halves of this rung ask
+      different questions, for reasons measured at the emission site: **any**
+      box-less list row reports, while a **scalar** field reports only when no
+      populated field in the section carries a box at all, and only when
+      ``geometry_available`` is not ``False`` — a document whose OCR backend emitted
+      no geometry never attempted a match, so every one of its sections would
+      otherwise report with a cause that did not apply. Counting scalars happened
+      in neither half before (#1520), so the rung could not fire for a section whose
+      fields are all scalars — which is most of them.
     - Confidence values are within [0, 1].
     - **Coverage (#901 item 3):** the share of extracted list rows that actually
       carry a confidence. A materially short section emits
@@ -1837,6 +1892,9 @@ def audit_explainability(
     want_geometry = bool(geometry_mode) and geometry_mode != "off"
     out_of_range = 0
     missing_geometry_rows = 0
+    row_geometry_total = 0
+    missing_geometry_scalars = 0
+    scalar_geometry_total = 0
 
     def _leaf_confidences(node: Any) -> list[dict[str, Any]]:
         """All ``{confidence: ...}`` leaves under a row/scalar assessment node."""
@@ -1852,6 +1910,31 @@ def audit_explainability(
     def _has_geometry(leaf: dict[str, Any]) -> bool:
         geo = leaf.get("geometry") or leaf.get("bbox") or leaf.get("bounding_box")
         return bool(geo)
+
+    def _scalar_leaf_values(node: Any, value: Any) -> list[tuple[dict[str, Any], Any]]:
+        """``(leaf, that leaf's OWN value)`` under a non-list field.
+
+        Pairing matters because the populated-ness test is a property of the leaf,
+        not of the field holding it: ``_is_populated_value`` is true for the dict
+        ``{"State": None, "ZipCode": ""}`` — it is a non-empty container — while
+        every leaf beneath it has nothing to locate. Testing the field would count
+        those leaves as wanting a box and report that none was found, about values
+        that do not exist.
+
+        A group whose extraction value is a plain string (the assessment model split
+        one value into sub-keyed fragments) yields ``None`` per child and so is
+        counted for nothing, which is the conservative direction: silence about a
+        shape this rung cannot reason over beats a note it cannot justify.
+        """
+        if not isinstance(node, dict):
+            return []
+        if "confidence" in node:
+            return [(node, value)]
+        pairs: list[tuple[dict[str, Any], Any]] = []
+        for key, child in node.items():
+            child_value = value.get(key) if isinstance(value, dict) else None
+            pairs.extend(_scalar_leaf_values(child, child_value))
+        return pairs
 
     for field, data_val in extraction_results.items():
         assessed = assessment.get(field)
@@ -1871,8 +1954,24 @@ def audit_explainability(
                     conf = leaf.get("confidence")
                     if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
                         out_of_range += 1
-                    if want_geometry and conf is not None and not _has_geometry(leaf):
-                        missing_geometry_rows += 1
+                # Geometry is counted per leaf against the leaf's OWN value, the same
+                # test the scalar half applies. Counting every scored row leaf
+                # regardless would make the two halves disagree: a list of scored but
+                # empty cells would be the section's only counted leaves, so
+                # ``nothing_located`` would hold and the note would say nothing was
+                # located about values that are not on the page — the false alarm the
+                # scalar threshold exists to avoid.
+                if want_geometry:
+                    for leaf, leaf_value in _scalar_leaf_values(
+                        assessed[i], data_val[i]
+                    ):
+                        if leaf.get("confidence") is None:
+                            continue
+                        if not _is_populated_value(leaf_value):
+                            continue
+                        row_geometry_total += 1
+                        if not _has_geometry(leaf):
+                            missing_geometry_rows += 1
         else:
             # Scalar/group: verify a confidence leaf exists and is in range.
             #
@@ -1886,6 +1985,24 @@ def audit_explainability(
                 conf = leaf.get("confidence")
                 if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
                     out_of_range += 1
+            # Geometry was counted in the list branch only, so this rung could not
+            # fire for a scalar field at all — the same row/scalar asymmetry as
+            # #1474. Measured over 571 real sections: **no** list leaf was
+            # scored-but-box-less, while 495 scalar ones were, in 222 sections. The
+            # rung was therefore counting the case that does not arise and
+            # structurally blind to the one that does (#1520).
+            #
+            # Each leaf is tested against its OWN value rather than the field's —
+            # see ``_scalar_leaf_values`` for why a group makes those differ.
+            if want_geometry:
+                for leaf, leaf_value in _scalar_leaf_values(assessed, data_val):
+                    if leaf.get("confidence") is None:
+                        continue
+                    if not _is_populated_value(leaf_value):
+                        continue
+                    scalar_geometry_total += 1
+                    if not _has_geometry(leaf):
+                        missing_geometry_scalars += 1
 
     if out_of_range:
         issues.append(
@@ -1899,14 +2016,79 @@ def audit_explainability(
                 details={"out_of_range_leaves": out_of_range},
             )
         )
-    if missing_geometry_rows:
+    # A section where NOTHING was located is the scalar half's condition, and it is
+    # deliberately not "any box-less scalar".
+    #
+    # ⚠️ Reporting per leaf here would be noise, measured: it fires on 40% of real
+    # sections, and the largest single contributor is ``Language`` (values like
+    # "English"), followed by ``LetterType``/``MemoType``/``FormType`` — fields whose
+    # value is the model's characterization of the document and is nowhere on the
+    # page, so no box can exist for them and their absence is the correct outcome
+    # rather than a defect. An info note that is usually about nothing is how
+    # ``extraction_sparse`` became background, and an operator learns to ignore the
+    # surface rather than the code.
+    #
+    # "No populated field in the section carries a box" is a different statement and
+    # one worth making: the highlight feature produced nothing at all there, which an
+    # operator opening the section will see and cannot otherwise explain. It fires on
+    # 2% of the same corpus. The shape mirrors the ``scored_fields <= 0`` condition
+    # this function already uses one rung down, so the two rungs read alike.
+    # ⚠️ The condition spans BOTH halves, because "no scalar carries a box" is a
+    # much weaker statement than the one this rung makes and a far more common
+    # state: one unmatched ``Language`` beside a fully grounded table satisfies it,
+    # and a note claiming nothing was located would be a plain false alarm there.
+    geometry_total = row_geometry_total + scalar_geometry_total
+    geometry_missing = missing_geometry_rows + missing_geometry_scalars
+    # ⚠️ ``geometry_available=False`` means no page carried OCR geometry at all, so
+    # no match was ever attempted. Every section of such a document satisfies
+    # "nothing was located", and the rung would publish ``root_cause="value could
+    # not be matched to OCR lines"`` about work that never ran — on every section at
+    # once, which an operator cannot act on per section because the cause is the
+    # document's OCR backend. The 2% figure above is measured where geometry IS
+    # available and says nothing about this population, so the rung declines it
+    # rather than reporting it with a cause it cannot support. ``None`` means the
+    # caller did not say, and is treated as available so an existing caller keeps
+    # its behaviour.
+    nothing_located = geometry_total > 0 and geometry_missing == geometry_total
+    # Gating the WHOLE emission, not just ``nothing_located``: with no geometry
+    # anywhere, every scored populated leaf is box-less, so a section holding a list
+    # would still report through ``missing_geometry_rows`` and blame
+    # ``geometry.mode`` for a match that was never attempted. Suppressing one half
+    # and not the other is the shape that makes a note hard to read rather than
+    # merely noisy.
+    #
+    # ⚠️ **Only under ``ocr_only``, because only there is the premise true.** That
+    # mode derives every box from value-matching, so no OCR geometry means no match
+    # was attempted. Under ``llm_grounded`` the model emits the boxes and OCR only
+    # corrects them, so a box-less leaf on a backend that carries no geometry is a
+    # genuine model omission — which is precisely what the ``root_cause`` below
+    # reports for that mode, and suppressing it would make that branch unreachable
+    # on every such backend.
+    suppressed_no_ocr_geometry = (
+        geometry_mode == "ocr_only" and geometry_available is False
+    )
+    if not suppressed_no_ocr_geometry and (missing_geometry_rows or nothing_located):
         issues.append(
             ProcessingIssue(
                 stage="assessment",
                 severity="info",
                 code="assessment_geometry_incomplete",
+                # The two conditions report different things, so they say different
+                # things: summing both counts under the list half's wording would
+                # publish a figure including scalars this rung declines to report
+                # individually.
+                #
+                # ⚠️ Written inline rather than assigned to a local first, because
+                # `scripts/tests/test_info_code_ui_parity.py` reads this argument
+                # from source to check the code reports an absence and not a repair.
+                # A bare name defeats that reader — it fails loudly rather than
+                # passing vacuously — and a conditional expression keeps **both**
+                # messages in its view.
                 message=(
-                    f"{missing_geometry_rows} scored leaf/leaves have no bounding "
+                    f"No scored field in this section has a bounding box under "
+                    f"geometry.mode '{geometry_mode}' ({geometry_missing} leaf/leaves)."
+                    if nothing_located
+                    else f"{missing_geometry_rows} scored leaf/leaves have no bounding "
                     f"box under geometry.mode '{geometry_mode}'."
                 ),
                 root_cause=(
@@ -1915,7 +2097,20 @@ def audit_explainability(
                     else "model omitted a box for some cells"
                 ),
                 section_id=section_id,
-                details={"missing_geometry_leaves": missing_geometry_rows},
+                details={
+                    # Stays list-rows-only, which is what it counted before the
+                    # scalar half existed, so its definition is unchanged. ⚠️ The
+                    # VALUE can be lower for identical input, because a row leaf
+                    # whose own value is empty is no longer counted — which is what
+                    # a consumer comparing runs across an upgrade will notice. The
+                    # new keys carry the rest.
+                    "missing_geometry_leaves": missing_geometry_rows,
+                    "missing_geometry_rows": missing_geometry_rows,
+                    "row_leaves_wanting_geometry": row_geometry_total,
+                    "missing_geometry_scalars": missing_geometry_scalars,
+                    "scalar_leaves_wanting_geometry": scalar_geometry_total,
+                    "nothing_located": nothing_located,
+                },
             )
         )
 
@@ -2367,11 +2562,27 @@ def assess_results_batched(
     # ``extraction.sharding`` for the opaque-row fallback, pulling the whole
     # extraction package (and strands) into the Assessment Lambda for a number it
     # never reads.
+    #
+    # The longest list is the one sliced below; everything else in
+    # ``extraction_results`` rides every batch unsliced (``_assess_slice_adaptive``
+    # copies ``base_results`` and replaces only that list), so it is passed as the
+    # fixed part of every call's output.
     effective_batch_size = batch_size
+    widest_list: list[Any] = []
+    fixed_results: dict[str, Any] = {}
     if all_list_fields_probe:
-        widest_list = max(all_list_fields_probe, key=len)
+        sliced_key = max(
+            (k for k, v in extraction_results.items() if isinstance(v, list) and v),
+            key=lambda k: len(extraction_results[k]),
+        )
+        widest_list = extraction_results[sliced_key]
+        fixed_results = {k: v for k, v in extraction_results.items() if k != sliced_key}
         effective_batch_size = compute_token_aware_batch_size(
-            confidence_model_id, widest_list, geometry_mode, batch_size
+            confidence_model_id,
+            widest_list,
+            geometry_mode,
+            batch_size,
+            fixed_results=fixed_results,
         )
         split_stats["derived_batch_size"] = effective_batch_size
 
@@ -2417,9 +2628,10 @@ def assess_results_batched(
         if all_list_fields_probe:
             escalation_batch_size = compute_token_aware_batch_size(
                 ladder_escalation_model,
-                max(all_list_fields_probe, key=len),
+                widest_list,
                 geometry_mode,
                 batch_size,
+                fixed_results=fixed_results,
             )
 
     # All list fields (any size) — used to target missing-row retries even when
@@ -2519,8 +2731,9 @@ def assess_results_batched(
             "split_stats": split_stats,
         }
 
-    # Batch by the largest list field; other (smaller) list fields ride the
-    # first batch and are reconciled afterward.
+    # Batch by the largest list field; the other list fields ride EVERY batch
+    # unsliced (which is why the sizer reserves them), and their assessments are
+    # taken from the first batch.
     big_field = max(list_fields, key=lambda k: len(list_fields[k]))
     rows = extraction_results[big_field]
     merged_assessment: dict[str, Any] = {}

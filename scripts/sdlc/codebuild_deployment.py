@@ -8859,8 +8859,7 @@ def update_ux_nightly_stack(template_url: str) -> dict:
     failure must not kill an update of a different stack mid-flight. It deletes
     nothing and calls none of this module's teardown paths, because the stack has
     to outlive every run, and it never disables the stack's CloudFront
-    distribution, because every run's teardown deletes disabled distributions
-    whichever stack owns them. Its result is a counts-only outcome for
+    distribution, which the stack serves its web UI from. Its result is a counts-only outcome for
     ux_nightly_row, and an unexpected exception anywhere is one more outcome,
     `failed` in phase `thread`, rather than a traceback in a worker.
 

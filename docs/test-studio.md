@@ -354,7 +354,7 @@ All datasets share these deployment characteristics:
 ### Backend Components
 
 #### TestSetResolver Lambda
-- **Location**: `src/lambda/test_set_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
 - **Purpose**: Handles GraphQL operations for test set management
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
@@ -369,7 +369,7 @@ All datasets share these deployment characteristics:
 - **Features**: S3 event triggered extraction, file validation, status updates, file count recount for accurate totals
 
 #### TestRunner Lambda
-- **Location**: `src/lambda/test_runner/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_runner/index.py`
 - **Purpose**: Initiates test runs and queues file processing jobs
 - **Features**: Test validation, SQS message queuing, fast response optimization
 
@@ -379,7 +379,7 @@ All datasets share these deployment characteristics:
 - **Features**: SQS message processing, file copying, status management
 
 #### TestResultsResolver Lambda
-- **Location**: `src/lambda/test_results_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
 - **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
@@ -397,13 +397,13 @@ All datasets share these deployment characteristics:
   - Automatic retry handling
 
 ### GraphQL Schema
-- **Location**: `src/api/schema.graphql`
+- **Location**: `nested/api-resolvers/src/api/schema.graphql`
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
 #### TestStudioLayout
-- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.tsx`
 - **Purpose**: Main container with two-tab navigation and global state management
 
 #### TestSets
@@ -412,7 +412,7 @@ All datasets share these deployment characteristics:
 - **Features**: Pattern-based creation, zip upload, direct upload detection, incremental document addition, time-based file filtering, dual polling (3s active, 60s discovery)
 
 #### TestExecutions
-- **Location**: `src/ui/src/components/test-studio/TestExecutions.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestExecutions.tsx`
 - **Purpose**: Unified interface combining TestRunner and TestResultsList
 - **Features**: Test execution, results viewing, comparison, export, abort, delete operations
 
@@ -421,16 +421,16 @@ All datasets share these deployment characteristics:
 ```
 components/
 └── test-studio/
-    ├── TestStudioLayout.jsx
-    ├── TestSets.jsx
-    ├── TestExecutions.jsx
-    ├── TestRunner.jsx
-    ├── TestResultsList.jsx
-    ├── TestResults.jsx
-    ├── TestComparison.jsx
-    ├── TestRunnerStatus.jsx
-    ├── DeleteTestModal.jsx
-    └── index.js
+    ├── TestStudioLayout.tsx
+    ├── TestSets.tsx
+    ├── TestExecutions.tsx
+    ├── TestRunner.tsx
+    ├── TestResultsList.tsx
+    ├── TestResults.tsx
+    ├── TestComparison.tsx
+    ├── TestRunnerStatus.tsx
+    ├── DeleteTestModal.tsx
+    └── index.ts
 ```
 
 ## Lifecycle flows: online vs offline paths
@@ -1010,6 +1010,14 @@ that curve it derives:
 | **Audit sample** | Random spot-check of the *high-confidence* documents |
 | **Burndown** | Residual error at every review depth |
 
+On a large set the estimate reads a bounded sample of documents rather than all of
+them, and scales what it finds to the whole set — both the confidences and the
+share of documents that already carry ground truth, which is not review work. The
+sample is taken in listing order, so a set whose labelled files sort together can
+be sized off. When a partial sample holds only ground truth, the dialog says how
+much of the set it read rather than reporting the set as fully labelled, and still
+lets you continue to the annotation queue, which lists every document.
+
 ### The curve is measured, and it improves
 
 The curve comes from three sources of increasing fidelity:
@@ -1181,9 +1189,15 @@ The queue page shows:
   document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
   them re-reads the queue from the server and takes a few seconds on a large set.
 
-Per-document actions (claim, release, skip, mark reviewed) sit at the top of the
-editor pane, so finishing a long document does not mean scrolling past every field
-to reach them.
+Per-document actions sit in one bar at the top of the document editor (the same
+editor as production review items), so finishing a long document does not mean
+scrolling past every field to reach them: **History**, **Skip**, **Discard Changes**,
+**Save**, **Edit Page Grouping**, **Processing Report** and **Complete**, or **Claim**
+for an Annotator viewing an unassigned document. **Save** saves the open section,
+which marks it reviewed (switching sections saves it too), and **Complete** saves the
+open section and confirms the rest. Under the title the screen names the **Document**
+(its input key) and its **Ground Truth**, with an **Annotate | View Source Document**
+switch beneath them, and its notices share one alert.
 
 On large sets the queue is read a page at a time, and the page says so rather than
 implying the whole set has been ranked. What bounds that page is the number of
@@ -1292,10 +1306,11 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Edit page grouping**, beside the section selector at the top of the document, opens a
-board with every section side by side and each page as a thumbnail. It sits with the
-section pills rather than down among the extracted fields because it changes the
-document's structure, not one section's values. (**Pages in this section**, in the field
+**Edit Page Grouping** opens a board with every section side by side and each page as a
+thumbnail. In the queue's document editor it is in the action bar at the top and opens
+the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
+section selector at the top of the document. Either way it is kept away from the
+extracted fields because it changes the document's structure, not one section's values. (**Pages in this section**, in the field
 list below, stays as a read-only record of which pages the open section covers.)
 
 Drag a page from one section to another, or use its **Move to section**
@@ -1369,7 +1384,7 @@ things happened rather than showing an empty form:
   extract against. This is the actionable one: set the class first — re-extracting before
   that produces nothing. A section in this state is marked **(no class)** in its tab. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
-  which **Edit page grouping** can merge.
+  which **Edit Page Grouping** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
 - **A section added by re-grouping**, which starts with no values because nothing has
   extracted those pages as a group yet.
@@ -1421,8 +1436,8 @@ has a chat tool, and the reviewer keeps ownership of the document.
 ### Edit history
 
 Each label records who changed it, when, and which fields moved. Open a document
-and use the **Edit history** tab — the same tab, and the same view, as the
-document detail editor in the main app.
+and use the **Edit history** tab, or **History › Field Edits** in the queue's
+document editor (which has no Edit history tab) — the same view as the document editor in the main app.
 
 > Not to be confused with a Configuration Profile **revision**, which is an
 > immutable numbered snapshot of a *configuration*. This is a log of edits to
@@ -1502,6 +1517,10 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
    - Cost breakdown for processed documents
 
 **Note**: Test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+
+The abort waits a few seconds for each document's workflow to confirm it has stopped. A document that could not be confirmed stopped is reported rather than hidden. The Test Studio page shows a warning beside the success message. In the abort response, the message ends with the number of such documents, and `errors` gives, for each affected run, how many and why: the stop request could not be made, was refused, or was not answered in time; the document was at a processing step the abort cannot stop, such as rule validation or malware scanning; or the request was too large to wait for in full — each run's documents are sent in stop requests of up to 25, and the abort waits for the answers to at most 20 of them, taking every run's first request before any run's second (so at most 500 documents, and fewer when a run's count is not a multiple of 25) — in which case the remaining stop requests are sent at the same moment without waiting for an answer. The run is still marked **ABORTED**, but those documents may still be processing. Documents that had already finished are not counted among them.
+
+The abort then waits for the run's documents to reach a final status. A document the wait did not see reach one is reported the same way, as not seen to reach a terminal state, even if its stop request was answered: a document can be reported stopped and still be processing, so the response describes what the wait read rather than what the stop requests answered. That includes a document whose status the wait could not read in time. When a stop request is still unanswered at the time by which the wait must end, the wait has no time left to read any status, so every document not already counted is reported this way, including one that had finished. A completed document counts as finished once its evaluation has a final status. Each document is counted at most once across the two counts. A document already reported as not confirmed stopped is not counted again. When the document abort reports that some of a stop request's documents failed without naming them, up to that many of the request's unfinished documents that no error names are taken to be those failures rather than counted a second time, so the two counts together are the fewest documents consistent with both readings, and the number still processing may be higher. If the wait itself fails, every document of the run is reported, because none was observed to finish.
 
 ### Results Management
 - Filter and paginate test runs

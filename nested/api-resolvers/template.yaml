@@ -2131,11 +2131,24 @@ Resources:
           # confines an Annotator to the test sets in their allowedTestSets, which
           # `testset_scope` resolves from the UsersTable EmailIndex.
           USERS_TABLE_NAME: !Ref UsersTableName
+          # Review queues: a document in review is regrouped only by the holder of
+          # its review item, read from HITLTable.
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref ProcessChangesResolverFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Review queues: read the document's review item (its state and holder).
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+          - !Ref AWS::NoValue
         - SQSSendMessagePolicy:
             QueueName: !Ref DocumentQueueName
         - S3CrudPolicy:

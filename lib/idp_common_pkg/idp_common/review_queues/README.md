@@ -3,11 +3,14 @@ SPDX-License-Identifier: MIT-0
 
 # Review queues (`idp_common.review_queues`)
 
-HITL review queues hold documents with low-confidence fields until a person has
+HITL review queues hold documents that raised confidence alerts until a person has
 reviewed them. Queues are system-wide definitions (`queue_defs.py`) that Admins
-manage in HITL › Queue Management; no configuration profile setting is involved.
-When the Default queue is enabled, a production document with a field under the
-Default queue's `confidence_threshold` waits in that queue instead of finishing. An Admin assigns them to Annotators, who correct and dispose of them. This
+manage in HITL › Queue Management, and they have no confidence threshold of their
+own. When HITL is enabled in a document's configuration (`hitl.enabled`) and the
+Default queue is enabled, a production document whose sections raised confidence
+alerts (each field's own threshold, otherwise `hitl.confidence_threshold`) waits in
+the Default queue instead of finishing. An Admin assigns them to Annotators, who
+correct and dispose of them. This
 README is the canonical description of the library, the queue item lifecycle and
 the **review status contract** that downstream consumers rely on. The user guide is
 [docs/review-queues.md](../../../../docs/review-queues.md).
@@ -27,10 +30,11 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `keys.py` | Table key layout and the opaque list cursors |
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
 | `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths |
-| `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch and a `confidence_threshold` (default 0.8), cached for 30 s; the Default queue is seeded, disabled, whenever it is missing |
+| `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch, cached for 30 s; the Default queue is seeded, enabled, whenever it is missing, and a stored Default is never overwritten |
 | `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins every queue; Annotators those whose `eligible_annotators` is empty or names them), failing closed |
-| `reasons.py` | `build_reasons`: why a document is held (fields under the Default queue's threshold, BDA blueprint confidence, unreadable results) |
-| `routing.py` | `route_for_review`: the one routing function both ProcessResults steps call |
+| `reasons.py` | `build_reasons`: why a document is held (its sections' `confidence_threshold_alerts`, and in BDA mode a blueprint confidence under `hitl.confidence_threshold`); reads no S3 |
+| `regrouping.py` | `regroup_refusal`: who may change the page grouping of a document in review (only the holder of its `CLAIMED` item). Used by `updateDocumentSections` |
+| `routing.py` | `review_mode` (the `hitl.enabled` and Default-queue gate) and `route_for_review`: the one routing function both ProcessResults steps call |
 | `tracker.py` | WorkflowTracker integration: activation after phase 1 and completion after the finalize run |
 | `service.py` | `ReviewQueueService`: listing, claims, leases, drafts, dispositions and the supervisor actions behind the review API |
 | `finalize.py` | The finalize token, `FinalizeSender` and `apply_corrections` |
@@ -71,26 +75,29 @@ after their own work. A Test Studio document (`submission_source == "test-studio
 a `test_set_id`) always reads as legacy (`review_mode(config, store, document)`): test
 runs are scored on the machine's output and their documents are reviewed as test-set
 annotation work, which the UI lists beside production queues. Otherwise
-`review_mode` is `"queues"` when the stack has a `HITLTable` and its Default queue
-is `enabled` (read through `QueueDefStore`, cached for 30 s), and `"legacy"`
-otherwise; a document whose item is `FINALIZING` stays `"queues"` so its finalize
-run completes after the switch is turned off. The profile's `hitl.*` settings don't
-decide the mode. In legacy mode routing writes nothing, and the profile-driven HITL
-marking is reproduced by `legacy_section_triggers` and `bda_segment_triggers`. In
-queue mode:
+`review_mode` is `"queues"` only when all three hold: `config.hitl.enabled` is true,
+the stack has a `HITLTable`, and its Default queue is `enabled` (read through
+`QueueDefStore`, cached for 30 s). A document whose item is `FINALIZING` stays
+`"queues"` so its finalize run completes after HITL or the switch is turned off; a
+fresh run in that state never holds. Anything else is `"legacy"`, logged at DEBUG as
+`event=review_mode_legacy reason=<hitl_disabled|default_queue_disabled|no_store>`.
+In legacy mode routing writes nothing, and the HITL marking is reproduced by
+`legacy_section_triggers` and `bda_segment_triggers`; the latter reads a null,
+non-numeric or non-finite (NaN, infinite) blueprint confidence as 0.0, so an
+unscored match is marked for review.
+In queue mode:
 
-- **Reasons.** Routing reads each section's `extraction_result_uri` once (in
-  parallel) and walks its `explainability_info` with
-  `testset_summaries.walk_confidence_named`. Both modes store field confidences
-  there in the same shape. A field whose confidence is under the Default queue's
-  `confidence_threshold` is a `low_confidence` reason named by its path
-  (`Address.City`, `Rows[0].Amount`); in BDA mode a matched blueprint under the same
-  threshold is a `blueprint_confidence` reason. Per-field schema thresholds and
-  `hitl.confidence_threshold` are not used here (they still drive the assessment
-  alerts and field highlights). A section whose result can't be read is a
-  `low_confidence` reason with no field and the label `Confidence unavailable`, so
-  a read failure never skips review. Up to 20 reasons are stored per item, worst
-  gap first; `reason_count` keeps the total.
+- **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
+  assessment or extraction in Pipeline mode, and by BDA processing in BDA mode, with
+  the field's `x-aws-idp-confidence-threshold` and otherwise
+  `hitl.confidence_threshold`) is a `low_confidence` reason named by its path
+  (`Address.City`, `Rows[0].Amount`), with the alert's confidence and threshold. In
+  BDA mode a matched blueprint under `hitl.confidence_threshold` is a
+  `blueprint_confidence` reason. So routing agrees exactly with the alerts users
+  see, and it reads nothing from S3. A malformed alert is skipped. The module must
+  not import `idp_common.assessment`: the Pipeline ProcessResults Lambda installs
+  only the `review_queues` extra. Up to 20 reasons are stored per item, worst gap
+  first; `reason_count` keeps the total.
 - **Hold.** A run with reasons writes a `HOLDING` item in the Default queue and
   returns `review_hold`. The state machine's guarded Choice
   rule on `$.Result.review_hold` then ends phase 1 with `HITL_IN_PROGRESS`,
@@ -100,27 +107,42 @@ queue mode:
   execution applies the drafts (`apply_corrections`) on `complete`, or nothing on
   `rejected` or `removed`, and returns `review_outcome` (`removed` reads as
   `complete`); the state machine then runs the tail (complete) or ends `REJECTED`.
-- **No reasons.** A fresh run that needs no review withdraws a live item.
+- **No reasons.** A fresh run that needs no review withdraws a live item and logs
+  `event=review_no_reasons`.
 
 The WorkflowTracker activates a `HOLDING` item when phase 1 succeeds (→ `OPEN`,
 writes the `in_review` status object, announces the queue; an item whose queue no
 longer exists opens in the Default queue) and records the document's completion
 when the finalize run ends.
 
+## Regrouping during review
+
+Correcting a document's split is part of review. `updateDocumentSections` accepts a
+document that is `HITL_IN_PROGRESS` and queue-managed `in_review` when the caller holds
+its `CLAIMED` item (`regroup_refusal`); an `OPEN` item must be claimed first, a
+`FINALIZING` one is refused, and anyone but the holder gets `NOT_LEASE_HOLDER`. The
+legacy HITL flow is unchanged. Section ids are kept across a regroup, so drafts stay
+with their sections; `get_item_detail` no longer lists a section the regroup removed,
+and `apply_corrections` skips its draft. The finalize run reprocesses the tracked
+document, so it finishes with the new grouping.
+
 ## Queues and assignment
 
 - A queue is identified by its `id`, which items, table keys (`Q#<id>`) and the
   API's queue arguments use. Its `name` is display text. Admins manage queues with
   `listReviewQueues`, `createReviewQueue`, `updateReviewQueue` and
-  `deleteReviewQueue`. Only Default can't be deleted (`PROTECTED_QUEUE`); an
+  `deleteReviewQueue`; the web UI doesn't offer `createReviewQueue`. Only Default can't be deleted (`PROTECTED_QUEUE`); an
   Escalation queue an earlier release seeded is an ordinary queue.
   `ReviewQueueService.delete_queue` moves a queue's `OPEN` and `CLAIMED` items to
   Default with `move` (unassigned; an assignee is told), re-points its `HOLDING`
   items at Default, then deletes the definition. It refuses with
   `QUEUE_FINALIZING` while one of the queue's items is `FINALIZING`.
-- `create`/`updateReviewQueue` take `confidenceThreshold` (0–1) and `enabled`. A new
-  queue defaults to 0.8 and enabled; an update that leaves them out keeps the stored
-  values. Only the Default queue's values route documents today.
+- `create`/`updateReviewQueue` take `enabled`. A new queue is enabled; an update
+  that leaves it out keeps the stored value, and a definition stored without it
+  reads as enabled. Queues have no confidence threshold: a `confidenceThreshold`
+  sent by an older client is ignored, and a stored `ConfidenceThreshold` attribute is
+  ignored on read and dropped on the next save. Only the Default queue's switch
+  routes documents.
 - A queue's `eligible_annotators` is its membership (`QueueDefinition.allows`): an
   Annotator works only the queues that list them, and an empty list means none.
   Admins work every queue (`QueueDirectory.is_member`).
@@ -289,10 +311,11 @@ The policies in `template.yaml`, `patterns/unified/template.yaml` and
 | ReviewQueueSweeperFunction | the resolver's table and bucket grants, `states:DescribeExecution`, `lambda:InvokeFunction` on the WorkflowTracker, DocumentQueue `SendMessage` |
 | TestSetResolverFunction | `HITLTable` and its indexes read/write (`TSDOC#` summaries and assignments), UsersTable `UpdateItem` (an assignment adds the set to the Annotator's `allowedTestSets`) |
 | TestSetFileCopierFunction | `HITLTable` `Query`/`UpdateItem`/`DeleteItem`/`BatchWriteItem`: builds a set's `TSDOC#` summaries after a copy and on a `{"action": "summarize"}` message |
+| ProcessChangesResolverFunction | `HITLTable` `GetItem` (the holder check before a regroup during review) |
 | CompleteSectionReviewFunction | `HITLTable` `GetItem`/`UpdateItem` (the assignee check, ending the assignment) |
 
-ProcessResults also reads each section's extraction result from the OutputBucket,
-which its existing grant covers. Headless deployments have no `HITLTable`; routing
+Routing doesn't read the extraction results; a finalize run's corrections are
+applied through ProcessResults' existing OutputBucket grant. Headless deployments have no `HITLTable`; routing
 stays legacy.
 
 ## Testing

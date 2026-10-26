@@ -94,6 +94,9 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     `listTestSetQueues` and `claimTestSetDocument` for Test Studio queues. Each is
     limited to the queues that list the caller (otherwise `NOT_A_MEMBER` or
     `NOT_ELIGIBLE`), and only the holder may release an item (`NOT_LEASE_HOLDER`).
+    `claimTestSetDocument` is Annotator-only, at the gateway as well as in the
+    resolver: Admins assign test-set documents (`assignTestSetDocuments`) rather than
+    claim them. A user in both Admin and Annotator may claim.
   - Their work: `listMyReviewWork`, `getReviewItem`, `saveReviewDraft`,
     `completeReviewItem` and `rejectReviewItem`. `getReviewItem` is read-only for an
     item the caller doesn't hold; saving and the dispositions need the claim.
@@ -116,9 +119,10 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - A queue's **Eligible Annotators** list is its membership: an Annotator sees,
     claims and is assigned only in queues that list them. An empty list means no
     Annotators; Admins work every queue.
-  - Only members of the Cognito `Annotator` group can claim or be assigned work;
-    both the production and the Test Studio checks use the group, not the
-    UsersTable persona, so a user who is Admin and Annotator can be assigned.
+  - Only members of the Cognito `Annotator` group can claim a Test Studio document or
+    be assigned work. An Admin can claim and work Production items without being an
+    Annotator; a user who is Admin and Annotator can also be assigned. Both the
+    production and the Test Studio checks use the group, not the UsersTable persona.
   - The owner key is taken from the verified claims. An Annotator keeps the items
     they hold even after being taken off a queue's list.
   - `allowedConfigVersions` limits which profiles' Production items an Annotator
@@ -832,7 +836,8 @@ enforcement itself is Layer 2.
 | `listFinetuningJobs`, `getFinetuningJob` | All authenticated — whole-deployment job, model and deployment state, with no per-caller scope (the rows record no owner). The UI surfaces them to Admin and Author only. The projection deliberately carries no dataset location, and `finetuning_jobs_resolver/test_projected_keys.py` pins its key set so that cannot change silently |
 | `validateTestSetForFinetuning`, `listAvailableModels` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, so default-deny refuses them to every caller including Admin |
 | `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
-| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
+| `sendChatDocumentMessage` | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
+| `onChatDocumentMessageUpdate` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, and the manifest the dispatcher authorizes against carries no subscription fields at all, so default-deny refuses it to every caller including Admin. Its one UI call site is gated off under the `httpapi` transport; replies arrive over the streaming Function URL instead |
 | `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
 | `getMyProfile` | All authenticated |
 | `listInboxMessages`, `getInboxUnreadCount`, `getInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |

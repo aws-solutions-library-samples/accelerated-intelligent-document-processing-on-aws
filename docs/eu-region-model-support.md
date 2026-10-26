@@ -297,9 +297,16 @@ extraction:
 
 ### Configuration / environment variables
 
-| Variable | Purpose | Default |
+⚠️ **No template sets any of these, so a deployed stack runs on the defaults.** The
+code reads them, but they reach no Lambda's environment through the templates and no
+stack parameter feeds them — so they are for running `idp_common` outside a stack, or
+for a manual per-function override that the next stack update removes. In a stack, use
+the per-service `reasoning_effort` config field shown above rather than the global
+fallback.
+
+| Variable | Purpose | Default (and, today, the effective value in a stack) |
 |----------|---------|---------|
-| `BEDROCK_MANTLE_REGION` | Pin the bedrock-mantle region for all GPT-5.x calls | derived from stack region with per-model fallback |
+| `BEDROCK_MANTLE_REGION` | Pin the bedrock-mantle region for all GPT-5.x calls | unset — derived from stack region with per-model fallback |
 | `BEDROCK_MANTLE_SIGNING_NAME` | SigV4 signing service name | `bedrock-mantle` |
 | `BEDROCK_MANTLE_REASONING_EFFORT` | Global fallback reasoning effort when a service config omits `reasoning_effort` | `medium` |
 

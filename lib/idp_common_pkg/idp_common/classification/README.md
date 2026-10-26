@@ -13,8 +13,10 @@ This module provides document classification capabilities for the IDP Accelerato
 - **Optional regex-based classification for enhanced performance**
   - Document name regex matching when all pages should be classified as the same class
   - Page content regex matching for multi-modal page-level classification
-- **Valid-class enforcement with re-prompt/retry** (page-level) — rejects
-  out-of-vocabulary predictions and re-prompts the model with the allowed classes
+- **Valid-class enforcement with re-prompt/retry** on every call that assigns a
+  class — one stage at page *and* packet granularity, and two-stage section
+  classification — rejects out-of-vocabulary predictions and re-prompts the model
+  with the allowed classes
 - Direct integration with the Document data model
 - Support for both text and image content
 - Concurrent processing of multiple pages
@@ -155,9 +157,55 @@ classification call fails keeps `doc_class = None` and is reported — its
 boundaries are still good, and an invented class would propagate into extraction
 as though it had been decided.
 
+#### Which placeholders a stage is allowed to render
+
+The prefix saving is the whole justification for two-stage, so **segmentation
+renders `{CLASS_NAMES_AND_DESCRIPTIONS}`, `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
+and `{FEW_SHOT_EXAMPLES}` as empty**, whichever granularity it runs at and
+whatever `contextPagesCount` is set to. That is decided by the stage, in
+`_stage_withholds_class_vocabulary` and `_build_classification_substitutions`,
+rather than by the content builder that happens to render the prompt — the page
+builder, the context-page builder and the packet builder are each shared between
+single-pass, segmentation and section classification, so a per-builder answer is
+three answers. `boundary_hints: class_names` stays the one supported way to put
+class **names** into a segmentation prompt.
+
+Symmetrically, **`{BOUNDARY_HINTS}` renders as empty for every stage other than
+segmentation.** The setting lives under `two_stage.segmentation.llm` and so is
+inert under `strategy: single_pass`, but that subtree is readable either way;
+the block it produces ends "do NOT report a type, only where each document
+starts and ends", which is the one thing a single-pass or section-classification
+call exists to do.
+
+None of this is observable with the shipped prompts — the shipped segmentation
+prompts reference neither vocabulary placeholder, and the shipped one-stage
+prompts do not reference `{BOUNDARY_HINTS}` — so it matters for an edited
+prompt, which every one of these is.
+
+`stage` is a **keyword-only parameter with no default** on every content
+builder and on `_build_classification_substitutions`, which is the point worth
+preserving through a refactor: a call site that omitted it would get the full
+vocabulary back with no type error and no failing test, and the only symptom
+would be the bill.
+
+The UI's prompt preview applies the same rules about which placeholder is empty
+for which step, so a step's preview does not promise content the call will not
+carry. They are restated in `buildSubstitutions` in
+`src/ui/src/components/configuration-layout/PromptPreview.tsx`, and asserted
+against a real render in
+`src/ui/src/components/configuration-layout/__tests__/PromptPreview.test.tsx`
+(`PromptPreview placeholder scoping by step`) — so **if you change which
+placeholders a stage renders, change that function too**, and those tests will
+tell you if you forget.
+
+The preview is nevertheless not byte-equal to the request, and is not meant to
+be: it renders a shorter `<document-type-hints>` block than the service emits,
+and substitutes a descriptive marker for `{DOCUMENT_TEXT}` and
+`{DOCUMENT_IMAGE}`. Read it for what a step *includes*, not as the exact bytes.
+
 ## Sequence Segmentation Approach
 
-The multimodal page-level classification method implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
+Page granularity implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
 
 ### How It Works
 
@@ -232,8 +280,11 @@ Two things this is **not** a workaround for, both measured: prompt-level wording
 
 Two OPTIONAL keys in the model's response are parsed alongside `class` and
 `document_boundary` ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
-Neither used to be read by anything, even though `confidence` was documented as
-supported and `classification_reason` is asked for by the **default** prompt.
+Both are read and persisted whenever the model returns them, whatever asked for
+them — the shipped `confidence.mode` composes the instruction, the **default**
+task prompt asks for `classification_reason`, and a hand-written prompt asking
+for either is honoured because the parser is not gated on the setting. The table
+below is where each one lands.
 
 | Key | Lands on | Persisted as |
 |-----|----------|--------------|
@@ -299,6 +350,12 @@ fewer signals than a miss.
   `task_prompt_verbalized_packet` instead, because its response is a segment list;
   section classification always takes the page-shaped block, being one call about
   one segment. Segmentation is never given a block: it decides no class.
+  Consequently the section-classification call carries **no** `_packet` blocks:
+  `base-classification.yaml` ships none there and `migrations.v08_to_v09` does not
+  copy them into it
+  (`SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS`), so the keys an operator can
+  see on that call are the ones it can actually read. The one-stage call keeps
+  both, because one stage can run at packet granularity.
 - **Resolution.** `resolve_class_and_confidence` prefers an explicit
   `confidence`, else `confidence_from_candidates`, which returns the probability
   of the class being **stored** — not the top of the list. Those differ when the
@@ -345,11 +402,24 @@ route work on it.
 |-------|----------|
 | `llm_determined` (default) | Group pages using the `document_boundary` signal described above |
 | `page` | One section per page — no same-type joining is ever possible |
-| `disabled` | One section spanning the whole document (class chosen by majority vote across pages) |
+| `disabled` | One section spanning the whole document (class chosen by a page-weighted vote across the segments that were detected) |
+
+The vote is cast by `_single_section_from_segments`, and it is **per page but
+over segments**: each segment carrying a configured class contributes
+`len(segment.page_ids)` votes, so a 5-page segment outweighs a 1-page one. That
+distinction is invisible at page granularity, where segments are mostly single
+pages, and decides the answer at packet granularity, where the call returns
+multi-page segments. A tie goes to the earliest segment carrying a tied class,
+and `segments[0].doc_class` is used only when no segment carries a configured
+class at all. ⚠️ A page whose own verdict was not the winning class has its
+confidence cleared, and a section's score is `None` if any of its pages is
+unscored — so one disagreeing page leaves the whole section without a
+confidence. A page that produced no verdict of its own inherits its segment's
+class *and* confidence, so silence does not count as disagreement.
 
 `file_shape.maxPagesForClassification` applies only under `disabled`. There,
-`_limit_pages_for_classification` classifies the first N pages and their majority
-class is applied to the whole file; a file at or under the limit is classified in
+`_limit_pages_for_classification` classifies the first N pages and the whole file
+takes the class that vote returns; a file at or under the limit is classified in
 full. Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only files longer than N while
 sectioning shorter ones normally.
@@ -393,13 +463,16 @@ When you want all pages of a document to be classified the same way, document na
 
 ```yaml
 classes:
-  - name: Payslip
-    description: "Employee wage statement showing earnings and deductions"
-    document_name_regex: "(?i).*(payslip|paystub|salary|wage).*"
-    attributes:
-      - name: EmployeeName
-        description: "Name of the employee"
-        attributeType: simple
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Payslip
+    type: object
+    x-aws-idp-document-type: Payslip
+    description: Employee wage statement showing earnings and deductions
+    x-aws-idp-document-name-regex: "(?i).*(payslip|paystub|salary|wage).*"
+    properties:
+      EmployeeName:
+        type: string
+        description: Name of the employee
 ```
 
 **How it works:**
@@ -437,21 +510,37 @@ For multi-modal page-level classification, page content regex patterns can class
 
 ```yaml
 classes:
-  - name: Invoice
-    description: "Business invoice document"
-    document_page_content_regex: "(?i)(invoice\\s+number|bill\\s+to|amount\\s+due)"
-    attributes:
-      - name: InvoiceNumber
-        description: "Invoice number"
-        attributeType: simple
-  - name: Payslip
-    description: "Employee wage statement"  
-    document_page_content_regex: "(?i)(gross\\s+pay|net\\s+pay|employee\\s+id)"
-    attributes:
-      - name: EmployeeName
-        description: "Employee name"
-        attributeType: simple
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Invoice
+    type: object
+    x-aws-idp-document-type: Invoice
+    description: Business invoice document
+    x-aws-idp-document-page-content-regex: "(?i)(invoice\\s+number|bill\\s+to|amount\\s+due)"
+    properties:
+      InvoiceNumber:
+        type: string
+        description: Invoice number
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Payslip
+    type: object
+    x-aws-idp-document-type: Payslip
+    description: Employee wage statement
+    x-aws-idp-document-page-content-regex: "(?i)(gross\\s+pay|net\\s+pay|employee\\s+id)"
+    properties:
+      EmployeeName:
+        type: string
+        description: Employee name
 ```
+
+⚠️ **The class name and both regexes must be written as the `x-aws-idp-*` schema
+extension keys.** `ClassificationService` builds its document-type list from
+`x-aws-idp-document-type`, `x-aws-idp-document-name-regex` and
+`x-aws-idp-document-page-content-regex` only. `classes` is free-form, so a class
+written in the pre-JSON-Schema style — a bare `name:` plus
+`document_page_content_regex:` and an `attributes:` list — is stored and merged
+unchanged, with no validation error and no warning, and yields a document type
+whose name is the empty string and whose regexes are `None`. Nothing matches, and
+the only signal is that classification silently never takes the regex path.
 
 **How it works:**
 - Only applies to multi-modal page-level classification method
@@ -466,15 +555,18 @@ Both regex types are optional and can be used together:
 
 ```yaml
 classes:
-  - name: W2-Form
-    description: "W2 tax form with wage and tax information"
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: W2-Form
+    type: object
+    x-aws-idp-document-type: W2-Form
+    description: W2 tax form with wage and tax information
     # Both regex types can be specified
-    document_name_regex: "(?i).*w-?2.*"  # For single-class scenarios
-    document_page_content_regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)"  # For page-level
-    attributes:
-      - name: EmployerEIN
-        description: "Employer identification number"
-        attributeType: simple
+    x-aws-idp-document-name-regex: "(?i).*w-?2.*"  # For single-class scenarios
+    x-aws-idp-document-page-content-regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)"  # For page-level
+    properties:
+      EmployerEIN:
+        type: string
+        description: Employer identification number
 ```
 
 ### Performance Benefits

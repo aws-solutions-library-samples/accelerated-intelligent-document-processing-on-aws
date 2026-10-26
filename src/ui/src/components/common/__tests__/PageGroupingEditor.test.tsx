@@ -22,6 +22,8 @@ import { join } from 'node:path';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import createWrapper from '@cloudscape-design/components/test-utils/dom';
+
 import PageGroupingEditor from '../PageGroupingEditor';
 import type { GroupedSection } from '../section-grouping';
 
@@ -65,6 +67,16 @@ const movePageTo = async (pageId: number, sectionId: string) => {
 };
 
 describe('PageGroupingEditor', () => {
+  it('opens expanded as a modal, with no Expand, and dismissing it cancels', () => {
+    const { onCancel } = renderEditor({ presentation: 'modal' });
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Edit Page Grouping')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Expand' })).not.toBeInTheDocument();
+    createWrapper(document.body).findModal()!.findDismissButton().click();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it('shows every page of the document, grouped by section', () => {
     renderEditor();
 
@@ -353,7 +365,7 @@ describe('PageGroupingEditor expand', () => {
 
     // The in-progress grouping survives the switch — it would be lost if expanding
     // remounted the board.
-    expect(screen.getByRole('heading', { name: /Edit page grouping/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Edit Page Grouping/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Save grouping/i })).toBeEnabled();
   });
 

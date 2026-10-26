@@ -144,7 +144,11 @@ class TestRetentionPin:
 
         captured = module._capture_config("config-table", "lending", 5)
 
-        assert captured["Config"] == {"notes": "pinned body"}
+        # The revision's body is what the run records. Its shape is normalised to
+        # the current config format, which
+        # `test_capture_migrates_legacy_config.py` covers; this test is about the
+        # pin, so it asserts only that the body arrived.
+        assert captured["Config"]["notes"] == "pinned body"
         manager.get_revision.assert_called_once_with("lending", 5)
         manager.mark_revision_pinned.assert_called_once_with("lending", 5)
 

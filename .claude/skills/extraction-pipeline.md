@@ -13,7 +13,10 @@ Controlled by `use_bda` flag in configuration:
 
 ### Pipeline Mode (`use_bda: false`) — Default
 1. **OCR**: Amazon Textract (or Bedrock OCR backend)
-2. **Classification**: Bedrock LLM — page-level or holistic document packet classification
+2. **Classification**: Bedrock LLM — `classification.strategy` is `single_pass` (one
+   call returns boundaries and classes) or `two_stage` (boundaries first, then one
+   classification call per section); `classification.one_stage.granularity` is `page`
+   or `packet`; `modality.text` / `modality.images` decide what each call is sent
 3. **Extraction**: Bedrock LLM — traditional or agentic mode
 4. **Assessment**: LLM-powered confidence assessment with multimodal analysis
 5. **Rule Validation**: Custom business rules (criteria validation)
@@ -68,22 +71,43 @@ classes:
       FieldName:
         type: string
         description: "Field description"
-        x-aws-idp-evaluation-method: EXACT    # EXACT, NUMERIC_EXACT, FUZZY
+        x-aws-idp-evaluation-method: EXACT    # see the method list below
 ```
 
 ### Custom JSON Schema Extensions
 - `x-aws-idp-document-type` — Document class identifier
 - `x-aws-idp-evaluation-method` — Evaluation metric type
-- `x-aws-idp-few-shot-examples` — Few-shot example references
+- `x-aws-idp-evaluation-method-config` — Per-comparator options (e.g. `DateComparator`'s
+  `dayfirst`, `NUMERIC_EXACT`'s tolerance)
+- `x-aws-idp-examples` — Few-shot example references. ⚠️ This is the declared
+  spelling (`X_AWS_IDP_EXAMPLES` in `idp_common/config/schema_constants.py`). A
+  misspelled `x-aws-idp-*` extension is accepted, stored, never read and never
+  reported, so a typo here fails silently — no gate catches it.
 
-### 14 Configuration Presets
-Located in `config_library/unified/`:
-- `lending-package-sample/` (default)
-- `bank-statement-sample/`
-- `healthcare-multisection-package/`
-- `fake-w2/`
-- `ocr-benchmark/`
-- And 9 more...
+### Evaluation methods
+The settable values of `x-aws-idp-evaluation-method`, from `METHOD_TO_COMPARATOR` in
+`idp_common/evaluation/stickler_backend/mapper.py` (the authority — re-read it rather
+than trusting this list):
+
+| Method | Comparator |
+|---|---|
+| `EXACT` | `ExactComparator` |
+| `NUMERIC_EXACT` | `NumericComparator` |
+| `FUZZY` | `FuzzyComparator` |
+| `LEVENSHTEIN` | `LevenshteinComparator` |
+| `SEMANTIC` | `SemanticComparator` |
+| `DATE` | `DateComparator` |
+| `LLM` | `IDPLLMComparator` (Bedrock-backed) |
+| `HUNGARIAN` | none — built in for arrays |
+
+### Configuration presets
+Located in `config_library/unified/`, one directory per preset, the directory name
+being the **Configuration Preset** stack parameter value. `lending-package-sample` is
+the default. Enumerate the rest with `ls config_library/unified/` — they are added and
+renamed often enough that a list here goes stale.
+
+Presets are **not** keyed by processing mode: `use_bda` resolves to `false` for every
+one of them, and each preset's `notes` says to set `use_bda: true` for BDA mode.
 
 ## Key Models and Types (`idp_common.models`)
 ```python

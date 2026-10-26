@@ -1917,13 +1917,10 @@ Four routes can still take part of that stack:
 - The apigw test-VPC reaper does not consult the set, so an
   `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
   reaper's age gate. Nothing creates one for that stack.
-- Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
-  disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
-  so that stack's distribution survives only while it stays enabled. The same
-  teardown tries to delete `idp-ux-nightly-security-headers-policy` whenever
-  that stack reads as failed (`UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`, or a
-  creation that failed or rolled back), which CloudFront refuses only while a
-  distribution still uses the policy.
+- Its CloudFront distribution and response headers policy are not at risk
+  from another run's teardown (`idp-cli delete --force-delete-all`): a teardown
+  acts only on the distributions and policy its own stack's resource list
+  records, so another stack's are never candidates.
 - The set protects names, not dependencies. A run's `-iam` service role and
   permissions boundary go at that run's teardown, which deletes every `idp-`
   role that names the boundary before the boundary itself, so a stack deployed

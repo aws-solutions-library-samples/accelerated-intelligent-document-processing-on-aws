@@ -402,7 +402,6 @@ class ReviewQueueService:
                 claimed_by_me=mine_by_queue.get(ref.partition, 0),
                 oldest_enqueued_at=oldest[0].enqueued_at if oldest else None,
                 is_default_queue=definition.id.lower() == rq.default_queue.lower(),
-                confidence_threshold=definition.confidence_threshold,
                 enabled=definition.enabled,
                 claim_cap=rq.max_claims_per_reviewer,
                 checklist=list(definition.checklist),
@@ -568,6 +567,10 @@ class ReviewQueueService:
         }
         for section_id in record.sections:
             s = doc_sections.get(section_id)
+            if s is None and doc_sections:
+                # Removed by a regroup during review: its draft, if any, is skipped
+                # by the finalize run, so it is no longer offered for editing.
+                continue
             d = drafts.get(section_id)
             sections.append(
                 ReviewSectionDetail(
@@ -1534,7 +1537,6 @@ class ReviewQueueService:
                     description=definition.description or None,
                     priority=definition.priority,
                     is_default_queue=definition.id.lower() == rq.default_queue.lower(),
-                    confidence_threshold=definition.confidence_threshold,
                     enabled=definition.enabled,
                     claim_cap=rq.max_claims_per_reviewer,
                     checklist=list(definition.checklist),

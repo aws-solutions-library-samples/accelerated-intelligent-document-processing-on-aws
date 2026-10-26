@@ -32,7 +32,7 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues) and one annotation screen; Admins create review queues and assign their items in HITL › Queue Management (see [HITL](#hitl))
+- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one document editor (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -180,8 +180,8 @@ markdown automatically.
 
 ## Comparing a document against its baseline
 
-On a document that has an evaluation baseline, **View Data** shows the
-**document class** comparison straight away — predicted, expected, and a verdict
+On a document that has an evaluation baseline, **Edit Data** (or **View Data**)
+opens the document editor, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -208,7 +208,8 @@ set, see
 
 ## Re-grouping a processed document's pages
 
-**Document Sections → Edit page grouping** opens a board with every section side by
+**Document Sections → Edit Page Grouping**, or **Edit Page Grouping** in the document
+editor (**Edit** on the document page), opens a board with every section side by
 side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
 to section** menu — the keyboard and screen-reader route to the same operation.
 Shift-click selects a run of pages so they move together, which is usually what a wrong
@@ -230,12 +231,13 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes** afterwards if you
-would rather the pipeline redo them.
+so they may no longer match; use **Edit Mode → Process Changes**, or **Complete**
+in the document editor, afterwards if you would rather the pipeline redo
+them.
 
 That is the difference between the two routes, and it is the reason both exist:
 
-| | Edit page grouping | Edit Mode → Process Changes |
+| | Edit Page Grouping | Edit Mode → Process Changes |
 |---|---|---|
 | Page assignments | drag and drop | comma-separated text |
 | Page order within a section | drag, or Move earlier / later | order of the ids you type |
@@ -250,18 +252,23 @@ which saves it. A grouping-only save writes directly, so it would race a run in
 progress; if the document is queued or running the save is refused with a message, and
 the arrangement you made is left on screen rather than discarded.
 
-Not available for Pattern-1, where BDA owns the section structure.
+Available in every deployment. The board rearranges the section records already in the
+document's output, so whether BDA or the Textract-plus-Bedrock pipeline produced them
+makes no difference to what it can edit.
 
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
-stays a deliberate act. The same board and the same rules are used for test-set ground
+stays a deliberate act. ⚠️ **That applies in BDA mode too**, where the values were
+produced by Bedrock Data Automation rather than by the pipeline's extraction step:
+deleting the section still discards them, and there is no read-only variant of this
+board to fall back on. The same board and the same rules are used for test-set ground
 truth; see
 [test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
 being preserved matters most because they are the annotations being built.
 
 ## Edit Sections
 
-The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
+The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization.
 
 ### Key Capabilities
 
@@ -270,16 +277,15 @@ The Edit Sections feature provides an intelligent interface for modifying docume
 - **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
 - **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
 - **Immediate Feedback**: Status updates appear instantly in the UI
-- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+- **Available in every deployment**: the editor works on the section records in the document's output, so it is offered whichever processing mode produced them
 
 ### How to Use
 
 1. Navigate to a completed document's detail page
 2. In the "Document Sections" panel, click the "Edit Sections" button
-3. **For Pattern-2/Pattern-3**: Enter edit mode with inline editing capabilities
-4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+3. Enter edit mode, with inline editing of each section's class and page assignments
 
-#### Editing Workflow (Pattern-2/Pattern-3)
+#### Section editing workflow
 
 1. **Edit Section Classifications**: Use dropdowns to change document types
 2. **Modify Page Assignments**: Edit comma-separated page IDs (e.g., "1, 2, 3")
@@ -306,28 +312,31 @@ The Edit Sections feature uses **2-phase schema knowledge optimization**:
   - **Assessment**: Skips if extraction results contain assessment data
 - **Selective Reprocessing**: Only modified sections lose their data and get reprocessed
 
-### Pattern Compatibility
-
-#### Pattern-2 and Pattern-3 Support
+### What section editing gives you, and what it costs
 
 - **Full Functionality**: Complete edit capabilities with intelligent reprocessing
 - **Performance Optimization**: Automatic selective processing for efficiency
 - **Data Preservation**: Unmodified sections retain all processing results
 
-#### Pattern-1 Support (Data-Only Edit Mode)
+Editing the structure is offered in every deployment, whichever processing mode the
+document ran through. Section records look the same in the output either way, so the
+editor does not distinguish them, and there is no data-only variant of it.
 
-Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic section management. Edit Mode in Pattern-1 provides **data-only editing**:
-
-- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" button for each section
-- **Section Structure**: Read-only - section boundaries, classifications, and page assignments are managed by BDA
-- **Reprocessing**: "Save and Reprocess" triggers evaluation and summarization steps without re-invoking BDA
-- **BDA Skip Logic**: When reprocessing with existing pages/sections data, BDA invocation is automatically skipped
-
-**Note**: Pattern-2 and Pattern-3 offer full section structure editing. Pattern-1 maintains BDA-managed section boundaries while allowing extraction data modifications.
+⚠️ **In BDA mode, a structural edit loses the edited section's values.** Bedrock Data
+Automation decided the section boundaries and the extracted values in the first place,
+and a changed or added section's values are cleared before the document is requeued.
+The workflow then skips Bedrock Data Automation for any document that still has at least
+one section, whatever state that section's extraction data is in, and nothing else in
+the BDA branch extracts values. So the section you edited comes back with its values gone
+and nothing to replace them, on a single-section document as much as on a multi-section
+one. Edit the structure of a BDA-mode document only when you are prepared for that, and prefer
+**Edit Data** on the section row when what you want is to correct a value rather than a
+boundary: that opens the document editor on the section and writes the value without
+touching the structure or requeueing anything.
 
 ## Edit Pages
 
-The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing for Pattern-2 and Pattern-3 workflows.
+The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing.
 
 ### Key Capabilities
 
@@ -337,16 +346,15 @@ The Edit Pages feature provides an intelligent interface for modifying individua
 - **Classification Reset**: Reset page classifications to force reclassification during reprocessing
 - **Text Editing**: Modify page OCR text (via the Raw markdown editor) with immediate S3 saves to prevent data loss
 - **Intelligent Reprocessing**: Only affected sections are reprocessed based on modification type
-- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+- **Available in every deployment**: the editor works on the page records in the document's output, so it is offered whichever processing mode produced them
 
 ### How to Use
 
 1. Navigate to a completed document's detail page
 2. In the "Document Pages" panel, click the "Edit Pages" button
-3. **For Pattern-2/Pattern-3**: Enter edit mode with page-level editing capabilities
-4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+3. Enter edit mode, with page-level editing of classifications and page text
 
-#### Editing Workflow (Pattern-2/Pattern-3)
+#### Page editing workflow
 
 ##### View Mode (Default)
 - Click "View Page Text" button to view page content in read-only mode
@@ -395,21 +403,22 @@ The Edit Pages feature uses intelligent selective reprocessing:
 - **Storage**: Text wrapped back in `{"text": "..."}` format for backward compatibility
 - **Confidence**: Markdown table format for readability (Text | Confidence columns)
 
-### Pattern Compatibility
-
-#### Pattern-2 and Pattern-3 Support
+### What page editing gives you, and what it costs
 
 - **Full Functionality**: Complete page editing capabilities with intelligent reprocessing
 - **Performance Optimization**: Automatic selective processing based on modification type
 - **Data Preservation**: Unmodified pages and sections retain all processing results
 
-#### Pattern-1 Information
+Page editing is offered in every deployment, whichever processing mode the document ran
+through, and the editor does not distinguish between them.
 
-Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic page management. When Edit Pages is clicked, users see an informative modal explaining:
-
-- **Architecture Differences**: BDA handles page processing automatically
-- **Alternative Workflows**: Available options like "View Page Text", Configuration updates, and document reprocessing
-- **Future Considerations**: Guidance on using Pattern-2/Pattern-3 for fine-grained page control
+⚠️ **In BDA mode, both page edits clear data that the reprocess does not replace.**
+Resetting a page's classification removes every section containing that page, and
+editing a page's text clears the extraction results of the sections containing it.
+Bedrock Data Automation produced those values, and the workflow skips it for any
+document that still has at least one section — so a section whose page text you edited
+comes back empty. If you only want to read a page as BDA saw it, use **View Page Text**,
+which changes nothing.
 
 ## Document Schema Builder
 
@@ -647,11 +656,13 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
   Queues** (one per test set), each listing Queue, Items, Pending, Assigned and
-  Annotators with an actions menu. Admins create, edit and delete
-  Production queues here, setting each one's name, priority, time limit, eligible
-  Annotators (who works the queue), **Enabled** switch and **Confidence threshold**
-  in its **Settings**. Low-confidence production documents go to the Default
-  queue when it is enabled, judged against its threshold. Deleting a queue moves its
+  Annotators with an actions menu. Admins edit and delete Production queues here,
+  setting each one's name, priority, time limit, eligible Annotators (who works the
+  queue) and **Enabled** switch in its **Settings**; there is no **Create queue**.
+  When HITL is enabled in a document's configuration and the Default queue is
+  enabled, a production document that raised confidence alerts goes to the Default
+  queue. Queues have no threshold of their own: the alerts use each field's own
+  threshold, otherwise `hitl.confidence_threshold`. Deleting a queue moves its
   items to Default; Default itself can't be deleted. On each queue's page, Admins
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
   to another queue, or **Remove from queue** (the document completes with
@@ -664,14 +675,26 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   removes it from the list and the count straight away (**Skip** gives the item back
   to its queue, unassigned and not finished), and work assigned to you by an Admin
   appears within about 30 seconds.
-- **The annotation screen** is the same for every item, whether you open it from
-  Tasks, an Inbox message or Queue Management. Production documents are at
-  `#/review-queues/items/<document>` and test-set documents at
-  `#/review-queues/test-sets/<id>/items/<document>`, and the breadcrumbs name the
-  item's queue or test set, linking to its page. The actions are **Complete** and,
-  for the assignee, **Skip**. An Admin edits an unassigned Production item directly
-  (the first saved edit, or Complete, assigns it to them) and uses **Take over** on
-  one assigned to someone else.
+- **The document editor** is the same for every edit, whether you open a queue item
+  from Tasks, an Inbox message or Queue Management, or edit a document directly. It
+  has three routes:
+  - a Production item at `#/review-queues/items/<document>`
+  - a test-set document at `#/review-queues/test-sets/<id>/items/<document>`
+  - a direct edit of any document at `#/documents/<document>/edit` (optionally
+    `?section=<id>`), opened from **Edit Data** on a section row or **Edit** on the
+    document page
+
+  The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
+  role. The actions are at the top, each shown where it applies: **History** (field
+  edits, and a Production item's review activity), **Skip** (queue items, for the
+  assignee), **Discard Changes**, **Save** (Production items and direct
+  edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
+  Complete finishes a queue item, and on a direct edit saves the edits,
+  confirms, and reprocesses the document. A direct edit also shows the evaluation
+  baseline when the document has one: the class comparison, **Show Evaluation** to
+  compare every field, and baseline editing. An Admin edits an unassigned Production
+  item directly (the first saved edit, or Complete, assigns it to them) and
+  uses **Take over** on one assigned to someone else.
 - The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
   **Review Status** as **In Review**, which for Admins and Annotators links to the queue
   item. A queued document is reviewed only from that item; the legacy Reviewer flow

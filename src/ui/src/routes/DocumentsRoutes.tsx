@@ -6,6 +6,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 
 import GenAIIDPLayout from '../components/genaiidp-layout';
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
+import DirectEditPage from '../components/review-workspace/DirectEditPage';
 
 const logger = new ConsoleLogger('DocumentsRoutes');
 
@@ -14,6 +15,16 @@ const DocumentsRoutes = (): React.JSX.Element => {
 
   return (
     <Routes>
+      {/* The unified editor's direct edit of any document. */}
+      <Route
+        path=":objectKey/edit"
+        element={
+          <div>
+            <GenAIIDPTopNavigation />
+            <DirectEditPage />
+          </div>
+        }
+      />
       <Route
         path="*"
         element={

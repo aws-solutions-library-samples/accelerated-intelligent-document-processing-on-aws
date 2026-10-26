@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * While a document is in a review queue, the Sections panel offers no way to change it.
- *
- * Edit Mode and Edit page grouping are off for every role (here an Admin, whom the
- * legacy gating always let through), and Skip All Reviews is not offered, because the
- * queue item is where a queued document is reviewed, skipped and completed.
+ * While a document is in a review queue, the Sections panel keeps Edit Mode and Edit
+ * Page Grouping enabled (the server still refuses a save it can't take), and Skip All
+ * Reviews is not offered, because the queue item is where a queued document is
+ * reviewed, skipped and completed.
  */
 
 import { render, screen } from '@testing-library/react';
@@ -52,10 +51,10 @@ const skipAllAction = () =>
 const isOff = (button: HTMLElement) => button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true';
 
 describe('SectionsPanel review-queue gating', () => {
-  it('turns Edit Mode and Edit page grouping off while the document is in a review queue', () => {
+  it('keeps Edit Mode and Edit Page Grouping enabled while the document is in a review queue', () => {
     renderPanel('in_review');
-    expect(isOff(screen.getByRole('button', { name: /^Edit Mode/i }))).toBe(true);
-    expect(isOff(screen.getByRole('button', { name: /Edit page grouping/i }))).toBe(true);
+    expect(isOff(screen.getByRole('button', { name: /^Edit Mode/i }))).toBe(false);
+    expect(isOff(screen.getByRole('button', { name: /Edit Page Grouping/i }))).toBe(false);
   });
 
   it('does not offer Skip All Reviews for a queued document', () => {

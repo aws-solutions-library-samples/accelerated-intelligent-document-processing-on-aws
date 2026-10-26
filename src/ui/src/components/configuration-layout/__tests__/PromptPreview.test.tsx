@@ -471,6 +471,30 @@ describe('expectedSchemaBlockFor', () => {
 });
 
 /**
+ * Switch the Processing Step select (the preview opens on the first step the
+ * current strategy makes available). Cloudscape's Select trigger opens on a
+ * real pointer sequence, not a bare click event, so this goes through
+ * userEvent.
+ */
+const showStep = async (label: string): Promise<void> => {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { expanded: false, name: /Processing Step/i }));
+  await user.click(await screen.findByRole('option', { name: new RegExp(`^${label}$`) }));
+};
+
+/**
+ * Open a tab and return the rendered PROMPT BODY, not the page text. The
+ * warning alert also mentions "Expected Schema:", so asserting on the whole
+ * document would pass on the alert alone and never look at the prompt.
+ */
+const promptBody = async (tabLabel: RegExp): Promise<string> => {
+  await userEvent.setup().click(screen.getByText(tabLabel));
+  const body = document.querySelector('.prompt-preview-content');
+  if (!body) throw new Error('no prompt body rendered');
+  return body.textContent ?? '';
+};
+
+/**
  * End-to-end on the two things a user actually reads: whether a Tool Schema tab
  * exists, and whether the token total moves when they flip the knob. Both were
  * silently wrong before — turning Schema Enforcement on changed the previewed
@@ -499,16 +523,6 @@ describe('PromptPreview token accounting', () => {
     },
   });
 
-  /**
-   * Switch the Processing Step select (the preview opens on Classification).
-   * Cloudscape's Select trigger opens on a real pointer sequence, not a bare
-   * click event, so this goes through userEvent.
-   */
-  const showStep = async (label: string): Promise<void> => {
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { expanded: false, name: /Processing Step/i }));
-    await user.click(await screen.findByRole('option', { name: new RegExp(`^${label}$`) }));
-  };
   const showExtractionStep = (): Promise<void> => showStep('Extraction');
 
   const totalTokens = (): number => {
@@ -516,18 +530,6 @@ describe('PromptPreview token accounting', () => {
     const match = /~([\d,]+) tokens/.exec(row?.textContent ?? '');
     if (!match) throw new Error(`no total in ${row?.textContent}`);
     return Number(match[1].replace(/,/g, ''));
-  };
-
-  /**
-   * Open a tab and return the rendered PROMPT BODY, not the page text. The
-   * warning alert also mentions "Expected Schema:", so asserting on the whole
-   * document would pass on the alert alone and never look at the prompt.
-   */
-  const promptBody = async (tabLabel: RegExp): Promise<string> => {
-    await userEvent.setup().click(screen.getByText(tabLabel));
-    const body = document.querySelector('.prompt-preview-content');
-    if (!body) throw new Error('no prompt body rendered');
-    return body.textContent ?? '';
   };
 
   it('Simple with forcing off is unchanged: no tab, no tool-schema stat', async () => {
@@ -784,5 +786,104 @@ describe('resolveClassificationStepPrompt', () => {
     expect(out.system_prompt).toBe('SC SYS');
     expect(out.task_prompt).toContain('top 3');
     expect(out.task_prompt).not.toContain('per segment');
+  });
+});
+
+/**
+ * Which placeholders the preview leaves empty for which step.
+ *
+ * This is the UI half of a guarantee whose Python half is enforced in
+ * `lib/idp_common_pkg/tests/unit/classification/test_two_stage.py`: a two-stage
+ * segmentation call carries no class vocabulary and no examples, and
+ * `{BOUNDARY_HINTS}` is rendered for segmentation and nowhere else. The preview
+ * restates those rules, so it can disagree with the service — and the preview
+ * is where an operator writing a custom prompt would discover the rule, so a
+ * preview promising content the call will not send is worse than no preview.
+ *
+ * Both assertions go through a real render rather than through a helper,
+ * because `buildSubstitutions` is not exported; the step select and the prompt
+ * body are the only seams onto it.
+ */
+describe('PromptPreview placeholder scoping by step', () => {
+  const A_DESCRIPTION = 'a distinctive letterhead';
+  const AN_ATTRIBUTE = 'total_amount_due';
+  /** The marker DOCUMENT_PLACEHOLDER_LABELS substitutes when examples ARE sent. */
+  const FEW_SHOT_MARKER = 'Few-shot examples from class configuration';
+
+  const CLASSES = [
+    {
+      $id: 'Invoice',
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      description: A_DESCRIPTION,
+      properties: { [AN_ATTRIBUTE]: { type: 'string', description: 'Amount due' } },
+    },
+  ];
+
+  /** A template asking for every placeholder whose scope is under test. */
+  const TEMPLATE = [
+    'Where does each document start?',
+    '{BOUNDARY_HINTS}',
+    '<types>{CLASS_NAMES_AND_DESCRIPTIONS}</types>',
+    '<attrs>{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}</attrs>',
+    '<examples>{FEW_SHOT_EXAMPLES}</examples>',
+    '<ocr>{DOCUMENT_TEXT}</ocr>',
+  ].join('\n');
+
+  const PROMPTS = { system_prompt: 'sys', task_prompt: TEMPLATE };
+  const OFF = { model: 'us.amazon.nova-2-lite-v1:0', confidence: { mode: 'off' } };
+
+  const configFor = (strategy: string) => ({
+    classes: CLASSES,
+    classification: {
+      strategy,
+      one_stage: { granularity: 'page', page: PROMPTS, llm: OFF },
+      two_stage: {
+        // `class_names` on purpose: with `none` the hints block is empty for
+        // every step and the single-pass assertion below would hold whether or
+        // not the preview scopes it.
+        segmentation: { llm: { granularity: 'page', boundary_hints: 'class_names', page: PROMPTS, ...OFF } },
+        section_classification: { llm: { ...PROMPTS, ...OFF } },
+      },
+    },
+  });
+
+  it('a segmentation step previews no class vocabulary and no examples', async () => {
+    render(<PromptPreview formValues={configFor('two_stage')} />);
+    await showStep('Classification: segmentation \\(Two stage\\)');
+
+    const body = await promptBody(/^Task Prompt \(~/);
+    expect(body).not.toContain(A_DESCRIPTION);
+    expect(body).not.toContain(AN_ATTRIBUTE);
+    expect(body).not.toContain(FEW_SHOT_MARKER);
+    // No literal tokens left behind either: empty is not the same as unreplaced.
+    expect(body).not.toContain('{CLASS_NAMES_AND_DESCRIPTIONS}');
+    expect(body).not.toContain('{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}');
+    expect(body).not.toContain('{FEW_SHOT_EXAMPLES}');
+    // The one vocabulary a boundary call may carry, and it is asked for here.
+    expect(body).toContain('document-type-hints');
+  });
+
+  it('a one-stage step previews no boundary-hints block', async () => {
+    // `classification` is the only classification step a single_pass config
+    // offers, so the preview opens on it.
+    render(<PromptPreview formValues={configFor('single_pass')} />);
+
+    const body = await promptBody(/^Task Prompt \(~/);
+    expect(body).not.toContain('document-type-hints');
+    expect(body).not.toContain('{BOUNDARY_HINTS}');
+    // Rendered, not blank: a one-stage call does carry the vocabulary.
+    expect(body).toContain(A_DESCRIPTION);
+    expect(body).toContain(FEW_SHOT_MARKER);
+  });
+
+  it('a section-classification step previews no boundary-hints block either', async () => {
+    render(<PromptPreview formValues={configFor('two_stage')} />);
+    await showStep('Classification: section classification \\(Two stage\\)');
+
+    const body = await promptBody(/^Task Prompt \(~/);
+    expect(body).not.toContain('document-type-hints');
+    expect(body).not.toContain('{BOUNDARY_HINTS}');
+    expect(body).toContain(A_DESCRIPTION);
   });
 });

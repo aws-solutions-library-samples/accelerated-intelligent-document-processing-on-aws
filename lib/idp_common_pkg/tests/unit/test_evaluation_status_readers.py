@@ -139,7 +139,7 @@ def _abort_polls(status):
     item = {"ObjectStatus": "COMPLETED", "EvaluationStatus": status}
     with (
         patch.object(
-            abort_runs, "_batch_get_document_items", return_value={key: item}
+            abort_runs, "_batch_get_document_items", return_value=({key: item}, set())
         ) as batch_get,
         patch.object(abort_runs.time, "sleep"),
     ):

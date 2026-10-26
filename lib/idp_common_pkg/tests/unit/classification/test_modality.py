@@ -288,7 +288,11 @@ class TestRequestContent:
         service = _service(modality={"images": False})
         config = service._get_classification_config()
         content = service._build_content(
-            config["task_prompt"], "page text", "invoice: An invoice", _png()
+            config["task_prompt"],
+            "page text",
+            "invoice: An invoice",
+            _png(),
+            stage=config["stage"],
         )
         assert _image_count(content) == 0
         assert "page text" in _text_of(content)
@@ -297,7 +301,11 @@ class TestRequestContent:
         service = _service(modality={"text": False})
         config = service._get_classification_config()
         content = service._build_content(
-            config["task_prompt"], "page text", "invoice: An invoice", _png()
+            config["task_prompt"],
+            "page text",
+            "invoice: An invoice",
+            _png(),
+            stage=config["stage"],
         )
         assert "page text" not in _text_of(content)
         assert _image_count(content) == 1
@@ -306,7 +314,11 @@ class TestRequestContent:
         service = _service()
         config = service._get_classification_config()
         content = service._build_content(
-            config["task_prompt"], "page text", "invoice: An invoice", _png()
+            config["task_prompt"],
+            "page text",
+            "invoice: An invoice",
+            _png(),
+            stage=config["stage"],
         )
         assert "page text" in _text_of(content)
         assert _image_count(content) == 1
@@ -414,6 +426,7 @@ class TestContextPathDefects:
             image_content=_png(),
             before_images=[_png("red")],
             after_images=[_png("blue")],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         text = _text_of(content)
         assert "{FEW_SHOT_EXAMPLES}" not in text
@@ -432,6 +445,7 @@ class TestContextPathDefects:
             image_content=_png(),
             before_images=[_png("red"), _png("blue")],
             after_images=[_png("blue")],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert _image_count(content) == 0
         assert "current page text" in _text_of(content)
@@ -444,6 +458,7 @@ class TestContextPathDefects:
             image_content=_png(),
             before_images=[_png("red")],
             after_images=[_png("blue")],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         # One context page either side plus the page itself.
         assert _image_count(content) == 3
@@ -458,6 +473,7 @@ class TestContextPathDefects:
             image_content=None,
             before_images=[],
             after_images=[],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert all(block.get("text", "x").strip() for block in content)
 
@@ -469,6 +485,7 @@ class TestContextPathDefects:
             image_content=_png(),
             before_images=[],
             after_images=[],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert _image_count(content) == 1
         assert "{DOCUMENT_IMAGE}" not in _text_of(content)

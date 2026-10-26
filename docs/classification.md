@@ -28,6 +28,7 @@ classification:
     packet: {window_pages, overlap_pages, system_prompt, task_prompt}
     llm:                         # the model settings of this call
       model: us.amazon.nova-2-lite-v1:0
+      model_lambda_hook_arn      # only with model: LambdaHook
       temperature / top_p / top_k / max_tokens / reasoning_effort
       modality: {text, images}   # what this call is sent
       image: {target_width, target_height}
@@ -59,12 +60,22 @@ calls that assign a class — one stage, and two-stage section classification �
 add **validation** and **class confidence**. Segmentation has neither, because it
 returns page ranges and never a class.
 
+Two of those settings are substituted rather than used as written when they
+cannot be. An empty `model` is not "no model" — every call needs a model id to
+send — so it falls back to the default classification model, which is the same
+`us.amazon.nova-2-lite-v1:0` the defaults put on all three calls, with a line in
+the log. And a `reasoning_effort` outside the levels listed in the editor is
+replaced with `medium`, also with a line in the log, because the value is
+forwarded to the provider as written and a misspelled one either fails the
+request or is silently ignored by a model family that has no effort control.
+
 | Setting | Values | What it decides |
 |---|---|---|
 | `strategy` | `single_pass` (default) \| `two_stage` | **Whether splitting and classifying are one call or two.** `two_stage` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
 | `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. One stage and segmentation each have their own. |
 | `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty means "infer from this call's task prompt placeholders". |
 | `file_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the file as one document and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
+| `file_shape.maxPagesForClassification` | `ALL` (default) \| a positive number of pages | **How much of a one-document file is classified.** Only with `sectionSplitting: disabled`: the first N pages are classified and the whole file takes their majority class. See [Page limit configuration](#page-limit-configuration) below, which carries the spelling hazards. |
 
 The settings combine freely. Two stage with segmentation at `packet` granularity
 and page images on is one boundary call over the whole packet with its images,
@@ -128,18 +139,19 @@ old setting becomes and the cases where the conversion is not a pure move.
   model's output limit, on a call the selected strategy makes. Each is named by
   its path, for example `classification.two_stage.section_classification.llm.model`.
 
-## Classification Methods Across Patterns
+## Classification in BDA mode and pipeline mode
 
-The solution supports multiple classification approaches that vary by pattern:
+`use_bda` chooses which of the two runs. They classify in entirely different
+places, which is why only one of them is configurable here:
 
-### Pattern 1: BDA-Based Classification
+### BDA mode (`use_bda: true`)
 
 - Classification is performed by the BDA (Bedrock Data Automation) project configuration
 - Uses BDA blueprints to define classification rules
 - Not configurable inside the GenAIIDP solution itself
 - Configuration happens at the BDA project level
 
-### Pipeline Mode: Bedrock LLM-Based Classification
+### Pipeline mode (`use_bda: false`)
 
 In Pipeline mode, one-stage classification works at one of two granularities:
 
@@ -156,7 +168,7 @@ In Pipeline mode, one-stage classification works at one of two granularities:
 
 ##### Sequence Segmentation Approach
 
-The multimodal page-level classification implements a sophisticated sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
+Page granularity implements a sophisticated sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
 
 **How It Works:**
 
@@ -191,7 +203,7 @@ The system automatically creates three sections, properly separating the two inv
 
 ##### Page Context for Classification
 
-The multimodal page-level classification supports including surrounding pages as context to improve classification accuracy. This is particularly useful when a single page doesn't contain enough information to determine its document type or boundary status.
+Page granularity supports including surrounding pages as context to improve classification accuracy. This is particularly useful when a single page doesn't contain enough information to determine its document type or boundary status.
 
 **Configuration:**
 
@@ -457,6 +469,22 @@ copies of the same form — it fixes both over-split directions with the shipped
 prompt, at the cost of the over-merge direction and roughly 3× the image tokens
 per classification call.
 
+**`granularity: packet` is the other lever, and on this shape it works.** A
+3-page statement with the identity header reprinted on every page returned 3
+sections at page granularity and **1** — correct — at packet granularity, under
+`single_pass` and `two_stage` alike. That is the expected direction: the rules
+above fail because a page judged alone has nothing to compare its header
+against, and a packet call sees every page at once. The cost is the mirror-image
+error, measured on the same pair of fixtures: at packet granularity two 3-page
+statements filed back to back merged into one section where page granularity got
+them right. `boundary_hints: class_names` was also measured on the over-split
+case and left it at 3 sections. See [Neither granularity dominates, and the
+failure modes are
+opposite](#neither-granularity-dominates-and-the-failure-modes-are-opposite) for
+the pair. So on a corpus of long single documents, packet granularity is a
+genuine fix for this shape; on a mixed corpus the class-description `BOUNDARY:`
+sentence remains the only lever measured not to cost anything elsewhere.
+
 Two notes on reading that table next to the *Measured effect* numbers above:
 
 - It is **Nova 2 Lite**, the shipped default and the model on which the rules have
@@ -534,7 +562,7 @@ classification:
 |---------|---------|-------------|
 | `validation.enforceValidClasses` | `true` | When `true`, validate the predicted class and re-prompt on out-of-vocabulary results. When `false`, an invalid class is logged and used as-is. |
 | `validation.maxValidationRetries` | `2` | Maximum number of re-prompts. `0` disables retries (a single invalid prediction goes straight to the fallback). |
-| `fallback_class` | `unclassified` | Class assigned when retries are exhausted. Set to one of your defined classes, or the built-in `unclassified`. One setting for the whole classification step; extraction reads it too. |
+| `fallback_class` | `unclassified` | Class assigned when retries are exhausted. Not validated against your class list — any string is stored, so a typo becomes a class name no extraction schema matches. Use one of your defined classes, or the built-in `unclassified`; clearing it gives `unclassified`. One setting for the whole classification step; extraction reads it too. |
 
 > **Catch-all class:** if you want an explicit "other"/"unknown" bucket, define
 > it as one of your classes — the model will then be able to select it
@@ -617,6 +645,12 @@ of what tells you where a document starts. Subject to the call's
 **Few-shot examples.** `{FEW_SHOT_EXAMPLES}` is filled from each class's
 `x-aws-idp-examples`, the same way the page-level path fills it.
 
+> ⚠️ **In a two-stage *segmentation* prompt this placeholder renders empty, at
+> either granularity.** Sending no examples is part of what makes the boundary
+> call cheap, so a segmentation template that references `{FEW_SHOT_EXAMPLES}`
+> gets nothing rather than an error. See
+> [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
+
 **Windowing.** A packet larger than one window is split into overlapping windows
 whose results are merged:
 
@@ -649,6 +683,31 @@ A single window (the common case) uses the model's segments directly.
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.
 
+**How to pick the two numbers.**
+
+- Keep `window_pages` at **20 or below** whenever images are on, so a request
+  stays under the 20-image-block threshold above which Bedrock downscales every
+  image. Raising it to get fewer calls costs page resolution on every call.
+- Keep it **no smaller than your longest single document**. A document that
+  straddles two windows has its boundary judged twice from two partial views,
+  which is the main way windowing loses accuracy. If your longest document is
+  longer than 20 pages and images matter, prefer page granularity over a wide
+  window.
+- `0` means never window: one call for the whole packet, which fails outright
+  above the model's context window rather than degrading. Use it when you need
+  the old single-call behaviour and your packets are bounded.
+- `overlap_pages` must be **strictly smaller** than `window_pages` or the save is
+  refused. It should cover the longest run of continuation pages you expect
+  before a boundary cue appears — 2 is enough when first pages are clearly
+  marked, more when a document opens with a cover sheet or a table that runs on.
+  Each additional window costs `overlap_pages` extra pages of input, so the cost
+  is roughly `overlap / (window - overlap)` on top of the un-overlapped page
+  count.
+
+The number of calls over N pages is 1 when `window_pages` is 0 or N fits in one
+window, and otherwise `ceil((N - window_pages) / (window_pages - overlap_pages))
++ 1`.
+
 ##### Limitations of packet-level classification
 
 Despite its strengths in handling full-document context, this granularity has several limitations:
@@ -661,12 +720,17 @@ Despite its strengths in handling full-document context, this granularity has se
 
 **Scalability Challenges**: Not ideal for very large or visually complex document sets. In such cases, page granularity is more appropriate.
 
-### Pattern 3: UDOP-Based Classification
+### The SageMaker UDOP backend is not deployable from this solution
 
-- Classification is performed by a pre-trained UDOP (Unified Document Processing) model
-- Model is deployed on Amazon SageMaker
-- Performs multi-modal page-level classification (classifies each page based on OCR data and page image)
-- Not configurable inside the GenAIIDP solution
+`ClassificationService` accepts `backend="sagemaker"` alongside the default
+`"bedrock"`, which routes page classification to a pre-trained UDOP (Unified
+Document Processing) model on a SageMaker endpoint. **Nothing in the deployed
+solution reaches it**: no template takes a UDOP endpoint parameter, and the
+classification Lambda constructs the service without a `backend` argument, so it
+always takes the Bedrock default. The parameter is usable only by code calling
+the library directly, with an endpoint it supplies itself.
+
+Everything else on this page describes the Bedrock path.
 
 ## Section Splitting Strategies
 
@@ -678,10 +742,10 @@ Despite its strengths in handling full-document context, this granularity has se
 
 **Behavior:**
 - All pages are assigned to a single section
-- Uses **majority voting** to determine the document class (most common classification wins)
-- Excludes unclassifiable/blank pages from voting to prevent them from affecting the result
-- If there's a tie, uses the first page's classification for determinism
-- Ignores any page-level classification boundaries
+- Uses a **page-weighted vote across the segments that were detected** to determine the document class: each segment casts as many votes as it has pages, and the class with the most votes wins
+- Excludes segments whose class is not one of the configured classes, so unclassifiable and blank pages do not affect the result
+- If there's a tie, uses the class of the earliest segment carrying a tied class, for determinism
+- Ignores the detected boundaries when building sections — it still reads them to weight the vote
 - With a **single-class configuration**, sends no page to the model: every page is given that class with confidence `1.0`. Under `llm_determined`, a multi-page file in such a configuration still goes to the model for its section boundaries: page by page at page granularity, and in one call for the whole file at packet granularity
 - Under two stage, makes **no segmentation call**: the whole file is one segment, given its class by one section classification call
 
@@ -704,18 +768,28 @@ classification:
 
 **Voting Behavior:**
 
-The `disabled` strategy uses majority voting to determine the document classification, which provides robust handling of edge cases:
+The `disabled` strategy votes on the document classification, which provides
+robust handling of edge cases. The same rule runs at **both** granularities and
+under both strategies — what differs is only how the segments it counts were
+produced:
 
-1. **Config-Driven Voting**: Only pages whose classification matches a valid document type defined in your configuration are eligible to vote. This automatically excludes:
+1. **Config-Driven Voting**: Only segments whose class matches a document type defined in your configuration are eligible to vote. This automatically excludes:
    - Blank pages (`unclassifiable_blank_page`, `blank`, etc.)
    - Error states (`error (backoff/retry)`, `unclassified`)
    - LLM hallucinations or typos that don't match any defined class
 
-2. **Majority Wins**: The classification that appears most frequently among votable pages becomes the document classification.
+2. **Pages, Not Segments, Are The Weight**: each eligible segment contributes one vote per page it covers, so a 5-page segment outweighs a 1-page one. The class with the most page-votes becomes the document classification.
 
-3. **Tie-Breaking**: If multiple classifications have the same count, the classification from the earliest page (by page number) is used for determinism.
+3. **Tie-Breaking**: If two classes have the same weight, the class of the earliest segment carrying a tied class is used for determinism.
 
-4. **Fallback**: If no pages have valid classifications (all are unclassifiable types), the first page's classification is used.
+4. **Fallback**: If no segment carries a configured class, the first segment's class is used, with a warning in the log.
+
+⚠️ **One disagreeing page leaves the section unscored.** A page whose own
+verdict was a class other than the winner has its confidence cleared, and a
+section's confidence is the aggregate over all its pages, which is `None` as soon
+as any page is unscored. A page that produced no verdict of its own inherits its
+segment's class *and* confidence, so silence does not count as disagreement —
+see [Not scored vs. scored 1.0](#not-scored-vs-scored-10).
 
 **Example:**
 ```
@@ -789,9 +863,49 @@ classification:
 
 | Strategy | Sections Created | Boundary Detection | Same-Type Handling | Deterministic | Performance |
 |----------|-----------------|-------------------|-------------------|---------------|-------------|
-| `disabled` | 1 section always | None | All joined | Yes | Fastest |
-| `page` | N sections (N pages) | Per-page | Never joined | Yes | Fast |
+| `disabled` | 1 section always | None — asserted | All joined | Yes | Fastest |
+| `page` | N sections (N pages) | None — asserted | Never joined | Yes | Fast |
 | `llm_determined` | Variable | LLM boundaries | May join | No | Standard |
+
+### What decides the choice
+
+⚠️ **`disabled` and `page` are assertions, not preferences.** They do not ask
+the model to lean one way; they replace boundary detection with a claim about the
+file, and nothing downstream can recover from the claim being wrong. A packet of
+eight documents declared `disabled` returns one section, with one extraction over
+eight documents' worth of pages. That is why these two sit under `file_shape` —
+*what you already know about this file* — rather than beside the strategy.
+
+So the choice is really a question about your input, not about accuracy:
+
+- **You know every file holds exactly one document** → `disabled`. This is the
+  common case for a single-document intake pipeline, and it is the only value
+  that enables `maxPagesForClassification`.
+- **You know every file is a run of one-page documents**, or a packet holds
+  same-type forms back to back and you would rather over-split than merge them →
+  `page`. This is the deterministic answer to the multiple-W-2 problem below.
+- **You do not know, or files vary** → `llm_determined`, the default. Pay for the
+  boundary decision.
+
+Three further properties worth knowing:
+
+- **`disabled` and `page` are the only values that let classification skip the
+  model entirely.** With a single-class configuration, or a document-name regex
+  match that already fixes the class, there is nothing left to decide and no
+  call is made. Under `llm_determined` the model is still called in both of those
+  cases, on purpose: the class may be known but the boundaries are not, and
+  silently skipping the call would collapse every multi-document packet into one
+  section.
+- **`file_shape` applies identically under both strategies.** Under `two_stage`
+  a declared shape skips the segmentation call outright, leaving one section
+  classification call per asserted section.
+- **`two_stage` with `sectionSplitting: page` is strictly dominated.** It makes
+  one classification call per page with no boundary pass, which on a measured
+  3-page file cost the same requests and essentially the same input tokens as
+  `single_pass` at page granularity (3 calls, 1,545 against 1,527 input tokens) —
+  the same price for a configuration that cannot return a per-page boundary
+  verdict. If you want one section per page, `single_pass` is the simpler
+  spelling.
 
 ### Configuration Placement
 
@@ -804,6 +918,28 @@ classification:
     sectionSplitting: disabled         # Options: llm_determined (default), disabled, page
     maxPagesForClassification: "3"     # Only with disabled: classify the first 3 pages
 ```
+
+Both are assertions about the file, so both are checked when you save.
+`sectionSplitting` accepts only those three values — an unrecognised one is
+**refused**, naming the setting, rather than quietly becoming `llm_determined`,
+which is the expensive value and changes where sections start. Clearing the field
+takes the default silently, as clearing any other setting does.
+
+⚠️ The same check runs on **deploy**, not only on save. A `CustomConfigPath`
+file carrying an unrecognised `sectionSplitting` fails the stack operation that
+applies it — which on an update means a rollback, so correct the value before
+deploying rather than after. `strategy`, either `granularity`, `boundary_hints`,
+either `method` and `section_classification.pages` behave the same way; the
+exceptions are `reasoning_effort` and `maxPagesForClassification`, which are
+normalised with a warning because a bad value there has a safe reading. No
+shipped preset or configuration can carry a bad one: the editor renders these as
+picklists, and every value in `config_library/` is on-list.
+
+`maxPagesForClassification` accepts `ALL` or a positive number of pages;
+anything else — a word, a negative number, an unquoted YAML `true` — is reported
+and the file is classified in full, because that is what the pipeline does with a
+limit it cannot read, and a stored value saying otherwise only looks like a
+setting that is in force.
 
 ### Interaction with the strategies
 
@@ -879,7 +1015,7 @@ severity says how much attention the case deserves:
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or the page's required OCR artifacts were absent, so the page has no class and nothing was extracted from it. **Reached on the SageMaker/UDOP backend.** On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page, and endpoint health, model access and quota |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. **Produced only by `classify_page_sagemaker`**, so it cannot occur in a stack this solution deploys: no template here creates a SageMaker endpoint or UDOP model. You reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page. If you supplied the endpoint yourself, check its health, model access and quota — otherwise this code indicates a classifier wired up outside the solution's own templates |
 | `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
@@ -1072,11 +1208,66 @@ page granularity it is one call per page asking only `start` or `continue`, whic
 still makes N calls but drops the prefix from each. It has no validation or
 class confidence, because it returns no class.
 
+> ⚠️ **Writing a custom segmentation prompt: the vocabulary placeholders render
+> empty there.** `{CLASS_NAMES_AND_DESCRIPTIONS}`,
+> `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` are
+> all substituted with nothing in a segmentation prompt, at either granularity
+> and whatever `contextPagesCount` is set to — that absence *is* the dropped
+> prefix, so referencing one gets you silence rather than an error.
+> `boundary_hints: class_names` is the supported way to put the class **names**
+> into this call; it renders a short `{BOUNDARY_HINTS}` block, which in turn is
+> empty in every call other than segmentation, because it tells the model to
+> report no document type. See
+> [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
+
 Section classification is **one call per segment**, over the pages `pages`
 selects. `first_k` is the default because a document's identity is almost always
 on its opening pages, while `all` makes classifying a long segment cost what
 page-level classification cost. It has its own prompts, modality, image size,
 validation and class confidence.
+
+#### Setting `boundary_hints`
+
+`boundary_hints` decides whether the segmentation prompt is told your class
+names. Leave it at **`none`** by default: withholding the vocabulary from the
+boundary pass is the saving two stage exists for, and a boundary is a question
+about where a document ends rather than about what kind it is.
+
+Reach for **`class_names`** when `boundary_accuracy` is the metric that is
+failing — not `label_accuracy` — **and** your class names are the kind of string
+that appears on a first page: a form number (`form_1040`, `w2`), a document
+title, an institution's own name for a statement. Those give the model a literal
+token to look for at the top of a page. If your class names are internal labels
+(`type_a`, `customer_doc_3`), `class_names` sends tokens that match nothing and
+costs the saving for no signal. On the over-split fixture [measured
+above](#neither-granularity-dominates-and-the-failure-modes-are-opposite),
+`class_names` changed nothing, which is the expected result when the ambiguity
+is about extent rather than identity. `class_names` sends names only, never
+descriptions or examples.
+
+#### Setting `pages` and `k`
+
+`pages` decides how much of each section the classifying call sees, and it is
+the only two-stage setting whose cost grows with section length:
+
+- **`first_k` with `k: 2`** is the default and covers the opening identity block
+  of nearly every form — a cover page plus the first content page.
+- **`first`** is the cheapest. Use it when every class is identifiable from its
+  very first page, which is usually true of forms and statements.
+- **`all`** makes a long section cost roughly what page-level classification
+  would have cost, which removes most of two stage's advantage. It is the right
+  answer only when a class is genuinely not identifiable from its opening pages.
+- **Raise `k` above 2** only for classes whose distinguishing content sits past
+  the cover page — a bundle whose first page is a generic transmittal sheet, or
+  two classes that share an opening page and differ later.
+
+Cost is roughly linear in the pages sent. Measured on one 6-page section (Nova 2
+Lite, section classification input tokens only): `first` sent 1 page for 1,317
+input tokens, `first_k` with `k: 2` sent 2 pages for 2,777, and `all` sent 6 for
+6,599.
+
+⚠️ `pages` and `k` are **Stage B** settings and cannot change the boundaries —
+if your sections are wrong, this is not the axis to tune.
 
 Four things worth knowing:
 
@@ -1171,6 +1362,48 @@ modality only — it is always one call per section).
   requires a real OCR backend only if you still want the page-content regex
   shortcut (which reads the text even when it is not sent).
 
+### Neither granularity dominates, and the failure modes are opposite
+
+The hardest boundary case is a **reprinted identity block**: a multi-page
+document whose header, account number and address appear again on every page.
+Read one page at a time, every page looks like a first page. Read the packet at
+once, two adjacent documents of the same type look like one. Those are the same
+ambiguity seen from the two available vantage points, and the two granularities
+fail on opposite sides of it.
+
+Measured on a matched pair of generated bank-statement fixtures, Nova 2 Lite,
+expected section counts from exact ground truth:
+
+| Fixture | Shape | `granularity: page` | `granularity: packet` |
+|---|---|---|---|
+| one 3-page statement, identity header reprinted on every page | expect **1** section | **3** — wrong | **1** — right |
+| two 3-page statements, header on each first page | expect **2** sections | **2** — right | **1** — wrong |
+
+Page granularity split a single document into one section per page; packet
+granularity merged two adjacent documents into one. Both results held under
+`strategy: single_pass` and `strategy: two_stage`, so this is a property of the
+granularity rather than of the strategy. **Choose by which error your corpus can
+afford.** A corpus of long single documents is safer at packet granularity; a
+corpus of back-to-back same-type forms is safer at page granularity.
+
+Two levers were measured on the over-split case and neither solves it:
+
+- **`boundary_hints: class_names`** left it at 3 sections. Putting the class
+  names into the boundary prompt does not help when the ambiguity is about where
+  one document ends, not about what kind it is.
+- **`contextPagesCount: 1`** improved it from 3 sections to 2 — a real
+  improvement, not a fix — and on the *other* fixture the same setting moved a
+  correct 3-section answer to 2. That is the over-merge trade this page warns
+  about, measured in both directions on one pair of documents: showing a page its
+  neighbours makes continuation pages easier to recognise and makes two
+  back-to-back documents of the same type easier to confuse.
+
+If neither error is acceptable, assert the shape instead of detecting it:
+`file_shape.sectionSplitting: disabled` gives a file known to hold one document
+exactly one section, and `page` gives a file of one-page documents exactly one
+section each. Both are assertions, so they are only right when you know the
+shape — see [Section Splitting Strategies](#section-splitting-strategies).
+
 ### Strategy
 
 - **One stage (`single_pass`)** for single-page files and short packets, where
@@ -1179,11 +1412,66 @@ modality only — it is always one call per section).
   want a different model for classifying than for boundary detection, or when you
   need to know whether your section errors are boundary errors or label errors.
 
+#### Why the prefix saving is smaller than it looks
+
+The argument for two stage above is that a one-stage boundary decision carries
+the class vocabulary it does not need. That is true, and it is **not** worth the
+list price of those tokens, because the prefix is cached. The default
+classification model, `us.amazon.nova-2-lite-v1:0`, is in
+`CACHEPOINT_SUPPORTED_MODELS` in
+`lib/idp_common_pkg/idp_common/bedrock/client.py`, the shipped one-stage prompts
+put the class list, the descriptions and the few-shot examples **before**
+`<<CACHEPOINT>>`, and `config_library/pricing.yaml` prices that model's
+`cacheReadInputTokens` at a quarter of its `inputTokens` with
+`cacheWriteInputTokens` at zero. So from the second page of a run onward the
+prefix one stage "wastes" is billed at 25% of list and was free to write. Two
+stage can therefore recover at most three quarters of the prefix on a cache-hit
+page — and it spends a whole extra request per section to do it.
+
+Which way that nets out depends on how many pages each section has, so measure
+it rather than reasoning about it. ⚠️ **The figures below are one regime, and it
+is the regime least favourable to two stage** — a 3-page file holding three
+1-page documents, a 2-class vocabulary with short descriptions, Nova 2 Lite,
+classification Bedrock tokens only. One page per document means the per-section
+second call is a whole extra request against a prefix that was small to begin
+with. Do not read it as a general result:
+
+| Cell | Bedrock requests | Fresh input tokens |
+|---|---|---|
+| one stage, `granularity: page` | 3 | 1,527 |
+| two stage, `granularity: page` | 6 | 2,988 |
+| one stage, `granularity: packet` | 1 | 1,650 |
+| two stage, `granularity: packet` | 4 | 3,258 |
+
+At each granularity two stage cost about twice the fresh input tokens and twice
+the requests. Section counts were correct in all four cells, so this is a cost
+difference and not an accuracy trade. (Cache-read volumes are omitted
+deliberately: they depend on what else had recently run against the same prefix,
+so single runs are not comparable on that column.)
+
+The durable reasons to pick two stage are not the prefix:
+
+- **One classification call per *document* instead of per page.** This is the one
+  that scales, and it is the opposite of the regime measured above: on a 40-page
+  statement, one stage makes 40 classification calls to produce one answer and
+  two stage makes one boundary pass plus one classification call. The longer your
+  sections, the better two stage looks.
+- **A different model per stage.** Boundary detection and classification are
+  different problems and the cheapest model that is good at one is often not the
+  other. One stage has a single model field for both.
+- **The `boundary_accuracy` / `label_accuracy` decomposition**, which tells you
+  which half to fix. See [Telling a wrong boundary from a wrong
+  label](#telling-a-wrong-boundary-from-a-wrong-label).
+
+Measure on your own corpus. The two stages are metered separately
+(`Segmentation/` and `SectionClassification/`, against one stage's
+`Classification/`), so the cost table answers the question directly.
+
 ### Comparison Table
 
 | | `page` | `packet` |
 |---|---|---|
-| Calls per document | N (one per page) | 1, or ⌈N / `window_pages`⌉ |
+| Calls per document | N (one per page) | 1, or ⌈(N − `overlap_pages`) / (`window_pages` − `overlap_pages`)⌉ |
 | Context when deciding a boundary | One page, plus `contextPagesCount` neighbours | The whole packet (or window) |
 | Prefix cost | Paid per page | Paid once per call |
 | Image tokens | Same | Same |
@@ -1213,6 +1501,10 @@ with `sectionSplitting: disabled`; with boundary detection on it is ignored, wit
 a warning in the classification log, because a limit would collapse only files
 longer than N while sectioning shorter ones normally.
 
+⚠️ **Quote the value, or write it as a bare number.** `maxPagesForClassification:
+true` is not a page count: an unquoted YAML boolean is reported and the file is
+classified in full. `ALL` and `0` both mean "every page".
+
 ### Prompt Components
 
 You can customize classification behavior through the prompts of each call. The
@@ -1237,7 +1529,11 @@ classification:
 
 ### Task Prompts
 
-Specify classification instructions and formatting:
+Specify classification instructions and formatting. A page prompt must ask for
+the boundary verdict as well as the class, because `document_boundary` is the
+signal `file_shape.sectionSplitting: llm_determined` — the default — groups pages
+into sections with. A prompt that returns only a class name leaves every page
+looking like the start of a new document:
 
 ```yaml
 classification:
@@ -1247,23 +1543,79 @@ classification:
         Analyze the following document page and classify it into one of these categories:
         {CLASS_NAMES_AND_DESCRIPTIONS}
 
-        Return ONLY the document class name without additional explanations.
-        If the document doesn't fit any of the provided classes, classify it as "other".
+        Also say whether this page is the FIRST page of a document ("start") or a
+        later page of a document that began earlier ("continue").
+
+        <output-format> {
+          "classification_reason": "the evidence for this class and this boundary verdict",
+          "class": "exact_document_type_from_list",
+          "document_boundary": "start or continue"
+        } </output-format>
+
+        <<CACHEPOINT>>
+
+        <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
+        <document-image> {DOCUMENT_IMAGE} </document-image>
 ```
+
+⚠️ **Three things a hand-written classification prompt has to carry, none of
+which produces an error if it is missing.**
+
+- **The output shape the active call's parser reads.** A page call is parsed for
+  `class` and `document_boundary`; a packet call is parsed for a `segments` array
+  of `ordinal_start_page`/`ordinal_end_page`/`type`. Asking for the wrong one
+  fails the parse rather than the validation. The shipped prompts in
+  `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
+  are the reference for both shapes, and the two-stage segmentation prompts there
+  drop `class`/`type` entirely because that call assigns no class.
+- **Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`, unless you mean to drop one.**
+  An unset `modality.text` or `modality.images` is **inferred from this call's
+  task prompt**, so deleting `{DOCUMENT_IMAGE}` turns images off for the call
+  silently. That is the documented way to make a call text-only — it is only a
+  problem when it was not intended.
+- **The boundary rules themselves, if you are relying on boundary detection.**
+  The shipped prompt's `<boundary-detection-rules>` block is what makes a
+  repeated table heading read as a continuation page rather than a new document;
+  a short prompt without it will split long tables.
+
+The snippets further down this page are **fragments** that illustrate one setting
+at a time — placeholder position, few-shot splicing, image sizing — and are not
+complete prompts. Start from the shipped prompt and change what you need.
 
 ### Class Descriptions
 
-Provide detailed descriptions for each document category:
+Classes live in the top-level `classes:` list, not under `classification:`. Each
+entry is a JSON Schema object whose `x-aws-idp-document-type` is the class name
+the model must return and whose `description` is what
+`{CLASS_NAMES_AND_DESCRIPTIONS}` renders into the prompt. Write a description
+detailed enough to separate the class from its neighbours — it is the only thing
+distinguishing them in the prompt:
 
 ```yaml
-document_classes:
-  invoice:
+classes:
+  - $schema: "https://json-schema.org/draft/2020-12/schema"
+    $id: invoice
+    x-aws-idp-document-type: invoice
+    type: object
     description: "A commercial document issued by a seller to a buyer, related to a sale transaction and indicating the products, quantities, and agreed prices for products or services."
-  receipt:
+    properties: {}
+  - $schema: "https://json-schema.org/draft/2020-12/schema"
+    $id: receipt
+    x-aws-idp-document-type: receipt
+    type: object
     description: "A document acknowledging that something of value has been received, often as proof of payment."
-  bank_statement:
+    properties: {}
+  - $schema: "https://json-schema.org/draft/2020-12/schema"
+    $id: bank_statement
+    x-aws-idp-document-type: bank_statement
+    type: object
     description: "A document issued by a bank showing transactions and balances for a specific account over a defined period."
+    properties: {}
 ```
+
+The `properties` of each class are the extraction schema for documents of that
+class; [Few Shot Example Configuration](#few-shot-example-configuration) below
+shows a fully populated entry.
 
 ## Using CachePoint for Classification
 
@@ -1341,7 +1693,7 @@ You can define custom document classes through the Web UI configuration:
 
 ## Image Placement with {DOCUMENT_IMAGE} Placeholder
 
-Pattern 2 supports precise control over where document images are positioned within your classification prompts using the `{DOCUMENT_IMAGE}` placeholder. This feature allows you to specify exactly where images should appear in your prompt template, rather than having them automatically appended at the end.
+Pipeline mode supports precise control over where document images are positioned within your classification prompts using the `{DOCUMENT_IMAGE}` placeholder. This feature allows you to specify exactly where images should appear in your prompt template, rather than having them automatically appended at the end.
 
 ### How {DOCUMENT_IMAGE} Works
 
@@ -1438,13 +1790,17 @@ classification:
 
 For documents with multiple pages, the system provides comprehensive image support:
 
-- **No Image Limits**: All document pages are processed following Bedrock API removal of image count restrictions
+- **No cap on page count**: a document may have any number of pages. What *is*
+  bounded is how many images one request carries: above 20 image blocks in a
+  single Bedrock request every image in it is downscaled to 2,000 px, which is
+  why `packet.window_pages` ships at 20. A single image also fails outright
+  above 3.75 MiB stored or 8,000 px on a side
 - **Info Logging**: System logs image counts for monitoring and debugging purposes
 - **Automatic Pagination**: Images are processed in page order for all pages
 
 ## Optional `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` Placeholder
 
-Pattern 2 classification prompts support an **optional** placeholder that
+Pipeline-mode classification prompts support an **optional** placeholder that
 expands to each class's name, description, **and the names of the schema
 attributes (extraction fields)** declared for that class. This gives the
 classifier richer disambiguation signal — particularly useful when two
@@ -1459,6 +1815,16 @@ The placeholder is fully **opt-in**:
 - Power users with schema-rich domains (lending, healthcare, insurance)
   can drop `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` into a custom
   `task_prompt` to give the model the extra signal.
+
+> ⚠️ **In a two-stage *segmentation* prompt this placeholder renders empty**,
+> as `{CLASS_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` do: it carries
+> the class names, their descriptions *and* their attributes, which is more
+> vocabulary than the plain listing rather than less, and a boundary call that
+> carries none of it is the saving two-stage exists for. A segmentation
+> template referencing it gets nothing rather than an error;
+> `boundary_hints: class_names` is the supported way to put class **names**
+> into that call. See
+> [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
 
 ### Rendered output (page-level classification)
 
@@ -1551,7 +1917,7 @@ If you have a class with hundreds of attributes, prefer:
 
 1. Writing a richer class `description` that captures distinguishing
    characteristics, **or**
-2. Adding [few-shot classification examples](#setting-up-few-shot-examples-in-pattern-2)
+2. Adding [few-shot classification examples](#setting-up-few-shot-examples)
    for that class.
 
 ### Mixing with the legacy placeholder
@@ -1561,9 +1927,9 @@ For example you could keep the compact `{CLASS_NAMES_AND_DESCRIPTIONS}`
 list for an overview block and add `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
 in a "for ambiguous cases, consult the schema fields" sub-section.
 
-## Setting Up Few Shot Examples in Pattern 2
+## Setting Up Few Shot Examples
 
-Pattern 2's multimodal page-level classification supports few-shot example prompting, which can significantly improve classification accuracy by providing concrete document examples. This feature is available when you select the 'few_shot_example_with_multimodal_page_classification' configuration.
+Classification supports few-shot example prompting at either granularity and under either strategy, which can significantly improve classification accuracy by providing concrete document examples. The `rvl-cdip-with-few-shot-examples` preset in `config_library/unified/` is a worked example; examples are defined on a class, so no preset is required to use them.
 
 ### Benefits of Few-Shot Examples
 
@@ -1575,7 +1941,7 @@ Pattern 2's multimodal page-level classification supports few-shot example promp
 
 ### Few Shot Example Configuration
 
-In Pattern 2, few-shot examples are configured within document class definitions using JSON Schema format:
+Few-shot examples are configured within document class definitions using JSON Schema format:
 
 ```yaml
 classes:
@@ -1612,20 +1978,32 @@ For comprehensive details on configuring few-shot examples, including multimodal
 
 The classification service supports configurable image dimensions for optimal performance and quality:
 
-### New Default Behavior (Preserves Original Resolution)
+### Image dimensions default to the original resolution
 
-**Important Change**: Empty strings or unspecified image dimensions now preserve the original document resolution for maximum classification accuracy:
+An empty string, or an absent dimension, sends the image OCR produced at its own
+resolution, which is what gives the best classification accuracy. That is the
+shipped setting on all three calls:
 
 ```yaml
 classification:
   one_stage:
     llm:
-      model: us.amazon.nova-pro-v1:0
+      model: us.amazon.nova-2-lite-v1:0
       # Image processing settings - preserves original resolution
       image:
         target_width: ""     # Empty string = no resizing (recommended)
         target_height: ""    # Empty string = no resizing (recommended)
 ```
+
+A classification call's `image` block honours **only** `target_width` and
+`target_height`. `dpi` and `preprocessing` are accepted by the same model, so
+writing them produces no error and no warning, and they do nothing here —
+rasterization DPI and binarization are OCR-stage decisions and belong under
+`ocr.image`. Under `strategy: two_stage` the same block exists on each stage at
+`classification.two_stage.segmentation.llm.image` and
+`classification.two_stage.section_classification.llm.image`, and the segmentation
+one is the one worth shrinking first: a boundary decision needs layout, not
+legible body text.
 
 ### Custom Image Dimensions
 
@@ -1770,10 +2148,12 @@ and per section. This is separate from the per-field confidence that extraction
 produces (see [extraction-and-confidence.md](./extraction-and-confidence.md));
 this one is about the *class*, not the extracted values.
 
-> **Two of the keys in the examples above — `confidence` and
-> `classification_reason` — used to be parsed by nothing.** A prompt could ask
-> for them, the model would answer, and the values were discarded. They are now
-> read and persisted ([#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
+> **Both `confidence` and `classification_reason` are read and persisted.** A
+> prompt that asks for either — including a hand-written one — has the value
+> stored on the page or section and surfaced in the Web UI, the document JSON and
+> the reporting database. Releases before
+> [#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)
+> discarded them, so a prompt carrying them starts producing scores on upgrade.
 
 ### Where a score comes from
 
@@ -1877,8 +2257,17 @@ number. Nothing invents a value:
 | Class was corrected by a human in the Web UI | `1.0` — the operator's assertion |
 | Model returned an invalid class and the fallback was applied | *not scored* (the class is no longer the model's) |
 | Pages beyond `maxPagesForClassification` | *not scored* (the class is extrapolated) |
+| Under `sectionSplitting: disabled`, a page whose own verdict was not the winning class | *not scored* (the class it carries is the vote's, not its own) |
 | SageMaker/UDOP backend | *not scored* (the endpoint returns no score) |
 | Page classification errored | `0.0` |
+
+⚠️ **The `disabled` row is the one that catches people out, because it makes a
+whole section unscored from a single disagreeing page.** Under
+`sectionSplitting: disabled` every page takes the voted class, and a page that
+predicted something else keeps no confidence — combined with the minimum rule
+below, one disagreement leaves the entire file's section unscored. A page that
+produced no verdict of its own is different: it inherits its segment's class
+*and* its confidence, so silence does not count as disagreement.
 
 This distinction matters because the aggregated value reaches the reporting lake
 as `section_confidence`: a fabricated `1.0` there would be indistinguishable
@@ -1916,8 +2305,9 @@ be more certain than its least certain page.
   on a classifier that answers ~0.95 for most pages it would paint a coarse flag
   as a calibrated traffic light.
 - **API** — `Page.ClassConfidence`, `Page.ClassReason`, `Page.ClassCandidates`
-  and `Section.Confidence` on `getDocument`, `getDocumentVersion` and the
-  document subscription. Named `ClassConfidence` on a page because
+  and `Section.Confidence` on `getDocument` and `getDocumentVersion`. The UI
+  keeps these fresh by polling those queries; there is no document
+  subscription. Named `ClassConfidence` on a page because
   `TextConfidenceUri` there is *OCR* confidence — a different measurement.
 - **Reporting / analytics** — the existing `section_confidence` column, which
   now carries a real value when one exists and null when it does not.
@@ -1930,8 +2320,10 @@ A single self-reported confidence is usually poorly calibrated — models asked
 "how sure are you?" answer ~0.95 almost everywhere, which is worse than no score
 because it invites automated escalation on noise. Smaller models are the most
 overconfident, and the default classification model is a small one. That is why
-`topk` is recommended over `verbalized`, and why the whole block is off by
-default.
+the shipped mode is `topk` rather than `verbalized`: ranking alternatives against
+each other is what makes the number carry information, where a single
+self-reported figure mostly does not. `off` is for a deployment that will not act
+on the score — it is the only setting that saves the output tokens.
 
 **This is measured, not asserted.** On 298 pages of a deliberately confusable
 13-class corpus, in `topk` mode ([full study](./benchmarking/studies/classification-confidence.md)):
@@ -1976,7 +2368,7 @@ Two cheap signals are already reliable and cost nothing extra:
 
 ## Regex-Based Classification for Performance Optimization
 
-Pattern 2 now supports optional regex-based classification that can provide significant performance improvements and cost savings by bypassing LLM calls when document patterns are recognized.
+Pipeline mode supports optional regex-based classification that can provide significant performance improvements and cost savings by bypassing LLM calls when document patterns are recognized.
 
 ### Document Name Regex (All Pages Same Class)
 

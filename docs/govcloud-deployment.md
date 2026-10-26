@@ -198,12 +198,34 @@ video/audio/document modality in Standard Output Configuration`.
 (condition `ShouldCreateBDAOCRProject`). In GovCloud the project isn't created
 and `BDA_OCR_PROJECT_ARN` is empty; the OCR service raises a clear error *only
 if* `ocr.backend` is actually set to `bda`. Use `ocr.backend: textract` — the
-built-in default. The `lending-package-sample-govcloud` preset sets no `ocr:`
-key, so the default applies and no configuration change is needed.
+built-in default. The `lending-package-sample-govcloud` preset leaves
+`ocr.backend` unset, so the default applies and no configuration change is
+needed. (It does set `ocr.model_id`, which is read only by the `bedrock`
+backend.)
 
 > Before this gate existed the resource was created unconditionally and its
 > failure rolled back the entire root stack on **every** GovCloud deployment,
 > regardless of deploy mode or the configured `ocr.backend`.
+
+## Models in the GovCloud Preset
+
+The `lending-package-sample-govcloud` preset is a partial configuration: any
+setting it omits is filled from the system defaults, which name commercial
+cross-region inference profiles (`us.*`, `global.*`). The deploy-time model
+swap does not rewrite IDs for a GovCloud region, so the preset pins a GovCloud
+model for every model setting, including ones for features that are off by
+default (OCR's `bedrock` backend, schema-validation escalation, rule
+validation). After the merge, every model setting names `amazon.nova-pro-v1:0`,
+`amazon.nova-lite-v1:0` or `us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+with one exception.
+
+**Multi-Doc Discovery's embedding step is not available in GovCloud.** It needs
+a multimodal embedding model, and when the preset was checked on 2026-07-17
+GovCloud offered only the text-only `amazon.titan-embed-text-v2:0`. The preset
+therefore leaves `discovery.multi_document.embedding_model_id` at the system
+default, `us.cohere.embed-v4:0`, and a Multi-Doc Discovery run fails at that
+step. This affects `--govcloud` deployments; `--headless` removes Multi-Doc
+Discovery altogether.
 
 ## Headless Deployment: `--headless`
 

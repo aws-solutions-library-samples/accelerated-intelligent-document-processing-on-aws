@@ -15,7 +15,11 @@ import re
 from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from idp_common.dynamodb.client import DynamoDBClient
+from idp_common.dynamodb.client import (
+    CONDITIONAL_CHECK_FAILED,
+    DynamoDBClient,
+    DynamoDBError,
+)
 from idp_common.dynamodb.ttl import calculate_ttl
 from idp_common.models import (
     Document,
@@ -1152,18 +1156,30 @@ class DocumentDynamoDBService:
 
         return document.input_key
 
-    def update_document(self, document: Document) -> Document:
+    def update_document(
+        self, document: Document, *, expected_status: Optional[Status] = None
+    ) -> Document:
         """
         Update an existing document in DynamoDB.
 
         Args:
             document: The Document object to update
+            expected_status: When given, the write lands only if the stored
+                ``ObjectStatus`` is still this value, so a caller that read the
+                document and decided from its status learns, instead of
+                overwriting, that something else changed it in between. The
+                abort resolver uses this for a document it read as QUEUED: if
+                the queue processor has started it since, the abort must stop
+                the execution rather than write ABORTED over a running document
+                (#1612). Raises ``DynamoDBError`` with error_code
+                ``ConditionalCheckFailedException`` when it does not hold.
 
         Returns:
             Updated Document object with any data returned from DynamoDB
 
         Raises:
-            DynamoDBError: If the DynamoDB operation fails
+            DynamoDBError: If the DynamoDB operation fails, including when
+                ``expected_status`` does not hold.
         """
         key = {
             "PK": f"doc#{document.input_key}",
@@ -1174,12 +1190,19 @@ class DocumentDynamoDBService:
             self._document_to_update_expressions(document)
         )
 
+        condition_expression = None
+        if expected_status is not None:
+            # ``#ObjectStatus`` is always registered by the SET clause above.
+            condition_expression = "#ObjectStatus = :ExpectedObjectStatus"
+            expression_values[":ExpectedObjectStatus"] = expected_status.value
+
         response = self.client.update_item(
             key=key,
             update_expression=update_expression,
             expression_attribute_names=expression_names,
             expression_attribute_values=expression_values,
             return_values="ALL_NEW",
+            condition_expression=condition_expression,
         )
 
         # Convert the response back to a Document object
@@ -1230,12 +1253,18 @@ class DocumentDynamoDBService:
             condition_expression="attribute_exists(PK)",
         )
 
-    def get_document(self, object_key: str) -> Optional[Document]:
+    def get_document(
+        self, object_key: str, *, consistent_read: bool = False
+    ) -> Optional[Document]:
         """
         Get a document from DynamoDB by its object key.
 
         Args:
             object_key: The object key of the document to retrieve
+            consistent_read: Use a strongly consistent read. The default read
+                is eventually consistent, so it can miss a write that has just
+                landed; a caller re-reading to decide what happened after a
+                conditional write was refused needs the current item.
 
         Returns:
             Document object if found, None otherwise
@@ -1248,10 +1277,50 @@ class DocumentDynamoDBService:
             "SK": "none",
         }
 
-        item = self.client.get_item(key)
+        item = self.client.get_item(key, consistent_read=consistent_read)
         if item:
             return self._dynamodb_item_to_document(item)
         return None
+
+    def claim_for_execution(self, object_key: str) -> bool:
+        """Confirm, atomically, that a document has not been aborted.
+
+        The queue processor calls this immediately before it starts a document's
+        Step Functions execution. ``abortWorkflow`` has no execution to stop for
+        a QUEUED document, so it writes ABORTED and relies on the processor not
+        starting one; a processor that read the document just before that write
+        used to start it anyway (#1612). A conditional write is evaluated
+        against the item as it is at write time, which a read -- eventually
+        consistent by default, and in any case taken earlier -- is not.
+
+        The write changes nothing (``ObjectStatus`` is set to itself), so a
+        claim made for a redelivered message whose document has since moved on
+        cannot rewind it.
+
+        Returns:
+            True if the document exists and is not ABORTED. False if the
+            condition was refused: the document is ABORTED, or there is no
+            tracking record. The caller tells the two apart by reading it.
+
+        Raises:
+            DynamoDBError: If the DynamoDB operation fails for any other reason.
+        """
+        try:
+            self.client.update_item(
+                key={"PK": f"doc#{object_key}", "SK": "none"},
+                update_expression="SET #ObjectStatus = #ObjectStatus",
+                expression_attribute_names={"#ObjectStatus": "ObjectStatus"},
+                expression_attribute_values={":Aborted": Status.ABORTED.value},
+                return_values="NONE",
+                condition_expression=(
+                    "attribute_exists(PK) AND #ObjectStatus <> :Aborted"
+                ),
+            )
+        except DynamoDBError as e:
+            if e.error_code == CONDITIONAL_CHECK_FAILED:
+                return False
+            raise
+        return True
 
     def batch_get_documents(self, object_keys: List[str]) -> List[Dict[str, Any]]:
         """Batch get document records by object keys (max 100)."""

@@ -10,7 +10,6 @@ query ListReviewQueues {
     timeLimitMinutes
     eligibleAnnotators
     isDefaultQueue
-    confidenceThreshold
     enabled
   }
 }

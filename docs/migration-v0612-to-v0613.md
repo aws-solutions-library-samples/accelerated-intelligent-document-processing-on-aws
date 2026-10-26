@@ -26,16 +26,32 @@ check if you maintain tooling that reads the configuration directly.
 |---|---|
 | `classificationMethod: multimodalPageLevelClassification` | `one_stage.granularity: page` |
 | `classificationMethod: textbasedHolisticClassification` | `one_stage.granularity: packet` — see [A holistic configuration](#a-holistic-configuration) |
+| `granularity` (if written directly) | **both** `one_stage.granularity` and `two_stage.segmentation.llm.granularity` |
 | `system_prompt`, `task_prompt` | `one_stage.page.system_prompt`, `one_stage.page.task_prompt` |
+| `packet.system_prompt`, `packet.task_prompt` | `one_stage.packet.system_prompt`, `one_stage.packet.task_prompt` |
+| `packet.window_pages`, `packet.overlap_pages` | **both** `one_stage.packet.…` and `two_stage.segmentation.llm.packet.…` |
 | `contextPagesCount` | `one_stage.page.contextPagesCount` and `two_stage.segmentation.llm.page.contextPagesCount` |
-| `model`, `model_lambda_hook_arn`, `temperature`, `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image` | `one_stage.llm.…`, and copied into `two_stage.segmentation.llm.…` and `two_stage.section_classification.llm.…` — see [Model settings are copied into every call](#model-settings-are-copied-into-every-call) |
+| `model`, `model_lambda_hook_arn`, `temperature`, `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image`, `modality` | `one_stage.llm.…`, and copied into `two_stage.segmentation.llm.…` and `two_stage.section_classification.llm.…` — see [Model settings are copied into every call](#model-settings-are-copied-into-every-call) |
+| `segmentation.system_prompt`, `segmentation.task_prompt` | `two_stage.segmentation.llm.page.…` (and `segmentation.packet.…` to `…llm.packet.…`) |
+| `segmentation.boundary_hints` | `two_stage.segmentation.llm.boundary_hints` |
+| `segmentation.model`, `labeling.model` | the matching stage's `…llm.model`, and a non-empty value here wins over a flat `model` |
+| `labeling.method`, `labeling.pages`, `labeling.k` | `two_stage.section_classification.…` — the block is named `section_classification` in v0.6.13 |
+| `labeling.system_prompt`, `labeling.task_prompt` | `two_stage.section_classification.llm.…` |
 | `enforceValidClasses`, `maxValidationRetries` | `one_stage.llm.validation.…` and `two_stage.section_classification.llm.validation.…` |
 | `invalidClassFallback` | `fallback_class` |
 | `confidence` | `one_stage.llm.confidence` and `two_stage.section_classification.llm.confidence` |
 | `sectionSplitting` | `file_shape.sectionSplitting` |
 | `maxPagesForClassification` | `file_shape.maxPagesForClassification` — see [A page limit](#a-page-limit-with-boundary-detection) |
 
-The resulting layout is described in
+Rows naming **both** destinations are what makes the conversion exact in either
+strategy: those settings describe the call that reads pages, and under
+`strategy: two_stage` that call is segmentation rather than one stage, so a
+converted profile behaves the same whichever strategy it selects. Any other key
+inside a v0.6.12 `segmentation` or `labeling` block is not carried over.
+
+`classification.strategy` is new in v0.6.13 and has no v0.6.12 equivalent; a
+converted profile gets the default, `single_pass`. The resulting layout is
+described in
 [How the classification settings are organised](classification.md#how-the-classification-settings-are-organised).
 
 ## Cases where the conversion is more than a move
@@ -76,24 +92,51 @@ page's image (subject to `one_stage.llm.modality.images`) and fills
 `{DOCUMENT_IMAGE}`, images are now sent; set `modality.images: false` to keep a
 text-only call.
 
-### Modality is not written
+### Modality follows the prompt it was inferred from
 
-The conversion does not set `modality.text` or `modality.images`. An unset flag
-is inferred from the call's task prompt — `{DOCUMENT_TEXT}` present means text is
-sent, `{DOCUMENT_IMAGE}` present means the image is — which is what v0.6.12 did.
-The documented way of getting text-only classification, deleting
-`{DOCUMENT_IMAGE}` from the task prompt, keeps working unchanged.
+An unset `modality.text` or `modality.images` is inferred from the task prompt of
+the call that reads it — `{DOCUMENT_TEXT}` present means text is sent,
+`{DOCUMENT_IMAGE}` present means the image is. The documented way of getting
+text-only classification, deleting `{DOCUMENT_IMAGE}` from the task prompt, keeps
+working unchanged.
+
+Two things the conversion does write:
+
+- **A flat `modality` block is copied into all three calls**, merged flag by
+  flag, alongside the model parameters below. Setting `modality.images: false`
+  in the flat layout therefore turns images off for one stage, segmentation and
+  section classification alike.
+- **A two-stage configuration gets its stage flags written explicitly.** In
+  v0.6.12 every call inferred an unset flag from the single-pass prompt; in
+  v0.6.13 each call infers from its own, and the two-stage prompts are not that
+  prompt. So when the configuration being converted already selects `two_stage`
+  and carries a single-pass task prompt to infer from, the flags inferred from
+  that prompt are written onto `two_stage.segmentation.llm.modality` and
+  `two_stage.section_classification.llm.modality`, and those calls keep seeing
+  exactly what they saw. Each flag is written only where it is neither set in the
+  flat `modality` block nor already set on the stage, so a flag you chose wins.
 
 ### Model settings are copied into every call
 
-The model, its parameters and the image size are copied into all three calls —
-one stage, segmentation and section classification — not only into the one stage
-call your configuration uses today. Switching a converted profile to two stage
-therefore starts every call on the model and parameters it already had, and you
-change each one from there. A custom or fine-tuned model ARN is the one exception
-at deploy time: `CustomClassificationModelARN` is written only to the call that
-assigns the class, because a classification model is not trained to find
-boundaries.
+The model parameters (`temperature`, `top_p`, `top_k`, `max_tokens`,
+`reasoning_effort`), the image settings, the modality flags and
+`model_lambda_hook_arn` are copied into all three calls — one stage, segmentation
+and section classification — not only into the one stage call your configuration
+uses today. Switching a converted profile to two stage therefore starts every
+call on the parameters it already had, and you change each one from there.
+
+**The `model` is the one setting treated differently, so that a stage model you
+chose is kept.** A flat `model` always sets the one stage call. It reaches a
+two-stage call only when that call names no model, or names the same model as the
+one stage call — so a stage model you picked yourself survives the conversion. A
+v0.6.12 `segmentation.model` or `labeling.model` sub-block wins outright for its
+own stage. [If you read the configuration from your own
+code](#if-you-read-the-configuration-from-your-own-code) states the same rule for
+a flat key written onto an already-converted configuration.
+
+A custom or fine-tuned model ARN is a separate case at deploy time:
+`CustomClassificationModelARN` is written only to the call that assigns the
+class, because a classification model is not trained to find boundaries.
 
 ### A page limit with boundary detection
 
@@ -112,12 +155,27 @@ Set `maxPagesForClassification: ALL` and `sectionSplitting: llm_determined` if
 you want boundary detection on every file instead. None of the presets shipped
 with the solution uses the combination.
 
+The same rule applies to a v0.6.13 configuration you write by hand, at a
+different point: the **runtime** resets `file_shape.maxPagesForClassification`
+to `ALL` and logs a warning whenever `file_shape.sectionSplitting` is anything
+other than `disabled`. So a page limit outside `disabled` is not an error and
+does not change the conversion — it is simply ignored, and the log line is the
+only notice. Pair the two settings yourself rather than relying on the
+conversion to pair them.
+
 ### An empty model is the default model
 
 Each call has its own `model`. A call whose model is empty — cleared in the
 editor, or left empty in a hand-written file — uses the default classification
-model, with a warning in the log, rather than sending no model ID. In v0.6.12 an
-empty classification model failed the document.
+model, `us.amazon.nova-2-lite-v1:0`, with a warning in the log, rather than
+sending no model ID. In v0.6.12 an empty classification model failed the
+document.
+
+That is the same model the shipped defaults put on all three calls, so clearing
+one call's model leaves it running what the rest of the profile runs. ⚠️ It is
+**not** the same as leaving the call out: there is no "off" for a model, so if
+you want a cheaper or more capable model on one call, name it rather than
+clearing the field.
 
 ### One fallback class
 
@@ -127,8 +185,24 @@ a class cannot be decided. Extraction reads it from there too.
 ## When the conversion runs
 
 - **When a profile is read.** The runtime and the configuration editor both read
-  through the conversion. The first time the runtime resolves a profile after the
-  upgrade, it saves the converted, resolved configuration back to the profile.
+  through the conversion, so a profile written under v0.6.12 behaves correctly
+  from the first read. The runtime also tries to **store** the converted
+  configuration back onto the profile, which is what takes a profile off the old
+  layout permanently. That write-back is skipped in two cases, and a profile it
+  skips keeps the v0.6.12 layout in storage and is converted again on every
+  read: when the resolved configuration already matches what is stored, and when
+  the profile's published revision was cut before revisions recorded an
+  integrity hash, because rewriting the profile would destroy that revision's
+  only proof. Saving the profile — a save from the editor, *Save As Version*, or
+  `idp-cli config-upload` — stores it converted and ends the condition. Nothing
+  is wrong with a profile in that state; it resolves correctly every time.
+- **Not as part of the upgrade.** Deploying v0.6.13 rewrites the stack-managed
+  `default` profile and the presets the stack ships, and does not visit profiles
+  you created. So a deployment that has been through several releases normally
+  stores profiles at several configuration formats at once. To see the spread on
+  your own stack, read each `Config#` record and decompress it:
+  `config_format_version` is stored inside the compressed configuration blob
+  rather than as a top-level attribute, so it is not listable.
 - **When a pinned revision is read.** A revision is immutable, so it is converted
   in memory every time it is loaded and its stored body is never rewritten. A test
   run or reprocess pinned to a revision saved under v0.6.12 runs with that
@@ -136,6 +210,30 @@ a class cannot be decided. Extraction reads it from there too.
 - **When a configuration is written**: a save from the editor, Save As Version,
   Save As Default, `idp-cli config-upload`, and the stack's own presets and
   `CustomConfigPath` file on deploy.
+
+⚠️ On the deploy path the conversion also **validates**, so a hand-written
+`CustomConfigPath` file is refused there rather than corrected — and on a stack
+update a refusal is a rollback, so correct the file before deploying rather than
+after.
+
+What gets refused is an unrecognised value for any of the classification
+settings that take a fixed set of values: `strategy`, either `granularity`,
+`boundary_hints`, either `method`, `section_classification.pages`, the
+class-confidence `mode`, and `file_shape.sectionSplitting`. What gets normalised
+is a value that has a safe reading: an unusable page limit becomes `ALL`, and an
+unrecognised `reasoning_effort` becomes `medium`. That is why
+`maxPagesForClassification: banana` is reported and tolerated where
+`sectionSplitting: banana` is not.
+
+⚠️ A **blank** is not the same as an unset value everywhere. For most settings
+it takes the default, but a blank class-confidence `mode` turns class confidence
+**off**, where leaving it unset gives `topk`. Delete the key rather than
+emptying it if you mean the default.
+
+No shipped preset or configuration can carry one: the editor renders each of
+these as a picklist, and every value in `config_library/` is on-list. This is
+about a hand-edited file. The full list of values each setting accepts is in
+[Configuration placement](classification.md#configuration-placement).
 
 The trigger is the presence of an old key, not the `config_format_version`
 stamp. A file that mixes old keys with new ones — for example a v0.6.12 file
@@ -145,16 +243,24 @@ nothing.
 
 ## What you will see in the configuration editor
 
-The Classification panel starts with **Strategy** (*One stage* or *Two stage*)
-and **Fallback class**, then shows only the calls the selected strategy makes:
+The Classification panel starts with **Strategy** (*One stage*, stored as
+`strategy: single_pass`, or *Two stage*, stored as `strategy: two_stage`) and
+**Fallback class**, then shows only the calls the selected strategy makes. The
+form view shows the labels; the editor's JSON and YAML views, and any file you
+upload, use the stored values — note the configuration *block* is named
+`one_stage` while the strategy *value* is `single_pass`.
 
-- **One stage** — granularity, the page or packet settings for that granularity,
-  and the model block.
-- **Two stage** — **Segmentation** (method, granularity, boundary hints, page or
-  packet settings, model block) and **Section classification** (method, pages per
-  section, prompts, model block).
-- **Advanced — known file shape**, collapsed: *Section splitting*, and *Pages to
-  classify*, which appears only for *One document*.
+- **One stage** (`strategy: single_pass`) — granularity, the page or packet
+  settings for that granularity, and the model block (`one_stage.…`).
+- **Two stage** (`strategy: two_stage`) — **Segmentation**
+  (`two_stage.segmentation`: method, granularity, boundary hints, page or packet
+  settings, model block) and **Section classification**
+  (`two_stage.section_classification`: method, *pages per section* with its `k`,
+  prompts, model block).
+- **Advanced — known file shape** (`file_shape`), collapsed: *Section splitting*
+  (`sectionSplitting`: `llm_determined`, `disabled` or `page`) and *Pages to
+  classify* (`maxPagesForClassification`), which appears only for *One document*
+  — the label for `sectionSplitting: disabled`.
 
 Each model block has its own model picker, modality, image settings and model
 parameters, with reasoning effort shown only for a model that accepts it. The two
@@ -174,6 +280,19 @@ the model block that decides the class under the configured strategy, and
 Code that writes flat keys keeps working, because they are converted on read —
 but a flat key written onto a v0.6.13 configuration overrides the nested setting
 it maps to, so prefer the nested path.
+
+A flat setting reaches every call that uses it, **except a two-stage call that
+chose its own value for it**. A flat `model` sets the one-stage call, and a
+two-stage call only if that call names no model or the same model as the
+one-stage call. The per-call parameters — `temperature`, `top_p`, `top_k`,
+`reasoning_effort`, `max_tokens`, `image`, `modality` and
+`model_lambda_hook_arn` — follow the same rule, and `image` and `modality`
+follow it key by key, so a flat `image.target_width` leaves a stage's own
+`target_height` alone. A pure v0.6.12 configuration has no stage parameters at
+all, so every one of them takes the flat value and the conversion is exact; the
+rule only has anything to decide when a flat key is written **on top of** a
+v0.6.13 configuration, and there the value on the stage is one somebody chose.
+`idp-cli config-validate` warns when a file still uses the flat layout.
 
 Two names change in outputs:
 

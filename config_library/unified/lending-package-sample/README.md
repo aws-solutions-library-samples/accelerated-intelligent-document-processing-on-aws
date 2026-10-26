@@ -43,20 +43,35 @@ The configuration defines 6 specialized lending document classes, each with comp
 
 ### Classification Settings
 
-- **Model**: Amazon Nova Pro
-- **Method**: Multimodal Page Level Classification
+This preset defines no `classification` section of its own, so every value below
+comes from the system defaults in
+`lib/idp_common_pkg/idp_common/config/system_defaults/`. They are the effective
+settings, not preset choices — change the preset and they move with the defaults.
+
+- **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
+  returns both the document boundaries and the classes
+- **Granularity**: page (`classification.one_stage.granularity`) — one classification
+  per page rather than per packet
+- **Model**: `us.amazon.nova-2-lite-v1:0`
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
+- **Modality**: `modality.text` and `modality.images` are both empty, so each is
+  inferred from the placeholders the call's task prompt uses
 - **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features
 
 The classification component analyzes document content and structure to accurately identify lending document types and establish proper page boundaries within multi-document packages.
 
 ### Extraction Settings
 
-- **Model**: Amazon Nova Pro
+- **Model**: `us.anthropic.claude-sonnet-5` (from the system defaults — this preset
+  pins no extraction model)
+- **Mode**: `simple` (`extraction.mode`); agentic extraction is off
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
-- **Max Tokens**: 10,000 (increased for detailed financial data)
+
+There is no `extraction.max_tokens` setting to raise. Extraction always requests the
+model's maximum output, resolved per model from
+`config_library/model_config_limits.yaml`.
 
 The extraction component performs comprehensive attribute extraction tailored to each lending document type, capturing critical financial information including:
 - Detailed income and deduction breakdowns
@@ -65,18 +80,24 @@ The extraction component performs comprehensive attribute extraction tailored to
 - Tax withholding and year-to-date totals
 - Insurance coverage details and applicant information
 
-### Assessment Settings
+### Confidence Assessment Settings
 
-- **Model**: us.amazon.nova-pro-v1:0
-- **Granular Assessment**: Enabled with parallel processing
-- **Default Confidence Threshold**: 0.9
-- **Max Workers**: 20 for improved performance
+Confidence assessment is configured under `extraction.confidence`, and this preset
+takes the system defaults for all of it:
 
-Enhanced confidence assessment ensures high accuracy for financial data extraction, critical for lending decisions.
+- **Mode**: `separate` — confidence is scored in its own call after extraction
+- **Model**: `us.amazon.nova-lite-v1:0`
+- **List batch size**: 25 (`list_batch_size`) — oversized list fields are scored in
+  batches of this many rows
+- **Escalation**: enabled, up to 2 rounds, escalating to
+  `us.anthropic.claude-sonnet-5:1m`
+
+Confidence assessment ensures high accuracy for financial data extraction, critical
+for lending decisions.
 
 ### Summarization Settings
 
-- **Model**: us.amazon.nova-2-lite-v1:0
+- **Model**: `us.anthropic.claude-sonnet-5:1m` (from the system defaults)
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
@@ -139,13 +160,19 @@ For enhanced compliance and audit requirements:
 
 ### Adjusting Confidence Thresholds for Financial Data
 
-For critical lending decisions, you may want higher confidence thresholds:
+The threshold below which an extraction is routed to human review is
+`hitl.confidence_threshold`, and it defaults to `0.8`. For critical lending decisions
+you may want it higher:
 
-1. Update the `default_confidence_threshold` in the assessment section:
-   ```yaml
-   assessment:
-     default_confidence_threshold: '0.95'  # Higher threshold for financial data
-   ```
+```yaml
+hitl:
+  confidence_threshold: '0.95'  # Higher threshold for financial data
+```
+
+The older spelling `assessment.default_confidence_threshold` is still accepted and
+still takes effect: a config carrying it is migrated to
+`hitl.confidence_threshold` before it is merged with the defaults, so the value
+arrives intact. Write the current key in new configs.
 
 ### Regional Customization
 
@@ -166,14 +193,15 @@ The default-lending configuration is optimized for:
 - **High Accuracy**: Temperature 0 and elevated confidence thresholds for reliable financial data extraction
 - **Comprehensive Coverage**: Detailed attribute definitions covering all critical lending information
 - **Compliance**: Structured outputs suitable for regulatory documentation and audit trails
-- **Scalability**: Granular assessment with parallel processing for high-volume lending workflows
+- **Scalability**: Oversized list fields are scored in batches rather than one call per row
 
 ### Financial Data Specific Optimizations
 
 - **OCR Enhancement**: Uses SIGNATURES feature to detect signed documents
 - **Table Processing**: TABLES feature for structured financial data in statements
 - **Layout Preservation**: LAYOUT feature maintains document structure for complex forms
-- **Extended Token Limits**: 10,000 tokens for comprehensive financial document processing
+- **Output Budget**: Extraction requests the model's full output limit, so long
+  financial documents are not truncated by a hand-set cap
 
 ## Security and Compliance Considerations
 

@@ -1061,7 +1061,7 @@ Resources:
               strategy:
                 type: string
                 title: Strategy
-                description: "'One stage': one call returns both the document boundaries and the classes. 'Two stage': find the boundaries first with no class list in the prompt, then classify each section with one call — cheaper on long documents with few sections, and it tells a wrong boundary apart from a wrong class. Metered as separate Segmentation and SectionClassification lines."
+                description: "'One stage' (stored as strategy: single_pass): one call returns both the document boundaries and the classes — best for single-page files and short packets. 'Two stage' (stored as strategy: two_stage): first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
                 enum: ["single_pass", "two_stage"]
                 enumLabels: { single_pass: "One stage", two_stage: "Two stage" }
                 default: "single_pass"
@@ -1083,7 +1083,7 @@ Resources:
                   granularity:
                     type: string
                     title: Granularity
-                    description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new document. 'packet': one call for the whole document, paying the class list and examples once instead of per page. Image tokens are the same either way."
+                    description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new document; pages run in parallel and each gets its own confidence score. 'packet': one call for the whole document, paying the class list and examples once instead of per page and letting the model see the whole packet when placing boundaries. Image tokens are the same either way."
                     enum: ["page", "packet"]
                     default: "page"
                     order: 0
@@ -1161,7 +1161,7 @@ Resources:
                       model:
                         type: string
                         title: Model
-                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference."
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                         enum:
                           - "LambdaHook"
                           - !If
@@ -1266,7 +1266,7 @@ Resources:
                         type: object
                         sectionLabel: Modality
                         collapsible: false
-                        description: "What the classification calls is sent. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                        description: "What each classification call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
                         order: 1
                         properties:
                           text:
@@ -1426,7 +1426,7 @@ Resources:
                 type: object
                 sectionLabel: Two stage
                 collapsible: false
-                description: "Segmentation finds where each document starts and ends, with no class list in the prompt; section classification then gives each section one class."
+                description: "Segmentation finds where each document starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known file shape declares the shape, segmentation makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
                 order: 2
                 showWhen: [{ field: "strategy", value: "two_stage" }]
                 properties:
@@ -1441,7 +1441,7 @@ Resources:
                       method:
                         type: string
                         title: Segmentation method
-                        description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned (GitHub issue #1329)."
+                        description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
                         enum: ["llm"]
                         default: "llm"
                         order: 0
@@ -1456,7 +1456,7 @@ Resources:
                           granularity:
                             type: string
                             title: Granularity
-                            description: "How many boundary calls are made. 'page': one per page, each saying whether that page starts a new document. 'packet': one for the whole document, returning page ranges."
+                            description: "How many boundary calls are made. 'page': one per page, each saying whether that page starts a new document; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
                             enum: ["page", "packet"]
                             default: "page"
                             order: 0
@@ -1534,7 +1534,7 @@ Resources:
                           model:
                             type: string
                             title: Model
-                            description: "Model for the boundary calls. Select 'LambdaHook' to use a custom Lambda function for inference."
+                            description: "Model for the boundary calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1639,7 +1639,7 @@ Resources:
                             type: object
                             sectionLabel: Modality
                             collapsible: false
-                            description: "What the boundary calls is sent. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            description: "What each boundary call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
                             order: 3
                             properties:
                               text:
@@ -1729,15 +1729,16 @@ Resources:
                       method:
                         type: string
                         title: Section classification method
-                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned (GitHub issue #1329)."
+                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show 'embeddings', 'decision_model' and 'low_confidence' blocks with defaults: they belong to those planned methods and are ignored today."
                         enum: ["llm"]
                         default: "llm"
                         order: 0
                       pages:
                         type: string
                         title: Pages per section
-                        description: "Which pages represent a section when classifying it. 'first_k' (the default) sends its opening pages, where a document's identity almost always is. 'all' gives back the saving on a long section."
+                        description: "Which pages are sent to classify a section. 'First page': its first page only. 'First k pages' (default): its opening pages, where a document's identity almost always is. 'All pages': every page — most accurate on an ambiguous section, but a long section then costs what page-level classification would."
                         enum: ["first", "first_k", "all"]
+                        enumLabels: { first: "First page", first_k: "First k pages (default)", all: "All pages" }
                         default: "first_k"
                         order: 1
                       k:
@@ -1772,7 +1773,7 @@ Resources:
                           model:
                             type: string
                             title: Model
-                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference."
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1877,7 +1878,7 @@ Resources:
                             type: object
                             sectionLabel: Modality
                             collapsible: false
-                            description: "What the section classification calls is sent. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            description: "What each section classification call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
                             order: 1
                             properties:
                               text:
@@ -1990,7 +1991,7 @@ Resources:
                               mode:
                                 type: string
                                 title: Class confidence mode
-                                description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the page could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                                description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the section could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
                                 enum: ["topk", "verbalized", "off"]
                                 default: "topk"
                                 order: 0
@@ -2908,12 +2909,11 @@ Resources:
               confidence_threshold:
                 type: number
                 title: Confidence threshold
-                description: "Confidence threshold (0.0-1.0). Fields scoring below this trigger HITL review and show confidence alerts."
+                description: "Confidence threshold (0.0-1.0) used for a field with no threshold of its own. Fields scoring below their threshold raise confidence alerts; with HITL enabled they send the document to review."
                 minimum: 0.0
                 maximum: 1.0
                 default: 0.8
                 order: 1
-                hideWhen: { field: "hitl.enabled", value: false }
               notifications:
                 type: object
                 order: 2
@@ -4115,7 +4115,7 @@ Resources:
                     order: 0
                   lookback_hours:
                     type: integer
-                    description: How far back the error analyzer searches logs, traces, and execution history (in hours)
+                    description: Default window, in hours, for the error analyzer's CloudWatch log searches when the question names none
                     default: 24
                     order: 1
                   system_prompt:

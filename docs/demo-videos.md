@@ -78,7 +78,7 @@ A comprehensive technical session demonstrating how AWS's GenAI Intelligent Docu
 
 **Replicate This Demo**: You can now run this exact healthcare demo yourself using the pre-configured sample and config files included in the repository:
 - **Sample Document**: [healthcare-multisection-package.pdf](../samples/healthcare-multisection-package.pdf)
-- **Configuration**: [Pattern-2 Healthcare Config](../config_library/unified/healthcare-multisection-package/config.yaml)
+- **Configuration**: [Healthcare multi-section config](../config_library/unified/healthcare-multisection-package/config.yaml)
 
 These are the same files used in the video demonstration and can be deployed with the IDP CLI or web UI.
 

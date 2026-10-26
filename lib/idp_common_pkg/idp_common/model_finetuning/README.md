@@ -226,11 +226,15 @@ config = {
 
 ### Hyperparameter Validation
 
-The service automatically validates hyperparameters for Nova models:
+`_validate_nova_hyperparameters` checks two hyperparameters for Nova models:
 
-- **epochCount**: Must be between 1 and 5
-- **learningRate**: Must be between 1e-6 and 1e-4
-- **batchSize**: Must be >= 1
+- **epochCount**: Must be between 1 and 5 — raises `ValueError` otherwise
+- **learningRate**: Must be between 1e-6 and 1e-4 — raises `ValueError` otherwise
+
+**`batchSize` is not checked.** The service passes whatever you give it straight
+through, so `batchSize: 0` raises nothing locally and the value is rejected (if at
+all) by the Bedrock fine-tuning API when the job is created. Supply a positive
+integer.
 
 ## Error Handling
 

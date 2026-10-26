@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT-0
 > **INFORMATION DOCUMENT**  
 > This document provides conceptual guidance on the cost factors to consider when using the GenAI Intelligent Document Processing (GenAIIDP) Accelerator solution.
 
-This document provides a framework for understanding the cost elements of running the GenAI IDP Accelerator solution. It outlines the primary contributors to cost and provides guidance on cost optimization across the different processing patterns.
+This document provides a framework for understanding the cost elements of running the GenAI IDP Accelerator solution. It outlines the primary contributors to cost and provides guidance on cost optimization across both processing modes.
 
 ## Key Cost Drivers
 
@@ -18,18 +18,17 @@ The primary cost drivers for the GenAI IDP Accelerator solution include:
 
 ### 1. Document Processing Services
 
-#### Pattern 1: Bedrock Data Automation (BDA)
-- **BDA Processing**: The main cost component for Pattern 1, charged per document processed.
-- **Amazon Bedrock**: Used for summarization (if enabled).
+Both processing modes are present in every deployment, and the `use_bda`
+configuration flag selects which one runs. Document-processing cost therefore
+follows the mode each document was processed under, not a deployment-time choice.
 
-#### Pattern 2: Textract and Bedrock
-- **Amazon Textract**: Costs based on the number of pages processed.
-- **Amazon Bedrock**: Costs based on the models used, input tokens processed, and output tokens generated.
+#### BDA mode (`use_bda: true`)
+- **Bedrock Data Automation**: The main cost component in this mode, charged per document processed.
+- **Amazon Bedrock**: Used for summarization (if enabled) and the shared tail.
 
-#### Pattern 3: Textract, SageMaker (UDOP), and Bedrock
-- **Amazon Textract**: Costs based on the number of pages processed.
-- **Amazon SageMaker**: Costs based on the instance type used and running time.
-- **Amazon Bedrock**: Costs for extraction and optional summarization.
+#### Pipeline mode (`use_bda: false`, the default)
+- **Amazon Textract**: Costs based on the number of pages processed, when the Textract OCR backend is used.
+- **Amazon Bedrock**: Costs based on the models used, input tokens processed, and output tokens generated — across classification, extraction, assessment and summarization. This is normally the largest line in this mode.
 
 ### 2. Storage Costs
 
@@ -57,13 +56,20 @@ a budget set without separating them will be wrong in one direction or the other
 | | What it is | How it scales |
 |---|---|---|
 | **Per-document** | Bedrock inference (classification, extraction, assessment, summarization), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
-| **Always-on** | S3 and DynamoDB storage, CloudWatch logs and metrics, Cognito monthly active users, the API Gateway requests the UI's polling makes, and — if enabled — a Bedrock Knowledge Base vector store or a Pattern 3 SageMaker endpoint | Roughly flat per month. Independent of how many documents you process, including when you process none |
+| **Always-on** | S3 and DynamoDB storage, CloudWatch logs and metrics, Cognito monthly active users, the API Gateway requests the UI's polling makes, and — if enabled — a Bedrock Knowledge Base vector store | Roughly flat per month. Independent of how many documents you process, including when you process none |
 
 Two consequences. First, a deployment that processes nothing still costs money,
-so a budget must leave room for the floor. Second, an optional feature can move
-the floor by far more than document volume does — a SageMaker endpoint for
-Pattern 3 and an OpenSearch Serverless vector store for a Knowledge Base are both
-billed for being provisioned, not for being used.
+so a budget must leave room for the floor — the customer-managed KMS key the stack
+always creates is part of it, billed per key per month.
+
+Second, an optional feature can move the floor by far more than document volume
+does, and the Knowledge Base is the clearest case: which vector store you pick
+decides how much. The default `OPENSEARCH_SERVERLESS` provisions an OpenSearch
+Serverless collection billed for its provisioned capacity whether or not you query
+it, while the `S3_VECTORS` alternative is priced as storage. The other optional
+resource billed for existing rather than for being used is the bastion host
+(`DeployBastionHost=true`, default `false`), an EC2 instance charged by the hour for
+as long as it is running.
 
 ## Cost Optimization Strategies
 
@@ -290,26 +296,31 @@ By default, Bedrock usage appears in AWS Cost Explorer as a single line item per
    ```
 
 > **💡 Tip:** Create separate inference profiles for each processing stage (classification, extraction, assessment) if you need per-stage cost breakdowns.
+>
+> Under `classification.strategy: two_stage` classification is **two** separately
+> metered stages — `Segmentation` and `SectionClassification` — each with its own
+> model field, so it can take two inference profiles. Under `single_pass` (*One
+> stage* in the editor) it is one stage metered as `Classification`.
 
 #### Step 2 — Update the IDP Configuration (No Code Change Needed)
 
 1. In the IDP web UI, go to **View/Edit Configuration**
 2. Toggle to **JSON View** or **YAML View**
 3. Find the `model` or `model_id` fields in the relevant processing step sections — for example:
-   - **Classification**: `classification.model_id`
-   - **Extraction**: `extraction.model_id`
+   - **Classification**: `classification.one_stage.llm.model` (or, under `strategy: two_stage`, each call's `llm.model`: `classification.two_stage.segmentation.llm.model` and `classification.two_stage.section_classification.llm.model`)
+   - **Extraction**: `extraction.model`
    - **Assessment (confidence)**: `extraction.confidence.model`
    - **Summarization**: `summarization.model`
 4. **Replace** the standard model ID or cross-region inference profile ID with the new **Application Inference Profile ARN**
 
    **Before:**
    ```yaml
-   model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+   model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
    ```
 
    **After:**
    ```yaml
-   model_id: arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdef123456
+   model: arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdef123456
    ```
 
 5. Click **Save Changes**

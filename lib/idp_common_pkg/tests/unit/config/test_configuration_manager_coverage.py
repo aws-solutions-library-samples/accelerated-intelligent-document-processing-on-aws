@@ -59,10 +59,12 @@ from idp_common.config.constants import (
     DEFAULT_VERSION,
 )
 from idp_common.config.models import (
+    DEFAULT_CLASSIFICATION_MODEL,
     IDPConfig,
     ModelConfigLimitsConfig,
     PricingConfig,
     SchemaConfig,
+    SummarizationConfig,
 )
 
 TABLE = "cfgmgr-coverage-table"
@@ -71,7 +73,12 @@ BUCKET = "cfgmgr-coverage-bucket"
 # A model id that no Pydantic default uses, so "the seeded default was read"
 # cannot be confused with "Pydantic filled its own default".
 SEEDED_MODEL = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-PYDANTIC_DEFAULT_MODEL = "us.amazon.nova-pro-v1:0"
+# Read from the models rather than written out: what these assertions mean is "the
+# field default, whatever it is", and a literal copy of it silently becomes a
+# different claim the moment the default moves — which is what happened when the
+# classification default was reconciled with the shipped one.
+PYDANTIC_DEFAULT_MODEL = DEFAULT_CLASSIFICATION_MODEL
+PYDANTIC_DEFAULT_SUMMARIZATION_MODEL = SummarizationConfig.model_fields["model"].default
 
 
 def _make_table(with_bucket: bool = False):
@@ -2793,7 +2800,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 
         assert merged is not None
         assert merged.summarization.model == SEEDED_MODEL
-        assert merged.summarization.model != PYDANTIC_DEFAULT_MODEL
+        assert merged.summarization.model != PYDANTIC_DEFAULT_SUMMARIZATION_MODEL
 
     def test_the_backfill_is_persisted_so_the_ui_stops_showing_empty_boxes(
         self, monkeypatch

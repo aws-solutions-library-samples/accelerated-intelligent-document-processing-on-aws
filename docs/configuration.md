@@ -17,7 +17,7 @@ The web interface allows real-time configuration updates without stack redeploym
 
 - **Document Classes**: Define and modify document categories and their descriptions (using JSON Schema format). Choose from **35+ pre-built standard classes** (Invoice, Receipt, W-2, Bank Statement, etc.) or create custom classes from scratch.
 - **Extraction Attributes**: Configure fields to extract for each document class (defined as JSON Schema properties)
-- **Few Shot Examples**: Upload and configure example documents to improve accuracy (supported in Pattern 2)
+- **Few Shot Examples**: Upload and configure example documents to improve accuracy (pipeline mode only — BDA mode does not run the LLM classification and extraction calls they feed)
 - **Model Selection**: Choose between available Bedrock models for classification and extraction
   > **💡 Cost Attribution Tip:** You can replace standard model IDs with [Bedrock Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) ARNs to enable cost-allocation tagging (e.g., for MAP migration tracking). This is a configuration-only change — no code modifications required. See [Cost Attribution with Application Inference Profiles](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles) for step-by-step instructions.
   > **🤖 OpenAI GPT-6 Astra:** `us.openai.gpt-6-astra` (US regions) and `global.openai.gpt-6-astra` (every region, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, and chat. Astra runs on the standard Converse API (**not** the bedrock-mantle path the GPT-5.x models use), has a 1.05M context window with automatic prompt caching, and is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) instead of temperature/top_p, which it rejects. It is **not** supported for Discovery or Policy Discovery. Note input above 272K tokens bills at roughly double the rate recorded in `pricing.yaml`. See [OpenAI Models](./openai-models.md#gpt-6-astra-converse) for the full support matrix and caveats.
@@ -64,11 +64,11 @@ For comprehensive documentation, see [configuration-profiles.md](configuration-p
 - **Import Configuration**: Upload configuration files from your local machine OR import from the Configuration Library:
   - **From Local File**: Upload configuration files from your computer in JSON or YAML format with automatic format detection and validation
   - **From Configuration Library**: Browse and import pre-configured document processing workflows from the solution's built-in configuration library
-    - **Pattern-Filtered**: Only shows configurations compatible with your currently deployed pattern (Pattern 1, 2, or 3)
+    - **Library Scope**: Shows the configurations under `config_library/unified/`, which cover both processing modes
     - **Dual Format Support**: Automatically detects and imports both `config.yaml` and `config.json` formats
     - **README Preview**: View markdown-formatted documentation before importing to understand configuration purpose and features
     - **Format Indicators**: Visual badges show file format (YAML/JSON) and README availability
-    - **Library Contents**: Includes sample configurations like lending-package-sample, bank-statement-sample, rvl-cdip, criteria-validation, and more
+    - **Library Contents**: Includes sample configurations like lending-package-sample, bank-statement-sample and rvl-cdip
   - **Important**: Importing a configuration **replaces** your existing custom configuration entirely. Any prior customizations not included in the imported file will be reset to defaults. Export your current configuration first if you want to preserve it.
 
 Configuration changes are validated and applied immediately, with rollback capability if issues arise. See [web-ui.md](web-ui.md) for details on using the administration interface.
@@ -100,7 +100,7 @@ CustomConfigPath: "s3://my-bucket/custom-config/config.yaml"
 - **Override Default Configuration**: When specified, your custom configuration completely replaces the default pattern configuration
 - **S3 URI Format**: Accepts standard S3 URI format (e.g., `s3://my-bucket/custom-config/config.yaml`)
 - **Least-Privilege Security**: IAM permissions are conditionally granted only to the specific S3 bucket and object you specify
-- **All Patterns Supported**: Works with Pattern 1 (BDA), Pattern 2 (Textract + Bedrock), and Pattern 3 (Textract + UDOP + Bedrock)
+- **Both Processing Modes Supported**: Works whether the configuration selects BDA mode or pipeline mode (`use_bda`)
 
 **Security Benefits:**
 - Eliminates wildcard S3 permissions (`arn:aws:s3:::*/*`)
@@ -382,14 +382,36 @@ A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the
 right rate.
 
-**`config-validate` catches it before you deploy.** `idp-cli config-validate` and
-`idp-cli config-upload` (unless you pass `--no-validate`) reject a configuration
-that pins an end-of-life model, naming the date and the command that confirms it,
-rather than letting the failure appear part-way through a document. Loading a
-stored configuration that still names one is unaffected — the model fields are
-plain strings and nothing revalidates a stored config — so an existing deployment
-does not break on upgrade; it keeps failing at inference exactly as it already
-was, until you repoint the stage.
+**`config-validate` catches some of them before you deploy.** `idp-cli
+config-validate` and `idp-cli config-upload` (unless you pass `--no-validate`)
+reject a configuration that pins an end-of-life model, naming the date and the
+command that confirms it, rather than letting the failure appear part-way through a
+document. ⚠️ **The check reads a fixed list of model fields, not every model field
+in the configuration**, so read a clean run as covering those and nothing else:
+
+| Checked | Not checked |
+|---|---|
+| `ocr.model_id` | `extraction.confidence.model` |
+| the model of each call the **active** classification strategy makes (`classification.one_stage.llm.model`, or both `two_stage` calls) | `extraction.validation.escalation_model`, and the per-class `x-aws-idp-extraction-escalation-model` override |
+| `extraction.model` | the evaluation, rule-validation, discovery and chat models |
+| `summarization.model` | |
+
+A model on the right-hand column is accepted and fails at inference. The confidence
+model is the one worth checking by hand, since
+[Extraction & Confidence](extraction-and-confidence.md) documents a specific id for
+it. The list also still names `assessment.model`, which can never fire: the v0.5 →
+v0.6 migration removes the whole `assessment` block before the check runs.
+
+⚠️ **Only the CLI and SDK run this check.** `idp-cli config-validate`,
+`idp-cli config-upload` and the SDK's equivalent operation call it; the stack's own
+configuration loader does not. So a `CustomConfigPath` that pins a retired model
+deploys cleanly and surfaces per document as a Bedrock `ValidationException`. Run
+`idp-cli config-validate` against the file before you point a stack at it.
+
+Loading a stored configuration that still names a retired model is unaffected — the
+model fields are plain strings and nothing revalidates a stored config — so an
+existing deployment does not break on upgrade; it keeps failing at inference exactly
+as it already was, until you repoint the stage.
 
 **Upgrading a stack that selected a removed model.** `KnowledgeBaseModelId` is a
 CloudFormation parameter, so if your stack's current value is a model that this
@@ -509,21 +531,47 @@ classification:
     llm:
       confidence:
         mode: topk          # topk (default) | verbalized | off
-        top_k_candidates: 3 # alternative classes returned per page
+        top_k_candidates: 3 # total ranked candidates, including the chosen class
 ```
 
-Two-stage section classification has the same block at
-`classification.two_stage.section_classification.llm.confidence`.
+⚠️ **This block belongs to the call that assigns the class, so under
+`classification.strategy: two_stage` it is a different one.** The two-stage
+equivalent is `classification.two_stage.section_classification.llm.confidence`,
+and the `one_stage` block above is not read at all — editing it under two stage
+changes nothing and raises no error. Segmentation has no confidence block,
+because it assigns no class. See [Classification
+Configuration](#classification-configuration).
 
-Each page's classification returns its top-K candidate classes with
-probabilities, giving a per-page confidence you can threshold on and a visible
-reason when a page is ambiguous.
+`top_k_candidates` is the size of the whole ranked list **including** the class
+the model chose, which must be first — so `3` means the chosen class plus two
+alternatives. It accepts 2 to 10, and is reduced automatically to the number of
+configured classes when that is smaller.
 
-⚠️ **It costs output tokens on every page.** Unlike extraction confidence, which
-is per *section*, this scales with page count. Measured at roughly **+17% of the
-classification step**, which is a small share of a typical bill because
-classification is cheap relative to extraction — but on a page-heavy corpus it is
-not free. Set `mode: off` to ask for no confidence.
+**Why `topk` is the shipped mode rather than `off` or `verbalized`.** A single
+self-reported number is usually poorly calibrated: small models answer ~0.95
+almost everywhere, which is worse than no score because it invites escalation on
+noise. Ranking alternatives against each other is what puts pressure on the
+number, so `topk` is the mode that produces something worth thresholding on.
+`off` is the right setting for a deployment that will not act on the score — it
+is the only one that saves the tokens. The measurement behind that choice is in
+the [classification confidence
+study](./benchmarking/studies/classification-confidence.md).
+
+**What the score is per.** Not always per page:
+
+| Configuration | One score per |
+|---|---|
+| `single_pass`, `granularity: page` | page |
+| `single_pass`, `granularity: packet` | segment the call returns |
+| `two_stage` | section |
+
+Only the first case multiplies by page count.
+
+⚠️ **At page granularity it costs output tokens on every page.** Unlike
+extraction confidence, which is per *section*, that case scales with page count.
+Measured at roughly **+17% of the classification step**, which is a small share
+of a typical bill because classification is cheap relative to extraction — but on
+a page-heavy corpus it is not free. Set `mode: off` to ask for no confidence.
 
 See [Classification](./classification.md) for the full reference, including how the
 score reaches the UI and what a `None` confidence means.
@@ -532,7 +580,7 @@ score reaches the UI and what a `None` confidence means.
 
 - **Confidence and geometry moved under `extraction.*`** in v0.6: the former top-level `assessment.*` confidence settings are now `extraction.confidence.*`, and `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr` are now `extraction.geometry.mode`. HITL moved to the top-level `hitl.*` block.
 - **Migrate-on-read handles old configs automatically** — pre-v0.6 configurations are migrated transparently when loaded; **no manual edit is required**.
-- **Granular assessment is retired** and its config keys are a **no-op** (they validate but are ignored).
+- **Granular assessment is retired** and its config keys are a **no-op**. `extraction.confidence.granular` and the legacy `assessment.granular` are **dropped by the loader** — they are not validated against anything, so a typo inside them is not reported either. Nothing is lost by deleting them from a stored configuration.
 - **`list_batch_size`** is the knob for large lists; for large documents, Advanced (agentic) extraction is recommended.
 
 See [Granular Assessment Retirement](./migration-granular-retirement.md) for details.
@@ -597,19 +645,13 @@ Key parameters that can be configured during CloudFormation deployment:
 ### Integration and Tracing Parameters
 - `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
 - `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
-- `EnableECRImageScanning`: Enable automatic vulnerability scanning for Lambda container images in ECR for Patterns 1-3 (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
+- `EnableECRImageScanning`: Enable automatic vulnerability scanning for the pattern stack's Lambda container images in ECR (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
-### Pattern Selection
-- `IDPPattern`: Select processing pattern:
-  - Unified: Supports both BDA and Pipeline processing modes via `use_bda` flag
-
-### Pattern-Specific Parameters
+### Processing Parameters
 - **Configuration Preset**: `ConfigurationPreset` — Select from available presets (lending-package-sample, bank-statement-sample, etc.)
 - **Custom Model ARNs**: Optional custom fine-tuned classification/extraction model ARNs
 
 > **Note**: The processing mode (BDA vs Pipeline) is controlled by the `use_bda` flag in the configuration, not by deployment parameters. See the [architecture docs](./architecture.md) for details.
-
-- **Pattern 3 (Textract + UDOP + Bedrock)**
 
 ### Optional Features
 - `EvaluationBaselineBucketName`: Optional existing bucket for ground truth data
@@ -653,7 +695,7 @@ See [the cost considerations guide](./cost-calculator.md) for the cost drivers o
 
 ## Bedrock Guardrail Integration
 
-The solution supports Amazon Bedrock Guardrails for content safety and compliance across all patterns:
+The solution supports Amazon Bedrock Guardrails for content safety and compliance on every Bedrock call it makes:
 
 ### How Guardrails Work
 
@@ -671,9 +713,9 @@ Guardrails are configured with two CloudFormation parameters:
 - `BedrockGuardrailVersion`: The version of the guardrail to use (e.g., "DRAFT" or "1")
 
 This applies guardrails to all Bedrock model interactions, including:
-- Document extraction (all patterns)
-- Document summarization (all patterns) 
-- Document classification (Pattern 2 only)
+- Document extraction (both processing modes)
+- Document summarization (both processing modes)
+- Document classification (pipeline mode only)
 - Knowledge base queries (if enabled)
 
 ### Best Practices
@@ -1037,8 +1079,17 @@ Document class schemas support evaluation-specific extensions for fine-grained c
 
 - `x-aws-idp-evaluation-method`: Comparison method (EXACT, FUZZY, LEVENSHTEIN, NUMERIC_EXACT, SEMANTIC, DATE, LLM, HUNGARIAN)
 - `x-aws-idp-evaluation-method-config`: Optional comparator config (used by DATE: `dayfirst`, `tolerance`, `range_mode`)
-- `x-aws-idp-evaluation-threshold`: Minimum score to consider a match (0.0-1.0)
+- `x-aws-idp-evaluation-threshold`: Minimum score to consider a match. The scale is 0.0-1.0, so `0.9` means 90% similarity
 - `x-aws-idp-evaluation-weight`: Field importance for weighted scoring (default: 1.0, higher values = more important)
+
+⚠️ **The 0.0-1.0 range is not enforced, so write the fraction and not the
+percentage.** Nothing validates the value — `idp-cli config-validate` accepts `50`
+and `-1` without an error or a warning, and they reach the comparator as given.
+`50` is the mistake to watch for, because it reads as "50%": no comparison can
+score above 1.0, so the field never matches and scores 0 on **every** document.
+That looks exactly like an extraction failure on that field. If a single field
+reports 0 accuracy across a whole evaluation while its extracted values look
+right, check its threshold first.
 
 ### Example Configuration
 
@@ -1087,17 +1138,146 @@ The evaluation framework uses [Stickler](https://github.com/awslabs/stickler) as
 
 For detailed evaluation capabilities and best practices, see [evaluation.md](evaluation.md).
 
+## Classification Configuration
+
+Every classification setting lives inside the model **call** that reads it, so
+the first thing to settle is which calls you are making. That is
+`classification.strategy`:
+
+| `classification.strategy` | Web UI label | Calls it makes |
+|---|---|---|
+| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the boundaries and the classes together |
+| `two_stage` | **Two stage** | A *segmentation* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
+
+*One stage* and *Two stage* are the labels the configuration editor's form view
+shows. The stored value is `single_pass` or `two_stage` — write that in the
+editor's YAML or JSON view and in any file you upload, because the form labels
+are not accepted as values and a save using one is refused.
+
+### Where each setting lives
+
+```yaml
+classification:
+  strategy: single_pass            # single_pass (One stage) | two_stage
+  fallback_class: unclassified     # the class assigned when none can be decided
+
+  one_stage:                       # read only under strategy: single_pass
+    granularity: page              # page | packet
+    page:
+      contextPagesCount: "0"       # neighbouring pages sent as context; each call carries up to 2k+1 pages
+      system_prompt: ...
+      task_prompt: ...             # must ask for class + document_boundary
+    packet:
+      window_pages: "20"           # most pages one packet call covers; 0 never windows
+      overlap_pages: "2"           # pages repeated between adjacent windows; must be smaller
+      system_prompt: ...
+      task_prompt: ...             # must ask for a segments array
+    llm:                           # the model block for this call
+      model: us.amazon.nova-2-lite-v1:0
+      temperature: "0.0"
+      top_p: "0.0"
+      top_k: "5"
+      max_tokens: ""               # empty uses the model's maximum
+      reasoning_effort: medium     # reasoning-capable models only; ignored by Nova
+      model_lambda_hook_arn: ""    # used when model is 'LambdaHook'
+      modality: {text: "", images: ""}
+      image: {target_width: "", target_height: ""}
+      validation:
+        enforceValidClasses: true  # re-prompt on a class outside the vocabulary
+        maxValidationRetries: "2"  # then assign fallback_class
+      confidence: {mode: topk, top_k_candidates: "3"}
+
+  two_stage:                       # read only under strategy: two_stage
+    segmentation:
+      method: llm
+      llm:
+        granularity: page          # this call's own granularity
+        page: {contextPagesCount: "0", system_prompt: ..., task_prompt: ...}
+        packet: {window_pages: "20", overlap_pages: "2", system_prompt: ..., task_prompt: ...}
+        boundary_hints: none       # none | class_names — what {BOUNDARY_HINTS} renders
+        model: us.amazon.nova-2-lite-v1:0
+        # ...the same model settings as above, minus validation and confidence:
+        # this call assigns no class
+    section_classification:
+      method: llm
+      pages: first_k               # first | first_k | all — pages sent per section
+      k: "2"                       # with first_k
+      llm:
+        model: us.amazon.nova-2-lite-v1:0
+        system_prompt: ...
+        task_prompt: ...
+        # ...plus validation and confidence, as above
+
+  file_shape:                      # applies under both strategies
+    sectionSplitting: llm_determined
+    maxPagesForClassification: ALL
+```
+
+Four notes on reading that:
+
+- **Only the active strategy's block is read.** A setting written in the inactive
+  one validates, saves and does nothing. This is also why `granularity` appears
+  twice: `one_stage.granularity` is the one in force under `single_pass`, and
+  `two_stage.segmentation.llm.granularity` under `two_stage`.
+- **`reasoning_effort` and `model_lambda_hook_arn` are per call**, in each
+  `llm` block, like the model and its parameters. Neither appears in
+  `base-classification.yaml`, so classification runs them at their field
+  defaults — `medium` and unset — until you write them; the configuration editor
+  offers both on each call. `reasoning_effort` is read only by models that have
+  an effort control (Claude Sonnet/Opus/Fable, OpenAI GPT-5.x and GPT-6, xAI
+  Grok — the legal tokens differ per family) and is ignored by the Nova family,
+  including the shipped default model. It is not validated at save time, so a
+  value the model does not accept surfaces as a Bedrock error at run time.
+- **`validation` and `confidence` exist only on the two calls that assign a
+  class** — `one_stage.llm` and `two_stage.section_classification.llm`. Each
+  carries four editable confidence prompts (`task_prompt_topk`,
+  `task_prompt_verbalized`, and the `_packet` variants used at packet
+  granularity), spliced into the call's own task prompt.
+- **`fallback_class` is not validated against your class list.** It accepts any
+  string; the built-in value is `unclassified`. Pointing it at one of your own
+  classes is supported and means extraction then runs that class's schema over a
+  document whose class could not actually be decided — which may be what you
+  want, or may not.
+
+For how to **choose** between the strategies, the granularities,
+`boundary_hints`, the window settings and `pages`/`k` — with the measured cost
+and accuracy figures behind each — see
+[Classification](./classification.md#choosing-granularity-modality-and-strategy).
+The authoritative list of every key with its shipped default and an inline
+rationale is
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+
 ## Section Splitting Strategies
 
-Pattern-2 and Pattern-3 support configurable strategies for how classified pages are grouped into document sections. This is controlled by the `sectionSplitting` configuration field:
+Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.file_shape.sectionSplitting` configuration field, and applies identically under both strategies:
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire document as a single section. With page-level classification the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); with holistic classification it takes the first segment's class. Simplest approach for single-document processing.
+- **`disabled`**: Treats the entire file as a single section. At **either**
+  granularity its class comes from a page-weighted vote across the segments that
+  were detected — each segment casts one vote per page it covers — counting only
+  segments carrying a class the configuration defines. A tie goes to the earliest
+  segment carrying a tied class, and the first segment's class is used only when
+  no segment carries a configured class at all. Simplest approach for
+  single-document processing.
   
 - **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   
-- **`llm_determined`** (default): Uses LLM boundary detection with "Start"/"Continue" indicators to intelligently segment multi-document packets. Best for complex scenarios where document boundaries are not obvious.
+- **`llm_determined`** (default): Uses whatever boundary signal the active call
+  produces — a per-page `start`/`continue` verdict at page granularity, and a
+  `segments` array of page ranges at packet granularity or from two-stage
+  segmentation. Best for complex scenarios where document boundaries are not
+  obvious.
+
+⚠️ **`disabled` and `page` are assertions, not preferences.** They replace
+boundary detection with a claim about the file rather than nudging the model, and
+nothing downstream recovers if the claim is wrong: a packet of eight documents
+declared `disabled` becomes one section with one extraction over all of it. They
+are also the only two values that let a single-class configuration, or a
+document-name regex match, skip the model call entirely — under `llm_determined`
+that call still runs, because the class may be known while the boundaries are
+not. See
+[Classification](./classification.md#what-decides-the-choice) for which to pick.
 
 ### Configuration Example
 
@@ -1113,7 +1293,7 @@ classification:
 - **Multiple Same-Type Forms**: Use `page` for deterministic splitting (resolves Issue #146)
 - **Complex Multi-Document Packets**: Use `llm_determined` for intelligent boundary detection
 
-For more details on classification methods and section splitting, see [classification.md](classification.md).
+For more details on the classification strategies, the two granularities and section splitting, see [classification.md](classification.md).
 
 ### Page Limit Configuration
 
@@ -1143,13 +1323,26 @@ same setting would give different answers for different files in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that lets you see the actual prompts sent to the LLM for each processing step (Classification, Extraction, Assessment, Summarization) with your configuration values filled in. This is useful for optimizing document class schemas and prompt templates — you can see exactly how your class names, descriptions, and JSON Schema attributes appear in the prompt that the LLM receives. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `single_pass` it offers *Classification: one stage*, and under `two_stage` it offers *Classification: segmentation* and *Classification: section classification* instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+
+## A `%` in a prompt is literal text
+
+Prompt templates are filled in by name — `{DOCUMENT_TEXT}`, `{DOCUMENT_CLASS}`
+and the other placeholders each page lists — and every other character is passed
+through as written. So "answer only when you are over 90% confident" and "95%
+certainty" mean what they say, and need no escaping. The same holds for a
+`%`-shaped sequence that is not an IDP placeholder, such as `%(FOO)s` or `100%s`:
+those are prompt text, not substitutions. A doubled `%%` is accepted too and
+renders as a single `%`.
+
+A `{NAME}` the step does not recognise is also left as written rather than
+emptied, so a prompt can refer to literal brace-wrapped text.
 
 ## Prompt Optimization
 
 ### Bedrock Prompt Caching
 
-The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. This feature is available across all patterns for classification, extraction, assessment, and summarization.
+The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. It applies to the classification, extraction, assessment and summarization calls.
 
 #### How It Works
 
@@ -1298,9 +1491,9 @@ the state says so. The view is in three places:
 
 For pricing details on cached tokens, see [cost-calculator.md](cost-calculator.md).
 
-## Regex-Based Classification (Pattern-2)
+## Regex-Based Classification (pipeline mode)
 
-Pattern-2 supports optional regex patterns in document class definitions for performance optimization and deterministic classification when patterns are known.
+Pipeline mode supports optional regex patterns in document class definitions for performance optimization and deterministic classification when patterns are known. BDA mode does not inherit the classification defaults these settings belong to, so they have no effect there.
 
 ### Configuration
 
@@ -1322,7 +1515,7 @@ classes:
 ### Classification Logic
 
 1. **Document Name Matching**: If `document_name_regex` matches the document filename, all pages are classified as that type without LLM processing
-2. **Page Content Matching**: During multimodal page-level classification, if `document_page_content_regex` matches page text, that page is classified without LLM processing
+2. **Page Content Matching**: At page granularity, if `document_page_content_regex` matches page text, that page is classified without LLM processing
 3. **Fallback**: If no regex matches, standard LLM classification is used
 
 ### Benefits
@@ -1338,9 +1531,9 @@ The system logs INFO-level messages when regex patterns match, providing visibil
 
 For examples and demonstrations, see the `step2_classification_with_regex.ipynb` notebook.
 
-## OCR Backend Configuration (Pattern-2 and Pattern-3)
+## OCR Backend Configuration (pipeline mode)
 
-Patterns 2 and 3 support multiple OCR backend engines for flexible document processing:
+Pipeline mode supports multiple OCR backend engines for flexible document processing. BDA mode runs its own integrated OCR and does not inherit the `ocr` defaults, so these settings apply only when `use_bda` is false:
 
 ### Available Backends
 
@@ -1372,7 +1565,7 @@ ocr:
   bda_project_arn: null
 
   # For Bedrock backend:
-  bedrock_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   system_prompt: "You are an OCR expert..."
   task_prompt: "Extract all text from this document..."
 ```
@@ -1510,9 +1703,9 @@ signatures. Removing it costs nothing, since the feature was free to begin with.
 
 For more details on OCR configuration and feature selection, see the pattern-specific documentation.
 
-## Custom Prompt Lambda (Pattern-2 and Pattern-3)
+## Custom Prompt Lambda (pipeline mode)
 
-Patterns 2 and 3 support injection of custom business logic into the extraction process through a Lambda function.
+Pipeline mode supports injection of custom business logic into the extraction process through a Lambda function. The setting carries no mode guard of its own, but it is read only on the LLM extraction path, which BDA mode does not run — so setting it on a BDA-mode configuration has no effect.
 
 ### Configuration
 
@@ -1642,11 +1835,15 @@ extraction:
     target_width: ""     # Preserves original resolution
     target_height: ""    # Preserves original resolution
 
-assessment:
-  image:
-    target_width: ""     # No resizing applied
-    target_height: ""    # No resizing applied
+  confidence:
+    image:
+      target_width: ""   # No resizing applied
+      target_height: ""  # No resizing applied
 ```
+
+⚠️ The confidence-assessment image block is `extraction.confidence.image`. A
+top-level `assessment:` block is **removed outright** by the v0.5 → v0.6
+migration, with no warning, so dimensions written there are discarded silently.
 
 ### Custom Image Dimensions
 
@@ -1748,9 +1945,13 @@ the bound from the worse of the planner's two regimes rather than from a formula
 so on a document with uneven — or entirely absent — text per page the clamp can
 engage *earlier* than the table says, never later.
 
-This also reaches stages other than extraction. Holistic classification sends every
-page of a packet in one request, so a packet over 20 pages now has its page images
-downscaled at classification time too.
+This also reaches stages other than extraction. Classification at packet
+granularity (`classification.one_stage.granularity: packet`, or
+`classification.two_stage.segmentation.llm.granularity: packet`) sends up to
+`window_pages` pages per request, so the downscale is reached only when that
+setting is raised above 20 or set to `0`, which never windows and sends the whole
+packet in one request. At the shipped `window_pages: 20` a packet is split into
+windows before it reaches the threshold.
 
 **What the re-encode costs.** It removes roughly 15% of the image tokens. Whether
 that costs *accuracy* depends on the model: Claude 4.7+, Opus 5 and Sonnet 5
@@ -1815,7 +2016,7 @@ classification:
 The solution provides additional configuration options through:
 
 - Configuration files in the `config_library` directory
-- Pattern-specific settings in each pattern's subdirectory
+- Preset configurations under `config_library/unified/`, one subdirectory each
 - Environment variables for Lambda functions
 - CloudWatch alarms and notification settings
 

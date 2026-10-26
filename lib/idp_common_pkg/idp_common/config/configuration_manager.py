@@ -9,7 +9,7 @@ import gzip
 import hashlib
 import json
 import os
-from typing import Callable, Dict, Any, Optional, Union, List
+from typing import Callable, Dict, Any, Optional, Tuple, Union, List
 from botocore.exceptions import ClientError
 import logging
 from boto3.dynamodb.types import Binary
@@ -280,6 +280,17 @@ class ConfigurationManager:
 
         Supports both compressed and legacy inline storage formats.
 
+        The head item's metadata attributes (`_DYNAMODB_METADATA_FIELDS`) are not
+        part of the result, `Managed` included. Its result is the editor's
+        `Custom` delta, which the UI merges into what it sends back on Save as
+        Profile and Save as default, so the result is kept free of record
+        metadata; `handle_update_custom_configuration` also drops any `managed`
+        it is sent, so a copy of a stack-managed profile is a user profile.
+        Saving this result back to the profile it was read from does not
+        un-manage it: `save_configuration` keeps the flag on a profile stored
+        as managed. `get_merged_configuration` needs the attribute and reads it
+        through `_read_raw_configuration`.
+
         Args:
             config_type: Configuration type
             version: Version identifier
@@ -289,6 +300,18 @@ class ConfigurationManager:
 
         Raises:
             ClientError: If DynamoDB operation fails
+        """
+        read = self._read_raw_configuration(config_type, version)
+        return read[0] if read is not None else None
+
+    def _read_raw_configuration(
+        self, config_type: str, version: str
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """`get_raw_configuration`, plus the head item's metadata attributes.
+
+        Returns ``(config_data, metadata)``, where ``metadata`` holds the keys of
+        the decompressed item that are in `_DYNAMODB_METADATA_FIELDS`, or None if
+        the item does not exist.
         """
         try:
             if version:
@@ -311,6 +334,9 @@ class ConfigurationManager:
             # Remove DynamoDB partition key and metadata fields - return only config data
             config_data = {
                 k: v for k, v in item.items() if k not in _DYNAMODB_METADATA_FIELDS
+            }
+            metadata = {
+                k: v for k, v in item.items() if k in _DYNAMODB_METADATA_FIELDS
             }
 
             # Relocate legacy-shaped keys to their current paths.
@@ -346,7 +372,7 @@ class ConfigurationManager:
             logger.info(
                 f"Retrieved raw configuration for {config_type}, version: {version}"
             )
-            return config_data
+            return config_data, metadata
 
         except ClientError as e:
             logger.error(f"Error retrieving raw configuration {config_type}: {e}")
@@ -436,6 +462,7 @@ class ConfigurationManager:
         # it recurs on every future field that is added with a non-empty shipped
         # default.
         full_config_fallback: Optional[IDPConfig] = None
+        raw_read: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
         raw_version: Optional[Dict[str, Any]] = None
         try:
             config = self.get_configuration(CONFIG_TYPE_CONFIG, version)
@@ -444,7 +471,8 @@ class ConfigurationManager:
                 # gzip-compressed precisely because it is large, and nothing on
                 # this path is cached — `get_config()` builds a fresh manager per
                 # call — so a second `get_item` is paid per invocation.
-                raw_version = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+                raw_read = self._read_raw_configuration(CONFIG_TYPE_CONFIG, version)
+                raw_version = raw_read[0] if raw_read is not None else None
                 if raw_version and _is_full_config(raw_version):
                     # Keep it, in case `default` cannot be read below: returning a
                     # usable config beats returning None, which is what the merge
@@ -479,13 +507,11 @@ class ConfigurationManager:
 
         # Get version as RAW dict (no Pydantic defaults), reusing the read above
         # when it succeeded.
-        version_dict = (
-            raw_version
-            if raw_version is not None
-            else self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
-        )
-        if not version_dict:
+        if raw_read is None:
+            raw_read = self._read_raw_configuration(CONFIG_TYPE_CONFIG, version)
+        if raw_read is None or not raw_read[0]:
             raise ValueError(f"No Version {version} configuration found")
+        version_dict, stored_metadata = raw_read
 
         # Remove format marker if present (shouldn't be in sparse, but just in case)
         version_dict.pop(_FULL_CONFIG_MARKER, None)
@@ -499,6 +525,25 @@ class ConfigurationManager:
         from .migrations import migrate_config
 
         version_dict = migrate_config(version_dict)
+
+        # ⚠️ `managed` is the one `IDPConfig` field stored as a head-item
+        # attribute (`Managed`) rather than in the body, so the raw read above
+        # does not carry it. Left out, the merge fills it from `default`, which
+        # is not managed: a stack-managed profile then never compares equal to
+        # its stored self, and the write-back below fires on EVERY unpinned read
+        # — persisting `Managed=False`, which un-manages the profile, wherever the
+        # role can write the table, and failing with AccessDenied wherever it
+        # cannot. It is record metadata, not a setting to inherit, so it is
+        # resolved exactly as `ConfigurationRecord.from_dynamodb_item` resolves
+        # it for the validated read the comparison is made against: the head
+        # attribute when present, else a body key (older writers left it there),
+        # else the field default. Issue #1613.
+        if "Managed" in stored_metadata:
+            version_dict["managed"] = stored_metadata["Managed"]
+        else:
+            version_dict.setdefault(
+                "managed", IDPConfig.model_fields["managed"].default
+            )
 
         # Merge: start from the default profile, then let every key the stored
         # config HAS override it. A key it lacks is backfilled; a key it holds
@@ -743,6 +788,29 @@ class ConfigurationManager:
             )
             is_active_status = existing_record.is_active if existing_record else False
 
+            # ⚠️ A save never clears `managed` on a profile stored as
+            # stack-managed. The flag is the head's `Managed` attribute, not part
+            # of the body, so every caller that reads a profile raw
+            # (`get_raw_configuration`, which the discovery, BDA, bootstrap and
+            # editor-update paths all use) and saves it back passes a body
+            # without it — and the model's `False` default then un-managed the
+            # profile on every such save. A save CAN set it: the stack's own
+            # presets carry `managed: true`. The rule is a property of the
+            # profile, not of the save, so it applies to a body that spells out
+            # `managed: false` and to the stack's own saves too. "Stored as
+            # managed" is what the validated read says (`from_dynamodb_item`:
+            # the attribute, else a body key an older writer left), so a head
+            # written by such a writer is kept managed and gains the attribute.
+            # A new profile name has no head, so a copy takes the body's value.
+            # Issue #1613.
+            if (
+                isinstance(config, IDPConfig)
+                and not config.managed
+                and existing_record is not None
+                and getattr(existing_record.config, "managed", False) is True
+            ):
+                config = config.model_copy(update={"managed": True})
+
             if existing_record:
                 # Existing config - preserve created_at, update updated_at
                 record_metadata = {
@@ -919,15 +987,24 @@ class ConfigurationManager:
         return entries
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
-        """Full configuration recorded in one revision, or None if not retained."""
+        """
+        Full configuration recorded in one revision, or None if not retained.
+
+        In the current config format, like every other read of a stored
+        configuration: a revision cut before the 0.9 classification nesting is
+        stored flat, so returned raw it gives `config-download --config-revision
+        N` a different shape from `config-download` of the profile head and from
+        what Revision History shows for the same revision. The stored body is
+        never rewritten (`_read_revision_body`).
+        """
         return self._read_revision_body(profile, revision)
 
     def _read_revision_body(
         self, profile: str, revision: int
     ) -> Optional[Dict[str, Any]]:
         """
-        A revision's body, rebuilt from the profile head if it is the published
-        revision and its object has expired.
+        A revision's body in the current config format, rebuilt from the profile
+        head if it is the published revision and its object has expired.
 
         Revision bodies live in the Configuration bucket, whose lifecycle rule
         expires every object after DataRetentionInDays, while every new document is
@@ -935,11 +1012,76 @@ class ConfigurationManager:
         published revision was cut more than DataRetentionInDays ago stops
         processing new documents. The head stands in only when it is provably that
         revision (`_head_is_revision`); any other missing body stays missing.
+
+        Both sources are migrated, so one revision number does not change shape
+        when its stored object expires: the head rebuild goes through
+        `ConfigurationRecord`/`IDPConfig` and is therefore already current, while a
+        stored body is in whatever format the release that cut it wrote.
+
+        Migrated **in memory only**, never written back. A revision is an immutable
+        record of the configuration that actually ran, which is why the pinned read
+        (`_load_revision_config`) migrates the same way.
         """
         body = self.revisions.get_body(profile, revision)
-        if body is not None or not self.revisions.enabled:
+        if body is None and self.revisions.enabled:
+            body = self._published_body_from_head(profile, int(revision))
+        return self._migrated_body(body)
+
+    @staticmethod
+    def _migrated_body(
+        body: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        `body` in the current config format, leaving the stored object alone.
+
+        A body the chain cannot convert is returned **as stored**, with a warning,
+        rather than raising. The revision was read; only its normalisation failed,
+        and every consumer of a converted body here is reading for the record, for
+        display or for download.
+
+        What decides it is the cost of each answer. `_capture_config` in the test
+        runner reaches a pinned revision through `get_revision` and re-raises
+        anything it throws as "Could not read revision r<n>", so raising here
+        would fail a whole `startTestRun` over a body the caller only wanted to
+        record — and the two sites that convert a *captured run* configuration
+        (`test_runner._current_format` on the way in,
+        `test_results_resolver._migrated_run_config` on the way back out) both
+        record such a body as stored, so raising would also defeat a contract they
+        state. Tolerating it, on the other hand, cannot let a document run under
+        an unconverted configuration: every path that *executes* a configuration
+        builds an `IDPConfig` (`_load_revision_config`, `restore_revision`), whose
+        validator calls the same chain and raises on the same body. So the
+        tolerance is confined to paths that only ever show or record what a
+        revision held.
+
+        ⚠️ Do not read this as the house style for `migrate_config`: callers over a
+        stored configuration do both, and most of the ones outside the captured-run
+        pair propagate. `configuration_resolver.handle_get_profile_revision`
+        converts *this same body* a layer up and answers an error response. The
+        closest precedent for tolerating is
+        `update_configuration._migrated_or_original`, which does it in this shape
+        on the deploy-time write path.
+        """
+        if body is None:
+            return None
+        from copy import deepcopy
+
+        from .migrations import migrate_config
+
+        # The deepcopy is belt-and-braces, not a guard against a known mutation:
+        # every hop in the chain already copies before it transforms and returns
+        # its input unchanged when it does not. Both of this function's callers
+        # pass a freshly deserialised body, so there is nothing to protect today.
+
+        try:
+            return migrate_config(deepcopy(body))
+        except Exception as e:  # noqa: BLE001 — a read must not fail on this
+            logger.warning(
+                f"Could not convert a stored configuration to the current format; "
+                f"returning it as stored: {e}",
+                exc_info=True,
+            )
             return body
-        return self._published_body_from_head(profile, int(revision))
 
     def _published_body_from_head(
         self, profile: str, revision: int
@@ -1750,6 +1892,13 @@ class ConfigurationManager:
         if isinstance(config_dict, dict):
             config_dict.pop("pricing", None)
             config_dict.pop(_FULL_CONFIG_MARKER, None)
+            # Whether a profile is stack-managed is decided by the stack, which
+            # writes through `save_configuration` directly, and is kept by that
+            # method on a profile already stored as managed. It is not a setting
+            # this operation edits: honoured here, a delta or a Save as carrying
+            # `managed: true` would make a user profile, or a copy of a managed
+            # one, stack-managed and undeletable in the web UI (#1613).
+            config_dict.pop("managed", None)
 
         # Migrate an incoming legacy-shaped config/delta to the current format BEFORE
         # it is merged onto a v0.6 default/current config below. If a v0.5-shaped upload
