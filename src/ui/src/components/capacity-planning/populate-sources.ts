@@ -16,10 +16,22 @@ export const MAX_DOCUMENTS_TO_DETAIL = 25;
 
 type ListRow = Pick<Document, 'ObjectKey' | 'ObjectStatus'> & Partial<Pick<Document, 'Metering' | 'CompletionTime' | 'InitialEventTime'>>;
 
-/** Keys of the most recent completed documents whose metering has not been loaded. */
-export const documentsNeedingDetail = (documents: ListRow[], limit = MAX_DOCUMENTS_TO_DETAIL): string[] =>
-  documents
-    .filter((doc) => doc.ObjectStatus === 'COMPLETED' && !doc.Metering)
+/**
+ * Completed documents whose metering has not been loaded and that have not already
+ * been read. `alreadyRead` matters because a document can be read and still carry no
+ * metering; without it the same documents would fill the cap on every press and the
+ * older ones would never be reached.
+ */
+const unread = (documents: ListRow[], alreadyRead: ReadonlySet<string>): ListRow[] =>
+  documents.filter((doc) => doc.ObjectStatus === 'COMPLETED' && !doc.Metering && !alreadyRead.has(String(doc.ObjectKey)));
+
+/** Keys of the most recent completed documents still to be read, up to the cap. */
+export const documentsNeedingDetail = (
+  documents: ListRow[],
+  limit = MAX_DOCUMENTS_TO_DETAIL,
+  alreadyRead: ReadonlySet<string> = new Set(),
+): string[] =>
+  unread(documents, alreadyRead)
     // The API's timestamps are ISO-8601, which sort chronologically as strings.
     .sort((a, b) =>
       String(b.CompletionTime ?? b.InitialEventTime ?? '').localeCompare(String(a.CompletionTime ?? a.InitialEventTime ?? '')),
@@ -54,5 +66,8 @@ export const fetchInChunks = async <T>(
 };
 
 /** Completed documents without metering beyond the ones a single Populate reads. */
-export const documentsBeyondCap = (documents: ListRow[], limit = MAX_DOCUMENTS_TO_DETAIL): number =>
-  Math.max(0, documents.filter((doc) => doc.ObjectStatus === 'COMPLETED' && !doc.Metering).length - limit);
+export const documentsBeyondCap = (
+  documents: ListRow[],
+  limit = MAX_DOCUMENTS_TO_DETAIL,
+  alreadyRead: ReadonlySet<string> = new Set(),
+): number => Math.max(0, unread(documents, alreadyRead).length - limit);

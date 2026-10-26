@@ -378,6 +378,8 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
           logger.warn('Background document refresh did not reach the server; retrying on the next poll', error);
           return;
         }
+        // Reported once for this run; the next run of failures starts counting afresh.
+        pollNetworkFailuresRef.current = 0;
       } else {
         // Anything else breaks the run: the count is of consecutive network failures.
         pollNetworkFailuresRef.current = 0;

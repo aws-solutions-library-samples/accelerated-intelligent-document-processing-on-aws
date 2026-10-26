@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 /* eslint-disable react/no-array-index-key */
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { calculateCapacity as calculateCapacityOp } from '../../graphql/generated';
 import {
@@ -27,7 +27,7 @@ import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useSettingsContext from '../../contexts/settings';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useDocumentsContext from '../../contexts/documents';
-import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, withDetails } from './populate-sources';
+import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENTS_TO_DETAIL, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
@@ -297,6 +297,8 @@ const CapacityPlanningLayout = () => {
   // Populate reads documents in rounds, so it takes long enough to need its own state.
   const [isPopulating, setIsPopulating] = useState(false);
   const [samplingNote, setSamplingNote] = useState<string | null>(null);
+  // Documents already read this session, so each press reaches further back.
+  const readDetailKeysRef = useRef<Set<string>>(new Set());
   const [hasCalculated, setHasCalculated] = useState(false);
   const [results, setResults] = useState<CapacityResult | null>(null);
   const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
@@ -634,12 +636,13 @@ const CapacityPlanningLayout = () => {
 
       // List rows carry no Metering or Sections; fetch the full record of the most
       // recent completed documents so their token counts and classes can be read.
-      const detailKeys = documentsNeedingDetail(documents);
+      const detailKeys = documentsNeedingDetail(documents, MAX_DOCUMENTS_TO_DETAIL, readDetailKeysRef.current);
       const detailed = await fetchInChunks(detailKeys, (chunk) => getDocumentDetailsFromIds(chunk, { reportErrors: false }));
-      const beyondCap = documentsBeyondCap(documents);
+      const beyondCap = documentsBeyondCap(documents, MAX_DOCUMENTS_TO_DETAIL, readDetailKeysRef.current);
+      detailKeys.forEach((key) => readDetailKeysRef.current.add(key));
       setSamplingNote(
         beyondCap > 0
-          ? `Showing the ${detailKeys.length} most recent completed documents; ${beyondCap} older ${beyondCap === 1 ? 'one was' : 'ones were'} not read.`
+          ? `Read ${detailKeys.length} more completed documents; ${beyondCap} older ${beyondCap === 1 ? 'one has' : 'ones have'} not been read yet. Choose Populate again to read them.`
           : null,
       );
       const unreadable = detailKeys.length - detailed.length;

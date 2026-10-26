@@ -82,6 +82,15 @@ describe('document list polling errors', () => {
     expect(setErrorMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('reports a sustained outage once per run of failures, not on every poll', async () => {
+    await loaded();
+    graphql.mockRejectedValue(NETWORK);
+
+    for (let i = 0; i < 2 * POLL_NETWORK_FAILURES_BEFORE_REPORT; i += 1) await tick();
+
+    expect(setErrorMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('starts counting again after a poll succeeds', async () => {
     await loaded();
     graphql.mockRejectedValueOnce(NETWORK).mockRejectedValueOnce(NETWORK).mockResolvedValueOnce(OK).mockRejectedValueOnce(NETWORK);

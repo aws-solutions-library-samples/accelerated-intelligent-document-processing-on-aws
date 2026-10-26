@@ -140,7 +140,26 @@ describe('Populate tokens from Documents', () => {
 
     // In the picker rather than a page notification: the page stacks its notifications,
     // which hides every one but the first.
-    expect(await screen.findByText(/most recent completed documents; 1 older one was not read/)).toBeInTheDocument();
+    expect(await screen.findByText(/Read 25 more completed documents; 1 older one has not been read yet/)).toBeInTheDocument();
+  });
+
+  it('reaches older documents on a second press when the first read found no metering', async () => {
+    const rows = Array.from({ length: MAX_DOCUMENTS_TO_DETAIL + 1 }, (_, i) => ({ ...LIST_ROW, ObjectKey: `docs/d${i}.pdf` }));
+    // Read fine, but carry no metering: the same documents must not fill the cap again.
+    const fetchMock = vi.fn(async (keys: string[]) => keys.map((key) => ({ ...LIST_ROW, ObjectKey: key })));
+    contextWith({ documents: rows, getDocumentDetailsFromIds: fetchMock });
+    render(<CapacityPlanningLayout />);
+    const button = screen.getByRole('button', { name: /Populate tokens from Documents/ });
+
+    await userEvent.click(button);
+    await waitFor(() => expect(button).not.toBeDisabled());
+    const firstPress = fetchMock.mock.calls.flatMap(([keys]) => keys);
+    await userEvent.click(button);
+    await waitFor(() => expect(fetchMock.mock.calls.flatMap(([keys]) => keys).length).toBe(firstPress.length + 1));
+
+    const secondPress = fetchMock.mock.calls.flatMap(([keys]) => keys).slice(firstPress.length);
+    expect(firstPress).toHaveLength(MAX_DOCUMENTS_TO_DETAIL);
+    expect(firstPress).not.toContain(secondPress[0]);
   });
 
   it('starts the document list load when no page has asked for it', () => {
@@ -168,6 +187,18 @@ describe('documentsNeedingDetail', () => {
     const rows = Array.from({ length: MAX_DOCUMENTS_TO_DETAIL + 5 }, (_, i) => ({ ObjectKey: `d${i}.pdf`, ObjectStatus: 'COMPLETED' }));
 
     expect(documentsNeedingDetail(rows)).toHaveLength(MAX_DOCUMENTS_TO_DETAIL);
+  });
+});
+
+describe('already-read documents', () => {
+  it('are neither read again nor counted as unread', () => {
+    const rows = [
+      { ObjectKey: 'a.pdf', ObjectStatus: 'COMPLETED' },
+      { ObjectKey: 'b.pdf', ObjectStatus: 'COMPLETED' },
+    ];
+
+    expect(documentsNeedingDetail(rows, 5, new Set(['a.pdf']))).toEqual(['b.pdf']);
+    expect(documentsBeyondCap(rows, 1, new Set(['a.pdf']))).toBe(0);
   });
 });
 
