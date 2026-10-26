@@ -111,7 +111,7 @@ export const isInternalRoute = (link?: string | null): link is string =>
   !hasWhitespaceOrControl(link);
 /** HITL › Queue Management: production review queues and Test Studio queues (Admin). */
 export const REVIEW_QUEUES_PATH = '/review-queues';
-/** My Work (Annotators): the caller's own Inbox, Tasks (assigned items) and Queues. */
+/** Home: every user's Inbox, and an Annotator's Tasks (assigned items) and Queues. */
 export const MY_WORK_PATH = '/my-work';
 export const MY_TASKS_PATH = `${MY_WORK_PATH}/tasks`;
 /** The queues that list the caller as an Annotator (production and Test Studio). */

@@ -9,7 +9,7 @@
  * the most expected error. The page shows the team's progress and, for an Admin,
  * assigns documents to the Annotators listed on the queue (an assignment does not
  * expire) and sets how long an assigned document waits before its Annotator is
- * reminded. A listed Annotator (from My Work › Queues) claims an unassigned document
+ * reminded. A listed Annotator (from Home › Queues) claims an unassigned document
  * instead, which assigns it to them. Each row opens the edit screen
  * (TestSetItemEdit), where documents are edited (read-only unless assigned to the
  * viewer).
@@ -385,13 +385,13 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     }
   };
 
-  /** Claim one document: it is assigned to the caller and shows in My Work › Tasks. */
+  /** Claim one document: it is assigned to the caller and shows in Home › Tasks. */
   const handleClaim = async (item: QueueItem) => {
     setClaimingKey(item.objectKey);
     reviewWork?.beginMutation();
     try {
       await claimTestSetDocument(testSetId, item.objectKey);
-      setSuccessMessage(`Claimed ${item.objectKey}. Work it in My Work › Tasks.`);
+      setSuccessMessage(`Claimed ${item.objectKey}. Work it in Home › Tasks.`);
     } catch (err) {
       setErrorMessage(describeApiError(err, 'claim the document'));
     } finally {
@@ -426,7 +426,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
       }
       const claimed = keys.length - failed.length;
       if (claimed > 0) {
-        setSuccessMessage(`Claimed ${claimed} document${claimed === 1 ? '' : 's'}. Work them in My Work › Tasks.`);
+        setSuccessMessage(`Claimed ${claimed} document${claimed === 1 ? '' : 's'}. Work them in Home › Tasks.`);
       }
       if (failed.length > 0) {
         setErrorMessage(
@@ -728,7 +728,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                   isAdmin
                     ? 'Worst-first: the documents with the most confidence alerts come first. Select documents to assign them to an Annotator.'
                     : claimsWork
-                      ? 'Worst-first: the documents with the most confidence alerts come first. Select documents nobody holds and Claim them to work them in My Work › Tasks.'
+                      ? 'Worst-first: the documents with the most confidence alerts come first. Select documents nobody holds and Claim them to work them in Home › Tasks.'
                       : 'Worst-first: the documents with the most confidence alerts come first.'
                 }
                 actions={

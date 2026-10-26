@@ -1,8 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// My Work › Tasks (Annotators): the items assigned to the caller (by an Admin, or
-// claimed from My Work › Queues) —
+// Home › Tasks (Annotators): the items assigned to the caller (by an Admin, or
+// claimed from Home › Queues) —
 // production review items and Test Studio documents, both from the shared
 // ReviewWorkProvider poll. Opening one goes to its edit screen.
 import React, { useMemo, useState } from 'react';
@@ -68,7 +68,7 @@ const MyTasksPage = (): React.JSX.Element => {
           onRowAction={runRowAction}
           columns={TASK_COLUMNS}
           showSourceFilter
-          empty="Nothing is assigned to you. Claim an item from My Work › Queues, or wait for an Admin to assign you one (you're told in your Inbox)."
+          empty="Nothing is assigned to you. Claim an item from Home › Queues, or wait for an Admin to assign you one (you're told in your Inbox)."
           actions={
             <Button iconName="refresh" ariaLabel="Refresh" loading={refreshing} onClick={() => void refresh()}>
               Refresh

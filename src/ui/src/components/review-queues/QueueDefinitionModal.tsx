@@ -283,7 +283,7 @@ const QueueDefinitionModal = ({
           </FormField>
           <FormField
             label="Eligible Annotators"
-            description="The Annotators who work this queue: they see it in My Work › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
+            description="The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
             stretch
           >
             <Multiselect

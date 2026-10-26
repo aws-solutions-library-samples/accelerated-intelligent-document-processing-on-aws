@@ -31,10 +31,12 @@ import EditScreen, { EditDocumentEmpty } from './EditScreen';
 import EditorNotices from './EditorNotices';
 import type { EditAction } from './EditScreen';
 import EditorHistoryModal from './EditorHistoryModal';
+import FileViewer from '../document-viewer/FileViewer';
 import SectionEditor from './SectionEditor';
 import type { SectionEditorController } from './SectionEditor';
 import { AUTOSAVE_MS, useProductionItemEdit } from './production-item-edit-adapter';
 import useEditCancel from './use-edit-cancel';
+import useEditView from './use-edit-view';
 import useEditExit, { useLeavePath } from './use-edit-exit';
 
 /** The item's queue, for the breadcrumbs: its id (for the link) and the name people see. */
@@ -65,6 +67,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
   const [saving, setSaving] = useState(false);
   const [sectionData, setSectionData] = useState<Record<string, unknown> | null>(null);
   const editor = useRef<SectionEditorController | null>(null);
+  const [view, setView] = useEditView();
   const [regroupOpen, setRegroupOpen] = useState(false);
   const [isSavingGrouping, setIsSavingGrouping] = useState(false);
   const [groupingError, setGroupingError] = useState<string | null>(null);
@@ -162,7 +165,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
         {notAssigned ? (
           <>
             Only the Annotators listed on this item&apos;s queue can open it. The queues that list you are in{' '}
-            <Link href={`#${MY_QUEUES_PATH}`}>My Work › Queues</Link>.
+            <Link href={`#${MY_QUEUES_PATH}`}>Home › Queues</Link>.
           </>
         ) : (
           describeApiError(loadError, 'load the review item')
@@ -271,7 +274,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
         'claim the item',
       );
       if (ok) {
-        setSuccessMessage(`Claimed ${name}. It is in My Work › Tasks.`);
+        setSuccessMessage(`Claimed ${name}. It is in Home › Tasks.`);
         await reload();
       }
       void reviewWork?.refresh();
@@ -357,7 +360,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
             content: assignee
               ? `View only. This item is assigned to ${assignee}.`
               : canClaim
-                ? 'View only. Claim this item to work on it; it is then assigned to you and shows in My Work › Tasks.'
+                ? 'View only. Claim this item to work on it; it is then assigned to you and shows in Home › Tasks.'
                 : 'View only.',
           },
       ]}
@@ -383,6 +386,8 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
         regroupDisabledReason: lockedReason ?? (dirty ? 'Saving your latest edits…' : undefined),
         showClaim: canClaim,
         onShowHistory: () => setShowHistory(true),
+        view,
+        onViewChange: setView,
         busy,
         onAction: (action) => void handleAction(action),
       }}
@@ -432,7 +437,9 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
       }
     >
       {adapter.sections.length === 0 ? (
-        <EditDocumentEmpty>This item has no sections to review.</EditDocumentEmpty>
+        <EditDocumentEmpty body={view === 'source' ? <FileViewer objectKey={objectKey} /> : undefined}>
+          This item has no sections to review.
+        </EditDocumentEmpty>
       ) : (
         <SectionEditor
           key={objectKey}
@@ -456,6 +463,8 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
           focusFieldPath={focusField}
           buildFieldLink={buildFieldLink}
           variant="widget"
+          /* The editor stays mounted behind the source view, so unsaved edits survive the switch. */
+          body={view === 'source' ? <FileViewer objectKey={objectKey} /> : undefined}
           defaultFilter={item.reasonCount > 0 ? 'confidence-alerts' : 'none'}
         />
       )}

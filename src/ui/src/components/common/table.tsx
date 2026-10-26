@@ -6,7 +6,7 @@ import { Box, Button, Header, SpaceBetween } from '@cloudscape-design/components
 
 import { InfoLink } from './info-link';
 
-/** The one empty-table text for Human Review and My Work tables. */
+/** The one empty-table text for Human Review and Home › Tasks tables. */
 export const NO_DATA_TEXT = 'No data!';
 
 /** Empty state for a table with no rows (after loading has finished). */

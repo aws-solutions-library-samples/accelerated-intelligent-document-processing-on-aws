@@ -42,7 +42,7 @@ const SCREEN = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'TestSetI
  * Develop's `nextAvailableAfter` / `applyReviewedToQueue` unit tests are not carried
  * here. They pinned the in-page "Save & next in queue" rail, which this page no longer
  * has: it is a queue table, and each row opens the per-document edit screen
- * (edit-screen/TestSetItemEdit.tsx), which returns to the queue (or My Work)
+ * (edit-screen/TestSetItemEdit.tsx), which returns to the queue (or Home › Tasks)
  * after Complete, Skip or the last section's save. There is no in-page advance, no
  * local next-document choice and no local retirement of a row left to test. The
  * intent of those tests — leave the saved document at once, and never claim a
@@ -75,7 +75,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
     expect(everyAt).toBeGreaterThan(-1);
     expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
-    expect(handleSaved).toContain('Check the other sections, then choose ${primaryLabel}.');
+    expect(handleSaved).toContain('Check the other sections, then choose Reprocess.');
   });
 
   it('does not report a skipped document as reviewed', () => {

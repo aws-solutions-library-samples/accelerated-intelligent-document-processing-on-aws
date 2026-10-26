@@ -3,12 +3,12 @@
 
 /**
  * The primary action on a Test Studio document. What has to hold: the bar is History,
- * Edit Page Grouping, Skip, Cancel, Save and the primary action, which is Reprocess for
- * a document with a review copy and Complete for authored ground truth; there is no
+ * Edit Page Grouping, Skip, Cancel, Save and Reprocess, for a document with a review copy
+ * and for authored ground truth alike; there is no
  * Save as Draft (no test-set save leaves labels unreviewed); the primary action saves
  * the open section's edits first, then confirms only the sections not saved, and exits
- * once; the Edit | View Source Document switch sits in the Edit Document widget's
- * header; and the screen tells the breadcrumbs the set's name.
+ * once; the Edit | View Source Document switch is first in the bar and shows the source
+ * in the Document Editor's place; and the screen tells the breadcrumbs the set's name.
  */
 
 import React from 'react';
@@ -124,10 +124,11 @@ describe('the primary action on a Test Studio document', () => {
     expect(barButtons()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
   });
 
-  it('offers Complete for authored ground truth, which nothing reprocesses', () => {
+  it('offers Reprocess for authored ground truth too, saying nothing is reprocessed', () => {
     docOver.reviewObjectKey = null;
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Complete']);
+    expect(barButtons()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
+    expect(button('Reprocess').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
   });
 
   it('saves the open section, then confirms the rest, and exits once', async () => {
@@ -163,13 +164,11 @@ describe('the primary action on a Test Studio document', () => {
     expect(editorProps!.regroupOpen).toBe(true);
   });
 
-  it('puts the Edit | View Source Document switch in the Edit Document widget, opening on Edit', async () => {
+  it('puts the Edit | View Source Document switch in the bar, opening on Edit', async () => {
     renderScreen();
     expect(editorProps!.variant).toBe('widget');
     expect(editorProps!.body).toBeUndefined();
-    // The editor is a stand-in here, so render the controls it is handed for its header.
-    const { container } = render(<>{editorProps!.headerActions as React.ReactNode}</>);
-    const control = createWrapper(container).findSegmentedControl()!;
+    const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
     expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
     expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
     await act(async () => control.findSegments()[1].click());

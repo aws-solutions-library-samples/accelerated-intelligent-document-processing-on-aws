@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // Where the edit screen goes once a queue item is finished, skipped or cancelled: an
-// Annotator returns to My Work › Tasks; an Admin (or an Author on a test set) returns
+// Annotator returns to Home › Tasks; an Admin (or an Author on a test set) returns
 // to the queue the item belongs to.
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -20,8 +20,8 @@ export const useLeavePath = (): ((queuePath: string) => string) => {
 
 /**
  * Returns `exit(queuePath, message, workItemId)`: show the message, drop the finished
- * item from My Work (so the Tasks badge updates now, not on a later poll), refresh
- * My Work and navigate. `workItemId` is the item's WorkItem.id.
+ * item from Home › Tasks (so the Tasks badge updates now, not on a later poll), refresh
+ * Tasks and navigate. `workItemId` is the item's WorkItem.id.
  */
 const useEditExit = (): ((queuePath: string, message: string, workItemId: string) => void) => {
   const navigate = useNavigate();

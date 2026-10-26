@@ -166,10 +166,8 @@ interface GroundTruthSectionEditorProps {
   regroupPlacement?: 'structure' | 'external';
   regroupOpen?: boolean;
   onRegroupOpenChange?: (open: boolean) => void;
-  /** Passed to SectionEditor: `widget` is the edit screen's Edit Document container. */
+  /** Passed to SectionEditor: `widget` is the edit screen's Document Editor panel. */
   variant?: 'widget' | 'inline';
-  /** Passed to SectionEditor: controls in the widget's header (the Edit | View Source switch). */
-  headerActions?: React.ReactNode;
   /** Passed to SectionEditor: shown in the widget in place of the panes (the source document). */
   body?: React.ReactNode;
 }
@@ -202,7 +200,6 @@ const GroundTruthSectionEditor = ({
   regroupOpen = false,
   onRegroupOpenChange,
   variant,
-  headerActions,
   body,
 }: GroundTruthSectionEditorProps): React.JSX.Element => {
   const externalRegroup = regroupPlacement === 'external';
@@ -783,7 +780,6 @@ const GroundTruthSectionEditor = ({
       }
       unsavedChangesMessage="You have unsaved ground truth changes. Leave this document and discard them?"
       variant={variant}
-      headerActions={headerActions}
       body={body}
     />
   );

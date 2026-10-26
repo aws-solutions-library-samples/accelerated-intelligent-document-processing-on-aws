@@ -80,9 +80,9 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 
 ## Annotator guide
 
-An Annotator sees only **My Work** (**Inbox**, **Tasks** and **Queues**) and the
-notifications bell. Only Annotators have My Work and an
-Inbox; other users have neither.
+An Annotator-only user sees only **Home** (**Inbox**, **Tasks** and **Queues**) and the
+notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** and
+**Queues** are there only for Annotators.
 
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
   **Eligible Annotators**). Open one to see its items. You can open any item
@@ -99,13 +99,16 @@ Inbox; other users have neither.
   Studio items and direct edits of a document all use the same edit screen, whether
   you open them from Tasks, an Inbox message or Queue Management.
   - The actions are in one bar at the top, always in this order and each shown only
-    where it applies: **History**, **Edit Page Grouping**, **Skip**, **Cancel**,
-    **Save** and **Reprocess**. A disabled action says why on hover.
+    where it applies: **Edit | View Source Document**, **History**, **Edit Page
+    Grouping**, **Skip**, **Cancel**, **Save** and **Reprocess**. A disabled action
+    says why on hover. **View Source Document** shows the original file in the
+    editor's place; unsaved edits are kept while it is shown.
   - The title is the document's name with its status in parentheses, for example
     `insurance_package-1.pdf (Claimed)`, and the full object key is under it.
-  - The **Edit Document** panel holds the editor: the page images beside the
-    fields, with the section selector (for a document with more than one section)
-    in the panel's header.
+  - The **Document Editor** panel holds the editor: the page images beside the
+    fields, with a **Section** dropdown at its top left (for a document with more
+    than one section) listing each section with its class, for example
+    **Section 1 (Letter)** and **Section 2 (Form)**.
   - **History** has three tabs. **Field Edits** lists every saved change to the
     open section's fields: who, when, and each field's old and new value (a
     Production draft save records one too). **Review Activity** lists who claimed,
@@ -127,13 +130,11 @@ Inbox; other users have neither.
     regroup it; an Admin's first regroup assigns an unassigned item to them.
   - **Test Studio item**: correct the labels and choose **Reprocess**, which
     saves the open section, confirms the rest and reprocesses the document's review
-    copy. For authored ground truth, which has no review copy and is never
-    reprocessed, the action is **Complete** instead. You can also choose it without
+    copy. Authored ground truth has no review copy, so for it **Reprocess** only
+    marks the labels reviewed. You can also choose it without
     changing anything, which confirms the labels as correct; it needs no **Start
     editing** first. **Save** saves the open section, which marks it reviewed,
-    and switching sections saves it too. **Edit | View Source Document**, in the
-    Edit Document panel's header, switches between the ground-truth editor and the
-    source document; unsaved edits are kept while the source is shown.
+    and switching sections saves it too.
     **Edit Page Grouping** opens the page-grouping board in a dialog. Versioning works exactly
     as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
@@ -167,7 +168,7 @@ joins it when User Management gives them the Annotator role, or when the externa
 identity provider maps them to it (`ExternalIdPAnnotatorGroupName`, see
 [external-idp.md](./external-idp.md)). A user may hold Annotator alongside another
 role, Admin for example. A queue's **Eligible Annotators** setting is who works it:
-only the Annotators listed there see the queue in My Work › Queues, can claim its
+only the Annotators listed there see the queue in Home › Queues, can claim its
 items, and can be assigned them. A queue with nobody listed has no Annotators until
 you add some. Listing an Annotator on a Test Studio queue also gives them access to
 that test set. A user added to the group in Cognito directly can be listed at once:

@@ -87,7 +87,7 @@ const UserManagementLayout = (): React.JSX.Element => {
     {
       label: 'Annotator',
       value: 'Annotator',
-      description: 'Works the HITL items an Admin assigns them — sees only My Work (Inbox, Tasks, Queues)',
+      description: 'Works the HITL items an Admin assigns them — sees only Home (Inbox, Tasks, Queues)',
     },
     { label: 'Viewer', value: 'Viewer', description: 'Read-only access to documents, configuration, and agent chat' },
   ];

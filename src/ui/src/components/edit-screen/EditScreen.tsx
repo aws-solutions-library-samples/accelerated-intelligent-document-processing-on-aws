@@ -4,17 +4,18 @@
 // The edit screen, the same for a direct edit of a document, a production queue item
 // and a Test Studio item: one action bar, the title "<document> (<status>)", the
 // object key under it, the notices, the task context (a queue item's Review Reason)
-// and the Edit Document widget.
+// and the Document Editor panel.
 //
-// The bar's actions always come in the order History, Edit Page Grouping, Skip,
-// Cancel, Save and the primary action (Reprocess, or Complete where finishing
-// reprocesses nothing), each shown only where it applies. An Annotator viewing an
-// unassigned item sees History and Claim instead. Every disabled action says why on
+// The bar always comes in the order Edit | View Source Document (where the source can
+// be shown), History, Edit Page Grouping, Skip, Cancel, Save and Reprocess, each shown
+// only where it applies. An Annotator viewing an unassigned item sees the view switch,
+// History and Claim instead. Every disabled action says why on
 // hover. The mode components decide which actions apply; the layout is decided here.
 import React from 'react';
-import { Box, Button, Container, Header, SpaceBetween } from '@cloudscape-design/components';
+import { Box, Button, Container, Header, SegmentedControl, SpaceBetween } from '@cloudscape-design/components';
 
 import EditScreenLayout from './EditScreenLayout';
+import type { EditView } from './use-edit-view';
 
 export type EditAction = 'reprocess' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup';
 
@@ -44,12 +45,16 @@ export interface EditActionsProps {
   /** Offer Save: save the edits without finishing. */
   showSave?: boolean;
   saveDisabledReason?: string;
-  /** The primary action's label: Reprocess, or Complete where finishing reprocesses nothing. */
-  primaryLabel?: 'Reprocess' | 'Complete';
   /** Why the primary action is unavailable; undefined when it is available. */
   primaryDisabledReason?: string;
   /** Hover text while the primary action is available. */
   primaryHint?: string;
+  /**
+   * Offer the Edit | View Source Document switch, first in the bar: `view` is the one
+   * shown. Omitted where the source document cannot be shown.
+   */
+  view?: EditView;
+  onViewChange?: (view: EditView) => void;
 }
 
 const EditActions = ({
@@ -65,9 +70,10 @@ const EditActions = ({
   cancelDisabledReason,
   showSave = false,
   saveDisabledReason,
-  primaryLabel = 'Reprocess',
   primaryDisabledReason,
   primaryHint,
+  view,
+  onViewChange,
 }: EditActionsProps): React.JSX.Element => {
   const working = busy !== null ? 'Working…' : undefined;
   const history = onShowHistory && (
@@ -77,11 +83,23 @@ const EditActions = ({
       </Button>
     </span>
   );
+  const viewSwitch = view && onViewChange && (
+    <SegmentedControl
+      label="Edit the document or view its source"
+      selectedId={view}
+      onChange={({ detail }) => onViewChange(detail.selectedId as EditView)}
+      options={[
+        { id: 'edit', text: 'Edit' },
+        { id: 'source', text: 'View Source Document' },
+      ]}
+    />
+  );
   if (showClaim) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
+        {viewSwitch}
         {history}
-        <span title={working ? undefined : 'Assign this item to you, then work it here or from My Work › Tasks'}>
+        <span title={working ? undefined : 'Assign this item to you, then work it here or from Home › Tasks'}>
           <Button variant="primary" disabled={!!working && busy !== 'claim'} loading={busy === 'claim'} onClick={() => onAction('claim')}>
             Claim
           </Button>
@@ -96,6 +114,7 @@ const EditActions = ({
   const primaryReason = working ?? primaryDisabledReason;
   return (
     <SpaceBetween direction="horizontal" size="xs">
+      {viewSwitch}
       {history}
       {showRegroup && (
         <Button iconName="edit" disabled={!!regroupReason} disabledReason={regroupReason} onClick={() => onAction('regroup')}>
@@ -129,18 +148,19 @@ const EditActions = ({
           loading={busy === 'reprocess'}
           onClick={() => onAction('reprocess')}
         >
-          {primaryLabel}
+          Reprocess
         </Button>
       </span>
     </SpaceBetween>
   );
 };
 
-/** The Edit Document widget when there is nothing to edit, titled as it is otherwise. */
-export const EditDocumentEmpty = ({ children }: { children: React.ReactNode }): React.JSX.Element => (
-  <Container header={<Header variant="h2">Edit Document</Header>}>
-    <Box color="text-body-secondary">{children}</Box>
-  </Container>
+/**
+ * The Document Editor panel when there is nothing to edit, titled as it is otherwise:
+ * `body` (the source document) when it is being viewed, or the message.
+ */
+export const EditDocumentEmpty = ({ children, body }: { children: React.ReactNode; body?: React.ReactNode }): React.JSX.Element => (
+  <Container header={<Header variant="h2">Document Editor</Header>}>{body ?? <Box color="text-body-secondary">{children}</Box>}</Container>
 );
 
 interface EditScreenProps {
@@ -157,7 +177,7 @@ interface EditScreenProps {
   context?: React.ReactNode;
   /** Dialogs the actions open (the skip reason, History, page grouping). */
   dialogs?: React.ReactNode;
-  /** The Edit Document widget. */
+  /** The Document Editor panel. */
   children: React.ReactNode;
 }
 

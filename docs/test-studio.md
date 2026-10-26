@@ -1191,16 +1191,16 @@ The queue page shows:
 
 Per-document actions sit in one bar at the top of the edit screen (the same
 screen as production review items), so finishing a long document does not mean
-scrolling past every field to reach them: **History**, **Edit Page Grouping**,
-**Skip**, **Cancel**, **Save** and **Reprocess**, or **Claim** for an Annotator
-viewing an unassigned document. **Save** saves the open section, which marks it
+scrolling past every field to reach them: **Edit | View Source Document**,
+**History**, **Edit Page Grouping**, **Skip**, **Cancel**, **Save** and
+**Reprocess**, or the view switch, **History** and **Claim** for an Annotator viewing
+an unassigned document. **Save** saves the open section, which marks it
 reviewed (switching sections saves it too), and **Reprocess** saves the open
 section, confirms the rest and reprocesses the document's review copy. Authored
-ground truth has no review copy and is never reprocessed, so its action is
-**Complete** instead. The title is the document's name with its status (**To
-review**, **Reviewed** or **Skipped**), and the **Edit Document** panel's header
-holds the section selector and an **Edit | View Source Document** switch. The
-notices share one alert.
+ground truth has no review copy, so for it **Reprocess** only marks the labels
+reviewed. The title is the document's name with its status (**To review**,
+**Reviewed** or **Skipped**), and the **Document Editor** panel has a **Section**
+dropdown at its top left. The notices share one alert.
 
 On large sets the queue is read a page at a time, and the page says so rather than
 implying the whole set has been ranked. What bounds that page is the number of

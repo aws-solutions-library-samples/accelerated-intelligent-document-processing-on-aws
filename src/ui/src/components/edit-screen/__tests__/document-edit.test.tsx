@@ -222,6 +222,17 @@ describe('the direct edit', () => {
     expect(editorProps!.evaluation).toBe(evaluation);
   });
 
+  it("offers Edit | View Source Document first in the bar, and shows the source in the editor's place", async () => {
+    await renderEditor();
+    const control = header().findActions()!.findSegmentedControl()!;
+    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(editorProps!.body).toBeUndefined();
+    await act(async () => control.findSegments()[1].click());
+    expect(editorProps!.body).toBeTruthy();
+    // The editor stays mounted behind it, with its unsaved edits.
+    expect(document.querySelector('[data-testid="editor"]')).not.toBeNull();
+  });
+
   it('Cancel with no unsaved edits leaves for the document page at once', async () => {
     await renderEditor();
     button('Cancel').click();

@@ -2,19 +2,19 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The edit screen for a Test Studio document: the ground-truth editor (the test-set
-// adapter over the shared SectionEditor), Save, Skip, Cancel and the primary action.
-// Saving a section marks it reviewed: Save and switching sections save the open one,
-// and the primary action saves it and confirms the sections not saved yet, so "the
-// labels are correct" and "I corrected them" end the same way. The primary action is
-// Reprocess for a document with a review copy (confirming its last section reprocesses
-// that copy) and Complete for authored ground truth, which nothing reprocesses.
+// adapter over the shared SectionEditor), Save, Skip, Cancel and Reprocess, with the
+// Edit | View Source Document switch. Saving a section marks it reviewed: Save and
+// switching sections save the open one, and Reprocess saves it and confirms the
+// sections not saved yet, so "the labels are correct" and "I corrected them" end the
+// same way. For a document with a review copy, confirming its last section reprocesses
+// that copy; authored ground truth has no copy, so Reprocess only marks it reviewed.
 // Skip gives the document back to its queue, unassigned and not reviewed, for another
 // Annotator to claim. The assignee works the document; an Admin or Author may too. An
 // Annotator listed on the set's queue can open any document read-only, and Claim an
 // unassigned one to work it.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, Box, Button, ContentLayout, Header, Link, SegmentedControl, Spinner } from '@cloudscape-design/components';
+import { Alert, Box, Button, ContentLayout, Header, Link, Spinner } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
@@ -36,6 +36,7 @@ import {
 } from '../test-studio/annotation-edit-flags';
 import EditScreen from './EditScreen';
 import useEditCancel from './use-edit-cancel';
+import useEditView from './use-edit-view';
 import EditorNotices from './EditorNotices';
 import EditorHistoryModal from './EditorHistoryModal';
 import type { SectionEditorController } from './SectionEditor';
@@ -43,8 +44,6 @@ import ReasonModal from '../common/ReasonModal';
 import type { EditAction } from './EditScreen';
 import { NOT_ASSIGNED_MESSAGE, useTestSetItemEdit } from './test-set-item-edit-adapter';
 import useEditExit, { useLeavePath } from './use-edit-exit';
-
-type DocView = 'ground-truth' | 'source';
 
 /**
  * A test-set document's review activity, from what its queue row records (its
@@ -83,8 +82,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
   const reviewWork = useOptionalReviewWork();
   const [searchParams] = useSearchParams();
   const focusField = searchParams.get('field');
-  // ?view=source (the queue's View action) opens on the source document.
-  const [docView, setDocView] = useState<DocView>(searchParams.get('view') === 'source' ? 'source' : 'ground-truth');
+  const [view, setView] = useEditView();
   const [busy, setBusy] = useState<EditAction | null>(null);
   const [askSkipReason, setAskSkipReason] = useState(false);
   const [isOpeningDraft, setIsOpeningDraft] = useState(false);
@@ -137,7 +135,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
         {notAssigned ? (
           <>
             Only the Annotators listed on this test set&apos;s queue can open its documents. The queues that list you are in{' '}
-            <Link href={`#${MY_QUEUES_PATH}`}>My Work › Queues</Link>.
+            <Link href={`#${MY_QUEUES_PATH}`}>Home › Queues</Link>.
           </>
         ) : (
           loadError
@@ -168,7 +166,6 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
   // Confirming the last section of a review copy reprocesses it; authored ground truth
   // has no copy, so finishing it only marks its labels reviewed.
   const reprocesses = !!doc.reviewObjectKey;
-  const primaryLabel = reprocesses ? 'Reprocess' : 'Complete';
 
   // The primary action needs no edit and no Start editing first: it opens the version
   // transition itself. Only the role half of the editor's read-only state applies.
@@ -211,7 +208,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
     reviewWork?.beginMutation();
     try {
       await claimTestSetDocument(testSetId, objectKey);
-      setSuccessMessage(`Claimed ${documentName(objectKey)}. It is in My Work › Tasks.`);
+      setSuccessMessage(`Claimed ${documentName(objectKey)}. It is in Home › Tasks.`);
     } catch (err) {
       setErrorMessage(describeApiError(err, 'claim this document'));
     } finally {
@@ -298,7 +295,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
       exit(queuePath, `Saved. ${name} is marked reviewed.`, workItemId);
       return;
     }
-    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose ${primaryLabel}.`);
+    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Reprocess.`);
   };
 
   const editorReadOnly = editFlags.isReadOnly || !mayWork;
@@ -315,7 +312,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
           content: doc.assignedTo
             ? `View only. This document is assigned to ${doc.assignedTo}.`
             : canClaim
-              ? 'View only. Claim this document to work on it; it is then assigned to you and shows in My Work › Tasks.'
+              ? 'View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.'
               : 'View only. It is not assigned to you.',
         },
         !draft && {
@@ -342,7 +339,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
           !!doc.labelSource && {
             id: 'authored',
             type: 'info',
-            content: `Authored ground truth: check its labels, correct them if needed, then choose ${primaryLabel}.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}`,
+            content: `Authored ground truth: check its labels, correct them if needed, then choose Reprocess.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}`,
           },
       ]}
     />
@@ -354,11 +351,10 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
       status={doc.reviewed ? 'Reviewed' : doc.skipped ? 'Skipped' : 'To review'}
       objectKey={objectKey}
       actions={{
-        primaryLabel,
         primaryDisabledReason: completeReason ?? (saving ? 'Saving your changes…' : undefined),
         primaryHint: reprocesses
           ? 'Mark the labels reviewed (saved and edited sections as corrected, the rest as correct) and reprocess the document'
-          : 'Mark the labels reviewed (saved and edited sections as corrected, the rest as correct). Authored ground truth is not reprocessed.',
+          : 'Mark the labels reviewed (saved and edited sections as corrected, the rest as correct). Authored ground truth has no review copy, so nothing is reprocessed.',
         showSkip: true,
         skipDisabledReason: skipReason,
         showCancel: !editorReadOnly,
@@ -369,6 +365,8 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
         showRegroup: true,
         regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
         showClaim: canClaim,
+        // The source document is in the test-set bucket; without it there is nothing to show.
+        ...(testSetBucket ? { view, onViewChange: setView } : {}),
         onShowHistory: () => setShowHistory(true),
         busy,
         onAction: (action) => void handleAction(action),
@@ -431,19 +429,8 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
           focusFieldPath={focusField}
           buildFieldLink={buildFieldLink}
           variant="widget"
-          headerActions={
-            <SegmentedControl
-              label="Edit the labels or view the source document"
-              selectedId={docView}
-              onChange={({ detail }) => setDocView(detail.selectedId as DocView)}
-              options={[
-                { id: 'ground-truth', text: 'Edit' },
-                { id: 'source', text: 'View Source Document' },
-              ]}
-            />
-          }
           /* The editor stays mounted behind the source view, so unsaved edits survive the switch. */
-          body={docView === 'source' ? <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} /> : undefined}
+          body={view === 'source' ? <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} /> : undefined}
         />
       )}
     </EditScreen>

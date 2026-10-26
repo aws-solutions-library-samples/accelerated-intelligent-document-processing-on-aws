@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-/** My Work › Queues rows: production and Test Studio queues link to their queue pages. */
+/** Home › Queues rows: production and Test Studio queues link to their queue pages. */
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +13,7 @@ import type { ReviewQueueSummary, TestSetQueueSummary } from '../../../graphql/g
 import { productionQueuePath, testSetQueuePath } from '../../../routes/constants';
 import { fromProductionQueue, fromTestSetQueue } from '../MyQueuesPage';
 
-describe('My Work › Queues rows', () => {
+describe('Home › Queues rows', () => {
   it('maps a production queue to its page, with pending and the caller’s items', () => {
     const row = fromProductionQueue({
       name: 'claims',

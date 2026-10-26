@@ -28,7 +28,7 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
 | **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (My Work: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -130,9 +130,11 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - Listing an Annotator on a Test Studio queue, or assigning them one of its
     documents, adds the test set to their `allowedTestSets`. Taking them off the
     list doesn't remove it.
-- **What the console shows.** A user whose only app group is `Annotator` sees
-  exactly My Work: Inbox, Tasks and Queues. Users without `Annotator` have
-  no My Work and no Inbox (no navigation entry, no bell, no Inbox page). **HITL ›
+- **What the console shows.** Every signed-in user has **Home** first in the
+  navigation, with their **Inbox**, and the notifications bell; the Inbox operations
+  are `ANY_GROUP`, scoped to the caller's own messages. A user in `Annotator` also
+  has **Tasks** and **Queues** under Home, and a user whose only app group is
+  `Annotator` sees exactly that: Home (Inbox, Tasks and Queues). **HITL ›
   Queue Management** is Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,

@@ -137,14 +137,12 @@ interface SectionEditorProps {
   /** The section to open first; defaults to the first section. */
   initialSectionId?: string | null;
   /**
-   * `widget`: the edit screen's Edit Document container, with the section selector, the
-   * structure slot and `headerActions` in its header, and the panes sized to the
-   * viewport. `inline` (the default): a title row over a section row, for a page that
-   * lays the editor out itself.
+   * `widget`: the edit screen's Document Editor panel, with a section dropdown at its
+   * top left, the structure slot at its top right, and the panes sized to the viewport.
+   * `inline` (the default): a title row over a section row, for a page that lays the
+   * editor out itself.
    */
   variant?: 'widget' | 'inline';
-  /** In the widget's header, after the section selector (Test Studio's Edit | View Source switch). */
-  headerActions?: React.ReactNode;
   /**
    * Shown in the widget in place of the panes (the source document). The editor stays
    * mounted meanwhile, so switching back keeps the unsaved edits.
@@ -209,7 +207,6 @@ const SectionEditor = ({
   evaluation,
   initialSectionId = null,
   variant = 'inline',
-  headerActions,
   body,
   defaultFilter = 'none',
 }: SectionEditorProps): React.JSX.Element => {
@@ -523,21 +520,31 @@ const SectionEditor = ({
   };
 
   const widget = variant === 'widget';
-  // One section needs no selector.
+  /* The open section's class comes from its loaded result, which may carry an unsaved
+     edit; the others come from the payload. Falling back to the payload while the
+     result is still loading keeps an entry from flashing "(no class)" at a section
+     that has one. */
+  const sectionLabel = (s: ReviewSectionRef): string =>
+    sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass);
+  // One section needs no selector. The widget lists them in a dropdown, which holds any
+  // number of sections in one line; the inline layout keeps the segmented control.
+  const sectionOptions = sections.map((s) => ({ value: s.sectionId, label: sectionLabel(s) }));
+  const sectionSelect =
+    sections.length > 1 ? (
+      <Select
+        inlineLabelText="Section"
+        selectedOption={sectionOptions.find((o) => o.value === selectedSectionId) ?? null}
+        onChange={({ detail }) => void handleSectionChange(detail.selectedOption.value ?? selectedSectionId)}
+        options={sectionOptions}
+      />
+    ) : null;
   const sectionToggle =
     sections.length > 1 ? (
       <SegmentedControl
         label="Section"
         selectedId={selectedSectionId}
         onChange={({ detail }) => void handleSectionChange(detail.selectedId)}
-        options={sections.map((s) => ({
-          id: s.sectionId,
-          /* The open section's class comes from its loaded result, which may carry
-             an unsaved edit; the others come from the payload. Falling back to the
-             payload while the result is still loading keeps a tab from flashing
-             "(no class)" at a section that has one. */
-          text: sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass),
-        }))}
+        options={sections.map((s) => ({ id: s.sectionId, text: sectionLabel(s) }))}
       />
     ) : null;
   const noGeometry =
@@ -726,28 +733,20 @@ const SectionEditor = ({
   );
 
   if (widget) {
-    // The section selector and the controls that change the sections are about the
-    // editor, so they sit in its header rather than in the screen's action bar. While
-    // `body` (the source document) is shown they are hidden: they act on the editor.
+    // The section dropdown (top left) and the controls that change the sections (top
+    // right) act on the editor, so they sit in its panel rather than in the screen's
+    // action bar, and are hidden while `body` (the source document) is shown.
     const showSectionControls = !hideSectionRow && !body;
+    const structure = showSectionControls && structureSlot ? structureSlot(ctx) : null;
     return (
-      <Container
-        header={
-          <Header
-            variant="h2"
-            actions={
-              <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                {showSectionControls && sectionToggle}
-                {showSectionControls && structureSlot && structureSlot(ctx)}
-                {headerActions}
-              </SpaceBetween>
-            }
-          >
-            Edit Document
-          </Header>
-        }
-      >
+      <Container header={<Header variant="h2">Document Editor</Header>}>
         <SpaceBetween size="s">
+          {showSectionControls && (sectionSelect || structure) && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ minWidth: '280px' }}>{sectionSelect}</div>
+              {structure}
+            </div>
+          )}
           {!body && headerExtras && headerExtras(ctx)}
           {error && <Alert type="error">{error}</Alert>}
           {body ?? panes}

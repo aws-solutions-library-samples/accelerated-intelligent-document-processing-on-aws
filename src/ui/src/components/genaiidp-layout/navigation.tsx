@@ -13,7 +13,7 @@ import useLatestVersion from '../../hooks/use-latest-version';
 import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
-import { buildHitlNavSection, buildMyWorkNavSection } from './review-queues-nav-items';
+import { buildHitlNavSection, buildHomeNavSection } from './review-queues-nav-items';
 import './navigation.css';
 
 const isQuickStartWidgetEnabled = (): boolean => {
@@ -356,9 +356,8 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
   const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isAnnotator } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
-  // My Work (Inbox, Tasks, Queues) is for Annotators, who are assigned HITL work;
-  // nobody else has an Inbox. HITL › Queue Management is Admin-only.
-  const showMyWork = isAnnotator;
+  // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
+  // assigned HITL work. HITL › Queue Management is Admin-only.
   const showHitl = isAdmin;
   const { features: installedFeatures } = useInstalledFeatures();
   const { features: catalogFeatures } = useCatalogFeatures();
@@ -391,11 +390,9 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     else if (isReviewerOnly) roleItems = reviewerNavItems;
     else roleItems = viewerNavItems; // Default: if user has Viewer + Reviewer, show viewer nav (union)
 
-    // My Work (with the Inbox) comes first, and only for Annotators.
-    if (showMyWork) {
-      const myWork = buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewCount);
-      roleItems = [myWork as unknown as Record<string, unknown>, ...roleItems];
-    }
+    // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isAnnotator, taskCount: reviewCount });
+    roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
       const section = buildHitlNavSection() as unknown as Record<string, unknown>;
@@ -413,7 +410,7 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, showMyWork, showHitl, reviewCount]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, isAnnotator, showHitl, reviewCount]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -634,7 +631,7 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
 };
 
 /**
- * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Queues)
+ * Navigation for an Annotator-only user: Home (Inbox, Tasks, Queues)
  * and nothing else. Mounts no feature, catalog or version hooks.
  */
 const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
@@ -642,7 +639,9 @@ const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: Navig
   const path = location.pathname;
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
-  const items: SideNavigationProps.Item[] = [buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewWork?.count ?? null)];
+  const items: SideNavigationProps.Item[] = [
+    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
+  ];
   // The edit screens (under /review-queues/.../items) are opened from Tasks; a
   // queue's own page (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;

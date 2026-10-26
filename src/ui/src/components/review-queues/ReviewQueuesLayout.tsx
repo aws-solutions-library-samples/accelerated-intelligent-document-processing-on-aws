@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The HITL pages' AppLayout (the InboxLayout shape): shared navigation and Flashbar,
-// breadcrumbs Home › Queue Management › page (or Home › My Work › page).
+// breadcrumbs Home › Queue Management › page (or Home › Home › page).
 import React from 'react';
 import { AppLayout, BreadcrumbGroup, Flashbar } from '@cloudscape-design/components';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';

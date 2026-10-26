@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The edit screen's action bar and title. What has to hold: the buttons come in the
- * order History, Edit Page Grouping, Skip, Cancel, Save and the primary action (labelled
- * Reprocess unless the mode says Complete), each only where it applies; Claim mode
- * shows History and Claim only; there is no Processing Report button (it is a History
+ * The edit screen's action bar and title. What has to hold: the bar comes in the order
+ * Edit | View Source Document (where the mode offers it), History, Edit Page Grouping,
+ * Skip, Cancel, Save and Reprocess, each only where it applies; Claim mode shows the
+ * view switch, History and Claim only; there is no Processing Report button (it is a History
  * tab); a disabled button carries its reason; while an action runs every button is
  * disabled; each button reports its own action; and the title reads
  * "<document> (<status>)" in plain text over the object key.
@@ -61,9 +61,33 @@ describe('the edit screen action bar', () => {
     expect(labels()).toEqual(['History', 'Reprocess']);
   });
 
-  it('labels the primary action Complete where the mode says so', () => {
-    renderScreen({ ...ALL, primaryLabel: 'Complete' });
-    expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Complete']);
+  it('puts the Edit | View Source Document switch first, and reports the view chosen', () => {
+    const onViewChange = vi.fn();
+    renderScreen({ ...ALL, view: 'edit', onViewChange });
+    expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
+    const control = header().findActions()!.findSegmentedControl()!;
+    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
+    // First in the bar: before History.
+    expect(control.getElement().compareDocumentPosition(button('History')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    control.findSegments()[1].click();
+    expect(onViewChange).toHaveBeenCalledWith('source');
+  });
+
+  it('keeps the view switch beside Claim', () => {
+    renderScreen({ ...ALL, showClaim: true, view: 'source', onViewChange: vi.fn() });
+    expect(labels()).toEqual(['History', 'Claim']);
+    expect(header().findActions()!.findSegmentedControl()!.findSelectedSegment()!.getElement().textContent).toBe('View Source Document');
+  });
+
+  it('offers no view switch where the mode gives no view', () => {
+    renderScreen(ALL);
+    expect(header().findActions()!.findSegmentedControl()).toBeNull();
+  });
+
+  it('labels the primary action Reprocess in every mode', () => {
+    renderScreen(ALL);
+    expect(labels()).not.toContain('Complete');
   });
 
   it('shows History and Claim in claim mode', () => {

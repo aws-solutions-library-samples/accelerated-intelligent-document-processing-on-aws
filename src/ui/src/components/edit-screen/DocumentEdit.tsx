@@ -37,9 +37,11 @@ import { useDocumentEdit } from './document-edit-adapter';
 import type { DirectEditDocument } from './document-edit-adapter';
 import { PROCESSING_REASON, isEditableStatus } from './document-edit-status';
 import EditorHistoryModal from './EditorHistoryModal';
+import FileViewer from '../document-viewer/FileViewer';
 import SectionEditor from './SectionEditor';
 import type { SectionEditorController } from './SectionEditor';
 import useEditCancel from './use-edit-cancel';
+import useEditView from './use-edit-view';
 import useSectionEvaluation from './use-section-evaluation';
 
 export const PROCESS_ROLE_REASON = 'Reprocess needs the Admin or Reviewer role.';
@@ -79,6 +81,7 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
   const { isAdmin, isReviewer, canWrite, canWorkReviewQueues } = useUserRole();
   const { mergedConfig } = useConfiguration(doc?.configVersion || 'default');
   const editor = useRef<SectionEditorController | null>(null);
+  const [view, setView] = useEditView();
   // The document's page: where Cancel and Reprocess leave to.
   const documentPath = `${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
   const { cancel, dialog: cancelDialog } = useEditCancel(editor, documentPath);
@@ -273,6 +276,8 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
         primaryDisabledReason: processReason,
         primaryHint: 'Save your changes and reprocess the document (evaluation and summary)',
         onShowHistory: () => setShowHistory(true),
+        view,
+        onViewChange: setView,
         busy,
         onAction: (action) => void handleAction(action),
       }}
@@ -320,7 +325,9 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
       }
     >
       {adapter.sections.length === 0 ? (
-        <EditDocumentEmpty>This document has no sections to edit.</EditDocumentEmpty>
+        <EditDocumentEmpty body={view === 'source' ? <FileViewer objectKey={objectKey} /> : undefined}>
+          This document has no sections to edit.
+        </EditDocumentEmpty>
       ) : (
         <SectionEditor
           key={objectKey}
@@ -341,6 +348,8 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
           evaluation={evaluation}
           showHistoryTab={false}
           variant="widget"
+          /* The editor stays mounted behind the source view, so unsaved edits survive the switch. */
+          body={view === 'source' ? <FileViewer objectKey={objectKey} /> : undefined}
         />
       )}
     </EditScreen>

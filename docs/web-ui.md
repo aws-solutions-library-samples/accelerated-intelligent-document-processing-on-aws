@@ -32,7 +32,7 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit screen (see [HITL](#hitl))
+- **Home** and **HITL** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit screen (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -649,9 +649,9 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 production documents held in review queues, and test sets that need ground truth.
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
-- **Navigation.** A user whose only role is Annotator sees exactly **My Work**
-  (**Inbox**, **Tasks**, **Queues**). Other users have no My Work and no Inbox.
-  They see the usual sections their roles
+- **Navigation.** A user whose only role is Annotator sees exactly **Home**
+  (**Inbox**, **Tasks**, **Queues**). Other users have **Home** with the **Inbox**
+  only, then the usual sections their roles
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
@@ -667,9 +667,9 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
   to another queue, or **Remove from queue** (the document completes with
   its machine output).
-- **My Work › Queues** lists the queues you're listed on. On a queue's page you can
+- **Home › Queues** lists the queues you're listed on. On a queue's page you can
   open any item read-only and **Claim** one nobody holds, which assigns it to you.
-- **My Work › Tasks** lists everything assigned to you, both Production review items
+- **Home › Tasks** lists everything assigned to you, both Production review items
   and Test Studio documents, with their document, source, queue and age. Selecting
   one opens it. The **Tasks** badge counts them; completing or skipping an item
   removes it from the list and the count straight away (**Skip** gives the item back
@@ -686,16 +686,17 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
 
   The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
   role. The title is the document's name with its status in parentheses, over the
-  full object key; a queue item's **Review Reason** follows, then the **Edit
-  Document** panel, which holds the editor with the section selector in its header.
+  full object key; a queue item's **Review Reason** follows, then the **Document
+  Editor** panel, which holds the editor with a **Section** dropdown at its top left.
   The actions are in one bar at the top, always in this order and each shown only
-  where it applies: **History** (field edits, review activity and the processing
+  where it applies: **Edit | View Source Document** (the original file in the
+  editor's place), **History** (field edits, review activity and the processing
   report), **Edit Page Grouping**, **Skip** (queue items, for the assignee, with a
   reason), **Cancel** (leave, discarding unsaved edits after asking), **Save** and
   **Reprocess**. Reprocess finishes a queue item and sends the document for
   reprocessing, and on a direct edit saves the edits, confirms, and reprocesses the
-  document. A Test Studio document with authored ground truth, which nothing
-  reprocesses, offers **Complete** instead. A direct edit also shows the evaluation
+  document. For a Test Studio document with authored ground truth, which has no
+  review copy, Reprocess only marks the labels reviewed. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
   item directly (the first saved edit, or Reprocess, assigns it to them) and
@@ -707,7 +708,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
 
 ## Inbox
 
-Annotators have an **Inbox**, in **My Work**: messages that platform components post to you,
+Every user has an **Inbox**, in **Home**: messages that platform components post to you,
 either by name or to a Cognito group you belong to. Messages are private to you;
 marking, deleting or muting them does not affect anyone else's copy. There are three
 entry points:
@@ -717,9 +718,8 @@ entry points:
   flagged. Choosing a message opens the page it links to (or the Inbox page when it has
   no link) and marks it read. The menu also offers **Mark all as read** and
   **View all in Inbox**.
-- **Inbox (left navigation).** **Inbox** is the first entry of **My Work**, with a badge
-  showing the unread count. Users who aren't Annotators have no Inbox: no navigation
-  entry, no bell and no Inbox page.
+- **Inbox (left navigation).** **Inbox** is the first entry of **Home**, with a badge
+  showing the unread count, for every user.
 - **Inbox page.** The Inbox page lists your messages with when they were received,
   their title (bold while unread; long titles are shortened, with the full title on
   hover), type and severity. Find messages by text, or filter by read

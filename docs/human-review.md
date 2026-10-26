@@ -319,8 +319,10 @@ object key under it. The actions are in one bar at the top, in this order:
 | **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
 | **Reprocess** | Saves the edits, confirms, then reprocesses the document (evaluation and summary) | Admin, Reviewer |
 
-A direct edit has no **Skip**: that belongs to a queue item. The editor itself is the
-**Edit Document** panel, with the section selector in its header. A disabled action
+A direct edit has no **Skip**: that belongs to a queue item. **Edit | View Source
+Document**, first in the bar, shows the original file in the editor's place. The
+editor itself is the **Document Editor** panel, with a **Section** dropdown at its
+top left. A disabled action
 says why on hover. A Reviewer's edits are saved through the review
 API and a Reviewer doesn't save baseline edits.
 
@@ -328,7 +330,7 @@ API and a Reviewer doesn't save baseline edits.
 - **Mouse Wheel Zoom**: Zoom in/out using the mouse wheel without requiring modifier keys
 - **Click-and-Drag Panning**: Pan around zoomed images by clicking and dragging (cursor shows grab/grabbing state)
 - **Rotate**: Turn a sideways or upside-down page in 90° steps, either direction. The rotated page is re-fitted to the panel rather than cropped, bounding-box overlays rotate with it, the rotation stays applied as you move between pages, and **Reset View** clears it along with zoom and pan
-- **Section Navigation**: Choose a section from the section selector in the Edit Document panel's header; unsaved edits ask before switching
+- **Section Navigation**: Choose a section from the **Section** dropdown at the top left of the Document Editor panel; unsaved edits ask before switching
 
 #### Tabbed Interface
 

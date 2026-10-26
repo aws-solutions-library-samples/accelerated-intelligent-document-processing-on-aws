@@ -40,6 +40,8 @@ let editor: {
   isReadOnly: boolean;
   onSave: (id: string, data: Record<string, unknown>) => Promise<unknown>;
   controllerRef?: { current: unknown };
+  body?: unknown;
+  defaultFilter?: string;
 } | null = null;
 const controller = { save: vi.fn(), discard: vi.fn(), isDirty: vi.fn() };
 
@@ -313,6 +315,22 @@ describe('the actions', () => {
     expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity', 'Processing Report']);
     tabs.findTabLinkByIndex(2)!.click();
     expect(modal.findContent().getElement().textContent).toContain('Claimed');
+  });
+
+  it("offer Edit | View Source Document first in the bar, showing the source in the editor's place", async () => {
+    server.detail = mine();
+    renderScreen();
+    const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
+    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(editor!.body).toBeUndefined();
+    await act(async () => control.findSegments()[1].click());
+    expect(editor!.body).toBeTruthy();
+  });
+
+  it('open the editor on the confidence alerts when the item has review reasons', () => {
+    server.detail = { ...mine(), item: { ...mine().item, reasonCount: 2 } } as ReviewItemDetail;
+    renderScreen();
+    expect(editor!.defaultFilter).toBe('confidence-alerts');
   });
 
   it('show no queue, profile and priority line', () => {

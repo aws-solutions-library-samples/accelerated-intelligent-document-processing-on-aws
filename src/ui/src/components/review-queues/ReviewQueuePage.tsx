@@ -4,8 +4,8 @@
 // One production queue: its progress and every item in it, with the Annotator each
 // one is assigned to. An Admin (HITL › Queue Management) selects items to assign,
 // unassign or move several at once, or uses ⋮ on a row. An Annotator listed on the
-// queue (My Work › Queues) claims items — one, the selected ones, or the next one —
-// which assigns them to the caller in My Work › Tasks. Edit opens an item's
+// queue (Home › Queues) claims items — one, the selected ones, or the next one —
+// which assigns them to the caller in Home › Tasks. Edit opens an item's
 // edit screen without changing its assignment (read-only unless it is yours).
 import React, { useCallback, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
@@ -123,7 +123,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
     }
   };
 
-  /** After a claim: the item is the caller's now, so reload the queue and My Work › Tasks. */
+  /** After a claim: the item is the caller's now, so reload the queue and Home › Tasks. */
   const afterClaim = async () => {
     await Promise.all([load(), reviewWork?.refresh()]);
   };
@@ -144,7 +144,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
     }
     if (ok > 0)
       setSuccessMessage(
-        `Claimed ${targets.length === 1 ? documentName(targets[0].objectKey) : `${ok} items`}. Work ${ok === 1 ? 'it' : 'them'} in My Work › Tasks.`,
+        `Claimed ${targets.length === 1 ? documentName(targets[0].objectKey) : `${ok} items`}. Work ${ok === 1 ? 'it' : 'them'} in Home › Tasks.`,
       );
     if (failed.length > 0)
       setErrorMessage(`Couldn't claim ${failed.length === 1 ? '1 item' : `${failed.length} items`}: ${failed.join('; ')}`);
@@ -162,7 +162,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
     try {
       const result = await claimNextItem(queueId);
       if (result.item) {
-        setSuccessMessage(`Claimed ${documentName(result.item.objectKey)}. Work it in My Work › Tasks.`);
+        setSuccessMessage(`Claimed ${documentName(result.item.objectKey)}. Work it in Home › Tasks.`);
       } else {
         setErrorMessage(CLAIM_NEXT_REASONS[result.reason ?? ''] ?? 'No item was claimed.');
       }
@@ -380,7 +380,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
           description={
             isAdmin
               ? 'Select items to assign them to an Annotator, unassign them or move them to another queue. Edit opens an item without changing its assignment.'
-              : 'Open any item to view it. Claim an item waiting for review to work it in My Work › Tasks, or choose Next item to claim the next one.'
+              : 'Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.'
           }
           footer={
             nextToken ? (
