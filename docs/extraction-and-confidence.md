@@ -878,6 +878,12 @@ outcome is
 [`extraction.row_shortfall_action`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
 which fails the Step Functions execution.
 
+The document editor's **Processing report** dialog shows the validation outcome for a
+section beside the rest of its report. The report names the extraction modes
+**Standard** (Simple on this page) and **Agentic** (Advanced):
+
+![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
+
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
@@ -1670,6 +1676,8 @@ extraction:
 
 ### What the viewers show
 
+![Document editor for a payslip: the Gross Pay value outlined on the page image, with each field's confidence and threshold in the Visual Editor](../images/extraction-document-editor-bounding-box.png)
+
 Wherever extracted fields are displayed — the document viewer, the human-review
 editor, Test Studio's ground-truth editor and the evaluation-correction table —
 each field carries one of two controls, so you can tell before clicking whether
@@ -1757,6 +1765,34 @@ The field's logical type comes from its JSON-Schema `type`/`format` when present
 else inferred from the value. Format-bridged matches are tagged
 `geometry_source: "ocr-normalized"` and Levenshtein near-misses `"ocr-fuzzy"`,
 distinct from exact `"ocr"` hits so they stay auditable.
+
+When a verbatim hit and a format-bridged one match at the **same tier**, the
+verbatim one wins. Without that, the tie is broken by position, so a variant match
+on an earlier page takes a box the value's own line should have had.
+
+⚠️ **Same tier only.** Preferring a verbatim hit at a *worse* tier looks like the
+same principle and is not, because "verbatim" is meaningful for a string and
+arbitrary for a number: `str(600.0)` is `"600.0"`, a substring of `"600.00 NM"`,
+and `str(6.0)` is a substring of `"126.00"`. A cross-tier rule therefore ranks a
+substring inside an unrelated amount above a variant that matched the right amount
+exactly, and the box lands on the wrong figure. A number's realistic renderings are
+its variants, not whichever form `str` happens to produce.
+
+**Separators at a line break.** A value written across two OCR lines carries a
+separator at the break that the page does not have: the document reads
+`510 W. 24th Street, #2` then `Sioux Falls, SD 57105`, and extraction returns the
+two joined by `", "`. Multi-line matching joins consecutive lines with a single
+space and requires exact equality, so that one extra comma used to defeat it and
+the field fell back to whatever fragment matched — in that case a box on the OCR
+line `1`. A comma or semicolon **followed by whitespace** is therefore collapsed to
+a space on both sides before matching, which also grounds a list the page renders
+without separators at all (`Keywords: Particulate matter Air pollution …`).
+
+⚠️ Only `,` and `;`, and only when followed by whitespace. A separator *inside* a
+token is digit grouping or OCR noise rather than a join the model inserted, and
+`/` is both the separator date variants are built from and the way a model composes
+a label that is nowhere on the page (`Request/Approval`). Collapsing either costs
+correct boxes rather than adding them.
 
 ### `llm_grounded` / `llm` — LLM-estimated boxes
 

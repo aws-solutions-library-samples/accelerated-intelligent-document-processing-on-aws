@@ -286,6 +286,8 @@ Under **Manual Override Available** it offers three buttons — **Pattern 1 (BDA
 BDA-mode deployment. An active override is confirmed by a **⚠️ Manual Pattern Override
 Active** alert carrying a **Reset to Automatic Detection** link.
 
+![Capacity Planning page with the configuration profile selected and the Expected Token Usage by Document Type table](../images/capacity-planning-token-usage.png)
+
 ### 2. Document Configuration
 
 **Step 1: Document Type Setup**

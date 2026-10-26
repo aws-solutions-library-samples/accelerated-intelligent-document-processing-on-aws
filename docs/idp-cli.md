@@ -2968,7 +2968,7 @@ idp-cli abort-test-run \
 - Document workflows are stopped via Step Functions execution abort
 
 **Limitations:**
-- Cannot abort test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED**
+- Cannot abort test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED**
 - The abort operation waits up to 25 seconds for documents to reach terminal state
 
 ---
