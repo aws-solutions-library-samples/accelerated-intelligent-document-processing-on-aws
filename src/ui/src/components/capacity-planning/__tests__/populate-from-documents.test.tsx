@@ -77,7 +77,7 @@ describe('Populate tokens from Documents', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
 
-    await waitFor(() => expect(value.getDocumentDetailsFromIds).toHaveBeenCalledWith(['docs/payslip.pdf']));
+    await waitFor(() => expect(value.getDocumentDetailsFromIds).toHaveBeenCalledWith(['docs/payslip.pdf'], { reportErrors: false }));
     expect(screen.queryByText('No Metering Data Found')).not.toBeInTheDocument();
     expect(await screen.findAllByText(/docs\/payslip\.pdf/)).not.toHaveLength(0);
   });
@@ -92,6 +92,36 @@ describe('Populate tokens from Documents', () => {
     const fetch = value.getDocumentDetailsFromIds as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(fetch.mock.calls.map(([keys]) => (keys as string[]).length)).toEqual([DETAIL_FETCH_CHUNK_SIZE, 2]);
+  });
+
+  it('reads quietly and says how many documents it could not read', async () => {
+    const rows = [LIST_ROW, { ...LIST_ROW, ObjectKey: 'docs/unreadable.pdf' }];
+    const value = contextWith({ documents: rows, getDocumentDetailsFromIds: vi.fn().mockResolvedValue([FULL_RECORD]) });
+    render(<CapacityPlanningLayout />);
+
+    await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
+
+    await waitFor(() => expect(screen.getByText('Some documents were skipped')).toBeInTheDocument());
+    expect(screen.getByText(/1 of 2 recent documents could not be read/)).toBeInTheDocument();
+    expect(value.getDocumentDetailsFromIds).toHaveBeenCalledWith(expect.any(Array), { reportErrors: false });
+  });
+
+  it('shows the button busy while it reads, and ignores a second click', async () => {
+    let release: (docs: unknown[]) => void = () => undefined;
+    const pending = new Promise<unknown[]>((resolve) => {
+      release = resolve;
+    });
+    const value = contextWith({ getDocumentDetailsFromIds: vi.fn().mockReturnValue(pending) });
+    render(<CapacityPlanningLayout />);
+    const button = screen.getByRole('button', { name: /Populate tokens from Documents/ });
+
+    await userEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    await userEvent.click(button);
+    expect(value.getDocumentDetailsFromIds).toHaveBeenCalledTimes(1);
+
+    release([FULL_RECORD]);
+    await waitFor(() => expect(button).not.toBeDisabled());
   });
 
   it('starts the document list load when no page has asked for it', () => {

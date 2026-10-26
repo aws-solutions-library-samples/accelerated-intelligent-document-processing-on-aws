@@ -78,7 +78,7 @@ interface UseGraphQlApiReturn {
   documents: Document[];
   isDocumentsListLoading: boolean;
   hasListBeenLoaded: boolean;
-  getDocumentDetailsFromIds: (objectKeys: string[]) => Promise<Document[]>;
+  getDocumentDetailsFromIds: (objectKeys: string[], options?: { reportErrors?: boolean }) => Promise<Document[]>;
   setIsDocumentsListLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setPeriodsToLoad: React.Dispatch<React.SetStateAction<number>>;
   periodsToLoad: number;
@@ -226,7 +226,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
    * re-renders the detail view — not just returned to the caller.
    */
   const getDocumentDetailsFromIds = useCallback(
-    async (objectKeys: string[]): Promise<Document[]> => {
+    async (objectKeys: string[], { reportErrors = true }: { reportErrors?: boolean } = {}): Promise<Document[]> => {
       logger.debug('getDocumentDetailsFromIds', objectKeys);
       const getDocumentPromises = objectKeys.map((objectKey) => client.graphql({ query: getDocument, variables: { objectKey } }));
       const getDocumentResolutions = await Promise.allSettled(getDocumentPromises);
@@ -244,9 +244,11 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       // console. Report the first rejection instead; the caller still gets whatever
       // resolved, which is what the polling path relies on.
       const firstRejection = getDocumentResolutions.find((r) => r.status === 'rejected');
+      // `reportErrors: false` is for a caller that reads many documents and says
+      // itself how many it could not, rather than raising the shared banner per call.
       if (firstRejection) {
         const reason = (firstRejection as PromiseRejectedResult).reason;
-        setErrorMessage(describeApiError(reason, 'load this document'));
+        if (reportErrors) setErrorMessage(describeApiError(reason, 'load this document'));
         logger.error('Error fetching document details', reason);
       }
 

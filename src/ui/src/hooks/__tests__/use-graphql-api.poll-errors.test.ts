@@ -126,3 +126,29 @@ describe('document list polling errors', () => {
     await waitFor(() => expect(setErrorMessage).toHaveBeenCalledTimes(1));
   });
 });
+
+describe('getDocumentDetailsFromIds error reporting', () => {
+  it('raises the shared banner for a refused read by default', async () => {
+    graphql.mockRejectedValue(SERVER);
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+
+    await act(async () => {
+      await hook.result.current.getDocumentDetailsFromIds(['a.pdf']);
+    });
+
+    expect(setErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves reporting to a caller that asks for it', async () => {
+    graphql.mockRejectedValue(SERVER);
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+
+    let result: unknown[] = ['unset'];
+    await act(async () => {
+      result = await hook.result.current.getDocumentDetailsFromIds(['a.pdf'], { reportErrors: false });
+    });
+
+    expect(setErrorMessage).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
+  });
+});

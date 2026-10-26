@@ -13,7 +13,7 @@ export interface DateRange {
 
 export interface DocumentsContextValue {
   documents: Document[];
-  getDocumentDetailsFromIds: (objectKeys: string[]) => Promise<Document[]>;
+  getDocumentDetailsFromIds: (objectKeys: string[], options?: { reportErrors?: boolean }) => Promise<Document[]>;
   isDocumentsListLoading: boolean;
   hasListBeenLoaded: boolean;
   selectedItems: Document[];

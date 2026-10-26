@@ -294,6 +294,8 @@ const CapacityPlanningLayout = () => {
   });
 
   const [loading, setLoading] = useState(false);
+  // Populate reads documents in rounds, so it takes long enough to need its own state.
+  const [isPopulating, setIsPopulating] = useState(false);
   const [hasCalculated, setHasCalculated] = useState(false);
   const [results, setResults] = useState<CapacityResult | null>(null);
   const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
@@ -608,6 +610,8 @@ const CapacityPlanningLayout = () => {
   };
 
   const fetchRecentDocuments = async () => {
+    if (isPopulating) return;
+    setIsPopulating(true);
     logger.debug('fetchRecentDocuments called');
     logger.debug('documents:', documents);
 
@@ -629,7 +633,15 @@ const CapacityPlanningLayout = () => {
       // List rows carry no Metering or Sections; fetch the full record of the most
       // recent completed documents so their token counts and classes can be read.
       const detailKeys = documentsNeedingDetail(documents);
-      const detailed = await fetchInChunks(detailKeys, getDocumentDetailsFromIds);
+      const detailed = await fetchInChunks(detailKeys, (chunk) => getDocumentDetailsFromIds(chunk, { reportErrors: false }));
+      const unreadable = detailKeys.length - detailed.length;
+      if (unreadable > 0) {
+        addNotification(
+          'warning',
+          `${unreadable} of ${detailKeys.length} recent documents could not be read and were left out. Try again to include them.`,
+          'Some documents were skipped',
+        );
+      }
       const pool = withDetails(documents, detailed);
 
       // Get configured document types for validation
@@ -684,7 +696,7 @@ const CapacityPlanningLayout = () => {
                 ))}
               </ul>
             </Box>
-            <Box variant="small">Documents may be missing metering information. Check the browser console for details.</Box>
+            <Box variant="small">Documents may be missing metering information.</Box>
           </>,
           'No Metering Data Found',
         );
@@ -785,6 +797,8 @@ const CapacityPlanningLayout = () => {
     } catch (error) {
       logger.error('Error processing documents:', error);
       addNotification('error', 'Failed to process document data. Please try again.', 'Processing Error');
+    } finally {
+      setIsPopulating(false);
     }
   };
 
@@ -2362,7 +2376,7 @@ const CapacityPlanningLayout = () => {
                 + Add Document Type
               </Button>
 
-              <Button variant="normal" iconName="refresh" onClick={fetchRecentDocuments}>
+              <Button variant="normal" iconName="refresh" onClick={fetchRecentDocuments} loading={isPopulating} disabled={isPopulating}>
                 Populate tokens from Documents
               </Button>
             </SpaceBetween>
@@ -2818,7 +2832,7 @@ const CapacityPlanningLayout = () => {
                       <li>No token usage configured (check Expected Token Usage section)</li>
                       <li>All OCR token values are zero</li>
                       <li>Backend calculation returned empty quota requirements</li>
-                      <li>Pattern detection issue (check browser console for logs)</li>
+                      <li>Pattern detection issue</li>
                     </ul>
                     <div>
                       <strong>Debug info:</strong>
