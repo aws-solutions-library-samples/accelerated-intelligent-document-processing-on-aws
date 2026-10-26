@@ -108,7 +108,9 @@ def handler(event, context):
                 "reason is required and must be one of: " + ", ".join(SKIP_ALL_REASONS)
             )
         note = (arguments.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
-        return skip_all_sections_review(object_key, username, user_email, reason, note)
+        return skip_all_sections_review(
+            object_key, username, user_email, reason, note, is_admin=is_admin
+        )
 
     if field_name == "saveSectionReviewEdits":
         # Not available to Annotator, whose Test Studio saves complete the section
@@ -317,6 +319,33 @@ def _review_finished_error(action):
         f"REVIEW_FINISHED: this review is already finished, so there is nothing "
         f"to {action}"
     )
+
+
+#: ``HITLStatus`` values the web UI reads as completed or skipped when it decides
+#: whether to offer Skip All Reviews (``SectionsPanel.tsx``: lower-cased, all
+#: whitespace removed). Looser than :func:`_review_finished`, which matches exactly
+#: after ``strip()``; the server refuses wherever either one reads finished.
+_UI_SKIP_HIDDEN_STATUSES = frozenset(
+    {"completed", "reviewcompleted", "skipped", "reviewskipped"}
+)
+
+
+def _skip_all_offered(doc):
+    """``True`` where the web UI offers Skip All Reviews, else why it does not.
+
+    The rule behind ``showSkipAllButton``: a review was raised (``hitlTriggered`` in
+    ``map-document-attributes.ts``: ``HITLTriggered`` is true, or ``HITLStatus`` is
+    set and not ``N/A``) and it is not completed or skipped. Returns ``"finished"``
+    or ``"not raised"`` otherwise. A queue-managed row never reaches here
+    (``_assert_not_queue_managed``).
+    """
+    status = doc.get("HITLStatus")
+    compact = "".join(str(status or "").lower().split())
+    if _review_finished(status) or compact in _UI_SKIP_HIDDEN_STATUSES:
+        return "finished"
+    if doc.get("HITLTriggered") is True or (bool(status) and status != "N/A"):
+        return True
+    return "not raised"
 
 
 def _read_review_row(object_key):
@@ -882,12 +911,13 @@ def trigger_reprocessing(object_key):
 
 
 def skip_all_sections_review(
-    object_key, username="", user_email="", reason=None, note=None
+    object_key, username="", user_email="", reason=None, note=None, is_admin=False
 ):
     """Skip all pending section reviews and mark the document complete.
 
     ``reason`` and ``note`` say why nobody checked it, and are kept with the skip in
-    ``HITLReviewHistory``.
+    ``HITLReviewHistory``. A caller who is not an Admin may skip only where the web
+    UI offers Skip All Reviews: a review was raised and has not finished.
     """
     logger.info(
         f"Skipping all sections review for document {object_key} by admin {username}"
@@ -902,11 +932,25 @@ def skip_all_sections_review(
 
     completed = set(document.hitl_sections_completed or [])
 
-    # Get skipped from DynamoDB (not in document model)
+    # Get skipped from DynamoDB (not in document model). Read consistently, so a
+    # review finished a moment ago is seen by the check below.
     table = dynamodb.Table(TRACKING_TABLE_NAME)
-    response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
-    doc = response.get("Item", {})
+    doc = _read_review_row(object_key)
     existing_skipped = set(doc.get("HITLSectionsSkipped", []) or [])
+
+    # Admins may skip any document. Anyone else only where the web UI offers the
+    # button; the write's condition below holds the finished part of that at the
+    # moment of the write.
+    if not is_admin:
+        offered = _skip_all_offered(doc)
+        if offered is not True:
+            logger.warning(f"Rejecting skip-all on {object_key}: {offered}")
+            if offered == "finished":
+                raise _review_finished_error("skip")
+            raise ValueError(
+                "NO_REVIEW_PENDING: this document has no review waiting, so there "
+                "is nothing to skip"
+            )
 
     # Get all section IDs from the document
     all_section_ids = {
@@ -953,9 +997,9 @@ def skip_all_sections_review(
     # unconditional whole-document write shared by the pipeline and several
     # resolvers. Guarding one caller of it in isolation is the change that looks
     # like a fix and is not. Reported in #1111 with the other sites on that path.
-    table.update_item(
-        Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression=(
+    update = {
+        "Key": {"PK": f"doc#{object_key}", "SK": "none"},
+        "UpdateExpression": (
             "SET HITLStatus = :status, HITLSectionsPending = :pending, "
             "HITLSectionsSkipped = :skipped, "
             "HITLReviewHistory = list_append("
@@ -963,7 +1007,7 @@ def skip_all_sections_review(
             "HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, "
             "HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview"
         ),
-        ExpressionAttributeValues={
+        "ExpressionAttributeValues": {
             ":status": LegacyHitlStatus.REVIEW_SKIPPED.value,
             ":pending": [],
             ":skipped": all_skipped,
@@ -973,7 +1017,18 @@ def skip_all_sections_review(
             ":reviewedBy": username or "unknown",
             ":reviewedByEmail": user_email or "",
         },
-    )
+    }
+    if not is_admin:
+        not_finished, finished_values = _not_finished_condition()
+        update["ConditionExpression"] = not_finished
+        update["ExpressionAttributeValues"].update(finished_values)
+    try:
+        table.update_item(**update)
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.warning(
+            f"Rejecting skip-all of a review finished during it {object_key}"
+        )
+        raise _review_finished_error("skip") from None
 
     logger.info(
         f"All sections skipped for document {object_key}. Skipped: {all_skipped}, Completed: {list(completed)}"

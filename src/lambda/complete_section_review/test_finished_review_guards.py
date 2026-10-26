@@ -449,3 +449,217 @@ def test_the_finished_check_reads_consistently_and_logs_the_refusal(mod, caplog)
     assert all(read.get("ConsistentRead") is True for read in reads), reads
     assert "Rejecting claim of finished review" in caplog.text
     assert "Rejecting release of finished review" in caplog.text
+
+
+# --------------------------------------------------------------------------
+# skipAllSectionsReview: a non-Admin may skip only where the web UI offers it
+# --------------------------------------------------------------------------
+
+
+def skip(mod, user="bob", groups=("Reviewer",)):
+    return mod.handler(
+        event(
+            "skipAllSectionsReview",
+            user,
+            list(groups),
+            reason="Review not needed for this document",
+        ),
+        None,
+    )
+
+
+def set_status(mod, status):
+    mod.dynamodb.Table(TRACKING).update_item(
+        Key=KEY,
+        UpdateExpression="SET HITLStatus = :s",
+        ExpressionAttributeValues={":s": status},
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("how", FINISHERS)
+@pytest.mark.parametrize("user", ["alice", "bob"], ids=["owner", "other-reviewer"])
+def test_a_reviewer_cannot_skip_a_finished_review(mod, how, user):
+    before = finish(mod, how)
+    with pytest.raises(ValueError, match=FINISHED_MESSAGE):
+        skip(mod, user)
+    assert row(mod) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status",
+    ["completed", "Review  Skipped", "reviewcompleted", "SKIPPED"],
+)
+def test_a_reviewer_cannot_skip_a_status_the_web_ui_reads_as_finished(mod, status):
+    """The web UI hides the button on these (lower-cased, whitespace removed),
+    though the exact-match rule does not read them as finished. No writer stores
+    them; the server refuses wherever either reading says finished."""
+    set_status(mod, status)
+    before = row(mod)
+    with pytest.raises(ValueError, match=FINISHED_MESSAGE):
+        skip(mod)
+    assert row(mod) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stored", ["absent", "N/A", ""])
+def test_a_reviewer_cannot_skip_a_document_no_review_was_raised_on(mod, stored):
+    table = mod.dynamodb.Table(TRACKING)
+    if stored == "absent":
+        table.update_item(
+            Key=KEY, UpdateExpression="REMOVE HITLStatus, HITLPendingReview"
+        )
+    else:
+        set_status(mod, stored)
+    before = row(mod)
+    with pytest.raises(ValueError, match="^NO_REVIEW_PENDING: "):
+        skip(mod)
+    assert row(mod) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "setup",
+    ["PendingReview", "Review Pending", "claimed-by-alice", "HITLTriggered-only"],
+)
+def test_a_reviewer_may_skip_a_review_that_is_still_owed(mod, setup):
+    table = mod.dynamodb.Table(TRACKING)
+    if setup == "claimed-by-alice":
+        claim(mod)
+    elif setup == "HITLTriggered-only":
+        # The legacy flag rows from earlier versions carry, with no status.
+        table.update_item(
+            Key=KEY,
+            UpdateExpression="SET HITLTriggered = :t REMOVE HITLStatus",
+            ExpressionAttributeValues={":t": True},
+        )
+    else:
+        set_status(mod, setup)
+    skip(mod)
+    stored = row(mod)
+    assert stored["HITLStatus"] == LegacyHitlStatus.REVIEW_SKIPPED.value
+    assert stored["HITLReviewedBy"] == "bob"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("how", ["completeSectionReview", "COMPLETED", "none"])
+def test_an_admin_may_still_skip_any_document(mod, how):
+    if how == "none":
+        mod.dynamodb.Table(TRACKING).update_item(
+            Key=KEY, UpdateExpression="REMOVE HITLStatus, HITLPendingReview"
+        )
+    else:
+        finish(mod, how)
+    skip(mod, "root", ("Admin",))
+    stored = row(mod)
+    assert stored["HITLStatus"] == LegacyHitlStatus.REVIEW_SKIPPED.value
+    assert stored["HITLReviewedBy"] == "root"
+
+
+class _FinishedJustBeforeTheWrite:
+    """The real table, with the review finishing ahead of each update."""
+
+    def __init__(self, real_table, status):
+        self._real = real_table
+        self._status = status
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def update_item(self, **kwargs):
+        self._real.update_item(
+            Key=KEY,
+            UpdateExpression="SET HITLStatus = :s",
+            ExpressionAttributeValues={":s": self._status},
+        )
+        return self._real.update_item(**kwargs)
+
+
+def _run_skip_all(mod, is_admin):
+    from idp_common.docs_service import create_document_service
+
+    with patch.object(mod, "create_document_service", create_document_service):
+        return mod.skip_all_sections_review(
+            OBJECT_KEY, "bob", "bob@example.com", is_admin=is_admin
+        )
+
+
+@pytest.mark.unit
+def test_a_review_finished_between_the_read_and_a_reviewers_skip_is_refused(mod):
+    real_table = mod.dynamodb.Table(TRACKING)
+    racing = _FinishedJustBeforeTheWrite(real_table, LegacyHitlStatus.COMPLETED.value)
+    with patch.object(mod.dynamodb, "Table", return_value=racing):
+        with pytest.raises(ValueError, match=FINISHED_MESSAGE):
+            _run_skip_all(mod, is_admin=False)
+    assert row(mod)["HITLStatus"] == LegacyHitlStatus.COMPLETED.value
+
+
+@pytest.mark.unit
+def test_an_admins_skip_carries_no_condition(mod):
+    """Admin behaviour is unchanged: the same race lets the Admin's skip land."""
+    real_table = mod.dynamodb.Table(TRACKING)
+    racing = _FinishedJustBeforeTheWrite(real_table, LegacyHitlStatus.COMPLETED.value)
+    with patch.object(mod.dynamodb, "Table", return_value=racing):
+        _run_skip_all(mod, is_admin=True)
+    assert row(mod)["HITLStatus"] == LegacyHitlStatus.REVIEW_SKIPPED.value
+
+
+@pytest.mark.unit
+def test_skip_all_defaults_to_the_non_admin_rule(mod):
+    """A caller that omits ``is_admin`` gets the stricter rule, not the Admin one."""
+    finish(mod, "completeSectionReview")
+    with pytest.raises(ValueError, match=FINISHED_MESSAGE):
+        mod.skip_all_sections_review(OBJECT_KEY, "bob", "bob@example.com")
+
+
+@pytest.mark.unit
+def test_the_handler_tells_skip_all_whether_the_caller_is_an_admin(mod):
+    """``is_admin`` comes from the verified group claim, not from an argument."""
+    for groups, expected in ((["Admin"], True), (["Reviewer"], False)):
+        with patch.object(mod, "skip_all_sections_review", return_value={}) as op:
+            mod.handler(
+                event(
+                    "skipAllSectionsReview",
+                    "bob",
+                    groups,
+                    reason="Duplicate document",
+                    is_admin=True,
+                ),
+                None,
+            )
+        assert op.call_args.kwargs["is_admin"] is expected
+
+
+@pytest.mark.unit
+def test_a_reviewers_skip_reads_consistently(mod):
+    real_table = mod.dynamodb.Table(TRACKING)
+    reads = []
+
+    class RecordingTable:
+        def __getattr__(self, name):
+            return getattr(real_table, name)
+
+        def get_item(self, **kwargs):
+            reads.append(kwargs)
+            return real_table.get_item(**kwargs)
+
+    with patch.object(mod.dynamodb, "Table", return_value=RecordingTable()):
+        _run_skip_all(mod, is_admin=False)
+    # The first read is the guard's; the last is the response, after the write.
+    assert reads
+    assert reads[0].get("ConsistentRead") is True, reads
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["complete", "rejected", " rejected "])
+def test_skip_all_itself_refuses_a_queue_outcome_for_a_reviewer(mod, status):
+    """The handler refuses a queue status first (``QUEUE_MANAGED``); the function
+    holds the shared finished rule on its own too. A queue outcome is not named by
+    the web UI's spelling check, and the padded one is not matched by the write's
+    exact condition either, so only the rule refuses it."""
+    set_status(mod, status)
+    before = row(mod)
+    with pytest.raises(ValueError, match=FINISHED_MESSAGE):
+        _run_skip_all(mod, is_admin=False)
+    assert row(mod) == before

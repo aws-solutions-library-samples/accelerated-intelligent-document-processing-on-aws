@@ -76,7 +76,7 @@ Admins have full access to all system features:
 | Upload Documents | ✅ Allowed |
 | View/Edit Extraction Results | ✅ Full access |
 | Complete Section Reviews | ✅ Allowed |
-| Skip All Reviews | ✅ Allowed (Admin only) |
+| Skip All Reviews | ✅ Allowed on any document |
 | Release Any Review | ✅ Allowed (can release reviews owned by others) |
 | View/Edit Configuration | ✅ Full access |
 | User Management | ✅ Full access (create/delete users) |
@@ -95,7 +95,7 @@ Reviewers have limited access focused on document review tasks:
 | View/Edit Extraction Results | ✅ Can view and edit (only for owned documents) |
 | Complete Section Reviews | ✅ Allowed (only for owned documents) |
 | Release Review | ✅ Can release own reviews only |
-| Skip All Reviews | ❌ Not allowed (Admin only) |
+| Skip All Reviews | ✅ Only on a review that is still waiting (raised, and not completed or skipped) |
 | View/Edit Configuration | ❌ Not allowed |
 | User Management | ❌ Not allowed |
 | Discovery | ❌ Not allowed |
@@ -209,6 +209,7 @@ Admins have additional capabilities:
   - Choose a reason (for example **Extracted values look correct** or **Duplicate document**) and optionally add a note; both are recorded with the skip in the review history, and the document page shows them as **Skip Reason**
   - Document status changes to **Review Skipped**
   - The **Review Completed By** field records the admin who skipped
+  - Reviewers can skip too, but only a review that is still waiting: the server refuses a Reviewer's skip on a document whose review has finished or was never raised, which is also where the button is hidden
   - Downstream reprocessing (Summarization/Evaluation) is triggered automatically — consistent with completing all sections — which also fires the optional post-processing Lambda hook (`PostProcessingLambdaHookFunctionArn`) on workflow completion
   
 - **Release Any Review**: Admins can release reviews owned by other users
@@ -297,7 +298,7 @@ The section review interface provides:
 |--------|--------------|-------------|
 | **Start Review** | Reviewers, Admins | Claim a pending document for review |
 | **Release Review** | Owner, Admins | Release document back to pending status |
-| **Skip All Reviews** | Admins only | Skip all remaining sections |
+| **Skip All Reviews** | Reviewers (on a review still waiting), Admins | Skip all remaining sections |
 | **Mark Review Complete** | Owner, Admins | Complete review for a section |
 
 ### Document Editor

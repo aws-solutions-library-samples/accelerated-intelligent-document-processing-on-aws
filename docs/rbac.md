@@ -137,7 +137,11 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
   `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
-  Annotators.
+  Annotators. `claimReview` and `releaseReview` refuse a finished review
+  (`REVIEW_FINISHED`) for every role, and `skipAllSectionsReview` refuses a caller
+  who is not an Admin unless a review was raised on the document and has not
+  finished (`REVIEW_FINISHED`, `NO_REVIEW_PENDING`), which is where the web UI offers
+  **Skip All Reviews**.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
   are in a production review queue (`QUEUE_MANAGED`).
 - **Residual access.** Like every role, an Annotator can call `getDocument` and

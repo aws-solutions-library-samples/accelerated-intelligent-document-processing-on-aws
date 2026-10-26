@@ -269,7 +269,7 @@ class TestSkipAllHistoryAppend:
             patch.object(mod, "trigger_reprocessing"),
             patch.object(mod, "build_document_response", return_value={}),
         ):
-            mod.skip_all_sections_review("doc/key.pdf", username="admin")
+            mod.skip_all_sections_review("doc/key.pdf", username="admin", is_admin=True)
 
     @mock_aws
     def test_a_reviewers_entry_is_not_overwritten_by_skip_all(self, mod):
