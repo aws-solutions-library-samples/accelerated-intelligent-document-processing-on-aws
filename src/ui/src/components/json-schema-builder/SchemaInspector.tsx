@@ -276,7 +276,7 @@ const MODE_DESIGNATE = 'designate';
 const MODE_SYNTHESIZE = 'synthesize';
 
 /**
- * How many documents of this class can one section hold? — ONE control, three
+ * How many records of this class can one section hold? — ONE control, three
  * outcomes.
  *
  * This replaced two separate optional controls (an "Instance Array" select and a
@@ -375,7 +375,7 @@ const MultiInstanceModeField = ({
   return (
     <FormField
       label="Records per section"
-      description="How many separate records of this class can end up in one section? Sections are split by document TYPE, so several records of the SAME type can land together — and then a single-record schema returns only the first."
+      description="How many separate records of this class can end up in one section? Sections are split by CLASS, so several records of the SAME class can land together — and then a single-record schema returns only the first."
     >
       <SpaceBetween size="xs">
         <RadioGroup
@@ -447,7 +447,7 @@ const MultiInstanceModeField = ({
                 </Box>
               ) : (
                 <Box variant="p">
-                  Each entry is one complete document with all of this class&apos;s fields. Evaluation baselines for this class must be
+                  Each entry is one complete record with all of this class&apos;s fields. Evaluation baselines for this class must be
                   migrated to the same shape, or its accuracy will read as ~0.
                 </Box>
               )}

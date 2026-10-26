@@ -17,7 +17,7 @@ Two configurations for this test set therefore set `classification.document_shap
 
 This directory's `config.yaml` does not set `classification.document_shape.sectionSplitting`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from this file on every update. `default` is usually the active profile, and a profile created by importing a configuration or uploading one under a new name is built on it, so a value set here would reach that profile, and every profile built on it afterwards, the next time such a stack is upgraded. Importing `realkie-fcc-verified` from the configuration library also reads this file. To treat each document as one invoice in a profile created from it, set **Section splitting** to `disabled` in the profile's classification settings.
 
-The setting applies to pipeline mode; with `use_bda: true`, BDA determines the sections. Do not use `disabled` for documents that hold several forms: it merges them into one section.
+The setting applies to pipeline mode; with `use_bda: true`, BDA determines the sections. Do not use `disabled` for documents that hold several sections: it merges them into one section.
 
 ## Validation Level
 

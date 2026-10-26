@@ -147,7 +147,7 @@ document of N pages or fewer was classified and sectioned normally — one setti
 a different answer for different documents in the same run.
 
 In v0.6.13 the page limit applies only when the whole document is one section
-(*One document*, `sectionSplitting: disabled`). A stored
+(*One section*, `sectionSplitting: disabled`). A stored
 configuration combining a limit with boundary detection is converted to
 `document_shape.sectionSplitting: disabled`, with a warning in the log naming both
 settings, so a long document keeps the behaviour it had. ⚠️ **A short packet in
@@ -260,7 +260,7 @@ upload, use the stored values — note the configuration *block* is named
   prompts, model block).
 - **Advanced — known document shape** (`document_shape`), collapsed: *Section splitting*
   (`sectionSplitting`: `llm_determined`, `disabled` or `page`) and *Pages to
-  classify* (`maxPagesForClassification`), which appears only for *One document*
+  classify* (`maxPagesForClassification`), which appears only for *One section*
   — the label for `sectionSplitting: disabled`.
 
 Each model block has its own model picker, modality, image settings and model

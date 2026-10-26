@@ -2029,15 +2029,15 @@ Resources:
                   sectionSplitting:
                     type: string
                     title: Section splitting
-                    description: "'Detect boundaries': one section per boundary found. 'One document': the whole document is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent single-page forms of the same class being merged into one section. Applies to both strategies."
+                    description: "'Detect boundaries': one section per boundary found. 'One section': the whole document is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent one-page sections of the same class being merged into one. Applies to both strategies."
                     enum: ["llm_determined", "disabled", "page"]
-                    enumLabels: { llm_determined: "Detect boundaries (default)", disabled: "One document", page: "One per page" }
+                    enumLabels: { llm_determined: "Detect boundaries (default)", disabled: "One section", page: "One per page" }
                     default: "llm_determined"
                     order: 0
                   maxPagesForClassification:
                     type: string
                     title: Pages to classify
-                    description: "Classify only the first N pages and give the whole document their majority class. Applies only to 'One document'."
+                    description: "Classify only the first N pages and give the whole document their majority class. Applies only to 'One section'."
                     enum: ["ALL", "1", "2", "3", "5", "10"]
                     default: "ALL"
                     order: 1
