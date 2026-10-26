@@ -1209,16 +1209,18 @@ def match_value_to_geometry(
     # preference runs only when neither disambiguator is present, which is the
     # ``ocr_only`` scalar case it was measured on.
     #
-    # ⚠️ **Bounded by what it is NOT asked to decide.** For a number the primary
-    # rendering is arbitrary — ``str(6.0)`` is ``"6.0"``, a substring of
-    # ``"126.00 total"`` — so below EXACT this preference can favour a coincidence
-    # over the line that holds the value. That hazard predates this change and is
-    # not closed here: a bare number matching inside a longer one is the real defect,
-    # and two attempts to bound it from this side were each measured as net-negative
-    # on an 18,177-section corpus (an EXACT-tier gate cost 15 correct rate boxes; a
-    # token-boundary rule cost 73 account numbers the model had transcribed one digit
-    # short, where the box was on the right field and the highlight is what would
-    # have caught the error). It wants its own change and its own measurement.
+    # ⚠️ **It settles provenance, not candidacy — and needs the demotion above to
+    # be sound.** For a number the primary rendering is arbitrary: ``str(6.0)`` is
+    # ``"6.0"``, a substring of ``"126.00 total"``. Preferring it over a variant
+    # would favour a coincidence if such a hit still ranked equal to the line holding
+    # the value, which is what the embedded-number demotion prevents (#1565) — a
+    # short number joined to further digits ranks below a whole numeric token, so it
+    # is no longer in the tie this block resolves. Bounding the preference from this
+    # side instead was tried twice and measured net-negative over an
+    # 18,177-section corpus: an EXACT-tier gate cost 15 correct rate boxes, and a
+    # token-boundary rejection cost 73 account numbers the model had transcribed one
+    # digit short — where the box was on the right field and the highlight is what
+    # would have caught the error. Demotion, not rejection, is why those keep a box.
     if occurrence_index is None and ref is None:
         verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
         if verbatim_at_tier:

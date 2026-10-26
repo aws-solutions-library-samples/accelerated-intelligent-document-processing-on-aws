@@ -1657,6 +1657,7 @@ class TestTheDateShapeOfASlash:
     def test_outcome(self, variant, text, embedded):
         assert g._only_inside_longer_number(variant, text) is embedded
 
+
 class TestSeparatorAtALineBreak:
     """A value written across OCR lines carries a separator the page does not (#1520).
 
@@ -1928,36 +1929,46 @@ class TestRowOrderWithVariantOnlyMatches:
         assert tops == [0.10, 0.15]
 
 
-class TestTheVerbatimPreferenceDoesNotCloseTheNumericHazard:
-    """What the preference is NOT asked to decide, pinned so a reader cannot over-read it.
+class TestTheVerbatimPreferenceComposesWithTheNumericDemotion:
+    """The preference and the embedded-number demotion decide different things.
 
-    For a number the primary rendering is arbitrary — ``str(6.0)`` is ``"6.0"``, a
-    substring of ``"126.00 total"`` — so below EXACT this preference can favour a
-    coincidence over the line that holds the value. That is a pre-existing defect in
-    numeric substring matching, not something this change introduces or fixes, and
-    two attempts to bound it from this side were each measured net-negative over an
-    18,177-section corpus. It is documented at the preference and left open.
+    The demotion settles whether a coincidental numeric hit is a candidate at all —
+    ``"75"`` inside the id ``"08337510"`` ranks below a whole numeric token. The
+    preference then settles a tie between a verbatim hit and a format-bridged one at
+    the same tier. Neither subsumes the other, and the combination is what puts the
+    box on the amount rather than on the id (#1565 for the demotion, #1520 here).
 
-    These tests record the open behaviour rather than asserting it is correct, so
-    that closing the hazard shows up here as a deliberate change rather than as a
-    silent one.
+    These tests are the join: they assert the outcome is independent of reading
+    order, which is what distinguishes evidence from position.
     """
 
-    def test_a_bare_number_still_matches_inside_a_longer_one(self):
-        """The open case. ``"75"`` has no business matching an 8-digit id, and does."""
-        pd = {1: _page([_line("08337510", 0.1, 0.10)])}
-        geom, _source, _conf = g.match_value_to_geometry(
-            75.0, pd, None, None, {"type": "number"}
-        )
-        assert geom is not None, "documents the hazard; see the class docstring"
+    def test_the_amount_wins_over_an_invoice_id_in_either_order(self):
+        for first, second in (("08337510", "$75.00 NM"), ("$75.00 NM", "08337510")):
+            pd = {1: _page([_line(first, 0.1, 0.10), _line(second, 0.1, 0.20)])}
+            geom, _source, _conf = g.match_value_to_geometry(
+                75.0, pd, None, None, {"type": "number"}
+            )
+            expected = 0.10 if first == "$75.00 NM" else 0.20
+            assert geom["boundingBox"]["top"] == pytest.approx(expected)
+
+    def test_the_amount_wins_over_a_larger_amount_in_either_order(self):
+        for first, second in (
+            ("126.00 total", "Fee $6 each"),
+            ("Fee $6 each", "126.00 total"),
+        ):
+            pd = {1: _page([_line(first, 0.1, 0.10), _line(second, 0.1, 0.20)])}
+            geom, _source, _conf = g.match_value_to_geometry(
+                6.0, pd, None, None, {"type": "number"}
+            )
+            expected = 0.10 if first == "Fee $6 each" else 0.20
+            assert geom["boundingBox"]["top"] == pytest.approx(expected)
 
     def test_a_truncated_account_number_keeps_its_box(self):
-        """Why a token-boundary rule is not simply an improvement.
+        """Demotion rather than rejection is why this still grounds.
 
         The model transcribed this nine of ten digits. The box is on the right field
-        and the highlight is what would let a reviewer catch the error, so rejecting
-        the match would remove the signal exactly where it is most useful — measured
-        at 73 such fields.
+        and the highlight is what lets a reviewer catch the error, so the hit is
+        ranked low rather than discarded.
         """
         pd = {
             1: _page(
@@ -1970,7 +1981,6 @@ class TestTheVerbatimPreferenceDoesNotCloseTheNumericHazard:
         assert geom is not None
 
     def test_a_value_whose_cents_the_model_dropped_keeps_its_box(self):
-        """The same shape on money: ``"272243"`` against ``"272243.34"``."""
         pd = {1: _page([_line("272243.34", 0.1, 0.10)])}
         geom, _source, _conf = g.match_value_to_geometry(
             272243, pd, None, None, {"type": "number"}
@@ -1978,7 +1988,7 @@ class TestTheVerbatimPreferenceDoesNotCloseTheNumericHazard:
         assert geom is not None
 
     def test_a_date_still_prefers_its_own_line_across_pages(self):
-        """What the preference IS for, and all it claims."""
+        """What the preference itself is for, unchanged by the demotion."""
         pd = {
             1: _page([_line("APR 15 2011", 0.79, 0.13)]),
             2: _page([_line("4-15-11", 0.75, 0.18)]),
