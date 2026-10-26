@@ -102,6 +102,20 @@ _ADMISSION_PROJECTION = (
 )
 _ADMISSION_NAMES = {"#s": "Status", "#ctx": "Context"}
 
+# What the tally and the completion time read, and nothing else. A document item
+# here carries ~27 attributes — ``Pages`` and ``Metering`` dominate — against the
+# three the derivation consumes, measured at 3.9 KB against 252 B on a real run.
+#
+# ⚠️ This does **not** reduce consumed read capacity: DynamoDB charges a read on
+# the size of the stored item, not on the attributes returned. What it saves is
+# bytes transferred, deserialised and held in the handler, which is what a sweep
+# over a 2,000-document test set is actually spending. Stated here because
+# "projected, therefore cheaper reads" is the natural misreading and it is wrong.
+#
+# None of these three is a DynamoDB reserved word, verified against the live
+# table, so unlike the admission projection this one needs no aliases.
+_DOCUMENT_PROJECTION = "PK, ObjectStatus, EvaluationStatus, CompletionTime"
+
 
 def _iter_runs_in_window(window_days, max_examined):
     """Hydrated run metadata records inside the window, newest first, in chunks.
@@ -203,7 +217,7 @@ def _load_documents(test_run_id, files):
     if not files:
         return {}
     keys = [{"PK": f"doc#{test_run_id}/{file_key}", "SK": "none"} for file_key in files]
-    items = _client().batch_get_items(keys)
+    items = _client().batch_get_items(keys, projection_expression=_DOCUMENT_PROJECTION)
     by_key = {}
     for item in items:
         pk = item.get("PK", "")

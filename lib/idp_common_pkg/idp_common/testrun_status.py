@@ -111,10 +111,12 @@ EVAL_STATUS_CLASSIFIED = (
     EVAL_STATUS_SETTLED | EVAL_STATUS_UNSUCCESSFUL | EVAL_STATUS_IN_FLIGHT
 )
 
-# ``ObjectStatus`` values meaning the pipeline will not touch the document again.
-# Used only to decide whether a run can still change; the per-document
-# classification above is what decides the run's status.
-DOC_STATUS_TERMINAL = frozenset({"COMPLETED", "FAILED", "ABORTED"})
+# ``ObjectStatus`` values meaning the document failed before evaluation could
+# have an opinion, so the run counts it as failed whatever its EvaluationStatus
+# says. Named rather than written inline at the branch below, because a set this
+# module declares and a literal the same module tests against is the two-copies
+# shape the rest of this file exists to remove.
+DOC_STATUS_FAILED = frozenset({"FAILED", "ABORTED"})
 
 # Run statuses that no reconciliation can move. A run in one of these is skipped
 # by the sweeper entirely.
@@ -388,7 +390,7 @@ def tally_documents(
                     "counting as evaluating, which will hold this run short of a "
                     "terminal status"
                 )
-        elif doc_status in ("FAILED", "ABORTED"):
+        elif doc_status in DOC_STATUS_FAILED:
             tally.failed += 1
         elif doc_status == "QUEUED":
             tally.queued += 1

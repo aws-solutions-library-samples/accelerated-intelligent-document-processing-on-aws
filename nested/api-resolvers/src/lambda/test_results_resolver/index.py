@@ -562,9 +562,20 @@ def handle_cache_update_request(event, context):
             }
 
             table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+            # The attempt counter is cleared in the same write that records the
+            # result, because the sweeper reads it as *consecutive* failures when
+            # sizing its backoff. ``ADD`` only ever increments it, so left in
+            # place it becomes a lifetime total: a run that failed a few times,
+            # succeeded, and later needs recomputing — a release adding a key to
+            # these metrics, or a cache invalidation — would be deferred by up to
+            # a day on the strength of failures that are over. Clearing it here
+            # is what makes the counter mean what the throttle reads.
             table.update_item(
                 Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"},
-                UpdateExpression="SET testRunResult = :metrics",
+                UpdateExpression=(
+                    f"SET testRunResult = :metrics "
+                    f"REMOVE {trs.CACHE_UPDATE_ATTEMPTS_ATTR}"
+                ),
                 ExpressionAttributeValues={
                     ":metrics": float_to_decimal(metrics_to_cache)
                 },

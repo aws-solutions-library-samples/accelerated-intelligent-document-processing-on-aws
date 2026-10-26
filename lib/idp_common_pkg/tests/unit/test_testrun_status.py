@@ -488,3 +488,69 @@ class TestSweepAggregationThrottle:
         assert trs.sweep_aggregation_throttle(Decimal("2")) == (
             trs.SWEEP_AGGREGATION_BASE_SECONDS * 4
         )
+
+
+@pytest.mark.unit
+class TestTheModuleDeclaresNothingItDoesNotUse:
+    """A constant that reads as the source of truth while the decision sits in a
+    literal is the two-copies shape this module exists to remove, so the module
+    must not carry one."""
+
+    def test_the_failure_set_is_the_one_the_tally_branches_on(self):
+        for status in sorted(trs.DOC_STATUS_FAILED):
+            tally = trs.tally_documents(["a"], _docs(a={"ObjectStatus": status}), {})
+            assert tally.failed == 1, status
+
+    def test_no_declared_status_set_is_dead(self):
+        """No declared set may be referenced from nowhere.
+
+        ⚠️ Two things make the naive version of this check useless, and both were
+        observed on it. **The question is repo-wide, not module-wide:**
+        ``EVAL_STATUS_CLASSIFIED`` is deliberately consulted by consumers rather
+        than here, so an in-module search reports as dead the one set whose whole
+        purpose is to be read from outside. And **a reference has to be a
+        reference, not a mention:** a textual search is satisfied by a comment or
+        a docstring naming the constant, so a set can be revived by prose about
+        it while nothing consults it. This walks the AST of every tracked module
+        and counts load and attribute accesses only.
+        """
+        import ast
+        import subprocess
+        from pathlib import Path
+
+        sets = sorted(
+            name
+            for name, value in vars(trs).items()
+            if isinstance(value, frozenset) and name.isupper()
+        )
+        assert sets, "expected this module to declare status sets"
+
+        repo = Path(__file__).resolve().parents[4]
+        declaring = Path(trs.__file__).resolve()
+        tracked = subprocess.run(
+            ["git", "ls-files", "*.py"], cwd=repo, capture_output=True, text=True
+        ).stdout.split()
+
+        referenced: set[str] = set()
+        for rel in tracked:
+            path = (repo / rel).resolve()
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError, OSError):
+                continue
+            own = path == declaring
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in sets:
+                    referenced.add(node.attr)
+                elif isinstance(node, ast.Name) and node.id in sets:
+                    # In the declaring module a bare Name is the assignment
+                    # itself unless it is being read, so only count loads.
+                    if not own or isinstance(node.ctx, ast.Load):
+                        referenced.add(node.id)
+
+        dead = [n for n in sets if n not in referenced]
+        assert not dead, (
+            f"{dead} is declared and read by no tracked module. Either use it or "
+            "delete it: a set the module states and nothing consults invites the "
+            "next reader to edit it and expect behaviour to change."
+        )

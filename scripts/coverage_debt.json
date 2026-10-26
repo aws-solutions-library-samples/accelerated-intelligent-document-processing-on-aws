@@ -287,6 +287,7 @@
         "idp_common/synthesis/packet_io.py": 95.58,
         "idp_common/synthesis/schema_author.py": 84.47,
         "idp_common/synthesis/schema_bridge.py": 92.62,
+        "idp_common/testrun_status.py": 99.29,
         "idp_common/testset_scope.py": 100.0,
         "idp_common/timeout_budget.py": 100.0,
         "idp_common/utils/__init__.py": 70.23,

@@ -593,6 +593,36 @@ class TestDiscovery:
         # And no document reads happened at all for a settled run.
         assert client.table.get_item.call_count == 0
 
+    def test_the_document_read_is_projected_too(self, mod):
+        """The heavy half of a sweep, and the one unit tests can only check shape.
+
+        A document item carries ~27 attributes against the three the derivation
+        consumes. Note this does not reduce consumed read capacity — DynamoDB
+        charges on stored item size — it reduces what crosses the wire and gets
+        deserialised, which is what a 2,000-document run spends.
+        """
+        run = _run(status="RUNNING", files=("a",))
+        docs = {
+            "doc#r1/a": {"ObjectStatus": "COMPLETED", "EvaluationStatus": "COMPLETED"}
+        }
+        client = _stub_client(mod, [run], docs)
+        mod.reconcile_run(run)
+
+        doc_call = next(
+            c
+            for c in client.batch_get_items.call_args_list
+            if c.args and c.args[0] and "doc#" in c.args[0][0]["PK"]
+        )
+        projection = doc_call.kwargs["projection_expression"]
+        # Everything the tally and the completion time read, and PK because the
+        # loader keys its result off it. A missing one reads as absent, which for
+        # ObjectStatus would tally every document as queued.
+        for attr in ("PK", "ObjectStatus", "EvaluationStatus", "CompletionTime"):
+            assert attr in projection, attr
+        # No aliases: none of these is a reserved word, verified against the
+        # live table. An alias map here would be noise asserting otherwise.
+        assert "expression_attribute_names" not in doc_call.kwargs
+
     def test_a_due_run_is_hydrated_in_full_before_reconciliation(self, mod):
         run = _run(status="RUNNING", files=("a",))
         docs = {
