@@ -878,6 +878,12 @@ outcome is
 [`extraction.row_shortfall_action`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
 which fails the Step Functions execution.
 
+The document editor's **Processing report** dialog shows the validation outcome for a
+section beside the rest of its report. The report names the extraction modes
+**Standard** (Simple on this page) and **Agentic** (Advanced):
+
+![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
+
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
@@ -1669,6 +1675,8 @@ extraction:
 > `llm`. Old configs are migrated on read.
 
 ### What the viewers show
+
+![Document editor for a payslip: the Gross Pay value outlined on the page image, with each field's confidence and threshold in the Visual Editor](../images/extraction-document-editor-bounding-box.png)
 
 Wherever extracted fields are displayed — the document viewer, the human-review
 editor, Test Studio's ground-truth editor and the evaluation-correction table —
