@@ -1519,7 +1519,7 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
    - Evaluation metrics for completed documents
    - Cost breakdown for processed documents
 
-**Note**: Test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+**Note**: Test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
 
 The abort waits a few seconds for each document's workflow to confirm it has stopped. A document that could not be confirmed stopped is reported rather than hidden. The Test Studio page shows a warning beside the success message. In the abort response, the message ends with the number of such documents, and `errors` gives, for each affected run, how many and why: the stop request could not be made, was refused, or was not answered in time; the document was at a processing step the abort cannot stop, such as rule validation or malware scanning; or the request was too large to wait for in full — each run's documents are sent in stop requests of up to 25, and the abort waits for the answers to at most 20 of them, taking every run's first request before any run's second (so at most 500 documents, and fewer when a run's count is not a multiple of 25) — in which case the remaining stop requests are sent at the same moment without waiting for an answer. The run is still marked **ABORTED**, but those documents may still be processing. Documents that had already finished are not counted among them.
 
