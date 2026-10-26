@@ -639,12 +639,13 @@ const CapacityPlanningLayout = () => {
       const detailKeys = documentsNeedingDetail(documents, MAX_DOCUMENTS_TO_DETAIL, readDetailKeysRef.current);
       const detailed = await fetchInChunks(detailKeys, (chunk) => getDocumentDetailsFromIds(chunk, { reportErrors: false }));
       const beyondCap = documentsBeyondCap(documents, MAX_DOCUMENTS_TO_DETAIL, readDetailKeysRef.current);
-      detailKeys.forEach((key) => readDetailKeysRef.current.add(key));
       setSamplingNote(
         beyondCap > 0
-          ? `Read ${detailKeys.length} more completed documents; ${beyondCap} older ${beyondCap === 1 ? 'one has' : 'ones have'} not been read yet. Choose Populate again to read them.`
+          ? `Read ${detailKeys.length} completed documents; ${beyondCap} older ${beyondCap === 1 ? 'one has' : 'ones have'} not been read yet. Choose Populate again to read them.`
           : null,
       );
+      // Only what came back counts as read: a failed read is the one worth retrying.
+      detailed.forEach((doc) => readDetailKeysRef.current.add(String(doc.ObjectKey)));
       const unreadable = detailKeys.length - detailed.length;
       if (unreadable > 0) {
         addNotification(

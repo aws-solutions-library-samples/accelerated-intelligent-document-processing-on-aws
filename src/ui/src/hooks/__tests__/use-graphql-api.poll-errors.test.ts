@@ -82,7 +82,7 @@ describe('document list polling errors', () => {
     expect(setErrorMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a sustained outage once per run of failures, not on every poll', async () => {
+  it('reports each run of consecutive failures once, not every poll in it', async () => {
     await loaded();
     graphql.mockRejectedValue(NETWORK);
 

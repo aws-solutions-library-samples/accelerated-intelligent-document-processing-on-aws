@@ -113,6 +113,22 @@ describe('Populate tokens from Documents', () => {
     expect(value.getDocumentDetailsFromIds).toHaveBeenCalledWith(expect.any(Array), { reportErrors: false });
   });
 
+  it('retries a document whose read failed on the next press', async () => {
+    const rows = [LIST_ROW, { ...LIST_ROW, ObjectKey: 'docs/unreadable.pdf' }];
+    // The first press reads only one of the two; the second must ask for the other again.
+    const fetchMock = vi.fn(async (keys: string[]) => keys.filter((key) => key !== 'docs/unreadable.pdf').map(() => FULL_RECORD));
+    contextWith({ documents: rows, getDocumentDetailsFromIds: fetchMock });
+    render(<CapacityPlanningLayout />);
+    const button = screen.getByRole('button', { name: /Populate tokens from Documents/ });
+
+    await userEvent.click(button);
+    await waitFor(() => expect(button).not.toBeDisabled());
+    await userEvent.click(button);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    expect(fetchMock.mock.calls[1][0]).toContain('docs/unreadable.pdf');
+  });
+
   it('shows the button busy while it reads, and ignores a second click', async () => {
     let release: (docs: unknown[]) => void = () => undefined;
     const pending = new Promise<unknown[]>((resolve) => {
@@ -140,7 +156,7 @@ describe('Populate tokens from Documents', () => {
 
     // In the picker rather than a page notification: the page stacks its notifications,
     // which hides every one but the first.
-    expect(await screen.findByText(/Read 25 more completed documents; 1 older one has not been read yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/Read 25 completed documents; 1 older one has not been read yet/)).toBeInTheDocument();
   });
 
   it('reaches older documents on a second press when the first read found no metering', async () => {
