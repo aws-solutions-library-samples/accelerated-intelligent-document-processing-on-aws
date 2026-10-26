@@ -525,7 +525,7 @@ flowchart LR
     Runner --> WF[Document processing workflow]
     WF -->|"docs finish"| RunDDB
 
-    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETED<br/>+ enqueue aggregation"| RunDDB
+    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETE<br/>+ enqueue aggregation"| RunDDB
     Poll --> AggQ[SQS aggregation queue]
     AggQ --> Agg[Metrics aggregation Lambda]
     Agg -->|"write testRunResult"| RunDDB
@@ -535,7 +535,7 @@ flowchart LR
 The tab that started the run stays on Test Studio, so the 5-second
 `getTestRunStatus` poll runs against the row. When the workflow finishes and
 every document has terminated, that poll — **not** the workflow — transitions
-`Status → COMPLETED` and enqueues aggregation. The metrics land, the next
+`Status → COMPLETE` and enqueues aggregation. The metrics land, the next
 poll reads the fresh row, the `EVALUATING` badge clears. All Test-Studio
 transitions happen in real time while the user watches.
 
@@ -553,7 +553,7 @@ flowchart LR
 
     Later([User logs into Test Studio<br/>hours later]) --> UI[UI Executions page]
     UI -->|"per-row getTestRunStatus poll"| RunDDB
-    RunDDB -->|"deferred:<br/>Status→COMPLETED + enqueue"| AggQ[SQS aggregation queue]
+    RunDDB -->|"deferred:<br/>Status→COMPLETE + enqueue"| AggQ[SQS aggregation queue]
     AggQ --> Agg[Aggregation]
     Agg -->|"write testRunResult"| RunDDB
     RunDDB -.->|"badge clears"| UI
@@ -1474,12 +1474,15 @@ be able to discard the team's annotation work.
 
 ### Running Tests
 1. Select test set from dropdown
-2. **Optional**: Select configuration version to use for processing
-3. **Optional**: Enter number of files to limit processing (useful for quick testing)
-4. **Optional**: Add context description for the test run
-5. Click "Run Test" (single test execution only)
-6. Monitor progress via TestRunnerStatus
-7. View results in integrated listing
+2. **Optional**: Pin a **Test set version** (defaults to the set's current labels)
+3. **Optional**: Select a **Configuration Profile**, and optionally a **Configuration revision**
+4. **Optional**: Enter number of files to limit processing (useful for quick testing)
+5. **Optional**: Add context description for the test run
+6. Click "Run Test" (single test execution only)
+7. Monitor progress via TestRunnerStatus
+8. View results in integrated listing
+
+![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
 
 ### Configuration Versioning
 The Test Studio supports running tests with specific Configuration Profiles and
@@ -1498,7 +1501,7 @@ For full details on configuration profiles and their revisions, see [configurati
 - **QUEUED**: File copying jobs queued in SQS
 - **RUNNING**: Files being copied and processed
 - **EVALUATING**: Documents processed, evaluation in progress
-- **COMPLETED**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETED while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
+- **COMPLETE**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETE while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
 - **PARTIAL_COMPLETE**: Test finished with some documents failed. A document whose evaluation failed or timed out (`EvaluationStatus` `FAILED` or `TIMED_OUT`) counts as failed, and the run's metrics cover the documents that were scored
 - **FAILED**: Errors during processing
 - **ABORTED**: Test run manually stopped before completion
@@ -1516,7 +1519,7 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
    - Evaluation metrics for completed documents
    - Cost breakdown for processed documents
 
-**Note**: Test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+**Note**: Test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
 
 The abort waits a few seconds for each document's workflow to confirm it has stopped. A document that could not be confirmed stopped is reported rather than hidden. The Test Studio page shows a warning beside the success message. In the abort response, the message ends with the number of such documents, and `errors` gives, for each affected run, how many and why: the stop request could not be made, was refused, or was not answered in time; the document was at a processing step the abort cannot stop, such as rule validation or malware scanning; or the request was too large to wait for in full — each run's documents are sent in stop requests of up to 25, and the abort waits for the answers to at most 20 of them, taking every run's first request before any run's second (so at most 500 documents, and fewer when a run's count is not a multiple of 25) — in which case the remaining stop requests are sent at the same moment without waiting for an answer. The run is still marked **ABORTED**, but those documents may still be processing. Documents that had already finished are not counted among them.
 
@@ -1547,6 +1550,9 @@ The abort then waits for the run's documents to reach a final status. A document
 - SQS-based asynchronous processing
 
 ### Results Analysis
+
+![Test results for a Fake-W2-Tax-Forms run: cost, confidence and accuracy summary above the weighted overall score distribution](../images/test-studio-results.png)
+
 - Comprehensive metrics display including:
   - **Test run metadata**: Configuration version, duration, context, file counts
   - **Overall accuracy and confidence metrics**
@@ -1689,6 +1695,8 @@ because the model filled in the wrong schema competently. Worse, a misclassified
 document can be *confidently* wrong, which means it raises few confidence alerts
 and therefore ranks **low priority** in the annotation queue's worst-first order.
 Without this panel it is the failure most likely to go unnoticed.
+
+![Classification errors panel for a DocSplit-Poly-Seq run, listing each wrong class and unmatched section with its expected and predicted class and pages](../images/test-studio-classification-errors.png)
 
 Three kinds are distinguished, because they call for different fixes:
 
