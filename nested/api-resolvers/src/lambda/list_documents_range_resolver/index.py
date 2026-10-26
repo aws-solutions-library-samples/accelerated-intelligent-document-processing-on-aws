@@ -47,8 +47,12 @@ from review_statuses import (  # noqa: E402
 )
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
+#: ``Review Pending`` is what ``releaseReview`` writes: a released review goes back
+#: to the queue for another Reviewer to claim. Matched exactly, in both document-list
+#: resolvers, so the two lists agree row for row.
 _REVIEWER_ACTIVE_STATUSES = (
     LegacyHitlStatus.PENDING_REVIEW.value,
+    LegacyHitlStatus.REVIEW_PENDING.value,
     LegacyHitlStatus.IN_PROGRESS.value,
     LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
 )
