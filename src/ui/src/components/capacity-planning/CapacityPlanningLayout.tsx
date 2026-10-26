@@ -296,6 +296,7 @@ const CapacityPlanningLayout = () => {
   const [loading, setLoading] = useState(false);
   // Populate reads documents in rounds, so it takes long enough to need its own state.
   const [isPopulating, setIsPopulating] = useState(false);
+  const [samplingNote, setSamplingNote] = useState<string | null>(null);
   const [hasCalculated, setHasCalculated] = useState(false);
   const [results, setResults] = useState<CapacityResult | null>(null);
   const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
@@ -636,13 +637,11 @@ const CapacityPlanningLayout = () => {
       const detailKeys = documentsNeedingDetail(documents);
       const detailed = await fetchInChunks(detailKeys, (chunk) => getDocumentDetailsFromIds(chunk, { reportErrors: false }));
       const beyondCap = documentsBeyondCap(documents);
-      if (beyondCap > 0) {
-        addNotification(
-          'info',
-          `Read the ${detailKeys.length} most recent completed documents; ${beyondCap} older ones were not read.`,
-          'Sampled recent documents',
-        );
-      }
+      setSamplingNote(
+        beyondCap > 0
+          ? `Showing the ${detailKeys.length} most recent completed documents; ${beyondCap} older ${beyondCap === 1 ? 'one was' : 'ones were'} not read.`
+          : null,
+      );
       const unreadable = detailKeys.length - detailed.length;
       if (unreadable > 0) {
         addNotification(
@@ -3925,6 +3924,7 @@ const CapacityPlanningLayout = () => {
         selectedDocuments={selectedDocuments as unknown as React.ComponentProps<typeof DocumentPickerModal>['selectedDocuments']}
         setSelectedDocuments={setSelectedDocuments as unknown as React.ComponentProps<typeof DocumentPickerModal>['setSelectedDocuments']}
         onUseSelectedDocuments={populateTokensFromMultipleDocuments}
+        samplingNote={samplingNote}
         onUseDocument={populateTokensFromDocument as unknown as React.ComponentProps<typeof DocumentPickerModal>['onUseDocument']}
         configuration={configuration}
         periodsToLoad={periodsToLoad}

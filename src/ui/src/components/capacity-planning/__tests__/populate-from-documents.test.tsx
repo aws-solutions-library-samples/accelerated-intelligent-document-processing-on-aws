@@ -138,7 +138,9 @@ describe('Populate tokens from Documents', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
 
-    expect(await screen.findByText('Sampled recent documents')).toBeInTheDocument();
+    // In the picker rather than a page notification: the page stacks its notifications,
+    // which hides every one but the first.
+    expect(await screen.findByText(/most recent completed documents; 1 older one was not read/)).toBeInTheDocument();
   });
 
   it('starts the document list load when no page has asked for it', () => {
