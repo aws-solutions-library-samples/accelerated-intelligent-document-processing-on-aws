@@ -1015,7 +1015,7 @@ severity says how much attention the case deserves:
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or the page's required OCR artifacts were absent, so the page has no class and nothing was extracted from it. **Reached on the SageMaker/UDOP backend.** On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page, and endpoint health, model access and quota |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. **Produced only by `classify_page_sagemaker`**, so it cannot occur in a stack this solution deploys: no template here creates a SageMaker endpoint or UDOP model. You reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page. If you supplied the endpoint yourself, check its health, model access and quota — otherwise this code indicates a classifier wired up outside the solution's own templates |
 | `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
@@ -2305,8 +2305,9 @@ be more certain than its least certain page.
   on a classifier that answers ~0.95 for most pages it would paint a coarse flag
   as a calibrated traffic light.
 - **API** — `Page.ClassConfidence`, `Page.ClassReason`, `Page.ClassCandidates`
-  and `Section.Confidence` on `getDocument`, `getDocumentVersion` and the
-  document subscription. Named `ClassConfidence` on a page because
+  and `Section.Confidence` on `getDocument` and `getDocumentVersion`. The UI
+  keeps these fresh by polling those queries; there is no document
+  subscription. Named `ClassConfidence` on a page because
   `TextConfidenceUri` there is *OCR* confidence — a different measurement.
 - **Reporting / analytics** — the existing `section_confidence` column, which
   now carries a real value when one exists and null when it does not.

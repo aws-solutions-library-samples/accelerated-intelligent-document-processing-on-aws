@@ -19,6 +19,7 @@ Usage:
 """
 
 import difflib
+import functools
 import math
 import re
 from functools import lru_cache
@@ -42,9 +43,9 @@ from pydantic import (
     Discriminator,
     Field,
     ValidationInfo,
-    field_validator,
     model_validator,
 )
+from pydantic import field_validator as _pydantic_field_validator
 from typing_extensions import Self
 
 # Current config schema/shape version. Bump when the stored config shape changes
@@ -63,6 +64,48 @@ from typing_extensions import Self
 # moved the file-shape assertions under `file_shape`, and replaced
 # `invalidClassFallback` with `fallback_class`.
 CONFIG_FORMAT_VERSION = "0.9"
+
+
+#: Exceptions a field validator here can raise on malformed input that pydantic
+#: does not convert into a ``ValidationError``: ``int([])`` and ``float({})`` raise
+#: ``TypeError``, and ``int(float("inf"))`` and ``float(10**400)`` raise
+#: ``OverflowError``. Pydantic converts only ``ValueError`` and ``AssertionError``.
+_UNCONVERTED_INPUT_ERRORS = (TypeError, OverflowError)
+
+
+def field_validator(*fields: str, **kwargs: Any) -> Any:
+    """``pydantic.field_validator`` whose validator cannot fail the whole load.
+
+    A stored value of the wrong shape (``temperature: []``, ``top_k: 1e400``,
+    ``ocr.max_workers: .inf``) made a validator raise ``TypeError`` or
+    ``OverflowError``. Pydantic lets those propagate, so ``IDPConfig`` raised
+    something that is not a ``ValidationError``, naming no setting, and callers
+    that report invalid configuration did not recognise it. This wraps every
+    validator in this module so those two errors are re-raised as ``ValueError``,
+    which pydantic reports as a ``ValidationError`` naming the field.
+
+    Nothing that parsed before parses differently: the wrapper acts only when the
+    validator has already raised, and it does not substitute a default. Every
+    validator in this module is declared through this name, which
+    ``tests/unit/config/test_null_numeric_settings.py`` checks per field.
+    """
+    decorate = _pydantic_field_validator(*fields, **kwargs)
+
+    def wrap(validator: Any) -> Any:
+        is_classmethod = isinstance(validator, classmethod)
+        func = validator.__func__ if is_classmethod else validator
+
+        @functools.wraps(func)
+        def guarded(*args: Any, **kw: Any) -> Any:
+            try:
+                return func(*args, **kw)
+            except _UNCONVERTED_INPUT_ERRORS as exc:
+                raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+
+        guarded.__idp_input_errors_converted__ = True  # type: ignore[attr-defined]
+        return decorate(classmethod(guarded) if is_classmethod else guarded)
+
+    return wrap
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -97,6 +140,35 @@ def _parse_required_int(v: Any, info: ValidationInfo, cls: type) -> int:
         default = cls.model_fields[info.field_name].default
         return int(default) if default is not None else 0
     return int(v)
+
+
+def _default_if_none(v: Any, info: ValidationInfo, cls: type) -> Any:
+    """Return the field's declared default when a stored value is ``None``.
+
+    A YAML key with no value (``temperature:``) or a JSON ``null`` reaches a
+    ``mode="before"`` validator as ``None``. A validator that passes it to
+    ``int()`` or ``float()`` raises ``TypeError``, which pydantic does not turn
+    into a ``ValidationError``, so the whole configuration fails to load. Any
+    other value is returned unchanged, so a validator applying this first keeps
+    its parsing of every non-null value exactly as it was.
+    """
+    if v is None:
+        return cls.model_fields[info.field_name].get_default(call_default_factory=True)
+    return v
+
+
+def _parse_required_float(v: Any, info: ValidationInfo, cls: type) -> float:
+    """Parse a required float, falling back to the field's default on ``None``.
+
+    The float counterpart of ``_parse_required_int`` for the sampling parameters
+    (``temperature``, ``top_p``, ``top_k``) and thresholds. Only ``None`` falls
+    back to the default: an empty string still parses as ``0.0`` and a numeric
+    string or number as ``float(v)``, as these validators always did.
+    """
+    v = _default_if_none(v, info, cls)
+    if isinstance(v, str):
+        return float(v) if v else 0.0
+    return float(v)
 
 
 def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
@@ -261,11 +333,9 @@ class TableParsingConfig(BaseModel):
         "min_confidence_threshold", "min_parse_success_rate", mode="before"
     )
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_empty_line_gap", mode="before")
     @classmethod
@@ -1033,11 +1103,9 @@ class ConfidenceConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("list_batch_size", mode="before")
     @classmethod
@@ -1184,11 +1252,9 @@ class HITLConfig(BaseModel):
 
     @field_validator("confidence_threshold", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
 
 class ExtractionConfig(BaseModel):
@@ -1446,11 +1512,9 @@ class ExtractionConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("context_buffer", mode="before")
     @classmethod
@@ -1980,8 +2044,8 @@ class ClassificationModelSettings(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        return _parse_float_param(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        return _parse_float_param(_default_if_none(v, info, cls))
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -2670,11 +2734,9 @@ class SummarizationConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -2754,11 +2816,9 @@ class ChatConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -2830,8 +2890,9 @@ class OCRConfig(BaseModel):
 
     @field_validator("max_workers", mode="before")
     @classmethod
-    def parse_max_workers(cls, v: Any) -> int:
-        """Parse max_workers from string or number"""
+    def parse_max_workers(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse max_workers from string or number (None -> field default)."""
+        v = _default_if_none(v, info, cls)
         if isinstance(v, str):
             return int(v) if v else 20
         return int(v)
@@ -2844,7 +2905,12 @@ class ErrorAnalyzerParameters(BaseModel):
         default=5, gt=0, description="Maximum number of log events to retrieve"
     )
     time_range_hours_default: int = Field(
-        default=24, gt=0, description="Default time range in hours for log searches"
+        default=24,
+        gt=0,
+        description=(
+            "Not read by the agent or its tools. The default log-search window is "
+            "agents.error_analyzer.lookback_hours."
+        ),
     )
 
     max_log_message_length: int = Field(
@@ -2931,16 +2997,17 @@ class ErrorAnalyzerConfig(BaseModel):
     lookback_hours: int = Field(
         default=24,
         gt=0,
-        description="How far back the error analyzer searches logs, traces, and execution history (in hours). Default: 24.",
+        description=(
+            "Default window, in hours, for the error analyzer's CloudWatch log "
+            "searches when the question names none. Default: 24."
+        ),
     )
 
     @field_validator("lookback_hours", mode="before")
     @classmethod
-    def parse_lookback_hours(cls, v: Any) -> int:
-        """Parse lookback_hours from string or number"""
-        if isinstance(v, str):
-            return int(v) if v else 24
-        return int(v)
+    def parse_lookback_hours(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse lookback_hours from string or number (empty/None -> field default)."""
+        return _parse_required_int(v, info, cls)
 
     error_patterns: list[str] = Field(
         default=[
@@ -2990,18 +3057,22 @@ INVESTIGATION WORKFLOW:
 5. Synthesize all evidence to determine root cause — never stop at the first error message
 
 TOOL USAGE:
+The tools below are the only ones you have. Call them by these exact names.
 - Document-specific analysis (user provides a filename or document ID):
-  → Use cloudwatch_document_logs and dynamodb_status as primary tools
+  → Use fetch_document_record (object_key) for the document's status, timestamps, ConfigVersion and Step Functions execution ARN
+  → Use retrieve_document_context (document_id) for the processing timeline, the failed Lambda function names and their request IDs
+  → Use search_cloudwatch_logs with document_id set to search only the logs of that document's processing window and request IDs
 - System-wide or batch analysis (no specific document):
-  → Use cloudwatch_logs and dynamodb_query to identify patterns
+  → Use fetch_recent_records (date, hours_back, limit) for recent documents and their completed/failed/in-progress counts
+  → Use search_cloudwatch_logs without document_id (filter_pattern, hours_back) for recent errors across the stack
+  → Use search_performance_issues (issue_type "performance", "throttling", "timeout" or "capacity") for throttling, timeout and capacity problems
 - Workflow failures and execution timeline:
-  → Use stepfunction_details for the execution event history
-- Lambda configuration and environment context:
-  → Use lambda_lookup to check timeout settings, memory, and environment variables
+  → Use analyze_workflow_execution (document_id) for the Step Functions state transitions and failure point
 - Which Bedrock model a pipeline stage uses (e.g. after a model error):
   → Use fetch_pipeline_configuration with the document's config version to read the per-stage model IDs
 - Distributed service interaction issues:
-  → Use xray_trace or xray_performance_analysis
+  → Use analyze_document_trace (document_id) for one document's X-Ray trace
+  → Use analyze_system_performance (stack_name, hours_back) for stack-wide X-Ray performance
 
 Always use at least 2 different tool sources before concluding a root cause. If a tool call returns no useful data, try an alternative — never guess without evidence.
 
@@ -3217,18 +3288,22 @@ INVESTIGATION WORKFLOW:
 5. Synthesize all evidence to determine root cause — never stop at the first error message
 
 TOOL USAGE:
+The tools below are the only ones you have. Call them by these exact names.
 - Document-specific analysis (user provides a filename or document ID):
-  → Use cloudwatch_document_logs and dynamodb_status as primary tools
+  → Use fetch_document_record (object_key) for the document's status, timestamps, ConfigVersion and Step Functions execution ARN
+  → Use retrieve_document_context (document_id) for the processing timeline, the failed Lambda function names and their request IDs
+  → Use search_cloudwatch_logs with document_id set to search only the logs of that document's processing window and request IDs
 - System-wide or batch analysis (no specific document):
-  → Use cloudwatch_logs and dynamodb_query to identify patterns
+  → Use fetch_recent_records (date, hours_back, limit) for recent documents and their completed/failed/in-progress counts
+  → Use search_cloudwatch_logs without document_id (filter_pattern, hours_back) for recent errors across the stack
+  → Use search_performance_issues (issue_type "performance", "throttling", "timeout" or "capacity") for throttling, timeout and capacity problems
 - Workflow failures and execution timeline:
-  → Use stepfunction_details for the execution event history
-- Lambda configuration and environment context:
-  → Use lambda_lookup to check timeout settings, memory, and environment variables
+  → Use analyze_workflow_execution (document_id) for the Step Functions state transitions and failure point
 - Which Bedrock model a pipeline stage uses (e.g. after a model error):
   → Use fetch_pipeline_configuration with the document's config version to read the per-stage model IDs
 - Distributed service interaction issues:
-  → Use xray_trace or xray_performance_analysis
+  → Use analyze_document_trace (document_id) for one document's X-Ray trace
+  → Use analyze_system_performance (stack_name, hours_back) for stack-wide X-Ray performance
 
 Always use at least 2 different tool sources before concluding a root cause. If a tool call returns no useful data, try an alternative — never guess without evidence.
 
@@ -3611,10 +3686,9 @@ class FactExtractionConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3647,10 +3721,9 @@ class RuleValidationOrchestratorConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3830,11 +3903,9 @@ class EvaluationLLMMethodConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3873,11 +3944,9 @@ class DiscoveryModelConfig(BaseModel):
 
     @field_validator("temperature", "top_p", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3951,11 +4020,9 @@ class MultiDocumentDiscoveryConfig(BaseModel):
 
     @field_validator("temperature", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator(
         "max_documents",
@@ -4019,11 +4086,9 @@ class RuleDiscoveryConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod

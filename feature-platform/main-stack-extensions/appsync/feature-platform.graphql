@@ -117,8 +117,8 @@ input RegisterFeatureInput {
 }
 
 # NOTE: This file is a REFERENCE SNAPSHOT only. The source of truth lives
-# inline in `nested/appsync/src/api/schema.graphql` (between
-# "Feature Platform (optional)" markers). AppSync silently rejects schemas
+# inline in `nested/api-resolvers/src/api/schema.graphql` (between the
+# `# === Feature Platform (optional) ===` markers). AppSync silently rejects schemas
 # that mix top-level + `extend type` definitions in a single SDL file, so
 # the fields were inlined into the main type declarations. Keep this file
 # in sync as a human-readable reference, but it is NOT consumed by

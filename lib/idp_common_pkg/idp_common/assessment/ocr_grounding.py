@@ -358,6 +358,146 @@ def _type_equal(value: Any, line_text: Any, hint: str) -> bool:
     return False
 
 
+def _is_digit(ch: str) -> bool:
+    """An ASCII digit. ``str.isdigit`` also accepts superscripts such as ``"²"``."""
+    return "0" <= ch <= "9"
+
+
+#: A date written with slashes: two slashes (``12/17/2024``, ``2024/12/17``), or
+#: one slash beside a four-digit year (``12/2024``). Matched against the whole
+#: maximal run of digits and slashes around a slash.
+_SLASH_DATE = re.compile(r"\d{1,4}/\d{1,2}/\d{1,4}|\d{1,2}/\d{4}|\d{4}/\d{1,2}")
+#: The longest such run (``2024/12/17``); a longer run is not a date.
+_SLASH_DATE_MAX_LEN = 10
+
+
+def _slash_in_date(text: str, i: int) -> bool:
+    """Is the slash at ``text[i]`` part of a date, rather than a ratio or fraction?
+
+    Only a date's slash joins digits into one run. ``120/80`` (blood pressure),
+    ``75/100`` (a score), ``10/325`` (a dose) and ``3/12`` (page 3 of 12) print
+    numbers that are values in their own right. The scan is bounded by the
+    longest date, so it costs the same however long the line is.
+    """
+    lo = i
+    while lo > 0 and i - lo <= _SLASH_DATE_MAX_LEN and text[lo - 1] in "0123456789/":
+        lo -= 1
+    hi = i + 1
+    while (
+        hi < len(text) and hi - i <= _SLASH_DATE_MAX_LEN and text[hi] in "0123456789/"
+    ):
+        hi += 1
+    run = text[lo:hi]
+    return len(run) <= _SLASH_DATE_MAX_LEN and _SLASH_DATE.fullmatch(run) is not None
+
+
+def _joins_digit(text: str, i: int, step: int) -> bool:
+    """Does the character at ``text[i]`` continue a digit run, reading by ``step``?
+
+    True for a digit, and for a decimal point, thousands comma or date slash whose
+    next character in the same direction is a digit (``"75"`` in ``"75.34"``,
+    ``"1,275"`` or the date ``"12/17/2024"``). Anything else — space, ``$``,
+    ``%``, a unit, a sign, a hyphen, a colon, a ratio's slash, closing punctuation,
+    the end of the line — is a token boundary.
+
+    A date's slash is there because a date component is part of a date, not a
+    number printed on its own: without it a value with its decimals dropped (``17``
+    for ``$17.49``) found a "whole" ``17`` inside ``12/17/2024``, which then
+    outranked the line that really holds the amount. Only a date's slash joins —
+    see :func:`_slash_in_date`.
+
+    One exception, reading rightwards: a comma followed by one or two digits and
+    then a non-digit is a **decimal comma** (``"1250,00"``), since a thousands group
+    is always three digits. The integer part ends there, so it is a boundary. No
+    surface form of a number renders a decimal comma, so for a European amount the
+    integer part is the only form that can match at all, and demoting it would
+    hand the box to any other line printing that integer.
+    """
+    if not 0 <= i < len(text):
+        return False
+    ch = text[i]
+    if _is_digit(ch):
+        return True
+    j = i + step
+    if not (ch in ".,/" and 0 <= j < len(text) and _is_digit(text[j])):
+        return False
+    if ch == "/":
+        return _slash_in_date(text, i)
+    if ch == "," and step > 0:
+        run = 0
+        while j + run < len(text) and _is_digit(text[j + run]):
+            run += 1
+        return run not in (1, 2)
+    return True
+
+
+def _containing_number(text: str, start: int, end: int) -> Tuple[int, int]:
+    """Bounds of the run of digits joined by ``.`` or ``,`` holding ``[start:end]``."""
+    while start > 0 and (
+        _is_digit(text[start - 1])
+        or (text[start - 1] in ".," and start >= 2 and _is_digit(text[start - 2]))
+    ):
+        start -= 1
+    while end < len(text) and (
+        _is_digit(text[end])
+        or (text[end] in ".," and end + 1 < len(text) and _is_digit(text[end + 1]))
+    ):
+        end += 1
+    return start, end
+
+
+def _only_inside_longer_number(
+    norm_variant: str, norm_text: str, value_number: Optional[float] = None
+) -> bool:
+    """True when every occurrence of a numeric variant in a line is digit-embedded.
+
+    The question is whether the line prints the number as a whole token, or only
+    contains its digits inside a longer number. An occurrence counts as whole when
+    neither neighbour continues a digit run (see :func:`_joins_digit`); one whole
+    occurrence anywhere in the line is enough. A side is only checked where the
+    variant itself ends in a digit, so a sign or symbol that is part of the variant
+    is never mistaken for a neighbour. Callers apply this to NUMBER values only.
+
+    An occurrence also counts as whole when the longer number around it is the
+    value itself written with more zeros (``"075.00"``, ``"75.000"``, or an item
+    number ``"0075"`` for 75), compared via ``value_number`` (unsigned, as the
+    unsigned variant already matches a value printed without its sign). Only a
+    number joined by ``.`` or ``,`` is read this way, so a date component still
+    counts as embedded.
+    """
+    if not norm_variant:
+        return False
+    check_left = _is_digit(norm_variant[0])
+    check_right = _is_digit(norm_variant[-1])
+    # The skip below relies on the longer number around an occurrence holding only
+    # digits, "." and ",", which holds only when the variant itself does ("10 10"
+    # can recur just past the number around its first occurrence).
+    can_skip = all(_is_digit(c) or c in ".," for c in norm_variant)
+    start = norm_text.find(norm_variant)
+    if start == -1:
+        return False
+    while start != -1:
+        end = start + len(norm_variant)
+        left_joined = check_left and _joins_digit(norm_text, start - 1, -1)
+        right_joined = check_right and _joins_digit(norm_text, end, 1)
+        if not left_joined and not right_joined:
+            return False
+        resume = start + 1
+        if value_number is not None:
+            lo, hi = _containing_number(norm_text, start, end)
+            if hi - lo > len(norm_variant) and _parse_number(norm_text[lo:hi]) == abs(
+                value_number
+            ):
+                return False
+            # Every later occurrence inside the same longer number is joined on
+            # its left and has the same number around it, so it cannot decide
+            # anything; skipping it keeps a long digit run linear, not quadratic.
+            if can_skip:
+                resume = max(resume, hi)
+        start = norm_text.find(norm_variant, resume)
+    return True
+
+
 def load_page_ocr_data(
     pages: Dict[str, Any], page_ids: List[str], page_offset: int = 0
 ) -> Dict[int, Dict[str, Any]]:
@@ -454,6 +594,8 @@ def _line_box(line: Dict[str, Any]) -> Optional[Dict[str, float]]:
 # that matched, then disambiguates ties spatially. Ordering rationale:
 #   EXACT     - line text equals the value
 #   SUBSTRING - value contained in a single line (whole value covered)
+#   SUBSTRING_EMBEDDED - a NUMBER contained in a single line only inside a longer
+#               digit run ("75" in "08337510"); see _TIER_SUBSTRING_EMBEDDED
 #   SPAN      - value reconstructed by joining consecutive lines (whole value covered)
 #   PARTIAL   - a single line is a fragment of the value (partial coverage)
 #   FUZZY     - token-overlap only
@@ -461,21 +603,41 @@ def _line_box(line: Dict[str, Any]) -> Optional[Dict[str, float]]:
 # value grounds to the unioned span rather than to one of its individual fragments.
 _TIER_EXACT = 1
 _TIER_SUBSTRING = 2
-_TIER_SPAN = 3
+#: A NUMBER found in a line only as part of a longer digit run — ``"75"`` inside
+#: the invoice id ``"08337510"``, ``"6.0"`` inside ``"126.00 total"`` (#1565).
+#:
+#: Number values are searched in several surface forms (``75.0`` is also tried as
+#: ``"75"`` and ``"75.00"``), and a short form is contained by coincidence in any
+#: longer number. Ranked at ``_TIER_SUBSTRING``, such a hit would tie with the line
+#: that genuinely prints the value, and which box won would be decided by reading
+#: order or by proximity to the LLM's estimate rather than by evidence.
+#:
+#: **Demotion by exactly one place, not rejection.** A digit run containing the
+#: value is not always a coincidence: a model that drops the cents (``272243`` for
+#: ``272243.34``) or misreads one digit of a long number still points at the right
+#: line, and that is the case where a box matters most — the value is wrong and the
+#: box is how a reviewer finds out. Rejecting the hit would remove those boxes.
+#: Ranking it immediately below ``_TIER_SUBSTRING`` changes exactly one thing: a
+#: line printing the number as a whole token now beats one where it is embedded.
+#: Every other comparison is as before — this tier sits above SPAN, so the same
+#: sweeps are skipped as for a substring hit, and an embedded hit still supplies
+#: the box wherever it did when nothing better exists.
+_TIER_SUBSTRING_EMBEDDED = 3
+_TIER_SPAN = 4
 # Type-aware equality (date/number/phone parse to the same value) — high
 # precision (both sides must parse), ranks just below direct text coverage and
 # above partial/token/char fuzzy. This is what bridges format reformatting
 # (e.g. 2022-04-04 == 04/04/2022) that text similarity cannot.
-_TIER_TYPED = 4
-_TIER_PARTIAL = 5
-_TIER_FUZZY = 6
+_TIER_TYPED = 5
+_TIER_PARTIAL = 6
+_TIER_FUZZY = 7
 # Character-level Levenshtein near-miss (OCR noise) — last resort.
-_TIER_LEVENSHTEIN = 7
+_TIER_LEVENSHTEIN = 8
 # A substring match covering less than _PARTIAL_MIN_COVERAGE of the value — a
 # FRAGMENT. Ranked last, BELOW the whole-string fuzzy tiers, because a line
 # accounting for a tenth of a value is weaker evidence of where that value sits
 # than a line resembling the whole of it (#1519).
-_TIER_WEAK_PARTIAL = 8
+_TIER_WEAK_PARTIAL = 9
 
 #: Coverage below which a substring match is demoted to ``_TIER_WEAK_PARTIAL``
 #: rather than ranked as a real ``_TIER_PARTIAL`` hit (#1519).
@@ -607,7 +769,9 @@ def _collect_candidates_in_page(
          less than ``_PARTIAL_MIN_COVERAGE`` of the value is a FRAGMENT and is
          recorded as ``_TIER_WEAK_PARTIAL`` — still a candidate, but ranked below
          every whole-string tier, and no longer able to short-circuit the sweeps
-         below (#1519). Read that constant before changing either.
+         below (#1519). Read that constant before changing either. A NUMBER found
+         only inside a longer digit run is ``_TIER_SUBSTRING_EMBEDDED``, one place
+         below a substring hit on a whole numeric token (#1565).
       2. SPAN — value text reconstructed across consecutive lines.
       3. TYPED — date/number/phone parse to the SAME logical value (``hint``); the
          robust bridge for reformatting that text similarity misses. Tagged
@@ -635,6 +799,7 @@ def _collect_candidates_in_page(
     norm_lines = page_data.get("__norm_lines_cache__") or []
 
     candidates: List[Tuple[int, Dict[str, Any], str, Optional[float]]] = []
+    value_number = _parse_number(raw_value) if hint == HINT_NUMBER else None
 
     for norm_text, line in norm_lines:
         if not norm_text:
@@ -645,7 +810,16 @@ def _collect_candidates_in_page(
             if norm_text == nv:
                 tier = _TIER_EXACT
             elif nv in norm_text:
-                tier = _TIER_SUBSTRING
+                # A number found only inside a longer digit run is demoted one
+                # place, not rejected — see _TIER_SUBSTRING_EMBEDDED (#1565). A
+                # longer number that is the value with more zeros ("075.00" for
+                # 75) is the value, so it keeps the substring tier.
+                tier = (
+                    _TIER_SUBSTRING_EMBEDDED
+                    if hint == HINT_NUMBER
+                    and _only_inside_longer_number(nv, norm_text, value_number)
+                    else _TIER_SUBSTRING
+                )
             elif norm_text in nv:
                 # A line covering less than half the value is a fragment. It is
                 # DEMOTED rather than rejected — see _TIER_WEAK_PARTIAL — so a
@@ -680,13 +854,13 @@ def _collect_candidates_in_page(
 
     # Tier-aware early-out. The caller keeps only the MOST PRECISE tier that
     # matched, so a pass that can only produce a WORSE tier than what we already
-    # have is pure waste. Tiers: EXACT=1 < SUBSTRING=2 < SPAN=3 < TYPED=4 <
-    # PARTIAL=5 < FUZZY=6 < LEVENSHTEIN=7 < WEAK_PARTIAL=8.
-    #   • SPAN (3): skip only if we already have EXACT/SUBSTRING (≤ SPAN). A mere
-    #     PARTIAL/TYPED/WEAK_PARTIAL (>SPAN) must NOT skip it — a multi-line span
-    #     can still win.
-    #   • FUZZY/LEVENSHTEIN (6/7): skip whenever a candidate BETTER THAN FUZZY
-    #     exists — those they can never beat. A ``_TIER_WEAK_PARTIAL`` (8)
+    # have is pure waste. Tiers: EXACT=1 < SUBSTRING=2 < SUBSTRING_EMBEDDED=3 <
+    # SPAN=4 < TYPED=5 < PARTIAL=6 < FUZZY=7 < LEVENSHTEIN=8 < WEAK_PARTIAL=9.
+    #   • SPAN (4): skip only if we already have EXACT/SUBSTRING/SUBSTRING_EMBEDDED
+    #     (≤ SPAN). A mere PARTIAL/TYPED/WEAK_PARTIAL (>SPAN) must NOT skip it — a
+    #     multi-line span can still win.
+    #   • FUZZY/LEVENSHTEIN (7/8): skip whenever a candidate BETTER THAN FUZZY
+    #     exists — those they can never beat. A ``_TIER_WEAK_PARTIAL`` (9)
     #     candidate must fall through to them, since they outrank it; that is the
     #     substance of #1519 and the condition below is written on the tier for
     #     exactly this reason. Skipping these O(lines) sweeps where they cannot

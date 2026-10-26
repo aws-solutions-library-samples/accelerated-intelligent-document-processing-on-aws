@@ -312,9 +312,9 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
           ),
         ),
       ],
-      ['Files Processed', ...Object.values(completeTestRuns).map((run) => run.filesCount || 'N/A')],
-      ['Files Completed', ...Object.values(completeTestRuns).map((run) => run.completedFiles || 'N/A')],
-      ['Files Failed', ...Object.values(completeTestRuns).map((run) => run.failedFiles || 'N/A')],
+      ['Files Processed', ...Object.values(completeTestRuns).map((run) => run.filesCount ?? 'N/A')],
+      ['Files Completed', ...Object.values(completeTestRuns).map((run) => run.completedFiles ?? 'N/A')],
+      ['Files Failed', ...Object.values(completeTestRuns).map((run) => run.failedFiles ?? 'N/A')],
       [
         'Total Cost',
         ...Object.values(completeTestRuns).map((run) =>
@@ -1121,19 +1121,19 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                 {
                   metric: 'Files Processed',
                   ...Object.fromEntries(
-                    Object.entries(completeTestRuns).map(([testRunId, testRun]) => [testRunId, testRun.filesCount || 'N/A']),
+                    Object.entries(completeTestRuns).map(([testRunId, testRun]) => [testRunId, testRun.filesCount ?? 'N/A']),
                   ),
                 },
                 {
                   metric: 'Files Completed',
                   ...Object.fromEntries(
-                    Object.entries(completeTestRuns).map(([testRunId, testRun]) => [testRunId, testRun.completedFiles || 'N/A']),
+                    Object.entries(completeTestRuns).map(([testRunId, testRun]) => [testRunId, testRun.completedFiles ?? 'N/A']),
                   ),
                 },
                 {
                   metric: 'Files Failed',
                   ...Object.fromEntries(
-                    Object.entries(completeTestRuns).map(([testRunId, testRun]) => [testRunId, testRun.failedFiles || 'N/A']),
+                    Object.entries(completeTestRuns).map(([testRunId, testRun]) => [testRunId, testRun.failedFiles ?? 'N/A']),
                   ),
                 },
                 {

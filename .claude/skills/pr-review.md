@@ -261,8 +261,8 @@ Flag these immediately when seen in any diff:
 - New IAM role without a `PermissionsBoundary` conditional
 - Secrets / access keys / JWTs in code, logs, or tests
 - Deleted tests without a replacement
-- Schema change in `src/ui/src/graphql/schema.graphql` without regenerated
-  files under `src/ui/src/graphql/generated/`
+- Schema change in `nested/api-resolvers/src/api/schema.graphql` without
+  regenerated files under `src/ui/src/graphql/generated/`
 - `Document` model field removed or renamed without a migration path
 - Wildcards in S3 bucket/object ARNs without `reason:` metadata
 - New/edited SRT suppressions in `scripts/srt/issues.json` without justification

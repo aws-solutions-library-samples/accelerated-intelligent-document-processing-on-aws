@@ -27,7 +27,7 @@ import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
 import { useDocumentVersion } from '../../contexts/document-version';
 import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
-import { inReviewQueueEditReason, isInReviewQueue } from '../common/review-status';
+import { inReviewQueueEditReason, isHitlReviewFinished, isInReviewQueue } from '../common/review-status';
 
 const client = generateClient();
 const logger = new ConsoleLogger('PagesPanel');
@@ -289,10 +289,9 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
   const hasReviewOwner = !!(documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail);
   const hitlTriggered = !!documentItem?.hitlTriggered;
 
-  // Check HITL status
-  const hitlStatusLower = documentItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
-  const isHitlCompleted = hitlStatusLower === 'completed' || hitlStatusLower === 'reviewcompleted';
-  const isHitlSkipped = hitlStatusLower === 'skipped' || hitlStatusLower === 'reviewskipped';
+  // Finished: a legacy review completed or skipped, or a queue review that ended
+  // complete or rejected.
+  const isHitlFinished = isHitlReviewFinished(documentItem?.hitlStatus);
 
   // Check if document is currently processing
   const processingStatuses = ['queued', 'running', 'processing', 'postprocessing', 'summarizing', 'evaluating'];
@@ -301,7 +300,7 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
 
   // Disable edit mode if:
   // - User has no write or review permissions (Viewer role), OR
-  // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL completed/skipped
+  // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL finished
   // Admins and Authors can always edit
   // - Viewing a historical version (read-only snapshot)
   // - In a review queue, for every role: it is reviewed from its queue item
@@ -310,20 +309,20 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
     isHistorical ||
     inReviewQueue ||
     (!canWrite && !canReview) ||
-    (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlCompleted || isHitlSkipped));
+    (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlFinished));
   const editModeDisabledReason = inReviewQueue ? inReviewQueueEditReason(canWorkReviewQueues) : undefined;
 
   // Auto-exit edit mode when switching to a historical version, or (for
-  // reviewers) when the document starts processing or HITL is completed/skipped.
+  // reviewers) when the document starts processing or HITL has finished.
   useEffect(() => {
     if ((isHistorical || inReviewQueue) && isEditMode) {
       setIsEditMode(false);
       return;
     }
-    if (isReviewerOnly && isEditMode && (isDocumentProcessing || isHitlCompleted || isHitlSkipped)) {
+    if (isReviewerOnly && isEditMode && (isDocumentProcessing || isHitlFinished)) {
       setIsEditMode(false);
     }
-  }, [isHistorical, inReviewQueue, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
+  }, [isHistorical, inReviewQueue, isReviewerOnly, isDocumentProcessing, isHitlFinished, isEditMode]);
 
   // Initialize edited pages when entering edit mode
   useEffect(() => {

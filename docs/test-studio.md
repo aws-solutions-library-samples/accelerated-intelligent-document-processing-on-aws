@@ -354,7 +354,7 @@ All datasets share these deployment characteristics:
 ### Backend Components
 
 #### TestSetResolver Lambda
-- **Location**: `src/lambda/test_set_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
 - **Purpose**: Handles GraphQL operations for test set management
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
@@ -369,7 +369,7 @@ All datasets share these deployment characteristics:
 - **Features**: S3 event triggered extraction, file validation, status updates, file count recount for accurate totals
 
 #### TestRunner Lambda
-- **Location**: `src/lambda/test_runner/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_runner/index.py`
 - **Purpose**: Initiates test runs and queues file processing jobs
 - **Features**: Test validation, SQS message queuing, fast response optimization
 
@@ -379,7 +379,7 @@ All datasets share these deployment characteristics:
 - **Features**: SQS message processing, file copying, status management
 
 #### TestResultsResolver Lambda
-- **Location**: `src/lambda/test_results_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
 - **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
@@ -397,13 +397,13 @@ All datasets share these deployment characteristics:
   - Automatic retry handling
 
 ### GraphQL Schema
-- **Location**: `src/api/schema.graphql`
+- **Location**: `nested/api-resolvers/src/api/schema.graphql`
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
 #### TestStudioLayout
-- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.tsx`
 - **Purpose**: Main container with two-tab navigation and global state management
 
 #### TestSets
@@ -412,7 +412,7 @@ All datasets share these deployment characteristics:
 - **Features**: Pattern-based creation, zip upload, direct upload detection, incremental document addition, time-based file filtering, dual polling (3s active, 60s discovery)
 
 #### TestExecutions
-- **Location**: `src/ui/src/components/test-studio/TestExecutions.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestExecutions.tsx`
 - **Purpose**: Unified interface combining TestRunner and TestResultsList
 - **Features**: Test execution, results viewing, comparison, export, abort, delete operations
 
@@ -421,16 +421,16 @@ All datasets share these deployment characteristics:
 ```
 components/
 └── test-studio/
-    ├── TestStudioLayout.jsx
-    ├── TestSets.jsx
-    ├── TestExecutions.jsx
-    ├── TestRunner.jsx
-    ├── TestResultsList.jsx
-    ├── TestResults.jsx
-    ├── TestComparison.jsx
-    ├── TestRunnerStatus.jsx
-    ├── DeleteTestModal.jsx
-    └── index.js
+    ├── TestStudioLayout.tsx
+    ├── TestSets.tsx
+    ├── TestExecutions.tsx
+    ├── TestRunner.tsx
+    ├── TestResultsList.tsx
+    ├── TestResults.tsx
+    ├── TestComparison.tsx
+    ├── TestRunnerStatus.tsx
+    ├── DeleteTestModal.tsx
+    └── index.ts
 ```
 
 ## Lifecycle flows: online vs offline paths
@@ -1517,6 +1517,10 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
    - Cost breakdown for processed documents
 
 **Note**: Test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+
+The abort waits a few seconds for each document's workflow to confirm it has stopped. A document that could not be confirmed stopped is reported rather than hidden. The Test Studio page shows a warning beside the success message. In the abort response, the message ends with the number of such documents, and `errors` gives, for each affected run, how many and why: the stop request could not be made, was refused, or was not answered in time; the document was at a processing step the abort cannot stop, such as rule validation or malware scanning; or the request was too large to wait for in full — each run's documents are sent in stop requests of up to 25, and the abort waits for the answers to at most 20 of them, taking every run's first request before any run's second (so at most 500 documents, and fewer when a run's count is not a multiple of 25) — in which case the remaining stop requests are sent at the same moment without waiting for an answer. The run is still marked **ABORTED**, but those documents may still be processing. Documents that had already finished are not counted among them.
+
+The abort then waits for the run's documents to reach a final status. A document the wait did not see reach one is reported the same way, as not seen to reach a terminal state, even if its stop request was answered: a document can be reported stopped and still be processing, so the response describes what the wait read rather than what the stop requests answered. That includes a document whose status the wait could not read in time. When a stop request is still unanswered at the time by which the wait must end, the wait has no time left to read any status, so every document not already counted is reported this way, including one that had finished. A completed document counts as finished once its evaluation has a final status. Each document is counted at most once across the two counts. A document already reported as not confirmed stopped is not counted again. When the document abort reports that some of a stop request's documents failed without naming them, up to that many of the request's unfinished documents that no error names are taken to be those failures rather than counted a second time, so the two counts together are the fewest documents consistent with both readings, and the number still processing may be higher. If the wait itself fails, every document of the run is reported, because none was observed to finish.
 
 ### Results Management
 - Filter and paginate test runs

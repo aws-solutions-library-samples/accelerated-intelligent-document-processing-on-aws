@@ -130,10 +130,12 @@ This analysis produces structured configuration templates that can be used to co
 - Generates standardized document class definitions
 - Supports both guided (ground truth) and unguided discovery methods
 
-**Discovery Panel UI (`src/ui/src/components/discovery/DiscoveryPanel.jsx`):**
+**Discovery Panel UI (`src/ui/src/components/discovery/DiscoveryPanel.tsx`):**
 - Unified web interface for all discovery operations
-- Job status tracking by polling `getDiscoveryJob` every 10 seconds while a job is
-  active (`DiscoveryJobDetails.tsx`); GraphQL subscriptions are not used
+- Job status tracking by polling `listDiscoveryJobs` every 10 seconds while a job
+  is active and filtering client-side for the job id
+  (`src/ui/src/components/discovery/DiscoveryJobDetails.tsx`); there is no
+  `getDiscoveryJob` operation, and GraphQL subscriptions are not used
 - PDF page thumbnail rendering with color-coded range highlighting
 - Configuration export and integration
 
@@ -147,7 +149,8 @@ This analysis produces structured configuration templates that can be used to co
 - Shared across both BDA and Pipeline processing modes
 
 **BDA Blueprint Automation (BDA mode only):**
-- **BDA Discovery Function** (`patterns/unified/src/bda_discovery_function/index.py`): Processes configuration update events and manages BDA blueprints
+- **Sync BDA/IDP Resolver** (`nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py`): Synchronizes blueprints between a configuration version and a BDA project. It backs the `syncBdaIdp` operation, so it runs **only when a user asks for it** from the Configuration page — nothing triggers it on a configuration change. Supports `bda_to_idp`, `idp_to_bda`, `bidirectional` (the default) and `cleanup_orphaned` directions, and enforces Admin/Author plus config-version scope server-side
+- **Blueprint Optimization Function** (`src/lambda/blueprint_optimization/index.py`): Iteratively refines a discovered class's BDA blueprint against a supplied ground-truth file. Invoked asynchronously by the discovery processor, and only when `use_bda` and `enable_blueprint_optimization` are both set, a ground-truth file was provided, and the document is a PDF
 - **BDA Blueprint Service** (`lib/idp_common_pkg/idp_common/bda/bda_blueprint_service.py`): Blueprint lifecycle management, schema conversion, and project synchronization
 - **Schema Converter** (`lib/idp_common_pkg/idp_common/bda/schema_converter.py`): Transforms discovery results to BDA-compatible schemas
 
@@ -840,29 +843,71 @@ discovery:
 
 ### API Integration
 
-**GraphQL Mutations:**
+These are the operations the UI sends to `POST /op/{field}`. The names and
+argument shapes come from the retained schema contract in
+`nested/api-resolvers/src/api/schema.graphql`.
+
+**Starting a single-document job.** There is no separate "start" mutation —
+`uploadDiscoveryDocument` mints the presigned upload URL *and* creates the
+tracking row, unless you pass `skipJobCreation`:
+
 ```graphql
-mutation StartDiscoveryJob($input: DiscoveryJobInput!) {
-  startDiscoveryJob(input: $input) {
-    jobId
-    status
-    message
+mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String) {
+  uploadDiscoveryDocument(
+    fileName: $fileName
+    discoveryType: $discoveryType
+    version: $version
+  ) {
+    presignedUrl
+    objectKey
   }
 }
 ```
 
-**Job Status Subscription:**
+**Starting a multi-document job:**
+
 ```graphql
-subscription OnDiscoveryJobStatusChange($jobId: ID!) {
-  onDiscoveryJobStatusChange(jobId: $jobId) {
+mutation StartMultiDocDiscovery($s3Bucket: String!, $s3Prefix: String!, $configVersion: String) {
+  startMultiDocDiscovery(
+    s3Bucket: $s3Bucket
+    s3Prefix: $s3Prefix
+    configVersion: $configVersion
+  ) {
     jobId
     status
-    progress
-    errorMessage
-    result
   }
 }
 ```
+
+Upload the archive for that job with `uploadMultiDocDiscoveryZip`.
+
+**Reading job status.** `listDiscoveryJobs` is the only read path; there is no
+`getDiscoveryJob`. Poll it and filter client-side for the job id, which is what
+`DiscoveryJobDetails.tsx` does:
+
+```graphql
+query ListDiscoveryJobs {
+  listDiscoveryJobs {
+    DiscoveryJobs {
+      jobId
+      status
+      statusMessage
+      discoveredClassName
+    }
+  }
+}
+```
+
+`deleteDiscoveryJob` removes a job. `updateDiscoveryJobStatus` is the
+backend-only status writer — it is `@aws_iam` and the dispatcher's manifest
+marks it IAM-only, so a signed-in user cannot call it.
+
+All of the above require the **Admin** or **Author** group.
+
+GraphQL subscriptions are not used. `onDiscoveryJobStatusChange` is still
+declared in the schema, but no GraphQL service evaluates it and it has no entry
+in the dispatcher's RBAC manifest, so it is a schema-only vestige rather than a
+transport.
 
 **Direct API Usage:**
 ```python
@@ -1182,7 +1227,7 @@ Discovery field types are automatically converted to BDA-compatible formats:
 
 **Creation Workflow:**
 1. **Discovery Completion**: Discovery results are generated and saved to the configuration table
-2. **Configuration Event**: BDA Discovery Function receives a configuration update event
+2. **Sync Request**: A user starts a sync from the Configuration page, reaching the Sync BDA/IDP Resolver. Nothing runs automatically on a configuration change
 3. **Blueprint Service**: Processes configuration and manages blueprint lifecycle
 4. **Schema Generation**: Converts discovery results to BDA schema format
 5. **Blueprint Creation**: Creates new blueprint in BDA service
@@ -1417,7 +1462,7 @@ graph TD
 
 **⚡ Parallel Processing**
 - Multi-threaded processing for improved performance
-- Configurable worker count via `BDA_SYNC_MAX_WORKERS` environment variable (default: 5)
+- Configurable worker count via the `BDA_SYNC_MAX_WORKERS` environment variable (default: 5), for the CLI and SDK sync paths
 - Parallel blueprint creation and updates
 - Parallel AWS blueprint conversion
 - Thread-safe operations with proper locking mechanisms
@@ -1490,7 +1535,9 @@ result = service.create_blueprints_from_custom_configuration(
 
 **Environment Configuration:**
 ```bash
-# Configure maximum parallel workers (default: 5)
+# Configure maximum parallel workers (default: 5).
+# Read from the calling process, so this applies to `idp-cli config-sync-bda`
+# and the SDK. A sync started from the Web UI always uses the default.
 BDA_SYNC_MAX_WORKERS=10
 ```
 
@@ -1642,15 +1689,24 @@ Arrays within object definitions are not supported by BDA:
 
 **Multi-Threading Configuration:**
 
-```python
-# Configure in environment
-BDA_SYNC_MAX_WORKERS=10  # Default: 5
+```bash
+# Read from the calling process's environment; default 5
+BDA_SYNC_MAX_WORKERS=10
 
 # Processing breakdown:
 # - IDP to BDA sync: Uses max_workers threads
 # - AWS blueprint conversion: Uses min(3, max_workers) threads
 # - Thread-safe operations with locking mechanisms
 ```
+
+⚠️ **This variable only applies to the CLI and SDK sync path, not to the Web
+UI's.** `BdaBlueprintService` reads it with `os.environ.get`, so it picks up
+whatever the calling process exports. That works for `idp-cli config-sync-bda`
+and for the `idp_sdk` config operations, which construct the service in-process
+— export it in your shell before running them. No CloudFormation template sets
+it, so the Web UI's **Sync to BDA** / **Sync from BDA** buttons run in
+`SyncBdaIdpResolverFunction` with the default of 5 and cannot be tuned without
+editing the template.
 
 **Performance Characteristics:**
 
@@ -1662,7 +1718,9 @@ BDA_SYNC_MAX_WORKERS=10  # Default: 5
 | Schema Transformation | Sequential | N/A | <1s per class |
 
 **Optimization Tips:**
-- Increase `BDA_SYNC_MAX_WORKERS` for large numbers of classes (10-20 recommended)
+- When syncing many classes from the CLI or SDK, export
+  `BDA_SYNC_MAX_WORKERS` at 10-20 before running. This has no effect on a sync
+  started from the Web UI
 - Monitor CloudWatch logs for thread execution times
 - Consider sync direction to avoid unnecessary operations
 - Use `idp_to_bda` when only updating blueprints from IDP changes
@@ -1769,7 +1827,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 | `BDA schema validation failed` | Invalid schema format | Ensure schema follows BDA draft-07 requirements |
 | `Property name contains invalid characters` | Special characters in names | Automatically sanitized; check logs for name mapping |
 | `Failed to normalize AWS blueprint schema` | Unsupported AWS blueprint structures | Check AWS blueprint format; may need manual intervention |
-| `Thread execution error during parallel processing` | Parallel processing failure | Check CloudWatch logs; consider reducing `BDA_SYNC_MAX_WORKERS` |
+| `Thread execution error during parallel processing` | Parallel processing failure | Check CloudWatch logs. If you are syncing from the CLI or SDK, lower `BDA_SYNC_MAX_WORKERS`; a sync started from the Web UI is already at the default of 5, so retry it and read the thread logs instead |
 
 **Debugging Steps:**
 
@@ -1895,8 +1953,13 @@ Causes:
 
 Solutions:
 - Verify BDA permissions in IAM role
-- Check BDA project ARN in stack parameters
-- Review BDA Discovery Function logs
+- Check the BDA project ARN on the configuration version. It is not a stack
+  parameter: it is stored on the configuration record in the Configuration
+  table, as the BdaProjectArn attribute alongside BdaSyncStatus and
+  BdaLastSyncedAt. Read it in the UI under Configuration -> View/Edit Config,
+  where the BDA Project Status banner shows the linked project and flags
+  "Sync Required" when the blueprints have drifted
+- Review the Sync BDA/IDP Resolver and Blueprint Optimization Function logs
 - Implement retry logic for throttling
 - Validate generated schema format
 ```

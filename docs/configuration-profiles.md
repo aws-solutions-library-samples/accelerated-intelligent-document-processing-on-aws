@@ -108,6 +108,15 @@ Configuration versions fall into two categories, indicated by a **Type** badge i
 - **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
 - **Save disabled** — the "Save changes" button is disabled and an info banner explains the config is stack-managed
 - **Delete disabled** — managed versions cannot be deleted in the UI or via the API
+- **Stays managed when other features write to it** — class discovery, BDA blueprint
+  sync and optimization, the Quick Start bootstrap, a discovery Replace and an update
+  through the API or `idp-cli config-upload` can all save a managed profile, and none
+  of them makes it a custom one. A save never clears the flag, including one whose
+  configuration says `managed: false`, and an update through the editor, API, SDK or
+  CLI cannot set it either. The stack's presets set it, and so does restoring a
+  revision saved while the profile was managed. A profile created by copying a
+  managed one (**Create profile**, **Save current edits as new profile…**) is always
+  custom.
 - **Editable copies** — use **Create profile** to create a custom, editable copy from any managed profile
 - **Test Studio integration** — when a test set is selected in Test Studio, the matching managed config version is auto-selected
 
@@ -334,8 +343,13 @@ does not stop the revision's body expiring `DataRetentionInDays` after it was cu
 The last **20** revisions per profile are retained by default, plus — regardless of
 that limit — the current revision, any labeled revision, and any revision pinned by
 a test run. Older unprotected revisions are pruned automatically as new ones are
-cut. The limit is set by the `CONFIG_REVISION_CAP` environment variable on the
-configuration resolver and the configuration custom-resource Lambda.
+cut. **That 20 is effectively fixed.** `ConfigRevisionStore` reads a
+`CONFIG_REVISION_CAP` environment variable and falls back to a built-in default of 20
+when it is absent — and no template in this repository sets it, so the fallback is what
+every deployment gets. The Lambdas that write revisions declare explicit
+`Environment.Variables` blocks that do not include it. Changing the cap means either
+adding the variable to those Lambdas in the template or passing `cap` to the store
+directly from your own code; it is not an operator-facing setting today.
 
 Revision bodies are stored in the Configuration bucket under
 `config_revisions/<profile>/<nnnnnn>.json.gz`, with a small metadata index in the
@@ -890,6 +904,9 @@ rather than failing the read.
   boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
   published revision predates the `storedHash` field**, because rewriting the head
   would destroy the only integrity proof such a revision has.
+- **Whether a profile is stack-managed is not resolved from `default`.** It is the
+  profile's own record attribute, so reading a profile never changes it, and a
+  write-back keeps it as stored.
 - **Transparent**: no manual intervention required.
 - ⚠️ **The backfill source is `default`,** which an administrator can overwrite
   with *Save as Default*. A field your profile lacks therefore adopts whatever

@@ -31,9 +31,9 @@ https://github.com/user-attachments/assets/0bf14b62-99dc-4538-a015-d8b89fa2f1f0
 
 
 
-**Supported Patterns:**
-- Pattern 1: BDA processing with HITL review
-- Pattern 2: Textract + Bedrock processing with HITL review
+**Supported processing modes:** both.
+- BDA mode: Amazon Bedrock Data Automation processing with HITL review
+- Pipeline mode: Textract or LLM-based OCR + Bedrock processing with HITL review
 
 **Key Features:**
 - Built-in review portal within the GenAI-IDP Web UI
@@ -261,7 +261,7 @@ The confidence threshold determines when human review is triggered:
 2. Find the **Human-in-the-Loop (HITL) Review (Optional)** section
 3. Set **Confidence threshold** (0.0-1.0, the `hitl.confidence_threshold` key):
    - `0.8` = 80% confidence threshold (recommended starting point)
-   - Fields with confidence below this threshold trigger HITL review
+   - Fields with confidence below this threshold trigger HITL review. A confidence that is NaN or infinite is not a usable score and is read as 0.0, so it triggers review too
 4. Click **Save** to apply changes
 
 ## Review Portal

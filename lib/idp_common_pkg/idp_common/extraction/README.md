@@ -1286,7 +1286,12 @@ per field, its **top-K guesses with probabilities** rather than a single value:
 `idp_common.extraction.topk_resolver.resolve_candidates` then splits this into:
 
 - **`inference_result`** — the top guess `G1` per field (numbers coerced per schema).
-- **raw confidence leaves** — `{"confidence": P1}` per field, stashed in
+- **raw confidence leaves** — `{"confidence": P1}` per field (clamped to [0, 1]).
+  A candidate with no usable `P1` (missing, null, not a number, or NaN) gets
+  `{"confidence": 0.0, "confidence_reason": "No usable probability (P1) …"}`, so
+  it still falls below its threshold and alerts, and the reason marks the 0.0 as a
+  stand-in rather than the model's verdict. NaN in particular used to clamp to
+  1.0, because `min(1.0, nan)` is `1.0`. The leaves are stashed in
   `metering["_integrated_field_assessment"]`. `_save_results` runs these through the
   **shared** `enrich_assessment_with_thresholds` (attaches
   `confidence_threshold` from each field's `x-aws-idp-confidence-threshold` or the
@@ -1495,8 +1500,8 @@ extraction:
       use_confidence_data: true  # Cross-reference with OCR confidence
       max_empty_line_gap: 3  # Tolerate up to N empty lines in tables
       auto_merge_adjacent_tables: true  # Merge table fragments
-    validation:                # see "Schema-Constraint Validation" below
-      enabled: false
+  validation:                  # sibling of `agentic`, not nested inside it —
+    enabled: false             # see "Schema-Constraint Validation" below
 ```
 
 > **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
@@ -1961,12 +1966,16 @@ validation still fails.
 extraction:
   agentic:
     enabled: true
-    validation:
-      enabled: false          # Off by default (no behavior change on upgrade)
-      check_formats: true     # Enforce JSON-Schema 'format' keywords
-      fail_action: escalate   # warn | escalate | reject
-      escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; "" = retry same model
+  validation:                 # sibling of `agentic`
+    enabled: false            # Off by default (no behavior change on upgrade)
+    check_formats: true       # Enforce JSON-Schema 'format' keywords
+    fail_action: escalate     # warn | escalate | reject
+    escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; "" = retry same model
 ```
+
+A stored config still carrying the older `extraction.agentic.validation` nesting
+is relocated to `extraction.validation` by the v0.7 migration on every load, so it
+keeps working; write new configs in the shape above.
 
 How it works:
 

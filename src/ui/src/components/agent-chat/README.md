@@ -70,33 +70,33 @@ const { messages, isLoading, waitingForResponse, error, sendMessage, clearError 
 ```javascript
 const config = {
   agentType: 'idp-help', // Agent type identifier
-  mutation: SEND_IDP_HELP_MESSAGE, // GraphQL mutation
-  subscription: ON_IDP_HELP_MESSAGE_UPDATE, // still accepted, but inert: the REST
-                                            // transport returns a no-op handle, so
-                                            // replies arrive by streaming or polling
+  mutation: sendAgentChatMessage, // operation document from graphql/generated
+  subscription: onAgentChatMessageUpdate, // still accepted, but inert: the REST
+                                          // transport returns a no-op handle, so
+                                          // replies arrive by streaming or polling
   method: 'chat', // Request method
 };
 ```
 
-## GraphQL Operations
+## API Operations
 
-### agentChatQueries.js
+This directory contains no API module. Every call to the backend goes through
+the `useAgentChat` hook in `src/ui/src/hooks/use-agent-chat.ts`, and the
+operation documents it uses are the generated ones in
+`src/ui/src/graphql/generated`:
 
-Contains both generic and backward-compatible GraphQL operations:
+- `sendAgentChatMessage` — sends a user message. Dispatched as
+  `POST /op/sendAgentChatMessage` by the REST client in `src/ui/src/api/`
+- `getChatMessages` — reads conversation history, and is also what the
+  no-Function-URL path polls for the assistant's reply
+- `onAgentChatMessageUpdate` — retained as a typed contract only. The REST
+  client returns a no-op handle for any subscription, and the hook's
+  subscription effect is gated off, so nothing subscribes
 
-#### Generic Operations (Future Use)
-
-- `SEND_AGENT_MESSAGE` - Generic agent message mutation
-- `ON_AGENT_MESSAGE_UPDATE` - Generic agent message subscription
-- `LIST_AVAILABLE_AGENTS` - Query available agents
-- `SUBMIT_AGENT_QUERY` - Submit query to multiple agents
-- `GET_AGENT_JOB_STATUS` - Check agent job status
-- `ON_AGENT_JOB_COMPLETE` - Agent job completion subscription
-
-#### Backward Compatibility
-
-- `SEND_IDP_HELP_MESSAGE` - Existing IDP Help mutation
-- `ON_IDP_HELP_MESSAGE_UPDATE` - Existing IDP Help subscription
+Replies do not arrive through a subscription. With a streaming Function URL
+configured, the hook calls `streamChat` (`src/ui/src/api/stream-client.ts`) and
+reads Server-Sent Events. Without one, it polls via
+`src/ui/src/api/chat-poll.ts`.
 
 ## Implementation Example
 
@@ -174,7 +174,7 @@ The generic architecture is designed to work with a backend agent orchestrator t
 
 ```mermaid
 flowchart TD
-    A[Frontend: AgentChatLayout] --> B[GraphQL: sendAgentMessage]
+    A[Frontend: AgentChatLayout] --> B[REST: POST /op/sendAgentChatMessage]
     B --> C[Backend: Agent Orchestrator]
 
     C --> D{Intent Analysis}

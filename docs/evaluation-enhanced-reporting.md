@@ -53,29 +53,32 @@ For complex attributes (nested objects, arrays), the evaluation now captures det
 
 ### 2. Interactive Markdown Reports
 
-The markdown reports now include interactive HTML controls:
+The report itself is plain Markdown with a little embedded HTML and **no script of any
+kind**. The interactivity comes from the Web UI's report viewer, which renders the
+Markdown and then manipulates the rendered DOM. That split matters in two directions: a
+report downloaded and opened in a plain Markdown renderer still reads correctly but has
+no buttons, and the viewer's controls work on any report the evaluation service produced
+without the report having to cooperate.
 
-#### 🔍 Show Only Unmatched
-Filter the attribute table to show only rows where matches failed, providing a compact view highlighting problematic fields.
+Two toolbar buttons appear above an evaluation report in the viewer:
 
-```html
-<button onclick="toggleUnmatchedOnly()">🔍 Show Only Unmatched</button>
-```
+| Button | What it does |
+|---|---|
+| **Unmatched Items** | Hides every row the report tagged `class="matched-row"`, leaving only the failures — a compact view of the problematic fields. Press again to restore. |
+| **Expand Details** | Opens (or closes) every `<details>` block in the report at once, so all nested field comparisons are visible without clicking each one. |
 
-#### ➕➖ Expand/Collapse All Details
-Expand or collapse all nested field comparison details at once.
-
-```html
-<button onclick="expandAllDetails()">➕ Expand All Details</button>
-<button onclick="collapseAllDetails()">➖ Collapse All Details</button>
-```
+Inline event handlers would not work here even if the report emitted them: the viewer
+renders through a sanitizing Markdown pipeline (`rehype-raw` plus `rehype-sanitize`
+against an allow-list schema) that deliberately permits no `on*` attributes. Report
+generation therefore emits structure and class names, and leaves behaviour to the UI.
 
 #### 📋 Expandable Nested Details
-Each attribute with nested comparisons has an expandable section:
+Each attribute with nested comparisons is wrapped in a `<details>` element, so it is
+collapsed by default and expands on click — and is what the **Expand Details** button
+operates on:
 
 ```html
-<details>
-  <summary>🔍 View 6 Nested Field Comparisons</summary>
+<details><summary style="padding: 8px;"><strong>🔍 View 6 Nested Field Comparisons</strong></summary>
   <!-- Detailed comparison table -->
 </details>
 ```

@@ -78,12 +78,73 @@ def test_null_g1_preserved():
 
 @pytest.mark.parametrize(
     "raw_p, expected",
-    [(1.5, 1.0), (-0.2, 0.0), ("0.42", 0.42), ("bad", 0.0), (None, 0.0)],
+    [(1.5, 1.0), (-0.2, 0.0), ("0.42", 0.42), (0, 0.0), (float("inf"), 1.0)],
 )
 def test_probability_clamped_and_coerced(raw_p, expected):
+    """A usable probability is clamped to [0, 1] and carries no reason: a model's
+    own 0.0 must stay distinguishable from the stand-in below."""
     schema = {"properties": {"A": {}}}
     _v, assess, _c = resolve_candidates({"A": {"G1": "x", "P1": raw_p}}, schema)
-    assert assess["A"]["confidence"] == expected
+    assert assess["A"] == {"confidence": expected}
+
+
+_MISSING = object()
+
+
+@pytest.mark.parametrize(
+    "raw_p",
+    [None, "bad", "", float("nan"), "NaN", [0.9], 10**400, _MISSING],
+    ids=["null", "word", "empty", "nan", "nan-string", "list", "overflow", "missing"],
+)
+def test_an_unusable_probability_scores_a_marked_stand_in(raw_p):
+    """No usable P1 means the model gave no probability. The leaf scores 0.0 so
+    the field still falls below its threshold, and carries a reason saying the
+    0.0 is a stand-in; without it the leaf was identical to a model's real 0.0.
+    NaN is the case that used to go the other way: ``min(1.0, nan)`` is 1.0, so
+    a NaN probability came out as full confidence and was never reviewed."""
+    schema = {"properties": {"A": {}}}
+    candidate = {"G1": "x"} if raw_p is _MISSING else {"G1": "x", "P1": raw_p}
+    _v, assess, _c = resolve_candidates({"A": candidate}, schema)
+    assert assess["A"]["confidence"] == 0.0
+    assert "not the model's confidence" in assess["A"]["confidence_reason"]
+
+
+def test_a_stand_in_reaches_every_candidate_shape_and_the_alert_surface():
+    """Scalar, group sub-field and list cell each build their leaf separately, so
+    each must mark the stand-in; and the shared enricher must still alert on it
+    (the routing a missing P1 always had), while a model's high P1 on a null
+    value does not alert."""
+    from idp_common.assessment.batching import enrich_assessment_with_thresholds
+
+    schema = {
+        "properties": {
+            "A": {},
+            "Addr": {"type": "object", "properties": {"City": {}}},
+            "Rows": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"Amt": {}}},
+            },
+            "Doi": {},
+        }
+    }
+    raw = {
+        "A": {"G1": "x", "P1": None},
+        "Addr": {"City": {"G1": "y", "P1": "high"}},
+        "Rows": [{"Amt": {"G1": "1", "P1": float("nan")}}],
+        "Doi": {"G1": None, "P1": 0.97},
+    }
+    _v, assess, _c = resolve_candidates(raw, schema)
+    for leaf in (assess["A"], assess["Addr"]["City"], assess["Rows"][0]["Amt"]):
+        assert leaf["confidence"] == 0.0
+        assert "not the model's confidence" in leaf["confidence_reason"]
+    assert assess["Doi"] == {"confidence": 0.97}
+
+    _e, alerts = enrich_assessment_with_thresholds(assess, schema, 0.8)
+    assert sorted(a["attribute_name"] for a in alerts) == [
+        "A",
+        "Addr.City",
+        "Rows[0].Amt",
+    ]
 
 
 def test_confidence_leaf_has_no_threshold():

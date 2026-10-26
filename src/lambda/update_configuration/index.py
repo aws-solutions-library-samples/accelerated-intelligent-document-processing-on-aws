@@ -26,7 +26,7 @@ from idp_common.config.migrations import migrate_config
 # this handler too.
 from idp_common.config.retired_models import base_model_id as _base_model_id
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -615,11 +615,34 @@ def save_configuration_bypass_manager(
     )
     stringified = _stringify_values(config_dict)
 
+    # `managed` is stored as the head's `Managed` attribute, never in the body,
+    # exactly as `ConfigurationRecord.to_dynamodb_item` stores it: the profile
+    # listing reads only the attribute, so a body key alone listed a managed
+    # profile as a user profile. And, as in `save_configuration`, a body that
+    # does not say `managed: true` keeps a profile stored as managed — by the
+    # attribute, or by the body key this writer used to leave (#1613). "Stored as
+    # managed" is coerced the way `IDPConfig.managed` coerces it on the validated
+    # read, so this writer and `save_configuration` agree on a string value too.
+    managed = stringified.pop("managed", None)
+    stored = (
+        existing_item.get("Managed", existing_item.get("managed"))
+        if existing_item is not None
+        else None
+    )
+    try:
+        stored_managed = stored is not None and TypeAdapter(bool).validate_python(
+            stored
+        )
+    except ValidationError:
+        stored_managed = False
+
     # Create DynamoDB item with flattened config
     item = {
         "Configuration": f"{config_type}#{version}" if version else config_type,
         **stringified,
     }
+    if managed is not None:
+        item["Managed"] = managed is True or stored_managed
 
     # Preserve existing created date and active status
     if config_type == "Config":

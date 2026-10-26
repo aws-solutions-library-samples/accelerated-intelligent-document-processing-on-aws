@@ -7569,15 +7569,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             rows = extracted_fields[field]
             # 1.1 Token-aware first-pass size for this field's confidence model.
             # Pass the whole row list — the widest row governs the batch, and rows
-            # are not guaranteed to carry the same keys.
+            # are not guaranteed to carry the same keys. Every retry call carries the
+            # rest of ``extracted_fields`` unsliced, so that is reserved as the fixed
+            # part of each call's output.
+            fixed_results = {k: v for k, v in extracted_fields.items() if k != field}
             batch_size = compute_token_aware_batch_size(
-                confidence_cfg.model, rows, geometry_mode, configured_batch_size
+                confidence_cfg.model,
+                rows,
+                geometry_mode,
+                configured_batch_size,
+                fixed_results=fixed_results,
             )
             if split_stats["derived_batch_size"] is None:
                 split_stats["derived_batch_size"] = batch_size
             esc_batch = (
                 compute_token_aware_batch_size(
-                    escalation_model, rows, geometry_mode, configured_batch_size
+                    escalation_model,
+                    rows,
+                    geometry_mode,
+                    configured_batch_size,
+                    fixed_results=fixed_results,
                 )
                 if escalation_one_call is not None
                 else batch_size

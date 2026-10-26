@@ -1566,6 +1566,121 @@ class TestGetResults:
         assert document["confidence"] == {"address": {"city": None}}
 
     @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_null_valued_field_reports_the_stored_score_unaltered(
+        self, monitor_cls, client, s3
+    ):
+        """A field with no extracted value keeps whatever score was stored for it,
+        and a stored ``null`` score stays ``null``. docs/mcp-server.md tells a
+        consumer the tool substitutes nothing, so a 0.0 here was stored upstream,
+        not written by the tool as an absence marker. A ``null`` must not become
+        0.0 either: the stored alert surface skips a null score and alerts on a
+        0.0, so the substitution would turn a non-alert into an apparent breach."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf"])
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "inference_result": {"title": None, "doi": None, "issn": None},
+                    "explainability_info": [
+                        {
+                            "title": {"confidence": 0.0},
+                            "doi": {"confidence": None},
+                            "issn": {"confidence": 0.95},
+                        }
+                    ],
+                }
+            ),
+        )
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["fields"] == {"title": None, "doi": None, "issn": None}
+        assert document["confidence"] == {"title": 0.0, "doi": None, "issn": 0.95}
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_field_with_no_stored_entry_is_left_out(self, monitor_cls, client, s3):
+        """The pipeline does not pad an absent value the model skipped, so a
+        null-valued field can have no entry in ``explainability_info``. The tool
+        must leave it out rather than invent one: a 0.0 here would be the very
+        "null values score 0.0" behaviour docs/mcp-server.md no longer claims, and
+        a ``None`` would claim a stored entry that does not exist. An empty stored
+        assessment likewise reports ``{}``, not ``null``."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf", "b/c.pdf"])
+        for key, explainability in (
+            ("b/a.pdf", [{"title": {"confidence": 0.9}}]),
+            ("b/c.pdf", [{}]),
+        ):
+            s3.put_object(
+                Bucket=OUTPUT_BUCKET,
+                Key=f"{key}/sections/1/result.json",
+                Body=json.dumps(
+                    {
+                        "inference_result": {"title": "T", "doi": None},
+                        "explainability_info": explainability,
+                    }
+                ),
+            )
+
+        documents = {
+            d["document_id"]: d for d in client.batch.get_results("b")["documents"]
+        }
+
+        assert documents["b/a.pdf"]["confidence"] == {"title": 0.9}
+        assert documents["b/c.pdf"]["confidence"] == {}
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_list_of_plain_values_mirrors_one_score_per_item(
+        self, monitor_cls, client, s3
+    ):
+        """docs/mcp-server.md says a list of plain values maps to one bare score
+        per item, in item order, with an unscored item as ``None``."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf"])
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "inference_result": {"tags": ["a", "b"]},
+                    "explainability_info": [
+                        {"tags": [{"confidence": 0.7}, {"confidence": None}]}
+                    ],
+                }
+            ),
+        )
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["confidence"] == {"tags": [0.7, None]}
+
+    @pytest.mark.parametrize("explainability", [[], None])
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_section_with_no_confidence_data_reports_null(
+        self, monitor_cls, explainability, client, s3
+    ):
+        """docs/mcp-server.md says ``confidence`` is ``null`` when a section has
+        no confidence data. An empty ``{}`` would read as "scored, and every
+        field absent", which is a different statement."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf"])
+        body = {"inference_result": {"title": None}}
+        if explainability is not None:
+            body["explainability_info"] = explainability
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/sections/1/result.json",
+            Body=json.dumps(body),
+        )
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["fields"] == {"title": None}
+        assert document["confidence"] is None
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
     def test_a_multi_instance_section_reports_its_instances(
         self, monitor_cls, client, s3
     ):

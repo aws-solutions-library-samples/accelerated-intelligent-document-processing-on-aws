@@ -1843,6 +1843,27 @@
       "ratchetEvidence": "scripts/tests/test_gate_exemption_registry.py",
       "ratchetGap": "Closure runs one way only: nothing fails for a DEAD member. This table can therefore carry a predicate no registry entry names, and file_absent_or_untracked is in that state today -- nothing in this registry rests on it. (That is a weaker statement than 'nothing calls it': the CLAUDE.md rule about an uncalled predicate bites on one an ENTRY names -- enforced by test_a_computable_premise_is_actually_computed -- not on an unnamed table member.) No premise distribution is quoted here on purpose: the figure that was written down went stale inside one release cycle, so derive it from this file if you need it. Note also that the ratchetEvidence above is the meta-test itself, and the marker the evidence check greps for is in that file's own RATCHET_EVIDENCE_MARKERS table, so for THIS entry the marker is self-satisfying: read the named test, not the marker."
     },
+    "scripts/tests/nested_parameter_defaults_baseline.json::nested_parameter_defaults_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "nested stack logical id + parameter name",
+      "turnsOff": "the report of a parameter of a nested stack that declares a Default which the parent template never overrides, per (logical id, parameter) pair. An `accepted` member stops being reported because the nested default is the value this solution intends; a `knownDefects` member stops being reported while staying labelled a defect, which is what let the check ship before the fixes for issues 1553 and 1558 did; that section is empty while no unfixed defect of this shape is known.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered as a JSON registry (the `*_baseline.json` glob) and it is one: every member is a finding the gate agrees not to fail on. Whether a given default is the intended value is the judgement, and it is not computable -- a verified defect and a deliberate knob are structurally identical, both being a declared Default no caller overrides. What is computable, and is computed per member, is the FINDING: scripts/tests/nested_parameter_defaults.py derives the set from the templates on every run, so a member cannot be recorded that the tree does not exhibit. The one-reason-per-set failure this registry exists to prevent is addressed inside the file rather than here, because that is where a member lives: each entry carries its own sentence about what reads the parameter and what the default means to it, and test_each_baseline_entry_answers_for_itself fails on an empty one, so every name sharing one sentence about defaults usually being deliberate is a test failure rather than a review question. The file is also not a laundering step: --write refuses to add a member, or to record one whose template has started reading it, without --allow-new-unpassed \"<reason>\", which is stored in the file -- without that refusal the gate would redden on a newly self-disabled feature, print 'record it or pass it', and --write would record it with nothing attached.",
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "It answers the opposite question and would hold for no member here. Every member belongs to a template that template.yaml deploys as an AWS::CloudFormation::Stack -- which is the precondition for being a finding at all, since the scan derives its universe from gate_premises.nested_stack_sources(). A member for which this predicate held could not be in the file."
+      },
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_nested_stack_parameters.py",
+        "scripts/tests/nested_parameter_defaults.py"
+      ],
+      "ratchetGap": "Closure and staleness are both enforced -- a finding in neither section fails, and a recorded member the scan no longer produces fails -- but nothing can check that a member is in the RIGHT section. Recording a real defect in `accepted` with a plausible sentence passes every test here; what it costs is a visible diff on a reasoned entry, which is the control, and it is a review control rather than a gate. The scan is also one level deep: it reads the AWS::CloudFormation::Stack resources of template.yaml, and a nested template declaring one of its own would not be followed. Measured on this tree, none does, so the gap is forward-looking rather than live.",
+      "issues": [
+        "1553"
+      ]
+    },
     "scripts/tests/repo_files.py::FALLBACK_PRUNE_DIRS": {
       "kind": "prune",
       "memberKind": "path",
@@ -2531,7 +2552,7 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
+      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml, and the root parameter template.yaml passes to it, which the test derives from the wiring rather than by name), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
       "ratchet": "staleness",
       "ratchetEvidence": [
         "scripts/tests/test_model_surface_consistency.py"
@@ -3181,6 +3202,20 @@
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_classification_flat_keys_ui_parity.py",
       "reason": "Discovered through the name route, on the NON_ fragment, and it is not a carve-out: these three values are the cases the shared parity table in src/ui/src/utils/__tests__/page-limit.fixtures.json cannot carry, because JSON has no spelling for Infinity or NaN. Registered rather than renamed, since renaming a constant to slip past discovery is the failure this registry exists to prevent and 'not an exemption at all' is a decision it is built to record. The closure is what makes the split safe and it is asserted rather than assumed, in test_no_float_spelling_is_unaccounted_for_by_both_case_sets: every member here is non-finite so none belongs in the table, nothing in the table is non-finite so none belongs here, and math.isfinite partitions float on exactly inf, -inf and nan, which is why three is all of them. No per-member fact is computed because there is none to compute -- which float spellings Python calls non-finite is a property of the language. What a reviewer should check instead is that the assertions are real: remove the math.isfinite guard from _is_page_limit and all three cases go red, which is how the guard was verified when it was written."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/error_analyzer/test_prompt_tool_names.py::NON_TOOL_IDENTIFIERS": {
+      "kind": "exemption",
+      "memberKind": "a snake_case identifier a shipped error-analyzer system prompt quotes as data rather than as a tool",
+      "turnsOff": "test_prompt_names_no_unregistered_tool for one named identifier. Without the entry that test fails on it, because it is neither a registered error-analyzer tool nor a parameter of one.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/error_analyzer/test_prompt_tool_names.py",
+      "issues": [
+        1555
+      ],
+      "reason": "Four members, each with its own reason beside it in the constant. status_reason is a Document attribute the summarization Lambda sets when the stage fails, which the prompt names as where the generic wrapper message shows up; assessment_incomplete is a ProcessingIssue code the prompt names as a non-fatal example; log_group and log_stream are keys of search_cloudwatch_logs results that the evidence template asks the model to quote in full. Whether an identifier in prose is data or a tool reference is a reading of the sentence, not a property of the tree, so it is JUDGEMENT. test_no_non_tool_identifier_is_stale fails on a member no shipped prompt contains, and test_no_non_tool_identifier_is_a_tool fails if a member collides with a registered tool or parameter name."
     }
   }
 }

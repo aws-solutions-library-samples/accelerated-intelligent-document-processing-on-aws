@@ -14,6 +14,7 @@ making it suitable for custom date ranges of any length.
 import json
 import logging
 import os
+import random
 import sys
 import time
 from datetime import datetime, timedelta
@@ -39,13 +40,49 @@ from config_scope import (  # noqa: E402
 
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
-from review_statuses import LegacyHitlStatus  # noqa: E402
+from review_statuses import (  # noqa: E402
+    LegacyHitlStatus,
+    ReviewStatus,
+    normalize_hitl_status,
+)
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
 _REVIEWER_ACTIVE_STATUSES = (
     LegacyHitlStatus.PENDING_REVIEW.value,
     LegacyHitlStatus.IN_PROGRESS.value,
     LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
+
+def _review_finished(hitl_status):
+    """Whether a stored HITLStatus says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
+    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
+    writer stored that the exact-match normaliser does not know (the earlier
+    SageMaker A2I flow). The listDocuments resolver and the web UI's
+    ``isHitlReviewFinished`` apply the same rule.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+#: Every stored HITLStatus value that reads as a finished review, derived from the
+#: declared vocabularies through ``_review_finished``. Matched exactly, as the
+#: listDocuments resolver must match it in its FilterExpression, so the two document
+#: lists agree row for row; the normaliser also accepts surrounding whitespace, which
+#: no writer stores.
+_FINISHED_HITL_STATUSES = frozenset(
+    value
+    for value in (
+        *(s.value for s in ReviewStatus),
+        *(s.value for s in LegacyHitlStatus),
+        "COMPLETED",
+    )
+    if _review_finished(value)
 )
 
 # Same story for the log redactor: byte-identical copy of
@@ -71,6 +108,28 @@ HOURS_PER_SHARD = 24 // SHARDS_PER_DAY  # 4 hours
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 BATCH_GET_LIMIT = 100  # DynamoDB BatchGetItem limit
+
+# BatchGetItem answers a throttled or oversized read with UnprocessedKeys, which
+# the caller must resubmit. The same bound and backoff as idp_common's
+# DynamoDBClient.batch_get_items (this function has no idp_common layer, so it
+# cannot call it): up to this many calls per chunk, with exponential backoff and
+# full jitter between them, then fail the request rather than return a page that
+# is silently missing documents.
+BATCH_GET_MAX_ATTEMPTS = 6
+
+
+class UnprocessedKeysError(RuntimeError):
+    """BatchGetItem still held keys back after ``BATCH_GET_MAX_ATTEMPTS`` calls.
+
+    A ``RuntimeError`` rather than a ``ValueError`` on purpose: the dispatcher
+    reports ``ValueError`` as a 400, which would blame the caller's request for
+    the table's throttling. Anything else surfaces as a 500.
+    """
+
+
+def _backoff_sleep(attempt):
+    """Exponential backoff with full jitter, capped at one second."""
+    time.sleep(random.uniform(0, min(1.0, 0.05 * 2**attempt)))  # nosec B311
 
 # Work budget: the most sequential DynamoDB Queries one invocation may issue.
 #
@@ -275,6 +334,7 @@ def _batch_get_documents(table_name, object_keys):
         ]
 
         request_items = {table_name: {"Keys": keys}}
+        attempt = 0
 
         while request_items:
             response = ddb_client.batch_get_item(RequestItems=request_items)
@@ -285,8 +345,25 @@ def _batch_get_documents(table_name, object_keys):
                 if doc and doc.get("ObjectKey"):
                     documents[doc["ObjectKey"]] = doc
 
-            # Handle unprocessed keys (throttling)
-            request_items = response.get("UnprocessedKeys", {})
+            # Keys held back (throttling, or the 16 MB response cap) are resubmitted
+            # with backoff, a bounded number of times. Without the bound a key that
+            # stays unprocessed spins here until the function times out.
+            request_items = response.get("UnprocessedKeys") or {}
+            if not request_items:
+                break
+            attempt += 1
+            if attempt >= BATCH_GET_MAX_ATTEMPTS:
+                remaining = len(request_items.get(table_name, {}).get("Keys", []))
+                logger.error(
+                    "BatchGetItem: %d unprocessed keys remain after %d attempts",
+                    remaining,
+                    BATCH_GET_MAX_ATTEMPTS,
+                )
+                raise UnprocessedKeysError(
+                    f"Could not read {remaining} document records: the tracking "
+                    "table is throttling reads. Retry the request."
+                )
+            _backoff_sleep(attempt)
 
     return documents
 
@@ -415,7 +492,13 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
     if reviewer_only:
         hitl_triggered = doc.get("HITLTriggered", False)
         hitl_status = doc.get("HITLStatus", "")
-        hitl_completed = doc.get("HITLCompleted", False)
+        # Finished by the legacy flag or by the status itself: a review queue
+        # records its outcome only in HITLStatus. Only a string can be a stored
+        # status; anything else (a list or map is unhashable) is not finished, as
+        # the listDocuments FilterExpression reads it.
+        hitl_completed = doc.get("HITLCompleted", False) or (
+            isinstance(hitl_status, str) and hitl_status in _FINISHED_HITL_STATUSES
+        )
         hitl_owner = doc.get("HITLReviewOwner", "")
         reviewer_id = caller["username"]
         reviewer_email = caller["email"]

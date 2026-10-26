@@ -503,41 +503,64 @@ def handler(event, context):
 
             # Mark HITL review as completed when processing changes
             # This handles the case where user edits data and clicks "Process Changes"
-            hitl_status_lower = (document.hitl_status or "").lower().replace(" ", "")
-            completed_statuses = [
-                "completed",
-                "reviewcompleted",
-                "skipped",
-                "reviewskipped",
-            ]
-            if document.hitl_status and hitl_status_lower not in completed_statuses:
+            # on a review that is still owed. A finished review — legacy completed or
+            # skipped, or a queue review that ended complete or rejected — is not
+            # finished again: its outcome and reviewer stay as recorded (#1568).
+            # "COMPLETED" is the one finished spelling a real writer stored that the
+            # exact-match normaliser does not know: the earlier A2I flow wrote it,
+            # and retained rows may still carry it.
+            review_finished = (
+                normalize_hitl_status(document.hitl_status).kind
+                in ("complete", "rejected", "skipped")
+                or document.hitl_status == "COMPLETED"
+            )
+            if document.hitl_status and not review_finished:
                 identity = event.get("identity", {})
                 username = identity.get("username", "system")
                 user_email = identity.get("claims", {}).get("email", "")
 
                 # Mark all pending sections as completed
                 pending_sections = document.hitl_sections_pending or []
-                completed_sections = list(document.hitl_sections_completed or [])
-                completed_sections.extend(pending_sections)
+                completed_sections = list(
+                    dict.fromkeys(
+                        list(document.hitl_sections_completed or [])
+                        + list(pending_sections)
+                    )
+                )
 
                 document.hitl_status = LegacyHitlStatus.REVIEW_COMPLETED.value
                 document.hitl_sections_pending = []
                 document.hitl_sections_completed = completed_sections
 
                 # Update review fields in DynamoDB (not in document model)
-                # HITLReviewedBy tracks who completed the review via Process Changes
+                # HITLReviewedBy tracks who completed the review via Process Changes.
+                # The two section lists are written in this same statement. The
+                # status write at the end of the handler also carries them, but it
+                # is best-effort and swallows its own failure, and the pipeline
+                # cannot carry an empty pending list (`to_dict` omits it), so without
+                # them here a failed status write left a completed review still
+                # listing its sections as pending.
                 tracking_table = os.environ.get("TRACKING_TABLE")
                 if tracking_table:
                     dynamodb_resource = boto3.resource("dynamodb")
                     table = dynamodb_resource.Table(tracking_table)
                     table.update_item(
                         Key={"PK": f"doc#{object_key}", "SK": "none"},
-                        UpdateExpression="SET HITLStatus = :status, HITLReviewedBy = :reviewedBy, HITLReviewedByEmail = :reviewedByEmail, HITLCompleted = :completed REMOVE HITLPendingReview",
+                        UpdateExpression=(
+                            "SET HITLStatus = :status, HITLReviewedBy = :reviewedBy, "
+                            "HITLReviewedByEmail = :reviewedByEmail, "
+                            "HITLCompleted = :completed, "
+                            "HITLSectionsPending = :pendingSections, "
+                            "HITLSectionsCompleted = :completedSections "
+                            "REMOVE HITLPendingReview"
+                        ),
                         ExpressionAttributeValues={
                             ":status": LegacyHitlStatus.REVIEW_COMPLETED.value,
                             ":reviewedBy": username,
                             ":reviewedByEmail": user_email,
                             ":completed": True,
+                            ":pendingSections": [],
+                            ":completedSections": completed_sections,
                         },
                     )
 
@@ -547,24 +570,35 @@ def handler(event, context):
             elif document.hitl_status:
                 # Already finished. A review completed section by section used to
                 # finish without recording who did it; fill that in from this caller,
-                # never overwriting a recorded reviewer.
+                # never overwriting a recorded reviewer. The name and email are one
+                # record, written together or not at all: a review queue records its
+                # reviewer in HITLReviewedBy and writes no HITLReviewedByEmail, and
+                # filling only the email would pair that reviewer with this caller's
+                # address. Either half recorded means a reviewer is recorded.
                 identity = event.get("identity", {})
                 tracking_table = os.environ.get("TRACKING_TABLE")
                 if tracking_table:
                     table = boto3.resource("dynamodb").Table(tracking_table)
-                    table.update_item(
-                        Key={"PK": f"doc#{object_key}", "SK": "none"},
-                        UpdateExpression=(
-                            "SET HITLReviewedBy = if_not_exists(HITLReviewedBy, :reviewedBy), "
-                            "HITLReviewedByEmail = if_not_exists(HITLReviewedByEmail, :reviewedByEmail)"
-                        ),
-                        ExpressionAttributeValues={
-                            ":reviewedBy": identity.get("username", "system"),
-                            ":reviewedByEmail": identity.get("claims", {}).get(
-                                "email", ""
+                    try:
+                        table.update_item(
+                            Key={"PK": f"doc#{object_key}", "SK": "none"},
+                            UpdateExpression=(
+                                "SET HITLReviewedBy = :reviewedBy, "
+                                "HITLReviewedByEmail = :reviewedByEmail"
                             ),
-                        },
-                    )
+                            ConditionExpression=(
+                                "attribute_not_exists(HITLReviewedBy) AND "
+                                "attribute_not_exists(HITLReviewedByEmail)"
+                            ),
+                            ExpressionAttributeValues={
+                                ":reviewedBy": identity.get("username", "system"),
+                                ":reviewedByEmail": identity.get("claims", {}).get(
+                                    "email", ""
+                                ),
+                            },
+                        )
+                    except table.meta.client.exceptions.ConditionalCheckFailedException:
+                        pass  # a reviewer is already recorded
 
         except ValueError as e:
             if str(e) == _QUEUE_MANAGED_MESSAGE:
