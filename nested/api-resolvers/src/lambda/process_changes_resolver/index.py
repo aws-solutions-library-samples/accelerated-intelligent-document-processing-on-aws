@@ -354,10 +354,16 @@ def _assert_not_a_bda_structural_edit(document, modified_sections, modified_page
 
     The mode is the one the requeued run will take: the routing rule the queue
     processor applies (``idp_common.config.configuration_manager.bda_routing``),
-    including that an unpinned document is processed under the ACTIVE profile.
-    Every read is made strict (``raise_errors=True``), so a configuration that
+    including that an unpinned document is processed under the ACTIVE profile and
+    that ``use_bda`` is read from the configuration revision the document is pinned
+    to (the requeued document carries that pin to the queue processor, which routes
+    by it), or from the profile head when it has none. The revision body lives in
+    the Configuration bucket (``CONFIGURATION_BUCKET``). Every read is made strict (``raise_errors=True``), so a configuration that
     cannot be read is refused rather than read as pipeline mode: a wrong
-    "pipeline" answer loses data and a wrong refusal costs a retry.
+    "pipeline" answer loses data and a wrong refusal costs a retry. That includes
+    a pinned revision that cannot be read: the queue processor would route that
+    run from the profile head, but the head is not the configuration the document
+    is pinned to, so it is not used to allow the change here.
     """
     if not modified_sections and not modified_pages:
         return
@@ -367,13 +373,17 @@ def _assert_not_a_bda_structural_edit(document, modified_sections, modified_page
 
     try:
         routing = bda_routing(
-            ConfigurationManager(), document.config_version, raise_errors=True
+            ConfigurationManager(),
+            document.config_version,
+            raise_errors=True,
+            config_revision=document.config_revision,
         )
     except Exception as e:  # noqa: BLE001 — an unknown mode refuses, see docstring
         logger.error(
-            "Rejecting processChanges: the processing mode of profile %r could not "
-            "be read: %s",
+            "Rejecting processChanges: the processing mode of profile %r "
+            "(revision %r) could not be read: %s",
             document.config_version,
+            document.config_revision,
             e,
         )
         raise _refusal(

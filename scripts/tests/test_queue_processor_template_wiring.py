@@ -10,6 +10,11 @@ handler fails when it is missing:
   pinned configuration revision (#1619). Without ``CONFIGURATION_BUCKET`` or
   ``s3:GetObject`` on the revision prefix, the read fails and both fall back to
   the profile head with a warning, which is the behaviour the change replaced.
+  The processChanges resolver (``ProcessChangesResolverFunction`` in
+  ``nested/api-resolvers/template.yaml``) reads the same revision to decide
+  whether a requeued run goes down the BDA branch; without the wiring it refuses
+  every section and page change on a pinned document, which only a live stack
+  would show.
 - The queue processor stops an execution it has just started when the document
   was aborted in the window before its post-start write (#1612). Without
   ``states:StopExecution`` the stop fails, and that is one ERROR log line.
@@ -30,9 +35,20 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO_ROOT / "template.yaml"
+API_RESOLVERS_TEMPLATE = REPO_ROOT / "nested/api-resolvers/template.yaml"
 REVISIONS_MODULE = REPO_ROOT / "lib/idp_common_pkg/idp_common/config/revisions.py"
 
-REVISION_BODY_READERS = ("QueueProcessor", "SaveReportingDataFunctionV2")
+# (template, function, the logical name the bucket is reached by in that template)
+REVISION_BODY_READERS = (
+    (TEMPLATE, "QueueProcessor", "ConfigurationBucket"),
+    (TEMPLATE, "SaveReportingDataFunctionV2", "ConfigurationBucket"),
+    (
+        API_RESOLVERS_TEMPLATE,
+        "ProcessChangesResolverFunction",
+        "ConfigurationBucketName",
+    ),
+)
+READER_IDS = [name for _, name, _ in REVISION_BODY_READERS]
 STATE_MACHINE_NAME = {"Fn::GetAtt": "PATTERNSTACK.Outputs.StateMachineName"}
 
 
@@ -51,9 +67,20 @@ def _tag(loader, suffix, node):
 _CfnLoader.add_multi_constructor("!", _tag)
 
 
+_LOADED: dict = {}
+
+
+def _resources_of(template: Path) -> dict:
+    if template not in _LOADED:
+        _LOADED[template] = yaml.load(template.read_text(), Loader=_CfnLoader)[
+            "Resources"
+        ]
+    return _LOADED[template]
+
+
 @pytest.fixture(scope="module")
 def resources() -> dict:
-    return yaml.load(TEMPLATE.read_text(), Loader=_CfnLoader)["Resources"]
+    return _resources_of(TEMPLATE)
 
 
 def _revision_prefix() -> str:
@@ -111,32 +138,39 @@ def _sub(node: Any) -> Any:
     return node.get("Fn::Sub") if isinstance(node, dict) else None
 
 
-@pytest.mark.parametrize("name", REVISION_BODY_READERS)
-def test_the_reader_is_told_the_configuration_bucket(resources, name):
-    variables = resources[name]["Properties"]["Environment"]["Variables"]
-    assert variables.get("CONFIGURATION_BUCKET") == {"Fn::Ref": "ConfigurationBucket"}
+@pytest.mark.parametrize(
+    ("template", "name", "bucket"), REVISION_BODY_READERS, ids=READER_IDS
+)
+def test_the_reader_is_told_the_configuration_bucket(template, name, bucket):
+    function = _resources_of(template)[name]
+    variables = function["Properties"]["Environment"]["Variables"]
+    assert variables.get("CONFIGURATION_BUCKET") == {"Fn::Ref": bucket}
 
 
-@pytest.mark.parametrize("name", REVISION_BODY_READERS)
-def test_the_reader_can_get_exactly_the_revision_bodies(resources, name):
+@pytest.mark.parametrize(
+    ("template", "name", "bucket"), REVISION_BODY_READERS, ids=READER_IDS
+)
+def test_the_reader_can_get_exactly_the_revision_bodies(template, name, bucket):
     prefix = _revision_prefix()
     assert prefix, "the revision store's prefix is empty"
-    grants = _granting(resources[name], "s3:GetObject")
+    grants = _granting(_resources_of(template)[name], "s3:GetObject")
     resources_granted = [_sub(s.get("Resource")) for s in grants]
     assert resources_granted == [
-        f"arn:${{AWS::Partition}}:s3:::${{ConfigurationBucket}}/{prefix}/*"
+        f"arn:${{AWS::Partition}}:s3:::${{{bucket}}}/{prefix}/*"
     ], grants
     assert all(s.get("Effect") == "Allow" and "Condition" not in s for s in grants)
 
 
-@pytest.mark.parametrize("name", REVISION_BODY_READERS)
+@pytest.mark.parametrize(
+    ("template", "name", "bucket"), REVISION_BODY_READERS, ids=READER_IDS
+)
 def test_the_reader_holds_no_whole_bucket_template_on_the_configuration_bucket(
-    resources, name
+    template, name, bucket
 ):
     """A SAM S3 policy template on the bucket would grant every object in it."""
     templates = [
         (key, value)
-        for policy in resources[name]["Properties"].get("Policies") or []
+        for policy in _resources_of(template)[name]["Properties"].get("Policies") or []
         if isinstance(policy, dict)
         for key, value in policy.items()
         if key.startswith("S3") and "ConfigurationBucket" in repr(value)
@@ -144,12 +178,16 @@ def test_the_reader_holds_no_whole_bucket_template_on_the_configuration_bucket(
     assert templates == [], templates
 
 
-@pytest.mark.parametrize("name", REVISION_BODY_READERS)
-def test_the_readers_list_grant_is_limited_to_the_revision_prefix(resources, name):
-    grants = _granting(resources[name], "s3:ListBucket")
+@pytest.mark.parametrize(
+    ("template", "name", "bucket"), REVISION_BODY_READERS, ids=READER_IDS
+)
+def test_the_readers_list_grant_is_limited_to_the_revision_prefix(
+    template, name, bucket
+):
+    grants = _granting(_resources_of(template)[name], "s3:ListBucket")
     assert [(_sub(s.get("Resource")), s.get("Condition")) for s in grants] == [
         (
-            "arn:${AWS::Partition}:s3:::${ConfigurationBucket}",
+            f"arn:${{AWS::Partition}}:s3:::${{{bucket}}}",
             {"StringLike": {"s3:prefix": f"{_revision_prefix()}/*"}},
         )
     ], grants

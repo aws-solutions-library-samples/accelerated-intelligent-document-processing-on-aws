@@ -2138,6 +2138,10 @@ Resources:
           # profile routes it to BDA, which it reads from the configuration table
           # (read-only grant below).
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          # ... at the revision the document is pinned to, whose body is read from
+          # the Configuration bucket (read-only grant below), so the decision agrees
+          # with the queue processor's routing of the requeued run.
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
       LoggingConfig:
         LogGroup: !Ref ProcessChangesResolverFunctionLogGroup
       Policies:
@@ -2174,6 +2178,22 @@ Resources:
                 - dynamodb:Scan
               Resource:
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+        # Pinned revision bodies, so `use_bda` is read from the revision the
+        # document is pinned to, as the queue processor routes it. Same grant the
+        # queue processor carries.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so an expired
+            # published revision could not fall back to the profile head (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         # Read-only access on UsersTable + EmailIndex so the resolver can look up
         # the caller's allowedTestSets and enforce per-test-set annotation scope on
         # updateDocumentSections. Without this the lookup fails with AccessDenied —

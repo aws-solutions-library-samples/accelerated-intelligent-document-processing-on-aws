@@ -20,6 +20,7 @@ asserts the document was requeued.
 Engine: moto, not DynamoDB.
 """
 
+import json
 import os
 from unittest.mock import patch
 
@@ -30,9 +31,11 @@ from botocore.exceptions import ClientError
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.constants import CONFIG_TYPE_CONFIG, DEFAULT_VERSION
 from idp_common.config.models import IDPConfig
+from idp_common.models import Document
 
 from .test_process_changes_caller_checks import (
     CONFIG,
+    WORKING_BUCKET,
     _assert_processed,
     _assert_untouched,
     _call,
@@ -257,3 +260,142 @@ class TestStillAllowed:
         assert result["success"] is True, result
         assert env.queued() == 1
         assert not env.result_exists()
+
+
+# ------------------------------------------------------------ pinned revision
+
+REVISIONS_BUCKET = "pc-configuration-bucket"
+
+
+@pytest.fixture
+def pinned_env():
+    """``env`` with the Configuration bucket the template now gives the resolver.
+
+    With ``CONFIGURATION_BUCKET`` set, every profile save cuts a revision, so a
+    profile saved twice has a pinned revision that disagrees with its head.
+    """
+    with process_changes_env() as built:
+        os.environ["CONFIGURATION_BUCKET"] = REVISIONS_BUCKET
+        boto3.client("s3").create_bucket(Bucket=REVISIONS_BUCKET)
+        try:
+            yield built
+        finally:
+            os.environ.pop("CONFIGURATION_BUCKET", None)
+
+
+def _profile_with_history(pinned_use_bda, head_use_bda, version="tenant-a"):
+    """Save ``version`` twice, linked to a BDA project; return the first revision.
+
+    The second save changes something beyond ``use_bda``, so a second revision is
+    cut even when the two values are equal.
+    """
+    _profile(DEFAULT_VERSION, False)
+    manager = ConfigurationManager(table_name=CONFIG)
+    manager.save_configuration(
+        CONFIG_TYPE_CONFIG, IDPConfig(use_bda=pinned_use_bda), version=version
+    )
+    pinned = manager.resolve_published_revision(version)
+    second = IDPConfig(use_bda=head_use_bda)
+    second.extraction.temperature = 0.37
+    manager.save_configuration(CONFIG_TYPE_CONFIG, second, version=version)
+    head = manager.resolve_published_revision(version)
+    assert pinned is not None and head is not None and head != pinned, (pinned, head)
+    # Proves the fixture: the head and the pinned revision really disagree.
+    assert bool(manager.get_merged_configuration(version).use_bda) is head_use_bda
+    assert (
+        bool(manager.get_merged_configuration(version, revision=pinned).use_bda)
+        is pinned_use_bda
+    )
+    manager.set_bda_project_arn(version, PROJECT)
+    return int(pinned)
+
+
+def _queued_document(env):
+    (message,) = boto3.client("sqs").receive_message(
+        QueueUrl=env.queue_url, MaxNumberOfMessages=10
+    )["Messages"]
+    return Document.load_document(json.loads(message["Body"]), WORKING_BUCKET)
+
+
+_RECLASSIFY_CHANGE = _SECTION_CHANGES[0].values[0]
+
+
+@pytest.mark.unit
+class TestPinnedRevisionDecides:
+    """The mode is read from the revision the requeued run will route by."""
+
+    def test_a_pinned_bda_revision_under_a_pipeline_head_is_refused(self, pinned_env):
+        pinned = _profile_with_history(pinned_use_bda=True, head_use_bda=False)
+        _seed(pinned_env, **_owned(), ConfigRevision=pinned)
+        with pytest.raises(ValueError, match="^BDA_MODE:"):
+            _call(pinned_env, changes=_RECLASSIFY_CHANGE)
+        _assert_untouched(pinned_env, "InProgress")
+
+    def test_a_pinned_pipeline_revision_under_a_bda_head_is_allowed(self, pinned_env):
+        pinned = _profile_with_history(pinned_use_bda=False, head_use_bda=True)
+        _seed(pinned_env, **_owned(), ConfigRevision=pinned)
+        _assert_processed(pinned_env, _call(pinned_env, changes=_RECLASSIFY_CHANGE))
+        # The requeued document carries the pin the decision was made on, so the
+        # queue processor routes it by the same revision.
+        queued = _queued_document(pinned_env)
+        assert (queued.config_version, queued.config_revision) == ("tenant-a", pinned)
+
+    @pytest.mark.parametrize(
+        "head_use_bda",
+        [pytest.param(True, id="head-bda"), pytest.param(False, id="head-pipeline")],
+    )
+    def test_a_document_with_no_pinned_revision_is_decided_by_the_head(
+        self, pinned_env, head_use_bda
+    ):
+        _profile_with_history(
+            pinned_use_bda=not head_use_bda, head_use_bda=head_use_bda
+        )
+        _seed(pinned_env, **_owned())
+        if head_use_bda:
+            with pytest.raises(ValueError, match="^BDA_MODE:"):
+                _call(pinned_env, changes=_RECLASSIFY_CHANGE)
+            _assert_untouched(pinned_env, "InProgress")
+        else:
+            _assert_processed(pinned_env, _call(pinned_env, changes=_RECLASSIFY_CHANGE))
+
+
+@pytest.mark.unit
+class TestUnreadablePinnedRevisionRefuses:
+    """Never read as pipeline mode, and never answered from the head instead."""
+
+    def test_a_revision_that_is_not_retained_refuses(self, pinned_env):
+        # The head is a pipeline profile, so a head fallback would allow this.
+        _profile_with_history(pinned_use_bda=True, head_use_bda=False)
+        _seed(pinned_env, **_owned(), ConfigRevision=99)
+        with pytest.raises(ValueError, match="processing mode could not be determined"):
+            _call(pinned_env, changes=_RECLASSIFY_CHANGE)
+        _assert_untouched(pinned_env, "InProgress")
+
+    def test_a_denied_revision_body_refuses_as_a_400_not_a_403(self, pinned_env):
+        # The revision store raises PermissionError on S3 AccessDenied, which the
+        # handler would otherwise pass through as an authorization denial.
+        pinned = _profile_with_history(pinned_use_bda=True, head_use_bda=False)
+        _seed(pinned_env, **_owned(), ConfigRevision=pinned)
+        from idp_common.config.revisions import ConfigRevisionStore
+
+        reads = []
+
+        def denied(self, profile, revision):
+            reads.append((profile, revision))
+            raise PermissionError("AccessDenied on the revision body")
+
+        with patch.object(ConfigRevisionStore, "get_body", denied):
+            with pytest.raises(
+                ValueError, match="processing mode could not be determined"
+            ):
+                _call(pinned_env, changes=_RECLASSIFY_CHANGE)
+        assert reads == [("tenant-a", pinned)], reads
+        _assert_untouched(pinned_env, "InProgress")
+
+    def test_no_configuration_bucket_refuses_a_pinned_document(self, pinned_env):
+        pinned = _profile_with_history(pinned_use_bda=True, head_use_bda=False)
+        os.environ.pop("CONFIGURATION_BUCKET")
+        _seed(pinned_env, **_owned(), ConfigRevision=pinned)
+        with pytest.raises(ValueError, match="processing mode could not be determined"):
+            _call(pinned_env, changes=_RECLASSIFY_CHANGE)
+        _assert_untouched(pinned_env, "InProgress")
