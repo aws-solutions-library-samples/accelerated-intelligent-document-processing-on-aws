@@ -391,7 +391,7 @@ The table includes a **type filter** (All / Managed / Custom) and a **preference
 
 - **Open/Edit**: Click a version name to open it in the configuration editor
 - **Create profile**: Create a new profile as a copy of an existing one. Pick the source profile (prefilled with the checked row, or the profile currently open in the editor), give the copy a name and optional description, and the new profile is created and opened in the editor. The source profile is not modified. This is the normal way to get an editable copy of the stack-managed `default`.
-- **Create (Import)**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
+- **Import**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
 - **Activate**: Set a selected version as the active version for processing
 - **Compare**: Select 2+ versions to view a side-by-side diff (exportable as CSV/JSON)
 - **Delete**: Remove selected versions (cannot delete the active version, `default`, or managed versions); a confirmation dialog lists the affected versions before deletion
