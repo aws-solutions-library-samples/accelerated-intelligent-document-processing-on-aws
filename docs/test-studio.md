@@ -525,7 +525,7 @@ flowchart LR
     Runner --> WF[Document processing workflow]
     WF -->|"docs finish"| RunDDB
 
-    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETED<br/>+ enqueue aggregation"| RunDDB
+    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETE<br/>+ enqueue aggregation"| RunDDB
     Poll --> AggQ[SQS aggregation queue]
     AggQ --> Agg[Metrics aggregation Lambda]
     Agg -->|"write testRunResult"| RunDDB
@@ -535,7 +535,7 @@ flowchart LR
 The tab that started the run stays on Test Studio, so the 5-second
 `getTestRunStatus` poll runs against the row. When the workflow finishes and
 every document has terminated, that poll — **not** the workflow — transitions
-`Status → COMPLETED` and enqueues aggregation. The metrics land, the next
+`Status → COMPLETE` and enqueues aggregation. The metrics land, the next
 poll reads the fresh row, the `EVALUATING` badge clears. All Test-Studio
 transitions happen in real time while the user watches.
 
@@ -553,7 +553,7 @@ flowchart LR
 
     Later([User logs into Test Studio<br/>hours later]) --> UI[UI Executions page]
     UI -->|"per-row getTestRunStatus poll"| RunDDB
-    RunDDB -->|"deferred:<br/>Status→COMPLETED + enqueue"| AggQ[SQS aggregation queue]
+    RunDDB -->|"deferred:<br/>Status→COMPLETE + enqueue"| AggQ[SQS aggregation queue]
     AggQ --> Agg[Aggregation]
     Agg -->|"write testRunResult"| RunDDB
     RunDDB -.->|"badge clears"| UI
