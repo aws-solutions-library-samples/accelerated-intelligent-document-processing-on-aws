@@ -8630,6 +8630,16 @@ Resources:
               Action:
                 - states:ListExecutions
               Resource: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+        # Stop an execution this function has just started when the document
+        # was aborted between its start claim and the post-start tracking write
+        # (#1612). Scoped to executions of this stack's own state machine.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StopExecution
+              Resource: !Sub
+                - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${StateMachineName}:*"
+                - StateMachineName: !GetAtt PATTERNSTACK.Outputs.StateMachineName
         # PutMetricData takes no resource-level permissions (AWS-wide), so it is
         # constrained by namespace condition instead.
         - Statement:

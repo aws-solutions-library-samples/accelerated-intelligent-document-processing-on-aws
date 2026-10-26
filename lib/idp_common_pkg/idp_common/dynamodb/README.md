@@ -96,10 +96,14 @@ profile head record, which is where it went wrong.
 
 High-level service for document operations:
 - `create_document()` - Create new documents with list partitioning
-- `update_document(document, expected_status=None)` - Update existing documents.
-  With `expected_status`, the write lands only if the stored `ObjectStatus` is
-  still that value, and otherwise raises `DynamoDBError` with error code
-  `ConditionalCheckFailedException`
+- `update_document(document, expected_status=None, unless_status=None)` - Update
+  existing documents. With `expected_status`, the write lands only if the stored
+  `ObjectStatus` is still that value; with `unless_status`, it lands unless the
+  stored `ObjectStatus` is that value (a record with no status, or no record, is
+  written as without it). Either way a refusal raises `DynamoDBError` with error
+  code `ConditionalCheckFailedException`, and the two cannot be combined. The
+  queue processor writes RUNNING after `StartExecution` with
+  `unless_status=ABORTED`, and stops the execution when that is refused
 - `get_document(object_key, consistent_read=False)` - Retrieve documents by
   object key. The default read is eventually consistent, so pass
   `consistent_read=True` when deciding from a write that has just landed

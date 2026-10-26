@@ -200,6 +200,7 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
   * `states:StartExecution`
   * `states:ListExecutions` (read-only, scoped to this stack's state machine — used to reconcile the workflow-concurrency counter against the executions that are really running, so a leaked counter cannot permanently stop the stack admitting documents)
+  * `states:StopExecution` (scoped to executions of this stack's own state machine — used only to stop an execution the processor has just started when the document was aborted while that start was in flight, so the abort is not overwritten by a running workflow)
   * `cloudwatch:PutMetricData` (restricted by an `IAM` condition to the stack's own metric namespace — publishes the concurrency-counter drift the `ConcurrencyCounterDriftAlarm` watches)
   * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
 

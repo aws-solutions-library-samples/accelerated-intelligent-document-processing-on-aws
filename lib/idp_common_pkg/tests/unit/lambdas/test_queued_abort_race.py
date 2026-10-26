@@ -285,7 +285,10 @@ def test_no_status_but_aborted_holds_a_document_back(stack, status):
 
     assert stack["processor"].process_message(record) == (True, record["messageId"])
 
-    assert len(_executions(stack)) == 1
+    (execution,) = _executions(stack)
+    assert execution["status"] == "RUNNING"
+    # The post-start write is refused only for ABORTED, so it lands here.
+    assert _status(stack, key) == "RUNNING"
     assert _active(stack) == 1
 
 
@@ -296,7 +299,11 @@ def test_a_document_with_no_tracking_record_still_starts(stack):
 
     assert stack["processor"].process_message(record) == (True, record["messageId"])
 
-    assert len(_executions(stack)) == 1
+    (execution,) = _executions(stack)
+    assert execution["status"] == "RUNNING"
+    # The conditional post-start write still creates the record, as the
+    # unconditional one did.
+    assert _status(stack, key) == "RUNNING"
     assert _active(stack) == 1
 
 
@@ -519,3 +526,175 @@ def test_the_claim_is_the_last_step_before_the_start(stack, monkeypatch):
     assert processor.process_message(record) == (True, record["messageId"])
 
     assert "config" in order and order[-2:] == ["claim", "start"], order
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        # The claim has been granted; StartExecution has not been called yet.
+        pytest.param("claim", id="after-the-start-claim"),
+        # The execution exists; the post-start tracking write has not been made.
+        pytest.param("start", id="after-start-execution"),
+    ],
+)
+def test_an_abort_landing_after_the_claim_stops_the_started_execution(
+    stack, monkeypatch, after
+):
+    """The window #1614 left open: an abort after the claim, before the write.
+
+    The abort reads the document as QUEUED (the claim does not change the
+    status), finds nothing to stop, and writes ABORTED. The processor's write
+    after StartExecution is refused for that, so it stops the execution it
+    started and leaves the document ABORTED. The abort's report is then exact.
+    """
+    key = f"run-1612/after-{after}.pdf"
+    record = _queue(stack, key)
+    processor = stack["processor"]
+    if after == "claim":
+        fired = _abort_after_first_call(
+            stack, monkeypatch, processor.document_service, "claim_for_execution", key
+        )
+    else:
+        fired = _abort_after_first_call(
+            stack, monkeypatch, processor.sfn, "start_execution", key
+        )
+
+    assert processor.process_message(record) == (True, record["messageId"])
+
+    assert [r["abortedCount"] for r in fired] == [1], fired
+    (execution,) = _executions(stack)
+    assert execution["status"] == "ABORTED"
+    assert _status(stack, key) == "ABORTED"
+    # The execution owns its slot and the workflow tracker releases it on the
+    # ABORTED event, so the processor does not hand it back.
+    assert _active(stack) == 1
+
+
+def test_a_failed_stop_still_leaves_the_document_aborted(stack, monkeypatch):
+    """If the stop is refused, the abort's ABORTED is still not overwritten."""
+    key = "run-1612/stop-refused.pdf"
+    record = _queue(stack, key)
+    processor = stack["processor"]
+    _abort_after_first_call(stack, monkeypatch, processor.sfn, "start_execution", key)
+    stops = []
+
+    def stop_execution(**kwargs):
+        stops.append(kwargs["executionArn"])
+        raise RuntimeError("ThrottlingException")
+
+    monkeypatch.setattr(processor.sfn, "stop_execution", stop_execution)
+
+    assert processor.process_message(record) == (True, record["messageId"])
+
+    (execution,) = _executions(stack)
+    assert stops == [execution["executionArn"]]
+    assert _status(stack, key) == "ABORTED"
+    assert _active(stack) == 1
+
+
+@pytest.mark.parametrize(
+    "status",
+    sorted(s.value for s in Status if s != Status.ABORTED),
+)
+def test_unless_status_writes_every_status_but_the_refused_one(stack, status):
+    """``update_document(unless_status=ABORTED)`` against moto's expression engine."""
+    service = stack["processor"].document_service
+    key = f"run-1612/unless-{status.lower()}.pdf"
+    _queue(stack, key, status=Status(status))
+    document = Document(id=key, input_key=key, status=Status.RUNNING)
+
+    service.update_document(document, unless_status=Status.ABORTED)
+
+    assert _status(stack, key) == "RUNNING"
+
+
+def test_unless_status_refuses_the_named_status_and_writes_nothing(stack):
+    workflow = stack["workflow"]
+    service = stack["processor"].document_service
+    key = "run-1612/unless-aborted.pdf"
+    _queue(stack, key, status=Status.ABORTED)
+    document = Document(id=key, input_key=key, status=Status.RUNNING)
+
+    # Matched by error code: the loaded handlers each hold their own import of
+    # the client module, so the exception class is not one shared object here.
+    with pytest.raises(Exception) as refused:
+        service.update_document(document, unless_status=Status.ABORTED)
+
+    assert getattr(refused.value, "error_code", None) == (
+        workflow.CONDITIONAL_CHECK_FAILED
+    ), refused.value
+    assert _status(stack, key) == "ABORTED"
+
+
+def test_unless_status_and_expected_status_are_exclusive(stack):
+    service = stack["processor"].document_service
+    document = Document(id="k", input_key="k", status=Status.RUNNING)
+    with pytest.raises(ValueError):
+        service.update_document(
+            document, expected_status=Status.QUEUED, unless_status=Status.ABORTED
+        )
+
+
+def test_the_post_start_write_allows_a_missing_status_explicitly(stack):
+    """The condition names a missing status as allowed, not left to ``<>``.
+
+    moto evaluates ``#ObjectStatus <> :v`` as true for an item with no status,
+    so dropping ``attribute_not_exists`` leaves every outcome here unchanged
+    (measured: that mutant passed this whole file). Whether DynamoDB's own
+    engine agrees is not something a moto test can establish, so what is
+    asserted is the request: the post-start write sends the explicit guard.
+    """
+    key = "run-1612/condition-shape.pdf"
+    record = _queue(stack, key, record=False)
+    processor = stack["processor"]
+    writes = []
+    events = processor.document_service.client.table.meta.client.meta.events
+    events.register(
+        "provide-client-params.dynamodb.UpdateItem",
+        lambda params, **_: writes.append(dict(params)),
+    )
+
+    assert processor.process_message(record) == (True, record["messageId"])
+
+    conditions = [w.get("ConditionExpression") for w in writes]
+    post_start = [c for c in conditions if c and ":UnlessObjectStatus" in c]
+    assert post_start == [
+        "attribute_not_exists(#ObjectStatus) OR #ObjectStatus <> :UnlessObjectStatus"
+    ], conditions
+    (aborted,) = [
+        w["ExpressionAttributeValues"][":UnlessObjectStatus"]
+        for w in writes
+        if ":UnlessObjectStatus" in (w.get("ConditionExpression") or "")
+    ]
+    assert aborted == "ABORTED"
+    assert _status(stack, key) == "RUNNING"
+
+
+def test_an_abort_in_the_window_is_stopped_when_the_post_start_write_fails(
+    stack, monkeypatch
+):
+    """A post-start write that fails for another reason (a throttle) is not a refusal.
+
+    It says nothing about the abort, so the processor re-reads the document
+    consistently and stops the execution if it is ABORTED.
+    """
+    key = "run-1612/write-throttled.pdf"
+    record = _queue(stack, key)
+    processor = stack["processor"]
+    _abort_after_first_call(stack, monkeypatch, processor.sfn, "start_execution", key)
+    service = processor.document_service
+    real_update = service.update_document
+
+    def update_document(document, **kwargs):
+        if kwargs.get("unless_status") is not None:
+            raise RuntimeError("ProvisionedThroughputExceededException")
+        return real_update(document, **kwargs)
+
+    monkeypatch.setattr(service, "update_document", update_document)
+
+    assert processor.process_message(record) == (True, record["messageId"])
+
+    (execution,) = _executions(stack)
+    assert execution["status"] == "ABORTED"
+    assert _status(stack, key) == "ABORTED"
+    assert _active(stack) == 1

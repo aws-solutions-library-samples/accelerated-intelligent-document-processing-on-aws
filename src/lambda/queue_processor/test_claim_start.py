@@ -181,3 +181,117 @@ class TestAbortedBeforeStart:
             "ConcurrencyCounterUpdateFailed"
         )
         qp.sqs.delete_message.assert_called_once()
+
+
+class _Refused(Exception):
+    """What the document service raises for a refused condition."""
+
+    error_code = "ConditionalCheckFailedException"
+
+
+EXECUTION_ARN = f"{SM_ARN.replace('stateMachine', 'execution')}:e1"
+
+
+class TestPostStartWrite:
+    """The write after StartExecution is refused for an ABORTED document (#1612).
+
+    End to end against moto in ``test_queued_abort_race.py``; pinned here for
+    the ``src_lambda`` coverage tree.
+    """
+
+    def test_the_write_is_conditional_on_the_document_not_being_aborted(self, qp):
+        success, _ = qp.process_message(_record())
+
+        assert success is True
+        qp.document_service.update_document.assert_called_once_with(
+            qp._doc, unless_status=qp.Status.ABORTED
+        )
+        qp.sfn.stop_execution.assert_not_called()
+
+    def test_a_refused_write_stops_the_execution_and_keeps_the_slot(self, qp):
+        qp.document_service.update_document.side_effect = _Refused("aborted")
+
+        success, message_id = qp.process_message(_record())
+
+        assert (success, message_id) == (True, MESSAGE_ID)
+        qp.sfn.stop_execution.assert_called_once()
+        assert qp.sfn.stop_execution.call_args.kwargs["executionArn"] == EXECUTION_ARN
+        # The execution owns the slot; the tracker releases it on ABORTED.
+        assert [c.kwargs for c in qp.update_counter.call_args_list] == [
+            {"increment": True}
+        ]
+        qp.sqs.delete_message.assert_called_once()
+
+    def test_any_other_write_failure_stops_nothing(self, qp):
+        qp.document_service.update_document.side_effect = RuntimeError("throttled")
+
+        success, _ = qp.process_message(_record())
+
+        assert success is True
+        qp.sfn.stop_execution.assert_not_called()
+        assert [c.kwargs for c in qp.update_counter.call_args_list] == [
+            {"increment": True}
+        ]
+
+    def test_stop_aborted_start_reports_a_stop(self, qp):
+        assert qp.stop_aborted_start(KEY, EXECUTION_ARN) is True
+        qp.sfn.stop_execution.assert_called_once_with(
+            executionArn=EXECUTION_ARN,
+            error="DocumentAborted",
+            cause="The document was aborted while its workflow was being started",
+        )
+
+    def test_stop_aborted_start_reports_a_failed_stop(self, qp):
+        qp.sfn.stop_execution.side_effect = RuntimeError("throttled")
+        assert qp.stop_aborted_start(KEY, EXECUTION_ARN) is False
+
+    @pytest.mark.parametrize("arn", [None, ""])
+    def test_stop_aborted_start_without_an_arn_calls_nothing(self, qp, arn):
+        assert qp.stop_aborted_start(KEY, arn) is False
+        qp.sfn.stop_execution.assert_not_called()
+
+    def test_a_failed_write_on_a_document_found_aborted_stops_it(self, qp):
+        """A throttled write says nothing about an abort; the re-read does."""
+        qp.document_service.update_document.side_effect = RuntimeError("throttled")
+        _abort_after_message_read(qp)
+        qp.document_service.claim_for_execution.return_value = True
+
+        success, _ = qp.process_message(_record())
+
+        assert success is True
+        qp.document_service.get_document.assert_called_with(KEY, consistent_read=True)
+        qp.sfn.stop_execution.assert_called_once()
+        assert qp.sfn.stop_execution.call_args.kwargs["executionArn"] == EXECUTION_ARN
+        assert [c.kwargs for c in qp.update_counter.call_args_list] == [
+            {"increment": True}
+        ]
+
+    def test_a_failed_write_whose_re_read_fails_stops_nothing(self, qp):
+        qp.document_service.update_document.side_effect = RuntimeError("throttled")
+        reads = []
+
+        def get_document(key, consistent_read=False):
+            reads.append(consistent_read)
+            if consistent_read:
+                raise RuntimeError("throttled too")
+            return None
+
+        qp.document_service.get_document = MagicMock(side_effect=get_document)
+
+        success, _ = qp.process_message(_record())
+
+        assert success is True
+        assert reads == [False, True]
+        qp.sfn.stop_execution.assert_not_called()
+
+    def test_a_failed_write_on_a_document_that_is_not_aborted_stops_nothing(self, qp):
+        qp.document_service.update_document.side_effect = RuntimeError("throttled")
+        qp.document_service.get_document = MagicMock(
+            return_value=_doc_with(qp, qp.Status.QUEUED)
+        )
+
+        success, _ = qp.process_message(_record())
+
+        assert success is True
+        qp.document_service.get_document.assert_called_with(KEY, consistent_read=True)
+        qp.sfn.stop_execution.assert_not_called()
