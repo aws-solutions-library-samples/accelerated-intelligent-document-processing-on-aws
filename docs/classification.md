@@ -36,7 +36,7 @@ classification:
       confidence: {mode, top_k_candidates, ...}
 
   two_stage:                     # strategy: two_stage
-    segmentation:                # where each section starts — no class list
+    boundary_detection:          # where each section starts — no class list
       method: llm
       llm:
         granularity, page, packet, boundary_hints
@@ -49,7 +49,7 @@ classification:
         system_prompt, task_prompt
         model settings + validation + confidence
 
-  file_shape:                    # Advanced — what you already know about a document
+  document_shape:                # Advanced — what you already know about a document
     sectionSplitting: llm_determined   # detect boundaries | disabled | page
     maxPagesForClassification: ALL     # only with sectionSplitting: disabled
 ```
@@ -57,7 +57,7 @@ classification:
 The model settings are the same block in every call: a model, its parameters,
 **modality** (send page text, send page images) and the image size. The two
 calls that assign a class — one stage, and two-stage section classification —
-add **validation** and **class confidence**. Segmentation has neither, because it
+add **validation** and **class confidence**. Boundary detection has neither, because it
 returns page ranges and never a class.
 
 Two of those settings are substituted rather than used as written when they
@@ -72,12 +72,12 @@ request or is silently ignored by a model family that has no effort control.
 | Setting | Values | What it decides |
 |---|---|---|
 | `strategy` | `single_pass` (default) \| `two_stage` | **Whether splitting and classifying are one call or two.** `two_stage` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
-| `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. One stage and segmentation each have their own. |
+| `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. One stage and boundary detection each have their own. |
 | `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty means "infer from this call's task prompt placeholders". |
-| `file_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
-| `file_shape.maxPagesForClassification` | `ALL` (default) \| a positive number of pages | **How much of a single-section document is classified.** Only with `sectionSplitting: disabled`: the first N pages are classified and the whole document takes their majority class. See [Page limit configuration](#page-limit-configuration) below, which carries the spelling hazards. |
+| `document_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
+| `document_shape.maxPagesForClassification` | `ALL` (default) \| a positive number of pages | **How much of a single-section document is classified.** Only with `sectionSplitting: disabled`: the first N pages are classified and the whole document takes their majority class. See [Page limit configuration](#page-limit-configuration) below, which carries the spelling hazards. |
 
-The settings combine freely. Two stage with segmentation at `packet` granularity
+The settings combine freely. Two stage with boundary detection at `packet` granularity
 and page images on is one boundary call over the whole packet with its images,
 followed by one section classification call per section found.
 
@@ -112,8 +112,8 @@ old setting becomes and the cases where the conversion is not a pure move.
   adds a second call to save a prefix that was only paid once. Each stage can use
   its own model, so boundaries can run on a cheap model and classification on a
   stronger one.
-- **A declared file shape skips the boundary work.** Under
-  `sectionSplitting: disabled` or `page`, two stage makes no segmentation calls:
+- **A declared document shape skips the boundary work.** Under
+  `sectionSplitting: disabled` or `page`, two stage makes no boundary detection calls:
   the segments are known, so it goes straight to section classification.
 - **The model choice outweighs all of it.** On the benchmark suite Nova 2 Lite,
   Claude Haiku 4.5 and Claude Sonnet 5 reached the same classification accuracy
@@ -217,8 +217,8 @@ classification:
       # contextPagesCount: 2  # Include 2 pages before and 2 pages after
 ```
 
-Two-stage segmentation at page granularity has the same setting at
-`classification.two_stage.segmentation.llm.page.contextPagesCount`.
+Two-stage boundary detection at page granularity has the same setting at
+`classification.two_stage.boundary_detection.llm.page.contextPagesCount`.
 
 **How It Works:**
 
@@ -645,9 +645,9 @@ of what tells you where a section starts. Subject to the call's
 **Few-shot examples.** `{FEW_SHOT_EXAMPLES}` is filled from each class's
 `x-aws-idp-examples`, the same way the page-level path fills it.
 
-> ⚠️ **In a two-stage *segmentation* prompt this placeholder renders empty, at
+> ⚠️ **In a two-stage *boundary detection* prompt this placeholder renders empty, at
 > either granularity.** Sending no examples is part of what makes the boundary
-> call cheap, so a segmentation template that references `{FEW_SHOT_EXAMPLES}`
+> call cheap, so a boundary detection template that references `{FEW_SHOT_EXAMPLES}`
 > gets nothing rather than an error. See
 > [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
 
@@ -663,8 +663,8 @@ classification:
       overlap_pages: "2"
 ```
 
-Two-stage segmentation at packet granularity has the same window settings at
-`classification.two_stage.segmentation.llm.packet`.
+Two-stage boundary detection at packet granularity has the same window settings at
+`classification.two_stage.boundary_detection.llm.packet`.
 
 The default of 20 is where Bedrock starts downscaling: above 20 image blocks in
 one request every image is shrunk to 2,000px, so a wider window with images on
@@ -734,7 +734,7 @@ Everything else on this page describes the Bedrock path.
 
 ## Section Splitting Strategies
 
-`classification.file_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One section* and *One per page*. It has three values:
+`classification.document_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One section* and *One per page*. It has three values:
 
 ### Available Strategies
 
@@ -747,7 +747,7 @@ Everything else on this page describes the Bedrock path.
 - If there's a tie, uses the class of the earliest segment carrying a tied class, for determinism
 - Ignores the detected boundaries when building sections — it still reads them to weight the vote
 - With a **single-class configuration**, sends no page to the model: every page is given that class with confidence `1.0`. Under `llm_determined`, a multi-page document in such a configuration still goes to the model for its section boundaries: page by page at page granularity, and in one call for the whole document at packet granularity
-- Under two stage, makes **no segmentation call**: the whole document is one segment, given its class by one section classification call
+- Under two stage, makes **no boundary detection call**: the whole document is one segment, given its class by one section classification call
 
 **Use Cases:**
 - Documents known to be single-type with no internal divisions
@@ -758,7 +758,7 @@ Everything else on this page describes the Bedrock path.
 **Configuration Example:**
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: disabled
 ```
 
@@ -814,7 +814,7 @@ This voting behavior addresses [Issue #167](https://github.com/aws-solutions-lib
 - Every page becomes an independent section
 - Each page keeps the class it was individually assigned
 - **Prevents automatic joining of adjacent same-class sections**
-- Under two stage, makes **no segmentation call**: each page is its own segment, given its class by its own section classification call
+- Under two stage, makes **no boundary detection call**: each page is its own segment, given its class by its own section classification call
 
 **Use Cases:**
 - **Critical for long documents with multiple same-type forms** (e.g., multiple W-2 forms, multiple invoices)
@@ -825,7 +825,7 @@ This voting behavior addresses [Issue #167](https://github.com/aws-solutions-lib
 **Configuration Example:**
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: page
 ```
 
@@ -851,7 +851,7 @@ This strategy directly addresses [Issue #146](https://github.com/aws-solutions-l
 **Configuration Example:**
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: llm_determined  # This is the default
 ```
 
@@ -873,7 +873,7 @@ classification:
 the model to lean one way; they replace boundary detection with a claim about the
 document, and nothing downstream can recover from the claim being wrong. A packet of
 eight forms declared `disabled` returns one section, with one extraction over
-eight forms' worth of pages. That is why these two sit under `file_shape` —
+eight forms' worth of pages. That is why these two sit under `document_shape` —
 *what you already know about this document* — rather than beside the strategy.
 
 So the choice is really a question about your input, not about accuracy:
@@ -896,8 +896,8 @@ Three further properties worth knowing:
   cases, on purpose: the class may be known but the boundaries are not, and
   silently skipping the call would collapse every packet into one
   section.
-- **`file_shape` applies identically under both strategies.** Under `two_stage`
-  a declared shape skips the segmentation call outright, leaving one section
+- **`document_shape` applies identically under both strategies.** Under `two_stage`
+  a declared shape skips the boundary detection call outright, leaving one section
   classification call per asserted section.
 - **`two_stage` with `sectionSplitting: page` is strictly dominated.** It makes
   one classification call per page with no boundary pass, which on a measured
@@ -909,12 +909,12 @@ Three further properties worth knowing:
 
 ### Configuration Placement
 
-`sectionSplitting` sits under `file_shape`, beside the page limit that only
+`sectionSplitting` sits under `document_shape`, beside the page limit that only
 applies to a single-section document:
 
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: disabled         # Options: llm_determined (default), disabled, page
     maxPagesForClassification: "3"     # Only with disabled: classify the first 3 pages
 ```
@@ -954,9 +954,9 @@ setting that is in force.
 - `llm_determined`: The model's segments used as sections (default behavior)
 
 **Two stage:**
-- `disabled`: No segmentation call; one section classification call over the document
-- `page`: No segmentation call; one section classification call per page
-- `llm_determined`: Segmentation finds the segments, then one section classification call each
+- `disabled`: No boundary detection call; one section classification call over the document
+- `page`: No boundary detection call; one section classification call per page
+- `llm_determined`: Boundary detection finds the segments, then one section classification call each
 
 ### Real-World Example: Multiple W-2 Forms
 
@@ -1157,13 +1157,13 @@ OCR → classification (LLM + optional regex) → extraction → assessment
 ships at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
-## Two-stage classification: segmentation, then section classification
+## Two-stage classification: boundary detection, then section classification
 
 `strategy: two_stage` (*Two stage* in the editor) splits the two jobs into two
 calls. One stage stays the default.
 
 ```
-packet ──► segmentation ──────────► segments {start_page, end_page}
+packet ──► boundary detection ────► segments {start_page, end_page}
                                         │
                                         ▼
            section classification ─► segments {start_page, end_page, class, confidence}
@@ -1183,7 +1183,7 @@ is classified forty times to produce one answer.
 classification:
   strategy: two_stage
   two_stage:
-    segmentation:
+    boundary_detection:
       method: llm
       llm:
         granularity: packet        # page | packet — this call's own
@@ -1201,22 +1201,22 @@ classification:
         confidence: {mode: topk}
 ```
 
-Segmentation has its own granularity, page and packet settings, prompts and
+Boundary detection has its own granularity, page and packet settings, prompts and
 model settings — the same call shape as one stage, asked a smaller question. At
 packet granularity it is one call (or one per window) asking for page ranges; at
 page granularity it is one call per page asking only `start` or `continue`, which
 still makes N calls but drops the prefix from each. It has no validation or
 class confidence, because it returns no class.
 
-> ⚠️ **Writing a custom segmentation prompt: the vocabulary placeholders render
+> ⚠️ **Writing a custom boundary detection prompt: the vocabulary placeholders render
 > empty there.** `{CLASS_NAMES_AND_DESCRIPTIONS}`,
 > `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` are
-> all substituted with nothing in a segmentation prompt, at either granularity
+> all substituted with nothing in a boundary detection prompt, at either granularity
 > and whatever `contextPagesCount` is set to — that absence *is* the dropped
 > prefix, so referencing one gets you silence rather than an error.
 > `boundary_hints: class_names` is the supported way to put the class **names**
 > into this call; it renders a short `{BOUNDARY_HINTS}` block, which in turn is
-> empty in every call other than segmentation, because it tells the model to
+> empty in every call other than boundary detection, because it tells the model to
 > report no class. See
 > [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
 
@@ -1228,7 +1228,7 @@ validation and class confidence.
 
 #### Setting `boundary_hints`
 
-`boundary_hints` decides whether the segmentation prompt is told your class
+`boundary_hints` decides whether the boundary detection prompt is told your class
 names. Leave it at **`none`** by default: withholding the vocabulary from the
 boundary pass is the saving two stage exists for, and a boundary is a question
 about where a section ends rather than about what kind it is.
@@ -1277,7 +1277,7 @@ Four things worth knowing:
   answers just as well. A custom or fine-tuned classification model
   (`CustomClassificationModelARN`, or *Create configuration version* on a
   fine-tuning job) is written to section classification.
-- **The halves are metered separately**, as `Segmentation/...` and
+- **The halves are metered separately**, as `BoundaryDetection/...` and
   `SectionClassification/...` in the cost table and the reporting database,
   while one stage keeps `Classification/...`. That split is what makes "is this
   actually cheaper on my documents?" answerable from the cost table rather than
@@ -1285,21 +1285,21 @@ Four things worth knowing:
 - **A document-name regex match skips section classification entirely.** The
   name already asserts the class, so a name-matched 40-page packet costs its
   boundary calls and no classification calls at all.
-- **A declared file shape skips segmentation entirely.** Under
-  `file_shape.sectionSplitting: disabled` the whole document is one segment, and
+- **A declared document shape skips boundary detection entirely.** Under
+  `document_shape.sectionSplitting: disabled` the whole document is one segment, and
   under `page` every page is one, so no boundary call is made.
 
 A segment whose section classification call fails keeps **no class** and is
 reported in the document's errors. Its boundaries are still good, and an
 invented class would propagate into extraction as though it had been decided.
 
-`segmentation.method` and `section_classification.method` ship with one value,
+`boundary_detection.method` and `section_classification.method` ship with one value,
 `llm`. A boundary-detection model, embeddings-based classification and external
 classifier endpoints (SageMaker, a Bedrock custom model, or a Lambda adapter in
 front of anything else) are described in
 [issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329);
 each needs measurement on real documents before its defaults can be set
-honestly. Their settings blocks (`segmentation.boundary_model`,
+honestly. Their settings blocks (`boundary_detection.boundary_model`,
 `section_classification.embeddings`, `decision_model` and `low_confidence`) are
 declared so adding a method later needs no configuration migration, and are
 ignored until their method exists.
@@ -1326,7 +1326,7 @@ are computed for one stage too.
 ## Choosing granularity, modality and strategy
 
 Granularity and modality are per call: one stage has one of each, and two stage
-sets them separately on segmentation and on section classification (which has
+sets them separately on boundary detection and on section classification (which has
 modality only — it is always one call per section).
 
 ### Use `granularity: packet` when
@@ -1399,7 +1399,7 @@ Two levers were measured on the over-split case and neither solves it:
   back-to-back sections of the same class easier to confuse.
 
 If neither error is acceptable, assert the shape instead of detecting it:
-`file_shape.sectionSplitting: disabled` gives a document known to hold a single section
+`document_shape.sectionSplitting: disabled` gives a document known to hold a single section
 exactly one section, and `page` gives a document of one-page sections exactly one
 section each. Both are assertions, so they are only right when you know the
 shape — see [Section Splitting Strategies](#section-splitting-strategies).
@@ -1464,7 +1464,7 @@ The durable reasons to pick two stage are not the prefix:
   label](#telling-a-wrong-boundary-from-a-wrong-label).
 
 Measure on your own corpus. The two stages are metered separately
-(`Segmentation/` and `SectionClassification/`, against one stage's
+(`BoundaryDetection/` and `SectionClassification/`, against one stage's
 `Classification/`), so the cost table answers the question directly.
 
 ### Comparison Table
@@ -1490,7 +1490,7 @@ For a document you know is a single section, classify only its first pages:
 
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: disabled          # one section per document
     maxPagesForClassification: "3"      # Default "ALL": classify every page
 ```
@@ -1509,7 +1509,7 @@ classified in full. `ALL` and `0` both mean "every page".
 
 You can customize classification behavior through the prompts of each call. The
 examples below are written for the one-stage page call
-(`classification.one_stage.page`); the packet call, segmentation and section
+(`classification.one_stage.page`); the packet call, boundary detection and section
 classification have the same two prompts in their own blocks.
 
 ### System Prompts
@@ -1531,7 +1531,7 @@ classification:
 
 Specify classification instructions and formatting. A page prompt must ask for
 the boundary verdict as well as the class, because `document_boundary` is the
-signal `file_shape.sectionSplitting: llm_determined` — the default — groups pages
+signal `document_shape.sectionSplitting: llm_determined` — the default — groups pages
 into sections with. A prompt that returns only a class name leaves every page
 looking like the start of a new section:
 
@@ -1566,7 +1566,7 @@ which produces an error if it is missing.**
   of `ordinal_start_page`/`ordinal_end_page`/`type`. Asking for the wrong one
   fails the parse rather than the validation. The shipped prompts in
   `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-  are the reference for both shapes, and the two-stage segmentation prompts there
+  are the reference for both shapes, and the two-stage boundary detection prompts there
   drop `class`/`type` entirely because that call assigns no class.
 - **Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`, unless you mean to drop one.**
   An unset `modality.text` or `modality.images` is **inferred from this call's
@@ -1816,11 +1816,11 @@ The placeholder is fully **opt-in**:
   can drop `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` into a custom
   `task_prompt` to give the model the extra signal.
 
-> ⚠️ **In a two-stage *segmentation* prompt this placeholder renders empty**,
+> ⚠️ **In a two-stage *boundary detection* prompt this placeholder renders empty**,
 > as `{CLASS_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` do: it carries
 > the class names, their descriptions *and* their attributes, which is more
 > vocabulary than the plain listing rather than less, and a boundary call that
-> carries none of it is the saving two-stage exists for. A segmentation
+> carries none of it is the saving two-stage exists for. A boundary detection
 > template referencing it gets nothing rather than an error;
 > `boundary_hints: class_names` is the supported way to put class **names**
 > into that call. See
@@ -2000,8 +2000,8 @@ A classification call's `image` block honours **only** `target_width` and
 writing them produces no error and no warning, and they do nothing here —
 rasterization DPI and binarization are OCR-stage decisions and belong under
 `ocr.image`. Under `strategy: two_stage` the same block exists on each stage at
-`classification.two_stage.segmentation.llm.image` and
-`classification.two_stage.section_classification.llm.image`, and the segmentation
+`classification.two_stage.boundary_detection.llm.image` and
+`classification.two_stage.section_classification.llm.image`, and the boundary detection
 one is the one worth shrinking first: a boundary decision needs layout, not
 legible body text.
 

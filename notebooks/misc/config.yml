@@ -92,7 +92,7 @@ classification:
         Remember: You must ONLY use document types that appear in the <document-types> reference data. Do not invent or create new document types.
         </final-instructions>
   two_stage:
-    segmentation:
+    boundary_detection:
       llm:
         model: us.amazon.nova-pro-v1:0
         max_tokens: '4096'

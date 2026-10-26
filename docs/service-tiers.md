@@ -99,7 +99,7 @@ and there are **two** fields to set:
 classification:
   strategy: two_stage
   two_stage:
-    segmentation:
+    boundary_detection:
       llm:
         model: "us.amazon.nova-2-lite-v1:0:flex"      # boundaries can wait
     section_classification:

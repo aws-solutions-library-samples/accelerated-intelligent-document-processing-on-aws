@@ -37,7 +37,7 @@ export const classificationModelOf = (classification: unknown): string | undefin
 
 /**
  * Write `model` into the class-assigning call of `classification`, creating the
- * path as needed. Segmentation keeps its own model: it only finds boundaries.
+ * path as needed. Boundary detection keeps its own model: it only finds boundaries.
  */
 export const setClassificationModel = (classification: Record<string, unknown>, model: string): void => {
   let node = classification;
@@ -110,13 +110,13 @@ export const DEFAULT_SECTION_SPLITTING = 'llm_determined';
  * The `sectionSplitting` a configuration will end up with, read the way the hop
  * reads it: ⚠️ **the FLAT key wins over the nested one.** That is the hop's own
  * hybrid rule (`v08_to_v09.py`: "in a hybrid — flat and nested keys in one dict —
- * the flat key wins"), where `_put` overwrites `file_shape.sectionSplitting` with
+ * the flat key wins"), where `_put` overwrites `document_shape.sectionSplitting` with
  * the flat value. Both helpers below go through this, so they cannot disagree
  * about precedence — two readers that did is the part most likely to be re-broken.
  */
 const sectionSplittingOf = (cls: Record<string, unknown>): unknown => {
   if ('sectionSplitting' in cls) return cls.sectionSplitting;
-  const nested = cls.file_shape && typeof cls.file_shape === 'object' ? (cls.file_shape as Record<string, unknown>) : undefined;
+  const nested = cls.document_shape && typeof cls.document_shape === 'object' ? (cls.document_shape as Record<string, unknown>) : undefined;
   return nested && 'sectionSplitting' in nested ? nested.sectionSplitting : undefined;
 };
 

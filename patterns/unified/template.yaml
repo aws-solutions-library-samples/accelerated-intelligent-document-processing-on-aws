@@ -1426,11 +1426,11 @@ Resources:
                 type: object
                 sectionLabel: Two stage
                 collapsible: false
-                description: "Boundary detection finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, boundary detection makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
+                description: "Boundary detection finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, boundary detection makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-boundary-detection-then-section-classification)"
                 order: 2
                 showWhen: [{ field: "strategy", value: "two_stage" }]
                 properties:
-                  segmentation:
+                  boundary_detection:
                     type: object
                     sectionLabel: Boundary detection
                     collapsible: true
@@ -2018,7 +2018,7 @@ Resources:
                                 description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
                                 order: 3
                                 dependsOn: { field: "mode", value: "verbalized" }
-              file_shape:
+              document_shape:
                 type: object
                 sectionLabel: Advanced — known document shape
                 collapsible: true

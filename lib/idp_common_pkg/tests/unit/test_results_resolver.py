@@ -701,7 +701,7 @@ def test_comparing_a_pre_0_9_run_with_a_current_one_lines_up_classification():
         "classification": {
             "one_stage": {"llm": {"model": "m2", "temperature": 0}},
             "two_stage": {
-                "segmentation": {"llm": {"model": "m1", "temperature": 0}},
+                "boundary_detection": {"llm": {"model": "m1", "temperature": 0}},
                 "section_classification": {"llm": {"model": "m1", "temperature": 0}},
             },
         },

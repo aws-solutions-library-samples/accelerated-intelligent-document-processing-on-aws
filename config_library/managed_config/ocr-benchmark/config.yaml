@@ -882,13 +882,13 @@ classification:
   # This preset runs one stage; the block keeps a switch to two stage on the
   # same model settings.
   two_stage:
-    segmentation:
+    boundary_detection:
       llm:
         max_tokens: '4096'
     section_classification:
       llm:
         max_tokens: '4096'
-  file_shape:
+  document_shape:
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
 extraction:

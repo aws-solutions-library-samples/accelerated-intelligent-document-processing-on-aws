@@ -116,8 +116,8 @@ Short key-value strings logged as MLflow params. These are filterable in the MLf
 | `classification.top_k` | `5.0` | The same call's `top_k` |
 | `classification.max_tokens` | `4096` | The same call's `max_tokens` |
 | `classification.strategy` | `single_pass` | `classification.strategy` |
-| `classification.granularity` | `page` | Granularity of the page-reading call: `classification.one_stage.granularity` for `single_pass`, `classification.two_stage.segmentation.llm.granularity` for `two_stage` (`page` when unset) |
-| `classification.segmentation.model` | `us.amazon.nova-2-lite-v1:0` | Two stage only: the boundary call's model, `classification.two_stage.segmentation.llm.model` |
+| `classification.granularity` | `page` | Granularity of the page-reading call: `classification.one_stage.granularity` for `single_pass`, `classification.two_stage.boundary_detection.llm.granularity` for `two_stage` (`page` when unset) |
+| `classification.boundary_detection.model` | `us.amazon.nova-2-lite-v1:0` | Two stage only: the boundary call's model, `classification.two_stage.boundary_detection.llm.model` |
 | `classification.modality.text` | `infer` | The class-assigning call's `llm.modality.text`; `infer` when unset, meaning the flag is inferred from the prompt's placeholders |
 | `classification.modality.images` | `infer` | The class-assigning call's `llm.modality.images`; `infer` when unset |
 | `extraction.model` | `us.amazon.nova-2-lite-v1:0` | Extraction model ID |
@@ -138,8 +138,8 @@ Only parameters that exist in the configuration are logged — missing values ar
 in one of them are indistinguishable in the MLflow UI.** The list above is the
 whole of what is logged; the ones most likely to be the variable in an experiment
 and absent from it are `two_stage.section_classification.pages` and its `k`,
-`two_stage.segmentation.llm.boundary_hints`, the packet
-`window_pages`/`overlap_pages`, `page.contextPagesCount`, `file_shape.*` and the
+`two_stage.boundary_detection.llm.boundary_hints`, the packet
+`window_pages`/`overlap_pages`, `page.contextPagesCount`, `document_shape.*` and the
 class-confidence block. If you are sweeping one of those, put the value in the
 run name or log it yourself — otherwise the comparison records identical
 parameters for runs that were not the same configuration.
@@ -151,7 +151,7 @@ Complex data structures logged as JSON files under the `metrics/` artifact path.
 | Artifact | Description |
 |----------|-------------|
 | `full_config.json` | Complete IDP configuration snapshot for the test run |
-| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `single_pass`, the `classification.one_stage.page` or `classification.one_stage.packet` prompts for the active granularity; under `two_stage`, `classification.two_stage.section_classification.llm`'s, with the boundary call's prompts as `classification.segmentation.system_prompt` and `classification.segmentation.task_prompt` |
+| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `single_pass`, the `classification.one_stage.page` or `classification.one_stage.packet` prompts for the active granularity; under `two_stage`, `classification.two_stage.section_classification.llm`'s, with the boundary call's prompts as `classification.boundary_detection.system_prompt` and `classification.boundary_detection.task_prompt` |
 | `class_definitions.json` | Document class schemas with field definitions and evaluation methods |
 | `weighted_overall_scores.json` | Weighted accuracy scores per document class |
 | `field_metrics.json` | Full per-field evaluation metrics |

@@ -132,11 +132,11 @@ Your Lambda function receives a **Converse API-compatible** payload:
 2. **`<<CACHEPOINT>>` tags are stripped** — These Bedrock-specific tags are removed from text content before sending to your Lambda.
 
 3. **`context` field is added** — Indicates which stage is calling: `OCR`,
-   `Classification`, `Segmentation`, `SectionClassification`, `Extraction`,
+   `Classification`, `BoundaryDetection`, `SectionClassification`, `Extraction`,
    `Assessment` or `Summarization`. ⚠️ Classification contributes **three**
    possible values, because the context names the stage rather than the step. A
    `single_pass` configuration calls your hook with `Classification`; a
-   `two_stage` configuration calls it with `Segmentation` for the boundary pass
+   `two_stage` configuration calls it with `BoundaryDetection` for the boundary pass
    and `SectionClassification` for the class pass, and never with
    `Classification`. A hook that branches on `context == "Classification"` falls
    through under two stage — match all three.

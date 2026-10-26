@@ -85,9 +85,9 @@ DEFAULTS_OMISSION_EXEMPT_SUBTREES: Dict[str, str] = {
         "configured; the field is an empty list and an empty list has no value to "
         "ship. Computed by test_an_omitted_collection_has_nothing_to_ship."
     ),
-    "classification.two_stage.segmentation.boundary_model": (
+    "classification.two_stage.boundary_detection.boundary_model": (
         "Declared for a boundary-detection model (#1329) and not implemented: "
-        "segmentation.method refuses 'boundary_model', so a default here would be a "
+        "boundary_detection.method refuses 'boundary_model', so a default here would be a "
         "setting nothing can reach. Computed by "
         "test_the_method_reaching_an_omitted_block_is_refused."
     ),
@@ -117,7 +117,7 @@ DEFAULTS_OMISSION_EXEMPT_FIELDS: Dict[str, str] = {}
 
 for _call in (
     "classification.one_stage.llm",
-    "classification.two_stage.segmentation.llm",
+    "classification.two_stage.boundary_detection.llm",
     "classification.two_stage.section_classification.llm",
 ):
     DEFAULTS_OMISSION_EXEMPT_FIELDS[f"{_call}.image.dpi"] = (
@@ -149,8 +149,8 @@ del _key
 #: The non-llm `method` value whose acceptance would make each omitted sub-block
 #: reachable. The premise for those four entries, as a per-member table.
 _METHOD_REACHING_OMITTED_BLOCK: Dict[str, Tuple[str, str]] = {
-    "classification.two_stage.segmentation.boundary_model": (
-        "classification.two_stage.segmentation.method",
+    "classification.two_stage.boundary_detection.boundary_model": (
+        "classification.two_stage.boundary_detection.method",
         "boundary_model",
     ),
     "classification.two_stage.section_classification.embeddings": (
@@ -439,7 +439,7 @@ def _stage_b_prompt_with(key: str, marker: str) -> str:
             "classification": {
                 "strategy": "two_stage",
                 "two_stage": {
-                    "segmentation": {"llm": {"granularity": "packet"}},
+                    "boundary_detection": {"llm": {"granularity": "packet"}},
                     "section_classification": {
                         "llm": {"confidence": {"mode": "topk", key: marker}}
                     },
@@ -452,7 +452,9 @@ def _stage_b_prompt_with(key: str, marker: str) -> str:
         service = ClassificationService(
             region="us-west-2", config=config, backend="bedrock"
         )
-    return service._get_classification_config(service.STAGE_LABELING)["task_prompt"]
+    return service._get_classification_config(service.STAGE_SECTION_CLASSIFICATION)[
+        "task_prompt"
+    ]
 
 
 @pytest.mark.parametrize("key", sorted(SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS))

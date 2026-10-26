@@ -185,7 +185,7 @@ workflow — OCR, extraction, assessment and the shared tail — is unchanged.
 
 ⚠️ Classification is configured per model call rather than once, so hooking "the
 classifier" can mean more than one setting: one-stage classification has a single
-call, while two-stage has a segmentation call and a section-classification call, and
+call, while two-stage has a boundary detection call and a section-classification call, and
 replacing only one of them leaves the other on its Bedrock model. The
 [Lambda Inference Hooks](./lambda-hook-inference.md) page carries the exact
 configuration key per call and the context value your hook receives for each.

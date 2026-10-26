@@ -1075,11 +1075,11 @@ class TestAModelRefusingImagesNamesTheSetting:
         [
             ("classification", "classification.one_stage.llm.modality.images"),
             (
-                "segmentation",
-                "classification.two_stage.segmentation.llm.modality.images",
+                "boundary_detection",
+                "classification.two_stage.boundary_detection.llm.modality.images",
             ),
             (
-                "labeling",
+                "section_classification",
                 "classification.two_stage.section_classification.llm.modality.images",
             ),
         ],

@@ -73,7 +73,7 @@ interface PromptPreviewProps {
 
 /** Processing steps available for prompt preview.
  *
- * `classification_segmentation` and `classification_section` are the two halves
+ * `classification_boundary_detection` and `classification_section` are the two halves
  * of `classification.strategy: two_stage`. They are listed unconditionally here
  * and FILTERED at render time (see `availableSteps`), because a step that is not
  * reachable under the current configuration would otherwise render an empty
@@ -82,7 +82,7 @@ interface PromptPreviewProps {
  */
 const STEPS = [
   { value: 'classification', label: 'Classification: one stage' },
-  { value: 'classification_segmentation', label: 'Classification: boundary detection (Two stage)' },
+  { value: 'classification_boundary_detection', label: 'Classification: boundary detection (Two stage)' },
   { value: 'classification_section', label: 'Classification: section classification (Two stage)' },
   { value: 'extraction', label: 'Extraction' },
   { value: 'confidence', label: 'Confidence Assessment' },
@@ -92,7 +92,7 @@ const STEPS = [
 type StepName = (typeof STEPS)[number]['value'];
 
 /** Every step that reads the classification config. */
-const CLASSIFICATION_STEPS: StepName[] = ['classification', 'classification_segmentation', 'classification_section'];
+const CLASSIFICATION_STEPS: StepName[] = ['classification', 'classification_boundary_detection', 'classification_section'];
 
 // Geometry modes in which the model is asked to emit bounding boxes (mirrors
 // idp_common.extraction.prompt_assembly.geometry_requires_llm_boxes).
@@ -153,7 +153,7 @@ export function resolveTopK(configured: number, numClasses: number): number {
 }
 
 /** The three classification calls the preview can show. */
-export type ClassificationStep = 'classification' | 'classification_segmentation' | 'classification_section';
+export type ClassificationStep = 'classification' | 'classification_boundary_detection' | 'classification_section';
 
 /** The dict at `path` under `root`, or `{}`. */
 function objAt(root: Record<string, unknown>, ...path: string[]): Record<string, unknown> {
@@ -171,7 +171,7 @@ function objAt(root: Record<string, unknown>, ...path: string[]): Record<string,
  * Mirrors `_stage_prompt`, `_call` and `_class_confidence_prompt` in
  * `classification/service.py`. Section classification is not
  * granularity-dependent — it is always one call about one section's pages —
- * while segmentation and one stage both are. Each call applies its OWN modality
+ * while boundary detection and one stage both are. Each call applies its OWN modality
  * and, for the two class-assigning calls, its own confidence block.
  *
  * A cleared stage prompt previews empty: the service then sends the shipped
@@ -192,8 +192,8 @@ export function resolveClassificationStepPrompt(
     system = String(call.system_prompt ?? '');
     task = String(call.task_prompt ?? '');
   } else {
-    reader = step === 'classification_segmentation' ? objAt(cls, 'two_stage', 'segmentation', 'llm') : objAt(cls, 'one_stage');
-    call = step === 'classification_segmentation' ? reader : objAt(reader, 'llm');
+    reader = step === 'classification_boundary_detection' ? objAt(cls, 'two_stage', 'boundary_detection', 'llm') : objAt(cls, 'one_stage');
+    call = step === 'classification_boundary_detection' ? reader : objAt(reader, 'llm');
     isPacket = String(reader.granularity ?? 'page') === 'packet';
     const prompts = objAt(reader, isPacket ? 'packet' : 'page');
     system = String(prompts.system_prompt ?? '');
@@ -205,10 +205,10 @@ export function resolveClassificationStepPrompt(
   // markers, and moving placeholders afterwards could carry content across one.
   task = applyModalityToPrompt(task, objAt(call, 'modality'));
 
-  // Segmentation reports no class, so there is nothing to be confident about.
+  // Boundary detection reports no class, so there is nothing to be confident about.
   // `topk` is the model default, so an absent key previews the block the service
   // WILL send.
-  if (step !== 'classification_segmentation') {
+  if (step !== 'classification_boundary_detection') {
     const conf = objAt(call, 'confidence');
     const confMode = String(conf.mode ?? 'topk');
     if (confMode !== 'off') {
@@ -1141,7 +1141,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     const twoStage = String(cls.strategy ?? 'single_pass') === 'two_stage';
     return STEPS.filter((step) => {
       if (step.value === 'classification') return !twoStage;
-      if (step.value === 'classification_segmentation' || step.value === 'classification_section') {
+      if (step.value === 'classification_boundary_detection' || step.value === 'classification_section') {
         return twoStage;
       }
       return true;
@@ -1236,7 +1236,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         // prompt if the template references it; substitutions for
         // unreferenced keys are no-ops.
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = formatClassAndAttributeNamesAndDescriptions(classes);
-        // {BOUNDARY_HINTS} belongs to the segmentation step alone — the block
+        // {BOUNDARY_HINTS} belongs to the boundary detection step alone — the block
         // it renders tells the model to report no document type, which is the
         // one thing these two steps exist to do — so the service substitutes
         // empty here. It has no DOCUMENT_PLACEHOLDER_LABELS entry either, so
@@ -1245,13 +1245,13 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         subs.BOUNDARY_HINTS = '';
         break;
 
-      case 'classification_segmentation': {
+      case 'classification_boundary_detection': {
         // ⚠️ Stage A gets NO class vocabulary — that absence is the prefix
         // saving two-stage exists for, so rendering the listing here would show
         // a prompt costing what single-pass costs. {BOUNDARY_HINTS} carries the
         // class NAMES only, and only when boundary_hints asks for them.
         const cls = (formValues?.classification as Record<string, unknown>) || {};
-        const hints = String(objAt(cls, 'two_stage', 'segmentation', 'llm').boundary_hints ?? 'none');
+        const hints = String(objAt(cls, 'two_stage', 'boundary_detection', 'llm').boundary_hints ?? 'none');
         subs.CLASS_NAMES_AND_DESCRIPTIONS = '';
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = '';
         // Stage A sends no examples either, for the same reason and at a
