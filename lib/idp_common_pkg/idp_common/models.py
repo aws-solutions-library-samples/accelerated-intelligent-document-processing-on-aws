@@ -541,9 +541,9 @@ class Section:
     hold the section with a ``blueprint_confidence`` reason, as legacy HITL
     marks the segment for review; a ``None`` confidence alone cannot, because a
     section whose segment did not match a blueprint is unscored too. Serialized
-    by ``to_dict`` only when True, so other payloads are unchanged. The DynamoDB
-    tracking record does not carry it, so a document reloaded from there reads
-    False.
+    only when True, by ``to_dict`` and as ``BlueprintUnscored`` in the DynamoDB
+    tracking record, so other payloads are unchanged and a reprocess that
+    reloads the document is held again.
     """
 
     @classmethod

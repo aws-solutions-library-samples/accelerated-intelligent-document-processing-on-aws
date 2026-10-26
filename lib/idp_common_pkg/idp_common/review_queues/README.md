@@ -100,8 +100,9 @@ In queue mode:
   BDA mode a matched blueprint under `hitl.confidence_threshold` is a
   `blueprint_confidence` reason, and so is a matched blueprint whose confidence is
   unscored: the BDA result processor sets `Section.blueprint_unscored`, and the
-  reason carries a score of 0.0. The flag is carried by `Section.to_dict` but not
-  by the DynamoDB tracking record. A section whose segment matched no blueprint is
+  reason carries a score of 0.0. The flag is persisted in the document's own
+  serialization and in the tracking table (`BlueprintUnscored`, written only when
+  true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
   unscored too but is not flagged, so it is not held, as legacy HITL does not mark
   it. So routing agrees exactly with the alerts users
   see, and it reads nothing from S3. A malformed alert is skipped. The module must

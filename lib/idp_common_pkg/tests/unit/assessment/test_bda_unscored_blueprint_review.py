@@ -82,6 +82,10 @@ def _body(bp_literal: str) -> bytes:
 def _decide(bp_literal: str, threshold: float, mode: str) -> bool:
     """True when the segment is reviewed: legacy HITL marks it, or queue mode
     builds a reason for it (``route_for_review`` holds exactly when it does)."""
+    return _process(bp_literal, threshold, mode)[0]
+
+
+def _process(bp_literal: str, threshold: float, mode: str):
     from idp_common.models import Document, Section
 
     body = _body(bp_literal)
@@ -122,11 +126,11 @@ def _decide(bp_literal: str, threshold: float, mode: str) -> bool:
     # No field alert in any cell, so only the blueprint confidence decides.
     assert result.sections[0].confidence_threshold_alerts == []
     if mode == "legacy":
-        return bool(hitl)
+        return bool(hitl), result, config
     # In queue mode the legacy marking is off for every segment.
     assert hitl is False
     assert [m.hitl_triggered for m in result.hitl_metadata] == [None]
-    return bool(build_reasons(result, config, mode="bda"))
+    return bool(build_reasons(result, config, mode="bda")), result, config
 
 
 CELLS = [(lit, t, m) for lit in LITERALS for t in THRESHOLDS for m in MODES]
@@ -327,9 +331,7 @@ class TestParseBlueprintConfidence:
 
 class TestBlueprintUnscoredPersists:
     """The flag travels with the document's own serialization (the workflow
-    payload between steps). The DynamoDB tracking record does not carry it, so a
-    reprocess that reloads the document from DynamoDB starts unflagged; that is
-    no fewer reviews than before, when queue mode never held an unscored match."""
+    payload between steps); the tracking-table round trip is tested below."""
 
     def test_section_round_trip(self):
         from idp_common.models import Section
@@ -353,3 +355,109 @@ class TestBlueprintUnscoredPersists:
         assert [("blueprint_unscored" in s) for s in data["sections"]] == [True, False]
         back = Document.from_dict(data)
         assert [s.blueprint_unscored for s in back.sections] == [True, False]
+
+
+def _through_dynamodb(document):
+    """The document as a reprocess sees it: written by ``update_document`` and
+    read back by the tracking-table reader (``process_changes_resolver`` and the
+    SDK's extraction rerun both reload it from there before ``skip_bda``)."""
+    from unittest.mock import MagicMock
+
+    from idp_common.dynamodb.service import DocumentDynamoDBService
+
+    client = MagicMock()
+    client.update_item.return_value = {"Attributes": {}}
+    service = DocumentDynamoDBService(dynamodb_client=client)
+    service.update_document(document)
+    sections = client.update_item.call_args.kwargs["expression_attribute_values"][
+        ":Sections"
+    ]
+    return service._dynamodb_item_to_document(
+        {"ObjectKey": "pkg.pdf", "ObjectStatus": "COMPLETED", "Sections": sections}
+    )
+
+
+@pytest.mark.parametrize("literal", LITERALS)
+@pytest.mark.parametrize("threshold", THRESHOLDS)
+def test_a_reprocess_from_dynamodb_is_reviewed_as_the_first_run(literal, threshold):
+    """Base persisted a scored blueprint (``"95%"`` as 0.95) as ``Confidence``,
+    so a reprocess re-held it. An unscored one is held on a reprocess only if
+    the flag is persisted too, or it would be reviewed less than on base."""
+    first, result, config = _process(literal, threshold, "queue")
+    reloaded = _through_dynamodb(result)
+    assert [s.blueprint_unscored for s in reloaded.sections] == [
+        s.blueprint_unscored for s in result.sections
+    ]
+    again = bool(build_reasons(reloaded, config, mode="bda"))
+    assert again is first
+    assert again >= (threshold in BEFORE[literal]["queue"])
+
+
+class TestBlueprintUnscoredInDynamoDB:
+    """Every tracking-table section writer carries the flag, and the reader
+    restores it; a section without it is written as before."""
+
+    def setup_method(self):
+        from unittest.mock import MagicMock
+
+        from idp_common.dynamodb.service import DocumentDynamoDBService
+
+        self.client = MagicMock()
+        self.client.update_item.return_value = {"Attributes": {}}
+        self.service = DocumentDynamoDBService(dynamodb_client=self.client)
+
+    @staticmethod
+    def _section(flag):
+        from idp_common.models import Section
+
+        return Section(
+            section_id="1", classification="x", page_ids=["1"], blueprint_unscored=flag
+        )
+
+    def _doc(self, flag):
+        from idp_common.models import Document
+
+        return Document(
+            id="d",
+            input_key="d",
+            queued_time="2025-07-07T14:00:00.000Z",
+            sections=[self._section(flag)],
+        )
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_update_document(self, flag):
+        self.service.update_document(self._doc(flag))
+        [data] = self.client.update_item.call_args.kwargs[
+            "expression_attribute_values"
+        ][":Sections"]
+        assert data.get("BlueprintUnscored") is (True if flag else None)
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_update_document_section(self, flag):
+        self.service.update_document_section(
+            document_id="d", section_index=0, section=self._section(flag)
+        )
+        data = self.client.update_item.call_args.kwargs["expression_attribute_values"][
+            ":section"
+        ]
+        assert data.get("BlueprintUnscored") is (True if flag else None)
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_create_document_run(self, flag):
+        self.service.create_document_run(
+            document=self._doc(flag),
+            run_id="20250707T141530Z-a",
+            manifest_uri="s3://o/m",
+        )
+        data = self.client.put_item.call_args[0][0]["Sections"][0]
+        assert data.get("BlueprintUnscored") is (True if flag else None)
+
+    @pytest.mark.parametrize("stored,expected", [(True, True), (None, False)])
+    def test_reader(self, stored, expected):
+        section = {"Id": "1", "Class": "x", "PageIds": [1]}
+        if stored is not None:
+            section["BlueprintUnscored"] = stored
+        doc = self.service._dynamodb_item_to_document(
+            {"ObjectKey": "d", "ObjectStatus": "COMPLETED", "Sections": [section]}
+        )
+        assert doc.sections[0].blueprint_unscored is expected
