@@ -472,11 +472,15 @@ Both halves test the **leaf's own** value, so a scored but empty cell counts for
 neither: an absent value has no place on the page for a box to sit, and a missing
 box is the correct outcome rather than a finding. ⚠️ That narrows the list half as
 well — a section whose only box-less scored leaves sit in empty cells reported
-before and is silent now. Neither half reports at all when no page carried OCR
-geometry: every scored leaf is box-less there, so a list section would
-otherwise report through the row count and blame `geometry.mode` for a match
-that was never attempted. Both callers — the assessment service and the
-extraction service — pass that fact through.
+before and is silent now. Under `ocr_only`, neither half reports when no page carried
+OCR geometry: that mode derives every box from value-matching, so a box-less leaf
+means no match was attempted rather than that one failed. Both callers — the
+assessment service and the extraction service — pass that fact through.
+
+⚠️ The suppression is scoped to `ocr_only` because only there is the premise true.
+Under `llm_grounded` the model emits the boxes and OCR only corrects them, so a
+box-less leaf on a backend carrying no geometry is a genuine model omission — and
+it still reports, with `root_cause` naming the model rather than the match.
 
 The scalar side was counted in neither half before
 ([#1520](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1520)) —

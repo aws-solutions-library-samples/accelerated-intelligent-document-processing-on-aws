@@ -415,3 +415,47 @@ class TestNoGeometrySuppressesBothHalves:
             geometry_available=False,
         )
         assert "assessment_geometry_incomplete" not in _codes(issues)
+
+
+class TestTheSuppressionIsScopedToOcrOnly:
+    """⚠️ "No match was attempted" is true of one mode, not of geometry generally.
+
+    ``ocr_only`` derives every box from value-matching, so a backend carrying no
+    OCR geometry means nothing was tried. Under ``llm_grounded`` the model emits
+    the boxes and OCR only corrects them, so a box-less leaf there is a genuine
+    model omission — and it is exactly what the non-``ocr_only`` ``root_cause``
+    reports, so suppressing it would make that branch unreachable on every backend
+    that emits no geometry.
+    """
+
+    EXTRACTION = {"Items": [{"Name": "Widget"}, {"Name": "Gadget"}]}
+
+    def _issues(self, mode, available):
+        assessment = {"Items": [{"Name": _scored()}, {"Name": _scored()}]}
+        _gaps, issues = audit_explainability(
+            assessment,
+            self.EXTRACTION,
+            geometry_mode=mode,
+            section_id="1",
+            geometry_available=available,
+        )
+        return issues
+
+    def test_ocr_only_is_suppressed_without_geometry(self):
+        assert "assessment_geometry_incomplete" not in _codes(
+            self._issues("ocr_only", False)
+        )
+
+    def test_llm_grounded_still_reports_without_geometry(self):
+        issues = self._issues("llm_grounded", False)
+        issue = _issue(issues, "assessment_geometry_incomplete")
+        assert issue.root_cause == "model omitted a box for some cells"
+
+    def test_the_model_omission_cause_stays_reachable(self):
+        """The branch the over-broad suppression made dead."""
+        for available in (False, True):
+            issue = _issue(
+                self._issues("llm_grounded", available),
+                "assessment_geometry_incomplete",
+            )
+            assert issue.root_cause == "model omitted a box for some cells"

@@ -2056,7 +2056,18 @@ def audit_explainability(
     # ``geometry.mode`` for a match that was never attempted. Suppressing one half
     # and not the other is the shape that makes a note hard to read rather than
     # merely noisy.
-    if geometry_available is not False and (missing_geometry_rows or nothing_located):
+    #
+    # ⚠️ **Only under ``ocr_only``, because only there is the premise true.** That
+    # mode derives every box from value-matching, so no OCR geometry means no match
+    # was attempted. Under ``llm_grounded`` the model emits the boxes and OCR only
+    # corrects them, so a box-less leaf on a backend that carries no geometry is a
+    # genuine model omission — which is precisely what the ``root_cause`` below
+    # reports for that mode, and suppressing it would make that branch unreachable
+    # on every such backend.
+    suppressed_no_ocr_geometry = (
+        geometry_mode == "ocr_only" and geometry_available is False
+    )
+    if not suppressed_no_ocr_geometry and (missing_geometry_rows or nothing_located):
         issues.append(
             ProcessingIssue(
                 stage="assessment",
