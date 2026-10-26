@@ -105,7 +105,7 @@ The **Upload Documents** panel accepts documents from two sources, selected with
 - **From my computer** — pick one or more files with the file picker (or drag-and-drop). Files are uploaded directly to the InputBucket via a presigned POST and processed automatically.
 - **Sample documents** — choose from the sample documents bundled with the deployment (e.g. a multi-page bank statement, a lending package, a batch of W-2 forms). Selecting a sample copies it server-side into the InputBucket — no local download required. This is the easiest way to try the accelerator or evaluate a configuration preset end-to-end.
 
-In both modes you can set an optional **folder prefix** and pick the **Configuration Version** used to process the document(s).
+In both modes you can set an optional **folder prefix** and pick the **Configuration Profile** and **Configuration revision** used to process the document(s).
 
 ![Upload Documents panel with a folder prefix, configuration profile and revision selected, and three files queued](../images/webui-upload.png)
 
