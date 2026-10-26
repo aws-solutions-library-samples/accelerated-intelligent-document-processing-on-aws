@@ -120,7 +120,7 @@ const ClassCell = ({
     <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
   );
 
-  // Only rendered when the section holds more than one document, so a normal
+  // Only rendered when the section holds more than one record, so a normal
   // section is just its class name.
   const instances = <MultiInstanceBadge item={item} />;
 
@@ -145,10 +145,10 @@ const ClassCell = ({
 const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <span>{item.PageIds.join(', ')}</span>;
 
 // Multi-instance annotation, rendered INSIDE the class cell rather than in a
-// column of its own. `InstanceCount` is how many separate documents of this
+// column of its own. `InstanceCount` is how many separate records of this
 // section's Class extraction found in it, and it is worth screen space in
 // exactly one case:
-//   > 1        -> the section holds several distinct documents that
+//   > 1        -> the section holds several distinct records that
 //                 classification did not split apart. A Badge (the same Badge
 //                 vocabulary the "Skipped" annotation uses) plus a hover Popover.
 //   1, 0, absent -> nothing at all. A column showed "1" on every row of a normal
@@ -163,7 +163,7 @@ const PageIdsCell = ({ item }: { item: SectionItem }): React.JSX.Element => <spa
 // working as intended.
 //
 // EXCEPT for the #753 case, where the count comes from the model's own answer to
-// "how many documents are in these pages" and the extra records were NOT
+// "how many records are in these pages" and the extra records were NOT
 // extracted. "Each one was extracted as its own instance" would be flatly untrue
 // there, so the badge reads the section's own
 // `extraction_multi_instance_suspected` issue — the authoritative signal, already
@@ -186,23 +186,23 @@ const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element 
       position="top"
       size="medium"
       triggerType="custom"
-      header={suspected ? 'Documents may be missing from this section' : 'Multiple documents in one section'}
+      header={suspected ? 'Records may be missing from this section' : 'Multiple records in one section'}
       content={
         <SpaceBetween size="xs">
           {suspected ? (
             <Box variant="p">
-              These pages appear to contain {count} separate {item.Class || 'document'} documents, but only the first was extracted — the
-              rest are not in the result.
+              These pages appear to contain {count} separate {item.Class ? `${item.Class} records` : 'records'}, but only the first was
+              extracted — the rest are not in the result.
             </Box>
           ) : (
             <Box variant="p">
-              Extraction found {count} separate {item.Class || 'document'} documents in this section. Each one was extracted as its own
-              instance.
+              Extraction found {count} separate {item.Class ? `${item.Class} records` : 'records'} in this section. Each one was extracted
+              as its own instance.
             </Box>
           )}
           <Box variant="small" color="text-body-secondary">
             {suspected
-              ? 'Split the section (classification section splitting), or turn on multi-instance extraction for this class so every document is extracted.'
+              ? 'Split the section (classification section splitting), or turn on multi-instance extraction for this class so every record is extracted.'
               : 'If these should be separate sections, review the classification settings for this class.'}
           </Box>
         </SpaceBetween>

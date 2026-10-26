@@ -49,7 +49,7 @@ comes from the system defaults in
 settings, not preset choices — change the preset and they move with the defaults.
 
 - **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
-  returns both the document boundaries and the classes
+  returns both the section boundaries and the classes
 - **Granularity**: page (`classification.one_stage.granularity`) — one classification
   per page rather than per packet
 - **Model**: `us.amazon.nova-2-lite-v1:0`
@@ -59,7 +59,7 @@ settings, not preset choices — change the preset and they move with the defaul
   inferred from the placeholders the call's task prompt uses
 - **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features
 
-The classification component analyzes document content and structure to accurately identify lending document types and establish proper page boundaries within multi-document packages.
+The classification component analyzes document content and structure to accurately identify each section's lending document class and establish the section boundaries within each lending packet.
 
 ### Extraction Settings
 

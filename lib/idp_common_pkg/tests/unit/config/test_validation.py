@@ -1303,7 +1303,7 @@ class TestValidateReportsTheClassificationConversion:
                 "classes": [],
             }
         )
-        assert any("one document per file" in w for w in result["warnings"])
+        assert any("one section per document" in w for w in result["warnings"])
 
     def test_a_nested_file_gets_no_conversion_notice(self):
         from idp_common.config.merge_utils import validate_config

@@ -95,9 +95,9 @@ During stack deployment, the system automatically:
 
 Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
 
-Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.file_shape.sectionSplitting: disabled`, because every file is one invoice: all of a file's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.file_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
 
-The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.file_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a file holding several documents. To get one section per file in a profile built from the preset, set **Section splitting** to `disabled` in it.
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.file_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** to `disabled` in it.
 
 ---
 
@@ -168,7 +168,7 @@ All test sets are immediately available after stack deployment:
 2. Select the test set from the **Select Test Set** dropdown:
    - "RealKIE-FCC-Verified" for invoice extraction testing
    - "OmniAI-OCR-Benchmark" for multi-format document testing
-   - "DocSplit-Poly-Seq" for document splitting and classification testing
+   - "DocSplit-Poly-Seq" for section splitting and classification testing
    - "Fake-W2-Tax-Forms" for W-2 tax form extraction testing
 3. Enter a description in the **Context** field
 4. Click **Run Test** to start processing
@@ -185,10 +185,10 @@ All test sets are immediately available after stack deployment:
 - Benchmarking multi-format document processing pipelines
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
@@ -202,13 +202,13 @@ All test sets are immediately available after stack deployment:
 **DocSplit Dataset**: https://huggingface.co/datasets/amazon/doc_split  
 **Documents Source**: https://huggingface.co/datasets/jordyvl/rvl_cdip_n_mp
 
-The DocSplit dataset contains 500 multi-page packet PDFs created by combining pages from 13 different document types. Documents are sourced from the RVL-CDIP-N-MP dataset. Each packet contains multiple subdocuments of different types to test classification and document splitting capabilities.
+The DocSplit dataset contains 500 multi-page packet PDFs created by combining pages from 13 different document types. Documents are sourced from the RVL-CDIP-N-MP dataset. Each packet combines several source documents of different types, to test classification and section splitting capabilities.
 
 #### Benchmark Methodology
 
 **DocSplit-Poly-Seq (Multi Category Documents Concatenation Sequentially):** Creates document packets by first determining a target page count (5-20 pages), then sequentially selecting documents from different categories without repetition. For each selected document, all of its pages are included while preserving the original page ordering, and this process continues until the target page count is reached.
 
-This benchmark simulates the most common real-world scenario where heterogeneous documents are assembled into packets, as observed in medical claims processing where prescription records, laboratory results, and insurance forms are concatenated. The varying document types test models' ability to detect inter-document boundaries based on content and structural transitions, a fundamental requirement for accurate packet splitting.
+This benchmark simulates the most common real-world scenario where heterogeneous documents are assembled into packets, as observed in medical claims processing where prescription records, laboratory results, and insurance forms are concatenated. The varying document types test models' ability to detect section boundaries based on content and structural transitions, a fundamental requirement for accurate packet splitting.
 
 #### Document Types
 
@@ -242,8 +242,8 @@ During stack deployment, the system automatically:
 
 #### Key Features
 
-- **Multi-Document Packets**: Each PDF contains 2-10 distinct documents of different types
-- **Splitting Evaluation**: Tests ability to correctly split multi-document packets into individual sections
+- **Multi-Section Packets**: Each PDF combines 2-10 source documents of different types
+- **Splitting Evaluation**: Tests ability to correctly split packets into sections
 - **Classification Diversity**: 13 document types provide comprehensive classification testing
 - **Variable Page Counts**: Packets range from 5 to 20 pages with varying complexity
 - **Ground Truth Included**: Complete page-level classification and splitting information
@@ -256,14 +256,14 @@ Use with: `config_library/unified/rvl-cdip/config.yaml`
 
 This test set enables evaluation of:
 - **Page-Level Classification**: Accuracy of classifying each page to correct document type
-- **Document Splitting**: Accuracy of identifying document boundaries within packets
+- **Section Splitting**: Accuracy of identifying section boundaries within packets
 - **Split Order**: Accuracy of maintaining correct page order within each split section
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 ---
 
@@ -340,10 +340,10 @@ All datasets share these deployment characteristics:
 - Benchmarking multi-format document processing pipelines
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 ---
 
@@ -625,7 +625,7 @@ Every source shares three optional fields:
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
-  (packets containing multiple sub-documents).
+  (packets that split into several sections).
 
 The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes

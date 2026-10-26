@@ -400,8 +400,8 @@ cannot fire; the condition is detected inside the first retry round instead. The
 count there is unchanged (2 before, 2 after) and the gain is purely diagnostic.
 
 The observed trigger is a class marked `x-aws-idp-multi-instance: true`: the wrapper
-makes the *instance list* the outer list field, so one "row" is a whole document
-instance carrying its own long inner list (a 100-row `Transactions` table). The
+makes the *instance list* the outer list field, so one "row" is a whole instance
+(record) carrying its own long inner list (a 100-row `Transactions` table). The
 sizer counts such a row by every leaf it emits, inner cells included, so it is sized
 as the 201-leaf row it is rather than as a one-column one. That makes the first pass
 batch it correctly; it cannot make a single instance whose own output exceeds the

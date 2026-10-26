@@ -54,7 +54,7 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 For **Classification** there is one *Model* dropdown per model call, and which
 ones appear depends on **Strategy**: *One stage* (`strategy: single_pass` in the
 JSON and YAML views) shows one, and *Two stage* (`strategy: two_stage`) shows one
-under *Segmentation* and one under *Section classification*. Hooking only one of
+under *Boundary detection* and one under *Section classification*. Hooking only one of
 the two leaves the other on its Bedrock model, which is a supported
 configuration — the hook receives a different `context` for each, so one Lambda
 can serve both.

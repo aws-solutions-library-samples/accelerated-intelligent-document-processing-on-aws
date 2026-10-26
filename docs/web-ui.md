@@ -277,7 +277,7 @@ The Edit Sections feature provides an intelligent interface for modifying docume
 ### Key Capabilities
 
 - **Section Management**: Create, update, and delete document sections with validation
-- **Classification Updates**: Change section document types with real-time validation
+- **Classification Updates**: Change section classes with real-time validation
 - **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
 - **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
 - **Immediate Feedback**: Status updates appear instantly in the UI
@@ -291,9 +291,9 @@ The Edit Sections feature provides an intelligent interface for modifying docume
 
 #### Section editing workflow
 
-1. **Edit Section Classifications**: Use dropdowns to change document types
+1. **Edit Section Classifications**: Use dropdowns to change section classes
 2. **Modify Page Assignments**: Edit comma-separated page IDs (e.g., "1, 2, 3")
-3. **Add New Sections**: Click "Add Section" for new document boundaries
+3. **Add New Sections**: Click "Add Section" for new section boundaries
 4. **Delete Sections**: Use remove buttons to delete unnecessary sections
 5. **Validation**: Real-time validation prevents overlapping pages and invalid configurations
 6. **Submit Changes**: Click "Save & Process Changes" to trigger selective reprocessing

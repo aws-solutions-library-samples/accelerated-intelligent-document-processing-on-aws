@@ -76,14 +76,14 @@ describe('the shipped classification schema', () => {
   it('shows the one-stage block, and not the two-stage one, for single_pass', () => {
     renderClassification({ strategy: 'single_pass', one_stage: { granularity: 'page' } });
     expect(visible('One stage')).toBe(true);
-    expect(visible('Segmentation')).toBe(false);
+    expect(visible('Boundary detection')).toBe(false);
     expect(visible('Section classification')).toBe(false);
   });
 
   it('shows the one-stage block when no strategy is stored, which is the default', () => {
     renderClassification({});
     expect(visible('One stage')).toBe(true);
-    expect(visible('Segmentation')).toBe(false);
+    expect(visible('Boundary detection')).toBe(false);
   });
 
   it('shows both two-stage calls, and not the one-stage block, for two_stage', () => {
@@ -91,8 +91,8 @@ describe('the shipped classification schema', () => {
       strategy: 'two_stage',
       two_stage: { segmentation: { method: 'llm' }, section_classification: { method: 'llm' } },
     });
-    expect(visible('Segmentation')).toBe(true);
-    expect(visible('LLM segmentation')).toBe(true);
+    expect(visible('Boundary detection')).toBe(true);
+    expect(visible('LLM boundary detection')).toBe(true);
     expect(visible('LLM section classification')).toBe(true);
     expect(visible('One stage')).toBe(false);
   });

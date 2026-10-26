@@ -140,19 +140,20 @@ class, because a classification model is not trained to find boundaries.
 
 ### A page limit with boundary detection
 
-`maxPagesForClassification` gives a whole file one class from its first N pages.
+`maxPagesForClassification` gives a whole document one class from its first N pages.
 In v0.6.12, combined with boundary detection (`sectionSplitting: llm_determined`
-or `page`), it collapsed a file **longer** than N pages to one section while a
-file of N pages or fewer was classified and sectioned normally — one setting gave
-a different answer for different files in the same run.
+or `page`), it collapsed a document **longer** than N pages to one section while a
+document of N pages or fewer was classified and sectioned normally — one setting gave
+a different answer for different documents in the same run.
 
-In v0.6.13 the page limit applies only to a one-document file. A stored
+In v0.6.13 the page limit applies only when the whole document is one section
+(*One section*, `sectionSplitting: disabled`). A stored
 configuration combining a limit with boundary detection is converted to
 `file_shape.sectionSplitting: disabled`, with a warning in the log naming both
-settings, so a long file keeps the behaviour it had. ⚠️ **A short multi-document
-file in such a configuration becomes one section** where v0.6.12 sectioned it.
+settings, so a long document keeps the behaviour it had. ⚠️ **A short packet in
+such a configuration becomes one section** where v0.6.12 sectioned it.
 Set `maxPagesForClassification: ALL` and `sectionSplitting: llm_determined` if
-you want boundary detection on every file instead. None of the presets shipped
+you want boundary detection on every document instead. None of the presets shipped
 with the solution uses the combination.
 
 The same rule applies to a v0.6.13 configuration you write by hand, at a
@@ -252,14 +253,14 @@ upload, use the stored values — note the configuration *block* is named
 
 - **One stage** (`strategy: single_pass`) — granularity, the page or packet
   settings for that granularity, and the model block (`one_stage.…`).
-- **Two stage** (`strategy: two_stage`) — **Segmentation**
+- **Two stage** (`strategy: two_stage`) — **Boundary detection**
   (`two_stage.segmentation`: method, granularity, boundary hints, page or packet
   settings, model block) and **Section classification**
   (`two_stage.section_classification`: method, *pages per section* with its `k`,
   prompts, model block).
-- **Advanced — known file shape** (`file_shape`), collapsed: *Section splitting*
+- **Advanced — known document shape** (`file_shape`), collapsed: *Section splitting*
   (`sectionSplitting`: `llm_determined`, `disabled` or `page`) and *Pages to
-  classify* (`maxPagesForClassification`), which appears only for *One document*
+  classify* (`maxPagesForClassification`), which appears only for *One section*
   — the label for `sectionSplitting: disabled`.
 
 Each model block has its own model picker, modality, image settings and model

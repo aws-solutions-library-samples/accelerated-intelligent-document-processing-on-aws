@@ -82,7 +82,7 @@ interface PromptPreviewProps {
  */
 const STEPS = [
   { value: 'classification', label: 'Classification: one stage' },
-  { value: 'classification_segmentation', label: 'Classification: segmentation (Two stage)' },
+  { value: 'classification_segmentation', label: 'Classification: boundary detection (Two stage)' },
   { value: 'classification_section', label: 'Classification: section classification (Two stage)' },
   { value: 'extraction', label: 'Extraction' },
   { value: 'confidence', label: 'Confidence Assessment' },
@@ -1438,13 +1438,13 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             {schemaDivergence.wrapped && (
               <span>
                 <strong>Multi-instance Sections</strong> is on for this class, so the schema actually sent wraps the fields below in an{' '}
-                <code>instances[]</code> array — one entry per document found in the section.
+                <code>instances[]</code> array — one entry per instance found in the section.
               </span>
             )}
             {schemaDivergence.probe && (
               <span>
-                <strong>Multi-document Section Detection</strong> is on, so one extra property (<code>IDPDocumentInstanceCount</code>) is
-                added to the schema sent for every class, asking the model how many documents the pages contain. It is stripped from the
+                <strong>Multi-instance Section Detection</strong> is on, so one extra property (<code>IDPDocumentInstanceCount</code>) is
+                added to the schema sent for every class, asking the model how many instances the pages contain. It is stripped from the
                 result and never appears in your extracted data.
               </span>
             )}

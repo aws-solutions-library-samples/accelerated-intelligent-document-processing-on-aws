@@ -41,9 +41,9 @@ Two behaviours are deliberate and the migration guide states them:
   both placeholders — so for a two-stage configuration the inferred flags are
   written explicitly onto the stage blocks whenever the single-pass prompt they
   were inferred from is present, and the stage calls see exactly what they saw.
-* **A page limit implies "one document".** ``maxPagesForClassification`` exists
-  to give a whole file one class from its first N pages. Combined with boundary
-  detection it used to collapse only files longer than N while sectioning shorter
+* **A page limit implies "one section".** ``maxPagesForClassification`` exists
+  to give a whole document one class from its first N pages. Combined with boundary
+  detection it used to collapse only documents longer than N while sectioning shorter
   ones normally — a side effect, not a feature, and one no configuration value can
   express. Such a combination is converted to ``sectionSplitting: disabled``, with
   a warning naming both settings.
@@ -331,10 +331,10 @@ def conversion_notices(config: Any) -> List[str]:
         notices.append(
             f"classification.maxPagesForClassification is {limit!r} with "
             f"sectionSplitting {splitting!r}; converted to file_shape."
-            "sectionSplitting 'disabled' (one document per file), because a page "
-            "limit applies only to a one-document file. A short multi-document "
-            "file is now one section. Set the page limit to ALL to keep boundary "
-            "detection."
+            "sectionSplitting 'disabled' (one section per document), because a "
+            "page limit applies only when the whole document is one section. A "
+            "short packet is now one section. Set the page limit to ALL to keep "
+            "boundary detection."
         )
     return notices
 
@@ -489,7 +489,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
     if "invalidClassFallback" in flat:
         out["fallback_class"] = copy.deepcopy(flat["invalidClassFallback"])
 
-    # ── File shape. A page limit implies "one document" (see the module doc).
+    # ── File shape. A page limit implies "one section" (see the module doc).
     if "sectionSplitting" in flat:
         _put(out, ("file_shape",), "sectionSplitting", flat["sectionSplitting"])
     if "maxPagesForClassification" in flat:
@@ -505,10 +505,10 @@ def migrate_v08_to_v09(config: Any) -> Any:
             if splitting is not None and splitting != "disabled":
                 logger.warning(
                     "classification.maxPagesForClassification is %r, which gives "
-                    "the whole file one class from its first pages, but "
+                    "the whole document one class from its first pages, but "
                     "sectionSplitting was %r. Converted to sectionSplitting "
-                    "'disabled' (one document): the limit used to collapse only "
-                    "files longer than it while sectioning shorter ones, which no "
+                    "'disabled' (one section): the limit used to collapse only "
+                    "documents longer than it while sectioning shorter ones, which no "
                     "single setting can express. Set the page limit to ALL to keep "
                     "boundary detection.",
                     limit,

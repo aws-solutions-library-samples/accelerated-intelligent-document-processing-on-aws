@@ -271,13 +271,13 @@ classification:
           task_prompt_verbalized: |-
             <class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
             Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
-  # ── Advanced: known file shape ───────────────────────────────────────────
-  # By default every file is treated as a packet and its boundaries are
-  # detected. These ASSERT the shape instead.
-  # sectionSplitting: llm_determined (detect) | disabled (one document) |
-  #   page (one document per page).
+  # ── Advanced: known document shape ───────────────────────────────────────────
+  # By default every document is treated as a packet and its section
+  # boundaries are detected. These ASSERT the shape instead.
+  # sectionSplitting: llm_determined (detect) | disabled (one section for the
+  #   whole document) | page (one section per page).
   # maxPagesForClassification: with 'disabled' only — classify the first N
-  #   pages and give the whole file their majority class.
+  #   pages and give the whole document their majority class.
   file_shape:
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL

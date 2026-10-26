@@ -418,7 +418,7 @@ class ClassificationService:
             logger.warning(
                 "classification.file_shape.maxPagesForClassification is %r but "
                 "sectionSplitting is %r; the page limit applies only to 'disabled' "
-                "(one document per file) and is ignored.",
+                "(one section per document) and is ignored.",
                 self.max_pages_for_classification,
                 file_shape.sectionSplitting,
             )
@@ -4206,7 +4206,7 @@ class ClassificationService:
         - **any strategy on a single-page document** — there is no boundary
           decision to make on one page, so the result is identical either way and
           an inference call would be pure waste. This keeps the common
-          "one document per file" single-class deployment at zero classification
+          "one section per document" single-class deployment at zero classification
           cost, which is what the original short-circuit was really protecting.
 
         ``llm_determined`` on a multi-page document is NOT skippable. It asks for

@@ -254,7 +254,7 @@ more, because each is judged on a *rate* and a single sample cannot resolve one.
 | `enforcecost` | What does `fail_action: escalate` cost? | `cost` — the only enforcement arm that spends money per failure; kept separate so it is never run by accident |
 | `forcing` | Does forcing the schema as a tool improve extraction? | `cell_accuracy`, `completeness_recall`, and `forced_tool_honored_rate` — **not** "did it parse" |
 | `restatement` | Does dropping the duplicated schema copy cost completeness? | `completeness_recall`. The gate is completeness, not tokens: a saving that loses list rows is a loss |
-| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-document file (must yield 2). A fix that only stops over-splitting regresses the second |
+| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-section packet (must yield 2). A fix that only stops over-splitting regresses the second |
 | `boundaryctl` | Control for `boundary`: what did the **pre-fix** prompt score? | `sections_correct`. Runs the frozen pre-#653 prompt from `benchmarks/matrices/prompts/`, so the claim is a measured delta rather than a single post-fix number |
 | `splitcost` | What did making `llm_determined` do real work cost? | `cost`, `repeats: 5` |
 
