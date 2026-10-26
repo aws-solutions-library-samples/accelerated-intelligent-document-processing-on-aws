@@ -1474,12 +1474,13 @@ be able to discard the team's annotation work.
 
 ### Running Tests
 1. Select test set from dropdown
-2. **Optional**: Select configuration version to use for processing
-3. **Optional**: Enter number of files to limit processing (useful for quick testing)
-4. **Optional**: Add context description for the test run
-5. Click "Run Test" (single test execution only)
-6. Monitor progress via TestRunnerStatus
-7. View results in integrated listing
+2. **Optional**: Pin a **Test set version** (defaults to the set's current labels)
+3. **Optional**: Select a **Configuration Profile**, and optionally a **Configuration revision**
+4. **Optional**: Enter number of files to limit processing (useful for quick testing)
+5. **Optional**: Add context description for the test run
+6. Click "Run Test" (single test execution only)
+7. Monitor progress via TestRunnerStatus
+8. View results in integrated listing
 
 ![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
 
@@ -1500,7 +1501,7 @@ For full details on configuration profiles and their revisions, see [configurati
 - **QUEUED**: File copying jobs queued in SQS
 - **RUNNING**: Files being copied and processed
 - **EVALUATING**: Documents processed, evaluation in progress
-- **COMPLETED**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETED while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
+- **COMPLETE**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETE while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
 - **PARTIAL_COMPLETE**: Test finished with some documents failed. A document whose evaluation failed or timed out (`EvaluationStatus` `FAILED` or `TIMED_OUT`) counts as failed, and the run's metrics cover the documents that were scored
 - **FAILED**: Errors during processing
 - **ABORTED**: Test run manually stopped before completion
