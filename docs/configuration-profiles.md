@@ -796,13 +796,13 @@ When a document is processed, the configuration version used is recorded:
 
 ### Version Selector in Processing UIs
 
-A **Configuration Version** dropdown is available in:
+A **Configuration Profile** selector is available in:
 
-- **Upload Documents** panel — select which version to use when uploading new documents
-- **Reprocess Document** modal — select which version to use when reprocessing
-- **Discovery** panel — select which version to save discovered schemas to
+- **Upload Documents** panel — the profile to process new documents with, plus a **Configuration revision** selector that defaults to the profile's current revision
+- **Reprocess Document** modal — the same profile and revision pair, for reprocessing
+- **Discovery** panel — the profile to save discovered schemas to
 
-The dropdown shows all available versions with their descriptions, and indicates which is currently active.
+The selector lists every profile with its description and marks the one that is active.
 
 ## Test Studio Integration
 

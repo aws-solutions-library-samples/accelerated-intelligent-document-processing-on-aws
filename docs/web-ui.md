@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT-0
 
 The solution includes a responsive web-based user interface built with React that provides comprehensive document management and monitoring capabilities.
 
-![Web UI Screenshot](../images/WebUI.png)
+![Document List filtered to a folder of processed sample documents](../images/WebUI.png)
 
 _The Document List, filtered to a folder of processed sample documents, with status, configuration profile, duration and confidence-alert columns._
 
