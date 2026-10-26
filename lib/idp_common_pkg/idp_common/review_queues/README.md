@@ -82,9 +82,14 @@ the stack has a `HITLTable`, and its Default queue is `enabled` (read through
 fresh run in that state never holds. Anything else is `"legacy"`, logged at DEBUG as
 `event=review_mode_legacy reason=<hitl_disabled|default_queue_disabled|no_store>`.
 In legacy mode routing writes nothing, and the HITL marking is reproduced by
-`legacy_section_triggers` and `bda_segment_triggers`; the latter reads a null,
-non-numeric or non-finite (NaN, infinite) blueprint confidence as 0.0, so an
-unscored match is marked for review.
+`legacy_section_triggers` and `bda_segment_triggers`. Both BDA modes read the
+blueprint confidence through `idp_common.utils.parse_blueprint_confidence`, which
+is `parse_confidence` except that a string is scored only when `float()` accepts
+it, so a percentage string (`"95%"`) is unscored rather than rescaled. An unscored
+blueprint confidence (null, non-finite, a bool, a string `float()` rejects, or a
+value outside 0 to 1 after a bare number in (1, 100] is rescaled, so `150` and
+`-0.2`) is reviewed at every threshold: legacy HITL marks the segment and queue
+mode holds it (below).
 In queue mode:
 
 - **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
@@ -93,7 +98,12 @@ In queue mode:
   `hitl.confidence_threshold`) is a `low_confidence` reason named by its path
   (`Address.City`, `Rows[0].Amount`), with the alert's confidence and threshold. In
   BDA mode a matched blueprint under `hitl.confidence_threshold` is a
-  `blueprint_confidence` reason. So routing agrees exactly with the alerts users
+  `blueprint_confidence` reason, and so is a matched blueprint whose confidence is
+  unscored: the BDA result processor sets `Section.blueprint_unscored`, and the
+  reason carries a score of 0.0. The flag is carried by `Section.to_dict` but not
+  by the DynamoDB tracking record. A section whose segment matched no blueprint is
+  unscored too but is not flagged, so it is not held, as legacy HITL does not mark
+  it. So routing agrees exactly with the alerts users
   see, and it reads nothing from S3. A malformed alert is skipped. The module must
   not import `idp_common.assessment`: the Pipeline ProcessResults Lambda installs
   only the `review_queues` extra. Up to 20 reasons are stored per item, worst gap
