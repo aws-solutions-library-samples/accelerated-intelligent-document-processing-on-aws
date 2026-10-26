@@ -106,7 +106,8 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 **Automatic Token Population from Processed Documents**:
 - Reads the completed documents in the Document List's current period. The list's rows
   carry no metering, so the full record of the most recent completed documents (up to 25)
-  is fetched when you choose **Populate tokens from Documents**, one request per document.
+  is fetched when you choose **Populate tokens from Documents**, one request per document,
+  a few at a time.
   Opening Capacity Planning starts the list load if no other page has.
 - Extraction of token usage from metering data structure
 - Support for multiple document selection and batch population

@@ -16,7 +16,7 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { documentsNeedingDetail, MAX_DOCUMENTS_TO_DETAIL, withDetails } from '../populate-sources';
+import { DETAIL_FETCH_CHUNK_SIZE, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENTS_TO_DETAIL, withDetails } from '../populate-sources';
 
 const ctx = vi.hoisted(() => ({
   value: {} as Record<string, unknown>,
@@ -82,6 +82,18 @@ describe('Populate tokens from Documents', () => {
     expect(await screen.findAllByText(/docs\/payslip\.pdf/)).not.toHaveLength(0);
   });
 
+  it('requests full records a few at a time, not all at once', async () => {
+    const rows = Array.from({ length: DETAIL_FETCH_CHUNK_SIZE + 2 }, (_, i) => ({ ...LIST_ROW, ObjectKey: `docs/d${i}.pdf` }));
+    const value = contextWith({ documents: rows, getDocumentDetailsFromIds: vi.fn().mockResolvedValue([]) });
+    render(<CapacityPlanningLayout />);
+
+    await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
+
+    const fetch = value.getDocumentDetailsFromIds as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(fetch.mock.calls.map(([keys]) => (keys as string[]).length)).toEqual([DETAIL_FETCH_CHUNK_SIZE, 2]);
+  });
+
   it('starts the document list load when no page has asked for it', () => {
     const value = contextWith({ documents: [], hasListBeenLoaded: false });
     render(<CapacityPlanningLayout />);
@@ -115,5 +127,21 @@ describe('withDetails', () => {
     const merged = withDetails([{ ObjectKey: 'a' }, { ObjectKey: 'b' }], [{ ObjectKey: 'b', extra: 1 } as { ObjectKey: string }]);
 
     expect(merged).toEqual([{ ObjectKey: 'a' }, { ObjectKey: 'b', extra: 1 }]);
+  });
+});
+
+describe('fetchInChunks', () => {
+  it('fetches in rounds and concatenates the results in order', async () => {
+    const fetchDetails = vi.fn(async (chunk: string[]) => chunk.map((key) => key.toUpperCase()));
+
+    expect(await fetchInChunks(['a', 'b', 'c'], fetchDetails, 2)).toEqual(['A', 'B', 'C']);
+    expect(fetchDetails.mock.calls).toEqual([[['a', 'b']], [['c']]]);
+  });
+
+  it('makes no request for no keys', async () => {
+    const fetchDetails = vi.fn();
+
+    expect(await fetchInChunks([], fetchDetails)).toEqual([]);
+    expect(fetchDetails).not.toHaveBeenCalled();
   });
 });

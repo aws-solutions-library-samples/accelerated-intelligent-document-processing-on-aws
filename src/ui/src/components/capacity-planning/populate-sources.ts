@@ -31,3 +31,23 @@ export const withDetails = <T extends { ObjectKey: string }>(documents: T[], det
   const byKey = new Map(detailed.map((doc) => [doc.ObjectKey, doc]));
   return documents.map((doc) => byKey.get(doc.ObjectKey) ?? doc);
 };
+
+/**
+ * How many full records are requested at once. The same bound the Document List
+ * uses when it hydrates rows (its HYDRATION_CHUNK_SIZE), so one button press cannot
+ * become a burst of simultaneous API calls that the API throttles.
+ */
+export const DETAIL_FETCH_CHUNK_SIZE = 5;
+
+/** Fetch `keys` in rounds of `chunkSize`, concatenating what each round returns. */
+export const fetchInChunks = async <T>(
+  keys: string[],
+  fetchDetails: (chunk: string[]) => Promise<T[]>,
+  chunkSize = DETAIL_FETCH_CHUNK_SIZE,
+): Promise<T[]> => {
+  const results: T[] = [];
+  for (let i = 0; i < keys.length; i += chunkSize) {
+    results.push(...(await fetchDetails(keys.slice(i, i + chunkSize))));
+  }
+  return results;
+};
