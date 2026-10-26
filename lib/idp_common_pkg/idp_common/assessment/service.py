@@ -1752,6 +1752,10 @@ class AssessmentService:
             # produced); in 'llm_grounded' real OCR boxes refine the model's
             # estimates. Skipped for 'llm' (boxes as-is) and 'off' (no geometry).
             geometry_mode = self.config.extraction.geometry.mode
+            # Whether any page actually carried OCR geometry. The audit's rung needs
+            # this to tell "nothing matched" from "nothing was available to match
+            # against" — see audit_explainability's geometry_available.
+            ocr_geometry_available: bool | None = None
             if geometry_mode not in ("llm", "off"):
                 try:
                     from idp_common.assessment.ocr_grounding import (
@@ -1761,6 +1765,10 @@ class AssessmentService:
 
                     page_data_by_page = load_page_ocr_data(
                         document.pages, sorted_page_ids
+                    )
+                    ocr_geometry_available = any(
+                        isinstance(pd, dict) and pd.get("geometryAvailable")
+                        for pd in (page_data_by_page or {}).values()
                     )
                     if page_data_by_page:
                         enhanced_assessment_data = ground_assessment_geometry(
@@ -1814,6 +1822,7 @@ class AssessmentService:
                 geometry_mode=geometry_mode,
                 section_id=section_id,
                 ladder_issues=ladder_issues,
+                geometry_available=ocr_geometry_available,
             )
             processing_issues = ladder_issues + audit_issues
 

@@ -50,12 +50,50 @@ _LEVENSHTEIN_MATCH_THRESHOLD = 0.8
 # Keeps unions tight; multi-line addresses/cells are typically 2-4 lines.
 _MAX_SPAN_LINES = 6
 
+#: Separator punctuation collapsed to a space *inside* a string before matching.
+#:
+#: The defect this closes is in the SPAN tier rather than in anything about lists
+#: (#1520). A value written across two OCR lines carries a separator **at the line
+#: break that the page does not have**: the document reads ``"510 W. 24th Street,
+#: #2"`` then ``"Sioux Falls, SD 57105"``, and extraction returns the two joined by
+#: ``", "``. :func:`_collect_span_candidates` joins consecutive lines with a single
+#: space and requires exact equality, so that one extra comma defeats the span and
+#: the field falls back to whatever fragment matched — measured cases include a box
+#: on the OCR line ``"1"`` for a full street address and on ``"A."`` for a thesis
+#: title. Collapsing the separators on both sides makes the two agree.
+#:
+#: ⚠️ **Only ``,`` and ``;``, and the exclusions are measured rather than cautious.**
+#: Adding ``/`` and ``|`` was tried over the same corpus and is worse on both counts:
+#: it loses a box, and it moves five date boxes to a *different* rendering of the
+#: same date (two of them onto another page), because ``/`` is the separator
+#: :func:`_value_variants` builds its ``%m/%d/%Y`` forms from — so stripping it lets
+#: a reformatted variant outrank the line carrying the value verbatim. ``/`` is also
+#: how a model composes a label that is nowhere on the page (``"Request/Approval"``,
+#: ``"Yes/No"``), and giving those a box is the #1519 harm rather than a fix.
+#:
+#: ⚠️ **The trailing ``\s`` is the load-bearing part, not a tidiness detail.** A
+#: separator a model inserted at a join is followed by whitespace (``", "``); one
+#: *inside* a token is digit grouping or OCR noise and must be left alone. Collapsing
+#: those too costs 60 boxes on a deliberately-garbled OCR corpus: the line
+#: ``"2,6,6914"`` is a mangled ``"2,669.14"`` that the Levenshtein tier matches at
+#: 0.875, and substituting a space **adds a character that was never there**, pushing
+#: the character distance past the threshold. Those boxes were correct — they sat on
+#: the amount — so the narrower rule keeps a tier this one has no business touching.
+#:
+#: This runs on **both** an extracted value and an OCR line, since one function
+#: normalizes both. It can therefore only make the two *agree* about punctuation
+#: they already differ on; it never adds text to either side.
+_INTERNAL_SEPARATORS = re.compile(r"[,;]+\s")
+
 
 def _normalize(text: Any) -> str:
-    """Casefold, collapse whitespace, and strip surrounding punctuation."""
+    """Casefold, collapse separators and whitespace, strip surrounding punctuation."""
     if text is None:
         return ""
     s = str(text).casefold()
+    # Internal separator punctuation -> space, so a value and the OCR line it came
+    # from compare equal when only their separators differ (see the constant).
+    s = _INTERNAL_SEPARATORS.sub(" ", s)
     # Collapse all whitespace runs to single spaces.
     s = re.sub(r"\s+", " ", s).strip()
     # Strip leading/trailing punctuation that commonly differs between an
@@ -1145,6 +1183,48 @@ def match_value_to_geometry(
     # span beats fuzzy), so a high-precision hit is never displaced by fuzzy noise.
     best_tier = min(tier for tier, *_ in candidates)
     best = [c for c in candidates if c[0] == best_tier]
+
+    # At the best matching tier the tie is about provenance rather than precision, so
+    # prefer the line carrying the value as extracted over a format-bridged rendering
+    # of it. Without this the tie-break below is positional, and collapsing a
+    # separator can promote a variant to EXACT alongside the verbatim hit: a
+    # ``"4-15-11"`` whose own line sits on page 2 is then grounded on page 1's
+    # ``"APR 15 2011"`` stamp, which reading order reaches first (#1520).
+    #
+    # ⚠️ **Never when a row mapping is in play.** With ``occurrence_index`` set, row
+    # *i* is the *i*-th candidate in reading order, so the position in this list IS
+    # the row correspondence — and filtering by provenance destroys it. A column
+    # where one occurrence is rendered verbatim and the others only match through a
+    # variant then narrows to the single verbatim candidate, the ``len(best) == 1``
+    # return below fires, and **every row is handed the same box**; with several
+    # survivors, row *i* indexes a pool that no longer contains row *i*. Row order
+    # already disambiguates those rows, so the preference has nothing to add there —
+    # it exists for the scalar case, which passes no index.
+    #
+    # ⚠️ **Nor when a spatial signal exists.** Under ``llm_grounded`` the model's own
+    # box arrives as ``preferred_geometry`` and the branch below picks the candidate
+    # nearest it. Filtering first could discard a separator-bridged candidate sitting
+    # exactly where the model said the value was, in favour of a verbatim one
+    # elsewhere on the page — which is the opposite of what that signal is for. So the
+    # preference runs only when neither disambiguator is present, which is the
+    # ``ocr_only`` scalar case it was measured on.
+    #
+    # ⚠️ **It settles provenance, not candidacy — and needs the demotion above to
+    # be sound.** For a number the primary rendering is arbitrary: ``str(6.0)`` is
+    # ``"6.0"``, a substring of ``"126.00 total"``. Preferring it over a variant
+    # would favour a coincidence if such a hit still ranked equal to the line holding
+    # the value, which is what the embedded-number demotion prevents (#1565) — a
+    # short number joined to further digits ranks below a whole numeric token, so it
+    # is no longer in the tie this block resolves. Bounding the preference from this
+    # side instead was tried twice and measured net-negative over an
+    # 18,177-section corpus: an EXACT-tier gate cost 15 correct rate boxes, and a
+    # token-boundary rejection cost 73 account numbers the model had transcribed one
+    # digit short — where the box was on the right field and the highlight is what
+    # would have caught the error. Demotion, not rejection, is why those keep a box.
+    if occurrence_index is None and ref is None:
+        verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
+        if verbatim_at_tier:
+            best = verbatim_at_tier
 
     if len(best) == 1:
         _, geometry, source, ocr_conf = best[0]
