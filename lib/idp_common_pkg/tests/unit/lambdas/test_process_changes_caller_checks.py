@@ -21,6 +21,7 @@ beyond a ``ProjectionExpression`` and a GSI equality query.
 
 import importlib.util
 import os
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import boto3
@@ -30,6 +31,7 @@ from moto import mock_aws
 _REPO_ROOT = os.path.join(os.path.dirname(__file__), "../../../../..")
 TRACKING = "pc-caller-checks-tracking"
 USERS = "pc-caller-checks-users"
+CONFIG = "pc-caller-checks-config"
 OUTPUT_BUCKET = "pc-output-bucket"
 WORKING_BUCKET = "pc-working-bucket"
 OBJECT_KEY = "packet.pdf"
@@ -44,6 +46,9 @@ _ENV = {
     "AWS_SESSION_TOKEN": "testing",  # nosec B105 - moto dummy credential
     "TRACKING_TABLE": TRACKING,
     "USERS_TABLE_NAME": USERS,
+    # The processing-mode read. Left empty here, which is pipeline mode;
+    # test_process_changes_bda_mode.py seeds BDA profiles into it.
+    "CONFIGURATION_TABLE_NAME": CONFIG,
     "INPUT_BUCKET": "pc-input-bucket",
     "OUTPUT_BUCKET": OUTPUT_BUCKET,
     "WORKING_BUCKET": WORKING_BUCKET,
@@ -88,8 +93,13 @@ class _Env:
         )
 
 
-@pytest.fixture
-def env():
+@contextmanager
+def process_changes_env():
+    """The moto doubles and a freshly loaded resolver, as an ``_Env``.
+
+    A context manager rather than only a fixture so the BDA-mode suite can build
+    the same environment without importing a fixture by name.
+    """
     with patch.dict(os.environ, _ENV):
         os.environ.pop("HITL_TABLE_NAME", None)
         with mock_aws():
@@ -120,6 +130,14 @@ def env():
                 ],
                 BillingMode="PAY_PER_REQUEST",
             )
+            ddb.create_table(
+                TableName=CONFIG,
+                KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+                AttributeDefinitions=[
+                    {"AttributeName": "Configuration", "AttributeType": "S"}
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
             s3 = boto3.client("s3")
             for bucket in (OUTPUT_BUCKET, WORKING_BUCKET):
                 s3.create_bucket(Bucket=bucket)
@@ -138,6 +156,12 @@ def env():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             yield _Env(mod, queue_url)
+
+
+@pytest.fixture
+def env():
+    with process_changes_env() as built:
+        yield built
 
 
 def _seed(env, **attributes):
@@ -173,8 +197,23 @@ def _owned(**overrides):
     }
 
 
-def _call(env, groups=("Reviewer",), username="rev", email="rev@example.com", sub=None):
-    """A reclassification of section 1, as the UI sends it.
+_RECLASSIFY = {
+    "modifiedSections": [
+        {"sectionId": "1", "classification": "receipt", "pageIds": ["1"]}
+    ],
+    "modifiedPages": [],
+}
+
+
+def _call(
+    env,
+    groups=("Reviewer",),
+    username="rev",
+    email="rev@example.com",
+    sub=None,
+    changes=None,
+):
+    """Process Changes; by default a reclassification of section 1, as the UI sends it.
 
     ``groups`` may be a string: a single-group claim can arrive unlisted.
     """
@@ -194,10 +233,7 @@ def _call(env, groups=("Reviewer",), username="rev", email="rev@example.com", su
             },
             "arguments": {
                 "objectKey": OBJECT_KEY,
-                "modifiedSections": [
-                    {"sectionId": "1", "classification": "receipt", "pageIds": ["1"]}
-                ],
-                "modifiedPages": [],
+                **(_RECLASSIFY if changes is None else changes),
             },
         },
         None,

@@ -17,12 +17,12 @@ import { useNavigate } from 'react-router-dom';
 import { Alert, Box, Button, Container, Link, Spinner, StatusIndicator } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
-import useSettingsContext from '../../contexts/settings';
 import useConfiguration from '../../hooks/use-configuration';
 import usePageThumbnails from '../../hooks/use-page-thumbnails';
 import useUserRole from '../../hooks/use-user-role';
 import { DOCUMENTS_PATH, reviewItemHref } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGrouping } from '../common/document-grouping';
 import PageGroupingEditor from '../common/PageGroupingEditor';
@@ -46,6 +46,12 @@ export const PROCESS_ROLE_REASON = 'Complete needs the Admin or Reviewer role, b
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 export const PROCESS_OWNER_REASON =
   "Complete needs an Admin, or the reviewer who holds this document's open review. Start the review first.";
+/**
+ * Why the page grouping is not offered in BDA mode. A BDA reprocess keeps the
+ * sections a document already has, so a structural change is not carried through it.
+ */
+export const BDA_REGROUP_REASON =
+  'Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.';
 
 /** The document's HITL review events, in the shape History's Review Activity lists. */
 export const documentReviewHistory = (
@@ -77,7 +83,6 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
   const { document: doc, loading, loadError, reload } = adapter;
   const navigate = useNavigate();
   const { user, setSuccessMessage } = useAppContext();
-  const { settings } = useSettingsContext();
   const { isAdmin, isReviewer, canWrite, canWorkReviewQueues } = useUserRole();
   const { mergedConfig } = useConfiguration(doc?.configVersion || 'default');
   const editor = useRef<SectionEditorController | null>(null);
@@ -170,9 +175,10 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
   if (!processReason && !isAdmin && !(holdsReview && reviewOpen)) processReason = PROCESS_OWNER_REASON;
   if (!processReason && saving) processReason = 'Saving your changes…';
 
-  const bdaMode = String((settings as Record<string, unknown>)?.IDPPattern ?? '')
-    .toLowerCase()
-    .includes('pattern1');
+  // From the document's own configuration, not the stack's `IDPPattern` (which
+  // names the one unified pattern for every document). In BDA mode the page grouping
+  // is not offered: a BDA reprocess keeps the sections a document already has.
+  const bdaMode = isBdaModeConfig(mergedConfig);
 
   const handleAction = async (action: AnnotationAction) => {
     setError(null);
@@ -273,7 +279,8 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
         showSave: showEditing,
         saveDisabledReason: readOnlyReason ?? (!dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined),
         showRegroup: showEditing,
-        regroupDisabledReason: readOnlyReason ?? (boardSections.length === 0 ? 'This document has no sections' : undefined),
+        regroupDisabledReason:
+          readOnlyReason ?? (bdaMode ? BDA_REGROUP_REASON : boardSections.length === 0 ? 'This document has no sections' : undefined),
         processDisabledReason: processReason,
         processHint: 'Save your changes and complete the document: it is reprocessed (evaluation and summary)',
         onShowHistory: () => setShowHistory(true),

@@ -33,6 +33,7 @@ const role = {
 };
 let editorProps: Record<string, unknown> | null = null;
 const server: { doc: Record<string, unknown> } = { doc: {} };
+const configured: { config: Record<string, unknown> } = { config: { classes: [] } };
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => graphql(...a) }) }));
 vi.mock('../../../contexts/app', () => ({
@@ -40,7 +41,7 @@ vi.mock('../../../contexts/app', () => ({
 }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: { EvaluationBaselineBucket: 'baseline-bucket' } }) }));
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
-vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: { classes: [] } }) }));
+vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: configured.config }) }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({ default: () => ({ urls: {}, failure: null }) }));
 vi.mock('../use-section-evaluation', () => ({ default: () => evaluation }));
 vi.mock('../SectionEditor', () => ({
@@ -51,7 +52,7 @@ vi.mock('../SectionEditor', () => ({
   },
 }));
 
-import DirectEditAnnotation, { EDIT_ROLE_REASON, PROCESS_OWNER_REASON } from '../DirectEditAnnotation';
+import DirectEditAnnotation, { BDA_REGROUP_REASON, EDIT_ROLE_REASON, PROCESS_OWNER_REASON } from '../DirectEditAnnotation';
 
 const rawDoc = (over: Record<string, unknown> = {}) => ({
   ObjectKey: 'in/doc.pdf',
@@ -93,6 +94,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
   editorProps = null;
   server.doc = rawDoc();
+  configured.config = { classes: [] };
   Object.assign(role, {
     isAdmin: true,
     isAuthor: false,
@@ -119,6 +121,26 @@ describe('the direct edit', () => {
     expect(bar()).toEqual(['History', 'Discard Changes', 'Save', 'Edit Page Grouping', 'Processing Report', 'Complete']);
     expect(editorProps!.isReadOnly).toBe(false);
     expect(editorProps!.actionsPlacement).toBe('external');
+  });
+
+  it('offers no page grouping for a BDA-mode document, and keeps Save and Complete', async () => {
+    // From the document's configuration; the stack settings mocked above carry no
+    // IDPPattern at all, so nothing else could be deciding.
+    configured.config = { classes: [], use_bda: true };
+    await renderEditor();
+    expect(button('Edit Page Grouping').isDisabled()).toBe(true);
+    expect(disabledReason('Edit Page Grouping')).toBe(BDA_REGROUP_REASON);
+    expect(button('Complete').isDisabled()).toBe(false);
+    expect(editorProps!.isReadOnly).toBe(false);
+    // Save is offered as soon as there is something to save.
+    await act(async () => (editorProps!.onDirtyChange as (d: boolean) => void)(true));
+    expect(button('Save').isDisabled()).toBe(false);
+  });
+
+  it('offers page grouping when the configuration says use_bda is "false"', async () => {
+    configured.config = { classes: [], use_bda: 'false' };
+    await renderEditor();
+    expect(button('Edit Page Grouping').isDisabled()).toBe(false);
   });
 
   describe('Complete for a caller who is not an Admin', () => {

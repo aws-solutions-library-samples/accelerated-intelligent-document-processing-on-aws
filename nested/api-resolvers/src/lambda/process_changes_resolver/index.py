@@ -331,6 +331,63 @@ def _assert_caller_may_process(event, object_key, document):
         )
 
 
+_BDA_MODE_MESSAGE = (
+    "BDA_MODE: this document is processed with Bedrock Data Automation, which keeps "
+    "a document's existing sections when it is reprocessed, so section, class, page "
+    "and text changes are not available for it. Edit field values instead."
+)
+
+
+def _assert_not_a_bda_structural_edit(document, modified_sections, modified_pages):
+    """Refuse a section or page change to a document that would reprocess in BDA mode.
+
+    A BDA run keeps the sections a document already has (the workflow skips Bedrock
+    Data Automation when any section exists), and this handler clears each changed
+    section's extraction result before requeueing. Nothing in the BDA branch
+    regenerates it, so the change would lose those values. Applies to every caller,
+    Admin included: it is about what the run can do, not who asked.
+
+    Stated as a capability rather than a list of edit kinds: in BDA mode this
+    operation changes no section and no page. Any entry in either list is refused,
+    and an empty request — field values already saved, reprocessed for evaluation
+    and summarization — is unaffected.
+
+    The mode is the one the requeued run will take: the routing rule the queue
+    processor applies (``idp_common.config.configuration_manager.bda_routing``),
+    including that an unpinned document is processed under the ACTIVE profile.
+    Every read is made strict (``raise_errors=True``), so a configuration that
+    cannot be read is refused rather than read as pipeline mode: a wrong
+    "pipeline" answer loses data and a wrong refusal costs a retry.
+    """
+    if not modified_sections and not modified_pages:
+        return
+
+    from idp_common.config import ConfigurationManager
+    from idp_common.config.configuration_manager import bda_routing
+
+    try:
+        routing = bda_routing(
+            ConfigurationManager(), document.config_version, raise_errors=True
+        )
+    except Exception as e:  # noqa: BLE001 — an unknown mode refuses, see docstring
+        logger.error(
+            "Rejecting processChanges: the processing mode of profile %r could not "
+            "be read: %s",
+            document.config_version,
+            e,
+        )
+        raise _refusal(
+            "The document's processing mode could not be determined, so section, "
+            "page and text changes cannot be made now. Field values can still be "
+            "edited."
+        ) from e
+    if routing.bda:
+        logger.warning(
+            "Rejecting processChanges: a section or page change to a BDA-mode document"
+        )
+        raise _refusal(_BDA_MODE_MESSAGE)
+
+
 def _caller_key(event):
     """The caller's owner key from verified claims, as a review claim records it."""
     from idp_common.notifications.keys import recipient_key_from_claims
@@ -640,6 +697,9 @@ def handler(event, context):
             # extraction results and requeueing are all acted on the caller's
             # behalf.
             _assert_caller_may_process(event, object_key, document)
+            _assert_not_a_bda_structural_edit(
+                document, modified_sections, modified_pages
+            )
 
             # Set bucket names from environment variables (fix for null bucket issue)
             input_bucket = os.environ.get("INPUT_BUCKET")
