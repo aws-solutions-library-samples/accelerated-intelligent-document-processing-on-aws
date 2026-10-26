@@ -26,26 +26,26 @@ check if you maintain tooling that reads the configuration directly.
 |---|---|
 | `classificationMethod: multimodalPageLevelClassification` | `one_stage.granularity: page` |
 | `classificationMethod: textbasedHolisticClassification` | `one_stage.granularity: packet` — see [A holistic configuration](#a-holistic-configuration) |
-| `granularity` (if written directly) | **both** `one_stage.granularity` and `two_stage.segmentation.llm.granularity` |
+| `granularity` (if written directly) | **both** `one_stage.granularity` and `two_stage.boundary_detection.llm.granularity` |
 | `system_prompt`, `task_prompt` | `one_stage.page.system_prompt`, `one_stage.page.task_prompt` |
 | `packet.system_prompt`, `packet.task_prompt` | `one_stage.packet.system_prompt`, `one_stage.packet.task_prompt` |
-| `packet.window_pages`, `packet.overlap_pages` | **both** `one_stage.packet.…` and `two_stage.segmentation.llm.packet.…` |
-| `contextPagesCount` | `one_stage.page.contextPagesCount` and `two_stage.segmentation.llm.page.contextPagesCount` |
-| `model`, `model_lambda_hook_arn`, `temperature`, `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image`, `modality` | `one_stage.llm.…`, and copied into `two_stage.segmentation.llm.…` and `two_stage.section_classification.llm.…` — see [Model settings are copied into every call](#model-settings-are-copied-into-every-call) |
-| `segmentation.system_prompt`, `segmentation.task_prompt` | `two_stage.segmentation.llm.page.…` (and `segmentation.packet.…` to `…llm.packet.…`) |
-| `segmentation.boundary_hints` | `two_stage.segmentation.llm.boundary_hints` |
+| `packet.window_pages`, `packet.overlap_pages` | **both** `one_stage.packet.…` and `two_stage.boundary_detection.llm.packet.…` |
+| `contextPagesCount` | `one_stage.page.contextPagesCount` and `two_stage.boundary_detection.llm.page.contextPagesCount` |
+| `model`, `model_lambda_hook_arn`, `temperature`, `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image`, `modality` | `one_stage.llm.…`, and copied into `two_stage.boundary_detection.llm.…` and `two_stage.section_classification.llm.…` — see [Model settings are copied into every call](#model-settings-are-copied-into-every-call) |
+| `segmentation.system_prompt`, `segmentation.task_prompt` | `two_stage.boundary_detection.llm.page.…` (and `segmentation.packet.…` to `…llm.packet.…`) |
+| `segmentation.boundary_hints` | `two_stage.boundary_detection.llm.boundary_hints` |
 | `segmentation.model`, `labeling.model` | the matching stage's `…llm.model`, and a non-empty value here wins over a flat `model` |
 | `labeling.method`, `labeling.pages`, `labeling.k` | `two_stage.section_classification.…` — the block is named `section_classification` in v0.6.13 |
 | `labeling.system_prompt`, `labeling.task_prompt` | `two_stage.section_classification.llm.…` |
 | `enforceValidClasses`, `maxValidationRetries` | `one_stage.llm.validation.…` and `two_stage.section_classification.llm.validation.…` |
 | `invalidClassFallback` | `fallback_class` |
 | `confidence` | `one_stage.llm.confidence` and `two_stage.section_classification.llm.confidence` |
-| `sectionSplitting` | `file_shape.sectionSplitting` |
-| `maxPagesForClassification` | `file_shape.maxPagesForClassification` — see [A page limit](#a-page-limit-with-boundary-detection) |
+| `sectionSplitting` | `document_shape.sectionSplitting` |
+| `maxPagesForClassification` | `document_shape.maxPagesForClassification` — see [A page limit](#a-page-limit-with-boundary-detection) |
 
 Rows naming **both** destinations are what makes the conversion exact in either
 strategy: those settings describe the call that reads pages, and under
-`strategy: two_stage` that call is segmentation rather than one stage, so a
+`strategy: two_stage` that call is boundary detection rather than one stage, so a
 converted profile behaves the same whichever strategy it selects. Any other key
 inside a v0.6.12 `segmentation` or `labeling` block is not carried over.
 
@@ -104,14 +104,14 @@ Two things the conversion does write:
 
 - **A flat `modality` block is copied into all three calls**, merged flag by
   flag, alongside the model parameters below. Setting `modality.images: false`
-  in the flat layout therefore turns images off for one stage, segmentation and
+  in the flat layout therefore turns images off for one stage, boundary detection and
   section classification alike.
 - **A two-stage configuration gets its stage flags written explicitly.** In
   v0.6.12 every call inferred an unset flag from the single-pass prompt; in
   v0.6.13 each call infers from its own, and the two-stage prompts are not that
   prompt. So when the configuration being converted already selects `two_stage`
   and carries a single-pass task prompt to infer from, the flags inferred from
-  that prompt are written onto `two_stage.segmentation.llm.modality` and
+  that prompt are written onto `two_stage.boundary_detection.llm.modality` and
   `two_stage.section_classification.llm.modality`, and those calls keep seeing
   exactly what they saw. Each flag is written only where it is neither set in the
   flat `modality` block nor already set on the stage, so a flag you chose wins.
@@ -120,7 +120,7 @@ Two things the conversion does write:
 
 The model parameters (`temperature`, `top_p`, `top_k`, `max_tokens`,
 `reasoning_effort`), the image settings, the modality flags and
-`model_lambda_hook_arn` are copied into all three calls — one stage, segmentation
+`model_lambda_hook_arn` are copied into all three calls — one stage, boundary detection
 and section classification — not only into the one stage call your configuration
 uses today. Switching a converted profile to two stage therefore starts every
 call on the parameters it already had, and you change each one from there.
@@ -149,7 +149,7 @@ a different answer for different documents in the same run.
 In v0.6.13 the page limit applies only when the whole document is one section
 (*One document*, `sectionSplitting: disabled`). A stored
 configuration combining a limit with boundary detection is converted to
-`file_shape.sectionSplitting: disabled`, with a warning in the log naming both
+`document_shape.sectionSplitting: disabled`, with a warning in the log naming both
 settings, so a long document keeps the behaviour it had. ⚠️ **A short packet in
 such a configuration becomes one section** where v0.6.12 sectioned it.
 Set `maxPagesForClassification: ALL` and `sectionSplitting: llm_determined` if
@@ -157,8 +157,8 @@ you want boundary detection on every document instead. None of the presets shipp
 with the solution uses the combination.
 
 The same rule applies to a v0.6.13 configuration you write by hand, at a
-different point: the **runtime** resets `file_shape.maxPagesForClassification`
-to `ALL` and logs a warning whenever `file_shape.sectionSplitting` is anything
+different point: the **runtime** resets `document_shape.maxPagesForClassification`
+to `ALL` and logs a warning whenever `document_shape.sectionSplitting` is anything
 other than `disabled`. So a page limit outside `disabled` is not an error and
 does not change the conversion — it is simply ignored, and the log line is the
 only notice. Pair the two settings yourself rather than relying on the
@@ -220,7 +220,7 @@ after.
 What gets refused is an unrecognised value for any of the classification
 settings that take a fixed set of values: `strategy`, either `granularity`,
 `boundary_hints`, either `method`, `section_classification.pages`, the
-class-confidence `mode`, and `file_shape.sectionSplitting`. What gets normalised
+class-confidence `mode`, and `document_shape.sectionSplitting`. What gets normalised
 is a value that has a safe reading: an unusable page limit becomes `ALL`, and an
 unrecognised `reasoning_effort` becomes `medium`. That is why
 `maxPagesForClassification: banana` is reported and tolerated where
@@ -254,11 +254,11 @@ upload, use the stored values — note the configuration *block* is named
 - **One stage** (`strategy: single_pass`) — granularity, the page or packet
   settings for that granularity, and the model block (`one_stage.…`).
 - **Two stage** (`strategy: two_stage`) — **Boundary detection**
-  (`two_stage.segmentation`: method, granularity, boundary hints, page or packet
+  (`two_stage.boundary_detection`: method, granularity, boundary hints, page or packet
   settings, model block) and **Section classification**
   (`two_stage.section_classification`: method, *pages per section* with its `k`,
   prompts, model block).
-- **Advanced — known document shape** (`file_shape`), collapsed: *Section splitting*
+- **Advanced — known document shape** (`document_shape`), collapsed: *Section splitting*
   (`sectionSplitting`: `llm_determined`, `disabled` or `page`) and *Pages to
   classify* (`maxPagesForClassification`), which appears only for *One document*
   — the label for `sectionSplitting: disabled`.

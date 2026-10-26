@@ -1989,7 +1989,7 @@ class TestClassificationService:
 
             # Verify default value
             assert (
-                service.config.classification.file_shape.sectionSplitting
+                service.config.classification.document_shape.sectionSplitting
                 == "llm_determined"
             )
 

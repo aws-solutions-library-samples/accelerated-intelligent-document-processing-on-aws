@@ -60,8 +60,8 @@ from typing_extensions import Self
 # configuration also has its hand-written flat prompts copied into
 # `classification.packet`, which is where packet granularity reads them. v0.9
 # nested every classification setting inside the call that uses it
-# (`one_stage`, `two_stage.segmentation`, `two_stage.section_classification`),
-# moved the file-shape assertions under `file_shape`, and replaced
+# (`one_stage`, `two_stage.boundary_detection`, `two_stage.section_classification`),
+# moved the file-shape assertions under `document_shape`, and replaced
 # `invalidClassFallback` with `fallback_class`.
 CONFIG_FORMAT_VERSION = "0.9"
 
@@ -1892,7 +1892,7 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
     """One of :data:`REASONING_EFFORT_VALUES`; anything else is the default.
 
     ⚠️ **Normalised rather than refused, and the reason is the same one
-    ``FileShapeConfig.parse_max_pages`` gives**: this field has never had a
+    ``DocumentShapeConfig.parse_max_pages`` gives**: this field has never had a
     validator, and ``save_configuration`` coerces through ``IDPConfig`` without
     touching it, so a typo written by hand or through the API **is stored
     verbatim today**. Raising on it would make such a profile fail validation on
@@ -1902,7 +1902,7 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
     case is a stack on Nova, which ignores effort entirely, running happily on a
     misspelled value right now.
 
-    Contrast ``FileShapeConfig.validate_section_splitting``, which *does* raise:
+    Contrast ``DocumentShapeConfig.validate_section_splitting``, which *does* raise:
     that validator already normalised on the way in, so an unrecognised value was
     never stored and raising cannot wedge anything. The two settings differ in
     whether the bad state is reachable in stored data, which is the whole question.
@@ -2094,7 +2094,7 @@ class ClassificationValidationConfig(BaseModel):
     """Re-prompt when a call returns a class outside the configured vocabulary.
 
     Only on calls that decide a class: one stage, and two-stage section
-    classification. Never segmentation, which returns no class.
+    classification. Never boundary detection, which returns no class.
     """
 
     enforceValidClasses: bool = Field(
@@ -2189,8 +2189,8 @@ class OneStageConfig(BaseModel):
         return _normalise_granularity(v, "classification.one_stage.granularity")
 
 
-class SegmentationLLMConfig(ClassificationModelSettings):
-    """Two-stage segmentation by an LLM: boundaries only, no class vocabulary.
+class BoundaryDetectionLLMConfig(ClassificationModelSettings):
+    """Two-stage boundary detection by an LLM: boundaries only, no class vocabulary.
 
     Model settings only — no validation and no class confidence — because this
     call returns page ranges and never a class. The saving over one stage is the
@@ -2220,7 +2220,7 @@ class SegmentationLLMConfig(ClassificationModelSettings):
     @classmethod
     def validate_granularity(cls, v: Any) -> str:
         return _normalise_granularity(
-            v, "classification.two_stage.segmentation.llm.granularity"
+            v, "classification.two_stage.boundary_detection.llm.granularity"
         )
 
     @field_validator("boundary_hints", mode="before")
@@ -2231,7 +2231,7 @@ class SegmentationLLMConfig(ClassificationModelSettings):
         v_str = str(v).strip().lower()
         if v_str not in ("none", "class_names"):
             raise ValueError(
-                "classification.two_stage.segmentation.llm.boundary_hints must be "
+                "classification.two_stage.boundary_detection.llm.boundary_hints must be "
                 f"'none' or 'class_names', got {v!r}"
             )
         return v_str
@@ -2240,7 +2240,7 @@ class SegmentationLLMConfig(ClassificationModelSettings):
 class ExternalModelConfig(BaseModel):
     """An external model behind a stable contract. **Declared, not yet implemented.**
 
-    Shared by the boundary model (segmentation) and the decision model (section
+    Shared by the boundary model (boundary detection) and the decision model (section
     classification), so both methods land without a configuration migration.
     """
 
@@ -2257,21 +2257,21 @@ class ExternalModelConfig(BaseModel):
     )
 
 
-class SegmentationConfig(BaseModel):
-    """Two-stage segmentation: where each section starts and ends."""
+class BoundaryDetectionConfig(BaseModel):
+    """Two-stage boundary detection: where each section starts and ends."""
 
     method: str = Field(
         default="llm",
         description="'llm' (the only value today). 'boundary_model' is declared.",
     )
-    llm: SegmentationLLMConfig = Field(default_factory=SegmentationLLMConfig)
+    llm: BoundaryDetectionLLMConfig = Field(default_factory=BoundaryDetectionLLMConfig)
     boundary_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
 
     @field_validator("method", mode="before")
     @classmethod
     def validate_method(cls, v: Any) -> str:
         return _single_value_method(
-            v, "classification.two_stage.segmentation.method", "'boundary_model'"
+            v, "classification.two_stage.boundary_detection.method", "'boundary_model'"
         )
 
 
@@ -2377,7 +2377,9 @@ class SectionClassificationConfig(BaseModel):
 class TwoStageConfig(BaseModel):
     """``strategy: two_stage`` — segment first, then classify each section."""
 
-    segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
+    boundary_detection: BoundaryDetectionConfig = Field(
+        default_factory=BoundaryDetectionConfig
+    )
     section_classification: SectionClassificationConfig = Field(
         default_factory=SectionClassificationConfig
     )
@@ -2398,7 +2400,7 @@ def _unusable_page_limit(value: Any) -> str:
     import logging
 
     logging.getLogger(__name__).warning(
-        "classification.file_shape.maxPagesForClassification is %r, which is not "
+        "classification.document_shape.maxPagesForClassification is %r, which is not "
         "'ALL' and not a positive number of pages; classifying every page instead. "
         "Set it to ALL, or to the number of opening pages whose majority class the "
         "whole document should take.",
@@ -2407,7 +2409,7 @@ def _unusable_page_limit(value: Any) -> str:
     return "ALL"
 
 
-class FileShapeConfig(BaseModel):
+class DocumentShapeConfig(BaseModel):
     """Advanced: what you already know about a document's shape.
 
     By default every document is treated as a packet and its section boundaries
@@ -2477,7 +2479,7 @@ class FileShapeConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in SECTION_SPLITTING_VALUES:
             raise ValueError(
-                "classification.file_shape.sectionSplitting must be one of "
+                "classification.document_shape.sectionSplitting must be one of "
                 f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
                 f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
             )
@@ -2551,7 +2553,7 @@ class ClassificationConfig(BaseModel):
 
     ``strategy`` decides how many calls are made and what each does. Every
     model setting lives inside the call that uses it — ``one_stage``, or
-    ``two_stage.segmentation`` and ``two_stage.section_classification`` — so no
+    ``two_stage.boundary_detection`` and ``two_stage.section_classification`` — so no
     setting at this level is silently ignored by one strategy. The flat keys of
     earlier formats are converted on read by ``migrations.v08_to_v09``.
     """
@@ -2578,7 +2580,7 @@ class ClassificationConfig(BaseModel):
     )
     one_stage: OneStageConfig = Field(default_factory=OneStageConfig)
     two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
-    file_shape: FileShapeConfig = Field(default_factory=FileShapeConfig)
+    document_shape: DocumentShapeConfig = Field(default_factory=DocumentShapeConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -2631,10 +2633,10 @@ class ClassificationConfig(BaseModel):
     # ── Resolved views. Every reader goes through these rather than walking the
     # tree, so the strategy-dependent choice of block is made in one place.
 
-    def page_input_call(self) -> Union[OneStageConfig, SegmentationLLMConfig]:
+    def page_input_call(self) -> Union[OneStageConfig, BoundaryDetectionLLMConfig]:
         """The block whose granularity / page / packet settings are in force."""
         if self.strategy == "two_stage":
-            return self.two_stage.segmentation.llm
+            return self.two_stage.boundary_detection.llm
         return self.one_stage
 
     def class_assigning_llm(
@@ -5183,7 +5185,7 @@ class IDPConfig(BaseModel):
         # saving a configuration whose live calls are fine.
         if cls.strategy == "two_stage":
             calls = {
-                "two_stage.segmentation.llm": cls.two_stage.segmentation.llm,
+                "two_stage.boundary_detection.llm": cls.two_stage.boundary_detection.llm,
                 "two_stage.section_classification.llm": (
                     cls.two_stage.section_classification.llm
                 ),

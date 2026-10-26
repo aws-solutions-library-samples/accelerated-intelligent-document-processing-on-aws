@@ -556,7 +556,7 @@ classification:
   prompt
 - Strict constraint on using only defined document types
 - An `<output-format>` asking for `document_boundary` as well as `class`. That
-  verdict is what `classification.file_shape.sectionSplitting: llm_determined`
+  verdict is what `classification.document_shape.sectionSplitting: llm_determined`
   — the default — groups pages into sections with, so a page prompt that returns
   only a class leaves every page looking like the start of a new section
 
@@ -1035,7 +1035,7 @@ For models supporting cache checkpoints:
 ⚠️ **The snippets in this section show values, not paths.** Each parameter lives
 inside the model block of the call that uses it, and classification has three of
 them: `classification.one_stage.llm`,
-`classification.two_stage.segmentation.llm` and
+`classification.two_stage.boundary_detection.llm` and
 `classification.two_stage.section_classification.llm`. There is no
 `classification.temperature`. Writing one anyway is not an error — it is a
 pre-0.9 flat key, so it is converted on read and **copied into all three call
@@ -1228,7 +1228,7 @@ has the full comparison and the cost argument.
 
 **Granularity is then read from the chosen strategy's own block.** Under
 `single_pass` it is `classification.one_stage.granularity`; under `two_stage` it
-is `classification.two_stage.segmentation.llm.granularity`, and
+is `classification.two_stage.boundary_detection.llm.granularity`, and
 `one_stage.granularity` is not read at all. The same applies to the page and
 packet settings underneath each — `contextPagesCount`, `window_pages`,
 `overlap_pages` and the prompts exist in both blocks, and only the active
@@ -1246,7 +1246,7 @@ strategy's copy is read.
 | **Output Format** | Segmented page ranges | Per-page class and boundary marker |
 
 The paths in that table are the `single_pass` ones. Under `two_stage`, read
-`classification.two_stage.segmentation.llm.…` for each of them — that is the
+`classification.two_stage.boundary_detection.llm.…` for each of them — that is the
 call that reads pages — and note that the class no longer comes from it: the
 boundary pass returns page ranges only, and
 `classification.two_stage.section_classification` classifies each range.
@@ -1358,7 +1358,7 @@ classification:
 ```
 
 Under `strategy: two_stage` the equivalent blocks are
-`classification.two_stage.segmentation.llm.image` and
+`classification.two_stage.boundary_detection.llm.image` and
 `classification.two_stage.section_classification.llm.image`; the `one_stage`
 block above is not read. A classification call's `image` block honours only
 `target_width` and `target_height` — `dpi` and `preprocessing` validate there and
@@ -1876,7 +1876,7 @@ properties:
 
 **Classification Template** (one stage, page granularity — under
 `strategy: two_stage` the equivalents are
-`classification.two_stage.segmentation.llm.page.*` for the boundary pass and
+`classification.two_stage.boundary_detection.llm.page.*` for the boundary pass and
 `classification.two_stage.section_classification.llm.*` for the class pass):
 ```yaml
 classification:

@@ -32,10 +32,10 @@ import DateRangeModal from '../common/DateRangeModal';
 import { parseMetering } from '../../graphql/awsjson-parsers';
 import { classificationModelOf } from '../../utils/classification-config';
 
-// Two-stage classification meters its halves as Segmentation and
+// Two-stage classification meters its halves as BoundaryDetection and
 // SectionClassification instead of Classification; all three are the
 // classification step.
-const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'Segmentation/', 'SectionClassification/'];
+const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'BoundaryDetection/', 'SectionClassification/'];
 
 // Type definitions for configuration and state
 interface Configuration {

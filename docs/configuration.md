@@ -167,7 +167,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the one-stage and two-stage calls, `file_shape` |
+| `base-classification.yaml` | classification: strategy, the one-stage and two-stage calls, `document_shape` |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -538,7 +538,7 @@ classification:
 `classification.strategy: two_stage` it is a different one.** The two-stage
 equivalent is `classification.two_stage.section_classification.llm.confidence`,
 and the `one_stage` block above is not read at all — editing it under two stage
-changes nothing and raises no error. Segmentation has no confidence block,
+changes nothing and raises no error. Boundary detection has no confidence block,
 because it assigns no class. See [Classification
 Configuration](#classification-configuration).
 
@@ -1147,7 +1147,7 @@ the first thing to settle is which calls you are making. That is
 | `classification.strategy` | Web UI label | Calls it makes |
 |---|---|---|
 | `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the section boundaries and the classes together |
-| `two_stage` | **Two stage** | A *segmentation* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
+| `two_stage` | **Two stage** | A *boundary detection* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
 
 *One stage* and *Two stage* are the labels the configuration editor's form view
 shows. The stored value is `single_pass` or `two_stage` — write that in the
@@ -1188,7 +1188,7 @@ classification:
       confidence: {mode: topk, top_k_candidates: "3"}
 
   two_stage:                       # read only under strategy: two_stage
-    segmentation:
+    boundary_detection:
       method: llm
       llm:
         granularity: page          # this call's own granularity
@@ -1208,7 +1208,7 @@ classification:
         task_prompt: ...
         # ...plus validation and confidence, as above
 
-  file_shape:                      # applies under both strategies
+  document_shape:                  # applies under both strategies
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
 ```
@@ -1218,7 +1218,7 @@ Four notes on reading that:
 - **Only the active strategy's block is read.** A setting written in the inactive
   one validates, saves and does nothing. This is also why `granularity` appears
   twice: `one_stage.granularity` is the one in force under `single_pass`, and
-  `two_stage.segmentation.llm.granularity` under `two_stage`.
+  `two_stage.boundary_detection.llm.granularity` under `two_stage`.
 - **`reasoning_effort` and `model_lambda_hook_arn` are per call**, in each
   `llm` block, like the model and its parameters. Neither appears in
   `base-classification.yaml`, so classification runs them at their field
@@ -1249,7 +1249,7 @@ rationale is
 
 ## Section Splitting Strategies
 
-Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.file_shape.sectionSplitting` configuration field, and applies identically under both strategies:
+Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.document_shape.sectionSplitting` configuration field, and applies identically under both strategies:
 
 ### Available Strategies
 
@@ -1266,7 +1266,7 @@ Pipeline mode supports configurable strategies for how classified pages are grou
 - **`llm_determined`** (default): Uses whatever boundary signal the active call
   produces — a per-page `start`/`continue` verdict at page granularity, and a
   `segments` array of page ranges at packet granularity or from two-stage
-  segmentation. Best for complex scenarios where section boundaries are not
+  boundary detection. Best for complex scenarios where section boundaries are not
   obvious.
 
 ⚠️ **`disabled` and `page` are assertions, not preferences.** They replace
@@ -1283,7 +1283,7 @@ not. See
 
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: page  # or "disabled", "llm_determined"
 ```
 
@@ -1301,7 +1301,7 @@ For a document you know is one section, classify only its first pages:
 
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: disabled          # one section per document
     maxPagesForClassification: "3"      # "ALL" (default) or "1", "2", "3", "5", "10"
 ```
@@ -1947,7 +1947,7 @@ engage *earlier* than the table says, never later.
 
 This also reaches stages other than extraction. Classification at packet
 granularity (`classification.one_stage.granularity: packet`, or
-`classification.two_stage.segmentation.llm.granularity: packet`) sends up to
+`classification.two_stage.boundary_detection.llm.granularity: packet`) sends up to
 `window_pages` pages per request, so the downscale is reached only when that
 setting is raised above 20 or set to `0`, which never windows and sends the whole
 packet in one request. At the shipped `window_pages: 20` a packet is split into

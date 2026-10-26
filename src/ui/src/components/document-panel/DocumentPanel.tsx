@@ -282,11 +282,11 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     contextGroups[item.context].push(item);
   });
 
-  // Sort contexts in pipeline order. 'Segmentation' and 'SectionClassification' are the two
+  // Sort contexts in pipeline order. 'BoundaryDetection' and 'SectionClassification' are the two
   // halves of two-stage classification (classification.strategy: two_stage) and
   // appear in place of 'Classification', never alongside it — they sit where it
   // sits so the cost table reads in pipeline order either way.
-  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Segmentation', 'SectionClassification', 'Extraction', 'Summarization'];
+  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'BoundaryDetection', 'SectionClassification', 'Extraction', 'Summarization'];
   const sortedContexts = Object.keys(contextGroups).sort((a, b) => {
     const aIndex = contextOrder.indexOf(a);
     const bIndex = contextOrder.indexOf(b);

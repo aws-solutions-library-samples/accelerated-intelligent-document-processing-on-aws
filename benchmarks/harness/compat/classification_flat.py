@@ -2,7 +2,7 @@
 """Add the pre-0.9 flat classification keys to a benchmark config.
 
 Why this exists: config format 0.9 nests every classification setting inside the
-model call that uses it (``one_stage.*``, ``two_stage.*``, ``file_shape.*``,
+model call that uses it (``one_stage.*``, ``two_stage.*``, ``document_shape.*``,
 ``strategy``, ``fallback_class``). The release benchmark A/B uploads the SAME
 generated file to the previous published release and to develop, and a release
 that predates the nesting (v0.6.12 reads config format 0.7) does not know any of
@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Tuple
 
 #: The v0.9 classification blocks. A release that predates the nesting reads none
 #: of them; :func:`with_flat_classification` carries their content in flat keys.
-V09_BLOCKS = ("strategy", "one_stage", "two_stage", "file_shape", "fallback_class")
+V09_BLOCKS = ("strategy", "one_stage", "two_stage", "document_shape", "fallback_class")
 
 #: ``one_stage.granularity`` -> the pre-0.8 ``classificationMethod`` that made the
 #: same number of calls.
@@ -148,7 +148,7 @@ def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]
 
     if "fallback_class" in classification:
         flat["invalidClassFallback"] = classification["fallback_class"]
-    shape = _dict(classification.get("file_shape"))
+    shape = _dict(classification.get("document_shape"))
     for key in ("sectionSplitting", "maxPagesForClassification"):
         if key in shape:
             flat[key] = shape[key]

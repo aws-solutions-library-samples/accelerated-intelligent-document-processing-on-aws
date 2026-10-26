@@ -1935,7 +1935,7 @@ response does appear to carry a different output-length budget than prose, but o
 evidence it is not the shorter one, and neither arm is safe at that size in simple mode.
 Measure on your own long lists before forcing them.
 
-### `classification.file_shape.sectionSplitting` and the boundary prompt (`boundaryab`) — #817 confirmed, #750 open
+### `classification.document_shape.sectionSplitting` and the boundary prompt (`boundaryab`) — #817 confirmed, #750 open
 
 Boundary detection judged on `sections_correct` (1.0/0.0 per run; the mean over 5 repeats
 is the pass rate). Classification model Nova 2 Lite (the shipped default).

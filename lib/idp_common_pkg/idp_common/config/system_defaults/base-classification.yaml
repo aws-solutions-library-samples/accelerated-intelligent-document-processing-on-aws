@@ -138,7 +138,7 @@ classification:
   # ── strategy: two_stage ──────────────────────────────────────────────────
   two_stage:
     # Boundaries only, with no class vocabulary: the prefix saving.
-    segmentation:
+    boundary_detection:
       method: llm
       llm:
         # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.
@@ -278,6 +278,6 @@ classification:
   #   whole document) | page (one section per page).
   # maxPagesForClassification: with 'disabled' only — classify the first N
   #   pages and give the whole document their majority class.
-  file_shape:
+  document_shape:
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
