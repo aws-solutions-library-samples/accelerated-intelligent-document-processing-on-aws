@@ -12,6 +12,7 @@ import os
 from typing import Callable, Dict, Any, Optional, Tuple, Union, List
 from botocore.exceptions import ClientError
 import logging
+from dataclasses import dataclass
 from boto3.dynamodb.types import Binary
 
 from idp_common.ddb_numbers import coerce_int
@@ -1403,7 +1404,7 @@ class ConfigurationManager:
             # Non-fatal: resolution falls back to the scan.
             logger.warning(f"Could not write the active-profile pointer: {e}")
 
-    def resolve_active_version(self) -> str:
+    def resolve_active_version(self, raise_errors: bool = False) -> str:
         """
         Resolve the configuration version a new document should be processed under.
 
@@ -1426,6 +1427,14 @@ class ConfigurationManager:
         next activation writes it. The fallback paginates, so it cannot miss an
         active row that sorts late.
 
+        Args:
+            raise_errors: Raise when the profiles cannot be read instead of
+                degrading to DEFAULT_VERSION. For a caller that must know the
+                answer rather than have a usable one — `bda_routing` on behalf of
+                the processChanges resolver, which refuses rather than guesses.
+                A failed pointer read still falls back to the scan, which reads
+                the same answer from the profiles.
+
         Returns:
             The active version name, or DEFAULT_VERSION if none is active.
         """
@@ -1437,17 +1446,21 @@ class ConfigurationManager:
             if pointer and pointer.get("ActiveVersion"):
                 return str(pointer["ActiveVersion"])
         except Exception as e:  # noqa: BLE001
+            # Not raised even under `raise_errors`: the scan below reads the same
+            # answer from the profiles themselves, and raises if IT fails.
             logger.warning(
                 f"Could not read the active-profile pointer ({e}); scanning instead"
             )
 
         try:
-            for version_dict in self.list_config_versions():
+            for version_dict in self.list_config_versions(raise_errors=raise_errors):
                 if version_dict.get("isActive"):
                     name = version_dict.get("versionName")
                     if name:
                         return name
         except Exception as e:  # noqa: BLE001
+            if raise_errors:
+                raise
             # Never fail a document over this — the default is always readable.
             logger.warning(
                 f"Could not resolve the active config version ({e}); "
@@ -1535,12 +1548,16 @@ class ConfigurationManager:
 
     # ===== BDA Project Tracking Methods =====
 
-    def get_bda_project_arn(self, version: str) -> Optional[str]:
+    def get_bda_project_arn(
+        self, version: str, raise_errors: bool = False
+    ) -> Optional[str]:
         """
         Get the BDA project ARN linked to a config version.
 
         Args:
             version: Config version name
+            raise_errors: Raise a failed read instead of answering None, which
+                reads as "no project linked" and so as pipeline mode.
 
         Returns:
             BDA project ARN string, or None if no project is linked
@@ -1555,6 +1572,8 @@ class ConfigurationManager:
                 return item.get("BdaProjectArn")
             return None
         except ClientError as e:
+            if raise_errors:
+                raise
             logger.error(f"Error getting BDA project ARN for version {version}: {e}")
             return None
 
@@ -2528,3 +2547,64 @@ class ConfigurationManager:
         """
         logger.info("sync_custom_with_new_default called (no-op in full config mode)")
         return old_custom
+
+
+@dataclass(frozen=True)
+class BdaRouting:
+    """Which branch of the unified workflow a document is routed to.
+
+    ``version`` is the profile the routing was read for, ``requested`` that
+    profile's ``use_bda``, and ``project_arn`` the BDA project linked to it (read
+    only when BDA is requested).
+    """
+
+    version: str
+    requested: bool
+    project_arn: Optional[str] = None
+
+    @property
+    def bda(self) -> bool:
+        """True when the run goes down the BDA branch."""
+        return self.requested and bool(self.project_arn)
+
+
+def bda_routing(
+    manager: "ConfigurationManager",
+    config_version: Optional[str],
+    raise_errors: bool = False,
+) -> BdaRouting:
+    """How a document processed under ``config_version`` is routed.
+
+    The queue processor's routing rule (``start_workflow`` in
+    ``src/lambda/queue_processor/index.py``), stated once for the processChanges
+    resolver, which must know before it requeues a document whether the run will
+    be a BDA one: a BDA run keeps the sections a document already has, so an edit
+    that clears a section's values is not carried through it. The queue processor
+    still carries the rule inline; its unit suites stub ``idp_common.config`` as a
+    plain module, so routing it through here is a change to those suites.
+
+    The rule: an unpinned document is processed under the ACTIVE profile (the
+    queue processor pins it before routing), and the run goes down the BDA branch
+    when that profile sets ``use_bda`` and a BDA project is linked to it — a
+    profile that asks for BDA with no project falls back to the pipeline.
+
+    Args:
+        manager: A ``ConfigurationManager`` for the configuration table.
+        config_version: The profile the document is pinned to, or None.
+        raise_errors: Raise on any failed read instead of degrading to an answer.
+            The queue processor degrades to the pipeline; the resolver refuses.
+    """
+    version = config_version or manager.resolve_active_version(
+        raise_errors=raise_errors
+    )
+    config = manager.get_merged_configuration(version)
+    requested = bool(getattr(config, "use_bda", False)) if config else False
+    if not requested:
+        return BdaRouting(version=version, requested=False)
+    return BdaRouting(
+        version=version,
+        requested=True,
+        project_arn=manager.get_bda_project_arn(version, raise_errors=raise_errors)
+        or None,
+    )
+

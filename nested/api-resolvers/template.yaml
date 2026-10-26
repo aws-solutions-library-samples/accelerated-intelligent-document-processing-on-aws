@@ -2134,6 +2134,10 @@ Resources:
           # Review queues: a document in review is regrouped only by the holder of
           # its review item, read from HITLTable.
           HITL_TABLE_NAME: !Ref HITLTableName
+          # processChanges refuses a section or page change to a document whose
+          # profile routes it to BDA, which it reads from the configuration table
+          # (read-only grant below).
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
       LoggingConfig:
         LogGroup: !Ref ProcessChangesResolverFunctionLogGroup
       Policies:
@@ -2155,6 +2159,21 @@ Resources:
             BucketName: !Ref OutputBucketName
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucketName
+        # Read-only, on the configuration table alone: processChanges reads the
+        # document's profile (`use_bda`) and its linked BDA project to decide whether
+        # a requeued run goes down the BDA branch. GetItem covers those reads and the
+        # active-profile pointer an unpinned document is resolved through; Scan is
+        # the fallback that resolution takes on a stack written before the pointer
+        # existed. No write: the configuration read's best-effort write-back of a
+        # backfilled profile is refused here and logged, which is the intended
+        # outcome.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Scan
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
         # Read-only access on UsersTable + EmailIndex so the resolver can look up
         # the caller's allowedTestSets and enforce per-test-set annotation scope on
         # updateDocumentSections. Without this the lookup fails with AccessDenied —

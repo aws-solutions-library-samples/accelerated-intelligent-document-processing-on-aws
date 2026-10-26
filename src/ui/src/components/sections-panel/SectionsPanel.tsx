@@ -39,6 +39,7 @@ import { getErrorMessage } from '../../utils/errorUtils';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
 import type { EditableSection } from '../../types/documents';
 import useSettingsContext from '../../contexts/settings';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 import useUserRole from '../../hooks/use-user-role';
 import { documentEditHref } from '../../routes/constants';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -814,17 +815,15 @@ const SectionsPanel = ({
   // instead would show the wrong class vocabulary in Edit Mode for docs
   // processed under a previous or different configuration profile.
   const configuration = mergedConfig;
-  const { settings: settings2 } = useSettingsContext();
   const { isReviewerOnly, canWrite, canReview } = useUserRole();
   // When viewing a past document version, all edits are disabled — the panels
   // write to the *current* output objects, not the historical snapshot.
   const { isHistorical } = useDocumentVersion();
 
-  // Check if current pattern is Pattern-1 (for data-only edit mode)
-  const isPattern1 = () => {
-    const pattern = settings2?.IDPPattern as string | undefined;
-    return pattern && pattern.toLowerCase().includes('pattern1');
-  };
+  // BDA mode: data-only Edit Mode, with no section-structure editing and no page
+  // regrouping. Decided by the document's own configuration (`use_bda`), not by the
+  // stack's `IDPPattern`, which names the one unified pattern for every document.
+  const isPattern1 = () => isBdaModeConfig(mergedConfig);
 
   // Check if document has pending HITL review
   const hitlStatusLower = documentItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';

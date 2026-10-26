@@ -287,8 +287,9 @@ The solution creates various IAM roles to run different components of the system
   * `s3:ListBucket`, `s3:GetObject` (when using S3 data source)
 
 * **S3 Vectors Manager Role** (custom-resource Lambda, default S3 Vectors store only):
-  * `s3vectors:CreateVectorBucket`, `s3vectors:GetVectorBucket`, `s3vectors:DeleteVectorBucket` on `bucket/*` in the deploying account and Region — the bucket segment is a wildcard because the Lambda lowercases and sanitizes the stack-derived bucket name, which CloudFormation cannot reproduce
+  * `s3vectors:CreateVectorBucket`, `s3vectors:GetVectorBucket`, `s3vectors:DeleteVectorBucket` on `bucket/*` in the deploying account and Region — the bucket segment is a wildcard because the Lambda lowercases and sanitizes the stack-derived bucket name, which CloudFormation cannot reproduce for every stack name
   * `s3vectors:CreateIndex`, `s3vectors:DeleteIndex` on `bucket/*/index/<index name>` (the index name is exact)
+  * `s3vectors:ListIndexes`, and `s3vectors:DeleteIndex` on any index, on the stack's own vector bucket only, named exactly — deleting the stack deletes every index in that bucket before the bucket, because S3 Vectors will not delete a bucket that still holds an index. Not granted when `pS3VectorBucketName` names the bucket
   * `bedrock:CreateKnowledgeBase`, `bedrock:DeleteKnowledgeBase`, `bedrock:GetKnowledgeBase`, `bedrock:UpdateKnowledgeBase`, `bedrock:ListKnowledgeBases`
   * `iam:PassRole` (to hand the Knowledge Base Service Role to Bedrock)
 
