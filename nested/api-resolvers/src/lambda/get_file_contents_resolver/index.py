@@ -19,6 +19,15 @@ from log_sanitizer import sanitize_event_for_logging
 # Set up logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+
+
+class ReportedServerError(RuntimeError):
+    """A 500 whose message is written for the caller, so the dispatcher passes it on.
+
+    Declared locally because this resolver does not import ``idp_common``; the
+    dispatcher matches the class by name. The canonical class, and the rule for
+    when to raise it, is ``idp_common.api_adapter.ReportedServerError``.
+    """
 logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
 # Get LOG_LEVEL from environment variable with INFO as default
 
@@ -781,7 +790,7 @@ def handler(event, context):
             error_code,
             error_message,
         )
-        raise Exception(
+        raise ReportedServerError(
             "This deployment could not read the requested file. "
             "Contact an administrator."
         ) from e

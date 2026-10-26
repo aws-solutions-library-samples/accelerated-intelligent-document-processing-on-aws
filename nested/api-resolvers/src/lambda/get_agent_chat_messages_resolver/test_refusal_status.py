@@ -150,3 +150,9 @@ class TestAFaultDoesNotRelayBotocoresMessage:
             "this deployment's own IAM failing is a server fault, not the caller's "
             "authorization problem"
         )
+        # The class the dispatcher passes a 500 message through for; any other
+        # class now reaches the caller as a generic message with a request id.
+        assert type(excinfo.value).__name__ == "ReportedServerError"
+        assert message == (
+            "This deployment could not read the chat data. Contact an administrator."
+        )

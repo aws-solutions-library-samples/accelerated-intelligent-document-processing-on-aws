@@ -856,6 +856,17 @@ those — `PermissionError`/`AuthorizationError`, or a message beginning
 becomes **400 `BadRequest`**; `ResourceNotFound` becomes **404 `ResourceNotFound`**;
 anything else becomes **500 `InternalError`**.
 
+The message of a 403, 400 or 404 is the resolver's own and reaches the caller
+unchanged, which is how a resolver tells the user what to do (`NOT_CLAIMED`,
+`QUEUE_MANAGED`, `REVIEW_FINISHED`). A 500 does not carry the exception's text: the
+caller gets "An unexpected server error occurred. Request ID: …" with the same id in
+`errors[0].requestId`, and the dispatcher logs the full error under that id, which
+is its Lambda request id. The one exception is `ReportedServerError`
+(`idp_common.api_adapter`), a 500 whose message the resolver wrote for the caller and
+which is passed through. `deleteDocument` uses it to say which documents could not be
+completely deleted, and the file-read, chat-history, chat-session-list and
+sample-link resolvers use it for their "Contact an administrator" messages.
+
 The 404's errorType is deliberately `ResourceNotFound` and not the `NotFound` the
 dispatcher already returns for an operation this deployment does not route: the live
 RBAC harness reads a bare `NotFound` from a feature probe as "this feature is

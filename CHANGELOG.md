@@ -27,6 +27,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **Unexpected server errors show a generic message with a request id.** An operation that fails unexpectedly answers 500 `InternalError` with "An unexpected server error occurred. Request ID: …" (also in `errors[0].requestId`), and the API dispatcher logs the full error under that id. Messages a resolver raises for the user, such as `NOT_CLAIMED`, `QUEUE_MANAGED`, a delete's per-document report or a "Contact an administrator" message, are unchanged. See [rbac.md](docs/rbac.md#the-status-a-refusal-arrives-with-and-why-it-matters-operationally).
+
 - **A Reviewer's Skip All Reviews is accepted only where the document page offers it.** For a caller who is not an Admin, `skipAllSectionsReview` requires that a review was raised on the document and has not been completed or skipped, and is otherwise refused with `REVIEW_FINISHED` or `NO_REVIEW_PENDING`. Admins can still skip any document. A refused skip shows the server's message. See [human-review.md](docs/human-review.md#2-review-process).
 
 - **Claim and release now refuse a finished review.** **Start Review** (`claimReview`) and **Release Review** (`releaseReview`) are refused for every user, Admins included, on a review that has been completed or skipped, as the document list already offers neither action there, and the document page now shows the server's message when **Start Review** is refused. See [human-review.md](docs/human-review.md#2-review-process).
