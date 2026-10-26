@@ -215,7 +215,7 @@ MODEL LIMITS
   View model limits               ✅      ✅       ❌        ✅
   Edit model limits               ✅      ❌       ❌        ❌
 
-✅* = Reviewer sees only HITL-pending docs + their own completed reviews (server-side filtered)
+✅* = Reviewer sees only docs awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them (server-side filtered); see Document Filtering below
 ✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
 ```
 
@@ -974,7 +974,7 @@ filtering based on the caller's identity:
 **Document Filtering:**
 - **Admin**: See all documents
 - **Author/Viewer**: See all documents, filtered by `allowedConfigVersions` if scope is set
-- **Reviewer-only**: See only HITL-pending documents + their own completed reviews, plus config-version scope
+- **Reviewer-only**: See only documents awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them, plus config-version scope. A completed or skipped review is listed only for the reviewer who owns it, and only on a document carrying the legacy `HITLTriggered` flag or one whose finished review was claimed again, which sets it back to in progress. `listDocuments`, `getDocumentCount` and `listDocumentsByDateRange` apply the same filter
 
 **Configuration Filtering:**
 - `getConfigVersions`: Returns only profiles in user's scope (or all if unrestricted)
