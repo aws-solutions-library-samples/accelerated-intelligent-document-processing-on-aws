@@ -300,7 +300,7 @@ Two names change in outputs:
 - The MLflow parameters keep their names (`classification.model`,
   `classification.temperature`, `classification.modality.*`) and describe the
   call that assigns the class; a two-stage run also logs
-  `classification.segmentation.model`.
+  `classification.boundary_detection.model`.
 - Save-time validation messages name the nested path, for example
   `classification.one_stage.llm.max_tokens (999999) exceeds model limit`.
 

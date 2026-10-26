@@ -41,7 +41,7 @@ Two behaviours are deliberate and the migration guide states them:
   both placeholders — so for a two-stage configuration the inferred flags are
   written explicitly onto the stage blocks whenever the single-pass prompt they
   were inferred from is present, and the stage calls see exactly what they saw.
-* **A page limit implies "one document".** ``maxPagesForClassification`` exists
+* **A page limit implies "one section".** ``maxPagesForClassification`` exists
   to give a whole document one class from its first N pages. Combined with boundary
   detection it used to collapse only documents longer than N while sectioning shorter
   ones normally — a side effect, not a feature, and one no configuration value can
@@ -494,7 +494,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
     if "invalidClassFallback" in flat:
         out["fallback_class"] = copy.deepcopy(flat["invalidClassFallback"])
 
-    # ── Document shape. A page limit implies "one document" (see the module doc).
+    # ── Document shape. A page limit implies "one section" (see the module doc).
     if "sectionSplitting" in flat:
         _put(out, ("document_shape",), "sectionSplitting", flat["sectionSplitting"])
     if "maxPagesForClassification" in flat:
@@ -512,7 +512,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
                     "classification.maxPagesForClassification is %r, which gives "
                     "the whole document one class from its first pages, but "
                     "sectionSplitting was %r. Converted to sectionSplitting "
-                    "'disabled' (one document): the limit used to collapse only "
+                    "'disabled' (one section): the limit used to collapse only "
                     "documents longer than it while sectioning shorter ones, which no "
                     "single setting can express. Set the page limit to ALL to keep "
                     "boundary detection.",

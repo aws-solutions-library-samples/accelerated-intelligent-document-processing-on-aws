@@ -168,7 +168,7 @@ In Pipeline mode, one-stage classification works at one of two granularities:
 
 ##### Sequence Segmentation Approach
 
-Page granularity implements a sophisticated sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate splitting of packets into sections, where a single document may contain several distinct forms.
+Page granularity implements a sophisticated sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate splitting of packets into sections, where a single document may contain several distinct sections.
 
 **How It Works:**
 

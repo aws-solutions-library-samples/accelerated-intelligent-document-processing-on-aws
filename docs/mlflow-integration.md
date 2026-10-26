@@ -151,7 +151,7 @@ Complex data structures logged as JSON files under the `metrics/` artifact path.
 | Artifact | Description |
 |----------|-------------|
 | `full_config.json` | Complete IDP configuration snapshot for the test run |
-| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `single_pass`, the `classification.one_stage.page` or `classification.one_stage.packet` prompts for the active granularity; under `two_stage`, `classification.two_stage.section_classification.llm`'s, with the boundary call's prompts as `classification.boundary detection.system_prompt` and `classification.boundary detection.task_prompt` |
+| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `single_pass`, the `classification.one_stage.page` or `classification.one_stage.packet` prompts for the active granularity; under `two_stage`, `classification.two_stage.section_classification.llm`'s, with the boundary call's prompts as `classification.boundary_detection.system_prompt` and `classification.boundary_detection.task_prompt` |
 | `class_definitions.json` | Document class schemas with field definitions and evaluation methods |
 | `weighted_overall_scores.json` | Weighted accuracy scores per document class |
 | `field_metrics.json` | Full per-field evaluation metrics |
