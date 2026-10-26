@@ -91,6 +91,21 @@ describe('document list polling errors', () => {
     expect(setErrorMessage).not.toHaveBeenCalled();
   });
 
+  it('counts only consecutive network failures', async () => {
+    await loaded();
+    graphql
+      .mockRejectedValueOnce(NETWORK)
+      .mockRejectedValueOnce(NETWORK)
+      .mockRejectedValueOnce(SERVER)
+      .mockRejectedValueOnce(NETWORK)
+      .mockRejectedValueOnce(NETWORK);
+
+    for (let i = 0; i < 5; i += 1) await tick();
+
+    // Only the server error is reported; the run of network failures restarted after it.
+    expect(setErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a server error on a poll at once', async () => {
     await loaded();
     graphql.mockRejectedValue(SERVER);

@@ -25,6 +25,7 @@ import {
 import useConfiguration from '../../hooks/use-configuration';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useSettingsContext from '../../contexts/settings';
+import { ConsoleLogger } from 'aws-amplify/utils';
 import useDocumentsContext from '../../contexts/documents';
 import { documentsNeedingDetail, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
@@ -36,6 +37,8 @@ import { classificationModelOf } from '../../utils/classification-config';
 // Two-stage classification meters its halves as Segmentation and
 // SectionClassification instead of Classification; all three are the
 // classification step.
+
+const logger = new ConsoleLogger('CapacityPlanningLayout');
 const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'Segmentation/', 'SectionClassification/'];
 
 // Type definitions for configuration and state
@@ -206,7 +209,8 @@ const CapacityPlanningLayout = () => {
   // List used to ask, so opening Capacity Planning directly left Populate with
   // nothing to read ("Please visit the Documents tab first").
   useEffect(() => {
-    if (!hasListBeenLoaded) {
+    // The same guard the Document List uses before starting the load.
+    if (!isDocumentsListLoading && !hasListBeenLoaded) {
       setIsDocumentsListLoading(true);
     }
   }, []); // Once, on mount: afterwards the list hook owns reloading
@@ -632,13 +636,7 @@ const CapacityPlanningLayout = () => {
       const configuredTypes = getConfiguredDocumentTypes();
       console.log('Configured document types:', Array.from(configuredTypes));
 
-      console.log('Total documents:', pool.length);
-      if (pool.length > 0) {
-        console.log('Sample document:', pool[0]);
-        console.log('Sample document keys:', Object.keys(pool[0]));
-        console.log('Sample document Metering:', pool[0].Metering);
-        console.log('Sample document ObjectStatus:', pool[0].ObjectStatus);
-      }
+      logger.debug('Populate: documents considered', { listed: pool.length, fetchedInFull: detailed.length });
 
       // Check different document statuses
       const completedDocs = pool.filter((doc) => doc.ObjectStatus === 'COMPLETED');

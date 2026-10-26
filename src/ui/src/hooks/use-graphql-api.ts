@@ -376,6 +376,9 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
           logger.warn('Background document refresh did not reach the server; retrying on the next poll', error);
           return;
         }
+      } else {
+        // Anything else breaks the run: the count is of consecutive network failures.
+        pollNetworkFailuresRef.current = 0;
       }
       // describeApiError branches on errorType: a 403 gets copy the reader can act
       // on rather than the dispatcher's own words, which name Cognito groups they

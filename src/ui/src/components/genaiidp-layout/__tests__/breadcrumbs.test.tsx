@@ -48,6 +48,7 @@ describe('layout breadcrumbs', () => {
     ['/documents/model-limits', 'Model Limits'],
     ['/documents/custom-models', 'Custom Models'],
     ['/documents/query', 'Knowledge Base'],
+    ['/documents/agents', 'Document Analytics'],
   ])('names %s as its page, not as a document', (entry, page) => {
     const crumbs = crumbsAt(entry);
 
