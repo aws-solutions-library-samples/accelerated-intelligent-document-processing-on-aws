@@ -643,7 +643,7 @@ const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: Navig
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
   const items: SideNavigationProps.Item[] = [buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewWork?.count ?? null)];
-  // The annotation screens (under /review-queues/.../items) are opened from Tasks; a
+  // The edit screens (under /review-queues/.../items) are opened from Tasks; a
   // queue's own page (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
   if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;

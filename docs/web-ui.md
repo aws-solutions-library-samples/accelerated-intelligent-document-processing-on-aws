@@ -32,7 +32,7 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one document editor (see [HITL](#hitl))
+- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit screen (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -181,7 +181,7 @@ markdown automatically.
 ## Comparing a document against its baseline
 
 On a document that has an evaluation baseline, **Edit Data** (or **View Data**)
-opens the document editor, which shows the **document class** comparison straight away — predicted, expected, and a verdict
+opens the edit screen, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -231,8 +231,8 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes**, or **Complete**
-in the document editor, afterwards if you would rather the pipeline redo
+so they may no longer match; use **Edit Mode → Process Changes**, or **Reprocess**
+on the edit screen, afterwards if you would rather the pipeline redo
 them.
 
 That is the difference between the two routes, and it is the reason both exist:
@@ -331,7 +331,7 @@ the BDA branch extracts values. So the section you edited comes back with its va
 and nothing to replace them, on a single-section document as much as on a multi-section
 one. Edit the structure of a BDA-mode document only when you are prepared for that, and prefer
 **Edit Data** on the section row when what you want is to correct a value rather than a
-boundary: that opens the document editor on the section and writes the value without
+boundary: that opens the edit screen on the section and writes the value without
 touching the structure or requeueing anything.
 
 ## Edit Pages
@@ -675,7 +675,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   removes it from the list and the count straight away (**Skip** gives the item back
   to its queue, unassigned and not finished), and work assigned to you by an Admin
   appears within about 30 seconds.
-- **The document editor** is the same for every edit, whether you open a queue item
+- **The edit screen** is the same for every edit, whether you open a queue item
   from Tasks, an Inbox message or Queue Management, or edit a document directly. It
   has three routes:
   - a Production item at `#/review-queues/items/<document>`
@@ -685,15 +685,20 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
     document page
 
   The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
-  role. The actions are at the top, each shown where it applies: **History** (field
-  edits, and a Production item's review activity), **Skip** (queue items, for the
-  assignee), **Discard Changes**, **Save** (Production items and direct
-  edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
-  Complete finishes a queue item, and on a direct edit saves the edits,
-  confirms, and reprocesses the document. A direct edit also shows the evaluation
+  role. The title is the document's name with its status in parentheses, over the
+  full object key; a queue item's **Review Reason** follows, then the **Edit
+  Document** panel, which holds the editor with the section selector in its header.
+  The actions are in one bar at the top, always in this order and each shown only
+  where it applies: **History** (field edits, review activity and the processing
+  report), **Edit Page Grouping**, **Skip** (queue items, for the assignee, with a
+  reason), **Cancel** (leave, discarding unsaved edits after asking), **Save** and
+  **Reprocess**. Reprocess finishes a queue item and sends the document for
+  reprocessing, and on a direct edit saves the edits, confirms, and reprocesses the
+  document. A Test Studio document with authored ground truth, which nothing
+  reprocesses, offers **Complete** instead. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
-  item directly (the first saved edit, or Complete, assigns it to them) and
+  item directly (the first saved edit, or Reprocess, assigns it to them) and
   uses **Take over** on one assigned to someone else.
 - The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
   **Review Status** as **In Review**, which for Admins and Annotators links to the queue

@@ -24,21 +24,21 @@ vi.mock('../../components/genai-idp-top-navigation', () => ({ default: () => nul
 vi.mock('../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 // The screen reports its item's queue (or test set) once it has loaded.
 const testSetName: { value: string | null | undefined } = { value: undefined };
-vi.mock('../../components/review-workspace/AnnotationScreen', () => ({
-  default: ({
-    onItemQueue,
-    onTestSet,
-  }: {
-    onItemQueue?: (q: { id: string; name: string }) => void;
-    onTestSet?: (t: { id: string; name: string | null }) => void;
-  }) => {
-    useEffect(() => {
-      onItemQueue?.({ id: 'high value', name: 'High Value' });
-      if (testSetName.value !== undefined) onTestSet?.({ id: 'ts-1', name: testSetName.value });
-    }, [onItemQueue, onTestSet]);
-    return null;
-  },
-}));
+// Both edit modes report the same way, so one stand-in serves for either. The mock
+// factories are hoisted above it, so they defer to it at render time.
+interface StubProps {
+  onItemQueue?: (q: { id: string; name: string }) => void;
+  onTestSet?: (t: { id: string; name: string | null }) => void;
+}
+const ScreenStub = ({ onItemQueue, onTestSet }: StubProps) => {
+  useEffect(() => {
+    onItemQueue?.({ id: 'high value', name: 'High Value' });
+    if (testSetName.value !== undefined) onTestSet?.({ id: 'ts-1', name: testSetName.value });
+  }, [onItemQueue, onTestSet]);
+  return null;
+};
+vi.mock('../../components/edit-screen/ProductionItemEdit', () => ({ default: (props: StubProps) => <ScreenStub {...props} /> }));
+vi.mock('../../components/edit-screen/TestSetItemEdit', () => ({ default: (props: StubProps) => <ScreenStub {...props} /> }));
 
 import { ProductionItemPage, TestSetItemPage } from '../ReviewQueuesRoutes';
 

@@ -63,7 +63,7 @@ import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
 import PublishVersionModal, { type PublishVersionInput } from './PublishVersionModal';
 import RemoveDocumentsModal from './RemoveDocumentsModal';
-import type { TestSetDocumentSectionRef } from './GroundTruthVisualEditor';
+import type { TestSetDocumentSectionRef } from './GroundTruthSectionEditor';
 import { createLatestResponseGuard } from './latestResponseOnly';
 
 const client = generateClient();
@@ -1073,7 +1073,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   // Set-level, so it belongs on the page header rather than in the
                   // Documents table's action row, which acts on rows. It sits here
                   // rather than on the table page because publishing completes the
-                  // pass that Generate draft labels and Annotate below begin.
+                  // pass that Generate draft labels and Edit ground truth below begin.
                   canWrite ? (
                     // `disabledReason` rather than a wrapper's `title`: Cloudscape
                     // wires it as the button's own accessible description, and a
@@ -1204,13 +1204,13 @@ const TestSetDetail = (): React.JSX.Element => {
                           the queue, so "how much to review" is decided before
                           committing a team. */}
                       <Button onClick={() => setShowEffortModal(true)} iconName="user-profile">
-                        Annotate
+                        Edit ground truth
                       </Button>
                       {/* Needed because the harvest only replaces a draft when the
                           new run produces a section for it: a run that splits
                           differently leaves orphan sections behind. */}
                       {/* The only action here that destroys work. It sat in the
-                          same row as Refresh and Annotate with identical styling,
+                          same row as Refresh and Edit ground truth with identical styling,
                           so nothing but the label distinguished it. */}
                       <Button
                         iconName="remove"
@@ -1308,7 +1308,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   width: 120,
                   cell: (item: TestSetDocumentItem) => (
                     <Box variant="span" fontSize="body-s">
-                      <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey)}>Annotate</Link>
+                      <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey)}>Edit</Link>
                     </Box>
                   ),
                 },

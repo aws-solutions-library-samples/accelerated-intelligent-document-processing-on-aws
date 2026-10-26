@@ -143,7 +143,7 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   );
   const logoutRoute = <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />;
 
-  // An Annotator-only user's shell: My Work, Inbox and the annotation screens (under
+  // An Annotator-only user's shell: My Work, Inbox and the edit screens (under
   // /review-queues, where Inbox notification links point). Nothing else is routed.
   const routes = isAnnotatorOnly ? (
     <Routes>

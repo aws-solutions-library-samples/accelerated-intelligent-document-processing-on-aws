@@ -126,7 +126,7 @@ the path the confidence-guided review and effort estimator are built around.
 ### Path B — process first, then register (more control)
 
 The original workflow: process documents *before* the test set exists, correct the
-predictions in the document editor, and register the corrected results as ground truth.
+predictions on the edit screen, and register the corrected results as ground truth.
 Choose this when you want Discovery to derive the schema from your samples, or want
 per-document control before anything is registered.
 
@@ -189,7 +189,7 @@ This is the most important step. You'll review each document's predictions, corr
 For each processed document:
 
 1. Open the document from the document list
-2. Click **Edit Data** on a section (or **Edit** at the top of the document page) to open the document editor
+2. Click **Edit Data** on a section (or **Edit** at the top of the document page) to open the edit screen
 3. Review each extracted field:
    - Click on a field to highlight it in the document viewer
    - Compare the extracted value against the source document

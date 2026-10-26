@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-/** History, from the annotation screen, shows why an item was skipped or rejected, newest first. */
+/** History, from the edit screen, shows why an item was skipped or rejected, newest first. */
 
 import React from 'react';
 import { describe, expect, it } from 'vitest';

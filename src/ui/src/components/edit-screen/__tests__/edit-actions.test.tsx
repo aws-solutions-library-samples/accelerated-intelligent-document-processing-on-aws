@@ -1,0 +1,129 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
+
+/**
+ * The edit screen's action bar and title. What has to hold: the buttons come in the
+ * order History, Edit Page Grouping, Skip, Cancel, Save and the primary action (labelled
+ * Reprocess unless the mode says Complete), each only where it applies; Claim mode
+ * shows History and Claim only; there is no Processing Report button (it is a History
+ * tab); a disabled button carries its reason; while an action runs every button is
+ * disabled; each button reports its own action; and the title reads
+ * "<document> (<status>)" in plain text over the object key.
+ */
+
+import React from 'react';
+import { fireEvent, render } from '@testing-library/react';
+import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { describe, expect, it, vi } from 'vitest';
+
+import EditScreen from '../EditScreen';
+import type { EditActionsProps } from '../EditScreen';
+
+const renderScreen = (actions: Partial<EditActionsProps> = {}, status: string | undefined = undefined) => {
+  const onAction = vi.fn();
+  const onShowHistory = vi.fn();
+  render(
+    <EditScreen title="doc.pdf" status={status} objectKey="in/doc.pdf" actions={{ busy: null, onAction, onShowHistory, ...actions }}>
+      <div />
+    </EditScreen>,
+  );
+  return { onAction, onShowHistory };
+};
+
+const header = () => createWrapper(document.body).findHeader()!;
+const buttons = () =>
+  header()
+    .findActions()!
+    .findAllButtons()
+    .map((b) => b.getElement());
+/** A button's own label: a disabled reason renders inside the button, after it. */
+const label = (b: HTMLElement) => b.querySelector('[class*="content"]')?.textContent ?? b.textContent;
+const labels = () => buttons().map(label);
+const button = (name: string) => {
+  const found = buttons().find((b) => label(b) === name);
+  if (!found) throw new Error(`no button ${name}`);
+  return found;
+};
+
+/** Cloudscape marks a button with a disabled reason aria-disabled rather than disabled. */
+const isDisabled = (b: HTMLElement) => (b as HTMLButtonElement).disabled || b.getAttribute('aria-disabled') === 'true';
+
+const ALL = { showRegroup: true, showSkip: true, showCancel: true, showSave: true };
+
+describe('the edit screen action bar', () => {
+  it('renders every action in order', () => {
+    renderScreen(ALL);
+    expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
+  });
+
+  it('shows only History and Reprocess by default', () => {
+    renderScreen();
+    expect(labels()).toEqual(['History', 'Reprocess']);
+  });
+
+  it('labels the primary action Complete where the mode says so', () => {
+    renderScreen({ ...ALL, primaryLabel: 'Complete' });
+    expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Complete']);
+  });
+
+  it('shows History and Claim in claim mode', () => {
+    renderScreen({ ...ALL, showClaim: true });
+    expect(labels()).toEqual(['History', 'Claim']);
+  });
+
+  it('has no Processing Report button: the report is a History tab', () => {
+    renderScreen(ALL);
+    expect(labels()).not.toContain('Processing Report');
+  });
+
+  it('disables a button with its reason', () => {
+    renderScreen({ ...ALL, regroupDisabledReason: 'Not while in review', primaryDisabledReason: 'Assigned to someone else' });
+    expect(isDisabled(button('Edit Page Grouping'))).toBe(true);
+    expect(isDisabled(button('Reprocess'))).toBe(true);
+    expect(isDisabled(button('Save'))).toBe(false);
+    const regroup = createWrapper(document.body)
+      .findAllButtons()
+      .find((b) => label(b.getElement()) === 'Edit Page Grouping')!;
+    regroup.focus();
+    expect(regroup.findDisabledReason()?.getElement().textContent).toBe('Not while in review');
+  });
+
+  it('disables every button while an action runs', () => {
+    renderScreen({ ...ALL, busy: 'save' });
+    for (const b of buttons()) expect(isDisabled(b), label(b) ?? '').toBe(true);
+  });
+
+  it.each([
+    ['Edit Page Grouping', 'regroup'],
+    ['Skip', 'skip'],
+    ['Cancel', 'cancel'],
+    ['Save', 'save'],
+    ['Reprocess', 'reprocess'],
+  ])('%s reports %s', (name, action) => {
+    const { onAction } = renderScreen(ALL);
+    fireEvent.click(button(name));
+    expect(onAction).toHaveBeenCalledWith(action);
+  });
+
+  it('shows History without an icon, and it opens its dialog', () => {
+    const { onShowHistory, onAction } = renderScreen(ALL);
+    expect(button('History').querySelector('svg')).toBeNull();
+    fireEvent.click(button('History'));
+    expect(onShowHistory).toHaveBeenCalledTimes(1);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('the edit screen title', () => {
+  it('reads "<document> (<status>)" in plain text, over the object key', () => {
+    renderScreen({}, 'Claimed');
+    expect(header().findHeadingText().getElement().textContent).toBe('doc.pdf (Claimed)');
+    expect(header().findHeadingText().getElement().querySelector('svg')).toBeNull();
+    expect(header().findDescription()?.getElement().textContent).toBe('in/doc.pdf');
+  });
+
+  it('reads the document name alone without a status', () => {
+    renderScreen();
+    expect(header().findHeadingText().getElement().textContent).toBe('doc.pdf');
+  });
+});

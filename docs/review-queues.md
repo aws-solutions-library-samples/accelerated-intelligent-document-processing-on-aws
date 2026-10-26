@@ -30,7 +30,7 @@ There are two kinds of queue:
   set's documents whose labels need a human check before they become ground truth.
 
 An **Admin** assigns queue items to **Annotators**. An Annotator corrects the
-item and finishes it with **Complete**, or skips it to give it back to its
+item and finishes it with **Reprocess**, or skips it to give it back to its
 queue. An Admin can work
 a Production item too. For a Production
 document, the corrections are applied by a second (finalize) run, which produces
@@ -68,7 +68,7 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
    and the assignee finishes it.
-   - **Complete** applies the corrections, and the document ends `COMPLETED`.
+   - **Reprocess** applies the corrections in the finalize run, and the document ends `COMPLETED`.
    - **Skip** gives it back to its queue, unassigned and not finished, with a reason
      from the queue's skip list.
    - An Admin can instead **Remove** it from the queue: it ends `COMPLETED` with the
@@ -95,34 +95,45 @@ Inbox; other users have neither.
   assigned it: Production review items and Test Studio documents, each with its
   document, source, queue and age. Its badge counts both. You get an Inbox message
   when an Admin assigns you work.
-- Select an item to open it in the **document editor**. Production items, Test
-  Studio items and direct edits of a document all use the same editor, whether you
-  open them from Tasks, an Inbox message or Queue Management. The document's page
-  images are shown beside its fields.
-  - The actions are at the top, each shown where it applies: **History**, **Skip**,
-    **Discard Changes**, **Save**, **Edit Page Grouping**, **Processing
-    Report** and **Complete**. A disabled action says why on hover.
-  - **History** has two tabs. **Field Edits** lists every saved change to the open
-    section's fields: who, when, and each field's old and new value (a Production
-    draft save records one too). **Review Activity** lists who claimed, was
-    assigned, skipped or completed the item, with any skip reason and note.
-  - **Processing Report** shows how the open section was extracted.
-  - **Production item**: **Review Reason**, at the top, lists why it is in review,
+- Select an item to open it in the **edit screen**. Production items, Test
+  Studio items and direct edits of a document all use the same edit screen, whether
+  you open them from Tasks, an Inbox message or Queue Management.
+  - The actions are in one bar at the top, always in this order and each shown only
+    where it applies: **History**, **Edit Page Grouping**, **Skip**, **Cancel**,
+    **Save** and **Reprocess**. A disabled action says why on hover.
+  - The title is the document's name with its status in parentheses, for example
+    `insurance_package-1.pdf (Claimed)`, and the full object key is under it.
+  - The **Edit Document** panel holds the editor: the page images beside the
+    fields, with the section selector (for a document with more than one section)
+    in the panel's header.
+  - **History** has three tabs. **Field Edits** lists every saved change to the
+    open section's fields: who, when, and each field's old and new value (a
+    Production draft save records one too). **Review Activity** lists who claimed,
+    was assigned, skipped or completed the item, with any skip reason and note.
+    **Processing Report** shows how the open section was extracted.
+  - **Cancel** leaves the item without finishing it. If the open section has
+    unsaved edits, it asks before discarding them; anything already saved, such as
+    a Production draft, is kept.
+  - **Production item**: **Review Reason**, above the editor, lists why it is in review,
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
     lists the rest and **Show fewer** collapses them again. Hover a reason chip to
     see the field, the score and the threshold. Your edits are saved as a draft as
-    you type, or straight away with **Save**. **Complete** saves
-    your latest edits and applies your corrections. **Edit Page Grouping** corrects
+    you type, or straight away with **Save**. **Reprocess** saves
+    your latest edits and applies your corrections. The editor opens with **Fields
+    to show** set to **Confidence alerts only** when the item has review reasons. **Edit Page Grouping** corrects
     the document's split as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
     (a section you remove takes its draft with it). Only the item's holder can
     regroup it; an Admin's first regroup assigns an unassigned item to them.
-  - **Test Studio item**: correct the labels and choose **Complete**, which
-    saves the open section and confirms the rest. You can also choose it without
+  - **Test Studio item**: correct the labels and choose **Reprocess**, which
+    saves the open section, confirms the rest and reprocesses the document's review
+    copy. For authored ground truth, which has no review copy and is never
+    reprocessed, the action is **Complete** instead. You can also choose it without
     changing anything, which confirms the labels as correct; it needs no **Start
-    annotating** first. **Save** saves the open section, which marks it reviewed,
-    and switching sections saves it too. **Annotate | View Source Document**, under
-    the title, switches between the ground-truth editor and the source document.
+    editing** first. **Save** saves the open section, which marks it reviewed,
+    and switching sections saves it too. **Edit | View Source Document**, in the
+    Edit Document panel's header, switches between the ground-truth editor and the
+    source document; unsaved edits are kept while the source is shown.
     **Edit Page Grouping** opens the page-grouping board in a dialog. Versioning works exactly
     as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
@@ -240,7 +251,7 @@ document, worst first, with columns **Document**, **Labels**, **Confidence** and
 **Assigned** (Yes or No; the assignee shows on hover). The document list filters to
 **All documents**, **Assigned** or **Not assigned**, and opens on **Not assigned**,
 which is exactly the documents that can still be claimed.
-Each row's menu offers **View** (the source document), **Annotate**, and for Admins
+Each row's menu offers **View** (the source document), **Edit**, and for Admins
 **Assign** and **Delete** (removes the document from the test set, after a
 confirmation). An Admin can also select several documents and choose **Assign to…** to
 give them all to one Annotator, or **Unassign** to take them back. Every document can be
@@ -277,21 +288,21 @@ and when a draft-labeling run writes its draft.
 Open an item from its queue's page. Its breadcrumbs read **Home**, then the queue's
 name, then the document, and the queue links back to its page.
 
-- **An unassigned item** says **Not assigned yet. Editing or completing assigns it to
-  you.** You can edit it straight away: your first saved edit, or **Complete**, assigns the item to you first. If an Annotator claimed it a moment earlier, the
+- **An unassigned item** says **Not assigned yet. Editing or reprocessing assigns it to
+  you.** You can edit it straight away: your first saved edit, or **Reprocess**, assigns the item to you first. If an Annotator claimed it a moment earlier, the
   screen says who and turns view-only.
 - **An item assigned to someone else** is view-only, with **Take over**. Taking over
   assigns the item to you, keeps its draft so you carry on from the Annotator's
   edits, and tells the former assignee in their Inbox. Then you can edit and
-  complete it.
-- **An item assigned to you** has **Complete** and **Skip**, as for an Annotator.
+  reprocess it.
+- **An item assigned to you** has **Reprocess** and **Skip**, as for an Annotator.
 
 ## Reviewing from the document page
 
 While a document is in a review queue (status **In Review**), it is reviewed from
 its queue item:
 
-- The document page's **Edit** opens the queue item in the document editor for
+- The document page's **Edit** opens the queue item on the edit screen for
   Admins and Annotators, the roles that can open queue items. For other roles it opens
   the direct edit, read-only.
 - **Edit Data** opens the direct edit read-only, with **Review in queue** for Admins

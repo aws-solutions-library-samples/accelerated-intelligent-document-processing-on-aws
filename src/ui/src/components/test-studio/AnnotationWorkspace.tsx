@@ -10,9 +10,9 @@
  * assigns documents to the Annotators listed on the queue (an assignment does not
  * expire) and sets how long an assigned document waits before its Annotator is
  * reminded. A listed Annotator (from My Work › Queues) claims an unassigned document
- * instead, which assigns it to them. Each row opens the annotation screen
- * (AnnotationScreen), where documents are annotated (read-only unless assigned to
- * the viewer).
+ * instead, which assigns it to them. Each row opens the edit screen
+ * (TestSetItemEdit), where documents are edited (read-only unless assigned to the
+ * viewer).
  *
  * The URL is safe to share: it only navigates, and every operation is authorized
  * server-side against the caller's allowedTestSets.
@@ -62,8 +62,7 @@ import {
   listTestSetQueues,
   unassignTestSetDocuments,
 } from '../review-queues/reviewer-assignment';
-import AnnotationScreen from '../review-workspace/AnnotationScreen';
-import type { AnnotationQueue, QueueItem } from '../review-workspace/test-set-adapter';
+import type { AnnotationQueue, QueueItem } from '../edit-screen/test-set-item-edit-adapter';
 import { renderAlertCount, renderLabelSource } from './TestSetDetail';
 import {
   REVIEWED_HIDDEN_HINT,
@@ -77,7 +76,7 @@ import {
 } from './annotation-edit-flags';
 import { createLatestResponseGuard } from './latestResponseOnly';
 
-export type { QueueItem } from '../review-workspace/test-set-adapter';
+export type { QueueItem } from '../edit-screen/test-set-item-edit-adapter';
 
 const client = generateClient();
 const logger = new ConsoleLogger('AnnotationWorkspace');
@@ -548,9 +547,9 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   if (!roleLoading && !canAnnotate) {
     return (
-      <ContentLayout header={<Header variant="h1">Annotate</Header>}>
+      <ContentLayout header={<Header variant="h1">Edit</Header>}>
         <Alert type="error" header="Not available for your account">
-          Ground-truth annotation requires an Annotator, Author or Admin role.
+          Editing ground truth requires an Annotator, Author or Admin role.
         </Alert>
       </ContentLayout>
     );
@@ -820,7 +819,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                     loading={claimingKey === item.objectKey}
                     items={[
                       { id: 'view', text: 'View' },
-                      { id: 'annotate', text: 'Annotate' },
+                      { id: 'annotate', text: 'Edit' },
                       ...(claimsWork
                         ? [
                             {
@@ -931,13 +930,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   );
 };
 
-/**
- * `queue`: the test set's queue page. `item` renders the annotation screen and exists
- * only until the route renders `<AnnotationScreen kind="test-set" />` itself.
- */
-export type AnnotationWorkspaceMode = 'queue' | 'item';
-
-const AnnotationWorkspace = ({ mode = 'queue' }: { mode?: AnnotationWorkspaceMode }): React.JSX.Element =>
-  mode === 'item' ? <AnnotationScreen kind="test-set" /> : <AnnotationQueuePage />;
+/** A test set's queue page. An item opens in the edit screen (`TestSetItemEdit`), which the route renders. */
+const AnnotationWorkspace = (): React.JSX.Element => <AnnotationQueuePage />;
 
 export default AnnotationWorkspace;

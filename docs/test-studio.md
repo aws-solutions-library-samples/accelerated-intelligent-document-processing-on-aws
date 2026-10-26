@@ -669,7 +669,7 @@ Sorting is the one control that stays page-scoped — see
 
 This page is where a set is worked on end to end: **Publish version** at the top
 acts on the set as a whole, while **Add documents**, **Generate draft labels**,
-**Annotate**, **Clear draft labels** and **Remove** sit above the document list and
+**Edit ground truth**, **Clear draft labels** and **Remove** sit above the document list and
 act on its documents. See [Publishing a version](#publishing-a-version).
 
 The document detail page offers two views:
@@ -1141,7 +1141,7 @@ Create one from **User Management**: set the persona to `Annotator` and assign t
 test set(s), then share the queue link
 (`#/test-studio/sets/<test-set-id>/annotate`). You can copy that link from the
 **Copy queue link** button on the queue itself, or open the queue for any set via
-**Actions → Annotate ground truth**.
+**Actions → Edit ground truth**.
 
 An annotator must be assigned at least one test set — an account with none is
 denied every set by the scope check, so the create form refuses to submit without
@@ -1189,15 +1189,18 @@ The queue page shows:
   document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
   them re-reads the queue from the server and takes a few seconds on a large set.
 
-Per-document actions sit in one bar at the top of the document editor (the same
-editor as production review items), so finishing a long document does not mean
-scrolling past every field to reach them: **History**, **Skip**, **Discard Changes**,
-**Save**, **Edit Page Grouping**, **Processing Report** and **Complete**, or **Claim**
-for an Annotator viewing an unassigned document. **Save** saves the open section,
-which marks it reviewed (switching sections saves it too), and **Complete** saves the
-open section and confirms the rest. Under the title the screen names the **Document**
-(its input key) and its **Ground Truth**, with an **Annotate | View Source Document**
-switch beneath them, and its notices share one alert.
+Per-document actions sit in one bar at the top of the edit screen (the same
+screen as production review items), so finishing a long document does not mean
+scrolling past every field to reach them: **History**, **Edit Page Grouping**,
+**Skip**, **Cancel**, **Save** and **Reprocess**, or **Claim** for an Annotator
+viewing an unassigned document. **Save** saves the open section, which marks it
+reviewed (switching sections saves it too), and **Reprocess** saves the open
+section, confirms the rest and reprocesses the document's review copy. Authored
+ground truth has no review copy and is never reprocessed, so its action is
+**Complete** instead. The title is the document's name with its status (**To
+review**, **Reviewed** or **Skipped**), and the **Edit Document** panel's header
+holds the section selector and an **Edit | View Source Document** switch. The
+notices share one alert.
 
 On large sets the queue is read a page at a time, and the page says so rather than
 implying the whole set has been ranked. What bounds that page is the number of
@@ -1307,7 +1310,7 @@ what the doc-split metrics score classification against — so a wrong split mak
 classification ground truth wrong, not merely untidy.
 
 **Edit Page Grouping** opens a board with every section side by side and each page as a
-thumbnail. In the queue's document editor it is in the action bar at the top and opens
+thumbnail. On the queue's edit screen it is in the action bar at the top and opens
 the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
 section selector at the top of the document. Either way it is kept away from the
 extracted fields because it changes the document's structure, not one section's values. (**Pages in this section**, in the field
@@ -1436,8 +1439,8 @@ has a chat tool, and the reviewer keeps ownership of the document.
 ### Edit history
 
 Each label records who changed it, when, and which fields moved. Open a document
-and use the **Edit history** tab, or **History › Field Edits** in the queue's
-document editor (which has no Edit history tab) — the same view as the document editor in the main app.
+and use the **Edit history** tab, or **History › Field Edits** on the queue's
+edit screen (which has no Edit history tab) — the same view as the edit screen in the main app.
 
 > Not to be confused with a Configuration Profile **revision**, which is an
 > immutable numbered snapshot of a *configuration*. This is a log of edits to

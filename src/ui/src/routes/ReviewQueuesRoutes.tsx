@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// /review-queues: the annotation screens for one item (Admin and Annotator; Inbox
+// /review-queues: the edit screen for one item (Admin and Annotator; Inbox
 // notification links point here), each queue's page (Admin, and the Annotators listed
 // on it, who reach it from My Work › Queues) and HITL › Queue Management (Admin only).
 import React, { useCallback, useState } from 'react';
@@ -13,9 +13,10 @@ import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
 import QueuesPage from '../components/review-queues/QueuesPage';
 import ReviewQueuePage from '../components/review-queues/ReviewQueuePage';
 import { documentName } from '../components/review-queues/review-api';
-import AnnotationScreen from '../components/review-workspace/AnnotationScreen';
-import type { ItemQueue } from '../components/review-workspace/ProductionAnnotation';
-import type { ItemTestSet } from '../components/review-workspace/TestSetAnnotation';
+import ProductionItemEdit from '../components/edit-screen/ProductionItemEdit';
+import type { ItemQueue } from '../components/edit-screen/ProductionItemEdit';
+import TestSetItemEdit from '../components/edit-screen/TestSetItemEdit';
+import type { ItemTestSet } from '../components/edit-screen/TestSetItemEdit';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
 import useUserRole from '../hooks/use-user-role';
 import RequireRole from './RequireRole';
@@ -52,7 +53,8 @@ export const ProductionItemPage = (): React.JSX.Element => {
   const { root, crumbs } = useItemCrumbs(queue && { text: queue.name, href: `#${productionQueuePath(queue.id)}` }, objectKey);
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <AnnotationScreen key={objectKey} kind="production" onItemQueue={onItemQueue} />
+      {/* Keyed on the item, so per-item state (the sections saved so far) never carries over. */}
+      <ProductionItemEdit key={objectKey} objectKey={decodeURIComponent(objectKey)} onItemQueue={onItemQueue} />
     </ReviewQueuesLayout>
   );
 };
@@ -66,7 +68,13 @@ export const TestSetItemPage = (): React.JSX.Element => {
   const { root, crumbs } = useItemCrumbs({ text: name ?? testSetId, href: `#${testSetQueuePath(testSetId)}` }, objectKey);
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <AnnotationScreen key={`${testSetId}/${objectKey}`} kind="test-set" onTestSet={onTestSet} />
+      {/* Keyed on the item, so per-item state (the opened version transition) never carries over. */}
+      <TestSetItemEdit
+        key={`${testSetId}/${objectKey}`}
+        testSetId={testSetId}
+        objectKey={decodeURIComponent(objectKey)}
+        onTestSet={onTestSet}
+      />
     </ReviewQueuesLayout>
   );
 };
@@ -81,7 +89,7 @@ const TestSetQueuePage = (): React.JSX.Element => {
   const { root, crumbs } = useQueueCrumbs({ text: `Test set: ${testSetId}`, href: '#' });
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <AnnotationWorkspace key={testSetId} mode="queue" />
+      <AnnotationWorkspace key={testSetId} />
     </ReviewQueuesLayout>
   );
 };

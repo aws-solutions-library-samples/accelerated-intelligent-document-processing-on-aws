@@ -119,7 +119,7 @@ interface WorkItemsTableProps {
   footer?: React.ReactNode;
   /** Offer the assignment filter (unassigned, assigned). */
   showStatusFilter?: boolean;
-  /** Adds the row "⋮" menu (Annotate, plus `extraRowActions`). */
+  /** Adds the row "⋮" menu (Edit, plus `extraRowActions`). */
   onRowAction?: (item: WorkItem, action: string) => void;
   /** More row menu entries, e.g. the Admin actions. */
   extraRowActions?: (item: WorkItem) => ButtonDropdownProps.ItemOrGroup[];

@@ -44,7 +44,7 @@ export const testSetItemPath = (testSetId: string, objectKey: string): string =>
   `${testSetQueuePath(testSetId)}/items/${encodeURIComponent(objectKey)}`;
 /**
  * Hash-link helper: href for a test set's queue under HITL › Queue Management, or
- * straight to one document's annotation screen. This link only navigates; access is enforced
+ * straight to one document's edit screen. This link only navigates; access is enforced
  * server-side against the user's allowedTestSets, so it grants nothing on its own
  * and is safe to share with a scoped annotator.
  */

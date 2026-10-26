@@ -4,7 +4,7 @@
 // My Work › Tasks (Annotators): the items assigned to the caller (by an Admin, or
 // claimed from My Work › Queues) —
 // production review items and Test Studio documents, both from the shared
-// ReviewWorkProvider poll. Opening one goes to its annotation screen.
+// ReviewWorkProvider poll. Opening one goes to its edit screen.
 import React, { useMemo, useState } from 'react';
 import { Alert, Button, ContentLayout, Header, SpaceBetween } from '@cloudscape-design/components';
 

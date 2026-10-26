@@ -5,8 +5,8 @@
 // one is assigned to. An Admin (HITL › Queue Management) selects items to assign,
 // unassign or move several at once, or uses ⋮ on a row. An Annotator listed on the
 // queue (My Work › Queues) claims items — one, the selected ones, or the next one —
-// which assigns them to the caller in My Work › Tasks. Annotate opens an item's
-// annotation screen without changing its assignment (read-only unless it is yours).
+// which assigns them to the caller in My Work › Tasks. Edit opens an item's
+// edit screen without changing its assignment (read-only unless it is yours).
 import React, { useCallback, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -379,7 +379,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
           }
           description={
             isAdmin
-              ? 'Select items to assign them to an Annotator, unassign them or move them to another queue. Annotate opens an item without changing its assignment.'
+              ? 'Select items to assign them to an Annotator, unassign them or move them to another queue. Edit opens an item without changing its assignment.'
               : 'Open any item to view it. Claim an item waiting for review to work it in My Work › Tasks, or choose Next item to claim the next one.'
           }
           footer={
