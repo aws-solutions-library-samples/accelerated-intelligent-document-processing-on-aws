@@ -253,7 +253,7 @@ upload, use the stored values — note the configuration *block* is named
 
 - **One stage** (`strategy: single_pass`) — granularity, the page or packet
   settings for that granularity, and the model block (`one_stage.…`).
-- **Two stage** (`strategy: two_stage`) — **Segmentation**
+- **Two stage** (`strategy: two_stage`) — **Boundary detection**
   (`two_stage.segmentation`: method, granularity, boundary hints, page or packet
   settings, model block) and **Section classification**
   (`two_stage.section_classification`: method, *pages per section* with its `k`,

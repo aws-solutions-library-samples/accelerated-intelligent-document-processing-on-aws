@@ -1426,13 +1426,13 @@ Resources:
                 type: object
                 sectionLabel: Two stage
                 collapsible: false
-                description: "Segmentation finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, segmentation makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
+                description: "Boundary detection finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, boundary detection makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
                 order: 2
                 showWhen: [{ field: "strategy", value: "two_stage" }]
                 properties:
                   segmentation:
                     type: object
-                    sectionLabel: Segmentation
+                    sectionLabel: Boundary detection
                     collapsible: true
                     defaultExpanded: true
                     description: "Finds where each section starts and ends. Returns page ranges only — no class — so its calls carry no class list, descriptions or examples."
@@ -1440,14 +1440,14 @@ Resources:
                     properties:
                       method:
                         type: string
-                        title: Segmentation method
+                        title: Boundary detection method
                         description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
                         enum: ["llm"]
                         default: "llm"
                         order: 0
                       llm:
                         type: object
-                        sectionLabel: LLM segmentation
+                        sectionLabel: LLM boundary detection
                         collapsible: false
                         description: "The boundary calls: how many are made, their prompts, and the model they use."
                         order: 1
@@ -1723,7 +1723,7 @@ Resources:
                     sectionLabel: Section classification
                     collapsible: true
                     defaultExpanded: true
-                    description: "Gives each section segmentation found one class. One call per section, not per page. Skipped for a section whose class a name RegEx already decided."
+                    description: "Gives each section that boundary detection found one class. One call per section, not per page. Skipped for a section whose class a name RegEx already decided."
                     order: 1
                     properties:
                       method:

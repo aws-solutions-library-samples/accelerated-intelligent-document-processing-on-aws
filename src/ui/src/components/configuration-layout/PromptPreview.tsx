@@ -82,7 +82,7 @@ interface PromptPreviewProps {
  */
 const STEPS = [
   { value: 'classification', label: 'Classification: one stage' },
-  { value: 'classification_segmentation', label: 'Classification: segmentation (Two stage)' },
+  { value: 'classification_segmentation', label: 'Classification: boundary detection (Two stage)' },
   { value: 'classification_section', label: 'Classification: section classification (Two stage)' },
   { value: 'extraction', label: 'Extraction' },
   { value: 'confidence', label: 'Confidence Assessment' },
