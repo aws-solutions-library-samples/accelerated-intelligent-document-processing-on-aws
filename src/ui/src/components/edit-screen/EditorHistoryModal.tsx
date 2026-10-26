@@ -8,8 +8,8 @@ import React from 'react';
 import { Box, Button, Modal, Tabs } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
-import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import { ReviewHistoryTable } from '../review-queues/ReviewHistoryModal';
+import FieldEditsTable from './FieldEditsTable';
 import ProcessingReportContent from './ProcessingReportContent';
 
 /** Every tab shares one height, so switching tabs doesn't resize the dialog. */
@@ -51,13 +51,8 @@ const EditorHistoryModal = ({
         {
           id: 'fields',
           label: 'Field Edits',
-          content: tabBody(
-            sectionData ? (
-              <EditHistoryTab predictionData={sectionData} baselineData={baselineData ?? null} height="auto" />
-            ) : (
-              <Box color="text-body-secondary">Open a section to see its field edits.</Box>
-            ),
-          ),
+          // The same table as Review Activity: one row per changed field, newest first.
+          content: tabBody(<FieldEditsTable sectionData={sectionData} baselineData={baselineData} />),
         },
         { id: 'review', label: 'Review Activity', content: tabBody(<ReviewHistoryTable history={reviewHistory ?? []} />) },
         { id: 'report', label: 'Processing Report', content: tabBody(<ProcessingReportContent sectionData={sectionData} />) },

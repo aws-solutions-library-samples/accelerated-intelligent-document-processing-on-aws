@@ -250,11 +250,14 @@ const STAGE_TONE: Record<string, { border: string; bg: string; mark: string }> =
   },
 };
 
+/** Every stage box's height: room for its label and a detail line. */
+const STAGE_HEIGHT = 44;
+
 const StageBox: React.FC<{ label: string; sub?: string; status?: string; fanout?: number }> = ({ label, sub, status = 'ok', fanout }) => {
   const tone = STAGE_TONE[status] || STAGE_TONE.ok;
   const parallel = fanout && fanout > 1;
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative', flex: '0 0 auto' }}>
       {/* Stacked "shadow" cards convey fan-out (sharded extract / concurrent confidence). */}
       {parallel && (
         <>
@@ -294,7 +297,15 @@ const StageBox: React.FC<{ label: string; sub?: string; status?: string; fanout?
           padding: '6px 10px',
           background: tone.bg,
           minWidth: 96,
+          // One height for every stage, with or without a detail line, so the boxes and
+          // the arrows between them share one centre line.
+          minHeight: STAGE_HEIGHT,
+          boxSizing: 'border-box',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
           textAlign: 'center',
+          whiteSpace: 'nowrap',
           opacity: status === 'skipped' ? 0.6 : 1,
         }}
       >
@@ -309,12 +320,21 @@ const StageBox: React.FC<{ label: string; sub?: string; status?: string; fanout?
   );
 };
 
-const Arrow: React.FC = () => <div style={{ alignSelf: 'center', color: '#5f6b7a' }}>→</div>;
+const Arrow: React.FC = () => (
+  <div aria-hidden style={{ flex: '0 0 auto', color: '#5f6b7a', lineHeight: 1 }}>
+    →
+  </div>
+);
 
 // Data-driven flow: renders whatever stages the backend recorded (works for both
-// simple and advanced), coloring each by status and stacking fanned-out stages.
+// simple and advanced), coloring each by status and stacking fanned-out stages. It is
+// one row, never wrapped: a wrapped flow strands an arrow at the end of a line and
+// reads as two flows. A flow wider than its panel scrolls sideways instead.
 const ProcessFlow: React.FC<{ stages: FlowStage[] }> = ({ stages }) => (
-  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch', paddingTop: 4 }}>
+  <div
+    data-testid="process-flow"
+    style={{ display: 'flex', flexWrap: 'nowrap', alignItems: 'center', gap: 8, overflowX: 'auto', padding: '4px 4px 8px' }}
+  >
     {stages.map((st, i) => (
       <React.Fragment key={st.key || i}>
         {i > 0 && <Arrow />}

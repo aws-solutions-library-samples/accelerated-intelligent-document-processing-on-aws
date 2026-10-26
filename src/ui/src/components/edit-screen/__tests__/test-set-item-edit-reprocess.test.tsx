@@ -7,7 +7,7 @@
  * and for authored ground truth alike; there is no
  * Save as Draft (no test-set save leaves labels unreviewed); the primary action saves
  * the open section's edits first, then confirms only the sections not saved, and exits
- * once; the Edit | View Source Document switch is first in the bar and shows the source
+ * once; the Edit | View switch is first in the bar and shows the source
  * in the Document Editor's place; and the screen tells the breadcrumbs the set's name.
  */
 
@@ -164,12 +164,12 @@ describe('the primary action on a Test Studio document', () => {
     expect(editorProps!.regroupOpen).toBe(true);
   });
 
-  it('puts the Edit | View Source Document switch in the bar, opening on Edit', async () => {
+  it('puts the Edit | View switch in the bar, opening on Edit', async () => {
     renderScreen();
     expect(editorProps!.variant).toBe('widget');
     expect(editorProps!.body).toBeUndefined();
     const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
-    expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View']);
     expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
     await act(async () => control.findSegments()[1].click());
     // The source document replaces the panes; the editor itself stays mounted.

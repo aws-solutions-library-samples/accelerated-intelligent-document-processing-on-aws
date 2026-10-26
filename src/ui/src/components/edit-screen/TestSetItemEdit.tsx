@@ -3,7 +3,7 @@
 //
 // The edit screen for a Test Studio document: the ground-truth editor (the test-set
 // adapter over the shared SectionEditor), Save, Skip, Cancel and Reprocess, with the
-// Edit | View Source Document switch. Saving a section marks it reviewed: Save and
+// Edit | View switch. Saving a section marks it reviewed: Save and
 // switching sections save the open one, and Reprocess saves it and confirms the
 // sections not saved yet, so "the labels are correct" and "I corrected them" end the
 // same way. For a document with a review copy, confirming its last section reprocesses

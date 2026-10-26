@@ -317,11 +317,11 @@ describe('the actions', () => {
     expect(modal.findContent().getElement().textContent).toContain('Claimed');
   });
 
-  it("offer Edit | View Source Document first in the bar, showing the source in the editor's place", async () => {
+  it("offer Edit | View first in the bar, showing the source in the editor's place", async () => {
     server.detail = mine();
     renderScreen();
     const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
-    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View']);
     expect(editor!.body).toBeUndefined();
     await act(async () => control.findSegments()[1].click());
     expect(editor!.body).toBeTruthy();

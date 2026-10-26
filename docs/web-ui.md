@@ -689,7 +689,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   full object key; a queue item's **Review Reason** follows, then the **Document
   Editor** panel, which holds the editor with a **Section** dropdown at its top left.
   The actions are in one bar at the top, always in this order and each shown only
-  where it applies: **Edit | View Source Document** (the original file in the
+  where it applies: **Edit | View** (the original file in the
   editor's place), **History** (field edits, review activity and the processing
   report), **Edit Page Grouping**, **Skip** (queue items, for the assignee, with a
   reason), **Cancel** (leave, discarding unsaved edits after asking), **Save** and

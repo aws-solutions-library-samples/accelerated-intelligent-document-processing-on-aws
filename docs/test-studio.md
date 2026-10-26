@@ -1191,7 +1191,7 @@ The queue page shows:
 
 Per-document actions sit in one bar at the top of the edit screen (the same
 screen as production review items), so finishing a long document does not mean
-scrolling past every field to reach them: **Edit | View Source Document**,
+scrolling past every field to reach them: **Edit | View**,
 **History**, **Edit Page Grouping**, **Skip**, **Cancel**, **Save** and
 **Reprocess**, or the view switch, **History** and **Claim** for an Annotator viewing
 an unassigned document. **Save** saves the open section, which marks it

@@ -222,10 +222,10 @@ describe('the direct edit', () => {
     expect(editorProps!.evaluation).toBe(evaluation);
   });
 
-  it("offers Edit | View Source Document first in the bar, and shows the source in the editor's place", async () => {
+  it("offers Edit | View first in the bar, and shows the source in the editor's place", async () => {
     await renderEditor();
     const control = header().findActions()!.findSegmentedControl()!;
-    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View']);
     expect(editorProps!.body).toBeUndefined();
     await act(async () => control.findSegments()[1].click());
     expect(editorProps!.body).toBeTruthy();

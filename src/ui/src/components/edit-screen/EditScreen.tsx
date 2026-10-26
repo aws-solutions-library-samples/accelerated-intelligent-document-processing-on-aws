@@ -6,8 +6,8 @@
 // object key under it, the notices, the task context (a queue item's Review Reason)
 // and the Document Editor panel.
 //
-// The bar always comes in the order Edit | View Source Document (where the source can
-// be shown), History, Edit Page Grouping, Skip, Cancel, Save and Reprocess, each shown
+// The bar always comes in the order Edit | View (the source document, where it can be
+// shown), History, Edit Page Grouping, Skip, Cancel, Save and Reprocess, each shown
 // only where it applies. An Annotator viewing an unassigned item sees the view switch,
 // History and Claim instead. Every disabled action says why on
 // hover. The mode components decide which actions apply; the layout is decided here.
@@ -50,7 +50,7 @@ export interface EditActionsProps {
   /** Hover text while the primary action is available. */
   primaryHint?: string;
   /**
-   * Offer the Edit | View Source Document switch, first in the bar: `view` is the one
+   * Offer the Edit | View switch (the source document), first in the bar: `view` is the one
    * shown. Omitted where the source document cannot be shown.
    */
   view?: EditView;
@@ -90,7 +90,7 @@ const EditActions = ({
       onChange={({ detail }) => onViewChange(detail.selectedId as EditView)}
       options={[
         { id: 'edit', text: 'Edit' },
-        { id: 'source', text: 'View Source Document' },
+        { id: 'source', text: 'View' },
       ]}
     />
   );
@@ -186,7 +186,16 @@ const EditScreen = ({ title, status, objectKey, actions, notices, context, dialo
     header={
       <SpaceBetween size="s">
         <Header variant="h1" description={<span title={objectKey}>{objectKey}</span>} actions={<EditActions {...actions} />}>
-          {status ? `${title} (${status})` : title}
+          {title}
+          {status && (
+            <>
+              {' '}
+              {/* The status reads as the subtitle does (font, size and colour), not as the title. */}
+              <Box variant="span" fontSize="body-m" fontWeight="normal" color="text-body-secondary">
+                ({status})
+              </Box>
+            </>
+          )}
         </Header>
         {notices}
       </SpaceBetween>

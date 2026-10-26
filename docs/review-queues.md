@@ -99,19 +99,23 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
   Studio items and direct edits of a document all use the same edit screen, whether
   you open them from Tasks, an Inbox message or Queue Management.
   - The actions are in one bar at the top, always in this order and each shown only
-    where it applies: **Edit | View Source Document**, **History**, **Edit Page
-    Grouping**, **Skip**, **Cancel**, **Save** and **Reprocess**. A disabled action
-    says why on hover. **View Source Document** shows the original file in the
-    editor's place; unsaved edits are kept while it is shown.
-  - The title is the document's name with its status in parentheses, for example
-    `insurance_package-1.pdf (Claimed)`, and the full object key is under it.
+    where it applies: **Edit | View**, **History**, **Edit Page Grouping**,
+    **Skip**, **Cancel**, **Save** and **Reprocess**. A disabled action says why on
+    hover. **View** shows the original file in the editor's place; unsaved edits are
+    kept while it is shown.
+  - The title is the document's name followed by its status in parentheses, in the
+    subtitle's text style, for example `insurance_package-1.pdf (Claimed)`, and the
+    full object key is under it.
   - The **Document Editor** panel holds the editor: the page images beside the
     fields, with a **Section** dropdown at its top left (for a document with more
     than one section) listing each section with its class, for example
     **Section 1 (Letter)** and **Section 2 (Form)**.
-  - **History** has three tabs. **Field Edits** lists every saved change to the
-    open section's fields: who, when, and each field's old and new value (a
-    Production draft save records one too). **Review Activity** lists who claimed,
+  - **History** has three tabs. **Field Edits** and **Review Activity** are tables
+    of the same shape, newest first. **Field Edits** has a row for every field a
+    save changed in the open section: **When**, **By**, **Field**, **From** and
+    **To**, plus **Applies to** (prediction or baseline) when a baseline was edited.
+    Every save that changes a field records it, including a Production draft
+    autosave and a Test Studio label save. **Review Activity** lists who claimed,
     was assigned, skipped or completed the item, with any skip reason and note.
     **Processing Report** shows how the open section was extracted.
   - **Cancel** leaves the item without finishing it. If the open section has

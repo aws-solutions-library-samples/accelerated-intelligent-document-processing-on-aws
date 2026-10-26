@@ -3,7 +3,7 @@
 
 /**
  * The edit screen's action bar and title. What has to hold: the bar comes in the order
- * Edit | View Source Document (where the mode offers it), History, Edit Page Grouping,
+ * Edit | View (where the mode offers it), History, Edit Page Grouping,
  * Skip, Cancel, Save and Reprocess, each only where it applies; Claim mode shows the
  * view switch, History and Claim only; there is no Processing Report button (it is a History
  * tab); a disabled button carries its reason; while an action runs every button is
@@ -61,12 +61,12 @@ describe('the edit screen action bar', () => {
     expect(labels()).toEqual(['History', 'Reprocess']);
   });
 
-  it('puts the Edit | View Source Document switch first, and reports the view chosen', () => {
+  it('puts the Edit | View switch first, and reports the view chosen', () => {
     const onViewChange = vi.fn();
     renderScreen({ ...ALL, view: 'edit', onViewChange });
     expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
     const control = header().findActions()!.findSegmentedControl()!;
-    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View Source Document']);
+    expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View']);
     expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
     // First in the bar: before History.
     expect(control.getElement().compareDocumentPosition(button('History')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -77,7 +77,7 @@ describe('the edit screen action bar', () => {
   it('keeps the view switch beside Claim', () => {
     renderScreen({ ...ALL, showClaim: true, view: 'source', onViewChange: vi.fn() });
     expect(labels()).toEqual(['History', 'Claim']);
-    expect(header().findActions()!.findSegmentedControl()!.findSelectedSegment()!.getElement().textContent).toBe('View Source Document');
+    expect(header().findActions()!.findSegmentedControl()!.findSelectedSegment()!.getElement().textContent).toBe('View');
   });
 
   it('offers no view switch where the mode gives no view', () => {
@@ -142,6 +142,9 @@ describe('the edit screen title', () => {
   it('reads "<document> (<status>)" in plain text, over the object key', () => {
     renderScreen({}, 'Claimed');
     expect(header().findHeadingText().getElement().textContent).toBe('doc.pdf (Claimed)');
+    // The status is set apart from the title, in the subtitle's style.
+    const status = [...header().findHeadingText().getElement().querySelectorAll('span')].find((s) => s.textContent === '(Claimed)');
+    expect(status).toBeDefined();
     expect(header().findHeadingText().getElement().querySelector('svg')).toBeNull();
     expect(header().findDescription()?.getElement().textContent).toBe('in/doc.pdf');
   });

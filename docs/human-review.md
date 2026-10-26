@@ -346,10 +346,9 @@ API and a Reviewer doesn't save baseline edits.
 - Full JSON validation before saving
 
 **History › Field Edits** (the editor has no separate Edit history tab)
-- Complete audit trail of all edits to the document
-- Timestamps showing when edits were made
-- Reviewer identification showing who made each change
-- Field-level diff information showing exactly what was modified
+- A table with a row for every field a save changed: **When**, **By**, **Field**, **From** and **To**, newest first, in the same shape as **Review Activity**
+- **Applies to** says whether the prediction or the evaluation baseline changed, when a baseline was edited
+- Every save that changes a field adds its rows; a section nobody has edited shows an empty table
 
 #### Editing Features
 

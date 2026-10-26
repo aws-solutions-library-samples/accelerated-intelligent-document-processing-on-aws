@@ -143,11 +143,17 @@ export interface PageGroupingEditorProps {
   presentation?: 'inline' | 'modal';
 }
 
-/** Column page-strip height. Taller in the modal, which is the point of expanding. */
+/**
+ * Column page-strip height. The dialog trades height for width: its columns are about
+ * 40% shorter than a full-height board, so the dialog fits a laptop screen with its
+ * footer in view, and the dialog is about 40% wider, so more sections sit side by side.
+ */
 const INLINE_COLUMN_HEIGHT = 320;
-const EXPANDED_COLUMN_HEIGHT = 620;
-/** The dialog's minimum width: two 260px section columns and the gap between them. */
-const MODAL_MIN_WIDTH = 560;
+const EXPANDED_COLUMN_HEIGHT = 340;
+/** The dialog's width: 40% wider than a Cloudscape `large` modal (820px); capped to the viewport. */
+const MODAL_WIDTH = 1150;
+/** The dialog body's minimum width: three 260px section columns and the gaps between them. */
+const MODAL_MIN_WIDTH = 784;
 
 const nextSectionId = (sections: GroupedSection[]): string => {
   const numeric = sections.map((s) => Number.parseInt(s.sectionId, 10)).filter((n) => Number.isFinite(n));
@@ -738,8 +744,14 @@ const PageGroupingEditor = ({
   if (isExpanded) {
     return (
       <>
-        <Modal visible size="large" header="Edit Page Grouping" onDismiss={asModal ? onCancel : () => setIsExpanded(false)} footer={footer}>
-          {/* Wide enough for two section columns side by side; more scroll sideways. */}
+        <Modal
+          visible
+          width={MODAL_WIDTH}
+          header="Edit Page Grouping"
+          onDismiss={asModal ? onCancel : () => setIsExpanded(false)}
+          footer={footer}
+        >
+          {/* Wide enough for three section columns side by side; more scroll sideways. */}
           <div style={{ minWidth: `${MODAL_MIN_WIDTH}px` }}>{body}</div>
         </Modal>
         {preview}
