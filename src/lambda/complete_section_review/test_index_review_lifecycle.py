@@ -1825,6 +1825,40 @@ def test_an_admin_can_release_a_review_abandoned_by_its_owner(mod, table):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {},
+        {"HITLStatus": "N/A"},
+        {"HITLStatus": "PendingReview"},
+        {"HITLStatus": "Review Pending"},
+        {"HITLTriggered": True},
+        {"HITLStatus": "COMPLETED"},
+        {"HITLStatus": "Completed", "HITLCompleted": True},
+        {"HITLStatus": "InProgress", "HITLReviewOwner": ""},
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("is_admin", [False, True])
+def test_a_document_nobody_has_claimed_cannot_be_released(
+    mod, table, attributes, is_admin
+):
+    """Release gives up a claim and writes Review Pending, which lists the document
+    for every Reviewer. With no owner there is no claim, and the row may be one no
+    review was raised on or a finished review recognised only by its status, so it
+    is refused and left as it was."""
+    put_doc(table, **attributes)
+    before = read_doc(table)
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        with pytest.raises(ValueError, match="^NOT_CLAIMED: "):
+            mod.release_review(OBJECT_KEY, "alice", is_admin=is_admin)
+    assert read_doc(table) == before
+
+
+@pytest.mark.unit
 def test_releasing_a_missing_document_raises(mod, table):
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(None)

@@ -89,7 +89,7 @@ Reviewers have limited access focused on document review tasks:
 
 | Feature | Access |
 |---------|--------|
-| View Documents | ✅ Pending and own in-progress reviews only |
+| View Documents | ✅ Unclaimed reviews (pending, or released back to the queue) and reviews they have claimed |
 | Upload Documents | ❌ Not allowed |
 | Start Review | ✅ Claim ownership of pending documents |
 | View/Edit Extraction Results | ✅ Can view and edit (only for owned documents) |
@@ -101,7 +101,7 @@ Reviewers have limited access focused on document review tasks:
 | Discovery | ❌ Not allowed |
 | Analytics & Agents | ❌ Limited access |
 
-**Note:** Reviewers see only documents that are pending review (unassigned) or documents they have claimed for review.
+**Note:** Reviewers see only documents that are waiting for review and unclaimed, including a review another reviewer has released back to the queue, or documents they have claimed for review. A review leaves the Reviewer's list once it is completed or skipped. It stays listed for the reviewer who owns it only on documents processed by earlier versions, which carry the legacy `HITLTriggered` flag, or when a finished review is claimed again, which sets it back to **Review In Progress**.
 
 ### Managing Users
 
@@ -198,6 +198,7 @@ HITL review is automatically triggered when:
    - If you need to stop reviewing, click **Release Review**
    - Document returns to **Review Pending** status
    - Another reviewer can claim it
+   - Only a claimed review can be released: releasing a document nobody has claimed is refused
 
 **For Admins:**
 
@@ -436,7 +437,7 @@ When evaluation data is available, turn on **Show Evaluation**:
 - Ensure all required fields are filled
 
 **User Cannot See Documents:**
-- Reviewers only see pending documents and their own in-progress reviews
+- Reviewers only see unclaimed pending documents (including reviews released back to the queue) and their own in-progress reviews
 - Verify user is in the correct Cognito group
 - Check user persona in User Management
 - Clear browser cache and re-login
