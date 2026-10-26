@@ -664,6 +664,13 @@ class DocumentDynamoDBService:
                 if section.instance_count:
                     section_data["InstanceCount"] = section.instance_count
 
+                # A BDA blueprint match with no usable confidence. Persisted so a
+                # reprocess that reloads the document from here (process changes,
+                # an extraction rerun) is still held for review in queue mode
+                # (GitHub #1581). Omitted when False, like InstanceCount.
+                if section.blueprint_unscored:
+                    section_data["BlueprintUnscored"] = True
+
                 # Exclusion flags for a section whose class carries
                 # x-aws-idp-exclude-from-processing. This is the write that makes
                 # the UI's "Skipped" badge possible — the badge is the only
@@ -1048,6 +1055,9 @@ class DocumentDynamoDBService:
                         confidence_threshold_alerts=confidence_threshold_alerts,
                         processing_issues=processing_issues,
                         instance_count=int(section_data.get("InstanceCount") or 0),
+                        blueprint_unscored=bool(
+                            section_data.get("BlueprintUnscored", False)
+                        ),
                         # Absent on items written before the flags were persisted,
                         # and on every non-excluded section.
                         excluded=bool(section_data.get("Excluded", False)),
@@ -1777,6 +1787,10 @@ class DocumentDynamoDBService:
         if section.instance_count:
             section_data["InstanceCount"] = section.instance_count
 
+        # See _document_to_update_expressions (GitHub #1581).
+        if section.blueprint_unscored:
+            section_data["BlueprintUnscored"] = True
+
         # Exclusion flags, written for the same reason ProcessingIssues are above:
         # classification sets them, then extraction calls THIS writer for every
         # section including the excluded ones it short-circuited
@@ -1933,6 +1947,8 @@ class DocumentDynamoDBService:
                     )
                 if section.instance_count:
                     section_data["InstanceCount"] = section.instance_count
+                if section.blueprint_unscored:
+                    section_data["BlueprintUnscored"] = True
                 # Snapshot the exclusion flags too, so a historical version keeps
                 # the "Skipped" badge instead of showing an unexplained empty
                 # section.

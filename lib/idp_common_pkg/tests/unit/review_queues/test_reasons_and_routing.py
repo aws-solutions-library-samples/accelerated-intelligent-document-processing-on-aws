@@ -217,6 +217,22 @@ class TestBuildReasons:
         # Pipeline mode never reads the blueprint confidence.
         assert build_reasons(doc, _config(threshold=0.9), mode="pipeline") == []
 
+    def test_bda_unscored_match_is_a_blueprint_reason_scored_zero(self):
+        """A matched blueprint with no usable confidence is held, as legacy HITL
+        reads it as 0.0 and marks it (GitHub #1581)."""
+        unscored = _section("1")
+        unscored.blueprint_unscored = True
+        doc = _document(unscored, _section("2"), _section("3", confidence=0.95))
+        reasons = build_reasons(doc, _config(threshold=0.9), mode="bda")
+        assert [(r.kind, r.section_id, r.score, r.threshold) for r in reasons] == [
+            ("blueprint_confidence", "1", 0.0, 0.9)
+        ]
+        # Pipeline mode never reads the blueprint confidence.
+        assert build_reasons(doc, _config(threshold=0.9), mode="pipeline") == []
+        # Held at every threshold, 0.0 included, as legacy HITL marks it.
+        [reason] = build_reasons(doc, _config(threshold=0.0), mode="bda")
+        assert (reason.section_id, reason.score, reason.threshold) == ("1", 0.0, 0.0)
+
     def test_bda_without_a_hitl_threshold_uses_the_default(self):
         doc = _document(_section("1", confidence=0.75))
         [reason] = build_reasons(doc, None, mode="bda")
@@ -323,6 +339,10 @@ class TestLegacyTriggers:
         assert routing.bda_segment_triggers([], "0.9", 0.8, hitl_enabled=True) is False
         assert routing.bda_segment_triggers([], 0.8, 0.8, hitl_enabled=True) is False
         assert routing.bda_segment_triggers([], None, 0.8, hitl_enabled=False) is None
+        # Unscored is reviewed at every threshold, 0.0 included (GitHub #1581).
+        assert routing.bda_segment_triggers([], None, 0.0, hitl_enabled=True) is True
+        assert routing.bda_segment_triggers([], -0.2, 0.0, hitl_enabled=True) is True
+        assert routing.bda_segment_triggers([], 0.0, 0.0, hitl_enabled=True) is False
 
 
 @pytest.mark.unit
@@ -388,6 +408,17 @@ class TestRouteForReview:
         decision = _route(doc, _Store(), mode="bda", config=_config(threshold=0.9))
         assert decision.hold is True
         assert [r.kind for r in decision.reasons] == ["blueprint_confidence"]
+
+    def test_bda_unscored_match_holds(self):
+        unscored = _section("1")
+        unscored.blueprint_unscored = True
+        store = _Store()
+        decision = _route(_document(unscored), store, mode="bda")
+        assert decision.hold is True
+        assert [(r.kind, r.score) for r in decision.reasons] == [
+            ("blueprint_confidence", 0.0)
+        ]
+        assert len(store.holding) == 1
 
     def test_hitl_off_finalizing_item_on_a_fresh_run_does_not_hold(self):
         item = _live_item(

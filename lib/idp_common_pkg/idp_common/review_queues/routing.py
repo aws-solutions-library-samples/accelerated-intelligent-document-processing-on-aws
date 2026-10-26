@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
-from idp_common.utils import finite_float
+from idp_common.utils import parse_blueprint_confidence
 
 from . import keys
 from .finalize import apply_corrections
@@ -122,18 +122,20 @@ def bda_segment_triggers(
 ) -> Optional[bool]:
     """BDA mode's trigger for a custom-output segment (``None`` when HITL is off).
 
-    A null, non-numeric or non-finite (NaN, infinite) blueprint confidence is an
-    unscored match and reads as 0.0, so the segment routes to review:
-    ``float(None)`` raised TypeError, which escaped ``process_segments`` into the
-    BDA handler's catch-all and abandoned the rest of the document's segments,
-    and a NaN compared directly never triggered, since ``nan < t`` is False.
+    The blueprint confidence is read by ``parse_blueprint_confidence``, the reader
+    review-queue mode uses too. An unscored one (null, non-numeric, non-finite, a
+    bool, out of range, or a string ``float()`` rejects, such as ``"95%"``)
+    routes the segment to review at every threshold, including 0.0, as queue
+    mode holds it with a ``blueprint_confidence`` reason scored 0.0.
+    ``float(None)``
+    used to raise TypeError, which escaped ``process_segments`` into the BDA
+    handler's catch-all and abandoned the rest of the document's segments, and a
+    NaN compared directly never triggered, since ``nan < t`` is False.
     """
     if not hitl_enabled:
         return None
-    confidence = finite_float(bp_confidence)
-    if confidence is None:
-        confidence = 0.0
-    return len(alerts) > 0 or confidence < threshold
+    confidence = parse_blueprint_confidence(bp_confidence)
+    return len(alerts) > 0 or confidence is None or confidence < threshold
 
 
 def _execution_name(execution_arn: str) -> str:

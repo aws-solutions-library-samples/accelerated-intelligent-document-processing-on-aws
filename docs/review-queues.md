@@ -57,7 +57,13 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
      threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
      `hitl.confidence_threshold` when it has none
    - in BDA mode, the matched blueprint's confidence is under
-     `hitl.confidence_threshold`
+     `hitl.confidence_threshold`, or BDA matched a blueprint but returned no
+     usable confidence for it: null, NaN, infinite, `true` or `false`, a string
+     that is not a plain number (including a percentage string such as
+     `"95%"`), or a value that is still outside 0 to 1 after a bare number
+     between 1 and 100 is read as a percentage (`95` reads as 0.95; `150` and
+     `-0.2` are unscored). An unscored blueprint is held at every threshold, the
+     same as in legacy HITL mode
 
    These are the same alerts the document page shows, and each one becomes a
    review reason. Routing reads them from the processed document; it doesn't read

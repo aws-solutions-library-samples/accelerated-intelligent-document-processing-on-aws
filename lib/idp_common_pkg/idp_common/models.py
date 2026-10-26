@@ -532,6 +532,20 @@ class Section:
     recovered when the model returned a JSON array for a single-object schema.
     """
 
+    blueprint_unscored: bool = False
+    """True when BDA matched a blueprint to this section but its confidence was
+    unscored (see ``idp_common.utils.parse_blueprint_confidence``), so
+    :attr:`confidence` is ``None``.
+
+    Set by the BDA result processor. It is what tells review-queue routing to
+    hold the section with a ``blueprint_confidence`` reason, as legacy HITL
+    marks the segment for review; a ``None`` confidence alone cannot, because a
+    section whose segment did not match a blueprint is unscored too. Serialized
+    only when True, by ``to_dict`` and as ``BlueprintUnscored`` in the DynamoDB
+    tracking record, so other payloads are unchanged and a reprocess that
+    reloads the document is held again.
+    """
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Section":
         """Create a Section from a dictionary representation."""
@@ -555,6 +569,7 @@ class Section:
             excluded=bool(data.get("excluded", False)),
             exclusion_reason=data.get("exclusion_reason"),
             instance_count=int(data.get("instance_count") or 0),
+            blueprint_unscored=bool(data.get("blueprint_unscored", False)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -580,6 +595,8 @@ class Section:
             ]
         if self.instance_count:
             result["instance_count"] = self.instance_count
+        if self.blueprint_unscored:
+            result["blueprint_unscored"] = True
         return result
 
 
@@ -1038,6 +1055,8 @@ class Document:
             # are byte-identical.
             if section.instance_count:
                 section_dict["instance_count"] = section.instance_count
+            if section.blueprint_unscored:
+                section_dict["blueprint_unscored"] = True
             result["sections"].append(section_dict)
 
         # Add rule_validation_result if present (optional)
@@ -1172,6 +1191,9 @@ class Document:
                     excluded=bool(section_data.get("excluded", False)),
                     exclusion_reason=section_data.get("exclusion_reason"),
                     instance_count=int(section_data.get("instance_count") or 0),
+                    blueprint_unscored=bool(
+                        section_data.get("blueprint_unscored", False)
+                    ),
                 )
             )
 
