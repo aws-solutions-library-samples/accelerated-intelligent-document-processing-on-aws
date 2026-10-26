@@ -157,6 +157,8 @@ retained revision newest-first with who saved it and when. The same panel is
 reachable from **Actions → Configuration revisions…** while you have a profile open
 in the editor, which is where you are standing when you want to undo a save.
 
+![Configuration revisions dialog listing every retained revision of the default profile, newest first, with who saved it and when](../images/config-profiles-revisions.png)
+
 From the panel you can:
 
 - **Compare any two revisions** — select two rows and choose *Compare revisions*
@@ -392,11 +394,13 @@ space taken from the thing you came to edit.
 
 The table includes a **type filter** (All / Managed / Custom) and a **preferences gear** to configure page size and visible columns.
 
+![Configuration Profiles table filtered to Managed profiles, with the History column showing each profile's revision count](../images/config-profiles-table.png)
+
 #### Available Actions
 
 - **Open/Edit**: Click a version name to open it in the configuration editor
 - **Create profile**: Create a new profile as a copy of an existing one. Pick the source profile (prefilled with the checked row, or the profile currently open in the editor), give the copy a name and optional description, and the new profile is created and opened in the editor. The source profile is not modified. This is the normal way to get an editable copy of the stack-managed `default`.
-- **Create (Import)**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
+- **Import**: Import a configuration file (JSON/YAML) or from the Configuration Library as a new version
 - **Activate**: Set a selected version as the active version for processing
 - **Compare**: Select 2+ versions to view a side-by-side diff (exportable as CSV/JSON)
 - **Delete**: Remove selected versions (cannot delete the active version, `default`, or managed versions); a confirmation dialog lists the affected versions before deletion
