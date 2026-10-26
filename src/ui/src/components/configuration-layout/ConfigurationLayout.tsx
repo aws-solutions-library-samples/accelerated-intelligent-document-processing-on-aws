@@ -2905,7 +2905,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
               {flatClassificationKeysIn(importedConfigForNewVersion).join(', ')}). Each setting is moved into the model call that uses it
               when the profile is created, and behaves as before
               {pageLimitBecomesOneDocument(importedConfigForNewVersion)
-                ? ' with one exception: its page limit is combined with boundary detection, so it is converted to one section per document, and a short packet holding several forms becomes one section'
+                ? ' with one exception: its page limit is combined with boundary detection, so it is converted to one section per document, and a short packet holding several sections becomes one section'
                 : ''}
               . Download the profile afterwards to get a file in the current layout.
             </Alert>

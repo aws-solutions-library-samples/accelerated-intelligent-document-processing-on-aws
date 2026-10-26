@@ -439,7 +439,7 @@ When the configuration defines exactly **one** document class, the *class* decis
 | `llm_determined`, single-page document | One section | No — one page cannot be split |
 | `llm_determined`, multi-page document | Real boundary detection | **Yes** |
 
-`llm_determined` asks for LLM boundary detection, so it performs it. A knob that silently does nothing is a bug, not an optimization — and the old behaviour was actively harmful for the case it mattered most: a packet holding several separate forms of the single class became one section, and extraction then returned only the first record.
+`llm_determined` asks for LLM boundary detection, so it performs it. A knob that silently does nothing is a bug, not an optimization — and the old behaviour was actively harmful for the case it mattered most: a packet holding several separate statements of the single class became one section, and extraction then returned only the first record.
 
 **Cost note.** `llm_determined` is the *default*, so a **multi-page** single-class deployment that never set `sectionSplitting` now performs classification inference where it previously performed none. Single-page documents are unaffected (nothing to split, so the call is skipped), which covers the common "one form per document" deployment at zero cost.
 

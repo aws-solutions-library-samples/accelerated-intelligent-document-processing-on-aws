@@ -1238,7 +1238,7 @@ strategy's copy is read.
 
 | Aspect | Packet granularity | Page granularity (default) |
 |--------|------------------------|---------------------------|
-| **Primary Use Case** | Packets whose section boundaries need the whole packet in view | Single-form documents and packets alike (the default) |
+| **Primary Use Case** | Packets whose section boundaries need the whole packet in view | Single-section documents and packets alike (the default) |
 | **Input Data** | OCR text + page images (subject to `one_stage.llm.modality`) | OCR text + page image (subject to `one_stage.llm.modality`) |
 | **Processing Method** | One call per packet (or window of `window_pages` pages) returning segments | One call per page returning a class and a start/continue boundary marker |
 | **Example Config** | None shipped; set `one_stage.granularity: packet` | `lending-package-sample`, `rvl-cdip` |

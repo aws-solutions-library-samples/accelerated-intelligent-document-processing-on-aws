@@ -160,7 +160,7 @@ In Pipeline mode, one-stage classification works at one of two granularities:
 - Classifies each page independently using both text and image data
 - **Uses sequence segmentation with BIO-like tagging for section boundary detection**
 - **Each page receives both a class and a boundary indicator ("start" or "continue")**
-- **Automatically splits packets into sections where several forms may be combined**
+- **Automatically splits packets into sections where several sections may be combined**
 - Works exceptionally well for complex packets containing multiple sections of the same or different types
 - Supports optional few-shot examples to improve classification accuracy
 - Selected with `classification.one_stage.granularity: page`, the default
@@ -734,7 +734,7 @@ Everything else on this page describes the Bedrock path.
 
 ## Section Splitting Strategies
 
-`classification.file_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One document* and *One per page*. It has three values:
+`classification.file_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One section* and *One per page*. It has three values:
 
 ### Available Strategies
 
@@ -881,7 +881,7 @@ So the choice is really a question about your input, not about accuracy:
 - **You know every document holds exactly one section** → `disabled`. This is the
   common case for a single-document intake pipeline, and it is the only value
   that enables `maxPagesForClassification`.
-- **You know every document is a run of one-page forms**, or a packet holds
+- **You know every document is a run of one-page sections**, or a packet holds
   same-type forms back to back and you would rather over-split than merge them →
   `page`. This is the deterministic answer to the multiple-W-2 problem below.
 - **You do not know, or documents vary** → `llm_determined`, the default. Pay for the
@@ -1399,8 +1399,8 @@ Two levers were measured on the over-split case and neither solves it:
   back-to-back sections of the same class easier to confuse.
 
 If neither error is acceptable, assert the shape instead of detecting it:
-`file_shape.sectionSplitting: disabled` gives a document known to hold a single form
-exactly one section, and `page` gives a document of one-page forms exactly one
+`file_shape.sectionSplitting: disabled` gives a document known to hold a single section
+exactly one section, and `page` gives a document of one-page sections exactly one
 section each. Both are assertions, so they are only right when you know the
 shape — see [Section Splitting Strategies](#section-splitting-strategies).
 

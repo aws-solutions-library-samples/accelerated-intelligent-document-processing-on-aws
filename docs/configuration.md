@@ -1289,7 +1289,7 @@ classification:
 
 ### Use Cases
 
-- **Single-Form Documents**: Use `disabled` for simplicity
+- **Single-Section Documents**: Use `disabled` for simplicity
 - **Multiple Same-Type Forms**: Use `page` for deterministic splitting (resolves Issue #146)
 - **Complex Packets**: Use `llm_determined` for intelligent section boundary detection
 

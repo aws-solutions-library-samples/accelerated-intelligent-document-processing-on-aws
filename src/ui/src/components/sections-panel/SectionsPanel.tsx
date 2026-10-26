@@ -120,7 +120,7 @@ const ClassCell = ({
     <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
   );
 
-  // Only rendered when the section holds more than one document, so a normal
+  // Only rendered when the section holds more than one record, so a normal
   // section is just its class name.
   const instances = <MultiInstanceBadge item={item} />;
 
@@ -191,13 +191,13 @@ const MultiInstanceBadge = ({ item }: { item: SectionItem }): React.JSX.Element 
         <SpaceBetween size="xs">
           {suspected ? (
             <Box variant="p">
-              These pages appear to contain {count} separate {item.Class || 'document'} records, but only the first was extracted — the rest
-              are not in the result.
+              These pages appear to contain {count} separate {item.Class ? `${item.Class} records` : 'records'}, but only the first was
+              extracted — the rest are not in the result.
             </Box>
           ) : (
             <Box variant="p">
-              Extraction found {count} separate {item.Class || 'document'} records in this section. Each one was extracted as its own
-              instance.
+              Extraction found {count} separate {item.Class ? `${item.Class} records` : 'records'} in this section. Each one was extracted
+              as its own instance.
             </Box>
           )}
           <Box variant="small" color="text-body-secondary">
