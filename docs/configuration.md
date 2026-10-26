@@ -1097,7 +1097,7 @@ right, check its threshold first.
 classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     x-aws-idp-document-type: "Invoice"
-    x-aws-idp-evaluation-match-threshold: 0.8  # Document-level threshold
+    x-aws-idp-evaluation-match-threshold: 0.8  # Class-level threshold
     properties:
       invoice_number:
         type: string
@@ -1146,7 +1146,7 @@ the first thing to settle is which calls you are making. That is
 
 | `classification.strategy` | Web UI label | Calls it makes |
 |---|---|---|
-| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the boundaries and the classes together |
+| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the section boundaries and the classes together |
 | `two_stage` | **Two stage** | A *segmentation* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
 
 *One stage* and *Two stage* are the labels the configuration editor's form view
@@ -1253,25 +1253,25 @@ Pipeline mode supports configurable strategies for how classified pages are grou
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire file as a single section. At **either**
+- **`disabled`**: Treats the entire document as a single section. At **either**
   granularity its class comes from a page-weighted vote across the segments that
   were detected — each segment casts one vote per page it covers — counting only
   segments carrying a class the configuration defines. A tie goes to the earliest
   segment carrying a tied class, and the first segment's class is used only when
   no segment carries a configured class at all. Simplest approach for
-  single-document processing.
+  documents that are not packets.
   
-- **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
+- **`page`**: Creates one section per page, preventing automatic joining of same-class pages into one section. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   
 - **`llm_determined`** (default): Uses whatever boundary signal the active call
   produces — a per-page `start`/`continue` verdict at page granularity, and a
   `segments` array of page ranges at packet granularity or from two-stage
-  segmentation. Best for complex scenarios where document boundaries are not
+  segmentation. Best for complex scenarios where section boundaries are not
   obvious.
 
 ⚠️ **`disabled` and `page` are assertions, not preferences.** They replace
-boundary detection with a claim about the file rather than nudging the model, and
-nothing downstream recovers if the claim is wrong: a packet of eight documents
+boundary detection with a claim about the document rather than nudging the model, and
+nothing downstream recovers if the claim is wrong: a packet of eight forms
 declared `disabled` becomes one section with one extraction over all of it. They
 are also the only two values that let a single-class configuration, or a
 document-name regex match, skip the model call entirely — under `llm_determined`
@@ -1289,32 +1289,32 @@ classification:
 
 ### Use Cases
 
-- **Single Document Processing**: Use `disabled` for simplicity
+- **Single-Form Documents**: Use `disabled` for simplicity
 - **Multiple Same-Type Forms**: Use `page` for deterministic splitting (resolves Issue #146)
-- **Complex Multi-Document Packets**: Use `llm_determined` for intelligent boundary detection
+- **Complex Packets**: Use `llm_determined` for intelligent section boundary detection
 
 For more details on the classification strategies, the two granularities and section splitting, see [classification.md](classification.md).
 
 ### Page Limit Configuration
 
-For a file you know is one document, classify only its first pages:
+For a document you know is one section, classify only its first pages:
 
 ```yaml
 classification:
   file_shape:
-    sectionSplitting: disabled          # one document per file
+    sectionSplitting: disabled          # one section per document
     maxPagesForClassification: "3"      # "ALL" (default) or "1", "2", "3", "5", "10"
 ```
 
 **Behavior:**
 - **"ALL"** (default): Uses all pages for classification
 - **Numeric value**: Classifies only the first N pages, then applies their
-  majority class to every page of the file as one section
+  majority class to every page of the document as one section
 
 The limit applies only with `sectionSplitting: disabled`. With boundary detection
 on it is ignored, with a warning in the classification log: a limit there would
-collapse only files longer than N while sectioning shorter ones normally, so the
-same setting would give different answers for different files in one run.
+collapse only documents longer than N while sectioning shorter ones normally, so the
+same setting would give different answers for different documents in one run.
 
 **Use Cases:**
 - Performance optimization for large documents

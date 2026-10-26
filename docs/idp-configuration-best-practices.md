@@ -398,7 +398,7 @@ properties:
 
 ### Packet granularity (`one_stage.granularity: packet`)
 
-This approach analyzes entire document packages to identify logical document boundaries.
+This approach analyzes an entire packet in one call to identify its section boundaries.
 Its prompts live at `classification.one_stage.packet.system_prompt` and
 `classification.one_stage.packet.task_prompt`. No preset in `config_library/unified/`
 sets packet granularity; set `classification.one_stage.granularity: packet` to use it.
@@ -558,7 +558,7 @@ classification:
 - An `<output-format>` asking for `document_boundary` as well as `class`. That
   verdict is what `classification.file_shape.sectionSplitting: llm_determined`
   — the default — groups pages into sections with, so a page prompt that returns
-  only a class leaves every page looking like the start of a new document
+  only a class leaves every page looking like the start of a new section
 
 ## Extraction Prompt Customization
 
@@ -1216,7 +1216,7 @@ other classification setting has to go in:
 
 | `classification.strategy` | Configuration editor label | What it does |
 |---|---|---|
-| `single_pass` (default) | **One stage** | One call per page, or per packet, returns the boundaries and the classes together |
+| `single_pass` (default) | **One stage** | One call per page, or per packet, returns the section boundaries and the classes together |
 | `two_stage` | **Two stage** | A boundary pass that is sent no class vocabulary, then one call per detected section to classify that section |
 
 The stored value is `single_pass` or `two_stage`. *One stage* and *Two stage* are
@@ -1238,7 +1238,7 @@ strategy's copy is read.
 
 | Aspect | Packet granularity | Page granularity (default) |
 |--------|------------------------|---------------------------|
-| **Primary Use Case** | Multi-document packages where boundaries need the whole packet in view | Single documents and packets alike (the default) |
+| **Primary Use Case** | Packets whose section boundaries need the whole packet in view | Single-form documents and packets alike (the default) |
 | **Input Data** | OCR text + page images (subject to `one_stage.llm.modality`) | OCR text + page image (subject to `one_stage.llm.modality`) |
 | **Processing Method** | One call per packet (or window of `window_pages` pages) returning segments | One call per page returning a class and a start/continue boundary marker |
 | **Example Config** | None shipped; set `one_stage.granularity: packet` | `lending-package-sample`, `rvl-cdip` |

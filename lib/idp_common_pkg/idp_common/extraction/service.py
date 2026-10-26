@@ -4808,18 +4808,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     code="extraction_multi_instance_suspected",
                     message=(
                         f"These pages appear to contain {instance_count} separate "
-                        f"'{self._class_label}' documents, but extraction returned "
-                        f"{extracted_n}. {missing} document(s) are NOT in the "
+                        f"'{self._class_label}' records, but extraction returned "
+                        f"{extracted_n}. {missing} record(s) are NOT in the "
                         f"result. Review the section, then either split it "
                         f"(classification sectionSplitting) or turn on "
                         f"multi-instance extraction for this class so every "
-                        f"document is extracted."
+                        f"record is extracted."
                     ),
                     root_cause=(
-                        f"the extraction model reported {instance_count} document "
+                        f"the extraction model reported {instance_count} "
                         f"instance(s) in this section while returning "
                         f"{extracted_n}; the class schema describes a single "
-                        f"document, so the additional records had nowhere to go "
+                        f"record, so the additional records had nowhere to go "
                         f"(model "
                         f"{self._pending_extraction_model or self.config.extraction.model})"
                     ),

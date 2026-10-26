@@ -264,14 +264,14 @@ Under `strategy: two_stage`:
   and the examples from the boundary pass is where two stage's prefix saving
   comes from, so adding `{FEW_SHOT_EXAMPLES}` to a segmentation prompt spends
   exactly the tokens the strategy exists to avoid, on a call that is only being
-  asked where documents start.
+  asked where sections start.
 - Editing `one_stage.page.task_prompt` under `two_stage` changes nothing and
   raises no error, because that block is not read.
 
 ### Extraction Process
 
 When extracting attributes from documents:
-- **Example Scope**: Uses examples ONLY from the specific document class being processed
+- **Example Scope**: Uses examples ONLY from the class of the section being processed
 - **Purpose**: Show the expected attribute extraction format and values
 - **Content**: Uses `x-aws-idp-attributes-prompt` field from examples (with optional images)
 - **Benefit**: Model sees concrete examples of what the extraction output should look like

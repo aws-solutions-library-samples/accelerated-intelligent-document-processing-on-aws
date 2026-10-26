@@ -615,11 +615,11 @@ class ForcedToolConfig(BaseModel):
 
 
 class MultiInstanceDetectionConfig(BaseModel):
-    """Detect a section that holds several documents of the same class (#753).
+    """Detect a section that holds several records of the same class (#753).
 
     When classification finds no type change to split on, several consecutive
     records of one class land in a single section. The class schema describes ONE
-    document, and the model overwhelmingly prefers to answer with one object — so
+    record, and the model overwhelmingly prefers to answer with one object — so
     the second and third records are simply absent from the response and
     **nothing anywhere reports it**: the section is SUCCESS, the document is
     COMPLETED, ``instance_count`` is 1, and no issue is raised. That is the
@@ -1474,7 +1474,7 @@ class ExtractionConfig(BaseModel):
     multi_instance_detection: MultiInstanceDetectionConfig = Field(
         default_factory=MultiInstanceDetectionConfig,
         description=(
-            "Detect (and warn about) a section that holds several documents of "
+            "Detect (and warn about) a section that holds several records of "
             "the same class when the model returned only one — see "
             "MultiInstanceDetectionConfig."
         ),
@@ -1808,7 +1808,7 @@ class ClassificationPacketConfig(BaseModel):
         default=2,
         ge=0,
         description=(
-            "Pages repeated between adjacent windows, so a document boundary "
+            "Pages repeated between adjacent windows, so a section boundary "
             "falling at a window edge is still seen with the pages before it. "
             "Costs `overlap` extra pages per additional window."
         ),
@@ -2258,7 +2258,7 @@ class ExternalModelConfig(BaseModel):
 
 
 class SegmentationConfig(BaseModel):
-    """Two-stage segmentation: where each document starts and ends."""
+    """Two-stage segmentation: where each section starts and ends."""
 
     method: str = Field(
         default="llm",
@@ -2401,16 +2401,17 @@ def _unusable_page_limit(value: Any) -> str:
         "classification.file_shape.maxPagesForClassification is %r, which is not "
         "'ALL' and not a positive number of pages; classifying every page instead. "
         "Set it to ALL, or to the number of opening pages whose majority class the "
-        "whole file should take.",
+        "whole document should take.",
         value,
     )
     return "ALL"
 
 
 class FileShapeConfig(BaseModel):
-    """Advanced: what you already know about a file's shape.
+    """Advanced: what you already know about a document's shape.
 
-    By default every file is treated as a packet and its boundaries are detected.
+    By default every document is treated as a packet and its section boundaries
+    are detected.
     These settings are assertions that override that, which is why they sit apart
     from the strategy rather than beside it.
     """
@@ -2418,15 +2419,16 @@ class FileShapeConfig(BaseModel):
     sectionSplitting: str = Field(
         default="llm_determined",
         description=(
-            "'llm_determined' (default): detect the boundaries. 'disabled': the "
-            "whole file is one document. 'page': every page is its own document."
+            "'llm_determined' (default): detect the section boundaries. 'disabled': "
+            "the whole document is one section. 'page': every page is its own "
+            "section."
         ),
     )
     maxPagesForClassification: str = Field(
         default="ALL",
         description=(
             "With sectionSplitting 'disabled', classify only the first N pages and "
-            "give the whole file their majority class. 'ALL' classifies every page."
+            "give the whole document their majority class. 'ALL' classifies every page."
         ),
     )
 

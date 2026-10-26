@@ -1055,13 +1055,13 @@ Resources:
             # Under the default boundary detection a multi-page file is still classified,
             # because knowing WHAT a packet contains says nothing about WHERE each record
             # starts.
-            description: "Splits the file into documents and assigns a class to each. Strategy decides how many model calls are made; each call's settings sit inside it."
+            description: "Splits the document into sections and assigns a class to each section. Strategy decides how many model calls are made; each call's settings sit inside it."
             dependsOn: { field: "use_bda", value: false }
             properties:
               strategy:
                 type: string
                 title: Strategy
-                description: "'One stage' (stored as strategy: single_pass): one call returns both the document boundaries and the classes — best for single-page files and short packets. 'Two stage' (stored as strategy: two_stage): first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
+                description: "'One stage' (stored as strategy: single_pass): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Two stage' (stored as strategy: two_stage): first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
                 enum: ["single_pass", "two_stage"]
                 enumLabels: { single_pass: "One stage", two_stage: "Two stage" }
                 default: "single_pass"
@@ -1076,14 +1076,14 @@ Resources:
                 type: object
                 sectionLabel: One stage
                 collapsible: false
-                description: "One call returns both where each document starts and its class."
+                description: "One call returns both where each section starts and its class."
                 order: 1
                 showWhen: [{ field: "strategy", notValues: ["two_stage"] }]
                 properties:
                   granularity:
                     type: string
                     title: Granularity
-                    description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new document; pages run in parallel and each gets its own confidence score. 'packet': one call for the whole document, paying the class list and examples once instead of per page and letting the model see the whole packet when placing boundaries. Image tokens are the same either way."
+                    description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new section; pages run in parallel and each gets its own confidence score. 'packet': one call for the whole document, paying the class list and examples once instead of per page and letting the model see the whole packet when placing boundaries. Image tokens are the same either way."
                     enum: ["page", "packet"]
                     default: "page"
                     order: 0
@@ -1113,7 +1113,7 @@ Resources:
                         type: string
                         title: Task prompt (page)
                         format: textarea
-                        description: "Asks for one page's class plus whether that page starts a new document. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off."
+                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off."
                         order: 2
                   packet:
                     type: object
@@ -1373,7 +1373,7 @@ Resources:
                         sectionLabel: Class confidence
                         collapsible: true
                         defaultExpanded: false
-                        description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per page at page granularity, one per document at packet. Costs output tokens on every call."
+                        description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per page at page granularity, one per section at packet. Costs output tokens on every call."
                         order: 5
                         properties:
                           mode:
@@ -1410,7 +1410,7 @@ Resources:
                             type: string
                             title: Top-K instruction block (packet)
                             format: textarea
-                            description: "The 'topk' block used at packet granularity, where the unit is a document rather than a page. Empty falls back to the page block above."
+                            description: "The 'topk' block used at packet granularity, where the unit is a section rather than a page. Empty falls back to the page block above."
                             order: 4
                             dependsOn: { field: "mode", value: "topk" }
                             showWhen: [{ field: "granularity", value: "packet" }]
@@ -1418,7 +1418,7 @@ Resources:
                             type: string
                             title: Verbalized instruction block (packet)
                             format: textarea
-                            description: "The 'verbalized' block used at packet granularity, on the same per-document rules as the packet Top-K block."
+                            description: "The 'verbalized' block used at packet granularity, on the same per-section rules as the packet Top-K block."
                             order: 5
                             dependsOn: { field: "mode", value: "verbalized" }
                             showWhen: [{ field: "granularity", value: "packet" }]
@@ -1426,7 +1426,7 @@ Resources:
                 type: object
                 sectionLabel: Two stage
                 collapsible: false
-                description: "Segmentation finds where each document starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known file shape declares the shape, segmentation makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
+                description: "Segmentation finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, segmentation makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
                 order: 2
                 showWhen: [{ field: "strategy", value: "two_stage" }]
                 properties:
@@ -1435,7 +1435,7 @@ Resources:
                     sectionLabel: Segmentation
                     collapsible: true
                     defaultExpanded: true
-                    description: "Finds where each document starts and ends. Returns page ranges only — no class — so its calls carry no class list, descriptions or examples."
+                    description: "Finds where each section starts and ends. Returns page ranges only — no class — so its calls carry no class list, descriptions or examples."
                     order: 0
                     properties:
                       method:
@@ -1456,14 +1456,14 @@ Resources:
                           granularity:
                             type: string
                             title: Granularity
-                            description: "How many boundary calls are made. 'page': one per page, each saying whether that page starts a new document; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
+                            description: "How many boundary calls are made. 'page': one per page, each saying whether that page starts a new section; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
                             enum: ["page", "packet"]
                             default: "page"
                             order: 0
                           boundary_hints:
                             type: string
                             title: Boundary hints
-                            description: "Whether the boundary calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a document's first page is titled like one of your classes."
+                            description: "Whether the boundary calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a section's first page is titled like one of your classes."
                             enum: ["none", "class_names"]
                             default: "none"
                             order: 0.5
@@ -1493,7 +1493,7 @@ Resources:
                                 type: string
                                 title: Task prompt (page)
                                 format: textarea
-                                description: "Asks only whether this page starts a new document; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here."
+                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here."
                                 order: 2
                           packet:
                             type: object
@@ -1736,7 +1736,7 @@ Resources:
                       pages:
                         type: string
                         title: Pages per section
-                        description: "Which pages are sent to classify a section. 'First page': its first page only. 'First k pages' (default): its opening pages, where a document's identity almost always is. 'All pages': every page — most accurate on an ambiguous section, but a long section then costs what page-level classification would."
+                        description: "Which pages are sent to classify a section. 'First page': its first page only. 'First k pages' (default): its opening pages, where a section's identity almost always is. 'All pages': every page — most accurate on an ambiguous section, but a long section then costs what page-level classification would."
                         enum: ["first", "first_k", "all"]
                         enumLabels: { first: "First page", first_k: "First k pages (default)", all: "All pages" }
                         default: "first_k"
@@ -2020,16 +2020,16 @@ Resources:
                                 dependsOn: { field: "mode", value: "verbalized" }
               file_shape:
                 type: object
-                sectionLabel: Advanced — known file shape
+                sectionLabel: Advanced — known document shape
                 collapsible: true
                 defaultExpanded: false
-                description: "By default every file is treated as a packet and its document boundaries are detected. Set these only when you already know a file's shape."
+                description: "By default every document is treated as a packet and its section boundaries are detected. Set these only when you already know a document's shape."
                 order: 3
                 properties:
                   sectionSplitting:
                     type: string
                     title: Section splitting
-                    description: "'Detect boundaries': one section per document found. 'One document': the whole file is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent documents of the same class being joined. Applies to both strategies."
+                    description: "'Detect boundaries': one section per boundary found. 'One document': the whole document is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent single-page forms of the same class being merged into one section. Applies to both strategies."
                     enum: ["llm_determined", "disabled", "page"]
                     enumLabels: { llm_determined: "Detect boundaries (default)", disabled: "One document", page: "One per page" }
                     default: "llm_determined"
@@ -2037,7 +2037,7 @@ Resources:
                   maxPagesForClassification:
                     type: string
                     title: Pages to classify
-                    description: "Classify only the first N pages and give the whole file their majority class. Applies only to 'One document'."
+                    description: "Classify only the first N pages and give the whole document their majority class. Applies only to 'One document'."
                     enum: ["ALL", "1", "2", "3", "5", "10"]
                     default: "ALL"
                     order: 1
@@ -2233,19 +2233,19 @@ Resources:
                     dependsOn: { field: "enabled", value: true }
               multi_instance_detection:
                 type: object
-                sectionLabel: Multi-document Section Detection
-                description: "Detects a section that turned out to hold SEVERAL separate documents of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many documents the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every document, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
+                sectionLabel: Multi-instance Section Detection
+                description: "Detects a section that turned out to hold SEVERAL separate instances (records) of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many instances the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every instance, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
                 order: 4.08
                 dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
                   enabled:
                     type: boolean
-                    description: "Warn when a section appears to contain more documents of its class than were extracted - the silent case, where the section reports success with zero issues while holding one record out of three. TURN THIS ON if one section can hold several documents of the same class: measured on 40 real bank-check images with ground truth, it found all 18 multi-check images, raised zero false alarms on the 22 single-check ones, and got the count exactly right every time, for about 2% more input tokens. It is OFF by default only because on a corpus with no multi-record documents to find it is pure cost - one real forms corpus lost about 1.3 accuracy points. It never changes the extracted data."
+                    description: "Warn when a section appears to contain more instances of its class than were extracted - the silent case, where the section reports success with zero issues while holding one record out of three. TURN THIS ON if one section can hold several instances of the same class: measured on 40 real bank-check images with ground truth, it found all 18 multi-check images, raised zero false alarms on the 22 single-check ones, and got the count exactly right every time, for about 2% more input tokens. It is OFF by default only because on a corpus with no multi-record sections to find it is pure cost - one real forms corpus lost about 1.3 accuracy points. It never changes the extracted data."
                     default: false
                     order: 0
                   question:
                     type: string
-                    description: "The question put to the model, as the description of the auxiliary count property. {DOCUMENT_CLASS} is replaced with the section's class name. Leave blank to use the shipped wording. Two clauses are load-bearing and should survive any edit: 'do not count pages, sections or repeated headers' (without it, a document carrying an identical banner on each of four pages reads as four documents), and 'DIAGNOSTIC METADATA, not extracted document data' (so the model does not treat the field as something to extract from the page)."
+                    description: "The question put to the model, as the description of the auxiliary count property. {DOCUMENT_CLASS} is replaced with the section's class name. Leave blank to use the shipped wording. Two clauses are load-bearing and should survive any edit: 'do not count pages, sections or repeated headers' (without it, a section carrying an identical banner on each of four pages reads as four instances), and 'DIAGNOSTIC METADATA, not extracted document data' (so the model does not treat the field as something to extract from the page)."
                     order: 1
                     dependsOn: { field: "enabled", value: true }
               coercion:

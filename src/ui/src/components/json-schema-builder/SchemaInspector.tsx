@@ -309,10 +309,10 @@ const MultiInstanceModeField = ({
 
   // "Designate, but no property chosen yet" is a real state and the schema cannot
   // express it — `x-aws-idp-instance-array` is either a name or absent, and absent
-  // reads as "One document". Deriving the mode purely from the schema therefore made
+  // reads as "One record". Deriving the mode purely from the schema therefore made
   // Designate UNREACHABLE for the class that needs it most: with two or more
   // candidate arrays there is nothing to preselect, so the key stayed undefined, the
-  // derived mode snapped straight back to "One document", and the picker never
+  // derived mode snapped straight back to "One record", and the picker never
   // rendered. Clicking the option did nothing at all, and the only way to configure
   // such a class was hand-editing YAML — the thing this control exists to avoid.
   //
@@ -374,8 +374,8 @@ const MultiInstanceModeField = ({
 
   return (
     <FormField
-      label="Documents per section"
-      description="How many separate documents of this class can end up in one section? Sections are split by document TYPE, so several records of the SAME type can land together — and then a single-record schema returns only the first."
+      label="Records per section"
+      description="How many separate records of this class can end up in one section? Sections are split by document TYPE, so several records of the SAME type can land together — and then a single-record schema returns only the first."
     >
       <SpaceBetween size="xs">
         <RadioGroup
@@ -384,7 +384,7 @@ const MultiInstanceModeField = ({
           items={[
             {
               value: MODE_ONE,
-              label: 'One document',
+              label: 'One record',
               description: 'The normal case. Nothing changes.',
             },
             {
@@ -406,15 +406,15 @@ const MultiInstanceModeField = ({
         />
 
         {/* "Designate, nothing chosen yet" has no schema representation, so an unset
-            key saves as One document. The picker says so rather than discarding the
+            key saves as One record. The picker says so rather than discarding the
             intent silently — it cannot be a save-blocking error. */}
         {mode === MODE_DESIGNATE && (
           <FormField
             label="Record array"
-            description="The top-level array-of-objects property holding one record per document."
+            description="The top-level array-of-objects property that holds one entry per record."
             errorText={
               designationError ??
-              (designated ? undefined : 'Select which array holds one record per document — until then this class saves as “One document”.')
+              (designated ? undefined : 'Select which array holds the records — until then this class saves as “One record”.')
             }
           >
             <Select

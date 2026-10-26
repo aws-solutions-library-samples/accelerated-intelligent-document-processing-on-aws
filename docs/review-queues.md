@@ -113,7 +113,7 @@ Inbox; other users have neither.
     see the field, the score and the threshold. Your edits are saved as a draft as
     you type, or straight away with **Save**. **Complete** saves
     your latest edits and applies your corrections. **Edit Page Grouping** corrects
-    the document's split as part of the review: the board shows every section of
+    how the document is split into sections as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
     (a section you remove takes its draft with it). Only the item's holder can
     regroup it; an Admin's first regroup assigns an unassigned item to them.
@@ -138,7 +138,7 @@ Inbox; other users have neither.
 - An assignment doesn't expire. If the queue's time limit passes while the item is
   still open, you get one **still to complete** reminder in the Inbox.
 
-Changing the document class isn't available for Production documents in review.
+Changing a section's class isn't available for Production documents in review.
 Regrouping pages is, from the queue item.
 
 ## Admin guide: Queue Management

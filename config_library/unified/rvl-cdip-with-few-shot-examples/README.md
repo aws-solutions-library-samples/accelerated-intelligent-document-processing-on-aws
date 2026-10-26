@@ -73,7 +73,7 @@ This preset overrides only the classification task prompt, so the rest comes fro
 system defaults in `lib/idp_common_pkg/idp_common/config/system_defaults/`.
 
 - **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
-  returns both the document boundaries and the classes
+  returns both the section boundaries and the classes
 - **Granularity**: page (`classification.one_stage.granularity`) — one classification
   per page rather than per packet
 - **Model**: `us.amazon.nova-2-lite-v1:0`
@@ -115,7 +115,7 @@ Other classes (form, invoice, resume, etc.) are defined but don't have examples 
 
 ### For Extraction  
 
-1. When extracting from a document of class X, the system includes examples ONLY from class X
+1. When extracting from a section of class X, the system includes examples ONLY from class X
 2. Each example shows the expected attribute extraction for that document type
 3. Uses `x-aws-idp-attributes-prompt` text and document images from the examples
 4. Provides concrete guidance on what attributes to extract and their expected format

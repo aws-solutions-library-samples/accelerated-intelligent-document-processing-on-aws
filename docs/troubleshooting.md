@@ -98,7 +98,7 @@ cannot help here.
 
 The known trigger is a class marked `x-aws-idp-multi-instance: true` whose instance
 carries a long inner list — a 100-row bank statement, for example. The wrapper makes
-the *instance* array the outer list, so one row of that list is a whole document
+the *instance* array the outer list, so one row of that list is a whole
 instance. The batch sizer counts that row by every confidence leaf it emits, inner
 rows included (its log line reports `leaves/row=`), so the first pass is sized for
 it — but no batch is smaller than one instance, so ⚠️ **an instance whose own
