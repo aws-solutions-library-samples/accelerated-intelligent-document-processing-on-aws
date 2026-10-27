@@ -1037,7 +1037,9 @@ defaults — `extraction.confidence.task_prompt` in `base-confidence.yaml` and
 carry a *FIELDS WITH NO VALUE* block telling the model to score its confidence in
 the null result: high when the field is genuinely absent, low (with a reason) when
 the value appears to be on the page but extraction returned null, so a real miss
-still alerts. No `config_library` preset carries its own copy of either prompt; they
+still alerts. This holds for scalar and group fields only: `reconcile_assessment_to_data`
+resizes a list field's assessment to the extracted rows, so an empty list keeps no
+score and cannot alert. No `config_library` preset carries its own copy of either prompt; they
 inherit these defaults. The 1S-TopK prompt is not changed.
 
 `tests/unit/assessment/test_absent_field_confidence_guidance.py` pins both halves of

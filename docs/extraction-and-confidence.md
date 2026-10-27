@@ -2000,12 +2000,23 @@ confidence in that result:
 - **In between** when the place the value would be is ambiguous or illegible.
 
 How closely a model follows this depends on the model, so check the alert rate and
-the real-miss alerts on your own documents when you change the confidence model.
+the real-miss alerts on your own documents when you change the confidence model. In
+advanced integrated mode the score comes from the same model that returned the null,
+so the low branch catches a value it left null because it was unsure, not one it
+overlooked; the separate pass, a second look by another call, is the better detector
+of a real miss.
+
+This applies to scalar and group fields. A list field that comes back empty has no
+rows to score, and its assessment is resized to the extracted rows, so a table that
+was missed entirely does not raise a confidence alert; the completeness checks in
+[Detecting a truncated list](#detecting-a-truncated-list) are what report it.
 Without this guidance the prompt did not say what a score on a null value means,
 and the model often answered 0.0, so an absent field alerted even when its
 `confidence_reason` said the value was not present.
 
-The 1S-TopK prompt (Simple + `integrated`) does not carry this guidance. Its
+The 1S-TopK prompt (Simple + `integrated`) does not carry this guidance; a section
+that Simple + `integrated` scores in a separate pass because its class has list
+fields does get it. Its
 confidence is the probability the model attaches to its top guess rather than a
 separate judgement about an extracted value, and changing what it is told about
 absent fields would change the extraction instruction as well.

@@ -59,6 +59,7 @@ NO_REFLEX_ZERO = "Do not score 0.0 just because there is no value."
 TRULY_ABSENT_SCORES_HIGH = "HIGH (>= 0.9) when you checked the document and the field"
 REAL_MISS_SCORES_LOW = "LOW (< 0.5) when the document appears to contain the value"
 REAL_MISS_GIVES_A_REASON = "saying what appears to have been missed"
+UNCLEAR_SCORES_IN_BETWEEN = "In between when the place the value would be is ambiguous"
 
 GUIDANCE = (
     ABSENT_IS_A_RESULT,
@@ -66,6 +67,7 @@ GUIDANCE = (
     TRULY_ABSENT_SCORES_HIGH,
     REAL_MISS_SCORES_LOW,
     REAL_MISS_GIVES_A_REASON,
+    UNCLEAR_SCORES_IN_BETWEEN,
 )
 
 # What the separate confidence pass substitutes (AssessmentService.

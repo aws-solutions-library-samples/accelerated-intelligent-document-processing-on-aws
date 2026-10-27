@@ -714,6 +714,10 @@ extraction:
          - 0.6-0.7 = Medium confidence, reasonable evidence but some ambiguity
          - 0.4-0.5 = Low confidence, weak or unclear evidence
          - 0.0-0.3 = Very low confidence, little to no supporting evidence
+      FIELDS WITH NO VALUE (null or empty): score your confidence that the
+      information really is absent. HIGH when it is genuinely not in the document;
+      LOW, with a reason, when the value appears to be on the page but extraction
+      returned null.
       </assessment-guidelines>
 
       <<CACHEPOINT>>
@@ -727,8 +731,8 @@ extraction:
       </extraction-results>
 ```
 
-Say in the guidelines how to score a field the extraction left null. Without it a
-model may answer 0.0 for every absent field, and each one then raises a
+The *FIELDS WITH NO VALUE* lines say how to score a field the extraction left null.
+Without them a model may answer 0.0 for every absent field, and each one then raises a
 confidence alert. The shipped default asks for the model's confidence in the null
 result — high when the field really is absent, low when the value appears to be on
 the page but was not extracted — so the alert still catches a real miss; see
