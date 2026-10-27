@@ -340,6 +340,22 @@ class TestPinnedRevisionDecides:
         queued = _queued_document(pinned_env)
         assert (queued.config_version, queued.config_revision) == ("tenant-a", pinned)
 
+    def test_a_pinned_revision_with_no_profile_name_reads_the_active_profile(
+        self, pinned_env
+    ):
+        # The queue processor resolves the active profile and keeps the revision.
+        pinned = _profile_with_history(pinned_use_bda=True, head_use_bda=False)
+        ConfigurationManager(table_name=CONFIG).activate_version("tenant-a")
+        _seed(pinned_env, **_owned(), ConfigVersion=None, ConfigRevision=pinned)
+        with pytest.raises(ValueError, match="^BDA_MODE:"):
+            _call(
+                pinned_env,
+                groups=("Admin",),
+                username="admin",
+                changes=_RECLASSIFY_CHANGE,
+            )
+        _assert_untouched(pinned_env, "InProgress")
+
     @pytest.mark.parametrize(
         "head_use_bda",
         [pytest.param(True, id="head-bda"), pytest.param(False, id="head-pipeline")],

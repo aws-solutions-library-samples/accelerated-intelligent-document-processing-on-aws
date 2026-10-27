@@ -358,8 +358,9 @@ def _assert_not_a_bda_structural_edit(document, modified_sections, modified_page
     that ``use_bda`` is read from the configuration revision the document is pinned
     to (the requeued document carries that pin to the queue processor, which routes
     by it), or from the profile head when it has none. The revision body lives in
-    the Configuration bucket (``CONFIGURATION_BUCKET``). Every read is made strict (``raise_errors=True``), so a configuration that
-    cannot be read is refused rather than read as pipeline mode: a wrong
+    the Configuration bucket (``CONFIGURATION_BUCKET``). Every read is made strict
+    (``raise_errors=True``), so a configuration that cannot be read is refused
+    rather than read as pipeline mode: a wrong
     "pipeline" answer loses data and a wrong refusal costs a retry. That includes
     a pinned revision that cannot be read: the queue processor would route that
     run from the profile head, but the head is not the configuration the document
