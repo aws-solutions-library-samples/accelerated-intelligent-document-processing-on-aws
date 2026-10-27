@@ -727,6 +727,13 @@ extraction:
       </extraction-results>
 ```
 
+Say in the guidelines how to score a field the extraction left null. Without it a
+model may answer 0.0 for every absent field, and each one then raises a
+confidence alert. The shipped default asks for the model's confidence in the null
+result — high when the field really is absent, low when the value appears to be on
+the page but was not extracted — so the alert still catches a real miss; see
+[Fields with no value](extraction-and-confidence.md#fields-with-no-value).
+
 > A top-level `assessment:` block is the pre-v0.6 spelling. Its recognised keys
 > — `system_prompt`, `task_prompt`, `model` and the rest — are relocated to
 > `extraction.confidence` (and `default_confidence_threshold` to

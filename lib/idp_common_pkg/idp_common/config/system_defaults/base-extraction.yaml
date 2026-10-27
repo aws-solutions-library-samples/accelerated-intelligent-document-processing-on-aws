@@ -343,6 +343,15 @@ extraction:
          "amount": {"confidence": 0.72, "confidence_reason": "figure partly illegible"}}
     confidence = your calibrated certainty the value matches the source document
     (1.0 = certain, lower = ambiguous/illegible/inferred).
+    FIELDS WITH NO VALUE (null or empty): the confidence is your confidence in that
+    result, i.e. that the information really is absent from this document. Do not
+    score 0.0 just because there is no value.
+    - HIGH (>= 0.9) when you checked the document and the field is genuinely not
+      there: no label, no value and no other evidence of it on these pages.
+    - LOW (< 0.5) when the document appears to contain the value (for example its
+      label is present with a value beside it) but you returned null; give a
+      confidence_reason saying what appears to have been missed.
+    - In between when the place the value would be is ambiguous or illegible.
     HOW TO REPORT IT:
     - If an extraction_with_confidence or provide_field_assessment TOOL is available
       to you, use it: pass the extracted values and this field_assessment together in

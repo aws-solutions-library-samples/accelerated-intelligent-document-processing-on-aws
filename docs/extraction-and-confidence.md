@@ -1976,6 +1976,45 @@ to the `explainability_info` based on configuration.
 }
 ```
 
+### Fields with no value
+
+A field that extraction left null is scored and compared against its threshold in
+the same way as any other field. There is no separate rule for absent values: a
+numeric score below the threshold raises a confidence alert, and a field with no
+score does not.
+
+What keeps a correctly absent field from alerting is the meaning of its score. The
+default confidence prompts (`extraction.confidence.task_prompt` for the separate
+pass, and `extraction.task_prompt_extraction_with_confidence` for advanced
+integrated mode) tell the model that, for a null value, the confidence is its
+confidence in that result:
+
+- **High (0.9 or above)** when the field is genuinely not in the document — no label,
+  no value and no other evidence of it on the pages assessed. This is the common case
+  on the interior pages of a multi-page packet, which carry few of the schema's
+  fields. Such a field does not alert unless its threshold is set above its score.
+- **Low (below 0.5)** when the document appears to contain the value but extraction
+  returned null, with a `confidence_reason` saying what seems to have been missed.
+  This is a real miss, and it still alerts, so the alert remains a detector for a
+  value that is on the page but was not extracted.
+- **In between** when the place the value would be is ambiguous or illegible.
+
+How closely a model follows this depends on the model, so check the alert rate and
+the real-miss alerts on your own documents when you change the confidence model.
+Without this guidance the prompt did not say what a score on a null value means,
+and the model often answered 0.0, so an absent field alerted even when its
+`confidence_reason` said the value was not present.
+
+The 1S-TopK prompt (Simple + `integrated`) does not carry this guidance. Its
+confidence is the probability the model attaches to its top guess rather than a
+separate judgement about an extracted value, and changing what it is told about
+absent fields would change the extraction instruction as well.
+
+**Custom prompts.** A configuration profile stores its own copy of each prompt, so
+a profile created before this guidance was added keeps the prompt it was saved with.
+To adopt it, copy the *FIELDS WITH NO VALUE* block from the `default` profile's
+confidence prompt into your profile's prompt, or reset the field to the default.
+
 ### Thresholds inside lists (arrays)
 
 For `type: array` attributes, each **item sub-field** carries its own threshold,
