@@ -650,7 +650,7 @@ processed and the scorer did not return a figure for them, which is why those ce
    0.76–0.81 simple at 2.1–3.0× the cost; the OCR benchmark is identical. The agentic path
    earns its premium on long lists (§3), not on forms.
 4. **`split-disabled` is the best RealKIE cell at the control model (0.842 vs 0.805) and
-   the cheapest** — on a single-class corpus of one-document files, the classifier's
+   the cheapest** — on a single-class corpus of single-section documents, the classifier's
    boundary pass can only introduce error, and here it introduces about 4 points of it. At
    Sonnet 5 the effect is within noise (0.771 vs 0.764). It remains wrong for packets (§7).
 5. **`enforce-escalate` costs +40% on RealKIE at the control model and +30% at Sonnet 5
@@ -1935,7 +1935,7 @@ response does appear to carry a different output-length budget than prose, but o
 evidence it is not the shorter one, and neither arm is safe at that size in simple mode.
 Measure on your own long lists before forcing them.
 
-### `classification.file_shape.sectionSplitting` and the boundary prompt (`boundaryab`) — #817 confirmed, #750 open
+### `classification.document_shape.sectionSplitting` and the boundary prompt (`boundaryab`) — #817 confirmed, #750 open
 
 Boundary detection judged on `sections_correct` (1.0/0.0 per run; the mean over 5 repeats
 is the pass rate). Classification model Nova 2 Lite (the shipped default).
@@ -1953,10 +1953,10 @@ Three results, each at 5 of 5:
   model, prompt text the only difference. This is the fix that produced "7 of 7 sections" in
   §2 and "1 section at every size" in §3.
 - **The reprinted running header (#750) is still split into three, under both prompts.** A
-  document whose every page re-prints the title-and-account block reads as three documents.
+  document whose every page re-prints the title-and-account block is split into three sections.
   This is the remaining over-split shape, and `sectionSplitting: disabled` is not the
   answer to it (next point).
-- **`disabled` is wrong by construction on a packet**: two statements in one file become one
+- **`disabled` is wrong by construction on a packet**: two statements in one document become one
   section, 5 of 5, losing the split silently (recall stays 1.0 because all the rows are
   there). On a single-class corpus of single documents it is harmless and now buys nothing
   (§2b: $0.714 vs $0.717).

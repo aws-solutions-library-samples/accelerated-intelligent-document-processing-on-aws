@@ -99,7 +99,7 @@ and there are **two** fields to set:
 classification:
   strategy: two_stage
   two_stage:
-    segmentation:
+    boundary_detection:
       llm:
         model: "us.amazon.nova-2-lite-v1:0:flex"      # boundaries can wait
     section_classification:
@@ -131,7 +131,7 @@ When you specify a model ID with a service tier suffix:
    - Find the "Model" dropdown. Classification shows **one dropdown per model
      call**: one under *One stage*, or — when **Strategy** is *Two stage*
      (`strategy: two_stage` in the JSON and YAML views) — one under
-     *Segmentation* and one under *Section classification*. Set the tier on each
+     *Boundary detection* and one under *Section classification*. Set the tier on each
      call you want it on
    - Select a model with the desired tier suffix:
      - Models ending in `:flex` use Flex tier

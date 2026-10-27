@@ -60,7 +60,7 @@ The configuration defines 6 specialized lending document classes, each with comp
 ### Classification Settings
 
 - **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
-  returns both the document boundaries and the classes
+  returns both the section boundaries and the classes
 - **Granularity**: page (`classification.one_stage.granularity`) — one classification
   per page rather than per packet
 - **Model**: Amazon Nova Pro (`amazon.nova-pro-v1:0`) — pinned by this preset, with no
@@ -72,7 +72,7 @@ The configuration defines 6 specialized lending document classes, each with comp
   inferred from the placeholders the call's task prompt uses
 - **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features
 
-The classification component analyzes document content and structure to accurately identify lending document types and establish proper page boundaries within multi-document packages.
+The classification component analyzes document content and structure to accurately identify each section's lending document class and establish the section boundaries within each lending packet.
 
 ### Extraction Settings
 

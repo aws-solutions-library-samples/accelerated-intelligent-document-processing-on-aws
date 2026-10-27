@@ -12,6 +12,8 @@ import boto3
 import cfnresponse  # type: ignore[import-untyped]
 import yaml
 from botocore.exceptions import ClientError
+from pydantic import TypeAdapter, ValidationError
+
 from idp_common.config.configuration_manager import (
     ConfigurationManager,  # type: ignore[import-untyped]
 )
@@ -26,7 +28,6 @@ from idp_common.config.migrations import migrate_config
 # this handler too.
 from idp_common.config.retired_models import base_model_id as _base_model_id
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-from pydantic import TypeAdapter, ValidationError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -466,7 +467,7 @@ def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) 
 
     ``CustomClassificationModelARN`` replaces the model of the call that assigns
     the class under the active strategy — ``one_stage.llm`` for a single pass,
-    ``two_stage.section_classification.llm`` for two stages. Segmentation keeps
+    ``two_stage.section_classification.llm`` for two stages. Boundary detection keeps
     its own model: it only finds boundaries, which is not what a classification
     model was trained to do. ``CustomExtractionModelARN`` replaces
     ``extraction.model``. An empty or absent ARN changes nothing.
@@ -564,6 +565,7 @@ def save_configuration_bypass_manager(
     Used when ConfigurationManager is unreliable (e.g., after migration from legacy format).
     """
     import boto3
+
     from idp_common.config.models import (
         IDPConfig,
         ModelConfigLimitsConfig,

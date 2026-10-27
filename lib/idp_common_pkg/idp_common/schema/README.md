@@ -26,7 +26,7 @@ The Schema module provides utilities for dynamically generating Pydantic v2 mode
 ## `multi_instance.py` — Synthesize mode (#715)
 
 A class flagged `x-aws-idp-multi-instance: true` has its **effective** schema
-replaced by a List-of-Class wrapper, so a section holding several documents of the
+replaced by a List-of-Class wrapper, so a section holding several instances (records) of the
 class extracts every one of them. Pure, idempotent, never mutates its input:
 
 ```python

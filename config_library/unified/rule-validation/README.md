@@ -47,7 +47,7 @@ comes from the system defaults in
 `lib/idp_common_pkg/idp_common/config/system_defaults/`.
 
 - **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
-  returns both the document boundaries and the classes
+  returns both the section boundaries and the classes
 - **Granularity**: page (`classification.one_stage.granularity`) — one classification
   per page rather than per packet
 - **Model**: `us.amazon.nova-2-lite-v1:0`
@@ -57,7 +57,7 @@ comes from the system defaults in
   inferred from the placeholders the call's task prompt uses
 - **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features
 
-The classification component analyzes document content and structure to accurately identify PA document types and establish proper page boundaries within multi-document packages.
+The classification component analyzes document content and structure to accurately identify each section's PA document class and establish the section boundaries within each PA packet.
 
 ### Extraction Settings
 
@@ -202,7 +202,7 @@ To use this rule validation configuration:
 
 ### Adding New Document Classes
 
-To add a new PA document section:
+To add a new class of PA document section:
 
 1. Add a new entry to the `classes` array in `config.yaml`:
    ```yaml

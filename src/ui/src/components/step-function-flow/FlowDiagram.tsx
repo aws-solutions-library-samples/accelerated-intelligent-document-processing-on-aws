@@ -4,6 +4,7 @@
 import React from 'react';
 import { Box, Badge } from '@cloudscape-design/components';
 import './FlowDiagram.css';
+import { withWordBreaks } from './word-breaks';
 
 interface StepConfig {
   summarization?: { enabled?: boolean };
@@ -151,7 +152,7 @@ const FlowDiagram = ({
                 </div>
                 <div className="step-label">
                   <div className="step-name">
-                    {step.name}
+                    <span>{withWordBreaks(step.name)}</span>
                     {stepDisabled && <Badge color="grey">NOT ENABLED</Badge>}
                     {isMapState && step.mapIterations && <Badge color="blue">{step.mapIterations} iterations</Badge>}
                   </div>

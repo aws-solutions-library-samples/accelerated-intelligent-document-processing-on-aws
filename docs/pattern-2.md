@@ -51,7 +51,7 @@ The workflow consists of three main processing steps with an optional assessment
    chooses between two strategies, and the page-reading call then works at one of
    two granularities:
    - `single_pass` (*One stage* in the configuration editor): one call returns a
-     page's or packet's boundaries and classes together
+     page's or packet's section boundaries and classes together
    - `two_stage`: boundaries first, with no class vocabulary in the prompt, then
      one call per detected section to classify it
    - Within either, `granularity: page` makes one call per page and
@@ -122,7 +122,7 @@ Each step includes comprehensive retry logic for handling transient errors:
   ```
 
 #### Classification Function
-- **Purpose**: Classifies pages or document packets using Claude via Bedrock and segments into sections
+- **Purpose**: Classifies pages or packets using Claude via Bedrock and splits the document into sections
 - **Key Features**:
   - Two classification granularities, set by `classification.one_stage.granularity` (see [Classification](./classification.md)):
     - Page granularity (the default): one call per page
@@ -423,7 +423,7 @@ Classification runs at one of two granularities, set in the configuration by `cl
 
 1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.one_stage.page.system_prompt` and `classification.one_stage.page.task_prompt`.
 
-2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify boundaries between different document types within a multi-document packet. It can detect logical document boundaries and identifies document types in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies document segments with start and end page numbers. Its prompts are `classification.one_stage.packet.system_prompt` and `classification.one_stage.packet.task_prompt`.
+2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify the boundaries between its sections. It detects section boundaries and identifies each section's class in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies the sections with start and end page numbers. Its prompts are `classification.one_stage.packet.system_prompt` and `classification.one_stage.packet.task_prompt`.
 
 The granularity is a configuration setting, not a stack parameter: change it in the configuration (for example in the web UI's configuration editor). [Classification](./classification.md) covers both granularities, the two-stage strategy, and how to choose between them.
 
@@ -585,7 +585,7 @@ Pattern 2 supports several placeholders for building dynamic prompts:
 - **`{FEW_SHOT_EXAMPLES}`**: Examples from the configuration (class-specific for extraction, all classes for classification)
 - **`{DOCUMENT_TEXT}`**: OCR-extracted text content from the document
 - **`{DOCUMENT_IMAGE}`**: Document image(s) positioned at specific locations in the prompt
-- **`{DOCUMENT_CLASS}`**: The classified document type (used in extraction prompts)
+- **`{DOCUMENT_CLASS}`**: The class of the section being processed (used in extraction prompts)
 - **`{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`**: List of attributes to extract with their descriptions
 
 **Image Placement Benefits:**

@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""``file_shape.maxPagesForClassification`` applies only to a one-document file.
+"""``document_shape.maxPagesForClassification`` applies only to a one-document file.
 
 A page limit gives the whole file one class from its first N pages. With boundary
 detection on, it used to collapse only files longer than N while sectioning
@@ -19,7 +19,7 @@ import pytest
 from idp_common.classification.service import ClassificationService
 
 
-def _service(file_shape):
+def _service(document_shape):
     return ClassificationService(
         region="us-west-2",
         config={
@@ -31,7 +31,7 @@ def _service(file_shape):
                         "task_prompt": "{DOCUMENT_TEXT}",
                     }
                 },
-                "file_shape": file_shape,
+                "document_shape": document_shape,
             },
         },
     )
@@ -79,4 +79,6 @@ class TestThePageLimitNeedsOneDocumentPerFile:
             },
         )
         assert service.max_pages_for_classification == "2"
-        assert service.config.classification.file_shape.sectionSplitting == "disabled"
+        assert (
+            service.config.classification.document_shape.sectionSplitting == "disabled"
+        )

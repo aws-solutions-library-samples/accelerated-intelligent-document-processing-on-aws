@@ -90,7 +90,7 @@ describe('stripInlineMarkdown', () => {
   });
 
   it('leaves plain prose untouched', () => {
-    const plain = 'Splits the file into documents and assigns a class to each.';
+    const plain = 'Splits the document into sections and assigns a class to each section.';
     expect(stripInlineMarkdown(plain)).toBe(plain);
   });
 

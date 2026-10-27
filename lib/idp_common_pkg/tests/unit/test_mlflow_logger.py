@@ -346,7 +346,7 @@ class TestExtractConfigParams:
         assert params["classification.granularity"] == "packet"
         assert params["classification.modality.text"] == "True"
         assert params["classification.modality.images"] == "infer"
-        assert "classification.segmentation.model" not in params
+        assert "classification.boundary_detection.model" not in params
         # The prompt the active granularity sends, not the other one.
         assert prompts["classification.task_prompt"] == "PACKET"
         assert prompts["classification.system_prompt"] == "SYS"
@@ -360,7 +360,7 @@ class TestExtractConfigParams:
                 "strategy": "two_stage",
                 "one_stage": {"llm": {"model": "unused-model"}},
                 "two_stage": {
-                    "segmentation": {
+                    "boundary_detection": {
                         "llm": {
                             "model": "boundary-model",
                             "granularity": "page",
@@ -380,12 +380,12 @@ class TestExtractConfigParams:
         params, prompts, _ = mlflow_logger._extract_config_params(config)
         assert params["classification.strategy"] == "two_stage"
         assert params["classification.model"] == "section-model"
-        assert params["classification.segmentation.model"] == "boundary-model"
+        assert params["classification.boundary_detection.model"] == "boundary-model"
         assert params["classification.granularity"] == "page"
         assert params["classification.modality.text"] == "False"
         assert params["classification.modality.images"] == "True"
         assert prompts["classification.task_prompt"] == "LABEL"
-        assert prompts["classification.segmentation.task_prompt"] == "BOUNDARIES"
+        assert prompts["classification.boundary_detection.task_prompt"] == "BOUNDARIES"
 
     def test_the_removed_key_logs_nothing(self):
         """A config still carrying `classificationMethod` reaches this function

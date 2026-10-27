@@ -159,9 +159,6 @@
       "F401": 4,
       "I001": 1
     },
-    "patterns/unified/src/mlflow_logger_function/index.py": {
-      "I001": 1
-    },
     "patterns/unified/src/ocr_function/index.py": {
       "I001": 1
     },
@@ -326,9 +323,6 @@
     "src/lambda/test_set_zip_extractor/index.py": {
       "F541": 1,
       "I001": 1
-    },
-    "src/lambda/update_configuration/index.py": {
-      "I001": 2
     },
     "src/lambda/update_settings/index.py": {
       "I001": 1
@@ -513,8 +507,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 79,
-    "lintFindings": 184,
+    "lintDebtFiles": 77,
+    "lintFindings": 181,
     "formatDebtFiles": 166
   }
 }

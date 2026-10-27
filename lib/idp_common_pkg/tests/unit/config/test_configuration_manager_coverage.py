@@ -2739,7 +2739,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 
         assert merged is not None
         cls = merged.classification
-        seg = cls.two_stage.segmentation.llm
+        seg = cls.two_stage.boundary_detection.llm
         assert (
             cls.one_stage.packet.task_prompt
             == "SHIPPED PACKET: segments ordinal_start_page"
