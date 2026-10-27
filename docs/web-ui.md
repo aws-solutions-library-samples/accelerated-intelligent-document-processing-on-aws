@@ -322,9 +322,13 @@ A document is in **BDA mode** when its configuration profile routes it to Bedroc
 Automation: the profile sets `use_bda` and a BDA project is linked to it. A profile that
 sets `use_bda` with no linked project processes in pipeline mode. The Web UI reads the
 profile's `use_bda` alone, so for such a profile it offers data-only editing although the
-server would accept the change. Both read the profile as it is now, not as it was when
-the document was last processed. For a BDA-mode document the Web UI does not offer the
-edits that change its structure or text:
+server would accept the change. The Web UI reads the profile as it is now. The server
+reads `use_bda` from the configuration revision the document is pinned to, which is the
+revision the requeued run is routed by, and reads the profile as it is now only for a
+document with no pinned revision. So after a profile's `use_bda` changes, the Web UI can
+offer or withhold an edit that the server decides the other way for a document pinned to
+an earlier revision. For a BDA-mode document the Web UI does not offer the edits that
+change its structure or text:
 
 - **Edit Sections**: Edit Mode is data-only. **Add Section** is not shown, and a
   section's class and page IDs are read-only. **Save and Reprocess** sends no section
@@ -343,8 +347,8 @@ beginning `BDA_MODE:`, and nothing about the document is changed. A request with
 section or page changes — field values already saved, reprocessed for evaluation and
 summarization — is accepted. The mode is the one the requeued run will take, so a
 document whose profile sets `use_bda` with no BDA project linked takes section and page
-changes. If the profile cannot be read, a section or page change is refused rather than
-assumed to be safe.
+changes. If the profile or the document's pinned revision cannot be read, a section or
+page change is refused rather than assumed to be safe.
 
 The reason is how a BDA-mode document is reprocessed. Bedrock Data Automation decided the
 section boundaries and the extracted values in the first place, and a structural or text

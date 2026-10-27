@@ -2577,32 +2577,59 @@ def bda_routing(
     manager: "ConfigurationManager",
     config_version: Optional[str],
     raise_errors: bool = False,
+    config_revision: Optional[int] = None,
 ) -> BdaRouting:
     """How a document processed under ``config_version`` is routed.
 
-    The queue processor's routing rule (``start_workflow`` in
-    ``src/lambda/queue_processor/index.py``), stated once for the processChanges
-    resolver, which must know before it requeues a document whether the run will
-    be a BDA one: a BDA run keeps the sections a document already has, so an edit
-    that clears a section's values is not carried through it. The queue processor
-    still carries the rule inline; its unit suites stub ``idp_common.config`` as a
-    plain module, so routing it through here is a change to those suites.
+    The queue processor's routing rule (``start_workflow`` and
+    ``routing_configuration`` in ``src/lambda/queue_processor/index.py``), stated
+    once for the processChanges resolver, which must know before it requeues a
+    document whether the run will be a BDA one: a BDA run keeps the sections a
+    document already has, so an edit that clears a section's values is not carried
+    through it. The queue processor still carries the rule inline; its unit suites
+    stub ``idp_common.config`` as a plain module, so routing it through here is a
+    change to those suites.
 
     The rule: an unpinned document is processed under the ACTIVE profile (the
-    queue processor pins it before routing), and the run goes down the BDA branch
-    when that profile sets ``use_bda`` and a BDA project is linked to it — a
-    profile that asks for BDA with no project falls back to the pipeline.
+    queue processor pins it before routing). ``use_bda`` is read from the revision
+    the document is pinned to (``config_revision``), or from the profile head when
+    it has none, and the run goes down the BDA branch when it is set and a BDA
+    project is linked to the profile — a profile that asks for BDA with no project
+    falls back to the pipeline.
+
+    A pinned revision that cannot be read is where the two callers differ. Lenient
+    (the queue processor's behaviour), the profile head is read instead. Strict
+    (``raise_errors``), the failure is raised: the head may disagree with the
+    revision the requeued run will route by whenever the revision becomes readable
+    again, so it is not an answer a caller that refuses rather than guesses can
+    use.
 
     Args:
         manager: A ``ConfigurationManager`` for the configuration table.
         config_version: The profile the document is pinned to, or None.
         raise_errors: Raise on any failed read instead of degrading to an answer.
             The queue processor degrades to the pipeline; the resolver refuses.
+        config_revision: The revision of that profile the document is pinned to,
+            or None to read the profile head.
     """
     version = config_version or manager.resolve_active_version(
         raise_errors=raise_errors
     )
-    config = manager.get_merged_configuration(version)
+    if config_revision is None:
+        config = manager.get_merged_configuration(version)
+    else:
+        try:
+            config = manager.get_merged_configuration(
+                version, revision=config_revision
+            )
+        except Exception as e:  # noqa: BLE001 — strict raises, lenient reads the head
+            if raise_errors:
+                raise
+            logger.warning(
+                f"Could not read revision r{config_revision} of configuration "
+                f"profile '{version}' for routing: {e}. Routing from the profile head."
+            )
+            config = manager.get_merged_configuration(version)
     requested = bool(getattr(config, "use_bda", False)) if config else False
     if not requested:
         return BdaRouting(version=version, requested=False)
@@ -2612,4 +2639,3 @@ def bda_routing(
         project_arn=manager.get_bda_project_arn(version, raise_errors=raise_errors)
         or None,
     )
-

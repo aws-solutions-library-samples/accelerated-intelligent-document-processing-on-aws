@@ -89,6 +89,85 @@ def test_an_unpinned_document_takes_the_active_profile(pinned):
     ]
 
 
+class _RevisionedManager(_Manager):
+    """A profile whose head and pinned revision disagree about ``use_bda``.
+
+    ``revisions`` maps a revision number to its ``use_bda``; a revision absent
+    from it is unreadable, raising the way ``_load_revision_config`` does.
+    """
+
+    def __init__(self, head_use_bda, revisions, project="arn:p"):
+        super().__init__(head_use_bda, project)
+        self.revisions = revisions
+
+    def get_merged_configuration(self, version, revision=None):
+        self.asked.append(("config", version, revision))
+        if revision is None:
+            return self.config
+        if revision not in self.revisions:
+            raise ValueError(f"Revision r{revision} of '{version}' is not available")
+        return type("Config", (), {"use_bda": self.revisions[revision]})()
+
+
+@pytest.mark.unit
+class TestPinnedRevision:
+    """``use_bda`` comes from the pinned revision, as the queue processor reads it."""
+
+    @pytest.mark.parametrize("raise_errors", [False, True])
+    @pytest.mark.parametrize(
+        "pinned_use_bda, head_use_bda",
+        [
+            pytest.param(True, False, id="pinned-bda-head-pipeline"),
+            pytest.param(False, True, id="pinned-pipeline-head-bda"),
+        ],
+    )
+    def test_the_pinned_revision_decides_not_the_head(
+        self, pinned_use_bda, head_use_bda, raise_errors
+    ):
+        manager = _RevisionedManager(head_use_bda, {3: pinned_use_bda})
+        routing = bda_routing(
+            manager, "tenant-a", raise_errors=raise_errors, config_revision=3
+        )
+        assert routing.bda is pinned_use_bda
+        assert routing.requested is pinned_use_bda
+        assert manager.asked[0] == ("config", "tenant-a", 3)
+        assert ("config", "tenant-a", None) not in manager.asked
+
+    @pytest.mark.parametrize("head_use_bda", [True, False])
+    def test_with_no_pinned_revision_the_head_decides(self, head_use_bda):
+        manager = _RevisionedManager(head_use_bda, {3: not head_use_bda})
+        routing = bda_routing(manager, "tenant-a", raise_errors=True)
+        assert routing.bda is head_use_bda
+        assert manager.asked[0] == ("config", "tenant-a", None)
+
+    def test_an_unpinned_profile_takes_the_active_profile_at_the_revision(self):
+        manager = _RevisionedManager(False, {2: True})
+        manager.active = "bda-profile"
+        routing = bda_routing(manager, None, raise_errors=True, config_revision=2)
+        assert routing.version == "bda-profile" and routing.bda is True
+        assert manager.asked[:2] == [("active", True), ("config", "bda-profile", 2)]
+
+    @pytest.mark.parametrize("head_use_bda", [True, False])
+    def test_an_unreadable_revision_raises_when_strict(self, head_use_bda):
+        # Never answered from the head: the head is not the configuration the
+        # document is pinned to, so the strict caller refuses instead.
+        manager = _RevisionedManager(head_use_bda, {})
+        with pytest.raises(ValueError, match="r9"):
+            bda_routing(manager, "tenant-a", raise_errors=True, config_revision=9)
+        assert manager.asked == [("config", "tenant-a", 9)]
+
+    @pytest.mark.parametrize("head_use_bda", [True, False])
+    def test_an_unreadable_revision_reads_the_head_when_lenient(self, head_use_bda):
+        # The queue processor's fallback (``routing_configuration``).
+        manager = _RevisionedManager(head_use_bda, {})
+        routing = bda_routing(manager, "tenant-a", config_revision=9)
+        assert routing.bda is head_use_bda
+        assert manager.asked[:2] == [
+            ("config", "tenant-a", 9),
+            ("config", "tenant-a", None),
+        ]
+
+
 @pytest.mark.unit
 def test_a_project_without_a_request_is_not_bda():
     assert BdaRouting("v", requested=False, project_arn="arn:p").bda is False
