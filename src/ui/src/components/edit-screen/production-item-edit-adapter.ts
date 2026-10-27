@@ -49,6 +49,10 @@ export interface ProductionItemEditModel {
   documentSections: ReviewSectionRef[];
   /** Re-read the document's pages and sections (after a regroup). */
   refreshDocument: () => Promise<void>;
+  /** The document's summary report, once summarization has run (after the review). */
+  summaryReportUri: string | null;
+  /** The document's evaluation status (BASELINE_COPYING while a baseline copy runs). */
+  evaluationStatus: string | null;
   /** Bumped when the open section must be re-read (a newer draft arrived). */
   reloadToken: number;
   loadSection: (sectionId: string) => Promise<LoadedSection>;
@@ -63,6 +67,8 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
   const [pages, setPages] = useState<ReviewPage[]>([]);
   const [pagesLoading, setPagesLoading] = useState(true);
   const [documentSections, setDocumentSections] = useState<ReviewSectionRef[]>([]);
+  const [summaryReportUri, setSummaryReportUri] = useState<string | null>(null);
+  const [evaluationStatus, setEvaluationStatus] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   // The latest draft revision per section, so a save names the revision it edits.
   const revisionsRef = useRef<Record<string, number>>({});
@@ -105,6 +111,8 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
       const result = await client.graphql({ query: getDocumentQuery, variables: { objectKey } });
       if (read !== documentRead.current) return;
       const doc = result.data?.getDocument;
+      setSummaryReportUri(doc?.SummaryReportUri || null);
+      setEvaluationStatus(doc?.EvaluationStatus || null);
       setPages(
         (doc?.Pages ?? [])
           .filter((p): p is NonNullable<typeof p> => !!p && p.Id != null && !!p.ImageUri)
@@ -199,6 +207,8 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
     sections,
     documentSections,
     refreshDocument,
+    summaryReportUri,
+    evaluationStatus,
     reloadToken,
     loadSection,
     saveSection,

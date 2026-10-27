@@ -34,7 +34,7 @@ const setSuccessMessage = vi.fn();
 const exit = vi.fn();
 const refreshDocument = vi.fn();
 const saveDocumentGrouping = vi.fn();
-const role = { isAdmin: true, isAnnotator: false };
+const role = { isAdmin: true, isAnnotator: false, canWrite: true };
 /** The props the editor was last rendered with. */
 let editor: {
   isReadOnly: boolean;
@@ -67,6 +67,8 @@ vi.mock('../production-item-edit-adapter', () => ({
         { sectionId: '2', documentClass: 'W2', resultUri: 's3://b/r2', pageIds: ['2'] },
       ],
       refreshDocument: (...a: unknown[]) => refreshDocument(...a),
+      summaryReportUri: 's3://out/in/w2.pdf/summary/summary.md',
+      evaluationStatus: null,
       reloadToken: 0,
       loadSection: vi.fn(),
       saveSection: (...a: unknown[]) => saveSection(...a),
@@ -104,6 +106,7 @@ vi.mock('../../common/PageGroupingEditor', () => ({
 }));
 
 import ProductionItemEdit from '../ProductionItemEdit';
+import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 
 const ADMIN = 'admin@example.com';
 const ANN = 'ann@example.com';
@@ -306,9 +309,9 @@ describe('the actions', () => {
       history: [{ at: '2026-10-20T09:00:00.000Z', event: 'claimed', actor: ADMIN, details: null }],
     } as ReviewItemDetail;
     renderScreen();
-    expect(buttons()).toContain('History');
+    expect(menuItems('Reports').map((i) => i.text)).toContain('History');
     expect(createWrapper(document.body).findModal()).toBeNull();
-    button('History').click();
+    chooseMenuItem('Reports', 'History');
     const modal = createWrapper(document.body).findModal()!;
     expect(modal.findHeader().getElement().textContent).toBe('History');
     const tabs = createWrapper(document.body).findTabs()!;
@@ -333,6 +336,24 @@ describe('the actions', () => {
     expect(editor!.defaultFilter).toBe('confidence-alerts');
   });
 
+  it('disable Summary and the baseline while the item is being worked, saying why', () => {
+    server.detail = mine();
+    renderScreen();
+    const reason = 'Available once the review is complete';
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({ disabled: true, disabledReason: reason });
+    expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({
+      disabled: true,
+      disabledReason: reason,
+    });
+  });
+
+  it('enable Summary and the baseline once the review is complete', () => {
+    server.detail = detailFor({ state: 'COMPLETE' });
+    renderScreen();
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({ disabled: false });
+    expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({ disabled: false });
+  });
+
   it('show no queue, profile and priority line', () => {
     server.detail = mine();
     renderScreen();
@@ -351,7 +372,7 @@ describe('the actions', () => {
   it('let the holder regroup the whole document during review, then re-read it', async () => {
     server.detail = mine();
     renderScreen();
-    button('Edit Page Class').click();
+    chooseMenuItem('More Actions', 'Edit Page Class');
     await waitFor(() => expect(board).not.toBeNull());
     // Every section of the document, not only the one under review.
     expect(board!.sections.map((s) => s.sectionId)).toEqual(['1', '2']);
@@ -365,7 +386,7 @@ describe('the actions', () => {
 
   it('claim an unassigned item for an Admin before regrouping it', async () => {
     renderScreen();
-    button('Edit Page Class').click();
+    chooseMenuItem('More Actions', 'Edit Page Class');
     await waitFor(() => expect(board).not.toBeNull());
     expect(claimItem).toHaveBeenCalledTimes(1);
   });
@@ -374,7 +395,7 @@ describe('the actions', () => {
     server.detail = mine();
     saveDocumentGrouping.mockResolvedValue({ success: false, message: 'NOT_LEASE_HOLDER: this item is assigned to someone else' });
     renderScreen();
-    button('Edit Page Class').click();
+    chooseMenuItem('More Actions', 'Edit Page Class');
     await waitFor(() => expect(board).not.toBeNull());
     await act(async () => board!.onSave([]));
     expect(screen.getByTestId('grouping-board')).toBeTruthy();
@@ -384,10 +405,10 @@ describe('the actions', () => {
   it('disable Edit Page Grouping on an item assigned to someone else, saying why', () => {
     server.detail = annotators();
     renderScreen();
-    const regroup = button('Edit Page Class');
-    expect(regroup.isDisabled()).toBe(true);
-    regroup.focus();
-    expect(regroup.findDisabledReason()?.getElement().textContent).toBe(`Assigned to ${ANN}`);
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+      disabled: true,
+      disabledReason: `Assigned to ${ANN}`,
+    });
   });
 
   it('save a draft through the editor, and Cancel discards unsaved edits after asking', async () => {
@@ -425,7 +446,9 @@ describe('the actions', () => {
     role.isAdmin = false;
     role.isAnnotator = true;
     renderScreen();
-    expect(buttons()).toEqual(expect.arrayContaining(['History', 'Claim']));
+    expect(menuNames()).toEqual(['Reports']);
+    expect(barButtonLabels()).toEqual(['Claim']);
+    expect(menuItems('Reports').map((i) => i.text)).toContain('History');
   });
 
   it('ask why before skipping, and skip with that reason', async () => {

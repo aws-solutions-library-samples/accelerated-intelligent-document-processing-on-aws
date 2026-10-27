@@ -1189,12 +1189,12 @@ The queue page shows:
   document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
   them re-reads the queue from the server and takes a few seconds on a large set.
 
-Per-document actions sit in one bar at the top of the edit screen (the same
-screen as production review items), so finishing a long document does not mean
-scrolling past every field to reach them: **Edit | View**,
-**History**, **Processing Report**, **Edit Page Class**, **Skip**, **Cancel**, **Save**
-and **Process Changes**, or the view switch, **History**, **Processing Report** and
-**Claim** for an Annotator viewing an unassigned document. **Save** saves the open
+Per-document actions sit in one bar at the top of the edit screen (the same screen as
+production review items), so finishing a long document does not mean scrolling past
+every field to reach them: **Edit | View**, **Reports** (**History**, **Processing
+Report**), **More Actions** (**Edit Page Class**), **Skip**, **Cancel**, **Save** and
+**Process Changes**, or the view switch, **Reports** and **Claim** for an Annotator
+viewing an unassigned document. **Save** saves the open
 section, which marks it reviewed (switching sections saves it too), and **Process
 Changes** saves the open section, confirms the rest and re-runs evaluation and
 summarization on the document's review copy (OCR, classification and extraction are

@@ -11,6 +11,7 @@ import { DOCUMENTS_PATH, documentDetailHref } from '../../routes/constants';
 import ReviewQueuesLayout from '../review-queues/ReviewQueuesLayout';
 import { documentName } from '../review-queues/review-api';
 import DocumentEdit from './DocumentEdit';
+import EditScreenToolsPanel from './tools-panel';
 
 const DocumentEditPage = (): React.JSX.Element => {
   const { objectKey: rawKey = '' } = useParams<{ objectKey: string }>();
@@ -18,6 +19,7 @@ const DocumentEditPage = (): React.JSX.Element => {
   const objectKey = decodeURIComponent(rawKey);
   return (
     <ReviewQueuesLayout
+      tools={<EditScreenToolsPanel />}
       root={{ text: 'Documents', href: `#${DOCUMENTS_PATH}` }}
       crumbs={[{ text: documentName(objectKey), href: documentDetailHref(objectKey) }]}
     >

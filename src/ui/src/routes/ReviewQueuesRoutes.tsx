@@ -18,6 +18,8 @@ import type { ItemQueue } from '../components/edit-screen/ProductionItemEdit';
 import TestSetItemEdit from '../components/edit-screen/TestSetItemEdit';
 import type { ItemTestSet } from '../components/edit-screen/TestSetItemEdit';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
+import EditScreenToolsPanel from '../components/edit-screen/tools-panel';
+import { QueueManagementToolsPanel, QueueToolsPanel } from '../components/review-queues/tools-panel';
 import useUserRole from '../hooks/use-user-role';
 import RequireRole from './RequireRole';
 import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, productionQueuePath, testSetQueuePath } from './constants';
@@ -52,7 +54,7 @@ export const ProductionItemPage = (): React.JSX.Element => {
   const queue = loaded?.objectKey === objectKey ? loaded.queue : null;
   const { root, crumbs } = useItemCrumbs(queue && { text: queue.name, href: `#${productionQueuePath(queue.id)}` }, objectKey);
   return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs}>
+    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<EditScreenToolsPanel />}>
       {/* Keyed on the item, so per-item state (the sections saved so far) never carries over. */}
       <ProductionItemEdit key={objectKey} objectKey={decodeURIComponent(objectKey)} onItemQueue={onItemQueue} />
     </ReviewQueuesLayout>
@@ -67,7 +69,7 @@ export const TestSetItemPage = (): React.JSX.Element => {
   const name = loaded?.id === testSetId ? loaded.name : null;
   const { root, crumbs } = useItemCrumbs({ text: name ?? testSetId, href: `#${testSetQueuePath(testSetId)}` }, objectKey);
   return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs}>
+    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<EditScreenToolsPanel />}>
       {/* Keyed on the item, so per-item state (the opened version transition) never carries over. */}
       <TestSetItemEdit
         key={`${testSetId}/${objectKey}`}
@@ -92,7 +94,7 @@ const TestSetQueuePage = (): React.JSX.Element => {
   const name = loaded?.id === testSetId ? loaded.name : testSetId;
   const { root, crumbs } = useQueueCrumbs({ text: `Test set: ${name}`, href: '#' });
   return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs}>
+    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<QueueToolsPanel />}>
       <AnnotationWorkspace key={testSetId} onName={onName} />
     </ReviewQueuesLayout>
   );
@@ -106,7 +108,7 @@ const ProductionQueuePage = (): React.JSX.Element => {
   const name = loaded?.id === queue ? loaded.name : decodeURIComponent(queue);
   const { root, crumbs } = useQueueCrumbs({ text: name, href: '#' });
   return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs}>
+    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<QueueToolsPanel />}>
       <ReviewQueuePage onName={onName} />
     </ReviewQueuesLayout>
   );
@@ -131,7 +133,7 @@ const QueueManagementRoutes = (): React.JSX.Element => (
       <Route
         index
         element={
-          <ReviewQueuesLayout>
+          <ReviewQueuesLayout tools={<QueueManagementToolsPanel />}>
             <QueuesPage />
           </ReviewQueuesLayout>
         }

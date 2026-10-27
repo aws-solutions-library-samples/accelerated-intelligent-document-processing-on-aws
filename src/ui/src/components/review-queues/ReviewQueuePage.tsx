@@ -46,7 +46,8 @@ const CLAIM_NEXT_REASONS: Record<string, string> = {
 const isClaimable = (item: ReviewItem): boolean => item.state === QueueItemState.OPEN;
 
 /** The Items table: Document, Source, Queue, Priority and State, then the row Actions menu. */
-const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state'] as const;
+// Annotator: who each document is assigned to (sortable), so a queue's work can be read by person.
+const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state', 'owner'] as const;
 
 interface ReviewQueuePageProps {
   /** Told the queue's name whenever it loads or is saved (for the breadcrumbs). */

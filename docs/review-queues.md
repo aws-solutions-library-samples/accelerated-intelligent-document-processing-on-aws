@@ -98,10 +98,17 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
 - Select an item to open it in the **edit screen**. Production items, Test
   Studio items and direct edits of a document all use the same edit screen, whether
   you open them from Tasks, an Inbox message or Queue Management.
-  - The actions are in one bar at the top, always in this order and each shown only
-    where it applies: **Edit | View**, **History**, **Processing Report**, **Edit
-    Page Class**, **Skip**, **Cancel**, **Save** and **Process Changes**. A disabled
-    action says why on hover. **View** shows the original file in the editor's place; unsaved edits are
+  - The actions are in one bar at the top, left to right: **Edit | View**, the
+    **Reports** menu (**History**, **Summary**, **Processing Report**), the **More
+    Actions** menu (**Edit Page Class**, **Use As Evaluation Baseline**), then **Skip**,
+    **Cancel**, **Save** and **Process Changes** last (or **Reports** and **Claim**, for
+    an Annotator viewing an unassigned item). A button that doesn't apply is left out.
+    A menu item that doesn't apply yet stays in its menu, disabled, with the reason on
+    hover: **Summary** and **Use As Evaluation Baseline** wait for a finished document (a
+    direct edit of a processed document, or a queue item whose review is complete), and
+    the baseline copy is listed only for Admins and Authors. Test Studio items have no
+    Summary or baseline, since their labels already are the baseline. The info icon opens a panel describing the
+    screen. **View** shows the original file in the editor's place; unsaved edits are
     kept while it is shown.
   - The title is the document's name followed by its status in parentheses, in the
     subtitle's text style, for example `insurance_package-1.pdf (Claimed)`, and the
@@ -164,7 +171,8 @@ Regrouping pages is, from the queue item.
 **HITL › Queue Management** is visible to Admins only. It has two tables,
 **Production Queues** and **Test Studio Queues**, with the same columns: **Queue**,
 **Items**, **Pending**, **Assigned**, **Annotators** and an actions menu. A queue's
-other settings, such as its priority and Enabled switch, are in its **Settings**.
+other settings, such as its priority and Enabled switch, are in its **Settings**. The
+info icon opens a panel describing the page.
 
 ![Queue Management page with the Default production queue and one Test Studio queue per test set](../images/review-queues-queue-management.png)
 
@@ -235,7 +243,8 @@ finished document leaves the queue). **Key Metrics** below it shows **Pending**,
 **Annotators** (how many are listed) and **Priority**. The **Annotators** table lists
 each listed Annotator, and anyone still holding the queue's documents, with how many
 documents each is assigned. The **Documents** table shows each item's **Document**, **Source**, **Queue**,
-**Priority** and **State**, with its actions in the row menu.
+**Priority**, **State** and **Annotator** (who it is assigned to; sortable), with its
+actions in the row menu. The info icon opens a panel describing the page.
 
 To work a queue, open its page, select items, and choose one of:
 
@@ -260,7 +269,8 @@ accuracy** and **Evidence**) once there is one. For an Admin, the **Annotators**
 follows, as on a Production queue's page. Below that are the
 draft-labeling status, the ground-truth version being annotated toward, and every
 document, worst first, with columns **Document**, **Labels**, **Confidence** and
-**Assigned** (Yes or No; the assignee shows on hover). The document list filters to
+**Annotator** (who it is assigned to). Sorting by **Annotator** groups each person's
+documents, worst first within each, with unassigned documents last. The document list filters to
 **All documents**, **Assigned** or **Not assigned**, and opens on **Not assigned**,
 which is exactly the documents that can still be claimed.
 Each row's menu offers **View** (the source document), **Edit**, and for Admins
@@ -314,6 +324,10 @@ name, then the document, and the queue links back to its page.
 While a document is in a review queue (status **In Review**), it is reviewed from
 its queue item:
 
+- The document page's **Review Owner** is the queue item's assignee: it is filled in when
+  the item is claimed, assigned, reassigned or taken over, cleared when it goes back to
+  the queue, and kept once the review finishes. **Review Completed By** is whoever
+  finished it, filled in once its corrections have been applied.
 - The document page's **Edit** opens the queue item on the edit screen for
   Admins and Annotators, the roles that can open queue items. For other roles it opens
   the direct edit, read-only.

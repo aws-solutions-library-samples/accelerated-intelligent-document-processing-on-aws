@@ -310,19 +310,26 @@ an in-review one links to its queue item with **Review in queue** for Admins and
 Annotators.
 
 The title is the document's name with its status in parentheses, with the full
-object key under it. The actions are in one bar at the top, in this order:
+object key under it. The actions are in one bar at the top: **Edit | View**, the
+**Reports** and **More Actions** menus, then the buttons, with **Process Changes** last.
+A menu item that doesn't apply yet stays in its menu, disabled, with the reason on
+hover.
 
-| Action | What it does | Who |
-|---|---|---|
-| **History** | The open section's field edits (prediction and baseline) and the document's review activity | everyone |
-| **Processing Report** | How the open section was extracted | everyone |
-| **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | editors |
-| **Cancel** | Leaves for the document page; asks first when there are unsaved edits, and discards them | editors |
-| **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
-| **Process Changes** | Saves the edits, confirms, then processes them like the Sections panel's **Process Changes**: evaluation and summarization re-run, and OCR, classification and extraction are not repeated | Admin, Reviewer |
+| Where | Action | What it does | Who |
+|---|---|---|---|
+| Reports | **History** | The open section's field edits (prediction and baseline) and the document's review activity | everyone |
+| Reports | **Summary** | The document's summary, on a processed document that has one | everyone |
+| Reports | **Processing Report** | How the open section was extracted | everyone |
+| More Actions | **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | editors |
+| More Actions | **Use As Evaluation Baseline** | Copies the processed document's results into the evaluation baseline, as on the document page | Admin, Author |
+| Button | **Cancel** | Leaves for the document page; asks first when there are unsaved edits, and discards them | editors |
+| Button | **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
+| Button | **Process Changes** | Saves the edits, confirms, then processes them like the Sections panel's **Process Changes**: evaluation and summarization re-run, and OCR, classification and extraction are not repeated | Admin, Reviewer |
 
 A direct edit has no **Skip**: that belongs to a queue item. **Edit | View**, first in
-the bar, shows the original file in the editor's place. The
+the bar, shows the original file in the editor's place. Summary and Use as Evaluation
+Baseline are not offered while the document is still processing or is in a review
+queue. The info icon opens a panel describing the screen. The
 editor itself is the **Document Editor** panel, with a **Section** dropdown at its
 top left. A disabled action
 says why on hover. A Reviewer's edits are saved through the review

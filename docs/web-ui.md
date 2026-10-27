@@ -688,12 +688,14 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   role. The title is the document's name with its status in parentheses, over the
   full object key; a queue item's **Review Reason** follows, then the **Document
   Editor** panel, which holds the editor with a **Section** dropdown at its top left.
-  The actions are in one bar at the top, always in this order and each shown only
-  where it applies: **Edit | View** (the original file in the
-  editor's place), **History** (field edits and review activity), **Processing
-  Report**, **Edit Page Class** (each section's pages and class), **Skip** (queue items, for the assignee, with a
-  reason), **Cancel** (leave, discarding unsaved edits after asking), **Save** and
-  **Process Changes**. Process Changes works like the Sections panel's: it re-runs
+  The actions are in one bar at the top, left to right: **Edit | View** (the original
+  file in the editor's place); **Reports** (**History**, field edits and review
+  activity; **Summary**; **Processing Report**); **More Actions** (**Edit Page Class**,
+  each section's pages and class; **Use As Evaluation Baseline**, for Admins and
+  Authors); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
+  (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
+  menu item that doesn't apply yet, such as Summary before a document is finished, is
+  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes works like the Sections panel's: it re-runs
   evaluation and summarization on the corrected document, and OCR, classification and
   extraction are not repeated. It finishes a queue item, and on a direct edit saves
   the edits and confirms first. For a Test Studio document with authored ground truth,

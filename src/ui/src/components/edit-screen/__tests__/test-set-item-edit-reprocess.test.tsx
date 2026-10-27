@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The primary action on a Test Studio document. What has to hold: the bar is History,
- * Edit Page Grouping, Skip, Cancel, Save and Reprocess, for a document with a review copy
- * and for authored ground truth alike; there is no
+ * The primary action on a Test Studio document. What has to hold: the bar is Reports
+ * (History, Processing Report), More Actions (Edit Page Class), Skip, Cancel, Save and
+ * Process Changes, for a document with a review copy and for authored ground truth alike; there is no
  * Save as Draft (no test-set save leaves labels unreviewed); the primary action saves
  * the open section's edits first, then confirms only the sections not saved, and exits
  * once; the Edit | View switch is first in the bar and shows the source
@@ -80,6 +80,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
+import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 
 const onTestSet = vi.fn();
 
@@ -90,12 +91,6 @@ const renderScreen = () =>
     </MemoryRouter>,
   );
 
-const barButtons = () =>
-  createWrapper(document.body)
-    .findHeader()!
-    .findActions()!
-    .findAllButtons()
-    .map((b) => b.findTextRegion()?.getElement().textContent ?? b.getElement().textContent);
 const button = (text: string) =>
   createWrapper(document.body)
     .findHeader()!
@@ -119,15 +114,19 @@ beforeEach(() => {
 });
 
 describe('the primary action on a Test Studio document', () => {
-  it('offers Save, Cancel and Reprocess for a document with a review copy', () => {
+  it('offers Skip, Cancel, Save and Process Changes for a document with a review copy, with no Summary or baseline', () => {
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Processing Report', 'Edit Page Class', 'Skip', 'Cancel', 'Save', 'Process Changes']);
+    expect(menuNames()).toEqual(['Reports', 'More Actions']);
+    expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
+    // Test Studio has no summary, and its labels already are the baseline.
+    expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Processing Report']);
+    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class']);
   });
 
   it('offers Reprocess for authored ground truth too, saying nothing is reprocessed', () => {
     docOver.reviewObjectKey = null;
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Processing Report', 'Edit Page Class', 'Skip', 'Cancel', 'Save', 'Process Changes']);
+    expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
     expect(button('Process Changes').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
   });
 
@@ -160,7 +159,7 @@ describe('the primary action on a Test Studio document', () => {
   it('places save, discard and page grouping in the top bar', () => {
     renderScreen();
     expect(editorProps).toMatchObject({ actionsPlacement: 'external', saveOnSectionSwitch: true, regroupPlacement: 'external' });
-    button('Edit Page Class').click();
+    chooseMenuItem('More Actions', 'Edit Page Class');
     expect(editorProps!.regroupOpen).toBe(true);
   });
 

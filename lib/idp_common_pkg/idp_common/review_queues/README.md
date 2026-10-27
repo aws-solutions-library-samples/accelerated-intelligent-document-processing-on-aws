@@ -298,6 +298,22 @@ The tracking row mirrors the status in `HITLStatus` (the same three values), wit
 `ReviewDisposedAt` and `ReviewRejectReason`. The SDK and CLI report it as
 `review_status`.
 
+It also carries who holds and who finished the review, so the document page's **Review
+Owner** and **Review Completed By** are filled for a queue document as for the legacy
+flow:
+
+- `HITLReviewOwnerEmail` is the item's assignee. `ReviewQueueService._write` mirrors it
+  after every write that changes who holds an item: a claim, an assignment, a
+  reassignment or a take over writes the new holder; a skip or an unassignment (back to
+  `OPEN`) clears it; a finish (`FINALIZING`, then `COMPLETE`, `REJECTED` or removed)
+  keeps the last holder. A withdrawal clears it with the other review attributes. The
+  mirror is best-effort: the queue item is the source of truth, and a tracking row that
+  cannot be written is logged (`event=review_owner_mirror_failed`) and never undoes the
+  write. Only the email is written; `HITLReviewOwner` is the legacy Reviewer flow's
+  Cognito username, and is only cleared.
+- `HITLReviewedBy` and `HITLReviewedByEmail` are both the email of whoever finished the
+  review, written by the tracker when the finalize run ends.
+
 ## Producer IAM
 
 The policies in `template.yaml`, `patterns/unified/template.yaml` and

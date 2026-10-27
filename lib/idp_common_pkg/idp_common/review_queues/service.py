@@ -214,6 +214,14 @@ def changed_fields(base: Any, new: Any) -> list[str]:
     return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 
 
+#: The tracking row's review owner. A queue item's assignee is written here, so the
+#: document page (and any other reader of the tracking row: the SDK, the CLI) shows who
+#: holds the review rather than a blank. Only the email is written: the legacy Reviewer
+#: flow keeps a Cognito username in ``HITLReviewOwner``, which a queue has no use for.
+REVIEW_OWNER_EMAIL_ATTRIBUTE = "HITLReviewOwnerEmail"
+REVIEW_OWNER_ATTRIBUTES = ("HITLReviewOwner", REVIEW_OWNER_EMAIL_ATTRIBUTE)
+
+
 class ReviewQueueService:
     """Operations behind the review-queue API, the tracker and the sweeper."""
 
@@ -339,7 +347,36 @@ class ReviewQueueService:
             names={"#st": "State"},
             extra_txn=extra_txn,
         )
+        self._mirror_owner(old, new)
         return new
+
+    def _mirror_owner(self, old: ReviewItemRecord, new: ReviewItemRecord) -> None:
+        """Write the item's assignee to the document's tracking row, after a write.
+
+        Claimed: the holder's email. Back to open: cleared. Finished (finalizing,
+        complete, rejected, removed): the last holder is kept, as the review's owner.
+        Best-effort, like ``_clear_outputs``: the queue item is the source of truth, and a
+        tracking row that cannot be written must never undo an assignment.
+        """
+        if self.document_service is None or not hasattr(
+            self.document_service, "update_review_attributes"
+        ):
+            return
+        held = new.owner_email if new.state == CLAIMED else None
+        was = old.owner_email if old.state == CLAIMED else None
+        if held == was or (held is None and new.state != OPEN):
+            return
+        try:
+            if held:
+                self.document_service.update_review_attributes(
+                    new.doc_key, {REVIEW_OWNER_EMAIL_ATTRIBUTE: held}
+                )
+            else:
+                self.document_service.update_review_attributes(
+                    new.doc_key, {}, remove_attrs=REVIEW_OWNER_ATTRIBUTES
+                )
+        except Exception:  # noqa: BLE001 — a missing tracking row is fine
+            logger.warning("event=review_owner_mirror_failed", exc_info=True)
 
     def _release_fields(self, record: ReviewItemRecord) -> None:
         record.owner_key = None
@@ -1625,7 +1662,12 @@ class ReviewQueueService:
         ):
             try:
                 self.document_service.update_review_attributes(
-                    doc_key, {}, remove_attrs=TRACKING_REVIEW_ATTRIBUTES
+                    doc_key,
+                    {},
+                    remove_attrs=(
+                        *TRACKING_REVIEW_ATTRIBUTES,
+                        *REVIEW_OWNER_ATTRIBUTES,
+                    ),
                 )
             except Exception:  # noqa: BLE001 — a missing tracking row is fine
                 logger.warning("event=review_tracking_clear_failed", exc_info=True)

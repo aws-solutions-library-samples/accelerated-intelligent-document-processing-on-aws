@@ -29,6 +29,8 @@ export interface DirectEditDocument {
   objectKey: string;
   objectStatus?: string;
   evaluationStatus?: string | null;
+  /** The document's summary report (`s3://…`), once summarization has run. */
+  summaryReportUri?: string | null;
   hitlStatus?: string;
   /** The document's HITL review events (parsed HITLReviewHistory). */
   hitlReviewHistory?: { action?: string; timestamp?: string; user?: string; sectionId?: string; [key: string]: unknown }[];

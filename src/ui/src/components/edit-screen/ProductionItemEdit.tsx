@@ -19,6 +19,7 @@ import usePageThumbnails from '../../hooks/use-page-thumbnails';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { MY_QUEUES_PATH, productionQueuePath, reviewItemHref } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
@@ -46,6 +47,9 @@ export interface ItemQueue {
   name: string;
 }
 
+/** Why Summary and Use As Evaluation Baseline wait: they are about the reviewed document. */
+const REVIEW_NOT_COMPLETE = 'Available once the review is complete';
+
 /** An Annotator was assigned the item between the Admin opening it and editing it. */
 class AssignedElsewhere extends Error {}
 
@@ -59,7 +63,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
   const adapter = useProductionItemEdit(objectKey);
   const { detail, loadError, reload } = adapter;
   const { user, setErrorMessage, setSuccessMessage } = useAppContext();
-  const { isAdmin, isAnnotator } = useUserRole();
+  const { isAdmin, isAnnotator, canWrite } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const exit = useEditExit();
   const [searchParams] = useSearchParams();
@@ -196,6 +200,9 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
   const canTakeOver = isAdmin && assigned && !assignedToMe;
   // An Annotator (not an Admin, whose edits assign the item) claims an item waiting for review.
   const canClaim = isAnnotator && !isAdmin && item.state === QueueItemState.OPEN;
+  // Summary and Use as Evaluation Baseline are about the finished document: only once its
+  // review is complete and the corrections have been applied.
+  const finished = item.state === QueueItemState.COMPLETE;
 
   let lockedReason: string | undefined;
   if (terminal) lockedReason = `This item is ${stateView.label.toLowerCase()}`;
@@ -299,6 +306,20 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
       }
       return;
     }
+    if (action === 'baseline') {
+      const ok = await run(
+        'baseline',
+        async () => {
+          await copyDocumentToBaseline(objectKey);
+        },
+        'use this document as the evaluation baseline',
+      );
+      if (ok) {
+        setSuccessMessage(`Copying ${name} to the evaluation baseline.`);
+        void adapter.refreshDocument();
+      }
+      return;
+    }
     if (action === 'regroup') {
       // Regrouping is part of review: like a first save, it assigns an unassigned
       // item to the Admin opening it, since only the item's holder may regroup.
@@ -378,6 +399,8 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
       status={stateView.label}
       objectKey={item.objectKey}
       reportSectionData={sectionData}
+      summaryReportUri={finished ? adapter.summaryReportUri || undefined : undefined}
+      summaryUnavailableReason={finished ? 'This document has no summary' : REVIEW_NOT_COMPLETE}
       actions={{
         primaryDisabledReason: lockedReason ?? (saving ? 'Saving your latest edits…' : undefined),
         primaryHint:
@@ -390,6 +413,9 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
         showSave: canEdit,
         saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your latest edits…' : undefined,
         showRegroup: true,
+        // copyToBaseline is Admin and Author (canWrite), as on the document page.
+        showBaseline: canWrite,
+        baselineDisabledReason: finished ? baselineCopyBlockedReason(adapter.evaluationStatus) : REVIEW_NOT_COMPLETE,
         regroupDisabledReason: lockedReason ?? (dirty ? 'Saving your latest edits…' : undefined),
         showClaim: canClaim,
         onShowHistory: () => setShowHistory(true),

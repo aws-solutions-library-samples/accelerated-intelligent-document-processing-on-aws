@@ -94,7 +94,7 @@ const BASE_COLUMNS: TableProps.ColumnDefinition<WorkItem>[] = [
   },
   {
     id: 'owner',
-    header: 'Assigned to',
+    header: 'Annotator',
     width: 210,
     cell: (item) => (item.assignedTo ? <TruncatedText maxChars={24}>{item.assignedTo}</TruncatedText> : '—'),
     sortingField: 'assignedTo',

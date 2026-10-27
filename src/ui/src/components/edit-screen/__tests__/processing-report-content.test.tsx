@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The edit screen's Processing Report, its own button in the bar. What has to hold: it
+ * The edit screen's Processing Report, in the bar's Reports menu. What has to hold: it
  * renders the open section's report from the loaded result, says what to do when no
- * section is open, opens from the bar right after History, and is not a History tab.
+ * section is open, opens from Reports, and is not a History tab.
  */
 
 import React from 'react';
@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import EditScreen from '../EditScreen';
 import EditorHistoryModal from '../EditorHistoryModal';
+import { chooseMenuItem, menuItems } from './edit-bar';
 import ProcessingReportContent from '../ProcessingReportContent';
 
 const SECTION = {
@@ -33,7 +34,7 @@ describe('ProcessingReportContent', () => {
     expect(container.textContent).toContain('Open a section to see its processing report.');
   });
 
-  it('opens from the edit screen bar, after History, and is not a History tab', () => {
+  it('opens from the Reports menu, after History', () => {
     render(
       <EditScreen
         title="doc.pdf"
@@ -44,13 +45,8 @@ describe('ProcessingReportContent', () => {
         <div />
       </EditScreen>,
     );
-    const bar = createWrapper(document.body).findHeader()!.findActions()!;
-    const labels = bar.findAllButtons().map((b) => b.getElement().textContent);
-    expect(labels.indexOf('Processing Report')).toBe(labels.indexOf('History') + 1);
-    bar
-      .findAllButtons()
-      .find((b) => b.getElement().textContent === 'Processing Report')!
-      .click();
+    expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Processing Report']);
+    chooseMenuItem('Reports', 'Processing Report');
     const modal = createWrapper(document.body).findModal()!;
     expect(modal.findHeader().getElement().textContent).toBe('Processing Report');
     expect(modal.findContent().getElement().textContent).toContain('Extracted with the invoice schema');
@@ -62,12 +58,7 @@ describe('ProcessingReportContent', () => {
         <div />
       </EditScreen>,
     );
-    const labels = createWrapper(document.body)
-      .findHeader()!
-      .findActions()!
-      .findAllButtons()
-      .map((b) => b.getElement().textContent);
-    expect(labels).not.toContain('Processing Report');
+    expect(menuItems('Reports').map((i) => i.text)).not.toContain('Processing Report');
   });
 
   it('is not a tab of History', () => {

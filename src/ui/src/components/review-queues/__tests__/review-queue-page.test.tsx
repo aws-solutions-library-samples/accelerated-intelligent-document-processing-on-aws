@@ -126,10 +126,20 @@ describe('a production queue page', () => {
     expect(rows).toEqual(['a@example.com2', 'b@example.com0', 'gone@example.com (not listed)1']);
   });
 
-  it('shows Document, Source, Queue, Priority, State and Actions in the Documents table', async () => {
+  it('shows Document, Source, Queue, Priority, State, Annotator and Actions in the Documents table', async () => {
     await renderPage();
     expect(itemsTable().findHeaderSlot()!.getElement().textContent).toContain('Documents');
-    expect(headers(itemsTable()).slice(-6)).toEqual(['Document', 'Source', 'Queue', 'Priority', 'State', 'Actions']);
+    expect(headers(itemsTable()).slice(-7)).toEqual(['Document', 'Source', 'Queue', 'Priority', 'State', 'Annotator', 'Actions']);
+  });
+});
+
+describe('the Annotator column', () => {
+  it("can be sorted, so each person's documents read together", async () => {
+    await renderPage();
+    const at = headers(itemsTable()).indexOf('Annotator');
+    expect(at).toBeGreaterThan(-1);
+    // Cloudscape renders a sorting control only on a column with a sortingField.
+    expect(itemsTable().findColumnSortingArea(at + 1)).not.toBeNull();
   });
 });
 

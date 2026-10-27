@@ -54,6 +54,7 @@ import { testSetAnnotateHref, testSetItemPath } from '../../routes/constants';
 import AssignModal from '../review-queues/AssignModal';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from '../review-queues/QueueAnnotatorsTable';
 import QueueProgress, { progressPercent } from '../review-queues/QueueProgress';
+import { ANNOTATOR_SORTING_COLUMN, sortByAnnotator } from './annotator-sort';
 import QueueDefinitionModal from '../review-queues/QueueDefinitionModal';
 import type { TestSetQueueTarget } from '../review-queues/QueueDefinitionModal';
 import {
@@ -172,6 +173,8 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const [error, setError] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState('');
   const [queuePage, setQueuePage] = useState(1);
+  // Worst-first until someone sorts by Annotator; then by assignee, either way.
+  const [annotatorSort, setAnnotatorSort] = useState<{ descending: boolean } | null>(null);
   const [statusFilter, setStatusFilter] = useState<DocStatusFilter>(DEFAULT_STATUS_FILTER);
   const showReviewed = statusFilter === 'all';
   const [selectedRows, setSelectedRows] = useState<QueueItem[]>([]);
@@ -344,11 +347,15 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
     return all.filter((d) => d.objectKey.toLowerCase().includes(needle));
   }, [queue, queueFilter, statusFilter]);
 
-  const queuePageCount = Math.max(1, Math.ceil(filteredQueue.length / QUEUE_ROWS_PER_PAGE));
+  const sortedQueue = useMemo(
+    () => (annotatorSort ? sortByAnnotator(filteredQueue, annotatorSort.descending) : filteredQueue),
+    [filteredQueue, annotatorSort],
+  );
+  const queuePageCount = Math.max(1, Math.ceil(sortedQueue.length / QUEUE_ROWS_PER_PAGE));
   const pagedQueue = useMemo(() => {
     const start = (queuePage - 1) * QUEUE_ROWS_PER_PAGE;
-    return filteredQueue.slice(start, start + QUEUE_ROWS_PER_PAGE);
-  }, [filteredQueue, queuePage]);
+    return sortedQueue.slice(start, start + QUEUE_ROWS_PER_PAGE);
+  }, [sortedQueue, queuePage]);
 
   // Every document can be assigned: one with a review record saves through the review
   // API, one without (authored ground truth) through saveTestSetDocumentSection.
@@ -495,10 +502,6 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const staleLinkVersion = staleVersionFor(requestedVersion, draft);
   // Whole percent until the curve is measured on this set (see estimateDecimals).
   const estimateDecimals = decimalsFor(impact?.estimateConfidence);
-
-  /** Yes (with the assignee on hover) or No. */
-  const renderAssigned = (item: QueueItem): React.ReactNode =>
-    item.assignedTo ? <span title={`Assigned to ${item.assignedTo}`}>Yes</span> : 'No';
 
   const onRowAction = (item: QueueItem, action: string) => {
     if (action === 'view') navigate(`${testSetItemPath(testSetId, item.objectKey)}?view=source`);
@@ -739,6 +742,12 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
             variant="container"
             items={pagedQueue}
             trackBy="objectKey"
+            sortingColumn={annotatorSort ? ANNOTATOR_SORTING_COLUMN : undefined}
+            sortingDescending={annotatorSort?.descending ?? false}
+            onSortingChange={({ detail }) => {
+              setAnnotatorSort({ descending: detail.isDescending ?? false });
+              setQueuePage(1);
+            }}
             loading={isLoading}
             loadingText="Loading the queue"
             selectionType={isAdmin || claimsWork ? 'multi' : undefined}
@@ -836,7 +845,12 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
                 header: 'Confidence',
                 cell: (item) => renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold) ?? '—',
               },
-              { id: 'assigned', header: 'Assigned', cell: renderAssigned },
+              {
+                id: 'annotator',
+                header: 'Annotator',
+                sortingField: ANNOTATOR_SORTING_COLUMN.sortingField,
+                cell: (item) => item.assignedTo ?? '—',
+              },
               {
                 id: 'actions',
                 header: <span className="idp-visually-hidden">Actions</span>,

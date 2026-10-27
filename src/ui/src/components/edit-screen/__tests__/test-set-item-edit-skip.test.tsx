@@ -49,6 +49,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
 }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
+import { chooseMenuItem } from './edit-bar';
 
 beforeEach(() => {
   skip.mockReset().mockResolvedValue(undefined);
@@ -84,13 +85,13 @@ describe('Skip on a Test Studio document', () => {
     await waitFor(() => expect(exit).toHaveBeenCalled());
   });
 
-  it('has a History button with Field Edits, Review Activity and Processing Report', () => {
+  it('has History, in Reports, with Field Edits and Review Activity', () => {
     render(
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
     );
-    buttonByText('History')!.click();
+    chooseMenuItem('Reports', 'History');
     const tabs = createWrapper(document.body).findTabs()!;
     expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity']);
   });

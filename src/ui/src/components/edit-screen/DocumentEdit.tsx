@@ -24,6 +24,7 @@ import usePageThumbnails from '../../hooks/use-page-thumbnails';
 import useUserRole from '../../hooks/use-user-role';
 import { DOCUMENTS_PATH, reviewItemHref } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGrouping } from '../common/document-grouping';
 import PageGroupingEditor from '../common/PageGroupingEditor';
@@ -161,6 +162,15 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
   if (inReview) readOnlyReason = inReviewReason;
   else if (!isEditableStatus(status)) readOnlyReason = PROCESSING_REASON;
   else if (!canWrite && !holdsReview) readOnlyReason = EDIT_ROLE_REASON;
+  // Summary and Use as Evaluation Baseline are about a finished document: not one still
+  // processing, nor one in a review queue, whose results change when its review ends.
+  const finished = !inReview && isEditableStatus(status);
+  // Why they are unavailable, for the menus (an item that does not apply stays, disabled).
+  const unfinishedReason = inReview
+    ? 'This document is in a review queue'
+    : !isEditableStatus(status)
+      ? 'Available when processing finishes'
+      : undefined;
   const readOnly = readOnlyReason !== undefined;
   // In review, the editing actions stay on the bar, disabled with the in-review reason.
   const showEditing = !readOnly || inReview;
@@ -177,6 +187,19 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
     setError(null);
     if (action === 'cancel') {
       cancel();
+      return;
+    }
+    if (action === 'baseline') {
+      setBusy('baseline');
+      try {
+        await copyDocumentToBaseline(objectKey);
+        setSuccessMessage(`Copying ${name} to the evaluation baseline. Its evaluation status shows when the copy is done.`);
+        void reload();
+      } catch (err) {
+        setError(`Could not use ${name} as the evaluation baseline: ${getErrorMessage(err)}`);
+      } finally {
+        setBusy(null);
+      }
       return;
     }
     if (action === 'regroup') {
@@ -268,10 +291,16 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
       status={status}
       objectKey={objectKey}
       reportSectionData={sectionData}
+      summaryReportUri={finished ? doc.summaryReportUri || undefined : undefined}
+      summaryUnavailableReason={unfinishedReason ?? 'This document has no summary'}
       actions={{
         showSave: showEditing,
         saveDisabledReason: readOnlyReason ?? (!dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined),
-        showRegroup: showEditing,
+        // Listed for everyone, disabled with the read-only reason where it does not apply.
+        showRegroup: true,
+        // copyToBaseline is Admin and Author (canWrite), as on the document page.
+        showBaseline: canWrite,
+        baselineDisabledReason: unfinishedReason ?? baselineCopyBlockedReason(doc.evaluationStatus),
         regroupDisabledReason: readOnlyReason ?? (boardSections.length === 0 ? 'This document has no sections' : undefined),
         showCancel: !readOnly,
         cancelDisabledReason: saving ? 'Saving your changes…' : undefined,

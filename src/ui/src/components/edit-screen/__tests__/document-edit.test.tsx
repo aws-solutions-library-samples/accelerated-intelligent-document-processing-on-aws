@@ -16,6 +16,7 @@ import React from 'react';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, useLocation } from 'react-router-dom';
+import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
@@ -44,6 +45,9 @@ vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: { classes: [] } }) }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({ default: () => ({ urls: {}, failure: null }) }));
 vi.mock('../use-section-evaluation', () => ({ default: () => evaluation }));
+vi.mock('../../document-viewer/MarkdownViewer', () => ({
+  MarkdownReport: ({ reportUri }: { reportUri: string }) => <div data-testid="summary-report">{reportUri}</div>,
+}));
 vi.mock('../SectionEditor', () => ({
   default: (props: Record<string, unknown>) => {
     editorProps = props;
@@ -89,7 +93,6 @@ const renderEditor = async () => {
 const header = () => createWrapper(document.body).findHeader()!;
 const barLabel = (b: ReturnType<ReturnType<typeof createWrapper>['findAllButtons']>[number]) =>
   b.findTextRegion()?.getElement().textContent ?? b.getElement().textContent;
-const bar = () => header().findActions()!.findAllButtons().map(barLabel);
 const button = (text: string) =>
   header()
     .findActions()!
@@ -117,6 +120,7 @@ beforeEach(() => {
   });
   graphql.mockReset().mockImplementation(async (req: { query: string }) => {
     if (req.query.includes('processChanges')) return { data: { processChanges: { success: true } } };
+    if (req.query.includes('copyToBaseline')) return { data: { copyToBaseline: { success: true, message: 'started' } } };
     return { data: { getDocument: server.doc } };
   });
   setSuccessMessage.mockReset();
@@ -126,9 +130,12 @@ beforeEach(() => {
 });
 
 describe('the direct edit', () => {
-  it('offers History, Edit Page Grouping, Cancel, Save and Reprocess, with no Skip', async () => {
+  it('offers Reports, More Actions, Cancel, Save and Process Changes, with no Skip', async () => {
     await renderEditor();
-    expect(bar()).toEqual(['History', 'Processing Report', 'Edit Page Class', 'Cancel', 'Save', 'Process Changes']);
+    expect(menuNames()).toEqual(['Reports', 'More Actions']);
+    expect(barButtonLabels()).toEqual(['Cancel', 'Save', 'Process Changes']);
+    expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
+    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class', 'Use As Evaluation Baseline']);
     expect(editorProps!.variant).toBe('widget');
     expect(editorProps!.title).toBeUndefined();
     expect(editorProps!.isReadOnly).toBe(false);
@@ -181,7 +188,10 @@ describe('the direct edit', () => {
       .find((b) => barLabel(b) === 'Review in queue');
     expect(review?.getElement().getAttribute('href')).toBe('#/review-queues/items/in%2Fdoc.pdf');
     expect(disabledReason('Save')).toBe('This document is in a review queue. Choose Review to work on it there.');
-    expect(disabledReason('Edit Page Class')).toBe('This document is in a review queue. Choose Review to work on it there.');
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+      disabled: true,
+      disabledReason: 'This document is in a review queue. Choose Review to work on it there.',
+    });
     expect(disabledReason('Process Changes')).toBe('This document is in a review queue. Choose Review to work on it there.');
   });
 
@@ -206,7 +216,7 @@ describe('the direct edit', () => {
       ]),
     });
     await renderEditor();
-    button('History').click();
+    chooseMenuItem('Reports', 'History');
     const tabGroup = createWrapper(document.body).findTabs()!;
     tabGroup.findTabLinkByIndex(2)!.click();
     const history = createWrapper(document.body)
@@ -231,6 +241,57 @@ describe('the direct edit', () => {
     expect(editorProps!.body).toBeTruthy();
     // The editor stays mounted behind it, with its unsaved edits.
     expect(document.querySelector('[data-testid="editor"]')).not.toBeNull();
+  });
+
+  it('offers Summary on a finished document that has one, and opens it', async () => {
+    server.doc = rawDoc({ SummaryReportUri: 's3://out/in/doc.pdf/summary/summary.md' });
+    await renderEditor();
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({ disabled: false });
+    chooseMenuItem('Reports', 'Summary');
+    await waitFor(() => expect(document.querySelector('[data-testid="summary-report"]')).not.toBeNull());
+    expect(document.querySelector('[data-testid="summary-report"]')!.textContent).toBe('s3://out/in/doc.pdf/summary/summary.md');
+  });
+
+  it('keeps Summary, disabled, when the document has none yet', async () => {
+    await renderEditor();
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({
+      disabled: true,
+      disabledReason: 'This document has no summary',
+    });
+  });
+
+  it('copies a finished document to the evaluation baseline, for an Admin or Author', async () => {
+    await renderEditor();
+    chooseMenuItem('More Actions', 'Use As Evaluation Baseline');
+    await waitFor(() => expect(graphql.mock.calls.some((c) => queryOf(c).includes('copyToBaseline'))).toBe(true));
+    const call = graphql.mock.calls.find((c) => queryOf(c).includes('copyToBaseline'))!;
+    expect((call[0] as { variables: unknown }).variables).toEqual({ objectKey: 'in/doc.pdf' });
+    await waitFor(() => expect(setSuccessMessage).toHaveBeenCalledWith(expect.stringContaining('evaluation baseline')));
+  });
+
+  it('disables Summary and the baseline on a document in a review queue, saying why', async () => {
+    server.doc = rawDoc({ HITLStatus: 'in_review', ObjectStatus: 'HITL_IN_PROGRESS', SummaryReportUri: 's3://x/summary.md' });
+    await renderEditor();
+    const reason = 'This document is in a review queue';
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({ disabled: true, disabledReason: reason });
+    expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({
+      disabled: true,
+      disabledReason: reason,
+    });
+  });
+
+  it('disables Summary and the baseline while the document is still processing', async () => {
+    server.doc = rawDoc({ ObjectStatus: 'EXTRACTING', SummaryReportUri: 's3://x/summary.md' });
+    await renderEditor();
+    const reason = 'Available when processing finishes';
+    expect(menuItems('Reports').find((i) => i.text === 'Summary')).toMatchObject({ disabled: true, disabledReason: reason });
+    expect(menuItems('More Actions').find((i) => i.text === 'Use As Evaluation Baseline')).toMatchObject({ disabledReason: reason });
+  });
+
+  it('offers the baseline only to a role that may copy it (Admin, Author)', async () => {
+    Object.assign(role, { isAdmin: false, isReviewer: true, canWrite: false });
+    await renderEditor();
+    expect(menuItems('More Actions').map((i) => i.text)).not.toContain('Use As Evaluation Baseline');
   });
 
   it('Cancel with no unsaved edits leaves for the document page at once', async () => {
