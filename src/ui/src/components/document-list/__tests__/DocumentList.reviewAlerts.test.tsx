@@ -141,5 +141,29 @@ describe('DocumentList review alerts', () => {
     await waitFor(() => expect(graphqlMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Release Review' })).toBeDisabled());
     expect(alertText()).toBeNull();
+
+    // Clearing the selection disables the button too, so select the row again: it
+    // stays disabled only because the list now shows the row as unclaimed.
+    selectRow(1);
+    expect(screen.getByRole('button', { name: 'Release Review' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Start Review' })).toBeEnabled();
+  });
+
+  it('clears a Start Review refusal when a later Release Review succeeds', async () => {
+    documentsRef.current = [doc('owed.pdf'), doc('claimed.pdf', { HITLReviewOwner: 'rev', HITLStatus: 'InProgress' })];
+    graphqlMock.mockImplementation(({ query }: { query: string }) =>
+      query.includes('releaseReview')
+        ? Promise.resolve({ data: { releaseReview: { HITLStatus: 'Review Pending' } } })
+        : refused('NO_REVIEW_PENDING: this document has no review waiting, so there is nothing to start'),
+    );
+    render(<DocumentList />);
+    selectRow(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Start Review' }));
+    await waitFor(() => expect(alertText()).toContain('Start Review was refused'));
+
+    selectRow(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Release Review' }));
+    await waitFor(() => expect(graphqlMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(alertText()).toBeNull());
   });
 });
