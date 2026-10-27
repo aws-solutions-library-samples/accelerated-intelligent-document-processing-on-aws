@@ -923,7 +923,7 @@ agents:
   error_analyzer:
     model_id: us.anthropic.claude-sonnet-4-6
     parameters:
-      max_log_events: 5
+      max_log_events: 10
       time_range_hours_default: 24
 discovery:
   output_format:
