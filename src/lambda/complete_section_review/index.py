@@ -343,9 +343,49 @@ def _skip_all_offered(doc):
     compact = "".join(str(status or "").lower().split())
     if _review_finished(status) or compact in _UI_SKIP_HIDDEN_STATUSES:
         return "finished"
-    if doc.get("HITLTriggered") is True or (bool(status) and status != "N/A"):
+    if _review_raised(doc):
         return True
     return "not raised"
+
+
+def _review_raised(doc):
+    """Whether a review was raised on a tracking row, finished or not.
+
+    The web UI's ``hitlTriggered`` (``map-document-attributes.ts``): ``HITLTriggered``
+    is true, or ``HITLStatus`` is set and not ``N/A``. An ownerless ``Review
+    Pending`` row written by an earlier version counts, by its status. "Set" means a
+    non-empty string, which is what every writer stores, so that
+    :func:`_review_raised_condition` can say the same thing at the write.
+    """
+    status = doc.get("HITLStatus")
+    return doc.get("HITLTriggered") is True or (
+        isinstance(status, str) and status not in ("", "N/A")
+    )
+
+
+def _review_raised_condition():
+    """``(condition, values)`` holding :func:`_review_raised` at the moment of a write.
+
+    ``attribute_type(..., S)`` rather than ``attribute_exists``, so a stored NULL or
+    any other non-string ``HITLStatus`` reads as unset here as it does in the rule.
+    """
+    return (
+        "(HITLTriggered = :raisedFlag OR (attribute_type(HITLStatus, :raisedType) "
+        "AND HITLStatus <> :raisedUnset AND HITLStatus <> :raisedNone))",
+        {
+            ":raisedFlag": True,
+            ":raisedType": "S",
+            ":raisedUnset": "",
+            ":raisedNone": "N/A",
+        },
+    )
+
+
+def _no_review_pending_error(action):
+    return ValueError(
+        f"NO_REVIEW_PENDING: this document has no review waiting, so there is "
+        f"nothing to {action}"
+    )
 
 
 def _read_review_row(object_key):
@@ -947,10 +987,7 @@ def skip_all_sections_review(
             logger.warning(f"Rejecting skip-all on {object_key}: {offered}")
             if offered == "finished":
                 raise _review_finished_error("skip")
-            raise ValueError(
-                "NO_REVIEW_PENDING: this document has no review waiting, so there "
-                "is nothing to skip"
-            )
+            raise _no_review_pending_error("skip")
 
     # Get all section IDs from the document
     all_section_ids = {
@@ -1064,12 +1101,22 @@ def claim_review(object_key, username="", user_email=""):
     # Progress and reopen its edits. Read consistently, so a review finished a
     # moment ago is refused; the write's condition below holds the same rule at the
     # moment of the write.
-    if _review_finished(_read_review_row(object_key).get("HITLStatus")):
+    #
+    # Claiming also needs a review to have been raised, or it would write Review In
+    # Progress onto a document nobody routed for review and list it as one. This is
+    # the rule the web UI offers Start Review by, and it holds for every caller,
+    # Admins included, like the finished check. The write's condition holds it too.
+    row = _read_review_row(object_key)
+    if _review_finished(row.get("HITLStatus")):
         logger.warning(f"Rejecting claim of finished review {object_key}")
         raise _review_finished_error("start")
+    if not _review_raised(row):
+        logger.warning(f"Rejecting claim of {object_key}: no review was raised")
+        raise _no_review_pending_error("start")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
     not_finished, finished_values = _not_finished_condition()
+    raised, raised_values = _review_raised_condition()
 
     # Conditional, so the claim is exclusive rather than advisory, and the condition
     # is the *only* ownership test here. A read-then-check before this write cannot
@@ -1087,7 +1134,7 @@ def claim_review(object_key, username="", user_email=""):
             UpdateExpression="SET HITLStatus = :status, HITLReviewOwner = :owner, HITLReviewOwnerEmail = :email",
             ConditionExpression=(
                 "(attribute_not_exists(HITLReviewOwner) OR HITLReviewOwner = :owner "
-                f"OR HITLReviewOwner = :empty) AND {not_finished}"
+                f"OR HITLReviewOwner = :empty) AND {not_finished} AND {raised}"
             ),
             ExpressionAttributeValues={
                 ":status": LegacyHitlStatus.IN_PROGRESS.value,
@@ -1095,6 +1142,7 @@ def claim_review(object_key, username="", user_email=""):
                 ":email": user_email,
                 ":empty": "",
                 **finished_values,
+                **raised_values,
             },
         )
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
@@ -1115,6 +1163,9 @@ def claim_review(object_key, username="", user_email=""):
                 f"Rejecting claim of a review finished during it {object_key}"
             )
             raise _review_finished_error("start") from None
+        if not _review_raised(current):
+            logger.warning(f"Rejecting claim of {object_key}: no review is raised now")
+            raise _no_review_pending_error("start") from None
         winner = current.get("HITLReviewOwner") or "another reviewer"
         logger.info(f"Claim race lost on {object_key}: already claimed by {winner}")
         raise ValueError(f"Document is already claimed by {winner}") from None
