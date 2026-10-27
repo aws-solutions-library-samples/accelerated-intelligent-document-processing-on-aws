@@ -31,7 +31,7 @@ from idp_common.config.configuration_manager import (
 from idp_common.config.constants import ACTIVE_POINTER_KEY, CONFIG_TYPE_CONFIG
 from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.config.migrations.v08_to_v09 import FLAT_KEYS
-from idp_common.config.models import IDPConfig
+from idp_common.config.models import CONFIG_FORMAT_VERSION, IDPConfig
 from idp_common.config.revisions import ConfigRevisionStore
 
 TABLE = "test-config-table"
@@ -1176,7 +1176,7 @@ class TestRevisionBodyFormat:
         body = manager.get_revision("p", 1)
 
         assert body is not None
-        assert body["config_format_version"] == "0.9"
+        assert body["config_format_version"] == CONFIG_FORMAT_VERSION
         assert not FLAT_KEYS & body["classification"].keys()
         assert body["classification"]["one_stage"]["llm"]["model"] == "MARKER-MODEL"
         assert body["classification"]["one_stage"]["llm"]["temperature"] == 0.25
@@ -1199,7 +1199,7 @@ class TestRevisionBodyFormat:
 
         for source, body in (("stored body", from_body), ("profile head", from_head)):
             assert body is not None, source
-            assert body["config_format_version"] == "0.9", source
+            assert body["config_format_version"] == CONFIG_FORMAT_VERSION, source
             assert not FLAT_KEYS & body["classification"].keys(), source
             assert "one_stage" in body["classification"], source
 

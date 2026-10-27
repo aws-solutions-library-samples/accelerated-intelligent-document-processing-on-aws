@@ -19,6 +19,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.config.models import CONFIG_FORMAT_VERSION
+
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("TRACKING_TABLE", "tracking")
 os.environ.setdefault("CONFIG_TABLE", "config")
@@ -60,7 +62,7 @@ def test_a_pinned_legacy_revision_is_captured_nested(module, monkeypatch):
     classification = captured["Config"]["classification"]
     assert "model" not in classification
     assert classification["one_stage"]["llm"]["model"] == "flat-model"
-    assert captured["Config"]["config_format_version"] == "0.9"
+    assert captured["Config"]["config_format_version"] == CONFIG_FORMAT_VERSION
     # The revision body the manager returned is not rewritten.
     assert stored == _flat_body()
 
@@ -93,7 +95,7 @@ def test_an_unstamped_body_is_captured_in_the_current_format(module):
 
     captured = module._capture_config("config-table", "lending")
 
-    assert captured["Config"]["config_format_version"] == "0.9"
+    assert captured["Config"]["config_format_version"] == CONFIG_FORMAT_VERSION
     assert captured["Config"]["notes"] == "x"
     # The stored item is not rewritten.
     assert item == {"Configuration": "Config#lending", "notes": "x"}
@@ -125,7 +127,10 @@ def test_an_unstamped_configuration_is_captured_the_same_way_either_route(
 
     manager = MagicMock()
     # What the manager now returns for an unstamped stored body: converted.
-    manager.get_revision.return_value = {**unstamped, "config_format_version": "0.9"}
+    manager.get_revision.return_value = {
+        **unstamped,
+        "config_format_version": CONFIG_FORMAT_VERSION,
+    }
     monkeypatch.setitem(
         sys.modules,
         "idp_common.config.configuration_manager",
@@ -133,7 +138,7 @@ def test_an_unstamped_configuration_is_captured_the_same_way_either_route(
     )
     from_revision = module._capture_config("config-table", "lending", 5)["Config"]
 
-    assert from_revision["config_format_version"] == "0.9"
+    assert from_revision["config_format_version"] == CONFIG_FORMAT_VERSION
     assert {k: v for k, v in from_head.items() if k != "Configuration"} == from_revision
 
 
@@ -155,7 +160,7 @@ def test_an_unstamped_revision_is_captured_in_the_current_format(module, monkeyp
 
     captured = module._capture_config("config-table", "lending", 5)["Config"]
 
-    assert captured["config_format_version"] == "0.9"
+    assert captured["config_format_version"] == CONFIG_FORMAT_VERSION
     assert captured["classification"]["one_stage"]["llm"]["model"] == "flat-model"
     assert "model" not in captured["classification"]
     # The body the manager returned is not rewritten.

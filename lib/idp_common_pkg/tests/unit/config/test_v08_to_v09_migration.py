@@ -250,7 +250,7 @@ class TestTheWholeChain:
 
     def test_the_chain_ends_at_the_current_format(self):
         out = migrate_config({"classification": {"model": "m"}})
-        assert out["config_format_version"] == CONFIG_FORMAT_VERSION == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
 
 
 # --------------------------------------------------------------------------

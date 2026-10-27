@@ -249,6 +249,7 @@ compared yet.
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). Also `bda_routing(manager, version, raise_errors, config_revision)`: whether a document under a profile goes down the BDA branch — `use_bda` is set **and** a BDA project is linked to the profile, an unpinned document taking the active profile. `use_bda` is read from the revision the document is pinned to, or from the profile head when it has none; an unreadable pinned revision falls back to the head, as the queue processor's routing does, unless `raise_errors` is set, when it raises. The queue processor's routing rule, stated once for the `processChanges` resolver, which refuses a section or page change to a BDA-mode document. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
+| `migrations/` | The `config_format_version` hop chain, applied by `migrate_config()` on every read. See [Config format migrations](#config-format-migrations). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
 | `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
@@ -804,6 +805,49 @@ Booleans, float `0.0` (e.g. `temperature`), positive defaults, and any non-defau
 detects a rollback (a stored `config_format_version` newer than the running
 code's) and returns SUCCESS rather than FAILED on a parse error, so the rollback
 completes instead of wedging — a genuine forward bad-config still fails loudly.
+
+## Config format migrations
+
+`migrations.migrate_config()` brings a stored configuration to
+`CONFIG_FORMAT_VERSION` (`models.py`) by applying one hop per format version in
+order. It runs on every read — the `IDPConfig` validator, a profile head, a pinned
+revision, a sparse delta before it is merged — and only in memory: a stored profile
+is rewritten on its next save, and a revision body never. Each hop is idempotent,
+returns its input unchanged once the configuration is stamped at its target or
+later, and never lowers a newer stamp, so a rollback leaves a newer record alone.
+
+The hops up to `v08_to_v09` move keys, and trigger on the presence of a legacy key
+as well as on the stamp, because a sparse delta merged onto current defaults can
+carry the current stamp and a legacy key at once. `v09_to_v010` changes a value
+rather than a shape, so it has no legacy key to detect and triggers on the stamp
+alone: in a configuration stamped older than `0.10`, or not stamped at all, it reads
+the error analyzer's `parameters.max_log_events: 5` (in `agents.error_analyzer` and
+`agents.chat_companion`) as `10`. That was the setting's default while the tools
+ignored it and applied 10, and its default is now 10, so the hop keeps the effective
+limit of every configuration saved before the change. A stored `5` that someone
+chose looks exactly like the untouched default, so it is read as `10` too; the
+user-facing note is under
+[Advanced parameters](../../../../docs/error-analyzer.md#advanced-parameters-config-file-only).
+
+⚠️ **A configuration being saved is not stored data.** An editor delta never carries
+a stamp, so read as stored data a `5` typed today would be saved as `10`.
+`handle_update_custom_configuration` (the editor, `idp-cli config-upload` and the
+SDK) therefore calls `migrate_config(..., unstamped_is_current=True)`. With it, an
+input that has no `config_format_version` key and carries no key an earlier hop
+relocates is taken to be current, so the value hop is skipped; any stamp, or any
+legacy key, sends the input through the whole chain as before. The legacy-key
+condition is what keeps a full download from v0.5, which predates the stamp and
+carries an `assessment` block, from keeping its old-default 5. Readers leave the
+flag off: an unstamped stored configuration was saved by v0.5 and holds the old
+default. `merge_config_with_defaults`, and so the stack's `CustomConfigPath` file
+and `idp-cli config-validate`, also leave it off, so an unstamped file is read
+there as older than 0.10. A new value hop needs the same consideration at every
+call site that migrates input rather than stored data.
+
+Changing a field's default is a format change whenever saved configurations store
+the old value and its meaning changes with the default. Profiles and revisions store
+a full snapshot, so they all hold the old default, and a hop is the only way to
+reach them.
 
 ## Region for the underlying clients
 

@@ -44,10 +44,13 @@ from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutErr
 from validation import validate_arguments
 
 from idp_common.api_adapter import (
+    ReportedServerError,
     ResourceAccessDenied,
     ResourceNotFound,
     _http_response,
+    internal_error_payload,
     normalize_event,
+    request_id_of,
 )
 
 logger = logging.getLogger()
@@ -505,6 +508,19 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
         # Client input errors -> 400.
         if err_type in ("ValueError", "KeyError"):
             raise ValueError(msg)
+        # A fault the resolver described for the caller -> 500, message kept.
+        if err_type == "ReportedServerError":
+            raise ReportedServerError(msg)
+        # Anything else is unexpected. Its text stays in the log, under the id of
+        # the resolver's own invocation so its log lines can be found; the caller
+        # gets a generic message (see the handler).
+        logger.error(
+            "Resolver %s failed with %s (invocation %s): %s",
+            function_arn,
+            err_type or "an unnamed error",
+            (resp.get("ResponseMetadata") or {}).get("RequestId", "unknown"),
+            msg,
+        )
         raise RuntimeError(msg)
     return data
 
@@ -652,10 +668,36 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         return _http_response(
             400, {"errors": [{"message": str(e), "errorType": "BadRequest"}]}
         )
-    except Exception as e:  # noqa: BLE001
-        logger.error("Dispatch error for %s: %s", field, e, exc_info=True)
-        return _http_response(
-            500, {"errors": [{"message": str(e), "errorType": "InternalError"}]}
+    except ReportedServerError as e:
+        # A resolver wrote this message for the caller; it is passed through.
+        request_id = request_id_of(context, event)
+        logger.error(
+            "Reported server error for %s (request %s): %s", field, request_id, e
         )
+        return _http_response(
+            500,
+            {
+                "errors": [
+                    {
+                        "message": str(e),
+                        "errorType": "InternalError",
+                        "requestId": request_id,
+                    }
+                ]
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        # Unexpected: the text is not written for a reader and can name internal
+        # resources (an AWS authorization message carries role and resource ARNs).
+        # It is logged in full under the request id the caller is given instead.
+        request_id = request_id_of(context, event)
+        logger.error(
+            "Dispatch error for %s (request %s): %s",
+            field,
+            request_id,
+            e,
+            exc_info=True,
+        )
+        return _http_response(500, internal_error_payload(request_id))
 
     return _http_response(200, result)

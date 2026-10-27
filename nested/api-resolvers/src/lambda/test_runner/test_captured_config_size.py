@@ -34,6 +34,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.config.models import CONFIG_FORMAT_VERSION
+
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("TRACKING_TABLE", "tracking")
 os.environ.setdefault("CONFIG_TABLE", "config")
@@ -380,7 +382,7 @@ class TestTheResultsResolverReadsBothStorageShapes:
             "Config": {
                 "notes": "x",
                 "extraction": {"temperature": 0.5},
-                "config_format_version": "0.9",
+                "config_format_version": CONFIG_FORMAT_VERSION,
             }
         }
 

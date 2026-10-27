@@ -285,7 +285,7 @@ agents:
     - AccessDenied
     - ThrottlingException
     parameters:
-      max_log_events: '5'
+      max_log_events: '10'
       time_range_hours_default: '24'
       max_log_message_length: '400'
       max_events_per_log_group: '5'
@@ -308,7 +308,7 @@ agents:
     - AccessDenied
     - ThrottlingException
     parameters:
-      max_log_events: '5'
+      max_log_events: '10'
       time_range_hours_default: '24'
       max_log_message_length: '400'
       max_events_per_log_group: '5'

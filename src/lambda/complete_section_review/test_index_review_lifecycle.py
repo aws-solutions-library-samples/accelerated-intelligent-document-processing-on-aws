@@ -1897,7 +1897,9 @@ def test_skip_all_skips_only_the_sections_nobody_has_reviewed(mod, table):
         ),
         patch.object(mod, "trigger_reprocessing") as reprocess,
     ):
-        mod.skip_all_sections_review(OBJECT_KEY, "admin", "admin@example.com")
+        mod.skip_all_sections_review(
+            OBJECT_KEY, "admin", "admin@example.com", is_admin=True
+        )
 
     stored = read_doc(table)
     assert sorted(stored["HITLSectionsSkipped"]) == ["sec-2", "sec-3", "sec-4"]
@@ -1927,7 +1929,7 @@ def skip_all_event(arguments):
 @pytest.mark.unit
 def test_skip_all_records_why_nobody_checked_the_document(mod, table):
     """The reason and note travel with the skip into the review history."""
-    put_doc(table, HITLPendingReview="true")
+    put_doc(table, HITLStatus="PendingReview", HITLPendingReview="true")
     document = FakeDocument([FakeSection("sec-1")])
     with (
         patch.object(
@@ -1965,7 +1967,7 @@ def test_skip_all_on_a_missing_document_raises(mod, table):
         mod, "create_document_service", return_value=FakeDocumentService(None)
     ):
         with pytest.raises(ValueError, match="not found"):
-            mod.skip_all_sections_review(OBJECT_KEY, "admin")
+            mod.skip_all_sections_review(OBJECT_KEY, "admin", is_admin=True)
 
 
 # --------------------------------------------------------------------------

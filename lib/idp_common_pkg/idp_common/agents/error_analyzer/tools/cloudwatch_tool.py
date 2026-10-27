@@ -38,22 +38,26 @@ logger = logging.getLogger(__name__)
 #: saved profile carrying a larger one must still load.
 MAX_HOURS_BACK = 168
 MAX_LOG_GROUPS = 50
+MAX_LOG_EVENTS = 50
 
 #: The processing span searched when the tracking record does not bound the run
 #: on both sides: the last half hour while it runs, or the half hour before completion.
 _DEFAULT_PROCESSING_SPAN = timedelta(minutes=30)
 
 
-def _resolve_max_log_events(requested: int, configured: int) -> int:
+def _resolve_max_log_events(requested: Optional[int], configured: int) -> int:
     """Return the per-group event count a search should use.
 
-    A requested count below 1 cannot be sent to CloudWatch Logs, whose
+    An omitted count (``None``) resolves to the configured
+    ``parameters.max_log_events``, clamped to the tools' advertised maximum. So
+    does a count below 1: CloudWatch Logs cannot be sent one, because the
     ``FilterLogEvents`` ``limit`` has a minimum of 1, and a rejected request reads
-    as "no events found". Such a value resolves to the configured
-    ``parameters.max_log_events``, which the configuration model holds above 0.
-    A count of 1 or more is used as given.
+    as "no events found". The configuration model holds the configured value above
+    0. A count of 1 or more is used as given.
     """
-    return requested if requested >= 1 else configured
+    if requested is not None and requested >= 1:
+        return requested
+    return min(configured, MAX_LOG_EVENTS)
 
 
 def _get_params() -> Dict[str, Any]:
@@ -82,7 +86,7 @@ def _get_params() -> Dict[str, Any]:
         )
         return {
             "lookback_hours": 24,
-            "max_log_events": 5,
+            "max_log_events": 10,
             "max_log_groups": 20,
             "max_log_message_length": 400,
             "settings_cache_ttl_seconds": 300,
@@ -99,7 +103,7 @@ def search_cloudwatch_logs(
     document_id: str = "",
     filter_pattern: str = "ERROR",
     hours_back: Optional[int] = None,
-    max_log_events: int = 10,
+    max_log_events: Optional[int] = None,
     max_log_groups: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
@@ -120,7 +124,8 @@ def search_cloudwatch_logs(
         hours_back: Hours to look back from now (default: the configured lookback_hours,
                    24 unless changed; max: 168). Only used for system-wide searches when
                    document_id is not provided. Omit it unless the user asked for a window.
-        max_log_events: Maximum error events to return per log group (default: 10, max: 50)
+        max_log_events: Maximum error events to return per log group (default: the
+                   configured max_log_events, 10 unless changed; max: 50)
         max_log_groups: Maximum log groups to search (default: the configured
                    max_log_groups, 20 unless changed; max: 50)
 
@@ -171,7 +176,7 @@ def search_cloudwatch_logs(
 def search_performance_issues(
     issue_type: str = "performance",
     hours_back: Optional[int] = None,
-    max_log_events: int = 10,
+    max_log_events: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Search CloudWatch logs for system performance and infrastructure issues.
@@ -191,7 +196,8 @@ def search_performance_issues(
                    "capacity" - Capacity and concurrency limits
         hours_back: Hours to look back from now (default: the configured lookback_hours,
                    24 unless changed; max: 168). Omit it unless the user asked for a window.
-        max_log_events: Maximum events to return per log group (default: 10, max: 50)
+        max_log_events: Maximum events to return per log group (default: the configured
+                   max_log_events, 10 unless changed; max: 50)
 
     Returns:
         Dict containing performance events, search metadata, and infrastructure context
