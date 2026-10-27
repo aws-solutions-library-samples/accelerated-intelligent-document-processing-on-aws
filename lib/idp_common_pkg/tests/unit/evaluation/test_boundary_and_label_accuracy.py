@@ -8,7 +8,7 @@ ground-truth one on **both** its page set and its class, so a wrong boundary and
 a wrong label are reported as the same failure. A report reading
 ``split_accuracy_without_order: 0.5`` cannot say whether the model is splitting
 the packet wrongly or naming the pieces wrongly, and those two call for
-different fixes — a different segmentation prompt, or a different labeling
+different fixes — a different boundary detection prompt, or a different labeling
 model.
 
 The decomposition is exact rather than an approximation, which is the property

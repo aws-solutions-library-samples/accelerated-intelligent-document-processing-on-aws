@@ -659,7 +659,10 @@ def test_a_flat_preset_is_migrated_before_it_is_merged(
     # one inferred from a single-pass prompt they do not use.
     stages = merged.classification.two_stage
     default_stages = default.classification.two_stage
-    assert stages.segmentation.llm.modality == default_stages.segmentation.llm.modality
+    assert (
+        stages.boundary_detection.llm.modality
+        == default_stages.boundary_detection.llm.modality
+    )
     assert (
         stages.section_classification.llm.modality
         == default_stages.section_classification.llm.modality

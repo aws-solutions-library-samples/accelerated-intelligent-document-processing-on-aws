@@ -1176,19 +1176,19 @@ def _two_stage(**overrides):
         "model": "us.amazon.nova-lite-v1:0",
         "task_prompt": "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}",
     }
-    segmentation = {
+    boundary_detection = {
         "model": "us.amazon.nova-lite-v1:0",
         "granularity": "page",
         "page": {"task_prompt": "boundaries {DOCUMENT_IMAGE}"},
     }
     section.update(overrides.pop("section", {}))
-    segmentation.update(overrides.pop("segmentation", {}))
+    boundary_detection.update(overrides.pop("boundary_detection", {}))
     return {
         "classification": {
             "strategy": "two_stage",
             "one_stage": overrides.pop("one_stage", {}),
             "two_stage": {
-                "segmentation": {"llm": segmentation},
+                "boundary_detection": {"llm": boundary_detection},
                 "section_classification": {"llm": section},
             },
         }
@@ -1227,22 +1227,22 @@ class TestNestedClassificationIsValidated:
             _validate_model_ids(config, result)
         assert result == {"valid": True, "errors": [], "warnings": []}
 
-    def test_a_segmentation_max_tokens_over_the_limit_is_caught(self):
-        config = _two_stage(segmentation={"max_tokens": 50000})
+    def test_a_boundary_detection_max_tokens_over_the_limit_is_caught(self):
+        config = _two_stage(boundary_detection={"max_tokens": 50000})
         result = {"valid": True, "errors": [], "warnings": []}
         _validate_max_tokens(config, result)
         assert result["valid"] is False
         assert result["errors"][0].startswith(
-            "classification.two_stage.segmentation.llm.max_tokens (50000)"
+            "classification.two_stage.boundary_detection.llm.max_tokens (50000)"
         )
 
-    def test_a_segmentation_prompt_with_no_content_placeholder_is_refused(self):
-        config = _two_stage(segmentation={"page": {"task_prompt": "no content"}})
+    def test_a_boundary_detection_prompt_with_no_content_placeholder_is_refused(self):
+        config = _two_stage(boundary_detection={"page": {"task_prompt": "no content"}})
         result = {"valid": True, "errors": [], "warnings": []}
         _validate_task_prompt_placeholders(config, result)
         assert result["valid"] is False
         assert result["errors"][0].startswith(
-            "classification.two_stage.segmentation.llm.page.task_prompt must include"
+            "classification.two_stage.boundary_detection.llm.page.task_prompt must include"
         )
 
     def test_the_one_stage_packet_prompt_is_the_one_checked_at_packet_granularity(
@@ -1303,7 +1303,7 @@ class TestValidateReportsTheClassificationConversion:
                 "classes": [],
             }
         )
-        assert any("one document per file" in w for w in result["warnings"])
+        assert any("one section per document" in w for w in result["warnings"])
 
     def test_a_nested_file_gets_no_conversion_notice(self):
         from idp_common.config.merge_utils import validate_config

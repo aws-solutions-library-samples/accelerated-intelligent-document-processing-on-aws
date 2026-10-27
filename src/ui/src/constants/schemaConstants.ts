@@ -349,7 +349,7 @@ export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
 /**
  * Class-level: replace the class's EFFECTIVE schema with a List-of-Class
  * wrapper, `{instances: {type: array, items: <the original class schema>}}`, so
- * a section holding several documents of this class extracts every one of them
+ * a section holding several records of this class extracts every one of them
  * instead of silently returning only the first.
  *
  * The counterpart to X_AWS_IDP_INSTANCE_ARRAY above and mutually exclusive with

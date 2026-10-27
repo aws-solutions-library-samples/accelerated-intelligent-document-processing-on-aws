@@ -30,7 +30,7 @@ axes:
       extraction.coercion.enabled: true
       extraction.validation.enabled: true
       extraction.validation.fail_action: escalate
-  # classification.file_shape.sectionSplitting. The ONE genuine cost increase that shipped
+  # classification.document_shape.sectionSplitting. The ONE genuine cost increase that shipped
   # on-by-default in v0.7: fixing #686 made `llm_determined` (the default) perform
   # real boundary detection for SINGLE-CLASS configs, which previously
   # short-circuited to one all-pages section with zero inference. So a multi-page
@@ -40,9 +40,9 @@ axes:
   # (bank_statement is one) and a MULTI-PAGE document — a single-page document has
   # nothing to split, so the call is skipped either way.
   section_splitting:
-    disabled:       {classification.file_shape.sectionSplitting: disabled}
-    page:           {classification.file_shape.sectionSplitting: page}
-    llm_determined: {classification.file_shape.sectionSplitting: llm_determined}
+    disabled:       {classification.document_shape.sectionSplitting: disabled}
+    page:           {classification.document_shape.sectionSplitting: page}
+    llm_determined: {classification.document_shape.sectionSplitting: llm_determined}
   # x-aws-idp-multi-instance on the document class (#715). Replaces the class's
   # EFFECTIVE schema with an instances[] List-of-Class wrapper, so a section that
   # holds several documents of the class extracts every one of them instead of

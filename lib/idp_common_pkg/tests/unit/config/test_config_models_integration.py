@@ -258,7 +258,7 @@ class TestConfigModelsIntegration:
         # coerced there.
         for call in (
             config.classification.one_stage.llm,
-            config.classification.two_stage.segmentation.llm,
+            config.classification.two_stage.boundary_detection.llm,
             config.classification.two_stage.section_classification.llm,
         ):
             assert call.temperature == 0.5

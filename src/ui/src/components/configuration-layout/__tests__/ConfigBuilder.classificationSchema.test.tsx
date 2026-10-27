@@ -8,7 +8,7 @@
  * it, and the panel shows only the calls the selected strategy makes. Those
  * gates are `showWhen` conditions resolved by a scope walk from several levels
  * down (`strategy` from inside `two_stage`, `method` from inside
- * `segmentation.llm`, `granularity` from inside a page group), so a typo in a
+ * `boundary_detection.llm`, `granularity` from inside a page group), so a typo in a
  * field name or a level the walk does not reach hides a block silently. These
  * tests read the real schema rather than a copy of it for that reason.
  *
@@ -76,23 +76,23 @@ describe('the shipped classification schema', () => {
   it('shows the one-stage block, and not the two-stage one, for single_pass', () => {
     renderClassification({ strategy: 'single_pass', one_stage: { granularity: 'page' } });
     expect(visible('One stage')).toBe(true);
-    expect(visible('Segmentation')).toBe(false);
+    expect(visible('Boundary detection')).toBe(false);
     expect(visible('Section classification')).toBe(false);
   });
 
   it('shows the one-stage block when no strategy is stored, which is the default', () => {
     renderClassification({});
     expect(visible('One stage')).toBe(true);
-    expect(visible('Segmentation')).toBe(false);
+    expect(visible('Boundary detection')).toBe(false);
   });
 
   it('shows both two-stage calls, and not the one-stage block, for two_stage', () => {
     renderClassification({
       strategy: 'two_stage',
-      two_stage: { segmentation: { method: 'llm' }, section_classification: { method: 'llm' } },
+      two_stage: { boundary_detection: { method: 'llm' }, section_classification: { method: 'llm' } },
     });
-    expect(visible('Segmentation')).toBe(true);
-    expect(visible('LLM segmentation')).toBe(true);
+    expect(visible('Boundary detection')).toBe(true);
+    expect(visible('LLM boundary detection')).toBe(true);
     expect(visible('LLM section classification')).toBe(true);
     expect(visible('One stage')).toBe(false);
   });
@@ -103,10 +103,10 @@ describe('the shipped classification schema', () => {
     expect(visible('Context pages')).toBe(false);
   });
 
-  it('gives section classification validation and confidence, and segmentation neither', () => {
+  it('gives section classification validation and confidence, and boundary detection neither', () => {
     renderClassification({
       strategy: 'two_stage',
-      two_stage: { segmentation: { method: 'llm', llm: {} }, section_classification: { method: 'llm', llm: {} } },
+      two_stage: { boundary_detection: { method: 'llm', llm: {} }, section_classification: { method: 'llm', llm: {} } },
     });
     // One "Class validation" and one "Class confidence" group: section classification's.
     expect(screen.getAllByText('Class validation')).toHaveLength(1);
@@ -116,10 +116,10 @@ describe('the shipped classification schema', () => {
   });
 
   it('shows Pages to classify only for a one-document file', () => {
-    const { unmount } = renderClassification({ file_shape: { sectionSplitting: 'llm_determined' } });
+    const { unmount } = renderClassification({ document_shape: { sectionSplitting: 'llm_determined' } });
     expect(visible('Pages to classify')).toBe(false);
     unmount();
-    renderClassification({ file_shape: { sectionSplitting: 'disabled' } });
+    renderClassification({ document_shape: { sectionSplitting: 'disabled' } });
     expect(visible('Pages to classify')).toBe(true);
   });
 

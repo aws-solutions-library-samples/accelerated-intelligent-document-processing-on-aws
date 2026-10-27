@@ -106,7 +106,7 @@ X_AWS_IDP_INSTANCE_ARRAY = "x-aws-idp-instance-array"
 #
 #     {"instances": {"type": "array", "items": <the original class schema>}}
 #
-# so a section holding several documents of this class extracts every one of them
+# so a section holding several records of this class extracts every one of them
 # instead of silently returning only the first (GitHub #715 / #565).
 #
 # This is "Synthesize mode", the counterpart to Designate mode above. It is a

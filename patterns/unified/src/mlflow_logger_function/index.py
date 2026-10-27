@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 import time
+
 import mlflow
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
@@ -106,13 +107,13 @@ def _classification_view(cls_cfg):
     """The classification settings that actually run, as one flat dict.
 
     Since config format 0.9 each classification setting lives inside the call
-    that uses it (``one_stage``, ``two_stage.segmentation.llm``,
+    that uses it (``one_stage``, ``two_stage.boundary_detection.llm``,
     ``two_stage.section_classification.llm``). The parameter names logged here
     stay the ones every earlier run carries — ``classification.model``,
     ``classification.temperature``, ``classification.modality.*`` — and describe
     the call that assigns the class under the active strategy, so a run before
     and after the change can be compared on one axis. A two-stage run also gets
-    ``segmentation`` (its boundary call's model and prompts).
+    ``boundary_detection`` (its boundary call's model and prompts).
 
     A dict with no nested blocks is returned as it is, so a flat config still
     logs what it holds.
@@ -123,13 +124,13 @@ def _classification_view(cls_cfg):
     view = {"strategy": cls_cfg.get("strategy")}
     if strategy == "two_stage":
         two_stage = _dict(cls_cfg.get("two_stage"))
-        seg = _dict(_dict(two_stage.get("segmentation")).get("llm"))
+        seg = _dict(_dict(two_stage.get("boundary_detection")).get("llm"))
         call = _dict(_dict(two_stage.get("section_classification")).get("llm"))
         granularity = seg.get("granularity") or "page"
         reader = _dict(seg.get("packet" if granularity == "packet" else "page"))
         view.update(call)
         view["granularity"] = granularity
-        view["segmentation"] = {
+        view["boundary_detection"] = {
             "model": seg.get("model"),
             "system_prompt": reader.get("system_prompt"),
             "task_prompt": reader.get("task_prompt"),
@@ -243,16 +244,18 @@ def _extract_config_params(config):
             value = cls_view.get(key)
             if value:
                 params[param] = str(value)
-        segmentation = cls_view.get("segmentation")
-        if isinstance(segmentation, dict):
+        boundary_detection = cls_view.get("boundary_detection")
+        if isinstance(boundary_detection, dict):
             # Two-stage boundary call: its own model, so its own parameter.
-            model = segmentation.get("model")
+            model = boundary_detection.get("model")
             if model:
-                params["classification.segmentation.model"] = str(model)
+                params["classification.boundary_detection.model"] = str(model)
             for prompt_key in ("system_prompt", "task_prompt"):
-                prompt_val = segmentation.get(prompt_key)
+                prompt_val = boundary_detection.get(prompt_key)
                 if prompt_val:
-                    prompts[f"classification.segmentation.{prompt_key}"] = prompt_val
+                    prompts[f"classification.boundary_detection.{prompt_key}"] = (
+                        prompt_val
+                    )
         modality = cls_view.get("modality")
         if isinstance(modality, dict):
             for flag in ("text", "images"):

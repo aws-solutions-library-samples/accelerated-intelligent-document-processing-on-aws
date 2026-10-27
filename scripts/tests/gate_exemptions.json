@@ -3217,7 +3217,7 @@
     "scripts/tests/test_classification_flat_keys_ui_parity.py::_NON_FINITE_PAGE_LIMITS": {
       "kind": "enforced-universe",
       "memberKind": "a non-finite float spelling of maxPagesForClassification",
-      "turnsOff": "nothing. It is the universe the two parametrised tests beside it are driven over, so a member being in it is what makes that member asserted about rather than what excuses it. Both tests require the value to be ANSWERED rather than to raise -- _is_page_limit truncates, and int(inf) raises OverflowError while int(nan) raises ValueError -- and the second requires FileShapeConfig to normalise the same value to 'ALL', so the two predicates are pinned to agree about it.",
+      "turnsOff": "nothing. It is the universe the two parametrised tests beside it are driven over, so a member being in it is what makes that member asserted about rather than what excuses it. Both tests require the value to be ANSWERED rather than to raise -- _is_page_limit truncates, and int(inf) raises OverflowError while int(nan) raises ValueError -- and the second requires DocumentShapeConfig to normalise the same value to 'ALL', so the two predicates are pinned to agree about it.",
       "premise": [
         "JUDGEMENT"
       ],

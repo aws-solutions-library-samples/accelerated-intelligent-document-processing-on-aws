@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState } from 'react';
 import {
+  Alert,
   Modal,
   Box,
   SpaceBetween,
@@ -45,6 +46,8 @@ interface DocumentPickerModalProps {
   onCustomDateRange?: (() => void) | null;
   loading?: boolean;
   onRefresh?: (() => void) | null;
+  /** Said above the table when the list offered is a sample rather than every document. */
+  samplingNote?: string | null;
 }
 
 // Time period configuration (matching main Document List)
@@ -167,6 +170,7 @@ const DocumentPickerModal = ({
   onCustomDateRange = null,
   loading = false,
   onRefresh = null,
+  samplingNote = null,
 }: DocumentPickerModalProps) => {
   const [preferences, _setPreferences] = useState({
     pageSize: 10,
@@ -279,6 +283,7 @@ const DocumentPickerModal = ({
       }
     >
       <SpaceBetween size="m">
+        {samplingNote && <Alert type="info">{samplingNote}</Alert>}
         <Box>
           Select documents to automatically populate token usage values from their metering data. You can select multiple documents - if
           multiple documents have the same document class, the last selected will be used.

@@ -29,7 +29,7 @@ describe('classificationModelOf', () => {
   const cls = {
     one_stage: { llm: { model: 'one-stage-model' } },
     two_stage: {
-      segmentation: { llm: { model: 'boundary-model' } },
+      boundary_detection: { llm: { model: 'boundary-model' } },
       section_classification: { llm: { model: 'section-model' } },
     },
   };
@@ -46,14 +46,14 @@ describe('classificationModelOf', () => {
 });
 
 describe('setClassificationModel', () => {
-  it('writes the class-assigning call and leaves segmentation alone', () => {
+  it('writes the class-assigning call and leaves boundary detection alone', () => {
     const cls: Record<string, unknown> = {
       strategy: 'two_stage',
-      two_stage: { segmentation: { llm: { model: 'boundary-model' } } },
+      two_stage: { boundary_detection: { llm: { model: 'boundary-model' } } },
     };
     setClassificationModel(cls, 'arn:custom');
     expect(classificationModelOf(cls)).toBe('arn:custom');
-    expect((cls.two_stage as { segmentation: { llm: { model: string } } }).segmentation.llm.model).toBe('boundary-model');
+    expect((cls.two_stage as { boundary_detection: { llm: { model: string } } }).boundary_detection.llm.model).toBe('boundary-model');
     expect(cls).not.toHaveProperty('model');
   });
 
@@ -134,7 +134,7 @@ describe('isPageLimit, through pageLimitBecomesOneDocument', () => {
 describe('unknownSectionSplittingIn', () => {
   it('names a value the backend will refuse', () => {
     expect(unknownSectionSplittingIn({ classification: { sectionSplitting: 'bogus' } })).toBe('bogus');
-    expect(unknownSectionSplittingIn({ classification: { file_shape: { sectionSplitting: 'Bogus' } } })).toBe('Bogus');
+    expect(unknownSectionSplittingIn({ classification: { document_shape: { sectionSplitting: 'Bogus' } } })).toBe('Bogus');
   });
 
   it('renders a malformed nesting readably rather than as [object Object]', () => {
@@ -143,13 +143,13 @@ describe('unknownSectionSplittingIn', () => {
 
   it('prefers the flat key, which is the one the migration keeps', () => {
     // `v08_to_v09.py`: in a hybrid the flat key wins, and `_put` overwrites
-    // `file_shape.sectionSplitting` with it. Warning about the nested value would
+    // `document_shape.sectionSplitting` with it. Warning about the nested value would
     // name one the migration discards.
-    expect(unknownSectionSplittingIn({ classification: { sectionSplitting: 'pages', file_shape: { sectionSplitting: 'page' } } })).toBe(
+    expect(unknownSectionSplittingIn({ classification: { sectionSplitting: 'pages', document_shape: { sectionSplitting: 'page' } } })).toBe(
       'pages',
     );
     expect(
-      unknownSectionSplittingIn({ classification: { sectionSplitting: 'page', file_shape: { sectionSplitting: 'pages' } } }),
+      unknownSectionSplittingIn({ classification: { sectionSplitting: 'page', document_shape: { sectionSplitting: 'pages' } } }),
     ).toBeNull();
   });
 

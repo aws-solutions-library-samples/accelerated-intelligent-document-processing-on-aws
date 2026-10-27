@@ -167,7 +167,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the one-stage and two-stage calls, `file_shape` |
+| `base-classification.yaml` | classification: strategy, the one-stage and two-stage calls, `document_shape` |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -538,7 +538,7 @@ classification:
 `classification.strategy: two_stage` it is a different one.** The two-stage
 equivalent is `classification.two_stage.section_classification.llm.confidence`,
 and the `one_stage` block above is not read at all — editing it under two stage
-changes nothing and raises no error. Segmentation has no confidence block,
+changes nothing and raises no error. Boundary detection has no confidence block,
 because it assigns no class. See [Classification
 Configuration](#classification-configuration).
 
@@ -1097,7 +1097,7 @@ right, check its threshold first.
 classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     x-aws-idp-document-type: "Invoice"
-    x-aws-idp-evaluation-match-threshold: 0.8  # Document-level threshold
+    x-aws-idp-evaluation-match-threshold: 0.8  # Class-level threshold
     properties:
       invoice_number:
         type: string
@@ -1146,8 +1146,8 @@ the first thing to settle is which calls you are making. That is
 
 | `classification.strategy` | Web UI label | Calls it makes |
 |---|---|---|
-| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the boundaries and the classes together |
-| `two_stage` | **Two stage** | A *segmentation* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
+| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the section boundaries and the classes together |
+| `two_stage` | **Two stage** | A *boundary detection* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
 
 *One stage* and *Two stage* are the labels the configuration editor's form view
 shows. The stored value is `single_pass` or `two_stage` — write that in the
@@ -1188,7 +1188,7 @@ classification:
       confidence: {mode: topk, top_k_candidates: "3"}
 
   two_stage:                       # read only under strategy: two_stage
-    segmentation:
+    boundary_detection:
       method: llm
       llm:
         granularity: page          # this call's own granularity
@@ -1208,7 +1208,7 @@ classification:
         task_prompt: ...
         # ...plus validation and confidence, as above
 
-  file_shape:                      # applies under both strategies
+  document_shape:                  # applies under both strategies
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
 ```
@@ -1218,7 +1218,7 @@ Four notes on reading that:
 - **Only the active strategy's block is read.** A setting written in the inactive
   one validates, saves and does nothing. This is also why `granularity` appears
   twice: `one_stage.granularity` is the one in force under `single_pass`, and
-  `two_stage.segmentation.llm.granularity` under `two_stage`.
+  `two_stage.boundary_detection.llm.granularity` under `two_stage`.
 - **`reasoning_effort` and `model_lambda_hook_arn` are per call**, in each
   `llm` block, like the model and its parameters. Neither appears in
   `base-classification.yaml`, so classification runs them at their field
@@ -1249,29 +1249,29 @@ rationale is
 
 ## Section Splitting Strategies
 
-Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.file_shape.sectionSplitting` configuration field, and applies identically under both strategies:
+Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.document_shape.sectionSplitting` configuration field, and applies identically under both strategies:
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire file as a single section. At **either**
+- **`disabled`**: Treats the entire document as a single section. At **either**
   granularity its class comes from a page-weighted vote across the segments that
   were detected — each segment casts one vote per page it covers — counting only
   segments carrying a class the configuration defines. A tie goes to the earliest
   segment carrying a tied class, and the first segment's class is used only when
   no segment carries a configured class at all. Simplest approach for
-  single-document processing.
+  documents that are not packets.
   
-- **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
+- **`page`**: Creates one section per page, preventing automatic joining of same-class pages into one section. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   
 - **`llm_determined`** (default): Uses whatever boundary signal the active call
   produces — a per-page `start`/`continue` verdict at page granularity, and a
   `segments` array of page ranges at packet granularity or from two-stage
-  segmentation. Best for complex scenarios where document boundaries are not
+  boundary detection. Best for complex scenarios where section boundaries are not
   obvious.
 
 ⚠️ **`disabled` and `page` are assertions, not preferences.** They replace
-boundary detection with a claim about the file rather than nudging the model, and
-nothing downstream recovers if the claim is wrong: a packet of eight documents
+boundary detection with a claim about the document rather than nudging the model, and
+nothing downstream recovers if the claim is wrong: a packet of eight forms
 declared `disabled` becomes one section with one extraction over all of it. They
 are also the only two values that let a single-class configuration, or a
 document-name regex match, skip the model call entirely — under `llm_determined`
@@ -1283,38 +1283,38 @@ not. See
 
 ```yaml
 classification:
-  file_shape:
+  document_shape:
     sectionSplitting: page  # or "disabled", "llm_determined"
 ```
 
 ### Use Cases
 
-- **Single Document Processing**: Use `disabled` for simplicity
+- **Single-Section Documents**: Use `disabled` for simplicity
 - **Multiple Same-Type Forms**: Use `page` for deterministic splitting (resolves Issue #146)
-- **Complex Multi-Document Packets**: Use `llm_determined` for intelligent boundary detection
+- **Complex Packets**: Use `llm_determined` for intelligent section boundary detection
 
 For more details on the classification strategies, the two granularities and section splitting, see [classification.md](classification.md).
 
 ### Page Limit Configuration
 
-For a file you know is one document, classify only its first pages:
+For a document you know is one section, classify only its first pages:
 
 ```yaml
 classification:
-  file_shape:
-    sectionSplitting: disabled          # one document per file
+  document_shape:
+    sectionSplitting: disabled          # one section per document
     maxPagesForClassification: "3"      # "ALL" (default) or "1", "2", "3", "5", "10"
 ```
 
 **Behavior:**
 - **"ALL"** (default): Uses all pages for classification
 - **Numeric value**: Classifies only the first N pages, then applies their
-  majority class to every page of the file as one section
+  majority class to every page of the document as one section
 
 The limit applies only with `sectionSplitting: disabled`. With boundary detection
 on it is ignored, with a warning in the classification log: a limit there would
-collapse only files longer than N while sectioning shorter ones normally, so the
-same setting would give different answers for different files in one run.
+collapse only documents longer than N while sectioning shorter ones normally, so the
+same setting would give different answers for different documents in one run.
 
 **Use Cases:**
 - Performance optimization for large documents
@@ -1323,7 +1323,7 @@ same setting would give different answers for different files in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `single_pass` it offers *Classification: one stage*, and under `two_stage` it offers *Classification: segmentation* and *Classification: section classification* instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `single_pass` it offers *Classification: one stage*, and under `two_stage` it offers *Classification: boundary detection* and *Classification: section classification* instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 
@@ -1947,7 +1947,7 @@ engage *earlier* than the table says, never later.
 
 This also reaches stages other than extraction. Classification at packet
 granularity (`classification.one_stage.granularity: packet`, or
-`classification.two_stage.segmentation.llm.granularity: packet`) sends up to
+`classification.two_stage.boundary_detection.llm.granularity: packet`) sends up to
 `window_pages` pages per request, so the downscale is reached only when that
 setting is raised above 20 or set to `0`, which never windows and sends the whole
 packet in one request. At the shipped `window_pages: 20` a packet is split into

@@ -43,7 +43,7 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 |---|---|---|
 | **How it works** | One Bedrock inference returns the structured result | Strands agent with a structured-output tool; can shard large sections, validate against the schema, and self-correct |
 | **Pros** | Cheapest & fastest; fewest moving parts; works with every model incl. OpenAI GPT-5.x | Highest accuracy on complex/nested schemas; guaranteed schema compliance; deterministic **table parsing** for big tables; **sharding** for long docs; model **escalation** on validation failure |
-| **Cons** | No built-in validation/retry; a single huge document must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
+| **Cons** | No built-in validation/retry; a single huge section must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
 | **Choose when** | Most documents; small–medium size; simple/flat schemas; lowest cost matters | Complex/nested schemas, strict validation needs, **large documents or big multi-row tables**, business-critical accuracy |
 
 > **Rule of thumb:** start Simple. Move to Advanced when you hit nested-schema accuracy limits, need schema-format validation, or the document is large enough that one inference can't hold it (long tables, 20+ dense pages).
@@ -62,7 +62,7 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 
 > **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips — for scalar-only classes; a list-bearing class is scored separately regardless (see the warning below). A field whose top guess comes back with no usable probability is scored 0.0, so it still raises a confidence alert, and its `confidence_reason` in `result.json` says the 0.0 is a stand-in rather than the model's confidence. The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
 
-> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per document, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
+> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per section, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
 
 > **Large lists & truncation are handled on every path.** Whichever combination you pick, long list fields are assessed in sequential batches (`list_batch_size`), and if the confidence model truncates a batch at its output-token ceiling the batch is **recursively split until it fits** — so you get complete per-cell coverage without tuning. See [Large-list batching](#large-list-batching-list_batch_size). For documents that are large because of a *very large single section* (not just a long list), prefer **Advanced sharding** — see [Large-Document Guidance](#8-large-document-guidance).
 
@@ -339,9 +339,9 @@ way, so the agent can always ask for the schema again mid-run.
 > So the reason to use this knob is **shard headroom**, not cost. Since
 > [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775)
 > the pipeline subtracts the measured prompt overhead (system prompt, rendered schema,
-> few-shot text, tool schema, this restatement) when it decides how to split a
-> document, where before the schema text was not counted at all — so the reclaimed
-> tokens are real budget. Whether the freed headroom changes a given document's shard
+> few-shot text, tool schema, this restatement) when it decides how to shard a
+> section, where before the schema text was not counted at all — so the reclaimed
+> tokens are real budget. Whether the freed headroom changes a given section's shard
 > count depends on it sitting near a boundary, and the page ceiling still closes shards
 > regardless.
 
@@ -706,7 +706,7 @@ extraction stub is authoritative). See the demo at
 
 ---
 
-## 2b. Output Correctness: Coercion, Validation & Multi-Document Sections
+## 2b. Output Correctness: Coercion, Validation & Multi-Instance Sections
 
 Three things happen to an extraction result after the model returns it and before
 it is stored. All are configurable under **Configuration → Extraction** in the Web
@@ -878,6 +878,12 @@ outcome is
 [`extraction.row_shortfall_action`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
 which fails the Step Functions execution.
 
+The document editor's **Processing report** dialog shows the validation outcome for a
+section beside the rest of its report. The report names the extraction modes
+**Standard** (Simple on this page) and **Agentic** (Advanced):
+
+![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
+
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
@@ -967,16 +973,16 @@ request, not from the indentation added for readability.
 instead of falling back. That loses data by design and exists only to measure how
 often forcing is actually honored; leave it on in production.
 
-### Multi-document sections (`instance_count`)
+### Several records in one section (`instance_count`)
 
-Classification splits sections by document *type*. When a packet concatenates
+Classification splits a document into sections by *class*. When a packet concatenates
 several records of the **same** type with no separator, there is no type change to
 split on, so they land in one section — and extraction, whose class schema
-describes one document, may return only the first record.
+describes one record, may return only the first record.
 
 Each section now reports an **instance count**. In the Sections panel it is shown
 only when there is something to say — a badge beside the section's class when the
-count exceeds 1, hoverable for detail. A normal single-document section shows just
+count exceeds 1, hoverable for detail. A normal single-instance section shows just
 its class name; so does a section whose count was never determined (older
 documents, or extraction that failed before producing a result). The raw value is
 on the API as `Section.InstanceCount` either way.
@@ -988,7 +994,7 @@ array, one element per record), name that array so the count can be derived:
 classes:
   - $id: patient_packet
     type: object
-    x-aws-idp-instance-array: records   # each element is one document
+    x-aws-idp-instance-array: records   # each element is one record
     properties:
       records:
         type: array
@@ -1001,21 +1007,21 @@ classes:
 This changes nothing about extraction output — it only tells the pipeline which
 existing array is the instance axis — so it is safe to add to a working config.
 
-If the model returns a JSON **array** for a single-document schema, every record is
+If the model returns a JSON **array** for a single-record schema, every record is
 now preserved (the first becomes the section result, the rest are recorded in
 `metadata.recovered_instances`) and the section is flagged for review rather than
 failed.
 
 #### The silent case, and the warning that catches it
 
-The hard case is the model returning a **single object** for a several-document
+The hard case is the model returning a **single object** for a several-record
 section. Only that one record exists in the response, so nothing can recover the
 others — and until recently nothing reported it either: the section was `SUCCESS`,
 the document `COMPLETED`, `ProcessingIssueCount` was `0`, and the instance count
 was `1`. One record out of three, silently.
 
 Extraction now asks the model, in the **same inference**, how many separate
-documents of the class the supplied pages contain. When that answer exceeds the
+records (instances) of the class the supplied pages contain. When that answer exceeds the
 number of records in the result, the section raises
 `extraction_multi_instance_suspected` (severity **warning**) naming both numbers,
 reports the model's count as the section's instance count, and emits a
@@ -1033,7 +1039,7 @@ The question is editable, like every other prompt in the system — it is sent a
 description of the auxiliary property. **Two clauses are load-bearing** and should
 survive any edit: *"do not count pages, sections or repeated headers"* (without it,
 a document carrying an identical banner on each of four pages reads as four
-documents) and *"DIAGNOSTIC METADATA, not extracted document data"* (so the model
+records) and *"DIAGNOSTIC METADATA, not extracted document data"* (so the model
 does not treat the field as something to extract from the page).
 
 - **Detection only.** It never changes the extracted data, never fails a section,
@@ -1057,7 +1063,7 @@ does not treat the field as something to extract from the page).
   in either arm**. `BANK_CHECK`'s schema is a single `checks` array, so the class
   already models several checks per sheet and nothing was collapsing. What detection
   correctly spotted is that the class never declares its instance axis, so the
-  section reports 1 instance for a sheet holding 6 documents — fixed for free with
+  section reports 1 instance for a sheet holding 6 checks — fixed for free with
   `x-aws-idp-instance-array: checks`, no schema change and no baseline migration.
 
   The distinction matters, because "probe says 6, section says 1" **cannot by itself
@@ -1116,8 +1122,8 @@ you do not degrade a single-record schema by hand.
 In the web UI both modes are one control, under **Configuration → Document
 Schema →** the class:
 
-> **Documents per section**
-> - ( ) One document — *the normal case; nothing changes*
+> **Records per section**
+> - ( ) One record — *the normal case; nothing changes*
 > - ( ) Several — this class already lists them → **Record array:** `records ▾`
 > - ( ) Several — wrap my single-record class → `instances[ ] → <Class> → { … }`
 
@@ -1127,7 +1133,7 @@ branch, and the shape preview and the baseline-migration warning appear only in 
 last one.
 
 **Opt-in per class, never automatic.** Auto-detecting the shape would make every
-single-document section pay for an extra nesting level and would move the
+single-instance section pay for an extra nesting level and would move the
 detection problem one stage later. Nothing changes for a class that does not set
 the flag.
 
@@ -1138,7 +1144,7 @@ Two things that used to be gaps are now closed:
   asked for a diagnostic count (the same question as the #753 probe, "count
   documents, not pages") and the job carries a suggestion: the job details page
   shows *"This sample appears to contain N 'X' records"* with a one-click
-  **Enable several documents per section** action, the alternative (section
+  **Enable several records per section** action, the alternative (section
   splitting) named alongside so the ambiguity is your call. The class setting is
   never changed silently, because the shape change invalidates baselines
   (GitHub #765). See [Discovery](discovery.md#samples-that-hold-several-records-of-one-class).
@@ -1163,7 +1169,7 @@ confidence, Hungarian record matching in evaluation, and a per-attribute (rather
 than one-giant-attribute) evaluation report.
 
 > **An internal list is not a reason to avoid this.** An invoice class with
-> `line_items[]` is a *single-instance* document with an internal list.
+> `line_items[]` is a *single-instance* class with an internal list.
 > `x-aws-idp-multi-instance: true` on it is correct and gives
 > `instances[i].line_items[j]` — three invoices in one section. Configuration
 > validation only *warns* when a class's top level is nothing but one record
@@ -1215,7 +1221,7 @@ lists every document it touched so that work is visible.
 |---|---|
 | Confidence | keyed `instances[i].Field`; each record scored independently |
 | HITL review | alert labels become `instances[i].Field` — correct, but review task labels change |
-| Reporting / Athena | **one row per document**, not per section, with a new `record_index` column. Existing column names are unchanged, so existing queries keep working — but `(document_id, section_id)` is no longer unique |
+| Reporting / Athena | **one row per record (instance)**, not per section, with a new `record_index` column. Existing column names are unchanged, so existing queries keep working — but `(document_id, section_id)` is no longer unique |
 | Analytics agent | told about `record_index` for flagged classes |
 | Z3 rules | address a record explicitly: `…inference_result.instances[0].NetPay`. A rule whose path no longer resolves logs what to write instead — a miss otherwise reads as "optional parameter absent" and the rule quietly stops firing |
 | Public SDK | `fields` is unchanged (the raw shape), plus a new `instances` list; `confidence` now walks lists and groups |
@@ -1325,7 +1331,7 @@ Defaults to enabled when the property is missing.
 Confidence does not have to run as a separate downstream step:
 
 - **`separate` on the agentic path** runs a second inference **inside each extraction shard** (over that shard's pages and extracted values) and collates on merge — per-field, page-ordered for list items, first-shard-wins for scalars — then grounds once in OCR geometry over the whole section. This reuses the *same* `AssessmentService.assess_results` core and `ground_assessment_geometry` the standalone step uses, so the `explainability_info` output is identical; only the execution location differs. A single post-merge assessment would re-introduce exactly the context-window pressure sharding removes, hence per-shard.
-- **`integrated` on the simple path** is a true single inference: one Bedrock call returns values **and** confidence together. The prompt asks for a `{"extraction": {...}, "confidence": {...}}` envelope; the service splits that (values → `inference_result`, confidence → `explainability_info` after threshold-enrichment + OCR grounding), so the standalone Assessment step auto-skips (the single-inference cost win). For robustness the split also recognizes a `field_assessment` (or `confidence`) **sibling** key placed next to the extracted fields — a shape some models emit — and lifts it the same way (and strips it from `inference_result` so it never leaks). Only a genuinely flat response with no recognizable confidence falls back to the standalone step. Best for **smaller documents** where the whole doc fits one inference; for large docs prefer agentic or `separate`. Any list rows the single inference leaves unscored are retried (missing rows only, bounded) so large-list coverage still reaches 100%.
+- **`integrated` on the simple path** is a true single inference: one Bedrock call returns values **and** confidence together. The prompt asks for a `{"extraction": {...}, "confidence": {...}}` envelope; the service splits that (values → `inference_result`, confidence → `explainability_info` after threshold-enrichment + OCR grounding), so the standalone Assessment step auto-skips (the single-inference cost win). For robustness the split also recognizes a `field_assessment` (or `confidence`) **sibling** key placed next to the extracted fields — a shape some models emit — and lifts it the same way (and strips it from `inference_result` so it never leaks). Only a genuinely flat response with no recognizable confidence falls back to the standalone step. Best for **smaller documents** where the whole section fits one inference; for large docs prefer agentic or `separate`. Any list rows the single inference leaves unscored are retried (missing rows only, bounded) so large-list coverage still reaches 100%.
 - **`integrated` on the agentic path** produces confidence within the agent's turn. Because extraction is delivered through a tool call, a hidden experimental setting `extraction.agentic.integrated_confidence_strategy` controls how confidence is produced. It is **deliberately not exposed in the config UI**; set it via `idp-cli config-upload` on a throwaway config version to A/B the trade-off. Both values yield identical `explainability_info`:
   - **`two_step`** *(default)*: the agent extracts, then calls `provide_field_assessment` in a **follow-up inference** — a dedicated reflection pass over finalized values (often better-calibrated). ~3 inferences: extract → assess → close.
   - **`single_shot`**: the agent emits values **and** per-field confidence in **one combined tool call**, saving the middle inference. ~2 inferences. Multi-step (patched) extractions may still call `provide_field_assessment` once at the end so every row is assessed (unassessed rows padded with neutral `confidence: null`).
@@ -1347,7 +1353,7 @@ The confidence prompts support the following placeholders:
 | `{DOCUMENT_CLASS}` | The classified document type |
 | `{EXTRACTION_RESULTS}` | JSON string of extraction results to assess |
 | `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` | Formatted list of attribute names and descriptions |
-| `{DOCUMENT_TEXT}` | Full document text (markdown) from OCR |
+| `{DOCUMENT_TEXT}` | OCR text (markdown) of the section's pages |
 | `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (80-90% token reduction) |
 | `{DOCUMENT_IMAGE}` | **Optional** — inserts document images at the specified position (see [Image Placement](#7-image-placement-cachepoint-output-formats--few-shot)) |
 
@@ -1501,7 +1507,7 @@ extraction:
 >
 >    The known trigger is a **multi-instance class**
 >    (`x-aws-idp-multi-instance: true`): the wrapper makes the *instance* array the
->    outer list, so one "row" is a whole document instance carrying its own long
+>    outer list, so one "row" is a whole instance (record) carrying its own long
 >    inner list (e.g. a 100-row `Transactions` table). The batch sizer counts such
 >    an instance by every leaf it emits, inner rows included, so the first pass is
 >    sized for it; but no batch is smaller than one instance, so ⚠️ **an instance
@@ -1669,6 +1675,8 @@ extraction:
 > `llm`. Old configs are migrated on read.
 
 ### What the viewers show
+
+![Document editor for a payslip: the Gross Pay value outlined on the page image, with each field's confidence and threshold in the Visual Editor](../images/extraction-document-editor-bounding-box.png)
 
 Wherever extracted fields are displayed — the document viewer, the human-review
 editor, Test Studio's ground-truth editor and the evaluation-correction table —

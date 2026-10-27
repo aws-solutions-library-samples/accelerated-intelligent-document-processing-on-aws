@@ -129,7 +129,7 @@ harness — verify they still hold when the schema evolves:
   disables summarization (unscored; its default model hits the temperature bug).
 - **`compat/native_upload.py`** writes configs verbatim (bypasses idp-cli migration).
 - **Classification back-compat copy (`compat/classification_flat.py`).** Config format
-  0.9 nests classification by model call (`one_stage.*`, `two_stage.*`, `file_shape.*`,
+  0.9 nests classification by model call (`one_stage.*`, `two_stage.*`, `document_shape.*`,
   `strategy`, `fallback_class`). A release that predates it (v0.6.12 reads format 0.7:
   flat keys plus `classificationMethod`) drops those blocks without an error and runs
   classification on its code defaults — a `split-disabled` cell would run
