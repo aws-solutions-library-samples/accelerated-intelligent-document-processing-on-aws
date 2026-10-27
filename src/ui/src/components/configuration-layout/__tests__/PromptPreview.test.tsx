@@ -738,7 +738,7 @@ describe('resolveClassificationStepPrompt', () => {
       },
     },
     two_stage: {
-      segmentation: {
+      boundary_detection: {
         llm: {
           model: 'boundary-model',
           granularity: 'packet',
@@ -773,8 +773,8 @@ describe('resolveClassificationStepPrompt', () => {
     expect(out.task_prompt).toContain('per segment, top 3');
   });
 
-  it('segmentation reads its own granularity and model, and asks for no confidence', () => {
-    const out = resolveClassificationStepPrompt(cls, 'classification_segmentation', 5);
+  it('boundary detection reads its own granularity and model, and asks for no confidence', () => {
+    const out = resolveClassificationStepPrompt(cls, 'classification_boundary_detection', 5);
     expect(out.model).toBe('boundary-model');
     expect(out.system_prompt).toBe('SEG SYS');
     expect(out.task_prompt).toBe('SEG PACKET {DOCUMENT_TEXT}');
@@ -794,8 +794,8 @@ describe('resolveClassificationStepPrompt', () => {
  *
  * This is the UI half of a guarantee whose Python half is enforced in
  * `lib/idp_common_pkg/tests/unit/classification/test_two_stage.py`: a two-stage
- * segmentation call carries no class vocabulary and no examples, and
- * `{BOUNDARY_HINTS}` is rendered for segmentation and nowhere else. The preview
+ * boundary detection call carries no class vocabulary and no examples, and
+ * `{BOUNDARY_HINTS}` is rendered for boundary detection and nowhere else. The preview
  * restates those rules, so it can disagree with the service — and the preview
  * is where an operator writing a custom prompt would discover the rule, so a
  * preview promising content the call will not send is worse than no preview.
@@ -842,15 +842,15 @@ describe('PromptPreview placeholder scoping by step', () => {
         // `class_names` on purpose: with `none` the hints block is empty for
         // every step and the single-pass assertion below would hold whether or
         // not the preview scopes it.
-        segmentation: { llm: { granularity: 'page', boundary_hints: 'class_names', page: PROMPTS, ...OFF } },
+        boundary_detection: { llm: { granularity: 'page', boundary_hints: 'class_names', page: PROMPTS, ...OFF } },
         section_classification: { llm: { ...PROMPTS, ...OFF } },
       },
     },
   });
 
-  it('a segmentation step previews no class vocabulary and no examples', async () => {
+  it('a boundary detection step previews no class vocabulary and no examples', async () => {
     render(<PromptPreview formValues={configFor('two_stage')} />);
-    await showStep('Classification: segmentation \\(Two stage\\)');
+    await showStep('Classification: boundary detection \\(Two stage\\)');
 
     const body = await promptBody(/^Task Prompt \(~/);
     expect(body).not.toContain(A_DESCRIPTION);

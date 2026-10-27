@@ -33,7 +33,7 @@ notice:
   wrong one for a measurement — the cell would describe whatever the prompt
   happens to say rather than the combination its name claims.
 * **The cost filter covers all three metering contexts.** ``single_pass`` bills
-  under ``Classification/`` while ``two_stage`` bills under ``Segmentation/``
+  under ``Classification/`` while ``two_stage`` bills under ``BoundaryDetection/``
   and ``SectionClassification/`` and emits no ``Classification/`` entry at all. Filtering on
   ``Classification/`` alone — which the driver did — matched nothing for a
   two-stage run and returned a cost of ``0.0``, making the configuration with an
@@ -124,7 +124,7 @@ def test_a_packet_variant_gets_the_packet_prompt(docsplit_base, a_model, variant
     cfg = _config(docsplit_base, a_model, variant)
     cls = cfg["classification"]
     reader = (
-        cls["two_stage"]["segmentation"]["llm"]
+        cls["two_stage"]["boundary_detection"]["llm"]
         if bench.VARIANTS[variant].get("strategy") == "two_stage"
         else cls["one_stage"]
     )
@@ -142,8 +142,8 @@ def test_a_two_stage_variant_gets_both_stage_prompts(docsplit_base, a_model, var
     cfg = _config(docsplit_base, a_model, variant)
     cls = cfg["classification"]
     granularity = bench.VARIANTS[variant]["granularity"]
-    segmentation = cls["two_stage"]["segmentation"]["llm"]
-    stage_a = segmentation["packet" if granularity == "packet" else "page"][
+    boundary_detection = cls["two_stage"]["boundary_detection"]["llm"]
+    stage_a = boundary_detection["packet" if granularity == "packet" else "page"][
         "task_prompt"
     ]
     assert stage_a, "Stage A would fall back to the shipped prompt"
@@ -155,7 +155,7 @@ def test_stage_a_carries_no_class_vocabulary(docsplit_base, a_model):
     reintroduces the class list, two-stage still works and costs what
     single-pass cost — the one failure mode with no symptom."""
     cfg = _config(docsplit_base, a_model, "twostage-packet")
-    stage_a = cfg["classification"]["two_stage"]["segmentation"]["llm"]["packet"][
+    stage_a = cfg["classification"]["two_stage"]["boundary_detection"]["llm"]["packet"][
         "task_prompt"
     ]
     assert "{CLASS_NAMES_AND_DESCRIPTIONS}" not in stage_a
@@ -189,7 +189,9 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
         ),
         (
             "twostage-packet",
-            lambda c: c["two_stage"]["segmentation"]["llm"].update(granularity="page"),
+            lambda c: c["two_stage"]["boundary_detection"]["llm"].update(
+                granularity="page"
+            ),
             "granularity",
         ),
         (
@@ -204,7 +206,7 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
         ),
         (
             # Each two-stage call is checked: section classification is not the
-            # segmentation call's shadow.
+            # boundary detection call's shadow.
             "twostage-page",
             lambda c: c["two_stage"]["section_classification"]["llm"][
                 "modality"
@@ -229,10 +231,10 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
         ),
         (
             "twostage-packet",
-            lambda c: c["two_stage"]["segmentation"]["llm"]["packet"].update(
+            lambda c: c["two_stage"]["boundary_detection"]["llm"]["packet"].update(
                 task_prompt=""
             ),
-            "segmentation task_prompt",
+            "boundary detection task_prompt",
         ),
         (
             "twostage-packet",
@@ -286,7 +288,7 @@ def test_an_unknown_variant_is_not_in_the_table():
 def test_all_three_classification_contexts_are_in_the_filter():
     assert set(bench.CLASSIFICATION_CONTEXTS) == {
         "Classification/",
-        "Segmentation/",
+        "BoundaryDetection/",
         "SectionClassification/",
     }
 
@@ -298,11 +300,11 @@ def test_a_two_stage_run_is_not_reported_as_free():
     call per segment look like the cheap one, which is the most misleading
     possible answer in a cost comparison."""
     metering = {
-        "Segmentation/bedrock/us.amazon.nova-2-lite-v1:0": {
+        "BoundaryDetection/bedrock/us.amazon.nova-2-lite-v1:0": {
             "inputTokens": 1000,
             "outputTokens": 100,
         },
-        "Segmentation/lambda/requests": {"requests": 1},
+        "BoundaryDetection/lambda/requests": {"requests": 1},
         "SectionClassification/bedrock/us.amazon.nova-2-lite-v1:0": {
             "inputTokens": 2000,
             "outputTokens": 200,
@@ -312,18 +314,18 @@ def test_a_two_stage_run_is_not_reported_as_free():
     _cost, tokens, _why, by_context = bench.classification_cost(metering)
     assert tokens["inputTokens"] == 3000
     assert tokens["outputTokens"] == 300
-    assert set(by_context) == {"Segmentation", "SectionClassification"}
+    assert set(by_context) == {"BoundaryDetection", "SectionClassification"}
 
 
 def test_the_two_halves_are_reported_separately():
     """ "Which half is the money in?" is the question the strategy is chosen on,
     and a single total cannot answer it."""
     metering = {
-        "Segmentation/bedrock/m": {"inputTokens": 10, "outputTokens": 1},
+        "BoundaryDetection/bedrock/m": {"inputTokens": 10, "outputTokens": 1},
         "SectionClassification/bedrock/m": {"inputTokens": 90, "outputTokens": 9},
     }
     _cost, _tokens, _why, by_context = bench.classification_cost(metering)
-    assert by_context["Segmentation"]["inputTokens"] == 10
+    assert by_context["BoundaryDetection"]["inputTokens"] == 10
     assert by_context["SectionClassification"]["inputTokens"] == 90
 
 
@@ -479,7 +481,10 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
             # A bare `<ctx>/<model>` exercises the context bucketing and NOTHING
             # ELSE — not pricing, not the `/bedrock/` call-count branch — while
             # looking like it covers both.
-            f"Segmentation/bedrock/{model}": {"inputTokens": 100, "outputTokens": 10},
+            f"BoundaryDetection/bedrock/{model}": {
+                "inputTokens": 100,
+                "outputTokens": 10,
+            },
             f"SectionClassification/bedrock/{model}": {
                 "inputTokens": 50,
                 "outputTokens": 5,
@@ -489,7 +494,7 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
             # key — the two counts the rest of this suite exists to keep
             # distinct. A fixture without this reports 0 invocations and the
             # per-document figure below would assert nothing.
-            "Segmentation/lambda/requests": {"requests": 1},
+            "BoundaryDetection/lambda/requests": {"requests": 1},
             "SectionClassification/lambda/requests": {"requests": 1},
         }
 
@@ -538,14 +543,14 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
         three times cheaper than it is."""
         out, _ = self._run(monkeypatch, n_docs=3)
         by_context = out["classification_by_context"]
-        assert set(by_context) == {"Segmentation", "SectionClassification"}
-        assert by_context["Segmentation"]["inputTokens"] == 300
+        assert set(by_context) == {"BoundaryDetection", "SectionClassification"}
+        assert by_context["BoundaryDetection"]["inputTokens"] == 300
         assert by_context["SectionClassification"]["inputTokens"] == 150
         assert out["classification_tokens"]["inputTokens"] == 450
 
     def test_invocations_per_document_is_per_document_not_per_corpus(self, monkeypatch):
         out, _ = self._run(monkeypatch, n_docs=3)
-        for context in ("Segmentation", "SectionClassification"):
+        for context in ("BoundaryDetection", "SectionClassification"):
             assert (
                 out["classification_by_context"][context][
                     "lambda_invocations_per_document"
@@ -658,18 +663,18 @@ def test_the_bedrock_call_count_is_captured_per_context():
     """⚠️ The count packet granularity's N-calls-to-one claim is about.
 
     Measured on IDP1: a two-stage, page-granularity run over a 6-page document
-    reported `requests: 6` under BOTH `Segmentation/bedrock/<model>` and
+    reported `requests: 6` under BOTH `BoundaryDetection/bedrock/<model>` and
     `SectionClassification/bedrock/<model>` — one Stage A call per page and one Stage B call
     per segment. So the runtime does meter per-call counts, and they are per
     stage.
     """
     metering = {
-        "Segmentation/bedrock/m": {"inputTokens": 100, "requests": 6},
+        "BoundaryDetection/bedrock/m": {"inputTokens": 100, "requests": 6},
         "SectionClassification/bedrock/m": {"inputTokens": 50, "requests": 6},
         "Classification/lambda/requests": {"requests": 1},
     }
     _c, _t, _w, by_context = bench.classification_cost(metering)
-    assert by_context["Segmentation"]["bedrock_calls"] == 6
+    assert by_context["BoundaryDetection"]["bedrock_calls"] == 6
     assert by_context["SectionClassification"]["bedrock_calls"] == 6
     # And the Lambda invocation is where the runtime puts it, not with the spend.
     assert by_context["Classification"]["lambda_invocations"] == 1

@@ -9,11 +9,11 @@ With two strategies and three calls between them, a large share of those setting
 did nothing in whichever mode was selected, and nothing in the file said which.
 v0.9 nests each setting inside the call that uses it:
 
-* ``one_stage``                          — ``strategy: single_pass``
-* ``two_stage.segmentation.llm``         — two-stage, boundaries only
-* ``two_stage.section_classification``   — two-stage, one class per section
-* ``file_shape``                         — what is already known about the file
-* ``fallback_class``                     — the one fallback, used everywhere
+* ``one_stage``                        — ``strategy: single_pass``
+* ``two_stage.boundary_detection.llm`` — two-stage, boundaries only
+* ``two_stage.section_classification`` — two-stage, one class per section
+* ``document_shape``                   — what is already known about the document
+* ``fallback_class``                   — the one fallback, used everywhere
 
 **Behaviour is preserved exactly**, and three rows of the mapping are what make
 that true rather than approximately true:
@@ -30,7 +30,7 @@ that true rather than approximately true:
    is the harm row 2 already prevents for the model.
 2. ⚠️ **An empty stage model means "inherit"**, so it becomes the flat model. A
    stage model that was set is kept.
-3. ⚠️ **The packet window is copied into segmentation too.** Stage A read the
+3. ⚠️ **The packet window is copied into boundary detection too.** Stage A read the
    shared ``packet.window_pages`` / ``overlap_pages`` in v0.8.
 
 Two behaviours are deliberate and the migration guide states them:
@@ -41,9 +41,9 @@ Two behaviours are deliberate and the migration guide states them:
   both placeholders — so for a two-stage configuration the inferred flags are
   written explicitly onto the stage blocks whenever the single-pass prompt they
   were inferred from is present, and the stage calls see exactly what they saw.
-* **A page limit implies "one document".** ``maxPagesForClassification`` exists
-  to give a whole file one class from its first N pages. Combined with boundary
-  detection it used to collapse only files longer than N while sectioning shorter
+* **A page limit implies "one section".** ``maxPagesForClassification`` exists
+  to give a whole document one class from its first N pages. Combined with boundary
+  detection it used to collapse only documents longer than N while sectioning shorter
   ones normally — a side effect, not a feature, and one no configuration value can
   express. Such a combination is converted to ``sectionSplitting: disabled``, with
   a warning naming both settings.
@@ -129,7 +129,7 @@ SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS = frozenset(
 )
 
 ONE_STAGE_LLM = ("one_stage", "llm")
-SEGMENTATION_LLM = ("two_stage", "segmentation", "llm")
+BOUNDARY_DETECTION_LLM = ("two_stage", "boundary_detection", "llm")
 SECTION_CLASSIFICATION = ("two_stage", "section_classification")
 SECTION_CLASSIFICATION_LLM = SECTION_CLASSIFICATION + ("llm",)
 
@@ -220,7 +220,7 @@ def _is_page_limit(value: Any) -> bool:
             # ``ValueError``. This function is called from ``conversion_notices``,
             # which ``merge_utils`` invokes ABOVE the ``try`` that wraps the merge,
             # so a raise here aborts ``idp-cli config-validate`` with a traceback
-            # instead of reporting the value. ``FileShapeConfig.parse_max_pages``
+            # instead of reporting the value. ``DocumentShapeConfig.parse_max_pages``
             # guards the same two for the same reason.
             return False
         # Truncated: a fraction below one page is not a page count, and ``0.4 > 0``
@@ -241,7 +241,7 @@ def _known_section_splitting(value: Any) -> str | None:
     """The recognised spelling of ``value``, or ``None`` when there is not one.
 
     The page-limit conversion below has to decide "is this already ``disabled``?"
-    about a *raw* stored value, before ``FileShapeConfig`` has seen it. Comparing the
+    about a *raw* stored value, before ``DocumentShapeConfig`` has seen it. Comparing the
     raw string meant an unrecognised value — a typo — was not ``disabled`` and so was
     rewritten to it, while the same typo without a page limit went to the validator
     and was reported there. One typo, opposite outcomes, decided by an unrelated key.
@@ -285,7 +285,7 @@ def _repair_reasoning_effort(out: Dict[str, Any]) -> None:
     """
     from ..models import normalise_reasoning_effort
 
-    for path in (ONE_STAGE_LLM, SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+    for path in (ONE_STAGE_LLM, BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
         node = _dict_or_empty(_walk(out, path))
         if "reasoning_effort" not in node:
             continue
@@ -330,11 +330,11 @@ def conversion_notices(config: Any) -> List[str]:
     if _is_page_limit(limit) and splitting is not None and splitting != "disabled":
         notices.append(
             f"classification.maxPagesForClassification is {limit!r} with "
-            f"sectionSplitting {splitting!r}; converted to file_shape."
-            "sectionSplitting 'disabled' (one document per file), because a page "
-            "limit applies only to a one-document file. A short multi-document "
-            "file is now one section. Set the page limit to ALL to keep boundary "
-            "detection."
+            f"sectionSplitting {splitting!r}; converted to document_shape."
+            "sectionSplitting 'disabled' (one section per document), because a "
+            "page limit applies only when the whole document is one section. A "
+            "short packet is now one section. Set the page limit to ALL to keep "
+            "boundary detection."
         )
     return notices
 
@@ -374,7 +374,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
     if flat_model is not None:
         _put(out, ONE_STAGE_LLM, "model", flat_model)
     for stage_cfg, path in (
-        (segmentation, SEGMENTATION_LLM),
+        (segmentation, BOUNDARY_DETECTION_LLM),
         (labeling, SECTION_CLASSIFICATION_LLM),
     ):
         stage_model = stage_cfg.get("model")
@@ -409,28 +409,28 @@ def migrate_v08_to_v09(config: Any) -> Any:
             # target_height, and must not take a target_width that stage chose.
             _put_merged(out, ONE_STAGE_LLM, key, value)
             previous_block = _dict_or_empty(previous)
-            for path in (SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+            for path in (BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
                 node = _node(out, path + (key,))
                 for inner, inner_value in value.items():
                     if _follows_one_stage(node.get(inner), previous_block.get(inner)):
                         node[inner] = copy.deepcopy(inner_value)
         else:
             _put(out, ONE_STAGE_LLM, key, value)
-            for path in (SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+            for path in (BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
                 if _follows_one_stage(_node(out, path).get(key), previous):
                     _put(out, path, key, value)
 
     _repair_reasoning_effort(out)
 
-    # ── Granularity and page input apply to one stage and to segmentation.
+    # ── Granularity and page input apply to one stage and to boundary detection.
     if "granularity" in flat:
         _put(out, ("one_stage",), "granularity", flat["granularity"])
-        _put(out, SEGMENTATION_LLM, "granularity", flat["granularity"])
+        _put(out, BOUNDARY_DETECTION_LLM, "granularity", flat["granularity"])
     if "contextPagesCount" in flat:
         _put(out, ("one_stage", "page"), "contextPagesCount", flat["contextPagesCount"])
         _put(
             out,
-            SEGMENTATION_LLM + ("page",),
+            BOUNDARY_DETECTION_LLM + ("page",),
             "contextPagesCount",
             flat["contextPagesCount"],
         )
@@ -442,22 +442,27 @@ def migrate_v08_to_v09(config: Any) -> Any:
         if key in packet:
             _put(out, ("one_stage", "packet"), key, packet[key])
 
-    # ── The packet window is shared with segmentation (row 3).
+    # ── The packet window is shared with boundary detection (row 3).
     for key in ("window_pages", "overlap_pages"):
         if key in packet:
             _put(out, ("one_stage", "packet"), key, packet[key])
-            _put(out, SEGMENTATION_LLM + ("packet",), key, packet[key])
+            _put(out, BOUNDARY_DETECTION_LLM + ("packet",), key, packet[key])
 
-    # ── Segmentation.
+    # ── Boundary detection (was the flat ``segmentation`` block).
     for key in ("system_prompt", "task_prompt"):
         if key in segmentation:
-            _put(out, SEGMENTATION_LLM + ("page",), key, segmentation[key])
+            _put(out, BOUNDARY_DETECTION_LLM + ("page",), key, segmentation[key])
     seg_packet = _dict_or_empty(segmentation.get("packet"))
     for key in ("system_prompt", "task_prompt"):
         if key in seg_packet:
-            _put(out, SEGMENTATION_LLM + ("packet",), key, seg_packet[key])
+            _put(out, BOUNDARY_DETECTION_LLM + ("packet",), key, seg_packet[key])
     if "boundary_hints" in segmentation:
-        _put(out, SEGMENTATION_LLM, "boundary_hints", segmentation["boundary_hints"])
+        _put(
+            out,
+            BOUNDARY_DETECTION_LLM,
+            "boundary_hints",
+            segmentation["boundary_hints"],
+        )
 
     # ── Section classification (was labeling).
     for key in ("method", "pages", "k"):
@@ -489,15 +494,15 @@ def migrate_v08_to_v09(config: Any) -> Any:
     if "invalidClassFallback" in flat:
         out["fallback_class"] = copy.deepcopy(flat["invalidClassFallback"])
 
-    # ── File shape. A page limit implies "one document" (see the module doc).
+    # ── Document shape. A page limit implies "one section" (see the module doc).
     if "sectionSplitting" in flat:
-        _put(out, ("file_shape",), "sectionSplitting", flat["sectionSplitting"])
+        _put(out, ("document_shape",), "sectionSplitting", flat["sectionSplitting"])
     if "maxPagesForClassification" in flat:
         limit = flat["maxPagesForClassification"]
-        _put(out, ("file_shape",), "maxPagesForClassification", limit)
+        _put(out, ("document_shape",), "maxPagesForClassification", limit)
         if _is_page_limit(limit):
             splitting = _known_section_splitting(
-                out["file_shape"].get("sectionSplitting", "llm_determined")
+                out["document_shape"].get("sectionSplitting", "llm_determined")
             )
             # `None` means the value is not one of the three. It is left alone so the
             # validator rules on it, exactly as it would without a page limit — see
@@ -505,16 +510,16 @@ def migrate_v08_to_v09(config: Any) -> Any:
             if splitting is not None and splitting != "disabled":
                 logger.warning(
                     "classification.maxPagesForClassification is %r, which gives "
-                    "the whole file one class from its first pages, but "
+                    "the whole document one class from its first pages, but "
                     "sectionSplitting was %r. Converted to sectionSplitting "
-                    "'disabled' (one document): the limit used to collapse only "
-                    "files longer than it while sectioning shorter ones, which no "
+                    "'disabled' (one section): the limit used to collapse only "
+                    "documents longer than it while sectioning shorter ones, which no "
                     "single setting can express. Set the page limit to ALL to keep "
                     "boundary detection.",
                     limit,
                     splitting,
                 )
-                out["file_shape"]["sectionSplitting"] = "disabled"
+                out["document_shape"]["sectionSplitting"] = "disabled"
 
     # ── Modality inference moves with the prompt. For a two-stage config, write
     # the flags the stages inferred in v0.8 — from the single-pass prompt — onto
@@ -529,7 +534,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
         if isinstance(legacy_prompt, str) and legacy_prompt:
             inferred = _inferred_modality(legacy_prompt)
             explicit = _dict_or_empty(flat.get("modality"))
-            for path in (SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+            for path in (BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
                 modality = _node(out, path + ("modality",))
                 for flag in ("text", "images"):
                     if explicit.get(flag) in (None, "") and modality.get(flag) in (

@@ -13,6 +13,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from idp_common import testrun_status as trs
+
 # Mock boto3 before importing the Lambda module to prevent NoRegionError
 # The Lambda creates boto3 clients at module level which requires AWS region
 with patch("boto3.resource") as mock_resource, patch("boto3.client") as mock_client:
@@ -701,7 +703,7 @@ def test_comparing_a_pre_0_9_run_with_a_current_one_lines_up_classification():
         "classification": {
             "one_stage": {"llm": {"model": "m2", "temperature": 0}},
             "two_stage": {
-                "segmentation": {"llm": {"model": "m1", "temperature": 0}},
+                "boundary_detection": {"llm": {"model": "m1", "temperature": 0}},
                 "section_classification": {"llm": {"model": "m1", "temperature": 0}},
             },
         },
@@ -1329,6 +1331,17 @@ def test_a_classification_only_run_keeps_what_athena_cannot_supply():
     assert cached["excludedDocumentCount"] == 1
     assert cached["splitClassificationMetrics"] == index.float_to_decimal(athena_splits)
     assert cached["totalCost"] == index.float_to_decimal(4.6)
+
+    # ⚠️ The same write that records the result clears the attempt counter. The
+    # sweeper reads that counter as *consecutive* failures when sizing its
+    # backoff, but ``ADD`` only ever increments it — so a run that failed a few
+    # times, succeeded, and later needs recomputing (a release adding a key to
+    # these metrics, or a cache invalidation) would be deferred by up to a day on
+    # the strength of failures that are over. Nothing else in the tree clears it,
+    # so this assertion is the only thing holding the counter to its meaning.
+    expression = mock_table.update_item.call_args.kwargs["UpdateExpression"]
+    assert "REMOVE" in expression, expression
+    assert trs.CACHE_UPDATE_ATTEMPTS_ATTR in expression.split("REMOVE", 1)[1]
 
 
 @pytest.mark.unit

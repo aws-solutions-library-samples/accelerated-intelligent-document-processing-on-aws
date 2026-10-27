@@ -229,11 +229,11 @@ A document processed in BDA mode (its configuration profile sets `use_bda`) gets
 
 ### Limitations
 
-Since Pattern-1 uses BDA for document splitting and classification:
+Since Pattern-1 uses BDA to split the document into sections and classify them:
 
 - **Section Structure**: Read-only - cannot add, delete, or modify sections
 - **Page Assignments**: Read-only - BDA controls which pages belong to which sections, and the page-grouping board is not offered
-- **Classification**: Read-only - document classes are determined by BDA blueprints
+- **Classification**: Read-only - each section's class is determined by BDA blueprints
 - **Page Edits**: Not offered - a page class reset or a page text edit would clear section values that a BDA reprocess does not regenerate
 
 ### How It Works

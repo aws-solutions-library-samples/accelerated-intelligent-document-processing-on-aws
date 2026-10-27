@@ -9,7 +9,7 @@ The Reporting module provides comprehensive functionality for saving document pr
 
 ## Key Components
 
-### Multi-instance sections: one row per DOCUMENT (#715)
+### Multi-instance sections: one row per INSTANCE (#715)
 
 A class flagged `x-aws-idp-multi-instance` produces
 `inference_result = {"instances": [ … ]}`. Left alone, `_flatten_json_data`
@@ -26,7 +26,7 @@ Two things to know:
 
 - ⚠️ `(document_id, section_id)` is **no longer unique** for such a table; the key
   is `(document_id, section_id, record_index)`. `COUNT(DISTINCT document_id)`
-  undercounts documents of the class, because one input file can contain several.
+  undercounts instances of the class, because one document can contain several.
   The analytics agent is told this for flagged classes.
 - The decision is driven by **config**, not by the shape of the output, so a
   Designate-mode class that happens to name its own array `instances` keeps its

@@ -254,7 +254,7 @@ more, because each is judged on a *rate* and a single sample cannot resolve one.
 | `enforcecost` | What does `fail_action: escalate` cost? | `cost` — the only enforcement arm that spends money per failure; kept separate so it is never run by accident |
 | `forcing` | Does forcing the schema as a tool improve extraction? | `cell_accuracy`, `completeness_recall`, and `forced_tool_honored_rate` — **not** "did it parse" |
 | `restatement` | Does dropping the duplicated schema copy cost completeness? | `completeness_recall`. The gate is completeness, not tokens: a saving that loses list rows is a loss |
-| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-document file (must yield 2). A fix that only stops over-splitting regresses the second |
+| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-section packet (must yield 2). A fix that only stops over-splitting regresses the second |
 | `boundaryctl` | Control for `boundary`: what did the **pre-fix** prompt score? | `sections_correct`. Runs the frozen pre-#653 prompt from `benchmarks/matrices/prompts/`, so the claim is a measured delta rather than a single post-fix number |
 | `splitcost` | What did making `llm_determined` do real work cost? | `cost`, `repeats: 5` |
 
@@ -352,16 +352,16 @@ Three things about reading the result:
   whichever you quote alone will argue for the setting it favours.
 - **`classification_by_context`** carries the per-stage tokens, cost and Lambda
   invocation count, so a two-stage cell shows whether the money went to
-  `Segmentation` or `SectionClassification`.
+  `BoundaryDetection` or `SectionClassification`.
   ⚠️ **Two counts, and the obvious reading of the first one is wrong.**
   `lambda_invocations_per_document` counts Lambda invocations: a 6-page document
   at `page` granularity makes six Bedrock calls inside **one** invocation, so it
   reads `1.0` for `page` and `packet` alike, and in a two-stage run the single
   invocation lands under `Classification` while the spend lands under
-  `Segmentation`/`SectionClassification`, which therefore read `0.0`.
+  `BoundaryDetection`/`SectionClassification`, which therefore read `0.0`.
   **`bedrock_calls_per_document`** is the figure the N-calls-to-one claim is
   about, and it is per stage — a two-stage page-granularity run over a 6-page
-  document measured 6 segmentation calls and 6 section classification calls. ⚠️ It is `None` rather
+  document measured 6 boundary detection calls and 6 section classification calls. ⚠️ It is `None` rather
   than `0` when nothing carried a request count, because not every metering entry
   does and "made no calls" is a different claim from "not metered".
   **`classification_output_tokens_per_page`** separates the granularities too,

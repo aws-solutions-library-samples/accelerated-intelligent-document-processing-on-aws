@@ -483,7 +483,7 @@ The `get_results` tool returns paginated results:
 
 For multi-section documents (e.g., lending packages):
 - Section 1: Primary extraction results
-- Sections 2+: Additional document types within the same file
+- Sections 2+: Further sections of the same document, each with its own class
 - Use `section_id` parameter to retrieve specific sections
 
 ### Confidence Structure

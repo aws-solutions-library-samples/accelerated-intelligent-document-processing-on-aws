@@ -94,15 +94,15 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 30 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 31 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. 29 of the thirty alarms publish to the
-`AlertsTopic` SNS topic; the thirtieth, `BedrockServiceOutageAlarm`, publishes to
+through them — the nested stacks declare none. 30 of the thirty-one alarms publish to the
+`AlertsTopic` SNS topic; the remaining one, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`.
-Eight are conditional, so a default deployment has twenty-two:
+Eight are conditional, so a default deployment has twenty-three:
 `BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
 malware-scanning alarms only when `MalwareScanning` is not `DISABLED`. The other
-twenty-two are unconditional. They fall into eight groups:
+twenty-three are unconditional. They fall into nine groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -114,6 +114,7 @@ twenty-two are unconditional. They fall into eight groups:
 | `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a Configuration Profile that no longer exists, or is persistently refusing documents. The first two watch a successful outcome, like the row above: the documents succeed, so nothing else on this list moves, while the extraction reflects a configuration nobody chose. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. ⚠️ A mapping's *pinned revision* going missing is **not** among the conditions detected: the ingest-time existence check is on the profile only, and such a document fails downstream when the configuration is loaded instead. The third alarm is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
 | `AgentTranscriptMessageDroppedAlarm`, `AgentTranscriptDrainIncompleteAlarm` | Ten or more agent conversation messages, in fifteen minutes, either dropped from the stored transcript or left behind by the bounded drain at an agent's close. Like the row above, both watch an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is at risk is an entry in the transcript the analytics UI replays. They are two alarms because they license different conclusions: a dropped message is gone (contention beyond what the bounded retry absorbs, or reads that keep failing), whereas an unfinished drain leaves a write that was never cancelled and often commits when the execution environment is next thawed |
 | the seven `<stack>-malware-*` alarms | Amazon GuardDuty found malware; a run of documents could not be scanned; a verdict was undeliverable; verdicts arrived and were not applied; a refused `/Jobs` file could not be recorded as terminal, which leaves its batch reporting `IN_PROGRESS` with that metric as the only signal; or — the one the others are blind to — documents are held with **no** verdict applied at all, meaning ingest has stopped. All conditional on `MalwareScanning`, so absent from a default deployment. The detection and job-finalize alarms fire on a single event, because one infected upload is an incident rather than a rate and one unrecorded refusal is one permanently stalled batch; the rest have thresholds or long windows, because a password-protected file and a re-uploaded filename are ordinary occurrences and only a sustained pattern is a signal. See [malware-scanning.md](./malware-scanning.md) |
+| `TestRunSweepUnclassifiedStatusAlarm` | A Test Studio document carries an `EvaluationStatus` that the run-status derivation in `idp_common.testrun_status` does not classify. An unclassified value counts as still-evaluating, so every run holding such a document is held short of a terminal status indefinitely — the failure that reached users twice in one release cycle, each time found by a report rather than by the stack. `Sum` of `TestRunsUnrecognisedEvalStatus` over an hour, above zero. `TreatMissingData: notBreaching`, the opposite choice from `DataMartRollupAbsenceAlarm` below: there the absence of data points *is* the outage, whereas the sweep publishes a sample every five minutes and a stack with no test runs legitimately reports zero |
 | `DataMartMigrationStateMachineFailureAlarm`, `DataMartRollupAbsenceAlarm` | A data-mart migration state-machine execution ended in `FAILED`/`TIMED_OUT`/`ABORTED` — the migration did not complete cleanly and the SSM marker will not have advanced to `state=completed`, so scheduled rollups defer until an operator investigates; and, separately, four consecutive one-hour windows with zero rollup Lambda invocations — the class of failure where a redeploy dropped the EventBridge schedule from the stack, which the DLQ alarm cannot see because that fires on failures, not absences |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
@@ -121,8 +122,8 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: 24 Lambda functions
-across the two main templates — 9 in `template.yaml` and 15 in
+Distributed tracing is instrumented, not merely recommended: 25 Lambda functions
+across the two main templates — 10 in `template.yaml` and 15 in
 `patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
 optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
 section (`seller-entitlement-service` is the exception). In the two main templates the
@@ -347,7 +348,7 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 130 IAM policy statements are written against `Resource: "*"` — 54 in
+extensions, 131 IAM policy statements are written against `Resource: "*"` — 55 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
@@ -457,7 +458,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 350 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 355 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

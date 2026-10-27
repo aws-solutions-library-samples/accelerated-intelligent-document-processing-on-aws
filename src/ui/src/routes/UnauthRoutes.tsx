@@ -98,6 +98,17 @@ const AutoLoginOrAuthenticator = (): React.JSX.Element => {
   );
 };
 
+/**
+ * The `?redirect=` query that sends a signed-out visitor back where they were.
+ *
+ * The value is encoded, because it is read back with `URLSearchParams.get`, which
+ * decodes it once. Interpolated raw, a document id's `%2F` came back as `/`, so the
+ * route no longer matched and the page rendered blank; a `&` in the original query
+ * also cut the value short.
+ */
+export const redirectSearch = (location: { pathname: string; search: string }): string =>
+  `?${new URLSearchParams({ [REDIRECT_URL_PARAM]: `${location.pathname}${location.search}` }).toString()}`;
+
 const UnauthRoutes = ({ location }: UnauthRoutesProps): React.JSX.Element => (
   <Routes>
     <Route path={LOGIN_PATH} element={<AutoLoginOrAuthenticator />} />
@@ -108,7 +119,7 @@ const UnauthRoutes = ({ location }: UnauthRoutesProps): React.JSX.Element => (
         <Navigate
           to={{
             pathname: LOGIN_PATH,
-            search: `?${REDIRECT_URL_PARAM}=${location.pathname}${location.search}`,
+            search: redirectSearch(location),
           }}
           replace
         />

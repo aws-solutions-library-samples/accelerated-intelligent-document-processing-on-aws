@@ -305,6 +305,10 @@ class ExtractionService:
         # current section, emitted as explainability_info by _save_results.
         # Reset per section. None when in-shard assessment did not run.
         self._grounded_assessment: dict[str, Any] | None = None
+        #: Whether any page carried OCR geometry on the last grounding pass.
+        #: ``None`` until one runs. audit_explainability needs it to tell
+        #: "nothing matched" from "nothing was available to match against".
+        self._ocr_geometry_available: bool | None = None
         # Wall-clock deadline (epoch seconds) for the in-shard assessment ladder
         # (1.5). Set per-invocation from the Lambda context; None = no guard.
         self._assessment_deadline_epoch: float | None = None
@@ -1362,6 +1366,7 @@ class ExtractionService:
         self._pending_image_fit_metadata = None
         self._pending_cache_marker_seen = False
         self._grounded_assessment = None
+        self._ocr_geometry_available = None
         # Top-level fields the simple-extraction schema-compliance filter dropped
         # because the class schema does not define them (off-schema/hallucinated).
         # Set by _filter_extracted_to_schema, surfaced by _build_extraction_issues.
@@ -4803,18 +4808,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     code="extraction_multi_instance_suspected",
                     message=(
                         f"These pages appear to contain {instance_count} separate "
-                        f"'{self._class_label}' documents, but extraction returned "
-                        f"{extracted_n}. {missing} document(s) are NOT in the "
+                        f"'{self._class_label}' records, but extraction returned "
+                        f"{extracted_n}. {missing} record(s) are NOT in the "
                         f"result. Review the section, then either split it "
                         f"(classification sectionSplitting) or turn on "
                         f"multi-instance extraction for this class so every "
-                        f"document is extracted."
+                        f"record is extracted."
                     ),
                     root_cause=(
-                        f"the extraction model reported {instance_count} document "
+                        f"the extraction model reported {instance_count} "
                         f"instance(s) in this section while returning "
                         f"{extracted_n}; the class schema describes a single "
-                        f"document, so the additional records had nowhere to go "
+                        f"record, so the additional records had nowhere to go "
                         f"(model "
                         f"{self._pending_extraction_model or self.config.extraction.model})"
                     ),
@@ -7404,6 +7409,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 page_data_by_page = load_page_ocr_data(
                     document.pages, section_info.sorted_page_ids
                 )
+                self._ocr_geometry_available = any(
+                    isinstance(pd, dict) and pd.get("geometryAvailable")
+                    for pd in (page_data_by_page or {}).values()
+                )
                 if page_data_by_page:
                     # skip_grounded: in the sharded path each shard already
                     # grounded its own rows against its own pages (in
@@ -8036,6 +8045,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 geometry_mode=geometry_mode,
                 section_id=section_id,
                 ladder_issues=ladder_issues,
+                geometry_available=self._ocr_geometry_available,
             )
             section_issues = ladder_issues + audit_issues
 
