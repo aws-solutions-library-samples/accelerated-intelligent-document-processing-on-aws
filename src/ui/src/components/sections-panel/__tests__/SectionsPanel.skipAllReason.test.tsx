@@ -66,4 +66,37 @@ describe('Skip All Reviews', () => {
       variables: { objectKey: 'packet.pdf', reason: 'Duplicate document', note: 'same as invoice-2' },
     });
   });
+
+  it('shows the message the server refused the skip with', async () => {
+    const message = 'REVIEW_FINISHED: this review is already finished, so there is nothing to skip';
+    // The REST client rejects with the dispatcher's body, not an Error.
+    graphql.mockRejectedValue({ errors: [{ message, errorType: 'BadRequest' }] });
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    render(
+      <SectionsPanel
+        sections={[{ Id: '1', Class: 'Invoice', PageIds: [1] }] as never}
+        pages={[{ Id: 1, ImageUri: 's3://out/1.jpg' }] as never}
+        documentItem={{ objectKey: 'packet.pdf', objectStatus: 'COMPLETED', hitlTriggered: true, hitlStatus: 'Review Pending' } as never}
+        mergedConfig={{ classes: [{ $id: 'Invoice' }] }}
+        onDocumentUpdate={() => undefined}
+      />,
+    );
+    const page = createWrapper(document.body);
+    page
+      .findAllButtons()
+      .find((b) => b.getElement().textContent === 'Skip All Reviews' && !b.getElement().closest('[role="dialog"]'))!
+      .click();
+    const modal = page.findAllModals().find((m) => m.findHeader().getElement().textContent === 'Skip All Section Reviews')!;
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    select.selectOptionByValue('Duplicate document');
+    modal
+      .findFooter()!
+      .findAllButtons()
+      .find((b) => b.getElement().textContent === 'Skip All Reviews')!
+      .click();
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    expect(alert).toHaveBeenCalledWith(`Failed to skip all sections: ${message}`);
+    alert.mockRestore();
+  });
 });

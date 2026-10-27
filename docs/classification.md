@@ -2234,8 +2234,13 @@ classification:
 ```
 
 The parse is tolerant: `0.95`, `"0.95"`, `95`, and `"95%"` all read as 0.95. A
-value that is unparseable or out of range is ignored (the page is simply
+string with a percent sign is always divided by 100, so `"0.9%"` reads as 0.009.
+A value that is unparseable or out of range is ignored (the page is simply
 unscored) rather than failing the classification.
+
+BDA's matched-blueprint confidence is read the same way, except that a
+percentage string is unscored rather than rescaled. An unscored blueprint is held
+for review in both legacy HITL and review-queue mode.
 
 ⚠️ **Confidence multiplies output tokens per PAGE.** Page-level classification
 runs one inference per page, so anything added to its output format is paid for

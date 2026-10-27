@@ -247,7 +247,7 @@ compared yet.
 |------|---------|
 | `models.py` | Typed `IDPConfig` Pydantic models (per-service config: OCR, classification, extraction, assessment, summarization, evaluation, chat, discovery, …). The source of truth for config field defaults and validation. |
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
-| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). |
+| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). Also `bda_routing(manager, version)`: whether a document under a profile goes down the BDA branch — the profile sets `use_bda` **and** a BDA project is linked, an unpinned document taking the active profile. The queue processor's routing rule, stated once for the `processChanges` resolver, which refuses a section or page change to a BDA-mode document. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `migrations/` | The `config_format_version` hop chain, applied by `migrate_config()` on every read. See [Config format migrations](#config-format-migrations). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |

@@ -39,3 +39,13 @@ describe('DocumentPanel Edit button on a queued document', () => {
     expect(SOURCE).not.toMatch(/Open in review queue/);
   });
 });
+
+describe('DocumentPanel Start Review failure', () => {
+  // The REST client rejects with the dispatcher's `{ errors: [...] }` body, not an
+  // Error, so `(error as Error).message` is undefined there; getErrorMessage reads
+  // the server's message (e.g. REVIEW_FINISHED) out of that body.
+  it('shows the message the server refused the claim with', () => {
+    expect(SOURCE).toMatch(/setErrorMessage\(`Failed to start review: \$\{getErrorMessage\(error\)\}`\)/);
+    expect(SOURCE).not.toMatch(/Failed to start review: \$\{\(error as Error\)\.message/);
+  });
+});

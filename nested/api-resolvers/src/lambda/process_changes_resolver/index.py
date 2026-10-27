@@ -185,6 +185,209 @@ def _assert_annotator_scope(event, object_key):
         raise ResourceAccessDenied(str(e)) from e
 
 
+def _refusal(message):
+    """A processChanges refusal: a 400 through the dispatcher, never a 200 body.
+
+    Deliberately a plain ``ValueError``: the dispatcher maps a resolver error to 400
+    by its class NAME (``errorType == "ValueError"``), so a subclass would surface as
+    a 500. The marker is what lets ``handler``'s two ``except ValueError`` arms tell
+    a refusal apart from a processing error, which they turn into a 200 with
+    ``success: false`` instead.
+    """
+    error = ValueError(message)
+    error.process_changes_refusal = True  # type: ignore[attr-defined]
+    return error
+
+
+def _is_refusal(error):
+    return (
+        getattr(error, "process_changes_refusal", False)
+        or str(error) == _QUEUE_MANAGED_MESSAGE
+    )
+
+
+# Built on first use, for the same reason as `_tracking_table`.
+_users_dynamodb = None
+_user_scope_cache: dict = {}
+
+
+def _caller_config_scope(claims):
+    """The caller's ``allowedConfigVersions``, or None when unrestricted.
+
+    The shared fail-closed lookup, called unchanged, so this resolver resolves the
+    scope exactly as the document-list and reprocess resolvers do. Raises
+    ``ScopeLookupError`` when the scope cannot be evaluated.
+    """
+    from idp_common.config_scope import (
+        caller_email_from_claims,
+        caller_sub_from_claims,
+        resolve_allowed_config_versions,
+    )
+
+    global _users_dynamodb
+    if _users_dynamodb is None:
+        _users_dynamodb = boto3.resource("dynamodb")
+    return resolve_allowed_config_versions(
+        caller_email_from_claims(claims),
+        caller_sub=caller_sub_from_claims(claims),
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_users_dynamodb,
+        cache=_user_scope_cache,
+    )
+
+
+def _assert_caller_may_process(event, object_key, document):
+    """The checks saving review edits applies, for a caller who is not an Admin.
+
+    ``saveSectionReviewEdits`` (``src/lambda/complete_section_review``) lets a
+    non-Admin write a section only while they own the document's open review, and
+    refuses a finished review. processChanges writes more than that save does — it
+    clears extraction results, completes the review and requeues the document — so
+    it applies the same two checks, plus the two this resolver's own
+    ``updateDocumentSections`` applies to a direct write: the document must not be
+    in flight, and it must sit inside the caller's configuration scope.
+
+    Order: scope first, because nothing about a document may be acted on for a
+    caller it is out of scope for; then the review state; then the document status.
+    Admin is unaffected, as it is on every sibling.
+
+    Refusal classes follow the dispatcher's mapping. Scope and ownership are
+    decisions about the OBJECT the caller named, so they raise
+    ``ResourceAccessDenied`` (403, ``authzControl: "resource"``) rather than this
+    resolver's group-floor ``PermissionError``. A finished review and a document in
+    flight are state, so they raise a ``ValueError`` refusal (400), as the sibling
+    does for a finished review.
+    """
+    identity = event.get("identity") or {}
+    claims = identity.get("claims") or {}
+    groups = claims.get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    if "Admin" in groups:
+        return
+
+    from idp_common.config_scope import ScopeLookupError, scope_allows
+
+    try:
+        allowed = _caller_config_scope(claims)
+    except ScopeLookupError as e:
+        logger.error("Denying processChanges: config-version scope unresolved: %s", e)
+        raise ResourceAccessDenied(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+    if allowed is not None and not scope_allows(allowed, document.config_version):
+        logger.warning(
+            "Denied processChanges: the document was processed under config "
+            "version %r, outside the caller's scope",
+            document.config_version,
+        )
+        raise ResourceAccessDenied(
+            "Access denied: this document is outside your allowed configuration scope"
+        )
+
+    # The review state is read from the tracking row, as the sibling reads it: the
+    # owner is not on the Document model.
+    try:
+        row = (
+            _tracking_table_resource()
+            .get_item(
+                Key={"PK": f"doc#{object_key}", "SK": "none"},
+                ProjectionExpression="HITLStatus, HITLReviewOwner",
+            )
+            .get("Item")
+            or {}
+        )
+    except Exception as e:  # noqa: BLE001 — an unanswerable owner check refuses
+        logger.error(
+            "Denying processChanges: the review owner could not be read: %s", e
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: your ownership of this review could not be verified"
+        ) from e
+
+    hitl_status = row.get("HITLStatus")
+    view = normalize_hitl_status(hitl_status)
+    # "COMPLETED" is the finished spelling the earlier A2I flow stored, which the
+    # exact-match normaliser does not know; the sibling makes the same exception.
+    if view.kind in ("complete", "rejected", "skipped") or hitl_status == "COMPLETED":
+        logger.warning("Rejecting processChanges on a finished review")
+        raise _refusal("This review is already finished; its edits are closed")
+
+    username = identity.get("username") or ""
+    owner = row.get("HITLReviewOwner") or ""
+    if view.kind not in ("pending", "in_progress") or not username or owner != username:
+        logger.warning("Denied processChanges by a caller who does not own the review")
+        raise ResourceAccessDenied(
+            "Only the review owner or an admin can process changes; start the "
+            "review first"
+        )
+
+    status = str(getattr(document.status, "value", document.status) or "").upper()
+    if status not in _EDITABLE_STATUSES:
+        logger.warning("Rejecting processChanges on a document that is in flight")
+        raise _refusal(
+            f"{object_key} is currently {status.lower() or 'in an unknown state'}. "
+            "Wait for processing to finish before processing changes."
+        )
+
+
+_BDA_MODE_MESSAGE = (
+    "BDA_MODE: this document is processed with Bedrock Data Automation, which keeps "
+    "a document's existing sections when it is reprocessed, so section, class, page "
+    "and text changes are not available for it. Edit field values instead."
+)
+
+
+def _assert_not_a_bda_structural_edit(document, modified_sections, modified_pages):
+    """Refuse a section or page change to a document that would reprocess in BDA mode.
+
+    A BDA run keeps the sections a document already has (the workflow skips Bedrock
+    Data Automation when any section exists), and this handler clears each changed
+    section's extraction result before requeueing. Nothing in the BDA branch
+    regenerates it, so the change would lose those values. Applies to every caller,
+    Admin included: it is about what the run can do, not who asked.
+
+    Stated as a capability rather than a list of edit kinds: in BDA mode this
+    operation changes no section and no page. Any entry in either list is refused,
+    and an empty request — field values already saved, reprocessed for evaluation
+    and summarization — is unaffected.
+
+    The mode is the one the requeued run will take: the routing rule the queue
+    processor applies (``idp_common.config.configuration_manager.bda_routing``),
+    including that an unpinned document is processed under the ACTIVE profile.
+    Every read is made strict (``raise_errors=True``), so a configuration that
+    cannot be read is refused rather than read as pipeline mode: a wrong
+    "pipeline" answer loses data and a wrong refusal costs a retry.
+    """
+    if not modified_sections and not modified_pages:
+        return
+
+    from idp_common.config import ConfigurationManager
+    from idp_common.config.configuration_manager import bda_routing
+
+    try:
+        routing = bda_routing(
+            ConfigurationManager(), document.config_version, raise_errors=True
+        )
+    except Exception as e:  # noqa: BLE001 — an unknown mode refuses, see docstring
+        logger.error(
+            "Rejecting processChanges: the processing mode of profile %r could not "
+            "be read: %s",
+            document.config_version,
+            e,
+        )
+        raise _refusal(
+            "The document's processing mode could not be determined, so section, "
+            "page and text changes cannot be made now. Field values can still be "
+            "edited."
+        ) from e
+    if routing.bda:
+        logger.warning(
+            "Rejecting processChanges: a section or page change to a BDA-mode document"
+        )
+        raise _refusal(_BDA_MODE_MESSAGE)
+
+
 def _caller_key(event):
     """The caller's owner key from verified claims, as a review claim records it."""
     from idp_common.notifications.keys import recipient_key_from_claims
@@ -490,6 +693,14 @@ def handler(event, context):
                 )
                 raise ValueError(_QUEUE_MANAGED_MESSAGE)
 
+            # Before anything below writes: completing the review, clearing
+            # extraction results and requeueing are all acted on the caller's
+            # behalf.
+            _assert_caller_may_process(event, object_key, document)
+            _assert_not_a_bda_structural_edit(
+                document, modified_sections, modified_pages
+            )
+
             # Set bucket names from environment variables (fix for null bucket issue)
             input_bucket = os.environ.get("INPUT_BUCKET")
             output_bucket = os.environ.get("OUTPUT_BUCKET")
@@ -600,8 +811,10 @@ def handler(event, context):
                     except table.meta.client.exceptions.ConditionalCheckFailedException:
                         pass  # a reviewer is already recorded
 
+        except PermissionError:
+            raise
         except ValueError as e:
-            if str(e) == _QUEUE_MANAGED_MESSAGE:
+            if _is_refusal(e):
                 raise
             logger.error(f"Error retrieving document {object_key}: {str(e)}")
             raise ValueError(
@@ -832,7 +1045,7 @@ def handler(event, context):
         # RBAC denial must reach the dispatcher as 403; do not swallow into 200.
         raise
     except ValueError as e:
-        if str(e) == _QUEUE_MANAGED_MESSAGE:
+        if _is_refusal(e):
             # A refusal, not a processing error: 400 through the dispatcher.
             raise
         logger.error(f"Error processing changes: {str(e)}", exc_info=True)
@@ -843,15 +1056,15 @@ def handler(event, context):
         }
     except Exception as e:
         logger.error(f"Error processing changes: {str(e)}", exc_info=True)
-
-        error_response = {
+        # Returned as a literal so the failed shape is visible where it is returned:
+        # a scope lookup that cannot be answered is turned into a refusal before it
+        # reaches here (`_assert_caller_may_process`), and this arm must not read as
+        # a success-shaped answer either way.
+        return {
             "success": False,
             "message": f"Error processing changes: {str(e)}",
             "processingJobId": None,
         }
-
-        logger.error(f"Returning error response: {json.dumps(error_response)}")
-        return error_response
 
 
 def process_page_changes(document, modified_pages, modified_section_ids):

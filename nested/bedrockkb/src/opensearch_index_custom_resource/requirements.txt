@@ -2,4 +2,4 @@ opensearch-py==2.8.0
 requests==2.33.0
 requests-aws4auth==1.3.1
 aws-lambda-powertools==2.43.0
-cfnresponse
+# cfnresponse is vendored as cfnresponse.py beside oss_handler.py, not installed.
