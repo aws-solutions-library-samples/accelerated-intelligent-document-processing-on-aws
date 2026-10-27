@@ -13,6 +13,7 @@ from aws_xray_sdk.core import patch_all, xray_recorder
 from idp_common import extraction, get_config, metrics
 from idp_common.docs_service import create_document_service
 from idp_common.extraction.failure import persist_section_after_extraction_failure
+from idp_common.lambda_deadline import lambda_deadline_scope
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
@@ -183,13 +184,14 @@ def handler(event, context):
     name ExtractionStep lists, hard errors keep their own name and are not retried
     (a bad schema cannot succeed on attempt 8).
     """
-    try:
-        return _handle(event, context)
-    except Exception as e:
-        raise_if_transient(
-            e, where=f"extraction section {(event or {}).get('section_id')}"
-        )
-        raise
+    with lambda_deadline_scope():
+        try:
+            return _handle(event, context)
+        except Exception as e:
+            raise_if_transient(
+                e, where=f"extraction section {(event or {}).get('section_id')}"
+            )
+            raise
 
 
 def _handle(event, context):
