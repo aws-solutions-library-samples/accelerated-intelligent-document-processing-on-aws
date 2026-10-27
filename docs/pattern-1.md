@@ -218,7 +218,7 @@ For comprehensive HITL documentation including workflow details, configuration s
 
 ## Edit Mode (Data-Only)
 
-Pattern-1 supports a data-only Edit Mode through the Web UI, allowing users to edit extraction data (predictions and ground truth) without re-invoking Bedrock Data Automation.
+A document processed in BDA mode (its configuration profile sets `use_bda`) gets a data-only Edit Mode in the Web UI, allowing users to edit extraction data (predictions and ground truth) without re-invoking Bedrock Data Automation. The Web UI decides this from the document's configuration profile, and the `processChanges` operation refuses any section or page change to such a document for every role; see [BDA-mode documents offer data-only editing](./web-ui.md#bda-mode-documents-offer-data-only-editing).
 
 ### Capabilities
 
@@ -232,8 +232,9 @@ Pattern-1 supports a data-only Edit Mode through the Web UI, allowing users to e
 Since Pattern-1 uses BDA to split the document into sections and classify them:
 
 - **Section Structure**: Read-only - cannot add, delete, or modify sections
-- **Page Assignments**: Read-only - BDA controls which pages belong to which sections
+- **Page Assignments**: Read-only - BDA controls which pages belong to which sections, and the page-grouping board is not offered
 - **Classification**: Read-only - each section's class is determined by BDA blueprints
+- **Page Edits**: Not offered - a page class reset or a page text edit would clear section values that a BDA reprocess does not regenerate
 
 ### How It Works
 

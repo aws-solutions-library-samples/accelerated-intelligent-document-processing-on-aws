@@ -1,8 +1,7 @@
 # AWS SDK for Python - Use latest version for S3 Vectors support
 boto3>=1.40.25
 
-# CloudFormation response helper (built into Lambda runtime but useful for local testing)
-cfnresponse
+# cfnresponse is vendored as cfnresponse.py beside handler.py, not installed.
 
 # Optional: For enhanced error handling and logging  
 botocore>=1.40.25

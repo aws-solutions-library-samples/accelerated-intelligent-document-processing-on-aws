@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT-0
 """Test config for the S3 Vectors custom-resource Lambda.
 
-Stubs ``cfnresponse`` (delivered via the ``cfnresponse`` pip dep at deploy
-time), sets fake AWS credentials, and puts the handler directory on
+Stubs ``cfnresponse`` (vendored as ``cfnresponse.py`` beside the handler; the
+real one would PUT to a URL), sets fake AWS credentials, and puts the handler directory on
 ``sys.path`` so ``import handler`` works from this ``tests/`` package.
 """
 

@@ -58,7 +58,7 @@ class TestErrorAnalyzerConfig:
         """Test ErrorAnalyzerParameters default values."""
         params = ErrorAnalyzerParameters()
 
-        assert params.max_log_events == 5
+        assert params.max_log_events == 10
         assert params.time_range_hours_default == 24
         assert params.max_log_message_length == 400
         assert params.max_events_per_log_group == 5
@@ -84,7 +84,7 @@ class TestErrorAnalyzerConfig:
         assert isinstance(config.system_prompt, str)
         assert len(config.system_prompt) > 0
         assert isinstance(config.parameters, ErrorAnalyzerParameters)
-        assert config.parameters.max_log_events == 5
+        assert config.parameters.max_log_events == 10
 
     @pytest.mark.parametrize("stored", [None, "", "   "])
     def test_an_empty_stored_lookback_hours_loads_as_the_default(self, stored):

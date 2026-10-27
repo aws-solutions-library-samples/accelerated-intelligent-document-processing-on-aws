@@ -8592,6 +8592,9 @@ Resources:
           MAX_CONCURRENT: !Ref MaxConcurrentWorkflows
           WORKING_BUCKET: !Ref WorkingBucket
           CONFIG_TABLE: !Ref ConfigurationTable
+          # Read the body of the revision a document is pinned to, so use_bda
+          # routing follows that revision rather than the profile head (#1619).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           CIRCUIT_BREAKER_ENABLED: !If [CircuitBreakerEnabledCondition, "true", "false"]
           DOCUMENT_QUEUE_URL: !Ref DocumentQueue
           RECOVERY_TIMEOUT_SECONDS: !Ref CircuitBreakerRecoveryTimeoutSeconds
@@ -8630,6 +8633,31 @@ Resources:
               Action:
                 - states:ListExecutions
               Resource: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+        # Stop an execution this function has just started when the document
+        # was aborted between its start claim and the post-start tracking write
+        # (#1612). Scoped to executions of this stack's own state machine.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StopExecution
+              Resource: !Sub
+                - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${StateMachineName}:*"
+                - StateMachineName: !GetAtt PATTERNSTACK.Outputs.StateMachineName
+        # Pinned revision bodies, for use_bda routing (#1619). Same grant the
+        # pattern functions that read a pinned revision carry.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so an expired
+            # published revision could not fall back to the profile head (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         # PutMetricData takes no resource-level permissions (AWS-wide), so it is
         # constrained by namespace condition instead.
         - Statement:
@@ -9220,6 +9248,21 @@ Resources:
             BucketName: !Ref OutputBucket
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
+        # Pinned revision bodies, so a report's classes come from the revision
+        # the document ran under rather than the profile head (#1619).
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so an expired
+            # published revision could not fall back to the profile head (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - Statement:
             - Effect: Allow
               Action:
@@ -9261,6 +9304,8 @@ Resources:
           METRIC_NAMESPACE: !Ref AWS::StackName
           STACK_NAME: !Ref AWS::StackName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          # Read the body of the revision a document is pinned to (#1619).
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
 
   SaveReportingDataFunctionV2LogGroup:
     Type: AWS::Logs::LogGroup

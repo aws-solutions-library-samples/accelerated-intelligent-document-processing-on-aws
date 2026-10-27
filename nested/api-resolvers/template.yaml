@@ -2134,6 +2134,14 @@ Resources:
           # Review queues: a document in review is regrouped only by the holder of
           # its review item, read from HITLTable.
           HITL_TABLE_NAME: !Ref HITLTableName
+          # processChanges refuses a section or page change to a document whose
+          # profile routes it to BDA, which it reads from the configuration table
+          # (read-only grant below).
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          # ... at the revision the document is pinned to, whose body is read from
+          # the Configuration bucket (read-only grant below), so the decision agrees
+          # with the queue processor's routing of the requeued run.
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
       LoggingConfig:
         LogGroup: !Ref ProcessChangesResolverFunctionLogGroup
       Policies:
@@ -2155,6 +2163,37 @@ Resources:
             BucketName: !Ref OutputBucketName
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucketName
+        # Read-only, on the configuration table alone: processChanges reads the
+        # document's profile (`use_bda`) and its linked BDA project to decide whether
+        # a requeued run goes down the BDA branch. GetItem covers those reads and the
+        # active-profile pointer an unpinned document is resolved through; Scan is
+        # the fallback that resolution takes on a stack written before the pointer
+        # existed. No write: the configuration read's best-effort write-back of a
+        # backfilled profile is refused here and logged, which is the intended
+        # outcome.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Scan
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+        # Pinned revision bodies, so `use_bda` is read from the revision the
+        # document is pinned to, as the queue processor routes it. Same grant the
+        # queue processor carries.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so an expired
+            # published revision could not fall back to the profile head (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         # Read-only access on UsersTable + EmailIndex so the resolver can look up
         # the caller's allowedTestSets and enforce per-test-set annotation scope on
         # updateDocumentSections. Without this the lookup fails with AccessDenied —

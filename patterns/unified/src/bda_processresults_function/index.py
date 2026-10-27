@@ -26,7 +26,7 @@ from idp_common.s3 import get_s3_client, write_content
 from idp_common.utils import (
     build_s3_uri,
     finite_float,
-    parse_confidence,
+    parse_blueprint_confidence,
     parse_s3_uri,
 )
 
@@ -1289,9 +1289,11 @@ def process_segments(
             # loop into the handler's catch-all and abandoned every later
             # segment. A missing name reads as "None", the value the
             # standard-output branch below records for an unclassified
-            # segment. A missing confidence stays None, so the section is left
-            # unscored and legacy HITL marks the segment for review; a present
-            # confidence is compared with the threshold as usual.
+            # segment. A missing or otherwise unscored confidence leaves the
+            # section unscored and marked ``blueprint_unscored``, so both review
+            # modes hold it: legacy HITL marks the segment, and queue mode adds
+            # a ``blueprint_confidence`` reason (GitHub #1581). Both read the
+            # value through ``parse_blueprint_confidence``.
             matched_blueprint = custom_output.get("matched_blueprint")
             if not isinstance(matched_blueprint, dict):
                 matched_blueprint = {}
@@ -1324,9 +1326,10 @@ def process_segments(
                     # mode scored by default, with no extra inference and no
                     # prompt change — unlike the pipeline mode, where the model
                     # has to be asked.
-                    section.confidence = parse_confidence(
+                    section.confidence = parse_blueprint_confidence(
                         bp_confidence, context=f"BDA blueprint {blueprint_name}"
                     )
+                    section.blueprint_unscored = section.confidence is None
                     logger.info(
                         f"Updated section {section.section_id} with {len(confidence_threshold_alerts)} confidence alerts, "
                         f"class confidence {section.confidence}"
