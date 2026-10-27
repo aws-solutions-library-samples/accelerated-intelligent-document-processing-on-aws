@@ -199,8 +199,8 @@ def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
         ("enforceValidClasses", llm + ("validation", "enforceValidClasses")),
         ("maxValidationRetries", llm + ("validation", "maxValidationRetries")),
         ("invalidClassFallback", ("fallback_class",)),
-        ("sectionSplitting", ("file_shape", "sectionSplitting")),
-        ("maxPagesForClassification", ("file_shape", "maxPagesForClassification")),
+        ("sectionSplitting", ("document_shape", "sectionSplitting")),
+        ("maxPagesForClassification", ("document_shape", "maxPagesForClassification")),
     ]
     return pairs
 

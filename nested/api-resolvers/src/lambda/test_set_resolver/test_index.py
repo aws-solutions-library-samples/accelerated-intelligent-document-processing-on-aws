@@ -673,3 +673,184 @@ def test_get_annotation_queue_returns_the_set_name(queues, monkeypatch):
     )
 
     assert (result["testSetId"], result["name"]) == (TEST_SET_ID, "my set")
+
+
+# --- BatchGetItem UnprocessedKeys --------------------------------------------
+#
+# DynamoDB returns keys it did not read under throttling in ``UnprocessedKeys``.
+# These tests drive both BatchGetItem sites through a botocore Stubber, which
+# validates every queued response against the DynamoDB service model, so the
+# response shapes are the service's own rather than hand-written guesses. The
+# stubbed client is the one ``db_client`` holds, and ``boto3.resource`` is pointed
+# at it too, so code that builds its own resource is driven by the same stubs.
+# A Stubber raises once its queue is empty, so no loop here can run unbounded.
+
+
+def _wire_testset(set_id):
+    return {
+        "PK": {"S": f"testset#{set_id}"},
+        "SK": {"S": "metadata"},
+        "id": {"S": set_id},
+        "name": {"S": set_id},
+    }
+
+
+def _wire_key(pk):
+    return {
+        "PK": {"S": pk},
+        "SK": {"S": "metadata" if pk.startswith("testset#") else "none"},
+    }
+
+
+@pytest.fixture
+def stubbed_ddb(resolver, monkeypatch):
+    from botocore.stub import Stubber
+
+    from idp_common.dynamodb import client as ddb_client_module
+
+    index, _ = resolver
+    resource = index.db_client.dynamodb
+    monkeypatch.setattr(index.boto3, "resource", lambda *a, **k: resource)
+    sleeps = []
+    monkeypatch.setattr(ddb_client_module, "_backoff_sleep", sleeps.append)
+    stubber = Stubber(resource.meta.client)
+    with stubber:
+        yield index, stubber, sleeps
+
+
+def _batch_request(pks):
+    """The request the first call must carry: every key, none dropped.
+
+    Expected parameters are compared before the resource layer serializes them,
+    so they are plain values rather than wire-format attribute values.
+    """
+    keys = [{k: v["S"] for k, v in _wire_key(pk).items()} for pk in pks]
+    return {"RequestItems": {TRACKING_TABLE: {"Keys": keys}}}
+
+
+def _batch_response(items, unprocessed_pks=()):
+    response = {"Responses": {TRACKING_TABLE: items}}
+    response["UnprocessedKeys"] = (
+        {TRACKING_TABLE: {"Keys": [_wire_key(pk) for pk in unprocessed_pks]}}
+        if unprocessed_pks
+        else {}
+    )
+    return response
+
+
+@pytest.mark.unit
+def test_test_set_listing_retries_unprocessed_keys(stubbed_ddb):
+    index, stubber, sleeps = stubbed_ddb
+    stubber.add_response(
+        "query",
+        {
+            "Items": [
+                {"PK": {"S": "testset#a"}, "SK": {"S": "metadata"}},
+                {"PK": {"S": "testset#b"}, "SK": {"S": "metadata"}},
+            ]
+        },
+    )
+    stubber.add_response(
+        "batch_get_item",
+        _batch_response([_wire_testset("a")], ["testset#b"]),
+        _batch_request(["testset#a", "testset#b"]),
+    )
+    # Explicit terminator: nothing left unprocessed.
+    stubber.add_response("batch_get_item", _batch_response([_wire_testset("b")]))
+
+    records = index._load_test_set_records()
+
+    assert sorted(r["id"] for r in records) == ["a", "b"]
+    assert sleeps == [1], "the retry must back off before re-submitting"
+    stubber.assert_no_pending_responses()
+
+
+@pytest.mark.unit
+def test_test_set_listing_never_returns_a_partial_batch(stubbed_ddb, caplog):
+    """Keys still unprocessed after the retry bound must not yield a short list.
+
+    The helper raises, and the listing falls back to the full scan.
+    """
+    index, stubber, sleeps = stubbed_ddb
+    stubber.add_response(
+        "query",
+        {
+            "Items": [
+                {"PK": {"S": "testset#a"}, "SK": {"S": "metadata"}},
+                {"PK": {"S": "testset#b"}, "SK": {"S": "metadata"}},
+            ]
+        },
+    )
+    stubber.add_response(
+        "batch_get_item", _batch_response([_wire_testset("a")], ["testset#b"])
+    )
+    for _ in range(5):
+        stubber.add_response("batch_get_item", _batch_response([], ["testset#b"]))
+    stubber.add_response(
+        "scan", {"Items": [_wire_testset("a"), _wire_testset("b")], "Count": 2}
+    )
+
+    with caplog.at_level("WARNING"):
+        records = index._load_test_set_records()
+
+    assert sorted(r["id"] for r in records) == ["a", "b"]
+    # The fallback must be reached by the retry bound, not by any other error.
+    assert "unprocessed keys remain" in caplog.text
+    stubber.assert_no_pending_responses()
+
+
+@pytest.mark.unit
+def test_claim_state_keeps_rows_read_when_keys_stay_unprocessed(
+    stubbed_ddb, monkeypatch, caplog
+):
+    """A document left unread loses its claim state, loudly; the rows that were
+    read keep theirs rather than being discarded with the batch."""
+    index, stubber, sleeps = stubbed_ddb
+    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id: ({}, "run1"))
+    docs = [{"objectKey": "a.pdf"}, {"objectKey": "b.pdf"}, {"objectKey": "c.pdf"}]
+    unclaimed = {"PK": {"S": "doc#run1/c.pdf"}, "SK": {"S": "none"}}
+    claimed = {
+        "PK": {"S": "doc#run1/a.pdf"},
+        "SK": {"S": "none"},
+        "HITLReviewOwner": {"S": "alice"},
+        "HITLStatus": {"S": "Completed"},
+    }
+    stubber.add_response(
+        "batch_get_item", _batch_response([claimed, unclaimed], ["doc#run1/b.pdf"])
+    )
+    for _ in range(5):
+        stubber.add_response("batch_get_item", _batch_response([], ["doc#run1/b.pdf"]))
+
+    with caplog.at_level("WARNING"):
+        state = index._claim_state_for_documents(TEST_SET_ID, {}, docs)
+
+    assert state == {
+        "a.pdf": {"owner": "alice", "status": "Completed", "exists": True},
+        "c.pdf": {"owner": "", "status": "", "exists": True},
+    }
+    assert "Could not read claim state" in caplog.text
+    assert "unprocessed keys remain" in caplog.text
+    stubber.assert_no_pending_responses()
+
+
+@pytest.mark.unit
+def test_claim_state_retries_unprocessed_keys(stubbed_ddb, monkeypatch):
+    index, stubber, sleeps = stubbed_ddb
+    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id: ({}, "run1"))
+    docs = [{"objectKey": "a.pdf"}, {"objectKey": "b.pdf"}]
+    item_b = {
+        "PK": {"S": "doc#run1/b.pdf"},
+        "SK": {"S": "none"},
+        "HITLReviewOwner": {"S": "bob"},
+    }
+    stubber.add_response(
+        "batch_get_item",
+        _batch_response([], ["doc#run1/b.pdf"]),
+        _batch_request(["doc#run1/a.pdf", "doc#run1/b.pdf"]),
+    )
+    stubber.add_response("batch_get_item", _batch_response([item_b]))
+
+    state = index._claim_state_for_documents(TEST_SET_ID, {}, docs)
+
+    assert state == {"b.pdf": {"owner": "bob", "status": "", "exists": True}}
+    stubber.assert_no_pending_responses()

@@ -372,9 +372,9 @@ query ListAvailableModels {
 ### GraphQL Mutations
 
 ```graphql
-# Start fine-tuning job
-mutation StartFinetuningJob($input: StartFinetuningJobInput!) {
-  startFinetuningJob(input: $input) {
+# Create fine-tuning job
+mutation CreateFinetuningJob($input: CreateFinetuningJobInput!) {
+  createFinetuningJob(input: $input) {
     id
     jobName
     status

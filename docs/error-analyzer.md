@@ -6,7 +6,7 @@ title: "Error Analyzer (Troubleshooting Tool) - PREVIEW"
 
 ## Overview
 
-The Error Analyzer is an intelligent AI-powered troubleshooting tool that helps diagnose and resolve document processing failures in the GenAI IDP Accelerator. It uses Amazon Bedrock's Claude Sonnet 4 model with the Strands agent framework to automatically analyze CloudWatch logs, DynamoDB tracking data, and Step Functions execution history to identify root causes and provide actionable recommendations.
+The Error Analyzer is an intelligent AI-powered troubleshooting tool that helps diagnose and resolve document processing failures in the GenAI IDP Accelerator. It uses a configurable Amazon Bedrock model — Claude Sonnet 4.6 by default — with the Strands agent framework to automatically analyze CloudWatch logs, DynamoDB tracking data, Step Functions execution history and X-Ray traces to identify root causes and provide actionable recommendations.
 
 This tool is not yet mature - we expect to refine and improve the capabilities in successive releases. Try it, and give us feedback via GitHub Issues.
 
@@ -17,8 +17,8 @@ https://github.com/user-attachments/assets/78764207-0fcf-4523-ad12-f428581a685f
 ### Key Capabilities
 
 - **Automatic Failure Diagnosis**: AI agent automatically investigates document processing failures
-- **Intelligent Query Routing**: Distinguishes between document-specific and system-wide analysis
-- **Multi-Source Analysis**: Correlates data from CloudWatch Logs, DynamoDB, and Step Functions
+- **Intelligent Tool Selection**: Distinguishes between document-specific and system-wide analysis and picks its own tools accordingly
+- **Multi-Source Analysis**: Correlates data from CloudWatch Logs, DynamoDB, Step Functions and X-Ray
 - **Contextual Recommendations**: Provides specific guidance for configuration, operational, or code issues
 - **Real-Time Updates**: Live job status with progress tracking and resumption capability
 - **Evidence-Based Analysis**: Shows detailed log evidence supporting diagnostic conclusions
@@ -37,27 +37,25 @@ https://github.com/user-attachments/assets/78764207-0fcf-4523-ad12-f428581a685f
 
 ```mermaid
 flowchart TD
-    UI[Web UI - TroubleshootModal] -->|GraphQL Mutation| Submit[submitAgentQuery]
-    Submit --> Agent[Error Analyzer Agent]
-    Agent -->|Route Query| Router{analyze_errors Tool}
-    
-    Router -->|Document-Specific| DocAnalysis[analyze_document_failure]
-    Router -->|System-Wide| SysAnalysis[analyze_recent_system_errors]
-    
-    DocAnalysis --> GetContext[get_document_context]
-    DocAnalysis --> SearchDocLogs[search_document_logs]
-    
-    SysAnalysis --> FindTable[find_tracking_table]
-    SysAnalysis --> ScanDB[scan_dynamodb_table]
-    SysAnalysis --> SearchStackLogs[search_stack_logs]
-    
-    GetContext --> DDB[(DynamoDB<br/>TrackingTable)]
-    SearchDocLogs --> CW[(CloudWatch Logs)]
-    SearchStackLogs --> CW
-    ScanDB --> DDB
-    
-    DocAnalysis --> Result[Analysis Result]
-    SysAnalysis --> Result
+    UI[Web UI - TroubleshootModal] -->|POST /op/submitAgentQuery| Submit[submitAgentQuery]
+    Submit --> Agent[Error Analyzer Agent<br/>Strands + Bedrock]
+    Agent -->|model selects tools| Tools{Diagnostic tools}
+
+    Tools --> CWTools["search_cloudwatch_logs<br/>search_performance_issues"]
+    Tools --> DDBTools["fetch_document_record<br/>fetch_recent_records"]
+    Tools --> CfgTool["fetch_pipeline_configuration"]
+    Tools --> LambdaTool["retrieve_document_context"]
+    Tools --> SFNTool["analyze_workflow_execution"]
+    Tools --> XRayTools["analyze_document_trace<br/>analyze_system_performance"]
+
+    CWTools --> CW[(CloudWatch Logs)]
+    DDBTools --> DDB[(DynamoDB<br/>TrackingTable)]
+    CfgTool --> CfgDDB[(DynamoDB<br/>ConfigurationTable)]
+    LambdaTool --> Lookup[Lookup Lambda]
+    SFNTool --> SFN[(Step Functions<br/>execution history)]
+    XRayTools --> XRay[(AWS X-Ray)]
+
+    Agent --> Result[Analysis Result]
     Result -->|polled every 2s via getAgentJobStatus| UI
 ```
 
@@ -73,81 +71,107 @@ Bedrock error text itself does not name the model):
 
 ```mermaid
 flowchart LR
-    subgraph "Main Router"
-        Router[analyze_errors]
+    subgraph "CloudWatch Logs"
+        CW1[search_cloudwatch_logs]
+        CW2[search_performance_issues]
     end
-    
-    subgraph "Document Analysis"
-        DocFail[analyze_document_failure]
-        GetCtx[get_document_context]
-        SearchDoc[search_document_logs]
+
+    subgraph "DynamoDB"
+        DB1[fetch_document_record]
+        DB2[fetch_recent_records]
+        DB3[fetch_pipeline_configuration]
     end
-    
-    subgraph "System Analysis"
-        SysErr[analyze_recent_system_errors]
-        FindTbl[find_tracking_table]
-        ScanTbl[scan_dynamodb_table]
-        SearchStk[search_stack_logs]
+
+    subgraph "Lambda"
+        LA1[retrieve_document_context]
     end
-    
-    Router --> DocFail
-    Router --> SysErr
-    DocFail --> GetCtx
-    DocFail --> SearchDoc
-    SysErr --> FindTbl
-    SysErr --> ScanTbl
-    SysErr --> SearchStk
+
+    subgraph "Step Functions"
+        SF1[analyze_workflow_execution]
+    end
+
+    subgraph "X-Ray"
+        XR1[analyze_document_trace]
+        XR2[analyze_system_performance]
+    end
+
+    Agent[Error Analyzer Agent] --> CW1
+    Agent --> CW2
+    Agent --> DB1
+    Agent --> DB2
+    Agent --> DB3
+    Agent --> LA1
+    Agent --> SF1
+    Agent --> XR1
+    Agent --> XR2
 ```
+
+The agent is a Strands agent constructed in
+`lib/idp_common_pkg/idp_common/agents/error_analyzer/agent.py`, which registers
+these tools and lets the model choose among them directly. There is no
+dispatching router tool between the model and the tools.
 
 **Tool Descriptions:**
 
-1. **analyze_errors** (Main Router)
-   - Classifies query intent (document-specific vs system-wide)
-   - Routes to appropriate analysis tool
-   - Manages time range parsing
+1. **search_cloudwatch_logs** (CloudWatch)
+   - Searches log groups for errors and failures
+   - Given a `document_id`, performs a targeted search using the document's
+     processing timestamps and Lambda request IDs; without one, searches
+     recent logs across the stack
+   - Arguments: `document_id`, `filter_pattern`, `hours_back`,
+     `max_log_events`, `max_log_groups`
 
-2. **analyze_document_failure** (Document-Specific)
-   - Investigates individual document failures
-   - Retrieves execution context and Lambda request IDs
-   - Searches document-specific logs
+2. **search_performance_issues** (CloudWatch)
+   - Searches for throttling, timeout, capacity and concurrency problems
+   - Arguments: `issue_type`, `hours_back`, `max_log_events`
 
-3. **analyze_recent_system_errors** (System-Wide)
-   - Analyzes error patterns across the system
-   - Categorizes errors by type
-   - Provides statistical summaries
+3. **fetch_document_record** (DynamoDB)
+   - Retrieves the complete tracking-table record for one document,
+     including status, timestamps, `ConfigVersion` and execution information
+   - Argument: `object_key`
 
-4. **get_document_context** (Lambda Integration)
-   - Retrieves document tracking data
-   - Extracts Step Functions execution ARN
-   - Provides Lambda request IDs for tracing
+4. **fetch_recent_records** (DynamoDB)
+   - Fetches records for documents processed within a time window, using
+     time-based partition scanning
+   - Arguments: `date`, `hours_back`, `limit`
 
-5. **search_document_logs** (CloudWatch)
-   - Filters logs by document ObjectKey
-   - Searches across multiple log groups
-   - Returns events with timestamps and context
+5. **fetch_pipeline_configuration** (Configuration)
+   - Returns the Bedrock model ID configured for each pipeline stage of a
+     configuration version, plus whether summarization is enabled
+   - This is what lets the agent name the exact model behind a
+     retired-or-unavailable-model error, since the Bedrock error text does
+     not name the model
+   - Argument: `config_version` (empty reads the active version)
 
-6. **search_stack_logs** (CloudWatch)
-   - System-wide log pattern matching
-   - Multi-pattern prioritized search
-   - Adaptive sampling for context management
+6. **retrieve_document_context** (Lambda)
+   - Invokes the lookup Lambda named by `LOOKUP_FUNCTION_NAME` to gather
+     execution context, timing and Step Functions details
+   - Extracts Lambda request IDs for correlating CloudWatch log searches
+   - Argument: `document_id`
 
-7. **find_tracking_table** (DynamoDB Discovery)
-   - Locates TrackingTable by stack name
-   - Validates table existence
+7. **analyze_workflow_execution** (Step Functions)
+   - Retrieves execution history, analyzes state transitions and identifies
+     the failure point in the workflow
+   - Argument: `document_id`
 
-8. **scan_dynamodb_table** (DynamoDB Query)
-   - Scans for failed documents
-   - Filters by status and time range
-   - Returns document metadata
+8. **analyze_document_trace** (X-Ray)
+   - Analyzes the X-Ray trace for one document for errors, bottlenecks and
+     service timeline
+   - Argument: `document_id`
+
+9. **analyze_system_performance** (X-Ray)
+   - Analyzes stack-specific traces first, then general infrastructure, to
+     find system-wide performance degradation
+   - Arguments: `stack_name`, `hours_back`
 
 ### Query Classification Logic
 
 ```mermaid
 flowchart TD
-    Query[User Query] --> Check{Document-Specific<br/>Pattern?}
+    Query[User Query] --> Check{Query names<br/>a document?}
     
-    Check -->|Match| DocPattern["Patterns:<br/>• document: filename.pdf<br/>• file: report.docx<br/>• ObjectKey: path/file"]
-    Check -->|No Match| GeneralPattern["General Queries:<br/>• Recent errors<br/>• System failures<br/>• Processing issues"]
+    Check -->|Yes| DocPattern["Names a document:<br/>• document: filename.pdf<br/>• file: report.docx<br/>• ObjectKey: path/file"]
+    Check -->|No| GeneralPattern["General Queries:<br/>• Recent errors<br/>• System failures<br/>• Processing issues"]
     
     DocPattern --> DocAnalysis[Document-Specific<br/>Analysis]
     GeneralPattern --> SysAnalysis[System-Wide<br/>Analysis]
@@ -286,36 +310,47 @@ The agent interprets time ranges intelligently:
 
 ### Agent Configuration in template.yaml
 
-The Error Analyzer is configured in the CloudFormation template under the `agents` section of the configuration schema:
+The Error Analyzer's editable settings are declared in the `ConfigSchema` of
+`patterns/unified/template.yaml`, under the `agents` section. The schema is what
+drives the UI Configuration panel, and it declares three properties:
 
 ```yaml
 agents:
   error_analyzer:
     type: object
     sectionLabel: Error Analysis Agent
+    description: Configuration for the error analysis agent
     properties:
       model_id:
         type: string
-        enum: [
-          "us.amazon.nova-pro-v1:0",
-          "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-          "us.anthropic.claude-sonnet-4-6"
-        ]
+        description: Bedrock model ID for the error analysis agent (requires tool use support)
+        enum:
+          - "us.amazon.nova-pro-v1:0"
+          - "us.anthropic.claude-sonnet-4-6"
+          # ... see the template for the full list of selectable models
         default: "us.anthropic.claude-sonnet-4-6"
+        order: 0
+      lookback_hours:
+        type: integer
+        description: Default window, in hours, for the error analyzer's CloudWatch log searches when the question names none
+        default: 24
+        order: 1
       system_prompt:
         type: string
         format: textarea
-      parameters:
-        type: object
-        properties:
-          max_log_events:
-            type: integer
-            default: 5
-          time_range_hours_default:
-            type: integer
-            default: 24
+        order: 2
 ```
+
+The enum is long — it carries `us.`, `global.` and `eu.` inference-profile
+variants of each supported model — so read it from the template rather than
+from a list here. Two things about it are worth knowing before you pick a
+value: Claude Haiku models are **not** in it, and a value outside the enum is
+rejected, so the model must support tool use.
+
+There is no `parameters` object in the schema. The `agents.error_analyzer.parameters`
+block described [below](#advanced-parameters-config-file-only) is accepted by
+the configuration model and can be set in a configuration YAML, but it is not
+surfaced in the UI Configuration panel.
 
 ### Configuration Parameters
 
@@ -329,68 +364,135 @@ agents:
 - More accurate root cause identification
 
 **Alternative Options**:
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`: Cost-effective for simple errors
 - `us.amazon.nova-pro-v1:0`: AWS-native option
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`: Good balance of cost and
   capability, but AWS has moved it to legacy (end of life 2027-04-08) and it
   takes no further Service Quota increases
 
+Claude Haiku models are not selectable for this agent. The enum does not
+include them, so a configuration naming one is rejected.
+
+#### lookback_hours
+
+**Purpose**: The default search window, in hours, for the two CloudWatch log
+tools.
+
+**Default**: `24` hours
+
+`search_cloudwatch_logs` (in its system-wide mode, without a `document_id`) and
+`search_performance_issues` each take an `hours_back` argument. When the model
+omits it, the tool searches the last `lookback_hours` hours. When the model
+passes it — because the query asked for a window, as in "errors in the last
+hour" or "what failed yesterday" — the model's value is used instead. Both tools
+tell the model to omit the argument unless the user asked for a window. A
+configured value above 168 hours, the maximum the tools advertise, is treated as
+168.
+
+Three things `lookback_hours` does not control. A document-specific
+`search_cloudwatch_logs` call searches a window derived from the document's
+tracking record, whatever this is set to: a few minutes either side of the
+completion time for a failed document, the processing run from start to
+completion for one that finished, the 30 minutes before completion for one that
+finished with no recorded start time, and the last 30 minutes for one still in
+progress or with no completion time. `fetch_recent_records`
+counts its `hours_back` back from the end of the requested date rather than from
+now, and keeps its own 24-hour default. `analyze_system_performance` keeps its
+own 1-hour default, because the X-Ray service graph it reads is bounded
+separately (see `xray_analysis_hours` below).
+
 #### system_prompt
 
 **Purpose**: Defines agent behavior and response formatting
 
-**Key Requirements**:
-1. Enforce three-section structure (Root Cause, Recommendations, Evidence)
-2. Specify evidence formatting with collapsible HTML details
-3. Define recommendation guidelines for different issue types
-4. Set time range parsing rules
+The shipped default is in
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-agents.yaml`, under
+`agents.error_analyzer.system_prompt`. It is long, and it is the authoritative
+copy — read it there rather than from an excerpt, which goes stale silently.
+It covers:
 
-**Default Prompt Highlights**:
-```
-You are an intelligent error analysis agent for the GenAI IDP system.
+- the pipeline stages and the AWS services behind each, so the agent can map a
+  failing stage to the log group that holds its errors
+- an investigation workflow and a "5 whys" instruction to keep the agent from
+  stopping at the first error message it finds
+- the distinction between a stage Lambda's generic wrapper message and the
+  underlying exception, which is the single most common way an analysis goes
+  shallow
+- a tool-usage section that names each of the agent's tools by its registered
+  name (listed under [Tool Ecosystem](#tool-ecosystem)), says when to
+  use it and which arguments to pass, split by document-specific, system-wide,
+  workflow, configuration and X-Ray questions
+- a catalogue of recurring error patterns (throttling, timeout, configuration,
+  permissions, input quality, BDA-specific, Bedrock model errors, and retired
+  or unavailable models) with the likely cause and what to check for each
+- the required output format: a `## Root Cause` section opening with a
+  confidence rating, a `## Recommendations` section capped at three items, and
+  a collapsible HTML `<details>` Evidence section
+- recommendation guidelines that differ by issue class — for a code defect the
+  agent is told not to propose code changes, because a user cannot change
+  Lambda code, and to describe the error well enough to report it instead
 
-ALWAYS format your response with exactly these three sections:
-## Root Cause
-## Recommendations
-<details><summary><strong>Evidence</strong></summary>...</details>
+If you replace the prompt, keep the three-section output format: the UI parses
+it to render the result, and the Evidence panel depends on the `<details>`
+block.
 
-RECOMMENDATION GUIDELINES:
-For code/system bugs: Do not suggest code modifications
-For configuration issues: Direct users to UI configuration panel
-For operational issues: Provide immediate troubleshooting steps
-```
+Name tools by the names the agent registers, which are the function names in
+`idp_common/agents/error_analyzer/tools/`. The model is given only those tools,
+so a prompt that directs it to any other name sends it after a tool it does not
+have. `tests/unit/agents/error_analyzer/test_prompt_tool_names.py` in the
+`idp_common` package checks every shipped copy of the prompt against the
+registered set in both directions.
 
-#### parameters.max_log_events
+⚠️ **A configuration profile you created keeps the prompt it was saved with.**
+Every profile is saved as a full, independent snapshot, and an upgrade re-seeds
+only `default` and the stack-managed profiles. So a profile created before this
+release carries the earlier prompt whether or not anyone edited it, and that
+prompt directs the model to tools that never existed (`cloudwatch_document_logs`,
+`dynamodb_status`, `cloudwatch_logs`, `dynamodb_query`, `stepfunction_details`,
+`lambda_lookup`, `xray_trace`, `xray_performance_analysis`). To update one, open
+the profile in the Configuration panel, use **Restore default** on the Error
+Analysis Agent's `system_prompt` field and save. If the prompt was customised on
+purpose, rewrite its tool-usage section against the registered tools instead, so
+the customisation is kept.
 
-**Purpose**: Limits log events returned to manage context window
+#### Advanced parameters (config-file only)
 
-**Default**: `5` events
-**Range**: 1-100
-**Considerations**:
-- Higher values provide more context but consume more tokens
-- For system-wide analysis, uses adaptive sampling across patterns
-- Individual log messages are truncated if exceeding 200 characters
+`agents.error_analyzer.parameters` is accepted by the configuration model but
+is absent from the template's `ConfigSchema`, so it can only be set in a
+configuration YAML — it does not appear in the UI Configuration panel. The full
+field list is `ErrorAnalyzerParameters` in
+`lib/idp_common_pkg/idp_common/config/models.py`.
 
-**Tuning Guidance**:
-- Simple errors: 3-5 events sufficient
-- Complex investigations: 10-20 events
-- Pattern analysis: 20-50 events
+These take effect as written:
 
-#### parameters.time_range_hours_default
+| Field | Default | Effect |
+|---|---|---|
+| `max_log_message_length` | `400` | Individual log messages longer than this are truncated |
+| `settings_cache_ttl_seconds` | `300` | TTL for the SSM settings cache |
+| `max_stepfunction_timeline_events` | `50` | Timeline events included from an execution history |
+| `max_stepfunction_error_length` | `400` | Truncation length for a Step Functions error message |
+| `max_stepfunction_history_pages` | `10` | Pages of execution history fetched |
+| `xray_slow_segment_threshold_ms` | `5000` | Segment duration treated as slow |
+| `xray_response_time_threshold_ms` | `10000` | Response time treated as slow |
+| `xray_analysis_hours` | `3` | Window for X-Ray service-graph analysis (max 6) |
+| `xray_error_rate_threshold` | `0.05` | Error rate treated as significant |
+| `max_log_groups` | `20` | Log groups `search_cloudwatch_logs` searches when the model passes no `max_log_groups`; a value the model passes is used instead. A configured value above 50, the maximum the tool advertises, is treated as 50 |
 
-**Purpose**: Default lookback period when not specified in query
+⚠️ **`max_log_events` is read but cannot currently override the tool
+default.** `search_cloudwatch_logs` and `search_performance_issues` declare
+`max_log_events: int = 10` in their own signatures, so when the model omits the
+argument a search returns up to 10 events per log group whatever this is set to.
+Both tools fall through to the configured value only when the model passes a
+count below 1, which CloudWatch Logs would reject. The configured
+default is `5`, and every saved configuration profile stores that `5`, so making
+the setting take effect would change the number of events every existing
+deployment receives; that is an open decision on
+[issue #1555](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1555).
+To change how many events come back, ask for it in the query — the model passes
+the argument through.
 
-**Default**: `24` hours (1 day)
-**Range**: 1-168 hours (1 week)
-**Considerations**:
-- Longer ranges increase CloudWatch Logs query time
-- Wider time windows may return less relevant results
-- Balance between coverage and performance
-
-**Tuning Guidance**:
-- Active development: 1-6 hours
-- Production monitoring: 24 hours
-- Post-mortem analysis: 72-168 hours
+`time_range_hours_default` is declared and validated by the configuration
+model, so setting it is accepted, but nothing in the agent or its tools reads
+it. Set the default window with `lookback_hours`, described above.
 
 ### Configuration Example (config.yaml)
 
@@ -398,26 +500,13 @@ For operational issues: Provide immediate troubleshooting steps
 agents:
   error_analyzer:
     model_id: us.anthropic.claude-sonnet-4-6
-    system_prompt: |
-      You are an intelligent error analysis agent for the GenAI IDP system.
-      
-      Use the analyze_errors tool to investigate issues. ALWAYS format your 
-      response with exactly these three sections in this order:
-      
-      ## Root Cause
-      Identify the specific underlying technical reason why the error occurred.
-      
-      ## Recommendations
-      Provide specific, actionable steps to resolve the issue. Limit to top 
-      three recommendations only.
-      
-      <details>
-      <summary><strong>Evidence</strong></summary>
-      Format log entries with their source information...
-      </details>
+    lookback_hours: 24
+    # Omit system_prompt to inherit the shipped default from base-agents.yaml.
+    # Override it only to change agent behaviour, and keep the three-section
+    # output format the UI parses.
     parameters:
-      max_log_events: 5
-      time_range_hours_default: 24
+      max_log_message_length: 400
+      max_stepfunction_history_pages: 10
 ```
 
 ## Understanding Results
@@ -517,27 +606,27 @@ ValidationException: JSON parsing error at line 42
 
 ### Intelligent Query Classification
 
-The agent uses regex pattern matching to determine analysis type:
+Nothing parses the query before the model sees it. The model reads it and
+decides which tools to call and what to pass them, so the split between
+document-specific and system-wide analysis is a consequence of whether it
+supplies a `document_id`:
 
-```python
-# Document-specific patterns (require colon immediately after keyword)
-document: filename.pdf   # Matches
-file: report.docx       # Matches
-ObjectKey: path/file    # Matches
+```
+document: filename.pdf   → model passes document_id="filename.pdf"
+file: report.docx        → model passes document_id="report.docx"
+ObjectKey: path/file     → model passes document_id="path/file"
 
-# General analysis (no specific pattern)
-recent errors           # System-wide
-find failures          # System-wide
-what happened          # System-wide
+recent errors            → model omits document_id
+find failures            → model omits document_id
+what happened            → model omits document_id
 ```
 
-**Pattern Detection Logic**:
-```
-If query matches "document:\s*([^\s]+)" → Document-Specific Analysis
-If query matches "file:\s*([^\s]+)" → Document-Specific Analysis  
-If query matches "ObjectKey:\s*([^\s]+)" → Document-Specific Analysis
-Otherwise → System-Wide Analysis
-```
+`search_cloudwatch_logs` then branches on that argument: with a `document_id`
+it looks up the document's processing window and Lambda request IDs and
+searches only the relevant log groups; without one it searches recent logs
+across the stack. Writing `document:` in front of a filename is a convention
+that helps the model pick the filename out of the sentence — it is not a
+required syntax, and a query that names a file plainly works too.
 
 ### Multi-Pattern Error Detection
 
@@ -732,11 +821,15 @@ Good ✓
 document: contract.pdf         # Clear document-specific
 Recent validation errors       # Clear system-wide
 What went wrong today?         # Natural language OK
+Analyze document contract.pdf  # Also fine - no required syntax
 
 Poor ✗
-Analyze document contract.pdf  # Ambiguous format
-Find errors for file: x.pdf and system  # Mixed intents
+Find errors for file: x.pdf and system  # Mixed intents in one query
 ```
+
+Ask one question at a time. A query that mixes a single document with a
+system-wide sweep gives the model two goals at once, and it will usually
+pursue only one of them.
 
 ### Interpreting Results Effectively
 
@@ -803,46 +896,43 @@ Action: Focus on validation_errors first as they affect most documents
 Choose model based on error complexity:
 
 ```yaml
-# Simple validation errors, frequent analysis
-model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
-
 # Complex multi-component failures, critical analysis
 model_id: us.anthropic.claude-sonnet-4-6  # Recommended and the default
+
+# Lower-cost option for routine analysis
+model_id: us.amazon.nova-pro-v1:0
 
 # Still selectable, but AWS has moved it to legacy (end of life 2027-04-08)
 model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
-#### Adjusting max_log_events
+The agent calls tools on every investigation, so any model you pick has to
+support tool use. Claude Haiku models are not in the enum and cannot be
+selected here.
 
-Tune based on analysis type:
+#### Scoping how much evidence is gathered
+
+For a single question, ask for it in the query. The model passes `hours_back`,
+`max_log_events` and `max_log_groups` to the tools per call, so "check the last
+6 hours" or "show me more log events" changes the search directly, and a value
+the model passes always wins over configuration.
+
+To change the default for every question, set
+[`lookback_hours`](#lookback_hours) for the log-search window and
+`parameters.max_log_groups` for the number of log groups searched.
+`parameters.max_log_events` cannot override the tool default — see
+[Advanced parameters](#advanced-parameters-config-file-only) for why.
+
+What you *can* set usefully in `parameters` is how much of each result is
+retained:
 
 ```yaml
 parameters:
-  # Development/testing - need detailed context
-  max_log_events: 20
-  
-  # Production monitoring - balance detail and cost
-  max_log_events: 5  # Default
-  
-  # Quick health checks - minimize cost
-  max_log_events: 3
-```
+  # Keep more of each log message before truncation
+  max_log_message_length: 800
 
-#### Time Range Optimization
-
-Set default based on deployment frequency:
-
-```yaml
-parameters:
-  # Frequent deployments (multiple per day)
-  time_range_hours_default: 6
-  
-  # Daily deployments
-  time_range_hours_default: 24  # Default
-  
-  # Weekly deployments
-  time_range_hours_default: 72
+  # Walk further back through a long execution history
+  max_stepfunction_history_pages: 20
 ```
 
 ## Troubleshooting Common Issues
@@ -993,15 +1083,9 @@ query GetAgentJobStatus($jobId: ID!) {
 }
 ```
 
-**Subscriptions**:
-```graphql
-subscription OnAgentJobComplete($jobId: ID!) {
-  onAgentJobComplete(jobId: $jobId) {
-    jobId
-    status
-  }
-}
-```
+There is no subscription operation in this list. Job completion is detected by
+polling `getAgentJobStatus`, as described under
+[Job Resumption](#job-resumption).
 
 #### CloudWatch Logs Integration
 
@@ -1070,74 +1154,60 @@ filter_pattern = f'"execution_id" = "{execution_id}"'
 
 ### Tool Implementation Reference
 
-#### analyze_errors (Main Router)
+Every tool lives under
+`lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/`, is exported from
+that package's `__init__.py`, and is registered on the agent in
+`../agent.py`. Each is decorated with `@tool` and returns a `Dict[str, Any]`.
 
-**Location**: `lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/error_analysis_tool.py`
+| Tool | Module | Signature |
+|---|---|---|
+| `search_cloudwatch_logs` | `cloudwatch_tool.py` | `(document_id="", filter_pattern="ERROR", hours_back=None, max_log_events=10, max_log_groups=None)` |
+| `search_performance_issues` | `cloudwatch_tool.py` | `(issue_type="performance", hours_back=None, max_log_events=10)` |
+| `fetch_document_record` | `dynamodb_tool.py` | `(object_key)` |
+| `fetch_recent_records` | `dynamodb_tool.py` | `(date="", hours_back=24, limit=100)` |
+| `fetch_pipeline_configuration` | `config_tool.py` | `(config_version="")` |
+| `retrieve_document_context` | `lambda_tool.py` | `(document_id)` |
+| `analyze_workflow_execution` | `stepfunction_tool.py` | `(document_id="")` |
+| `analyze_document_trace` | `xray_tool.py` | `(document_id)` |
+| `analyze_system_performance` | `xray_tool.py` | `(stack_name="", hours_back=1)` |
 
-**Function Signature**:
-```python
-@tool
-def analyze_errors(query: str, time_range_hours: int = 1) -> Dict[str, Any]:
-    """
-    Intelligent error analysis with precise query classification.
-    
-    Args:
-        query: User's error analysis query
-        time_range_hours: Hours to look back (default: 1, uses config default)
-    
-    Returns:
-        Dict containing analysis results or error information
-    """
-```
+#### search_cloudwatch_logs
 
-**Classification Logic**:
-```python
-def _classify_query_intent(query: str) -> Tuple[str, str]:
-    """
-    Classify query as document-specific vs general system analysis.
-    
-    Returns:
-        Tuple of (intent_type, document_id)
-        - intent_type: "document_specific" or "general_analysis"
-        - document_id: Extracted document ID or empty string
-    """
-    specific_doc_patterns = [
-        r"document:\s*([^\s]+)",
-        r"file:\s*([^\s]+)",
-        r"ObjectKey:\s*([^\s]+)",
-    ]
-    
-    for pattern in specific_doc_patterns:
-        match = re.search(pattern, query, re.IGNORECASE)
-        if match:
-            return ("document_specific", match.group(1).strip())
-    
-    return ("general_analysis", "")
-```
+The one tool with two distinct modes, selected by whether `document_id` is
+supplied:
 
-#### analyze_document_failure
+- **With a `document_id`** it calls `_search_document_logs`, which first
+  resolves the document's processing window and Lambda request IDs (via
+  `_get_document_context`, which reuses `fetch_document_record`) and then
+  filters only the log groups that window implicates. This is the targeted
+  path, and it is much cheaper than a stack-wide sweep.
+- **Without one** it calls `_search_stack_logs`, which searches recent logs
+  across the stack's log groups for the given `filter_pattern`.
 
-**Location**: `lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/document_analysis_tool.py`
+Both paths truncate individual messages at `max_log_message_length` and cap
+the number of log groups searched. An omitted `hours_back` resolves to the
+configured `lookback_hours` and an omitted `max_log_groups` to
+`parameters.max_log_groups`.
 
-**Purpose**: Document-specific failure analysis
+#### retrieve_document_context
 
-**Key Operations**:
-1. Retrieves document context from DynamoDB
-2. Searches CloudWatch logs filtered by ObjectKey
-3. Extracts Lambda request IDs for tracing
-4. Correlates execution context with errors
+Invokes a separate lookup Lambda rather than reading AWS APIs directly. The
+function name comes from the `LOOKUP_FUNCTION_NAME` environment variable, and
+the tool raises if it is unset — which is the first thing to check if this tool
+alone is failing.
 
-#### analyze_recent_system_errors
+#### fetch_pipeline_configuration
 
-**Location**: `lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/general_analysis_tool.py`
+Loads a configuration version through `idp_common.config.get_config` and walks
+it for every stage that references a Bedrock model, returning
+`stage_models` as a list of `{"stage": <dotted path>, "model": <model_id>}`
+plus whether summarization is enabled.
 
-**Purpose**: System-wide error pattern analysis
-
-**Key Operations**:
-1. Scans DynamoDB for recent failures
-2. Multi-pattern CloudWatch log search
-3. Error categorization and statistics
-4. Adaptive sampling for context management
+This is the tool that resolves retired-model failures. A Bedrock
+`ResourceNotFoundException` does not name the model that was rejected, so the
+chain is: `fetch_document_record` for the document's `ConfigVersion`, then
+`fetch_pipeline_configuration` with that version, then match the failing stage
+to its configured model ID.
 
 ### Performance Considerations
 

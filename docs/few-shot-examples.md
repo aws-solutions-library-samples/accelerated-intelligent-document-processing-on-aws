@@ -1,15 +1,23 @@
 ---
-title: "Few-Shot Examples in Pattern-2: Classification and Extraction"
+title: "Few-Shot Examples in Pipeline Mode: Classification and Extraction"
 ---
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-# Few-Shot Examples in Pattern-2: Classification and Extraction
+# Few-Shot Examples in Pipeline Mode: Classification and Extraction
 
 ## Overview
 
-Pattern-2 supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+Pipeline mode supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+
+Few-shot examples apply to **pipeline mode only** — the processing mode that runs
+Amazon Textract or LLM-based OCR, then classification and extraction as separate
+Bedrock inferences. They reach the model through the `{FEW_SHOT_EXAMPLES}`
+placeholder in the classification and extraction prompts, and BDA mode runs
+neither of those steps: Amazon Bedrock Data Automation performs classification
+and extraction itself. Examples declared on a class are therefore ignored when
+`use_bda` selects BDA mode, with no error.
 
 ## What is Few-Shot Learning?
 
@@ -36,7 +44,7 @@ Consider using few-shot examples when:
 
 ## Configuration Structure
 
-Few-shot examples are configured within document class definitions using JSON Schema format in your Pattern-2 configuration:
+Few-shot examples are configured within document class definitions using JSON Schema format in your configuration:
 
 ```yaml
 classes:
@@ -186,7 +194,7 @@ The system uses these environment variables for resolving relative paths:
 
 ### Multimodal vs Text-Only Examples
 
-Few-shot examples in Pattern-2 support both multimodal and text-only approaches:
+Few-shot examples support both multimodal and text-only approaches:
 
 **Multimodal Examples (Recommended)**:
 - Include both `x-aws-idp-image-path` and text descriptions in prompts
@@ -226,9 +234,9 @@ examples:
     x-aws-idp-image-path: "config_library/unified/your_config/example-images/invoice1.pdf"
 ```
 
-## How Few-Shot Examples Work in Pattern-2
+## How Few-Shot Examples Work
 
-Pattern-2 uses few-shot examples differently for classification and extraction tasks:
+Pipeline mode uses few-shot examples differently for classification and extraction tasks:
 
 ### Classification Process
 
@@ -249,21 +257,21 @@ Under `strategy: two_stage`:
   `classification.two_stage.section_classification.llm.task_prompt`, the call
   that assigns the class. The shipped prompt there carries the placeholder, so
   defining examples is enough.
-- The **segmentation** prompts
-  (`classification.two_stage.segmentation.llm.page.task_prompt` and
+- The **boundary detection** prompts
+  (`classification.two_stage.boundary_detection.llm.page.task_prompt` and
   `…llm.packet.task_prompt`) deliberately carry no class vocabulary and no
   examples — they carry `{BOUNDARY_HINTS}` instead. Withholding the class list
   and the examples from the boundary pass is where two stage's prefix saving
-  comes from, so adding `{FEW_SHOT_EXAMPLES}` to a segmentation prompt spends
+  comes from, so adding `{FEW_SHOT_EXAMPLES}` to a boundary detection prompt spends
   exactly the tokens the strategy exists to avoid, on a call that is only being
-  asked where documents start.
+  asked where sections start.
 - Editing `one_stage.page.task_prompt` under `two_stage` changes nothing and
   raises no error, because that block is not read.
 
 ### Extraction Process
 
 When extracting attributes from documents:
-- **Example Scope**: Uses examples ONLY from the specific document class being processed
+- **Example Scope**: Uses examples ONLY from the class of the section being processed
 - **Purpose**: Show the expected attribute extraction format and values
 - **Content**: Uses `x-aws-idp-attributes-prompt` field from examples (with optional images)
 - **Benefit**: Model sees concrete examples of what the extraction output should look like
@@ -948,4 +956,4 @@ The few-shot examples feature continues to evolve with planned enhancements:
 - **Hybrid Examples**: Better integration of text and image content within examples
 - **Enhanced Multi-Image Support**: Advanced algorithms for optimal image selection from directories
 
-Few-shot examples with prompt caching represent a significant step forward in making Pattern-2 more accurate, cost-effective, and easier to configure for diverse document processing scenarios. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.
+Few-shot examples with prompt caching represent a significant step forward in making pipeline mode more accurate, cost-effective, and easier to configure for diverse document processing scenarios. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.

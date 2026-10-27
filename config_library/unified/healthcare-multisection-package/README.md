@@ -122,7 +122,7 @@ see the whole package in one call instead, set
 overlapping windows and merged, which keeps a request under the 20-image-block
 threshold above which Bedrock downscales every image to 2,000 px. Keep
 `window_pages` at or below 20 while images are on, and no smaller than your
-longest single document.
+longest single section.
 
 ### Extraction Settings
 
@@ -172,7 +172,7 @@ Based on testing with the provided sample document:
 To use this healthcare configuration:
 
 1. **Deploy with Sample**: Upload `samples/healthcare-multisection-package.pdf` to test the configuration
-2. **Review Results**: Examine the classified documents and extracted nested data structure in the UI
+2. **Review Results**: Examine the classified sections and extracted nested data structure in the UI
 3. **Evaluate Performance**: Use the evaluation framework to compare against baseline results
 4. **Customize**: Modify attribute definitions for your specific healthcare document formats
 

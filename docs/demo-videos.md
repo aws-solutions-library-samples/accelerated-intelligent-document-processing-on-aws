@@ -78,7 +78,7 @@ A comprehensive technical session demonstrating how AWS's GenAI Intelligent Docu
 
 **Replicate This Demo**: You can now run this exact healthcare demo yourself using the pre-configured sample and config files included in the repository:
 - **Sample Document**: [healthcare-multisection-package.pdf](../samples/healthcare-multisection-package.pdf)
-- **Configuration**: [Pattern-2 Healthcare Config](../config_library/unified/healthcare-multisection-package/config.yaml)
+- **Configuration**: [Healthcare multi-section config](../config_library/unified/healthcare-multisection-package/config.yaml)
 
 These are the same files used in the video demonstration and can be deployed with the IDP CLI or web UI.
 
@@ -315,7 +315,7 @@ https://github.com/user-attachments/assets/1d17ea33-f098-4d9e-a461-1113b9dc3ce9
 ---
 
 ### Test Set - ConfBench (Confidence & OCR Robustness)
-Installable Feature Platform extension that deploys the [amazon/ConfBench](https://huggingface.co/datasets/amazon/ConfBench) benchmark into Test Studio on demand — the 75 verified FCC invoices degraded with up to 21 Augraphy noise pipelines into 1,346 (document, noise variant) pairs with identical ground truth. Purpose-built for measuring confidence calibration, OCR robustness, and extraction quality as input quality degrades, with results directly comparable to the clean RealKIE-FCC-Verified baseline when both test sets run on one configuration version: the stack-managed `realkie-fcc-verified` profile sets `classification.file_shape.sectionSplitting: disabled`, and the extension's preset does not set it.
+Installable Feature Platform extension that deploys the [amazon/ConfBench](https://huggingface.co/datasets/amazon/ConfBench) benchmark into Test Studio on demand — the 75 verified FCC invoices degraded with up to 21 Augraphy noise pipelines into 1,346 (document, noise variant) pairs with identical ground truth. Purpose-built for measuring confidence calibration, OCR robustness, and extraction quality as input quality degrades, with results directly comparable to the clean RealKIE-FCC-Verified baseline when both test sets run on one configuration version: the stack-managed `realkie-fcc-verified` profile sets `classification.document_shape.sectionSplitting: disabled`, and the extension's preset does not set it.
 
 https://github.com/user-attachments/assets/0b164e6d-c694-4127-8be9-45ec7fd41bee
 

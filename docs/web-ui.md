@@ -9,9 +9,9 @@ SPDX-License-Identifier: MIT-0
 
 The solution includes a responsive web-based user interface built with React that provides comprehensive document management and monitoring capabilities.
 
-![Web UI Screenshot](../images/WebUI.png)
+![Document List filtered to a folder of processed sample documents](../images/WebUI.png)
 
-_The GenAIIDP Web Interface showing the document tracking dashboard with status information, classification results, and extracted data._
+_The Document List, filtered to a folder of processed sample documents, with status, configuration profile, duration and confidence-alert columns._
 
 ## Features
 
@@ -105,15 +105,17 @@ The **Upload Documents** panel accepts documents from two sources, selected with
 - **From my computer** — pick one or more files with the file picker (or drag-and-drop). Files are uploaded directly to the InputBucket via a presigned POST and processed automatically.
 - **Sample documents** — choose from the sample documents bundled with the deployment (e.g. a multi-page bank statement, a lending package, a batch of W-2 forms). Selecting a sample copies it server-side into the InputBucket — no local download required. This is the easiest way to try the accelerator or evaluate a configuration preset end-to-end.
 
-In both modes you can set an optional **folder prefix** and pick the **Configuration Version** used to process the document(s).
+In both modes you can set an optional **folder prefix** and pick the **Configuration Profile** and **Configuration revision** used to process the document(s).
+
+![Upload Documents panel with a folder prefix, configuration profile and revision selected, and three files queued](../images/webui-upload.png)
 
 ### One-click config for samples
 
 Many bundled samples are tuned for a specific configuration preset in the [Configuration Library](configuration-profiles.md) (for example, the bank-statement sample pairs with the `bank-statement-sample` config). When you select such a sample:
 
-- If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration version and processes the sample with it. Uncheck it to process the sample under the currently selected version instead.
-- If the associated configuration is **already imported**, that version is preselected automatically.
-- Samples with no associated configuration are simply uploaded under the selected version.
+- If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration profile and processes the sample with it. Uncheck it to process the sample under the currently selected profile instead.
+- If the associated configuration is **already imported**, that profile is preselected automatically.
+- Samples with no associated configuration are simply uploaded under the selected profile.
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 
@@ -252,40 +254,46 @@ which saves it. A grouping-only save writes directly, so it would race a run in
 progress; if the document is queued or running the save is refused with a message, and
 the arrangement you made is left on screen rather than discarded.
 
-Not available for Pattern-1, where BDA owns the section structure.
+Available in every deployment. The board rearranges the section records already in the
+document's output, so whether BDA or the Textract-plus-Bedrock pipeline produced them
+makes no difference to what it can edit.
 
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
-stays a deliberate act. The same board and the same rules are used for test-set ground
+stays a deliberate act. ⚠️ **That applies in BDA mode too**, where the values were
+produced by Bedrock Data Automation rather than by the pipeline's extraction step:
+deleting the section still discards them, and there is no read-only variant of this
+board to fall back on. The same board and the same rules are used for test-set ground
 truth; see
 [test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
 being preserved matters most because they are the annotations being built.
 
 ## Edit Sections
 
-The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
+The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization.
+
+![Document Details page for a six-page lending package, showing the Document Sections panel with each section's class, pages, low-confidence field count and status](../images/webui-document-sections.png)
 
 ### Key Capabilities
 
 - **Section Management**: Create, update, and delete document sections with validation
-- **Classification Updates**: Change section document types with real-time validation
+- **Classification Updates**: Change section classes with real-time validation
 - **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
 - **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
 - **Immediate Feedback**: Status updates appear instantly in the UI
-- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+- **Available in every deployment**: the editor works on the section records in the document's output, so it is offered whichever processing mode produced them
 
 ### How to Use
 
 1. Navigate to a completed document's detail page
 2. In the "Document Sections" panel, click the "Edit Sections" button
-3. **For Pattern-2/Pattern-3**: Enter edit mode with inline editing capabilities
-4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+3. Enter edit mode, with inline editing of each section's class and page assignments
 
-#### Editing Workflow (Pattern-2/Pattern-3)
+#### Section editing workflow
 
-1. **Edit Section Classifications**: Use dropdowns to change document types
+1. **Edit Section Classifications**: Use dropdowns to change section classes
 2. **Modify Page Assignments**: Edit comma-separated page IDs (e.g., "1, 2, 3")
-3. **Add New Sections**: Click "Add Section" for new document boundaries
+3. **Add New Sections**: Click "Add Section" for new section boundaries
 4. **Delete Sections**: Use remove buttons to delete unnecessary sections
 5. **Validation**: Real-time validation prevents overlapping pages and invalid configurations
 6. **Submit Changes**: Click "Save & Process Changes" to trigger selective reprocessing
@@ -308,28 +316,33 @@ The Edit Sections feature uses **2-phase schema knowledge optimization**:
   - **Assessment**: Skips if extraction results contain assessment data
 - **Selective Reprocessing**: Only modified sections lose their data and get reprocessed
 
-### Pattern Compatibility
-
-#### Pattern-2 and Pattern-3 Support
+### What section editing gives you, and what it costs
 
 - **Full Functionality**: Complete edit capabilities with intelligent reprocessing
 - **Performance Optimization**: Automatic selective processing for efficiency
 - **Data Preservation**: Unmodified sections retain all processing results
 
-#### Pattern-1 Support (Data-Only Edit Mode)
+Editing the structure is offered in every deployment, whichever processing mode the
+document ran through. Section records look the same in the output either way, so the
+editor does not distinguish them, and there is no data-only variant of it.
 
-Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic section management. Edit Mode in Pattern-1 provides **data-only editing**:
-
-- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" link for each section, which opens the document editor
-- **Section Structure**: Read-only - section boundaries, classifications, and page assignments are managed by BDA
-- **Reprocessing**: "Save and Reprocess" triggers evaluation and summarization steps without re-invoking BDA
-- **BDA Skip Logic**: When reprocessing with existing pages/sections data, BDA invocation is automatically skipped
-
-**Note**: Pattern-2 and Pattern-3 offer full section structure editing. Pattern-1 maintains BDA-managed section boundaries while allowing extraction data modifications.
+⚠️ **In BDA mode, a structural edit loses the edited section's values.** Bedrock Data
+Automation decided the section boundaries and the extracted values in the first place,
+and a changed or added section's values are cleared before the document is requeued.
+The workflow then skips Bedrock Data Automation for any document that still has at least
+one section, whatever state that section's extraction data is in, and nothing else in
+the BDA branch extracts values. So the section you edited comes back with its values gone
+and nothing to replace them, on a single-section document as much as on a multi-section
+one. Edit the structure of a BDA-mode document only when you are prepared for that, and prefer
+**Edit Data** on the section row when what you want is to correct a value rather than a
+boundary: that opens the document editor on the section and writes the value without
+touching the structure or requeueing anything.
 
 ## Edit Pages
 
-The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing for Pattern-2 and Pattern-3 workflows.
+The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing.
+
+![Document Pages panel listing each page with its class, classification confidence and thumbnail](../images/webui-document-pages.png)
 
 ### Key Capabilities
 
@@ -339,16 +352,15 @@ The Edit Pages feature provides an intelligent interface for modifying individua
 - **Classification Reset**: Reset page classifications to force reclassification during reprocessing
 - **Text Editing**: Modify page OCR text (via the Raw markdown editor) with immediate S3 saves to prevent data loss
 - **Intelligent Reprocessing**: Only affected sections are reprocessed based on modification type
-- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+- **Available in every deployment**: the editor works on the page records in the document's output, so it is offered whichever processing mode produced them
 
 ### How to Use
 
 1. Navigate to a completed document's detail page
 2. In the "Document Pages" panel, click the "Edit Pages" button
-3. **For Pattern-2/Pattern-3**: Enter edit mode with page-level editing capabilities
-4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+3. Enter edit mode, with page-level editing of classifications and page text
 
-#### Editing Workflow (Pattern-2/Pattern-3)
+#### Page editing workflow
 
 ##### View Mode (Default)
 - Click "View Page Text" button to view page content in read-only mode
@@ -397,25 +409,28 @@ The Edit Pages feature uses intelligent selective reprocessing:
 - **Storage**: Text wrapped back in `{"text": "..."}` format for backward compatibility
 - **Confidence**: Markdown table format for readability (Text | Confidence columns)
 
-### Pattern Compatibility
-
-#### Pattern-2 and Pattern-3 Support
+### What page editing gives you, and what it costs
 
 - **Full Functionality**: Complete page editing capabilities with intelligent reprocessing
 - **Performance Optimization**: Automatic selective processing based on modification type
 - **Data Preservation**: Unmodified pages and sections retain all processing results
 
-#### Pattern-1 Information
+Page editing is offered in every deployment, whichever processing mode the document ran
+through, and the editor does not distinguish between them.
 
-Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic page management. When Edit Pages is clicked, users see an informative modal explaining:
-
-- **Architecture Differences**: BDA handles page processing automatically
-- **Alternative Workflows**: Available options like "View Page Text", Configuration updates, and document reprocessing
-- **Future Considerations**: Guidance on using Pattern-2/Pattern-3 for fine-grained page control
+⚠️ **In BDA mode, both page edits clear data that the reprocess does not replace.**
+Resetting a page's classification removes every section containing that page, and
+editing a page's text clears the extraction results of the sections containing it.
+Bedrock Data Automation produced those values, and the workflow skips it for any
+document that still has at least one section — so a section whose page text you edited
+comes back empty. If you only want to read a page as BDA saw it, use **View Page Text**,
+which changes nothing.
 
 ## Document Schema Builder
 
 The **Document Schema** tab on the Configuration page provides a visual **Schema Builder** for defining the document types (classes) and fields (attributes) that extraction produces — a JSON Schema Draft 2020-12 editor that requires no hand-editing of JSON. (The same builder powers the **Policy Schema** tab for rule validation.)
+
+![Schema Builder with the Payslip document type selected: the class list, its attributes, and the class inspector](../images/webui-schema-builder.png)
 
 ### Layout
 
@@ -437,6 +452,8 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 ## Prompt Preview
 
 The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
+
+![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
 
 ### Key Capabilities
 
@@ -592,11 +609,15 @@ From the panel you can:
 - **Compare** any two versions — a section-by-section, field-level diff of their extraction results.
 - **Delete** a version (Admin only) — permanently removes that run's pinned object versions; the current version cannot be deleted, and versions still referenced by another retained run are preserved.
 
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
+
 See the [Document Versions guide](document-versions.md) for how versioning works, retention, the CLI/API surfaces, and caveats.
 
 ## Chat with Document
 
 The "Chat with Document" feature is available at the bottom of the Document Detail view. It provides an interactive Q&A interface grounded in the text of the single document you are viewing — no other documents are considered. The feature is only available after the document's status is **COMPLETE**.
+
+![Chat with the Document panel answering a question that compares the payslip and W-2 in a lending package](../images/webui-chat-with-document.png)
 
 ### Model selection
 

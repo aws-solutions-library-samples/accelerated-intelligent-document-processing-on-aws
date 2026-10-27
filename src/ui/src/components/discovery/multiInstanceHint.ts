@@ -37,7 +37,7 @@ export interface ApplyResult {
 const classId = (c: Record<string, unknown>): string | undefined =>
   (c.$id as string | undefined) ?? (c['x-aws-idp-document-type'] as string | undefined);
 
-// Return a new classes list with `Documents per section: Several` enabled on the
+// Return a new classes list with `Records per section: Several` enabled on the
 // named class (mirrors SchemaInspector's Synthesize mode: the flag on, any
 // instance-array designation cleared). Never touches any other class.
 export function applyMultiInstance(classes: unknown[], className: string): ApplyResult {

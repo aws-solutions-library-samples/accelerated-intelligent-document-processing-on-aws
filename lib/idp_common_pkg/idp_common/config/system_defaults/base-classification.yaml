@@ -14,7 +14,13 @@ classification:
   strategy: single_pass
   # The ONE fallback: assigned when a class cannot be decided — validation
   # retries ran out, or (two-stage, non-LLM methods) the classifier was not
-  # confident. One of the configured classes, or the built-in 'unclassified'.
+  # confident. Normally one of the configured classes, or the built-in
+  # 'unclassified'.
+  #
+  # NOT validated against the class list: any string is accepted and stored as
+  # written, and `validate_config` reports no error and no warning for a name no
+  # class declares. Sections then carry that name downstream, where nothing
+  # matches it. Check the spelling yourself against `classes`.
   fallback_class: unclassified
   # ── strategy: single_pass ────────────────────────────────────────────────
   one_stage:
@@ -132,7 +138,7 @@ classification:
   # ── strategy: two_stage ──────────────────────────────────────────────────
   two_stage:
     # Boundaries only, with no class vocabulary: the prefix saving.
-    segmentation:
+    boundary_detection:
       method: llm
       llm:
         # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.
@@ -265,13 +271,13 @@ classification:
           task_prompt_verbalized: |-
             <class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
             Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
-  # ── Advanced: known file shape ───────────────────────────────────────────
-  # By default every file is treated as a packet and its boundaries are
-  # detected. These ASSERT the shape instead.
-  # sectionSplitting: llm_determined (detect) | disabled (one document) |
-  #   page (one document per page).
+  # ── Advanced: known document shape ───────────────────────────────────────────
+  # By default every document is treated as a packet and its section
+  # boundaries are detected. These ASSERT the shape instead.
+  # sectionSplitting: llm_determined (detect) | disabled (one section for the
+  #   whole document) | page (one section per page).
   # maxPagesForClassification: with 'disabled' only — classify the first N
-  #   pages and give the whole file their majority class.
-  file_shape:
+  #   pages and give the whole document their majority class.
+  document_shape:
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL

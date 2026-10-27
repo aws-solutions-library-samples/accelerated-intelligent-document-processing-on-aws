@@ -6,7 +6,18 @@
 # =============================================================================
 
 ocr:
-  # OCR backend: "textract" (AWS Textract) or "bedrock" (LLM-based)
+  # OCR backend. Four values are accepted:
+  #   "textract" - AWS Textract (the default; `features` below applies only here)
+  #   "bedrock"  - LLM-based OCR via Bedrock, using model_id/system_prompt/
+  #                task_prompt below
+  #   "bda"      - Amazon Bedrock Data Automation. Preferred for table-heavy
+  #                documents; see `bda_project_arn` on OCRConfig, which the stack
+  #                normally supplies through the BDA_OCR_PROJECT_ARN env var
+  #   "none"     - no text layer; page images only
+  #
+  # This field is a plain string with no validator, so an unrecognised value is
+  # stored and deployed intact. OcrService refuses it per-document at
+  # construction time instead, which fails every document rather than one.
   backend: "textract"
   
   # For bedrock backend only - model and prompts
@@ -15,7 +26,14 @@ ocr:
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
   
   # Textract features to enable
-  # Options: LAYOUT, TABLES, FORMS, SIGNATURES, QUERIES
+  # Options: LAYOUT, TABLES, FORMS, SIGNATURES
+  #
+  # Those four are the whole set, and they are the ConfigSchema enum the Web UI
+  # config editor offers. `OCRFeature` carries no validator, though, so any other
+  # name saves and deploys cleanly and is refused only at run time: with
+  # `backend: textract`, OcrService checks the list against exactly these four
+  # and raises, so an unsupported name fails EVERY document rather than being
+  # ignored. (With any other backend the list is not read at all.)
   #
   # DEFAULT: TABLES + LAYOUT + SIGNATURES.
   #

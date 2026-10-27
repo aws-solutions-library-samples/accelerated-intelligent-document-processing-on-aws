@@ -19,6 +19,7 @@ Usage:
 """
 
 import difflib
+import functools
 import math
 import re
 from functools import lru_cache
@@ -42,9 +43,9 @@ from pydantic import (
     Discriminator,
     Field,
     ValidationInfo,
-    field_validator,
     model_validator,
 )
+from pydantic import field_validator as _pydantic_field_validator
 from typing_extensions import Self
 
 # Current config schema/shape version. Bump when the stored config shape changes
@@ -59,10 +60,52 @@ from typing_extensions import Self
 # configuration also has its hand-written flat prompts copied into
 # `classification.packet`, which is where packet granularity reads them. v0.9
 # nested every classification setting inside the call that uses it
-# (`one_stage`, `two_stage.segmentation`, `two_stage.section_classification`),
-# moved the file-shape assertions under `file_shape`, and replaced
+# (`one_stage`, `two_stage.boundary_detection`, `two_stage.section_classification`),
+# moved the file-shape assertions under `document_shape`, and replaced
 # `invalidClassFallback` with `fallback_class`.
 CONFIG_FORMAT_VERSION = "0.9"
+
+
+#: Exceptions a field validator here can raise on malformed input that pydantic
+#: does not convert into a ``ValidationError``: ``int([])`` and ``float({})`` raise
+#: ``TypeError``, and ``int(float("inf"))`` and ``float(10**400)`` raise
+#: ``OverflowError``. Pydantic converts only ``ValueError`` and ``AssertionError``.
+_UNCONVERTED_INPUT_ERRORS = (TypeError, OverflowError)
+
+
+def field_validator(*fields: str, **kwargs: Any) -> Any:
+    """``pydantic.field_validator`` whose validator cannot fail the whole load.
+
+    A stored value of the wrong shape (``temperature: []``, ``top_k: 1e400``,
+    ``ocr.max_workers: .inf``) made a validator raise ``TypeError`` or
+    ``OverflowError``. Pydantic lets those propagate, so ``IDPConfig`` raised
+    something that is not a ``ValidationError``, naming no setting, and callers
+    that report invalid configuration did not recognise it. This wraps every
+    validator in this module so those two errors are re-raised as ``ValueError``,
+    which pydantic reports as a ``ValidationError`` naming the field.
+
+    Nothing that parsed before parses differently: the wrapper acts only when the
+    validator has already raised, and it does not substitute a default. Every
+    validator in this module is declared through this name, which
+    ``tests/unit/config/test_null_numeric_settings.py`` checks per field.
+    """
+    decorate = _pydantic_field_validator(*fields, **kwargs)
+
+    def wrap(validator: Any) -> Any:
+        is_classmethod = isinstance(validator, classmethod)
+        func = validator.__func__ if is_classmethod else validator
+
+        @functools.wraps(func)
+        def guarded(*args: Any, **kw: Any) -> Any:
+            try:
+                return func(*args, **kw)
+            except _UNCONVERTED_INPUT_ERRORS as exc:
+                raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+
+        guarded.__idp_input_errors_converted__ = True  # type: ignore[attr-defined]
+        return decorate(classmethod(guarded) if is_classmethod else guarded)
+
+    return wrap
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -97,6 +140,35 @@ def _parse_required_int(v: Any, info: ValidationInfo, cls: type) -> int:
         default = cls.model_fields[info.field_name].default
         return int(default) if default is not None else 0
     return int(v)
+
+
+def _default_if_none(v: Any, info: ValidationInfo, cls: type) -> Any:
+    """Return the field's declared default when a stored value is ``None``.
+
+    A YAML key with no value (``temperature:``) or a JSON ``null`` reaches a
+    ``mode="before"`` validator as ``None``. A validator that passes it to
+    ``int()`` or ``float()`` raises ``TypeError``, which pydantic does not turn
+    into a ``ValidationError``, so the whole configuration fails to load. Any
+    other value is returned unchanged, so a validator applying this first keeps
+    its parsing of every non-null value exactly as it was.
+    """
+    if v is None:
+        return cls.model_fields[info.field_name].get_default(call_default_factory=True)
+    return v
+
+
+def _parse_required_float(v: Any, info: ValidationInfo, cls: type) -> float:
+    """Parse a required float, falling back to the field's default on ``None``.
+
+    The float counterpart of ``_parse_required_int`` for the sampling parameters
+    (``temperature``, ``top_p``, ``top_k``) and thresholds. Only ``None`` falls
+    back to the default: an empty string still parses as ``0.0`` and a numeric
+    string or number as ``float(v)``, as these validators always did.
+    """
+    v = _default_if_none(v, info, cls)
+    if isinstance(v, str):
+        return float(v) if v else 0.0
+    return float(v)
 
 
 def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
@@ -261,11 +333,9 @@ class TableParsingConfig(BaseModel):
         "min_confidence_threshold", "min_parse_success_rate", mode="before"
     )
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_empty_line_gap", mode="before")
     @classmethod
@@ -545,11 +615,11 @@ class ForcedToolConfig(BaseModel):
 
 
 class MultiInstanceDetectionConfig(BaseModel):
-    """Detect a section that holds several documents of the same class (#753).
+    """Detect a section that holds several records of the same class (#753).
 
     When classification finds no type change to split on, several consecutive
     records of one class land in a single section. The class schema describes ONE
-    document, and the model overwhelmingly prefers to answer with one object — so
+    record, and the model overwhelmingly prefers to answer with one object — so
     the second and third records are simply absent from the response and
     **nothing anywhere reports it**: the section is SUCCESS, the document is
     COMPLETED, ``instance_count`` is 1, and no issue is raised. That is the
@@ -1033,11 +1103,9 @@ class ConfidenceConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("list_batch_size", mode="before")
     @classmethod
@@ -1184,11 +1252,9 @@ class HITLConfig(BaseModel):
 
     @field_validator("confidence_threshold", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
 
 class ExtractionConfig(BaseModel):
@@ -1408,7 +1474,7 @@ class ExtractionConfig(BaseModel):
     multi_instance_detection: MultiInstanceDetectionConfig = Field(
         default_factory=MultiInstanceDetectionConfig,
         description=(
-            "Detect (and warn about) a section that holds several documents of "
+            "Detect (and warn about) a section that holds several records of "
             "the same class when the model returned only one — see "
             "MultiInstanceDetectionConfig."
         ),
@@ -1446,11 +1512,9 @@ class ExtractionConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("context_buffer", mode="before")
     @classmethod
@@ -1744,7 +1808,7 @@ class ClassificationPacketConfig(BaseModel):
         default=2,
         ge=0,
         description=(
-            "Pages repeated between adjacent windows, so a document boundary "
+            "Pages repeated between adjacent windows, so a section boundary "
             "falling at a window edge is still seen with the pages before it. "
             "Costs `overlap` extra pages per additional window."
         ),
@@ -1828,7 +1892,7 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
     """One of :data:`REASONING_EFFORT_VALUES`; anything else is the default.
 
     ⚠️ **Normalised rather than refused, and the reason is the same one
-    ``FileShapeConfig.parse_max_pages`` gives**: this field has never had a
+    ``DocumentShapeConfig.parse_max_pages`` gives**: this field has never had a
     validator, and ``save_configuration`` coerces through ``IDPConfig`` without
     touching it, so a typo written by hand or through the API **is stored
     verbatim today**. Raising on it would make such a profile fail validation on
@@ -1838,7 +1902,7 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
     case is a stack on Nova, which ignores effort entirely, running happily on a
     misspelled value right now.
 
-    Contrast ``FileShapeConfig.validate_section_splitting``, which *does* raise:
+    Contrast ``DocumentShapeConfig.validate_section_splitting``, which *does* raise:
     that validator already normalised on the way in, so an unrecognised value was
     never stored and raising cannot wedge anything. The two settings differ in
     whether the bad state is reachable in stored data, which is the whole question.
@@ -1980,8 +2044,8 @@ class ClassificationModelSettings(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        return _parse_float_param(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        return _parse_float_param(_default_if_none(v, info, cls))
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -2030,7 +2094,7 @@ class ClassificationValidationConfig(BaseModel):
     """Re-prompt when a call returns a class outside the configured vocabulary.
 
     Only on calls that decide a class: one stage, and two-stage section
-    classification. Never segmentation, which returns no class.
+    classification. Never boundary detection, which returns no class.
     """
 
     enforceValidClasses: bool = Field(
@@ -2125,8 +2189,8 @@ class OneStageConfig(BaseModel):
         return _normalise_granularity(v, "classification.one_stage.granularity")
 
 
-class SegmentationLLMConfig(ClassificationModelSettings):
-    """Two-stage segmentation by an LLM: boundaries only, no class vocabulary.
+class BoundaryDetectionLLMConfig(ClassificationModelSettings):
+    """Two-stage boundary detection by an LLM: boundaries only, no class vocabulary.
 
     Model settings only — no validation and no class confidence — because this
     call returns page ranges and never a class. The saving over one stage is the
@@ -2156,7 +2220,7 @@ class SegmentationLLMConfig(ClassificationModelSettings):
     @classmethod
     def validate_granularity(cls, v: Any) -> str:
         return _normalise_granularity(
-            v, "classification.two_stage.segmentation.llm.granularity"
+            v, "classification.two_stage.boundary_detection.llm.granularity"
         )
 
     @field_validator("boundary_hints", mode="before")
@@ -2167,7 +2231,7 @@ class SegmentationLLMConfig(ClassificationModelSettings):
         v_str = str(v).strip().lower()
         if v_str not in ("none", "class_names"):
             raise ValueError(
-                "classification.two_stage.segmentation.llm.boundary_hints must be "
+                "classification.two_stage.boundary_detection.llm.boundary_hints must be "
                 f"'none' or 'class_names', got {v!r}"
             )
         return v_str
@@ -2176,7 +2240,7 @@ class SegmentationLLMConfig(ClassificationModelSettings):
 class ExternalModelConfig(BaseModel):
     """An external model behind a stable contract. **Declared, not yet implemented.**
 
-    Shared by the boundary model (segmentation) and the decision model (section
+    Shared by the boundary model (boundary detection) and the decision model (section
     classification), so both methods land without a configuration migration.
     """
 
@@ -2193,21 +2257,21 @@ class ExternalModelConfig(BaseModel):
     )
 
 
-class SegmentationConfig(BaseModel):
-    """Two-stage segmentation: where each document starts and ends."""
+class BoundaryDetectionConfig(BaseModel):
+    """Two-stage boundary detection: where each section starts and ends."""
 
     method: str = Field(
         default="llm",
         description="'llm' (the only value today). 'boundary_model' is declared.",
     )
-    llm: SegmentationLLMConfig = Field(default_factory=SegmentationLLMConfig)
+    llm: BoundaryDetectionLLMConfig = Field(default_factory=BoundaryDetectionLLMConfig)
     boundary_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
 
     @field_validator("method", mode="before")
     @classmethod
     def validate_method(cls, v: Any) -> str:
         return _single_value_method(
-            v, "classification.two_stage.segmentation.method", "'boundary_model'"
+            v, "classification.two_stage.boundary_detection.method", "'boundary_model'"
         )
 
 
@@ -2313,7 +2377,9 @@ class SectionClassificationConfig(BaseModel):
 class TwoStageConfig(BaseModel):
     """``strategy: two_stage`` — segment first, then classify each section."""
 
-    segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
+    boundary_detection: BoundaryDetectionConfig = Field(
+        default_factory=BoundaryDetectionConfig
+    )
     section_classification: SectionClassificationConfig = Field(
         default_factory=SectionClassificationConfig
     )
@@ -2334,19 +2400,20 @@ def _unusable_page_limit(value: Any) -> str:
     import logging
 
     logging.getLogger(__name__).warning(
-        "classification.file_shape.maxPagesForClassification is %r, which is not "
+        "classification.document_shape.maxPagesForClassification is %r, which is not "
         "'ALL' and not a positive number of pages; classifying every page instead. "
         "Set it to ALL, or to the number of opening pages whose majority class the "
-        "whole file should take.",
+        "whole document should take.",
         value,
     )
     return "ALL"
 
 
-class FileShapeConfig(BaseModel):
-    """Advanced: what you already know about a file's shape.
+class DocumentShapeConfig(BaseModel):
+    """Advanced: what you already know about a document's shape.
 
-    By default every file is treated as a packet and its boundaries are detected.
+    By default every document is treated as a packet and its section boundaries
+    are detected.
     These settings are assertions that override that, which is why they sit apart
     from the strategy rather than beside it.
     """
@@ -2354,15 +2421,16 @@ class FileShapeConfig(BaseModel):
     sectionSplitting: str = Field(
         default="llm_determined",
         description=(
-            "'llm_determined' (default): detect the boundaries. 'disabled': the "
-            "whole file is one document. 'page': every page is its own document."
+            "'llm_determined' (default): detect the section boundaries. 'disabled': "
+            "the whole document is one section. 'page': every page is its own "
+            "section."
         ),
     )
     maxPagesForClassification: str = Field(
         default="ALL",
         description=(
             "With sectionSplitting 'disabled', classify only the first N pages and "
-            "give the whole file their majority class. 'ALL' classifies every page."
+            "give the whole document their majority class. 'ALL' classifies every page."
         ),
     )
 
@@ -2411,7 +2479,7 @@ class FileShapeConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in SECTION_SPLITTING_VALUES:
             raise ValueError(
-                "classification.file_shape.sectionSplitting must be one of "
+                "classification.document_shape.sectionSplitting must be one of "
                 f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
                 f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
             )
@@ -2485,7 +2553,7 @@ class ClassificationConfig(BaseModel):
 
     ``strategy`` decides how many calls are made and what each does. Every
     model setting lives inside the call that uses it — ``one_stage``, or
-    ``two_stage.segmentation`` and ``two_stage.section_classification`` — so no
+    ``two_stage.boundary_detection`` and ``two_stage.section_classification`` — so no
     setting at this level is silently ignored by one strategy. The flat keys of
     earlier formats are converted on read by ``migrations.v08_to_v09``.
     """
@@ -2512,7 +2580,7 @@ class ClassificationConfig(BaseModel):
     )
     one_stage: OneStageConfig = Field(default_factory=OneStageConfig)
     two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
-    file_shape: FileShapeConfig = Field(default_factory=FileShapeConfig)
+    document_shape: DocumentShapeConfig = Field(default_factory=DocumentShapeConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -2565,10 +2633,10 @@ class ClassificationConfig(BaseModel):
     # ── Resolved views. Every reader goes through these rather than walking the
     # tree, so the strategy-dependent choice of block is made in one place.
 
-    def page_input_call(self) -> Union[OneStageConfig, SegmentationLLMConfig]:
+    def page_input_call(self) -> Union[OneStageConfig, BoundaryDetectionLLMConfig]:
         """The block whose granularity / page / packet settings are in force."""
         if self.strategy == "two_stage":
-            return self.two_stage.segmentation.llm
+            return self.two_stage.boundary_detection.llm
         return self.one_stage
 
     def class_assigning_llm(
@@ -2670,11 +2738,9 @@ class SummarizationConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -2754,11 +2820,9 @@ class ChatConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -2830,8 +2894,9 @@ class OCRConfig(BaseModel):
 
     @field_validator("max_workers", mode="before")
     @classmethod
-    def parse_max_workers(cls, v: Any) -> int:
-        """Parse max_workers from string or number"""
+    def parse_max_workers(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse max_workers from string or number (None -> field default)."""
+        v = _default_if_none(v, info, cls)
         if isinstance(v, str):
             return int(v) if v else 20
         return int(v)
@@ -2844,7 +2909,12 @@ class ErrorAnalyzerParameters(BaseModel):
         default=5, gt=0, description="Maximum number of log events to retrieve"
     )
     time_range_hours_default: int = Field(
-        default=24, gt=0, description="Default time range in hours for log searches"
+        default=24,
+        gt=0,
+        description=(
+            "Not read by the agent or its tools. The default log-search window is "
+            "agents.error_analyzer.lookback_hours."
+        ),
     )
 
     max_log_message_length: int = Field(
@@ -2931,16 +3001,17 @@ class ErrorAnalyzerConfig(BaseModel):
     lookback_hours: int = Field(
         default=24,
         gt=0,
-        description="How far back the error analyzer searches logs, traces, and execution history (in hours). Default: 24.",
+        description=(
+            "Default window, in hours, for the error analyzer's CloudWatch log "
+            "searches when the question names none. Default: 24."
+        ),
     )
 
     @field_validator("lookback_hours", mode="before")
     @classmethod
-    def parse_lookback_hours(cls, v: Any) -> int:
-        """Parse lookback_hours from string or number"""
-        if isinstance(v, str):
-            return int(v) if v else 24
-        return int(v)
+    def parse_lookback_hours(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse lookback_hours from string or number (empty/None -> field default)."""
+        return _parse_required_int(v, info, cls)
 
     error_patterns: list[str] = Field(
         default=[
@@ -2990,18 +3061,22 @@ INVESTIGATION WORKFLOW:
 5. Synthesize all evidence to determine root cause — never stop at the first error message
 
 TOOL USAGE:
+The tools below are the only ones you have. Call them by these exact names.
 - Document-specific analysis (user provides a filename or document ID):
-  → Use cloudwatch_document_logs and dynamodb_status as primary tools
+  → Use fetch_document_record (object_key) for the document's status, timestamps, ConfigVersion and Step Functions execution ARN
+  → Use retrieve_document_context (document_id) for the processing timeline, the failed Lambda function names and their request IDs
+  → Use search_cloudwatch_logs with document_id set to search only the logs of that document's processing window and request IDs
 - System-wide or batch analysis (no specific document):
-  → Use cloudwatch_logs and dynamodb_query to identify patterns
+  → Use fetch_recent_records (date, hours_back, limit) for recent documents and their completed/failed/in-progress counts
+  → Use search_cloudwatch_logs without document_id (filter_pattern, hours_back) for recent errors across the stack
+  → Use search_performance_issues (issue_type "performance", "throttling", "timeout" or "capacity") for throttling, timeout and capacity problems
 - Workflow failures and execution timeline:
-  → Use stepfunction_details for the execution event history
-- Lambda configuration and environment context:
-  → Use lambda_lookup to check timeout settings, memory, and environment variables
+  → Use analyze_workflow_execution (document_id) for the Step Functions state transitions and failure point
 - Which Bedrock model a pipeline stage uses (e.g. after a model error):
   → Use fetch_pipeline_configuration with the document's config version to read the per-stage model IDs
 - Distributed service interaction issues:
-  → Use xray_trace or xray_performance_analysis
+  → Use analyze_document_trace (document_id) for one document's X-Ray trace
+  → Use analyze_system_performance (stack_name, hours_back) for stack-wide X-Ray performance
 
 Always use at least 2 different tool sources before concluding a root cause. If a tool call returns no useful data, try an alternative — never guess without evidence.
 
@@ -3217,18 +3292,22 @@ INVESTIGATION WORKFLOW:
 5. Synthesize all evidence to determine root cause — never stop at the first error message
 
 TOOL USAGE:
+The tools below are the only ones you have. Call them by these exact names.
 - Document-specific analysis (user provides a filename or document ID):
-  → Use cloudwatch_document_logs and dynamodb_status as primary tools
+  → Use fetch_document_record (object_key) for the document's status, timestamps, ConfigVersion and Step Functions execution ARN
+  → Use retrieve_document_context (document_id) for the processing timeline, the failed Lambda function names and their request IDs
+  → Use search_cloudwatch_logs with document_id set to search only the logs of that document's processing window and request IDs
 - System-wide or batch analysis (no specific document):
-  → Use cloudwatch_logs and dynamodb_query to identify patterns
+  → Use fetch_recent_records (date, hours_back, limit) for recent documents and their completed/failed/in-progress counts
+  → Use search_cloudwatch_logs without document_id (filter_pattern, hours_back) for recent errors across the stack
+  → Use search_performance_issues (issue_type "performance", "throttling", "timeout" or "capacity") for throttling, timeout and capacity problems
 - Workflow failures and execution timeline:
-  → Use stepfunction_details for the execution event history
-- Lambda configuration and environment context:
-  → Use lambda_lookup to check timeout settings, memory, and environment variables
+  → Use analyze_workflow_execution (document_id) for the Step Functions state transitions and failure point
 - Which Bedrock model a pipeline stage uses (e.g. after a model error):
   → Use fetch_pipeline_configuration with the document's config version to read the per-stage model IDs
 - Distributed service interaction issues:
-  → Use xray_trace or xray_performance_analysis
+  → Use analyze_document_trace (document_id) for one document's X-Ray trace
+  → Use analyze_system_performance (stack_name, hours_back) for stack-wide X-Ray performance
 
 Always use at least 2 different tool sources before concluding a root cause. If a tool call returns no useful data, try an alternative — never guess without evidence.
 
@@ -3611,10 +3690,9 @@ class FactExtractionConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3647,10 +3725,9 @@ class RuleValidationOrchestratorConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3830,11 +3907,9 @@ class EvaluationLLMMethodConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3873,11 +3948,9 @@ class DiscoveryModelConfig(BaseModel):
 
     @field_validator("temperature", "top_p", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -3951,11 +4024,9 @@ class MultiDocumentDiscoveryConfig(BaseModel):
 
     @field_validator("temperature", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator(
         "max_documents",
@@ -4019,11 +4090,9 @@ class RuleDiscoveryConfig(BaseModel):
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def parse_float(cls, v: Any, info: ValidationInfo) -> float:
+        """Parse float from string or number (None -> field default)."""
+        return _parse_required_float(v, info, cls)
 
     @field_validator("max_tokens", mode="before")
     @classmethod
@@ -5116,7 +5185,7 @@ class IDPConfig(BaseModel):
         # saving a configuration whose live calls are fine.
         if cls.strategy == "two_stage":
             calls = {
-                "two_stage.segmentation.llm": cls.two_stage.segmentation.llm,
+                "two_stage.boundary_detection.llm": cls.two_stage.boundary_detection.llm,
                 "two_stage.section_classification.llm": (
                     cls.two_stage.section_classification.llm
                 ),

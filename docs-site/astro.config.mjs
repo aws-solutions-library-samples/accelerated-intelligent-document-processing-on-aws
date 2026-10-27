@@ -114,7 +114,6 @@ export default defineConfig({
             { label: "Human-in-the-Loop Review", slug: "human-review" },
             { label: "Review Queues", slug: "review-queues" },
             { label: "Rule Validation", slug: "rule-validation" },
-            { label: "Criteria Validation", slug: "criteria-validation" },
             { label: "Missing Page Handling", slug: "missing-page-handling" },
             {
               label: "OCR Image Sizing Guide",

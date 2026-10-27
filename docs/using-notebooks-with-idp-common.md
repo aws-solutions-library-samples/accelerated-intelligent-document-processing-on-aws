@@ -266,13 +266,18 @@ classes:
 
 To experiment with different AI models:
 
-1. **Edit relevant config files**:
+1. **Edit relevant config files**, matching the key names the file already uses:
 ```yaml
 # In config/extraction.yaml
-llm_method:
+extraction:
   model: "anthropic.claude-sonnet-4-5-20250929-v1:0"  # Change model
   temperature: 0.1  # Adjust parameters
 ```
+
+There is no `extraction.llm_method` — an `llm_method` wrapper exists only under
+`evaluation`, for the LLM-based evaluation comparator. Writing one under
+`extraction` is not read; the shipped default model stays in force, and the only
+notice is a log line naming `extraction.llm_method` as an unknown field.
 
 2. **Run affected steps**: Only the steps that use the changed configuration
 
@@ -280,11 +285,17 @@ llm_method:
 
 To experiment with confidence thresholds:
 
-1. **Edit `config/assessment.yaml`**:
+1. **Edit `config/assessment.yaml`**, changing the key the file already carries:
 ```yaml
 assessment:
-  confidence_threshold: 0.7  # Lower threshold = more permissive
+  default_confidence_threshold: '0.7'  # Lower threshold = more permissive
 ```
+
+The key is `default_confidence_threshold`, not `confidence_threshold`. On load it
+is relocated to `hitl.confidence_threshold`, which is the threshold that decides
+whether a document is routed to human review. A key spelled
+`assessment.confidence_threshold` is discarded and the default stays in force,
+with nothing reported.
 
 2. **Run Steps 4-6**: Assessment, Summarization, and Evaluation
 

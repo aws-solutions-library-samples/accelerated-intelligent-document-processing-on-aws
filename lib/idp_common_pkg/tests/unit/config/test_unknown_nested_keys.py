@@ -594,7 +594,7 @@ def test_a_call_setting_written_in_its_stage_block_is_sent_to_the_llm_block():
 def test_the_llm_block_rule_does_not_settle_a_tie_one_level_further_out():
     """The rule applies only inside the block the key was written in.
 
-    ``classification.two_stage.model`` has ``segmentation.llm.model`` and
+    ``classification.two_stage.model`` has ``boundary_detection.llm.model`` and
     ``section_classification.llm.model`` equally near, both in an ``llm`` block —
     preferring one would be a guess, so it still declines.
     """

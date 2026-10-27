@@ -6,7 +6,7 @@
 The custom-resource handler merges the shipped preset with the system defaults
 (which migrates it to the nested shape) and then writes the ARN. The ARN is a
 model trained to assign a class, so it goes to the call that assigns the class
-under the active strategy and nowhere else — segmentation keeps its own model.
+under the active strategy and nowhere else — boundary detection keeps its own model.
 """
 
 import copy
@@ -52,7 +52,7 @@ class TestCustomClassificationModelArn:
         )
         resolved = IDPConfig(**config).classification
         assert resolved.one_stage.llm.model == ARN
-        assert resolved.two_stage.segmentation.llm.model != ARN
+        assert resolved.two_stage.boundary_detection.llm.model != ARN
         assert resolved.two_stage.section_classification.llm.model != ARN
 
     def test_two_stage_writes_section_classification_only(self, update_config_module):
@@ -62,7 +62,7 @@ class TestCustomClassificationModelArn:
         )
         resolved = IDPConfig(**config).classification
         assert resolved.two_stage.section_classification.llm.model == ARN
-        assert resolved.two_stage.segmentation.llm.model != ARN
+        assert resolved.two_stage.boundary_detection.llm.model != ARN
         assert resolved.one_stage.llm.model != ARN
 
     def test_a_flat_preset_lands_in_the_migrated_call(self, update_config_module):

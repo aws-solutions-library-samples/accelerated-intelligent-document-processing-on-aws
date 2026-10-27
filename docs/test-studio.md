@@ -95,9 +95,9 @@ During stack deployment, the system automatically:
 
 Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
 
-Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.file_shape.sectionSplitting: disabled`, because every file is one invoice: all of a file's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.document_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
 
-The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.file_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a file holding several documents. To get one section per file in a profile built from the preset, set **Section splitting** to `disabled` in it.
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.document_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** to `disabled` in it.
 
 ---
 
@@ -168,7 +168,7 @@ All test sets are immediately available after stack deployment:
 2. Select the test set from the **Select Test Set** dropdown:
    - "RealKIE-FCC-Verified" for invoice extraction testing
    - "OmniAI-OCR-Benchmark" for multi-format document testing
-   - "DocSplit-Poly-Seq" for document splitting and classification testing
+   - "DocSplit-Poly-Seq" for section splitting and classification testing
    - "Fake-W2-Tax-Forms" for W-2 tax form extraction testing
 3. Enter a description in the **Context** field
 4. Click **Run Test** to start processing
@@ -185,10 +185,10 @@ All test sets are immediately available after stack deployment:
 - Benchmarking multi-format document processing pipelines
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
@@ -202,13 +202,13 @@ All test sets are immediately available after stack deployment:
 **DocSplit Dataset**: https://huggingface.co/datasets/amazon/doc_split  
 **Documents Source**: https://huggingface.co/datasets/jordyvl/rvl_cdip_n_mp
 
-The DocSplit dataset contains 500 multi-page packet PDFs created by combining pages from 13 different document types. Documents are sourced from the RVL-CDIP-N-MP dataset. Each packet contains multiple subdocuments of different types to test classification and document splitting capabilities.
+The DocSplit dataset contains 500 multi-page packet PDFs created by combining pages from 13 different document types. Documents are sourced from the RVL-CDIP-N-MP dataset. Each packet combines several source documents of different types, to test classification and section splitting capabilities.
 
 #### Benchmark Methodology
 
 **DocSplit-Poly-Seq (Multi Category Documents Concatenation Sequentially):** Creates document packets by first determining a target page count (5-20 pages), then sequentially selecting documents from different categories without repetition. For each selected document, all of its pages are included while preserving the original page ordering, and this process continues until the target page count is reached.
 
-This benchmark simulates the most common real-world scenario where heterogeneous documents are assembled into packets, as observed in medical claims processing where prescription records, laboratory results, and insurance forms are concatenated. The varying document types test models' ability to detect inter-document boundaries based on content and structural transitions, a fundamental requirement for accurate packet splitting.
+This benchmark simulates the most common real-world scenario where heterogeneous documents are assembled into packets, as observed in medical claims processing where prescription records, laboratory results, and insurance forms are concatenated. The varying document types test models' ability to detect section boundaries based on content and structural transitions, a fundamental requirement for accurate packet splitting.
 
 #### Document Types
 
@@ -242,8 +242,8 @@ During stack deployment, the system automatically:
 
 #### Key Features
 
-- **Multi-Document Packets**: Each PDF contains 2-10 distinct documents of different types
-- **Splitting Evaluation**: Tests ability to correctly split multi-document packets into individual sections
+- **Multi-Section Packets**: Each PDF combines 2-10 source documents of different types
+- **Splitting Evaluation**: Tests ability to correctly split packets into sections
 - **Classification Diversity**: 13 document types provide comprehensive classification testing
 - **Variable Page Counts**: Packets range from 5 to 20 pages with varying complexity
 - **Ground Truth Included**: Complete page-level classification and splitting information
@@ -256,14 +256,14 @@ Use with: `config_library/unified/rvl-cdip/config.yaml`
 
 This test set enables evaluation of:
 - **Page-Level Classification**: Accuracy of classifying each page to correct document type
-- **Document Splitting**: Accuracy of identifying document boundaries within packets
+- **Section Splitting**: Accuracy of identifying section boundaries within packets
 - **Split Order**: Accuracy of maintaining correct page order within each split section
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 ---
 
@@ -340,10 +340,10 @@ All datasets share these deployment characteristics:
 - Benchmarking multi-format document processing pipelines
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 ---
 
@@ -354,7 +354,7 @@ All datasets share these deployment characteristics:
 ### Backend Components
 
 #### TestSetResolver Lambda
-- **Location**: `src/lambda/test_set_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
 - **Purpose**: Handles GraphQL operations for test set management
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
@@ -369,7 +369,7 @@ All datasets share these deployment characteristics:
 - **Features**: S3 event triggered extraction, file validation, status updates, file count recount for accurate totals
 
 #### TestRunner Lambda
-- **Location**: `src/lambda/test_runner/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_runner/index.py`
 - **Purpose**: Initiates test runs and queues file processing jobs
 - **Features**: Test validation, SQS message queuing, fast response optimization
 
@@ -379,7 +379,7 @@ All datasets share these deployment characteristics:
 - **Features**: SQS message processing, file copying, status management
 
 #### TestResultsResolver Lambda
-- **Location**: `src/lambda/test_results_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
 - **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
@@ -397,13 +397,13 @@ All datasets share these deployment characteristics:
   - Automatic retry handling
 
 ### GraphQL Schema
-- **Location**: `src/api/schema.graphql`
+- **Location**: `nested/api-resolvers/src/api/schema.graphql`
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
 #### TestStudioLayout
-- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.tsx`
 - **Purpose**: Main container with two-tab navigation and global state management
 
 #### TestSets
@@ -412,7 +412,7 @@ All datasets share these deployment characteristics:
 - **Features**: Pattern-based creation, zip upload, direct upload detection, incremental document addition, time-based file filtering, dual polling (3s active, 60s discovery)
 
 #### TestExecutions
-- **Location**: `src/ui/src/components/test-studio/TestExecutions.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestExecutions.tsx`
 - **Purpose**: Unified interface combining TestRunner and TestResultsList
 - **Features**: Test execution, results viewing, comparison, export, abort, delete operations
 
@@ -421,16 +421,16 @@ All datasets share these deployment characteristics:
 ```
 components/
 └── test-studio/
-    ├── TestStudioLayout.jsx
-    ├── TestSets.jsx
-    ├── TestExecutions.jsx
-    ├── TestRunner.jsx
-    ├── TestResultsList.jsx
-    ├── TestResults.jsx
-    ├── TestComparison.jsx
-    ├── TestRunnerStatus.jsx
-    ├── DeleteTestModal.jsx
-    └── index.js
+    ├── TestStudioLayout.tsx
+    ├── TestSets.tsx
+    ├── TestExecutions.tsx
+    ├── TestRunner.tsx
+    ├── TestResultsList.tsx
+    ├── TestResults.tsx
+    ├── TestComparison.tsx
+    ├── TestRunnerStatus.tsx
+    ├── DeleteTestModal.tsx
+    └── index.ts
 ```
 
 ## Lifecycle flows: online vs offline paths
@@ -525,7 +525,7 @@ flowchart LR
     Runner --> WF[Document processing workflow]
     WF -->|"docs finish"| RunDDB
 
-    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETED<br/>+ enqueue aggregation"| RunDDB
+    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETE<br/>+ enqueue aggregation"| RunDDB
     Poll --> AggQ[SQS aggregation queue]
     AggQ --> Agg[Metrics aggregation Lambda]
     Agg -->|"write testRunResult"| RunDDB
@@ -535,7 +535,7 @@ flowchart LR
 The tab that started the run stays on Test Studio, so the 5-second
 `getTestRunStatus` poll runs against the row. When the workflow finishes and
 every document has terminated, that poll — **not** the workflow — transitions
-`Status → COMPLETED` and enqueues aggregation. The metrics land, the next
+`Status → COMPLETE` and enqueues aggregation. The metrics land, the next
 poll reads the fresh row, the `EVALUATING` badge clears. All Test-Studio
 transitions happen in real time while the user watches.
 
@@ -553,7 +553,7 @@ flowchart LR
 
     Later([User logs into Test Studio<br/>hours later]) --> UI[UI Executions page]
     UI -->|"per-row getTestRunStatus poll"| RunDDB
-    RunDDB -->|"deferred:<br/>Status→COMPLETED + enqueue"| AggQ[SQS aggregation queue]
+    RunDDB -->|"deferred:<br/>Status→COMPLETE + enqueue"| AggQ[SQS aggregation queue]
     AggQ --> Agg[Aggregation]
     Agg -->|"write testRunResult"| RunDDB
     RunDDB -.->|"badge clears"| UI
@@ -625,7 +625,7 @@ Every source shares three optional fields:
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
-  (packets containing multiple sub-documents).
+  (packets that split into several sections).
 
 The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
@@ -1474,12 +1474,15 @@ be able to discard the team's annotation work.
 
 ### Running Tests
 1. Select test set from dropdown
-2. **Optional**: Select configuration version to use for processing
-3. **Optional**: Enter number of files to limit processing (useful for quick testing)
-4. **Optional**: Add context description for the test run
-5. Click "Run Test" (single test execution only)
-6. Monitor progress via TestRunnerStatus
-7. View results in integrated listing
+2. **Optional**: Pin a **Test set version** (defaults to the set's current labels)
+3. **Optional**: Select a **Configuration Profile**, and optionally a **Configuration revision**
+4. **Optional**: Enter number of files to limit processing (useful for quick testing)
+5. **Optional**: Add context description for the test run
+6. Click "Run Test" (single test execution only)
+7. Monitor progress via TestRunnerStatus
+8. View results in integrated listing
+
+![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
 
 ### Configuration Versioning
 The Test Studio supports running tests with specific Configuration Profiles and
@@ -1498,7 +1501,7 @@ For full details on configuration profiles and their revisions, see [configurati
 - **QUEUED**: File copying jobs queued in SQS
 - **RUNNING**: Files being copied and processed
 - **EVALUATING**: Documents processed, evaluation in progress
-- **COMPLETED**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETED while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
+- **COMPLETE**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETE while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
 - **PARTIAL_COMPLETE**: Test finished with some documents failed. A document whose evaluation failed or timed out (`EvaluationStatus` `FAILED` or `TIMED_OUT`) counts as failed, and the run's metrics cover the documents that were scored
 - **FAILED**: Errors during processing
 - **ABORTED**: Test run manually stopped before completion
@@ -1516,7 +1519,11 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
    - Evaluation metrics for completed documents
    - Cost breakdown for processed documents
 
-**Note**: Test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+**Note**: Test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+
+The abort waits a few seconds for each document's workflow to confirm it has stopped. A document that could not be confirmed stopped is reported rather than hidden. The Test Studio page shows a warning beside the success message. In the abort response, the message ends with the number of such documents, and `errors` gives, for each affected run, how many and why: the stop request could not be made, was refused, or was not answered in time; the document was at a processing step the abort cannot stop, such as rule validation or malware scanning; or the request was too large to wait for in full — each run's documents are sent in stop requests of up to 25, and the abort waits for the answers to at most 20 of them, taking every run's first request before any run's second (so at most 500 documents, and fewer when a run's count is not a multiple of 25) — in which case the remaining stop requests are sent at the same moment without waiting for an answer. The run is still marked **ABORTED**, but those documents may still be processing. Documents that had already finished are not counted among them.
+
+The abort then waits for the run's documents to reach a final status. A document the wait did not see reach one is reported the same way, as not seen to reach a terminal state, even if its stop request was answered: a document can be reported stopped and still be processing, so the response describes what the wait read rather than what the stop requests answered. That includes a document whose status the wait could not read in time. When a stop request is still unanswered at the time by which the wait must end, the wait has no time left to read any status, so every document not already counted is reported this way, including one that had finished. A completed document counts as finished once its evaluation has a final status. Each document is counted at most once across the two counts. A document already reported as not confirmed stopped is not counted again. When the document abort reports that some of a stop request's documents failed without naming them, up to that many of the request's unfinished documents that no error names are taken to be those failures rather than counted a second time, so the two counts together are the fewest documents consistent with both readings, and the number still processing may be higher. If the wait itself fails, every document of the run is reported, because none was observed to finish.
 
 ### Results Management
 - Filter and paginate test runs
@@ -1543,6 +1550,9 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 - SQS-based asynchronous processing
 
 ### Results Analysis
+
+![Test results for a Fake-W2-Tax-Forms run: cost, confidence and accuracy summary above the weighted overall score distribution](../images/test-studio-results.png)
+
 - Comprehensive metrics display including:
   - **Test run metadata**: Configuration version, duration, context, file counts
   - **Overall accuracy and confidence metrics**
@@ -1685,6 +1695,8 @@ because the model filled in the wrong schema competently. Worse, a misclassified
 document can be *confidently* wrong, which means it raises few confidence alerts
 and therefore ranks **low priority** in the annotation queue's worst-first order.
 Without this panel it is the failure most likely to go unnoticed.
+
+![Classification errors panel for a DocSplit-Poly-Seq run, listing each wrong class and unmatched section with its expected and predicted class and pages](../images/test-studio-classification-errors.png)
 
 Three kinds are distinguished, because they call for different fixes:
 

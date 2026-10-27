@@ -54,9 +54,13 @@ Concierge support for customization, deployment, and integration of production u
 ## Key Features
 
 - **Serverless Architecture**: Built entirely on AWS serverless technologies including Lambda, Step Functions, SQS, and DynamoDB
-- **Modular, pluggable patterns**: Pre-built processing patterns using state-of-the-art models and AWS services
+- **Two processing modes, one stack**: A single unified pattern stack runs either
+  Bedrock Data Automation end to end or a Textract-plus-Bedrock pipeline, selected by
+  the `use_bda` configuration flag — no separate stack to pick between
 - **Command Line Interface**: Programmatic batch processing with evaluation framework, analytics integration, and interactive Agent Chat
-- **Advanced Classification**: Support for page-level and holistic document packet classification
+- **Advanced Classification**: Classify a page at a time or a whole packet at a time
+  (classification granularity `page` or `packet`), in one call or in a separate
+  boundary-then-class pass
 - **Few Shot Example Support**: Improve accuracy through example-based prompting
 - **Custom Business Logic Integration**: Inject custom prompt generation logic via Lambda functions for specialized document processing
 - **High Throughput Processing**: Handles large volumes of documents through intelligent queuing
@@ -77,10 +81,10 @@ Concierge support for customization, deployment, and integration of production u
 
 ![Architecture Diagram](./images/IDP.UnifiedPatterns.drawio.png)
 
-The solution uses a modular architecture with nested CloudFormation stacks to support multiple document processing patterns while maintaining common infrastructure for queueing, tracking, and monitoring.
+The solution uses a modular architecture with nested CloudFormation stacks, with one unified pattern stack doing the document processing and common infrastructure for queueing, tracking, and monitoring.
 
 The unified pattern supports two processing modes, controlled by the `use_bda` configuration flag:
-- **Pipeline mode** (default): OCR → Bedrock Classification (page-level or holistic) → Bedrock Extraction → Assessment → Rule Validation → Summarization
+- **Pipeline mode** (default): OCR → Bedrock Classification (`page` or `packet` granularity) → Bedrock Extraction → Assessment → Rule Validation → Summarization
 - **BDA mode**: End-to-end processing with Bedrock Data Automation (BDA) → Rule Validation → Summarization
 
 ## Quick Start

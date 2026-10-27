@@ -141,7 +141,7 @@ extraction:
     reasoning_effort: low               # only if a reasoning-capable model is selected
     list_batch_size: 25                 # CEILING on rows per batch; the size used is
                                         # derived from the confidence model's output
-                                        # cap, column count and geometry mode
+                                        # cap, row width and geometry mode
     # NOTE: no max_tokens knob — each confidence call requests an OUTPUT BUDGET:
     # what a correct answer over its fields needs (one leaf per scalar and per list
     # cell, ~40 tokens each, x3 with LLM bounding boxes, plus 1,500 overhead),
@@ -203,8 +203,8 @@ depend on granular assessment for large lists.
 `idp_common.assessment.batching.assess_results_batched`, which:
 
 1. Finds the single largest list field whose length exceeds the effective batch
-   size (derived from the confidence model's output cap, the row's column count and
-   the geometry mode; never larger than the `extraction.confidence.list_batch_size`
+   size (derived from the confidence model's output cap, the row's width in
+   confidence leaves, the geometry mode and the fields every batch repeats; never larger than the `extraction.confidence.list_batch_size`
    ceiling, default 25; and never larger than a **per-family loop ceiling** where one
    was measured — 12 rows for Amazon Nova Lite/Micro, see
    `bedrock.sizing._MODEL_LIST_BATCH_CEILINGS`).
@@ -284,13 +284,25 @@ left 34/68 transaction rows with `confidence: null`). Two additions make advance
 mode complete correctly on the first try:
 
 1. **Token-aware first-pass sizing** (`compute_token_aware_batch_size`). Before
-   the first call the batch size is derived from three inputs: the confidence
+   the first call the batch size is derived from four inputs: the confidence
    model's output cap (`bedrock.model_utils.get_model_max_output_tokens`), the
-   **column count** of the list's widest sampled row, and whether `geometry.mode`
+   **confidence-leaf count** of the list's widest row, whether `geometry.mode`
    is `llm`/`llm_grounded` (a per-cell bounding box roughly triples per-row
-   output). The estimator itself lives in `bedrock.sizing`
+   output), and the estimated output of **everything else the call carries**.
+   The estimator itself lives in `bedrock.sizing`
    (`confidence_rows_per_call`) so this module and `compute_sizing_plan` cannot
    drift apart. Recorded as `derived_batch_size`.
+
+   A row's width is counted at every depth (`bedrock.sizing.confidence_leaf_count`,
+   the same count `confidence_output_budget` uses): the model scores a nested group
+   field by field and a nested list item by item, so a line item holding six scalars
+   and a seven-field group is thirteen wide, not six. And every batch repeats the
+   section's scalars, groups and every other list unsliced, so their output is
+   reserved first: the rows must fit both in the safety fraction of the cap and in
+   what the cap leaves after that fixed part and the per-call overhead. When the
+   fixed part is small the fraction is the tighter bound and nothing changes; a
+   section heavy in scalars, or carrying a second list, gets a smaller batch instead
+   of one planned to overrun the cap.
 
    There is no correct fixed value. On a 10,000-token-cap model without a loop
    ceiling (Nova Pro) with bounding boxes the batch that fits is 41 rows for a
@@ -388,11 +400,12 @@ cannot fire; the condition is detected inside the first retry round instead. The
 count there is unchanged (2 before, 2 after) and the gain is purely diagnostic.
 
 The observed trigger is a class marked `x-aws-idp-multi-instance: true`: the wrapper
-makes the *instance list* the outer list field, so one "row" is a whole document
-instance carrying its own long inner list (a 100-row `Transactions` table). The
-sizer reports that row as `cols=2 per_row~80` and derives a 12-row batch, which is
-wrong by orders of magnitude — **that sizing bug is not fixed** and #894 stays open
-for it.
+makes the *instance list* the outer list field, so one "row" is a whole instance
+(record) carrying its own long inner list (a 100-row `Transactions` table). The
+sizer counts such a row by every leaf it emits, inner cells included, so it is sized
+as the 201-leaf row it is rather than as a one-column one. That makes the first pass
+batch it correctly; it cannot make a single instance whose own output exceeds the
+cap fit, which is the case this guard reports.
 
 ⚠️ **The 900s timeout reported on #894 is not explained by this loop.** The observed
 failure was an Assessment Lambda hitting its 900s wall three times
@@ -410,7 +423,7 @@ bisection did, so a sequence of rounds that each recovered *something* while nev
 bisecting was bounded only by `max_retries`, at a real model call per round. All
 three rungs now consult the deadline before starting work. Whether that was the
 cause of the observed 900s timeouts is still **not established** — no reproduction
-exists — so #894 remains open for it, and for the batch sizer.
+exists.
 
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
@@ -446,6 +459,49 @@ the standalone and in-shard paths: it confirms every extracted value has a real
 (non-null), in-range confidence and — when `geometry.mode != "off"` — a bounding
 box, emitting `assessment_confidence_out_of_range` / `assessment_geometry_incomplete`
 for anything structurally wrong.
+
+The geometry half asks a **different question of a list row than of a scalar
+field**, and the asymmetry is deliberate:
+
+| Shape | Reports when |
+|---|---|
+| List row | **any** scored row holding a populated value carries no box |
+| Scalar / group field | **no populated field** in the section carries a box |
+
+Both halves test the **leaf's own** value, so a scored but empty cell counts for
+neither: an absent value has no place on the page for a box to sit, and a missing
+box is the correct outcome rather than a finding. ⚠️ That narrows the list half as
+well — a section whose only box-less scored leaves sit in empty cells reported
+before and is silent now. Under `ocr_only`, neither half reports when no page carried
+OCR geometry: that mode derives every box from value-matching, so a box-less leaf
+means no match was attempted rather than that one failed. Both callers — the
+assessment service and the extraction service — pass that fact through.
+
+⚠️ The suppression is scoped to `ocr_only` because only there is the premise true.
+Under `llm_grounded` the model emits the boxes and OCR only corrects them, so a
+box-less leaf on a backend carrying no geometry is a genuine model omission — and
+it still reports, with `root_cause` naming the model rather than the match.
+
+The scalar side was counted in neither half before
+([#1520](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1520)) —
+the counter lived inside the `isinstance(data_val, list)` branch — so the rung
+could not fire for a section whose fields are all scalars, which is most of them.
+Measured over 571 real sections: **no** list leaf was scored-but-box-less, while
+495 scalar ones were, across 222 sections. The rung was counting the case that does
+not arise and was blind to the one that does.
+
+⚠️ **The scalar threshold is "nothing was located", not "something is missing",
+and loosening it is not the harmless improvement it looks like.** Reporting per
+leaf fires on 40% of real sections, and the largest single contributor is
+`Language` — values like "English" — followed by `LetterType`, `MemoType` and
+`FormType`. Those values are the model's characterization of the document rather
+than text on the page, so no box can exist for them and their absence is the
+correct outcome rather than a defect. An `info` note that is usually about nothing
+teaches an operator to ignore the surface. "No populated field in this section
+carries a box" is a different statement and worth making: the highlight feature
+produced nothing there at all, which a reviewer opening the section sees and cannot
+otherwise explain. It fires on 2% of the same corpus, and the shape mirrors the
+`scored_fields <= 0` condition one rung down so the two read alike.
 
 ### Omitted fields, as distinct from unscored rows
 
@@ -1172,7 +1228,8 @@ enhanced_assessment = ground_assessment_geometry(
 Key behaviors:
 
 - **Tiered matching** of each extracted value to OCR `lines[]`: exact → value-in-line →
-  multi-line span (boxes unioned) → line fragment covering at least half the value →
+  **number found only inside a longer number** → multi-line span (boxes unioned) →
+  same date/number/phone by type → line fragment covering at least half the value →
   token-overlap fuzzy (≥ 0.6) → character similarity (≥ 0.8) → **fragment covering less
   than half the value**, ranked last.
 
@@ -1201,6 +1258,71 @@ Key behaviors:
   (`similarity ≤ min(len)/max(len)`, computed over the same stripping the scorer
   applies), without which grounding went from 4.6s to 25.4s over those sections, 98%
   of it in that one function. Keep the guard if you touch the tiers.
+
+  The **number inside a longer number** tier (`_TIER_SUBSTRING_EMBEDDED`) is
+  [#1565](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1565).
+  A number value is searched in several surface forms (`75.0` also as `75` and
+  `75.00`), and a short form is contained by coincidence in any longer number — `75`
+  in an invoice id `08337510`, `6.0` in `126.00`. As an ordinary value-in-line hit it
+  tied with the line that prints the value, so reading order or proximity to the LLM
+  box chose between them. A hit now counts as a whole token only when neither
+  neighbour continues a digit run: an ASCII digit, or a `.` `,` or date `/`
+  followed by a digit, joins the run; a space, `$`, `%`, a unit, a sign, a hyphen, a
+  colon, a ratio's slash or closing punctuation does not. Three refinements keep
+  correct boxes that rule alone would demote:
+
+  - A comma followed by one or two digits is a **decimal comma**, so `1250` in
+    `1250,00` is whole. No surface form renders a decimal comma, so for a European
+    amount the integer part is the only form that matches at all.
+  - An occurrence inside a longer number that *is* the value with more zeros
+    (`075.00`, `75.000`, an item number `0075`; compared unsigned) is whole.
+  - Only a **date's slash** joins: two slashes (`12/17/2024`), or one beside a
+    four-digit year (`12/2024`). `120/80`, `75/100`, `10/325` and `3/12` print
+    numbers that are values in their own right, so their slash is a boundary.
+
+  **It is demoted by exactly one place, not rejected.** A digit run holding the value
+  is sometimes the right line — the model dropped the cents (`272243` for
+  `272243.34`) or misread one digit of a long number — and there the box is how a
+  reviewer finds the error. Placed directly below value-in-line and above span, the
+  tier changes one comparison only: a whole-token line beats an embedded one. With
+  nothing better the embedded line still supplies the box, and the same passes are
+  skipped as for any value-in-line hit. A date's slash is in the joining set because
+  a date component is not a free-standing number; without it, `17` for `$17.49` found
+  a "whole" `17` inside `12/17/2024`. A colon (times) was measured in the joining set
+  as well and did worse, so it is a boundary.
+
+  ⚠️ **The rule reads one line at a time, so it has a known cost.** Where the right
+  line holds the value embedded and another line prints the same digits whole, the
+  whole line now wins even when the LLM box points at the right one. That is the
+  intended outcome for a coincidence, and the wrong one for three shapes the rule
+  cannot tell apart from it: a list written without spaces (`20` in `10,20,30` reads
+  as part of one number), a value that is itself a date component (a month `12` in
+  `12/2024`), and a value the model truncated (`14` for `14.8` beside `14 days`).
+  The date-slash test also accepts a residual: a ratio written in a date's shape
+  (`1/1000`, `FY 2024/25`) is read as a date, so in a section that also prints a
+  date with a slash suffix it can lose its box to that line.
+
+  **Measured on lines derived from the PDF text layer of the repository's sample
+  documents, not on Textract output.** Over the text-layer PDFs in `samples/` (97
+  pages, cut into sections of up to 3 pages), every printed number of two or more
+  digits outside a date was grounded as a value, as a string and as a float, with
+  `schema_hint={"type": "number"}`, plus two perturbed sets — decimals dropped, and a
+  long number missing a digit — that model values no line prints. With no
+  disambiguator 1,608 boxes moved onto a line printing the value and 4 moved off
+  one; with a noisy LLM box (proximity), 70 moved on and 31 off. Every loss was a
+  perturbed value. That zero for printed values is weak evidence on its own: the
+  measurement judges a box by whether its line prints the value as a whole token,
+  so it cannot tell two lines printing the same number apart, and its value set has
+  no space-free lists, date components, ratios, European decimal commas or
+  zero-padded amounts. Those shapes are pinned by the tests in
+  `test_ocr_grounding.py` instead. The harness was ad hoc and is not kept in the
+  repository.
+
+  `geometry_source` changes only where a line holds the value's own form embedded
+  and another of its forms whole (`1250` against `Ref 12500 total 1,250`): the box is
+  the same, and the tag now names the form that matched whole, `"ocr-normalized"`.
+  Over the same sample documents (all but the 17-page fund factsheet, left out of
+  that pass for time) none of 11,466 unchanged boxes changed tag.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).
