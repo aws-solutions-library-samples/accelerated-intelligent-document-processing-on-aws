@@ -188,8 +188,9 @@ HITL review is automatically triggered when:
      so you can come back and keep editing
 
 4. **Complete the Review**:
-   - Click **Reprocess** on the edit screen (or **Process Changes** in the
-     Sections panel's Edit Mode) to finish the review and reprocess the document. The
+   - Click **Process Changes** on the edit screen (or in the Sections panel's Edit
+     Mode) to finish the review and process the changes: evaluation and summarization
+     re-run, and OCR, classification and extraction are not repeated. The
      edit screen saves your latest edits first and asks you to confirm
    - Document status changes to **Review Completed**, and **Review Completed By**
      records you
@@ -213,13 +214,13 @@ Admins have additional capabilities:
 
 ### 3. Result Integration
 
-When the review is completed with **Reprocess** (or **Process Changes**), or every section is completed or skipped:
+When the review is completed with **Process Changes** (on the edit screen or in the Sections panel), or every section is completed or skipped:
 - Document status changes to **Review Completed** or **Review Skipped**
 - Corrected data is saved to S3
 - **Review Completed By** field records who completed/skipped the review
 - Review history is recorded with reviewer information and timestamps
 
-**Note:** Finalizing reviews — **Reprocess** on the edit screen (or **Process Changes**), completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
+**Note:** Finalizing reviews — **Process Changes** (on the edit screen or in the Sections panel), completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
 
 ## Configuration
 
@@ -313,14 +314,15 @@ object key under it. The actions are in one bar at the top, in this order:
 
 | Action | What it does | Who |
 |---|---|---|
-| **History** | The open section's field edits (prediction and baseline), the document's review activity, and the open section's processing report | everyone |
-| **Edit Page Grouping** | Opens the page-grouping board in a dialog | editors |
+| **History** | The open section's field edits (prediction and baseline) and the document's review activity | everyone |
+| **Processing Report** | How the open section was extracted | everyone |
+| **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | editors |
 | **Cancel** | Leaves for the document page; asks first when there are unsaved edits, and discards them | editors |
 | **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
-| **Reprocess** | Saves the edits, confirms, then reprocesses the document (evaluation and summary) | Admin, Reviewer |
+| **Process Changes** | Saves the edits, confirms, then processes them like the Sections panel's **Process Changes**: evaluation and summarization re-run, and OCR, classification and extraction are not repeated | Admin, Reviewer |
 
-A direct edit has no **Skip**: that belongs to a queue item. **Edit | View Source
-Document**, first in the bar, shows the original file in the editor's place. The
+A direct edit has no **Skip**: that belongs to a queue item. **Edit | View**, first in
+the bar, shows the original file in the editor's place. The
 editor itself is the **Document Editor** panel, with a **Section** dropdown at its
 top left. A disabled action
 says why on hover. A Reviewer's edits are saved through the review
@@ -368,7 +370,7 @@ API and a Reviewer doesn't save baseline edits.
 
 After making edits to predictions or baselines, you can trigger reprocessing to re-run downstream steps with the updated data:
 
-1. **Save and reprocess**: Click **Reprocess** on the edit screen. It saves your prediction and baseline edits, asks you to confirm, then reprocesses the document. (**Save** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
+1. **Save and process the changes**: Click **Process Changes** on the edit screen. It saves your prediction and baseline edits, asks you to confirm, then processes the changes. (**Save** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
 2. **Confirm**: The confirmation says which steps re-run
 3. **Automatic Pipeline Execution**: The document automatically transitions through processing stages:
    - `SUMMARIZING` → Re-generates document summary using updated extraction data

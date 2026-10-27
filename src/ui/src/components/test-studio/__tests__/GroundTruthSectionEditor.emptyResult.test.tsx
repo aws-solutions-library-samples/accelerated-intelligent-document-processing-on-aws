@@ -117,17 +117,16 @@ describe('GroundTruthSectionEditor with no field values', () => {
     expect(screen.getByText(/can merge them/i)).toBeInTheDocument();
   });
 
-  it('offers the class control on a section that has no class', async () => {
-    // The dead end this pair of fixes exists for: the Class label field was gated on a
-    // class already being set, so the section that needed one had no control to set it —
-    // while the alert told the reviewer to change the class.
+  it('offers Edit Page Class on a section that has no class, and points the reviewer at it', async () => {
+    // The dead end this guards against: a section that needs a class must have a control
+    // that sets one, while the alert tells the reviewer to set it. That control is Edit
+    // Page Class, which changes a section's class as well as its pages.
     mockBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
     renderEditor();
 
-    expect(await screen.findByText('Class label')).toBeInTheDocument();
-    // Asserted as text, not getByPlaceholderText: a Cloudscape Select renders its
-    // placeholder as button content, not an HTML placeholder attribute.
-    expect(screen.getByText('Choose a document class')).toBeInTheDocument();
+    expect(await screen.findByText(/Set its class in Edit Page Class first/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeEnabled();
+    expect(screen.queryByText('Class label')).not.toBeInTheDocument();
   });
 
   it('still distinguishes a missing result from an empty one', async () => {

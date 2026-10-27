@@ -231,9 +231,9 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes**, or **Reprocess**
-on the edit screen, afterwards if you would rather the pipeline redo
-them.
+so they may no longer match; use the Sections panel's **Edit Mode → Process Changes**
+afterwards if you would rather the pipeline redo them. (The edit screen's **Process
+Changes** re-runs evaluation and summarization only, so it keeps them.)
 
 That is the difference between the two routes, and it is the reason both exist:
 
@@ -690,13 +690,14 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   Editor** panel, which holds the editor with a **Section** dropdown at its top left.
   The actions are in one bar at the top, always in this order and each shown only
   where it applies: **Edit | View** (the original file in the
-  editor's place), **History** (field edits, review activity and the processing
-  report), **Edit Page Grouping**, **Skip** (queue items, for the assignee, with a
+  editor's place), **History** (field edits and review activity), **Processing
+  Report**, **Edit Page Class** (each section's pages and class), **Skip** (queue items, for the assignee, with a
   reason), **Cancel** (leave, discarding unsaved edits after asking), **Save** and
-  **Reprocess**. Reprocess finishes a queue item and sends the document for
-  reprocessing, and on a direct edit saves the edits, confirms, and reprocesses the
-  document. For a Test Studio document with authored ground truth, which has no
-  review copy, Reprocess only marks the labels reviewed. A direct edit also shows the evaluation
+  **Process Changes**. Process Changes works like the Sections panel's: it re-runs
+  evaluation and summarization on the corrected document, and OCR, classification and
+  extraction are not repeated. It finishes a queue item, and on a direct edit saves
+  the edits and confirms first. For a Test Studio document with authored ground truth,
+  which has no review copy, it only marks the labels reviewed. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
   item directly (the first saved edit, or Reprocess, assigns it to them) and

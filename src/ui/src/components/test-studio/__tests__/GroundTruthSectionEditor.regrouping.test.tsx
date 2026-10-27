@@ -105,8 +105,8 @@ const renderEditor = () =>
   );
 
 const openBoard = async () => {
-  await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeEnabled());
-  await userEvent.click(screen.getByRole('button', { name: /Edit Page Grouping/i }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeEnabled());
+  await userEvent.click(screen.getByRole('button', { name: /Edit Page Class/i }));
 };
 
 describe('GroundTruthSectionEditor page regrouping', () => {
@@ -165,6 +165,42 @@ describe('GroundTruthSectionEditor page regrouping', () => {
     expect(graphql.mock.calls.some((c) => c[0].query === 'reextractTestSetDocument')).toBe(false);
   });
 
+  it('offers Re-extract on a section whose class Edit Page Class changed, and runs it only on request', async () => {
+    // The saved grouping comes back with section 1 (first page 1, formerly Invoice) as W2.
+    graphql.mockImplementation((args: { query: string }) => {
+      if (args.query === 'getFilePresignedUrl') {
+        return Promise.resolve({ data: { getFilePresignedUrl: { presignedUrl: 'https://example.test/signed' } } });
+      }
+      if (args.query === 'updateTestSetDocumentSections') {
+        return Promise.resolve({
+          data: { updateTestSetDocumentSections: { sections: [{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }] } },
+        });
+      }
+      if (args.query === 'reextractTestSetDocument') {
+        return Promise.resolve({ data: { reextractTestSetDocument: { jobId: 'j1', status: 'SUCCEEDED' } } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    renderEditor();
+    await openBoard();
+    await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Section 1\b/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Delete section 2/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Save page grouping/i }));
+
+    expect(await screen.findByText('Fields still reflect the previous class')).toBeInTheDocument();
+    expect(screen.getByText(/These fields were extracted as/)).toHaveTextContent('Invoice');
+    expect(graphql.mock.calls.some((c) => c[0].query === 'reextractTestSetDocument')).toBe(false);
+    await userEvent.click(screen.getByRole('button', { name: /^Re-extract$/ }));
+    await waitFor(() => expect(graphql.mock.calls.some((c) => c[0].query === 'reextractTestSetDocument')).toBe(true));
+  });
+
+  it('has no Class label dropdown: a section is reclassified in Edit Page Class', async () => {
+    renderEditor();
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeEnabled());
+    expect(screen.queryByText('Class label')).not.toBeInTheDocument();
+  });
+
   it('states that field values and provenance survive, before anything is saved', async () => {
     renderEditor();
     await openBoard();
@@ -188,7 +224,7 @@ describe('GroundTruthSectionEditor page regrouping', () => {
 
     // reextract and the grouping mutation are both keyed on the set; offering the button
     // would produce a save that cannot be addressed.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeDisabled());
   });
 
   it('does not offer the board to someone who cannot change the class', async () => {
@@ -206,7 +242,7 @@ describe('GroundTruthSectionEditor page regrouping', () => {
 
     // Re-grouping is the same class of annotation authority as changing a class, and it
     // persists through the same kind of write.
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeDisabled());
   });
 });
 
@@ -216,16 +252,16 @@ describe('GroundTruthSectionEditor page regrouping', () => {
  *
  * Re-grouping rewrites the document's structure, so sitting it next to the field data made
  * it read as part of that data. These are DOM-relationship and document-order assertions
- * on purpose — `getByRole('button', { name: /Edit Page Grouping/ })` passes wherever the
+ * on purpose — `getByRole('button', { name: /Edit Page Class/ })` passes wherever the
  * button happens to be, so a presence check could not have caught the old placement and
  * cannot protect the new one.
  */
 describe('GroundTruthSectionEditor page grouping placement', () => {
   it('sits on the same row as the section pills', async () => {
     renderEditor();
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeEnabled());
 
-    const button = screen.getByRole('button', { name: /Edit Page Grouping/i });
+    const button = screen.getByRole('button', { name: /Edit Page Class/i });
     const pill = screen.getByRole('button', { name: /^Section 2\b/ });
 
     expect(button.closest('div')).toContainElement(pill);
@@ -235,7 +271,7 @@ describe('GroundTruthSectionEditor page grouping placement', () => {
     renderEditor();
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
 
-    const button = screen.getByRole('button', { name: /Edit Page Grouping/i });
+    const button = screen.getByRole('button', { name: /Edit Page Class/i });
     // The read-only Pages field is where the button used to be, immediately after this
     // input — so in the old layout the input PRECEDED the button.
     const pagesField = screen.getByDisplayValue('1, 2');
@@ -258,7 +294,7 @@ describe('GroundTruthSectionEditor page grouping placement', () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Grouping/i })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /Edit Page Class/i })).toBeEnabled());
     // And with one section there are no pills to sit beside.
     expect(screen.queryByRole('button', { name: /^Section 2\b/ })).not.toBeInTheDocument();
   });
@@ -269,7 +305,7 @@ describe('GroundTruthSectionEditor page grouping placement', () => {
 
     // Still informational — a reviewer looking at a section wants to know which pages it
     // covers — and it now says where the editing control went.
-    expect(screen.getByText(/Use Edit Page Grouping, above/i)).toBeInTheDocument();
+    expect(screen.getByText(/Use Edit Page Class, above/i)).toBeInTheDocument();
   });
 
   it('hides the control while the board is open, so it cannot be re-triggered', async () => {
@@ -278,7 +314,7 @@ describe('GroundTruthSectionEditor page grouping placement', () => {
 
     // The pills hide during regrouping; a lone button beside them would be a dead affordance
     // pointing at the thing already on screen.
-    expect(screen.queryByRole('button', { name: /^Edit Page Grouping$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit Page Class$/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Save page grouping/i })).toBeInTheDocument();
   });
 });

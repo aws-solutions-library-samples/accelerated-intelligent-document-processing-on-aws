@@ -92,6 +92,6 @@ describe('Skip on a Test Studio document', () => {
     );
     buttonByText('History')!.click();
     const tabs = createWrapper(document.body).findTabs()!;
-    expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity', 'Processing Report']);
+    expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity']);
   });
 });

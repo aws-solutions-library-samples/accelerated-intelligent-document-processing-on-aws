@@ -33,7 +33,6 @@ import {
   Header,
   Link,
   Modal,
-  ProgressBar,
   Pagination,
   Popover,
   Select,
@@ -53,6 +52,8 @@ import useUserRole from '../../hooks/use-user-role';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { testSetAnnotateHref, testSetItemPath } from '../../routes/constants';
 import AssignModal from '../review-queues/AssignModal';
+import QueueAnnotatorsTable, { queueAnnotatorRows } from '../review-queues/QueueAnnotatorsTable';
+import QueueProgress, { progressPercent } from '../review-queues/QueueProgress';
 import QueueDefinitionModal from '../review-queues/QueueDefinitionModal';
 import type { TestSetQueueTarget } from '../review-queues/QueueDefinitionModal';
 import {
@@ -127,7 +128,12 @@ interface ReviewImpact {
   totalObservations: number;
 }
 
-const AnnotationQueuePage = (): React.JSX.Element => {
+interface AnnotationQueuePageProps {
+  /** Told the test set's name once its queue has loaded (for the breadcrumbs). */
+  onName?: (name: string) => void;
+}
+
+const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.Element => {
   const { testSetId = '' } = useParams<{ testSetId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -140,11 +146,28 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { canAnnotate, isAdmin, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
   const reviewWork = useOptionalReviewWork();
+  // The Annotators listed on this set's queue (Admin): read with the page, and replaced by
+  // a saved settings dialog at once rather than waiting for the next read.
+  const [eligibleAnnotators, setEligibleAnnotators] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!isAdmin || !testSetId) return;
+    listTestSetQueues()
+      .then((sets) => setEligibleAnnotators(sets.find((s) => s.id === testSetId)?.eligibleAnnotators ?? []))
+      .catch((err: unknown) => {
+        logger.warn('listTestSetQueues failed', err);
+        setEligibleAnnotators([]);
+      });
+  }, [isAdmin, testSetId]);
   // A non-Admin Annotator claims documents rather than assigning them.
   const claimsWork = isAnnotator && !isAdmin;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);
+  // The breadcrumb names the set, as the title does, once the queue has loaded.
+  const queueName = queue?.name;
+  useEffect(() => {
+    if (queueName) onName?.(queueName);
+  }, [queueName, onName]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState('');
@@ -465,7 +488,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   // Completed: reviewed, or skipped without a review.
   const completedDocs = queue ? (queue.completedDocs ?? queue.reviewedDocs) : 0;
-  const progressPct = queue && queue.totalDocs > 0 ? Math.round((completedDocs / queue.totalDocs) * 100) : 0;
+  const progressPct = queue ? progressPercent(completedDocs, queue.totalDocs) : 0;
   const draft = currentDraft(queue, null);
   const queueLink = annotationQueueLink(window.location.origin, testSetAnnotateHref(testSetId), draft);
   // A link from a transition that has since been published: still usable, but out of date.
@@ -557,6 +580,13 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   // Queue counts over the documents still to complete: pending (unassigned), assigned.
   const openDocs = (queue?.documents ?? []).filter((d) => !isDone(d));
+  // Each listed Annotator with the open documents assigned to them, as on a Production queue.
+  const assignedCounts = new Map<string, number>();
+  openDocs.forEach((d) => d.assignedTo && assignedCounts.set(d.assignedTo, (assignedCounts.get(d.assignedTo) ?? 0) + 1));
+  const annotatorRows = queueAnnotatorRows(
+    eligibleAnnotators ?? [],
+    [...assignedCounts].map(([email, claimed]) => ({ email, claimed })),
+  );
   const pendingCount = openDocs.filter((d) => !d.assignedTo).length;
   const assignedCount = openDocs.filter((d) => d.assignedTo).length;
   const annotatorCount = new Set(openDocs.map((d) => d.assignedTo).filter(Boolean)).size;
@@ -601,7 +631,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
               </SpaceBetween>
             }
           >
-            {`Test set: ${testSetId}`}
+            {`Test set: ${queue?.name || testSetId}`}
           </Header>
         </SpaceBetween>
       }
@@ -623,14 +653,12 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         )}
 
         {queue && (
-          <Container header={<Header variant="h2">Queue Progress</Header>}>
-            <ProgressBar
-              value={progressPct}
-              description="Shared across everyone annotating this test set"
-              additionalInfo={`${completedDocs} of ${queue.totalDocs} documents completed`}
-              style={{ progressBar: { height: '16px', borderRadius: '8px' } }}
-            />
-          </Container>
+          <QueueProgress
+            count={completedDocs}
+            total={queue.totalDocs}
+            countLabel="completed"
+            description="Shared across everyone annotating this test set"
+          />
         )}
 
         {queue && (
@@ -669,6 +697,8 @@ const AnnotationQueuePage = (): React.JSX.Element => {
             </SpaceBetween>
           </Container>
         )}
+
+        {isAdmin && queue && <QueueAnnotatorsTable rows={annotatorRows} loading={eligibleAnnotators == null} />}
 
         {labelJobRunning && (
           <Alert type="info" header="Draft labeling in progress">
@@ -909,9 +939,10 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         annotators={candidates}
         annotatorsLoading={false}
         onDismiss={() => setSettingsTarget(null)}
-        onSaved={() => {
+        onSaved={(_, saved) => {
           setSuccessMessage('Saved the queue settings.');
           setSettingsTarget(null);
+          if (saved) setEligibleAnnotators([...(saved.eligibleAnnotators ?? [])]);
           void loadQueue();
         }}
       />
@@ -931,6 +962,6 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 };
 
 /** A test set's queue page. An item opens in the edit screen (`TestSetItemEdit`), which the route renders. */
-const AnnotationWorkspace = (): React.JSX.Element => <AnnotationQueuePage />;
+const AnnotationWorkspace = ({ onName }: AnnotationQueuePageProps): React.JSX.Element => <AnnotationQueuePage onName={onName} />;
 
 export default AnnotationWorkspace;

@@ -38,14 +38,22 @@ describe('document filters', () => {
   });
 });
 
-describe('queue progress and key metrics', () => {
-  const progress = between('<Header variant="h2">Queue Progress</Header>', '</Container>');
+describe('queue progress, key metrics and annotators', () => {
+  const progress = between('<QueueProgress', '/>');
   const metrics = between('<Header variant="h2">Key Metrics</Header>', '</Container>');
 
-  it('shows the progress bar on its own, taller than the default', () => {
-    expect(progress).toContain('<ProgressBar');
-    expect(progress).toMatch(/style=\{\{ progressBar: \{ height: '16px'/);
+  it('shows the shared Queue Progress panel on its own, counting completed documents, before Key Metrics', () => {
+    expect(progress).toContain('count={completedDocs}');
+    expect(progress).toContain('countLabel="completed"');
     expect(progress).not.toContain('metric(');
+    expect(SOURCE.indexOf('<QueueProgress')).toBeLessThan(SOURCE.indexOf('<Header variant="h2">Key Metrics</Header>'));
+  });
+
+  it('lists the queue’s Annotators after Key Metrics, for an Admin, from the set’s eligible Annotators', () => {
+    const at = SOURCE.indexOf('<QueueAnnotatorsTable');
+    expect(at).toBeGreaterThan(SOURCE.indexOf('<Header variant="h2">Key Metrics</Header>'));
+    expect(SOURCE).toMatch(/\{isAdmin && queue && <QueueAnnotatorsTable rows=\{annotatorRows\}/);
+    expect(SOURCE).toMatch(/queueAnnotatorRows\(\s*eligibleAnnotators \?\? \[\]/);
   });
 
   it('lays every metric out in one grid, so later rows keep the first row’s columns', () => {

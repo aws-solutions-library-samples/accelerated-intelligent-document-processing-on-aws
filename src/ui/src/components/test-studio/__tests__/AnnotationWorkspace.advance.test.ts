@@ -75,7 +75,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
     expect(everyAt).toBeGreaterThan(-1);
     expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
-    expect(handleSaved).toContain('Check the other sections, then choose Reprocess.');
+    expect(handleSaved).toContain('Check the other sections, then choose Process Changes.');
   });
 
   it('does not report a skipped document as reviewed', () => {

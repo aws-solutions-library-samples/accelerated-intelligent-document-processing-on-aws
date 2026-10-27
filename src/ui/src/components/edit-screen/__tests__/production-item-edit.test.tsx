@@ -187,13 +187,13 @@ describe('an Admin on an unassigned item', () => {
   it('can edit it, and says editing or reprocessing assigns it to them', () => {
     renderScreen();
     expect(readOnly()).toBe(false);
-    expect(document.body.textContent).toContain('Not assigned yet. Editing or reprocessing assigns it to you.');
-    expect(button('Reprocess').isDisabled()).toBe(false);
+    expect(document.body.textContent).toContain('Not assigned yet. Editing it, or choosing Process Changes, assigns it to you.');
+    expect(button('Process Changes').isDisabled()).toBe(false);
   });
 
   it('claims the item, then reprocesses it', async () => {
     renderScreen();
-    fireEvent.click(button('Reprocess').getElement());
+    fireEvent.click(button('Process Changes').getElement());
     await waitFor(() => expect(complete).toHaveBeenCalled());
     expect(claimItem).toHaveBeenCalledTimes(1);
     expect(claimItem.mock.calls[0][0]).toMatchObject({ objectKey: 'in/w2.pdf', cycleId: 'c1' });
@@ -260,8 +260,8 @@ describe('an Admin on an item assigned to someone else', () => {
   it('is view-only with Take over, and no Skip', () => {
     renderScreen();
     expect(readOnly()).toBe(true);
-    expect(document.body.textContent).toContain(`Assigned to ${ANN}. Take over to edit or reprocess it.`);
-    expect(button('Reprocess').isDisabled()).toBe(true);
+    expect(document.body.textContent).toContain(`Assigned to ${ANN}. Take over to edit it and process its changes.`);
+    expect(button('Process Changes').isDisabled()).toBe(true);
     expect(buttons()).not.toContain('Skip');
   });
 
@@ -312,7 +312,7 @@ describe('the actions', () => {
     const modal = createWrapper(document.body).findModal()!;
     expect(modal.findHeader().getElement().textContent).toBe('History');
     const tabs = createWrapper(document.body).findTabs()!;
-    expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity', 'Processing Report']);
+    expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity']);
     tabs.findTabLinkByIndex(2)!.click();
     expect(modal.findContent().getElement().textContent).toContain('Claimed');
   });
@@ -351,7 +351,7 @@ describe('the actions', () => {
   it('let the holder regroup the whole document during review, then re-read it', async () => {
     server.detail = mine();
     renderScreen();
-    button('Edit Page Grouping').click();
+    button('Edit Page Class').click();
     await waitFor(() => expect(board).not.toBeNull());
     // Every section of the document, not only the one under review.
     expect(board!.sections.map((s) => s.sectionId)).toEqual(['1', '2']);
@@ -365,7 +365,7 @@ describe('the actions', () => {
 
   it('claim an unassigned item for an Admin before regrouping it', async () => {
     renderScreen();
-    button('Edit Page Grouping').click();
+    button('Edit Page Class').click();
     await waitFor(() => expect(board).not.toBeNull());
     expect(claimItem).toHaveBeenCalledTimes(1);
   });
@@ -374,7 +374,7 @@ describe('the actions', () => {
     server.detail = mine();
     saveDocumentGrouping.mockResolvedValue({ success: false, message: 'NOT_LEASE_HOLDER: this item is assigned to someone else' });
     renderScreen();
-    button('Edit Page Grouping').click();
+    button('Edit Page Class').click();
     await waitFor(() => expect(board).not.toBeNull());
     await act(async () => board!.onSave([]));
     expect(screen.getByTestId('grouping-board')).toBeTruthy();
@@ -384,7 +384,7 @@ describe('the actions', () => {
   it('disable Edit Page Grouping on an item assigned to someone else, saying why', () => {
     server.detail = annotators();
     renderScreen();
-    const regroup = button('Edit Page Grouping');
+    const regroup = button('Edit Page Class');
     expect(regroup.isDisabled()).toBe(true);
     regroup.focus();
     expect(regroup.findDisabledReason()?.getElement().textContent).toBe(`Assigned to ${ANN}`);
@@ -416,7 +416,7 @@ describe('the actions', () => {
     server.detail = mine();
     controller.isDirty.mockReturnValue(true);
     renderScreen();
-    fireEvent.click(button('Reprocess').getElement());
+    fireEvent.click(button('Process Changes').getElement());
     await waitFor(() => expect(complete).toHaveBeenCalled());
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(complete.mock.invocationCallOrder[0]);
   });

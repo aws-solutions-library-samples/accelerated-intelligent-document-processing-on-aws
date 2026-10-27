@@ -23,7 +23,7 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { Alert, Badge, Box, Button, FormField, Input, Select, SpaceBetween } from '@cloudscape-design/components';
+import { Alert, Badge, Box, Button, FormField, Input, SpaceBetween } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { getErrorMessage } from '../../utils/errorUtils';
@@ -47,12 +47,7 @@ import type { GroupedSection } from '../common/section-grouping';
 import SectionEditor from '../edit-screen/SectionEditor';
 import type { SectionEditorContext, SectionEditorController } from '../edit-screen/SectionEditor';
 import type { LoadedSection, ReviewSectionRef } from '../edit-screen/types';
-import {
-  CLASS_LIST_UNAVAILABLE_CONSTRAINT,
-  CLASS_LIST_UNAVAILABLE_DESCRIPTION,
-  isClassListUnavailable,
-  mayChangeClassFor,
-} from './annotation-edit-flags';
+import { mayChangeClassFor } from './annotation-edit-flags';
 
 const client = generateClient();
 const logger = new ConsoleLogger('GroundTruthSectionEditor');
@@ -159,7 +154,7 @@ interface GroundTruthSectionEditorProps {
   saveOnSectionSwitch?: boolean;
   onDataChange?: (data: Record<string, unknown> | null) => void;
   /**
-   * `structure` (the default) puts Edit Page Grouping beside the section selector and
+   * `structure` (the default) puts Edit Page Class beside the section selector and
    * shows the board inline. `external` leaves the button to the caller, which opens the
    * board as a modal through `regroupOpen`.
    */
@@ -224,9 +219,10 @@ const GroundTruthSectionEditor = ({
   const mayChangeClass = mayChangeClassFor(canChangeClass, isReadOnly);
   const [isReextracting, setIsReextracting] = useState(false);
   const [reextractNote, setReextractNote] = useState<string | null>(null);
-  // The class the loaded baseline was extracted under; differing from the current
-  // selection is what says the fields no longer match the class.
-  const [savedClassType, setSavedClassType] = useState<string | undefined>(undefined);
+  // Sections whose class Edit Page Class just changed, by section id, with the class
+  // their fields were extracted under: their fields no longer match their class until
+  // they are re-extracted.
+  const [reclassified, setReclassified] = useState<Record<string, string>>({});
   // Forces a baseline re-read after a re-extract rewrites it: the key is unchanged.
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -261,8 +257,7 @@ const GroundTruthSectionEditor = ({
     return { data: JSON.parse(text) as Record<string, unknown>, raw: text };
   };
 
-  const handleLoaded = (_sectionId: string, parsed: Record<string, unknown>) => {
-    setSavedClassType((parsed.document_class as Record<string, unknown> | undefined)?.type as string | undefined);
+  const handleLoaded = () => {
     setReextractNote(null);
   };
 
@@ -284,43 +279,9 @@ const GroundTruthSectionEditor = ({
     [stampedConfigVersion, configVersion, activeConfigVersion],
   );
   const classConfigVersion = classConfig.version;
-  const { mergedConfig, loading: configLoading, error: configError } = useConfiguration(classConfigVersion);
+  const { mergedConfig } = useConfiguration(classConfigVersion);
   const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
-  /**
-   * True when the class list could not be read, as opposed to being genuinely empty.
-   *
-   * `getConfigVersion` grants **Annotator** alongside `Admin, Author, Viewer`, and a
-   * caller with no other entitlement receives only the class vocabulary — the resolver
-   * reduces the payload (`_class_vocabulary_only` in `configuration_resolver/index.py`,
-   * whose `_FULL_CONFIG_GROUPS` is the boundary). Do not "tidy" either half: the grant
-   * exists *because* of that reduction, and dropping the reduction would hand prompts
-   * and model ids to the lowest-privilege role.
-   *
-   * The flag stays because a denied or failed fetch is still reachable — a role outside
-   * all four groups, or a config error — and it must not be mistaken for a config that
-   * genuinely defines no classes. See isClassListUnavailable.
-   */
-  const classListUnavailable = isClassListUnavailable(classOptions.length, configError, configLoading);
-  // A class the config no longer lists stays selectable; otherwise a document whose
-  // class was since renamed would silently blank the field.
-  const classOptionsWithCurrent = useMemo(() => {
-    if (!documentClassType || classOptions.some((o) => o.value === documentClassType)) return classOptions;
-    return [
-      { label: documentClassType, value: documentClassType, description: 'Not defined in this configuration profile' },
-      ...classOptions,
-    ];
-  }, [classOptions, documentClassType]);
-  const classChanged = Boolean(savedClassType) && documentClassType !== savedClassType;
   const editHistoryCount = Array.isArray(localData?._editHistory) ? (localData._editHistory as unknown[]).length : 0;
-
-  const updateDocumentClass = (ctx: SectionEditorContext, newType: string) => {
-    // mayChangeClass, not isReadOnly: guarding on the narrower flag would accept the
-    // dropdown's change event and silently discard it, which is how the original
-    // class-correction bug behaved.
-    if (!mayChangeClass || !ctx.data) return;
-    const docClass = { ...((ctx.data.document_class as Record<string, unknown>) ?? {}), type: newType };
-    ctx.setData({ ...ctx.data, document_class: docClass });
-  };
 
   /**
    * Every section's grouping, in the board's 1-based page-id space.
@@ -380,6 +341,18 @@ const GroundTruthSectionEditor = ({
         .map((sec) => (sec as { sectionId: string }).sectionId);
 
       setRegroupedSectionIds(changed);
+      const classByFirstPage = new Map(sections.map((sec) => [sec.pageIndices?.[0], sec.documentClass ?? '']));
+      const nextClassByFirstPage = new Map(payload.map((sec) => [sec.pageIndices[0], sec.documentClass ?? '']));
+      const moved: Record<string, string> = {};
+      written.forEach((sec) => {
+        if (!sec) return;
+        const first = (sec.pageIndices ?? [])[0];
+        const was = classByFirstPage.get(first);
+        // What was saved, as the server reports it; what the board sent if it does not say.
+        const after = sec.documentClass ?? nextClassByFirstPage.get(first);
+        if (was && after && was !== after) moved[sec.sectionId] = was;
+      });
+      setReclassified(moved);
       setIsRegrouping(false);
       if (onRegroupOpenChange) onRegroupOpenChange(false);
       setReloadToken((token) => token + 1);
@@ -439,6 +412,7 @@ const GroundTruthSectionEditor = ({
       }
 
       setReloadToken((token) => token + 1);
+      setReclassified({});
       setReextractNote(`Re-extracted as ${documentClassType}.`);
       if (onReextracted) onReextracted();
     } catch (err) {
@@ -557,7 +531,7 @@ const GroundTruthSectionEditor = ({
           onDismiss={() => setRegroupedSectionIds([])}
         >
           The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so
-          their values may no longer match. Check them, and use <b>Change class &amp; re-extract</b> on a section if you would rather the
+          their values may no longer match. Check them, and change a section&apos;s class and use <b>Re-extract</b> if you would rather the
           model redo it.
         </Alert>
       )}
@@ -565,6 +539,7 @@ const GroundTruthSectionEditor = ({
       {(externalRegroup ? regroupOpen && canRegroup : isRegrouping) && (
         <PageGroupingEditor
           presentation={externalRegroup ? 'modal' : 'inline'}
+          title="Edit Page Class"
           pages={boardPages}
           sections={groupingForBoard(ctx.selectedSectionId)}
           classOptions={classOptions}
@@ -595,7 +570,7 @@ const GroundTruthSectionEditor = ({
     !externalRegroup &&
     canRegroup && (
       <Button iconName="edit" disabled={!mayChangeClass || !testSetId} onClick={() => setIsRegrouping(true)}>
-        Edit Page Grouping
+        Edit Page Class
       </Button>
     );
 
@@ -604,86 +579,29 @@ const GroundTruthSectionEditor = ({
      ALREADY set — backwards for the one case that needs it. */
   const classSlot = (ctx: SectionEditorContext): React.ReactNode => (
     <>
-      {ctx.data && (
-        <FormField
-          label="Class label"
-          description={
-            classOptions.length > 0
-              ? 'What this section is classified as, from this configuration profile. Distinct from the extraction labels below.'
-              : classListUnavailable
-                ? CLASS_LIST_UNAVAILABLE_DESCRIPTION
-                : 'What this section is classified as. Distinct from the extraction labels below.'
-          }
-          constraintText={
-            isReextracting
-              ? 'Locked while the re-extraction runs.'
-              : classListUnavailable
-                ? CLASS_LIST_UNAVAILABLE_CONSTRAINT
-                : !mayChangeClass
-                  ? 'You do not have permission to change this class.'
-                  : undefined
+      {/* A section's class is changed in Edit Page Class. Its fields were extracted under
+          the previous class, and only a re-extract replaces them. */}
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && (
+        <Alert
+          type="info"
+          header="Fields still reflect the previous class"
+          action={
+            <Button onClick={handleReextract} loading={isReextracting} disabled={!mayChangeClass}>
+              {isReextracting ? 'Re-extracting…' : 'Re-extract'}
+            </Button>
           }
         >
-          <SpaceBetween size="xs">
-            {/* Constrained to the config's classes: a class with no schema cannot be
-                extracted against, so the correction could never take effect. Free text
-                only when no config resolves. */}
-            {classListUnavailable ? (
-              <Input value={documentClassType ?? ''} disabled />
-            ) : classOptions.length > 0 ? (
-              <Select
-                selectedOption={
-                  documentClassType
-                    ? (classOptionsWithCurrent.find((o) => o.value === documentClassType) ?? {
-                        label: documentClassType,
-                        value: documentClassType,
-                      })
-                    : null
-                }
-                onChange={({ detail }) => updateDocumentClass(ctx, detail.selectedOption.value ?? '')}
-                options={classOptionsWithCurrent}
-                disabled={!mayChangeClass || isReextracting}
-                placeholder="Choose a document class"
-              />
-            ) : (
-              <Input
-                value={documentClassType ?? ''}
-                onChange={({ detail }) => updateDocumentClass(ctx, detail.value)}
-                disabled={!mayChangeClass}
-              />
-            )}
-            {/* Correcting the class is only half the fix: the fields were extracted
-                against the previous schema and only a re-extract replaces them. */}
-            {classChanged && testSetId && (
-              <Alert
-                type="info"
-                header="Fields still reflect the previous class"
-                action={
-                  <Button onClick={handleReextract} loading={isReextracting} disabled={!mayChangeClass}>
-                    {isReextracting ? 'Re-extracting…' : 'Change class & re-extract'}
-                  </Button>
-                }
-              >
-                These fields were extracted as <b>{savedClassType}</b>. Re-extract to replace them with ones the <b>{documentClassType}</b>{' '}
-                schema produces. This re-runs the document through the pipeline and usually takes under a minute; you can leave this page
-                and come back.
-                {ctx.data?.labelSource === 'reviewed-human'
-                  ? ' This document was already marked reviewed; re-extracting discards those confirmed values.'
-                  : ctx.data?.labelSource === 'draft-machine'
-                    ? ' The current draft labels for this document are replaced.'
-                    : ' The class is corrected, but this document has authored ground truth, so its field values are kept.'}
-              </Alert>
-            )}
-            {classChanged && !testSetId && (
-              <Alert type="warning">
-                The class will be saved, but this document has no processing run to re-extract from, so its fields will still reflect the
-                previous class.
-              </Alert>
-            )}
-            {reextractNote && <Alert type="success">{reextractNote}</Alert>}
-          </SpaceBetween>
-        </FormField>
+          These fields were extracted as <b>{reclassified[ctx.selectedSectionId]}</b>. Re-extract to replace them with ones the{' '}
+          <b>{documentClassType}</b> schema produces. This re-runs the document through the pipeline and usually takes under a minute; you
+          can leave this page and come back.
+          {ctx.data?.labelSource === 'reviewed-human'
+            ? ' This document was already marked reviewed; re-extracting discards those confirmed values.'
+            : ctx.data?.labelSource === 'draft-machine'
+              ? ' The current draft labels for this document are replaced.'
+              : ' The class is corrected, but this document has authored ground truth, so its field values are kept.'}
+        </Alert>
       )}
+      {reextractNote && <Alert type="success">{reextractNote}</Alert>}
       {splitPageIndices !== undefined && (
         <FormField
           label="Pages in this section"
@@ -693,8 +611,8 @@ const GroundTruthSectionEditor = ({
              implying it is here. */
           description={
             externalRegroup
-              ? 'Which pages of the document this section covers, in reading order. Use Edit Page Grouping at the top to move or reorder pages.'
-              : 'Which pages of the document this section covers, in reading order. Use Edit Page Grouping, above, to move or reorder pages.'
+              ? "Which pages of the document this section covers, in reading order. Use Edit Page Class at the top to move or reorder pages, or change a section's class."
+              : "Which pages of the document this section covers, in reading order. Use Edit Page Class, above, to move or reorder pages, or change a section's class."
           }
         >
           <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
@@ -715,18 +633,19 @@ const GroundTruthSectionEditor = ({
     return (
       <Alert type="info" header="No field values for this section">
         {!documentClassType
-          ? 'This section has no document class, so there is no schema to extract against — that is why it has no fields. Set the class above first; re-extracting before that will not produce anything.'
+          ? 'This section has no document class, so there is no schema to extract against — that is why it has no fields. Set its class in Edit Page Class first; re-extracting before that will not produce anything.'
           : inferenceResult
             ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
             : 'This section has no inference_result at all.'}{' '}
-        {sections.length > 1 ? 'Other sections of this document may still have values — check the section tabs above. ' : ''}
+        {sections.length > 1 ? 'Other sections of this document may still have values — choose one from the Section list above. ' : ''}
         {documentClassType ? (
           <>
-            Use <b>Change class &amp; re-extract</b> to have the model populate it, or the <b>JSON Editor</b> tab to enter values by hand.
+            To have the model populate it, change its class in <b>Edit Page Class</b> and choose <b>Re-extract</b>, or use the{' '}
+            <b>JSON Editor</b> tab to enter values by hand.
           </>
         ) : (
           <>
-            If the pages belong with another section instead, <b>Edit Page Grouping</b> can merge them rather than classifying this one
+            If the pages belong with another section instead, <b>Edit Page Class</b> can merge them rather than classifying this one
             separately.
           </>
         )}

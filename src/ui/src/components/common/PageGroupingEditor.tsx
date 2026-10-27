@@ -141,6 +141,8 @@ export interface PageGroupingEditorProps {
    * the modal cancels the edit (the unified editor's Edit Page Grouping).
    */
   presentation?: 'inline' | 'modal';
+  /** The dialog's title: the edit screen's button is Edit Page Class, the Sections panel's Edit Page Grouping. */
+  title?: string;
 }
 
 /**
@@ -474,6 +476,7 @@ const PageGroupingEditor = ({
   onSave,
   onCancel,
   presentation = 'inline',
+  title = 'Edit Page Grouping',
 }: PageGroupingEditorProps): React.JSX.Element => {
   const asModal = presentation === 'modal';
   // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note
@@ -744,13 +747,7 @@ const PageGroupingEditor = ({
   if (isExpanded) {
     return (
       <>
-        <Modal
-          visible
-          width={MODAL_WIDTH}
-          header="Edit Page Grouping"
-          onDismiss={asModal ? onCancel : () => setIsExpanded(false)}
-          footer={footer}
-        >
+        <Modal visible width={MODAL_WIDTH} header={title} onDismiss={asModal ? onCancel : () => setIsExpanded(false)} footer={footer}>
           {/* Wide enough for three section columns side by side; more scroll sideways. */}
           <div style={{ minWidth: `${MODAL_MIN_WIDTH}px` }}>{body}</div>
         </Modal>

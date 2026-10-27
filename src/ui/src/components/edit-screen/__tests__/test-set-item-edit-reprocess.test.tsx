@@ -121,19 +121,19 @@ beforeEach(() => {
 describe('the primary action on a Test Studio document', () => {
   it('offers Save, Cancel and Reprocess for a document with a review copy', () => {
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
+    expect(barButtons()).toEqual(['History', 'Processing Report', 'Edit Page Class', 'Skip', 'Cancel', 'Save', 'Process Changes']);
   });
 
   it('offers Reprocess for authored ground truth too, saying nothing is reprocessed', () => {
     docOver.reviewObjectKey = null;
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
-    expect(button('Reprocess').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
+    expect(barButtons()).toEqual(['History', 'Processing Report', 'Edit Page Class', 'Skip', 'Cancel', 'Save', 'Process Changes']);
+    expect(button('Process Changes').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
   });
 
   it('saves the open section, then confirms the rest, and exits once', async () => {
     renderScreen();
-    button('Reprocess').click();
+    button('Process Changes').click();
     await waitFor(() => expect(exit).toHaveBeenCalledTimes(1));
     expect(controller.save).toHaveBeenCalledTimes(1);
     expect(confirmSections).toHaveBeenCalledWith(['2']);
@@ -151,7 +151,7 @@ describe('the primary action on a Test Studio document', () => {
   it('stops when the save fails', async () => {
     controller.save.mockResolvedValue(false);
     renderScreen();
-    button('Reprocess').click();
+    button('Process Changes').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalled());
     expect(confirmSections).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
@@ -160,7 +160,7 @@ describe('the primary action on a Test Studio document', () => {
   it('places save, discard and page grouping in the top bar', () => {
     renderScreen();
     expect(editorProps).toMatchObject({ actionsPlacement: 'external', saveOnSectionSwitch: true, regroupPlacement: 'external' });
-    button('Edit Page Grouping').click();
+    button('Edit Page Class').click();
     expect(editorProps!.regroupOpen).toBe(true);
   });
 

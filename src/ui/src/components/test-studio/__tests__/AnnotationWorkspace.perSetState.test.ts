@@ -45,7 +45,7 @@ const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
 
 describe('one workspace instance per test set', () => {
   it('remounts the queue page and the edit screen when the set in the URL changes', () => {
-    expect(pageBody('TestSetQueuePage')).toMatch(/<AnnotationWorkspace key=\{testSetId\} \/>/);
+    expect(pageBody('TestSetQueuePage')).toMatch(/<AnnotationWorkspace key=\{testSetId\} onName=\{onName\} \/>/);
     expect(pageBody('TestSetItemPage')).toMatch(
       /<TestSetItemEdit\s+key=\{`\$\{testSetId\}\/\$\{objectKey\}`\}\s+testSetId=\{testSetId\}\s+objectKey=\{decodeURIComponent\(objectKey\)\}\s+onTestSet=\{onTestSet\}\s+\/>/,
     );

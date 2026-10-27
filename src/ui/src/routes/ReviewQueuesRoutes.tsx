@@ -86,20 +86,28 @@ export const TestSetItemPage = (): React.JSX.Element => {
  */
 const TestSetQueuePage = (): React.JSX.Element => {
   const { testSetId = '' } = useParams();
-  const { root, crumbs } = useQueueCrumbs({ text: `Test set: ${testSetId}`, href: '#' });
+  // The set's name arrives with its queue, keyed on the set; its id stands in until then.
+  const [loaded, setLoaded] = useState<{ id: string; name: string } | null>(null);
+  const onName = useCallback((name: string) => setLoaded({ id: testSetId, name }), [testSetId]);
+  const name = loaded?.id === testSetId ? loaded.name : testSetId;
+  const { root, crumbs } = useQueueCrumbs({ text: `Test set: ${name}`, href: '#' });
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <AnnotationWorkspace key={testSetId} />
+      <AnnotationWorkspace key={testSetId} onName={onName} />
     </ReviewQueuesLayout>
   );
 };
 
 const ProductionQueuePage = (): React.JSX.Element => {
   const { queue = '' } = useParams();
-  const { root, crumbs } = useQueueCrumbs({ text: decodeURIComponent(queue), href: '#' });
+  // The queue's name, as loaded or as just saved, keyed on the queue; its id stands in until then.
+  const [loaded, setLoaded] = useState<{ id: string; name: string } | null>(null);
+  const onName = useCallback((name: string) => setLoaded({ id: queue, name }), [queue]);
+  const name = loaded?.id === queue ? loaded.name : decodeURIComponent(queue);
+  const { root, crumbs } = useQueueCrumbs({ text: name, href: '#' });
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <ReviewQueuePage />
+      <ReviewQueuePage onName={onName} />
     </ReviewQueuesLayout>
   );
 };

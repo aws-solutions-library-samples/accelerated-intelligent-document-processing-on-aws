@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The edit screen for a production review item: the shared SectionEditor over the
-// item's sections, edits autosaved as drafts (and Save), then Reprocess (finish the
-// review; the finalize run applies the corrections) or Skip (give the item back to its
+// item's sections, edits autosaved as drafts (and Save), then Process Changes (finish
+// the review; the finalize run applies the corrections and re-runs evaluation and
+// summarization, reusing the document's OCR, classification and extraction) or Skip (give the item back to its
 // queue; the draft is kept). Cancel leaves without finishing. Only the assignee edits.
 // Any Annotator listed on the item's queue can open it read-only, and Claim an
 // unassigned item to work it. An Admin edits an unassigned item directly: the first
-// draft save, or Reprocess, assigns it to them. An item assigned to someone else is view-only for an Admin
+// draft save, or Process Changes, assigns it to them. An item assigned to someone else is view-only for an Admin
 // until they Take over.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -90,7 +91,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
   const [askSkipReason, setAskSkipReason] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [takingOver, setTakingOver] = useState(false);
-  /** Who was assigned the item just as this Admin tried to edit or reprocess it. */
+  /** Who was assigned the item just as this Admin tried to edit or finish it. */
   const [assignedJustNow, setAssignedJustNow] = useState<string | null>(null);
   // The latest item read, and the one claim in flight: concurrent saves share it.
   const itemRef = useRef<ReviewItem | null>(null);
@@ -109,7 +110,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
   }, [queueId, queueName, onItemQueue]);
 
   /**
-   * Before an Admin's first draft save or Reprocess on an unassigned item: claim it
+   * Before an Admin's first draft save or Process Changes on an unassigned item: claim it
    * (once, however many saves are waiting) and re-read it. Resolves true when the item
    * is the caller's; false when an Annotator was assigned it first.
    */
@@ -188,7 +189,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
   const terminal = !assigned && item.state !== QueueItemState.OPEN;
   const assignee = assigned ? item.ownerEmail : null;
   const assignedToMe = assigned && item.isMine;
-  // An Admin edits an unassigned item straight away; the first save or Reprocess assigns it to them.
+  // An Admin edits an unassigned item straight away; the first save or Process Changes assigns it to them.
   const adminOnOpen = isAdmin && item.state === QueueItemState.OPEN;
   const canEdit = assignedToMe || adminOnOpen;
   // An Admin takes over an item assigned to someone else before editing it.
@@ -315,16 +316,16 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
       return;
     }
     const ok = await run(
-      'reprocess',
+      'process',
       async () => {
         if (!(await ensureAssigned())) throw new AssignedElsewhere();
         // The latest edits are saved as a draft first, so the finalize run applies them.
         if (editor.current?.isDirty() && !(await editor.current.save())) throw new Error('Your latest edits could not be saved');
         await adapter.complete();
       },
-      'reprocess the item',
+      'process the changes',
     );
-    if (ok) exit(queuePath, `Submitted ${name} for reprocessing. Your corrections are being applied.`, `p:${objectKey}`);
+    if (ok) exit(queuePath, `Processing the changes to ${name}: your corrections are being applied.`, `p:${objectKey}`);
   };
 
   // One alert for the screen's notices, so the space stays given over to the review.
@@ -339,13 +340,17 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
               ? 'This review is finished: it was submitted and its corrections are being applied.'
               : `This review is finished: the item is ${stateView.label.toLowerCase()} and can no longer be edited.`,
         },
-        adminOnOpen && { id: 'unassigned', type: 'info', content: 'Not assigned yet. Editing or reprocessing assigns it to you.' },
+        adminOnOpen && {
+          id: 'unassigned',
+          type: 'info',
+          content: 'Not assigned yet. Editing it, or choosing Process Changes, assigns it to you.',
+        },
         canTakeOver && {
           id: 'take-over',
           type: assignedJustNow ? 'warning' : 'info',
           content: assignedJustNow
-            ? `Assigned to ${assignee ?? assignedJustNow} just now. Take over to edit or reprocess it.`
-            : `Assigned to ${assignee}. Take over to edit or reprocess it.`,
+            ? `Assigned to ${assignee ?? assignedJustNow} just now. Take over to edit it and process its changes.`
+            : `Assigned to ${assignee}. Take over to edit it and process its changes.`,
           action: (
             <Button onClick={() => void handleTakeOver()} loading={takingOver} disabled={busy !== null}>
               Take over
@@ -372,9 +377,11 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
       title={name}
       status={stateView.label}
       objectKey={item.objectKey}
+      reportSectionData={sectionData}
       actions={{
         primaryDisabledReason: lockedReason ?? (saving ? 'Saving your latest edits…' : undefined),
-        primaryHint: 'Apply your corrections and reprocess the document',
+        primaryHint:
+          'Apply your corrections and finish the review: evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
         // Skip gives the item back to its queue: only its holder can.
         showSkip: assignedToMe,
         skipDisabledReason: dirty ? 'Saving your latest edits…' : undefined,
@@ -403,6 +410,7 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
           {regroupOpen && (
             <PageGroupingEditor
               presentation="modal"
+              title="Edit Page Class"
               pages={boardPages}
               sections={boardSections}
               canChangeClass={false}
@@ -410,8 +418,8 @@ const ProductionItemEdit = ({ objectKey, onItemQueue }: ProductionItemEditProps)
                 <>
                   {groupingError && <Alert type="error">{groupingError}</Alert>}
                   Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted values and your draft edits are{' '}
-                  <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>Reprocess</b>. A section
-                  you remove takes its draft edits with it.
+                  <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>Process Changes</b>. A
+                  section you remove takes its draft edits with it.
                 </>
               }
               saveLabel="Save page grouping"

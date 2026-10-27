@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * A production queue's page, for an Admin. What has to hold: Queue Progress shows
- * exactly Pending, Assigned, In Progress, Annotators (how many are listed) and
- * Priority; the Annotators table lists each listed Annotator, and anyone still holding
- * items, with the items assigned to each; and the Items table shows Document, Source,
- * Queue, Priority and State, then the row Actions menu.
+ * A production queue's page, for an Admin. What has to hold: Queue Progress is a bar of
+ * the documents assigned or in progress, of all the queue's documents (a finished item
+ * leaves its queue); Key Metrics shows exactly Pending, Assigned, In Progress,
+ * Annotators (how many are listed) and Priority; the Annotators table lists each listed
+ * Annotator, and anyone still holding documents, with the documents assigned to each;
+ * the Documents table shows Document, Source, Queue, Priority and State, then the row
+ * Actions menu; and the page reports the queue's name for the breadcrumb.
  */
 
 import React from 'react';
@@ -73,11 +75,11 @@ vi.mock('../review-api', async (importOriginal) => ({
 import ReviewQueuePage from '../ReviewQueuePage';
 import { queueAnnotatorRows } from '../QueueAnnotatorsTable';
 
-const renderPage = async () => {
+const renderPage = async (onName?: (name: string) => void) => {
   render(
     <MemoryRouter initialEntries={['/review-queues/queues/default']}>
       <Routes>
-        <Route path="/review-queues/queues/:queue" element={<ReviewQueuePage />} />
+        <Route path="/review-queues/queues/:queue" element={<ReviewQueuePage onName={onName} />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -91,7 +93,18 @@ const itemsTable = () => tables()[1];
 const headers = (t: ReturnType<typeof annotatorsTable>) => t.findColumnHeaders().map((h) => h.getElement().textContent);
 
 describe('a production queue page', () => {
-  it('shows Pending, Assigned, In Progress, Annotators and Priority in Queue Progress', async () => {
+  it('shows the work underway in Queue Progress, before Key Metrics', async () => {
+    await renderPage();
+    const bar = createWrapper(document.body).findProgressBar()!;
+    // claimed 3 (assigned or in progress) of unclaimed 2 + claimed 3.
+    expect(bar.findAdditionalInfo()!.getElement().textContent).toBe('3 of 5 documents assigned or in progress');
+    const titles = createWrapper(document.body)
+      .findAllContainers()
+      .map((c) => c.findHeader()?.getElement().textContent);
+    expect(titles.indexOf('Queue Progress')).toBeLessThan(titles.indexOf('Key Metrics'));
+  });
+
+  it('shows Pending, Assigned, In Progress, Annotators and Priority in Key Metrics', async () => {
     await renderPage();
     const pairs = createWrapper(document.body).findKeyValuePairs()!;
     expect(pairs.findItems().map((i) => i.findLabel()?.getElement().textContent)).toEqual([
@@ -104,18 +117,27 @@ describe('a production queue page', () => {
     expect(pairs.findItems().map((i) => i.findValue()?.getElement().textContent)).toEqual(['2', '2', '1', '2', '50']);
   });
 
-  it('lists each Annotator with the items assigned to them', async () => {
+  it('lists each Annotator with the documents assigned to them', async () => {
     await renderPage();
-    expect(headers(annotatorsTable())).toEqual(['Annotator', 'Assigned items']);
+    expect(headers(annotatorsTable())).toEqual(['Annotator', 'Assigned documents']);
     const rows = annotatorsTable()
       .findRows()
       .map((r) => r.getElement().textContent);
     expect(rows).toEqual(['a@example.com2', 'b@example.com0', 'gone@example.com (not listed)1']);
   });
 
-  it('shows Document, Source, Queue, Priority, State and Actions in the Items table', async () => {
+  it('shows Document, Source, Queue, Priority, State and Actions in the Documents table', async () => {
     await renderPage();
+    expect(itemsTable().findHeaderSlot()!.getElement().textContent).toContain('Documents');
     expect(headers(itemsTable()).slice(-6)).toEqual(['Document', 'Source', 'Queue', 'Priority', 'State', 'Actions']);
+  });
+});
+
+describe('the queue name', () => {
+  it('is reported for the breadcrumb', async () => {
+    const onName = vi.fn();
+    await renderPage(onName);
+    expect(onName).toHaveBeenCalledWith('Default');
   });
 });
 

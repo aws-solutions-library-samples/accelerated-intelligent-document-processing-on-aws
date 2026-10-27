@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The edit screen for a Test Studio document: the ground-truth editor (the test-set
-// adapter over the shared SectionEditor), Save, Skip, Cancel and Reprocess, with the
+// adapter over the shared SectionEditor), Save, Skip, Cancel and Process Changes, with the
 // Edit | View switch. Saving a section marks it reviewed: Save and
-// switching sections save the open one, and Reprocess saves it and confirms the
+// switching sections save the open one, and Process Changes saves it and confirms the
 // sections not saved yet, so "the labels are correct" and "I corrected them" end the
-// same way. For a document with a review copy, confirming its last section reprocesses
-// that copy; authored ground truth has no copy, so Reprocess only marks it reviewed.
+// same way. For a document with a review copy, confirming its last section re-runs
+// evaluation and summarization on that copy (not OCR, classification or extraction);
+// authored ground truth has no copy, so Process Changes only marks it reviewed.
 // Skip gives the document back to its queue, unassigned and not reviewed, for another
 // Annotator to claim. The assignee works the document; an Admin or Author may too. An
 // Annotator listed on the set's queue can open any document read-only, and Claim an
@@ -163,7 +164,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
   const mayWork = doc.claimedByMe || isAdmin || isAuthor;
   const sections = doc.sections ?? [];
   const name = documentName(objectKey);
-  // Confirming the last section of a review copy reprocesses it; authored ground truth
+  // Confirming the last section of a review copy re-runs its evaluation and summary; authored ground truth
   // has no copy, so finishing it only marks its labels reviewed.
   const reprocesses = !!doc.reviewObjectKey;
 
@@ -244,7 +245,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
       }
       return;
     }
-    if (action !== 'reprocess') return;
+    if (action !== 'process') return;
     setBusy(action);
     processing.current = true;
     try {
@@ -257,12 +258,12 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
       exit(
         queuePath,
         reprocesses
-          ? `Submitted ${name} for reprocessing. Its labels are marked reviewed.`
+          ? `Processing the changes to ${name}. Its labels are marked reviewed.`
           : `${name} is complete. Its labels are marked reviewed.`,
         workItemId,
       );
     } catch (err) {
-      setErrorMessage(describeApiError(err, reprocesses ? 'reprocess this document' : 'complete this document'));
+      setErrorMessage(describeApiError(err, 'process the changes to this document'));
       void reload();
     } finally {
       processing.current = false;
@@ -295,7 +296,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
       exit(queuePath, `Saved. ${name} is marked reviewed.`, workItemId);
       return;
     }
-    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Reprocess.`);
+    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Process Changes.`);
   };
 
   const editorReadOnly = editFlags.isReadOnly || !mayWork;
@@ -339,7 +340,7 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
           !!doc.labelSource && {
             id: 'authored',
             type: 'info',
-            content: `Authored ground truth: check its labels, correct them if needed, then choose Reprocess.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}`,
+            content: `Authored ground truth: check its labels, correct them if needed, then choose Process Changes.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}`,
           },
       ]}
     />
@@ -350,10 +351,11 @@ const TestSetItemEdit = ({ testSetId, objectKey, onTestSet }: TestSetItemEditPro
       title={name}
       status={doc.reviewed ? 'Reviewed' : doc.skipped ? 'Skipped' : 'To review'}
       objectKey={objectKey}
+      reportSectionData={sectionData}
       actions={{
         primaryDisabledReason: completeReason ?? (saving ? 'Saving your changes…' : undefined),
         primaryHint: reprocesses
-          ? 'Mark the labels reviewed (saved and edited sections as corrected, the rest as correct) and reprocess the document'
+          ? 'Mark the labels reviewed (saved and edited sections as corrected, the rest as correct): evaluation and summarization re-run; OCR, classification and extraction are not repeated.'
           : 'Mark the labels reviewed (saved and edited sections as corrected, the rest as correct). Authored ground truth has no review copy, so nothing is reprocessed.',
         showSkip: true,
         skipDisabledReason: skipReason,

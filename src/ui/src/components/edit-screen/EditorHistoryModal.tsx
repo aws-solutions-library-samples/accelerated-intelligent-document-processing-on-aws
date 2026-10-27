@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The edit screen's History, in every mode: the open section's Field Edits (its
-// `_editHistory`, prediction and baseline), the Review Activity (who claimed, was
-// assigned, skipped or completed it, and why) and the open section's Processing Report.
+// `_editHistory`, prediction and baseline) and the Review Activity (who claimed, was
+// assigned, skipped or completed it, and why). Processing Report is its own button.
 import React from 'react';
 import { Box, Button, Modal, Tabs } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { ReviewHistoryTable } from '../review-queues/ReviewHistoryModal';
 import FieldEditsTable from './FieldEditsTable';
-import ProcessingReportContent from './ProcessingReportContent';
 
 /** Every tab shares one height, so switching tabs doesn't resize the dialog. */
 const TAB_HEIGHT = '420px';
@@ -19,7 +18,7 @@ const tabBody = (content: React.ReactNode): React.ReactNode => <div style={{ hei
 interface EditorHistoryModalProps {
   visible: boolean;
   onDismiss: () => void;
-  /** The open section's result, whose `_editHistory` and processing report are shown. */
+  /** The open section's result, whose `_editHistory` is shown. */
   sectionData: Record<string, unknown> | null;
   baselineData?: Record<string, unknown> | null;
   /** The review activity (claims, assignments, skips, completions); empty shows an empty state. */
@@ -55,7 +54,6 @@ const EditorHistoryModal = ({
           content: tabBody(<FieldEditsTable sectionData={sectionData} baselineData={baselineData} />),
         },
         { id: 'review', label: 'Review Activity', content: tabBody(<ReviewHistoryTable history={reviewHistory ?? []} />) },
-        { id: 'report', label: 'Processing Report', content: tabBody(<ProcessingReportContent sectionData={sectionData} />) },
       ]}
     />
   </Modal>

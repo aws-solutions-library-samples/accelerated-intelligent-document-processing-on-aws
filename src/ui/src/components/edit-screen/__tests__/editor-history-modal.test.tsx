@@ -24,7 +24,7 @@ describe('EditorHistoryModal', () => {
   it('always offers Field Edits, Review Activity and Processing Report, with an empty state when there is no activity', () => {
     render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={{ inference_result: {} }} />);
     expect(createWrapper(document.body).findModal()!.findHeader().getElement().textContent).toBe('History');
-    expect(tabs()).toEqual(['Field Edits', 'Review Activity', 'Processing Report']);
+    expect(tabs()).toEqual(['Field Edits', 'Review Activity']);
     createWrapper(document.body).findTabs()!.findTabLinkByIndex(2)!.click();
     expect(createWrapper(document.body).findModal()!.findContent().getElement().textContent).toContain(
       'Nothing has happened to this item yet.',
@@ -57,7 +57,7 @@ describe('EditorHistoryModal', () => {
         reviewHistory={[{ at: '2026-10-22T10:00:00Z', event: 'claimed', actor: 'ann@example.com', details: null }]}
       />,
     );
-    expect(tabs()).toEqual(['Field Edits', 'Review Activity', 'Processing Report']);
+    expect(tabs()).toEqual(['Field Edits', 'Review Activity']);
     const modal = createWrapper(document.body).findModal()!;
     createWrapper(document.body).findTabs()!.findTabLinkByIndex(2)!.click();
     expect(modal.findContent().getElement().textContent).toContain('ann@example.com');

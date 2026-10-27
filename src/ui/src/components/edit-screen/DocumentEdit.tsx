@@ -3,14 +3,15 @@
 //
 // The edit screen's direct edit of any processed document, in review or not: the
 // shared SectionEditor over its sections, with the evaluation baseline where the
-// document has one. Save writes the edits without reprocessing; Reprocess saves them,
-// confirms, then reprocesses the document (evaluation and summarization); Cancel
-// leaves for the document's page. Edit Page Grouping saves a new grouping.
+// document has one. Save writes the edits without reprocessing; Process Changes saves
+// them, confirms, then submits them through processChanges, so evaluation and
+// summarization re-run on them and OCR, classification and extraction are not
+// repeated; Cancel leaves for the document's page. Edit Page Class saves a new grouping.
 //
 // A document in a review queue opens read-only: it is edited from its queue item,
 // and finalizing that item would overwrite edits made here. So does a document still
 // processing. Save needs the Admin or Author role, or a Reviewer holding the
-// document's legacy review; Reprocess needs the Admin or Reviewer role. The
+// document's legacy review; Process Changes needs the Admin or Reviewer role. The
 // server enforces both.
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -44,7 +45,7 @@ import useEditCancel from './use-edit-cancel';
 import useEditView from './use-edit-view';
 import useSectionEvaluation from './use-section-evaluation';
 
-export const PROCESS_ROLE_REASON = 'Reprocess needs the Admin or Reviewer role.';
+export const PROCESS_ROLE_REASON = 'Process Changes needs the Admin or Reviewer role.';
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 
 /** The document's HITL review events, in the shape History's Review Activity lists. */
@@ -82,7 +83,7 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
   const { mergedConfig } = useConfiguration(doc?.configVersion || 'default');
   const editor = useRef<SectionEditorController | null>(null);
   const [view, setView] = useEditView();
-  // The document's page: where Cancel and Reprocess leave to.
+  // The document's page: where Cancel and Process Changes leave to.
   const documentPath = `${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
   const { cancel, dialog: cancelDialog } = useEditCancel(editor, documentPath);
   const [busy, setBusy] = useState<EditAction | null>(null);
@@ -191,8 +192,8 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
       }
       return;
     }
-    if (action !== 'reprocess') return;
-    // The edits are saved first, so the reprocess evaluates them.
+    if (action !== 'process') return;
+    // The edits are saved first, so processing the changes evaluates them.
     if (editor.current?.isDirty()) {
       setBusy('save');
       const ok = await editor.current.save().finally(() => setBusy(null));
@@ -202,15 +203,15 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
   };
 
   const runProcessChanges = async () => {
-    setBusy('reprocess');
+    setBusy('process');
     try {
       await adapter.processChanges();
       setConfirmProcess(false);
-      setSuccessMessage(`${name} was submitted for reprocessing.`);
+      setSuccessMessage(`Processing the changes to ${name}: evaluation and summarization are re-running.`);
       navigate(documentPath);
     } catch (err) {
       setConfirmProcess(false);
-      setError(`Could not reprocess the document: ${getErrorMessage(err)}`);
+      setError(`Could not process the changes: ${getErrorMessage(err)}`);
     } finally {
       setBusy(null);
     }
@@ -266,6 +267,7 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
       title={name}
       status={status}
       objectKey={objectKey}
+      reportSectionData={sectionData}
       actions={{
         showSave: showEditing,
         saveDisabledReason: readOnlyReason ?? (!dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined),
@@ -274,7 +276,8 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
         showCancel: !readOnly,
         cancelDisabledReason: saving ? 'Saving your changes…' : undefined,
         primaryDisabledReason: processReason,
-        primaryHint: 'Save your changes and reprocess the document (evaluation and summary)',
+        primaryHint:
+          'Save your changes and process them: evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
         onShowHistory: () => setShowHistory(true),
         view,
         onViewChange: setView,
@@ -298,21 +301,23 @@ const DocumentEdit = ({ objectKey, initialSectionId = null }: DocumentEditProps)
             visible={confirmProcess}
             structuralChanges={false}
             bdaMode={bdaMode}
-            busy={busy === 'reprocess'}
+            busy={busy === 'process'}
             onConfirm={() => void runProcessChanges()}
             onCancel={() => setConfirmProcess(false)}
           />
           {regroupOpen && (
             <PageGroupingEditor
               presentation="modal"
+              title="Edit Page Class"
               pages={boardPages}
               sections={boardSections}
               classOptions={getConfigClassOptions(mergedConfig)}
               consequence={
                 <>
                   Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the
-                  document is <b>not</b> reprocessed, so they may no longer match their pages. Use <b>Reprocess</b> afterwards if you would
-                  rather the pipeline redo them.
+                  document is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, use the
+                  document page&apos;s <b>Edit Mode → Process Changes</b> afterwards: this screen&apos;s <b>Process Changes</b> re-runs
+                  evaluation and summarization only.
                 </>
               }
               saveLabel="Save page grouping"

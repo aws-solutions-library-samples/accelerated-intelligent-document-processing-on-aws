@@ -128,7 +128,7 @@ beforeEach(() => {
 describe('the direct edit', () => {
   it('offers History, Edit Page Grouping, Cancel, Save and Reprocess, with no Skip', async () => {
     await renderEditor();
-    expect(bar()).toEqual(['History', 'Edit Page Grouping', 'Cancel', 'Save', 'Reprocess']);
+    expect(bar()).toEqual(['History', 'Processing Report', 'Edit Page Class', 'Cancel', 'Save', 'Process Changes']);
     expect(editorProps!.variant).toBe('widget');
     expect(editorProps!.title).toBeUndefined();
     expect(editorProps!.isReadOnly).toBe(false);
@@ -146,7 +146,7 @@ describe('the direct edit', () => {
   it('confirms, then calls processChanges with no section changes', async () => {
     controller.isDirty.mockReturnValue(true);
     await renderEditor();
-    button('Reprocess').click();
+    button('Process Changes').click();
     await waitFor(() => expect(createWrapper(document.body).findModal()).not.toBeNull());
     // The edits are saved before the confirmation, and nothing is sent until it is confirmed.
     expect(controller.save).toHaveBeenCalledTimes(1);
@@ -167,7 +167,7 @@ describe('the direct edit', () => {
     Object.assign(role, { isAdmin: false, isAuthor: true, canWrite: true, canReview: false, canWorkReviewQueues: false });
     await renderEditor();
     expect(button('Save')).toBeTruthy();
-    expect(disabledReason('Reprocess')).toBe('Reprocess needs the Admin or Reviewer role.');
+    expect(disabledReason('Process Changes')).toBe('Process Changes needs the Admin or Reviewer role.');
   });
 
   it('opens a document in a review queue read-only, with Review in queue for an Annotator', async () => {
@@ -181,15 +181,15 @@ describe('the direct edit', () => {
       .find((b) => barLabel(b) === 'Review in queue');
     expect(review?.getElement().getAttribute('href')).toBe('#/review-queues/items/in%2Fdoc.pdf');
     expect(disabledReason('Save')).toBe('This document is in a review queue. Choose Review to work on it there.');
-    expect(disabledReason('Edit Page Grouping')).toBe('This document is in a review queue. Choose Review to work on it there.');
-    expect(disabledReason('Reprocess')).toBe('This document is in a review queue. Choose Review to work on it there.');
+    expect(disabledReason('Edit Page Class')).toBe('This document is in a review queue. Choose Review to work on it there.');
+    expect(disabledReason('Process Changes')).toBe('This document is in a review queue. Choose Review to work on it there.');
   });
 
   it('is read-only while the document is still processing', async () => {
     server.doc = rawDoc({ ObjectStatus: 'RUNNING' });
     await renderEditor();
     expect(editorProps!.isReadOnly).toBe(true);
-    expect(disabledReason('Reprocess')).toBe('Available when processing finishes');
+    expect(disabledReason('Process Changes')).toBe('Available when processing finishes');
   });
 
   it('titles the document with its status over the object key, with no Edit history tab in the editor', async () => {

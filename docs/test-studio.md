@@ -1192,13 +1192,14 @@ The queue page shows:
 Per-document actions sit in one bar at the top of the edit screen (the same
 screen as production review items), so finishing a long document does not mean
 scrolling past every field to reach them: **Edit | View**,
-**History**, **Edit Page Grouping**, **Skip**, **Cancel**, **Save** and
-**Reprocess**, or the view switch, **History** and **Claim** for an Annotator viewing
-an unassigned document. **Save** saves the open section, which marks it
-reviewed (switching sections saves it too), and **Reprocess** saves the open
-section, confirms the rest and reprocesses the document's review copy. Authored
-ground truth has no review copy, so for it **Reprocess** only marks the labels
-reviewed. The title is the document's name with its status (**To review**,
+**History**, **Processing Report**, **Edit Page Class**, **Skip**, **Cancel**, **Save**
+and **Process Changes**, or the view switch, **History**, **Processing Report** and
+**Claim** for an Annotator viewing an unassigned document. **Save** saves the open
+section, which marks it reviewed (switching sections saves it too), and **Process
+Changes** saves the open section, confirms the rest and re-runs evaluation and
+summarization on the document's review copy (OCR, classification and extraction are
+not repeated). Authored ground truth has no review copy, so for it **Process Changes**
+only marks the labels reviewed. The title is the document's name with its status (**To review**,
 **Reviewed** or **Skipped**), and the **Document Editor** panel has a **Section**
 dropdown at its top left. The notices share one alert.
 
@@ -1260,10 +1261,10 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-In the editor, **Class label** is a dropdown of the classes defined by the config
+A section's class is changed in **Edit Page Class**, whose class list holds the classes defined by the config
 version that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
-names which config the list came from, and says so explicitly when it is a
+names which config the class list came from, and says so explicitly when it is a
 fallback ("… (active config)", "built-in default"), because a list of classes
 from the wrong config looks exactly like a list of classes from the right one.
 
@@ -1271,10 +1272,10 @@ The order is: the config stamped on the baseline; failing that the test set's ow
 declared version; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
-preset. Choosing a different class offers
-**Change class & re-extract**, which re-runs that one document and waits for the
-new labels before returning, so you are never left looking at fields from the
-previous class.
+preset. After a section's class is changed and saved in **Edit Page Class**, the
+section says **Fields still reflect the previous class** and offers **Re-extract**,
+which re-runs that one document and waits for the new labels before returning, so you
+are never left looking at fields from the previous class.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
@@ -1309,8 +1310,8 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Edit Page Grouping** opens a board with every section side by side and each page as a
-thumbnail. On the queue's edit screen it is in the action bar at the top and opens
+**Edit Page Class** opens a board with every section side by side and each page as a
+thumbnail, where a section's pages and its class are changed. On the queue's edit screen it is in the action bar at the top and opens
 the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
 section selector at the top of the document. Either way it is kept away from the
 extracted fields because it changes the document's structure, not one section's values. (**Pages in this section**, in the field
@@ -1350,7 +1351,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Change class & re-extract** is there if you would rather the model redo one. It is
+**Re-extract**, offered after a class change, is there if you would rather the model redo one. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1384,10 +1385,11 @@ A section can legitimately have nothing extracted, and the editor says which of 
 things happened rather than showing an empty form:
 
 - **No document class.** With no class there is no schema, so extraction had nothing to
-  extract against. This is the actionable one: set the class first — re-extracting before
-  that produces nothing. A section in this state is marked **(no class)** in its tab. It
+  extract against. This is the actionable one: set the class in **Edit Page Class** first —
+  re-extracting before that produces nothing. A section in this state is marked **(no
+  class)** in the **Section** list. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
-  which **Edit Page Grouping** can merge.
+  which **Edit Page Class** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
 - **A section added by re-grouping**, which starts with no values because nothing has
   extracted those pages as a group yet.

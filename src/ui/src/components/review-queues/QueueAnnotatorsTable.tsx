@@ -1,9 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// A production queue's Annotators, on the queue's page (Admin): everyone listed in its
+// A queue's Annotators, on the queue's page (Admin): everyone listed in its
 // Eligible Annotators, plus anyone still holding its items after being taken off the
-// list, with how many of the queue's items each one is assigned.
+// list, with how many of the queue's documents each one is assigned. Shown on a production
+// queue's page and a Test Studio queue's page alike.
 import React, { useMemo } from 'react';
 import { Box, Header, Pagination, Table, TextFilter } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
@@ -64,7 +65,7 @@ const QueueAnnotatorsTable = ({ rows, loading }: QueueAnnotatorsTableProps): Rea
       header={
         <Header
           counter={loading ? undefined : `(${rows.length})`}
-          description="The Annotators who work this queue, and the items assigned to each."
+          description="The Annotators who work this queue, and the documents assigned to each."
         >
           Annotators
         </Header>
@@ -81,7 +82,7 @@ const QueueAnnotatorsTable = ({ rows, loading }: QueueAnnotatorsTableProps): Rea
               <span title="No longer listed in this queue's Eligible Annotators; still holds its items">{`${row.email} (not listed)`}</span>
             ),
         },
-        { id: 'assigned', header: 'Assigned items', sortingField: 'assigned', cell: (row) => row.assigned },
+        { id: 'assigned', header: 'Assigned documents', sortingField: 'assigned', cell: (row) => row.assigned },
       ]}
       filter={
         <TextFilter

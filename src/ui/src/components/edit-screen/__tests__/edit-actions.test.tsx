@@ -53,18 +53,18 @@ const ALL = { showRegroup: true, showSkip: true, showCancel: true, showSave: tru
 describe('the edit screen action bar', () => {
   it('renders every action in order', () => {
     renderScreen(ALL);
-    expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
+    expect(labels()).toEqual(['History', 'Edit Page Class', 'Skip', 'Cancel', 'Save', 'Process Changes']);
   });
 
   it('shows only History and Reprocess by default', () => {
     renderScreen();
-    expect(labels()).toEqual(['History', 'Reprocess']);
+    expect(labels()).toEqual(['History', 'Process Changes']);
   });
 
   it('puts the Edit | View switch first, and reports the view chosen', () => {
     const onViewChange = vi.fn();
     renderScreen({ ...ALL, view: 'edit', onViewChange });
-    expect(labels()).toEqual(['History', 'Edit Page Grouping', 'Skip', 'Cancel', 'Save', 'Reprocess']);
+    expect(labels()).toEqual(['History', 'Edit Page Class', 'Skip', 'Cancel', 'Save', 'Process Changes']);
     const control = header().findActions()!.findSegmentedControl()!;
     expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Edit', 'View']);
     expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
@@ -102,12 +102,12 @@ describe('the edit screen action bar', () => {
 
   it('disables a button with its reason', () => {
     renderScreen({ ...ALL, regroupDisabledReason: 'Not while in review', primaryDisabledReason: 'Assigned to someone else' });
-    expect(isDisabled(button('Edit Page Grouping'))).toBe(true);
-    expect(isDisabled(button('Reprocess'))).toBe(true);
+    expect(isDisabled(button('Edit Page Class'))).toBe(true);
+    expect(isDisabled(button('Process Changes'))).toBe(true);
     expect(isDisabled(button('Save'))).toBe(false);
     const regroup = createWrapper(document.body)
       .findAllButtons()
-      .find((b) => label(b.getElement()) === 'Edit Page Grouping')!;
+      .find((b) => label(b.getElement()) === 'Edit Page Class')!;
     regroup.focus();
     expect(regroup.findDisabledReason()?.getElement().textContent).toBe('Not while in review');
   });
@@ -118,11 +118,11 @@ describe('the edit screen action bar', () => {
   });
 
   it.each([
-    ['Edit Page Grouping', 'regroup'],
+    ['Edit Page Class', 'regroup'],
     ['Skip', 'skip'],
     ['Cancel', 'cancel'],
     ['Save', 'save'],
-    ['Reprocess', 'reprocess'],
+    ['Process Changes', 'process'],
   ])('%s reports %s', (name, action) => {
     const { onAction } = renderScreen(ALL);
     fireEvent.click(button(name));

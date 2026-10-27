@@ -7,17 +7,18 @@
 // and the Document Editor panel.
 //
 // The bar always comes in the order Edit | View (the source document, where it can be
-// shown), History, Edit Page Grouping, Skip, Cancel, Save and Reprocess, each shown
-// only where it applies. An Annotator viewing an unassigned item sees the view switch,
-// History and Claim instead. Every disabled action says why on
+// shown), History, Processing Report, Edit Page Class, Skip, Cancel, Save and Process
+// Changes, each shown only where it applies. An Annotator viewing an unassigned item sees
+// the view switch, History, Processing Report and Claim instead. Every disabled action says why on
 // hover. The mode components decide which actions apply; the layout is decided here.
-import React from 'react';
-import { Box, Button, Container, Header, SegmentedControl, SpaceBetween } from '@cloudscape-design/components';
+import React, { useState } from 'react';
+import { Box, Button, Container, Header, Modal, SegmentedControl, SpaceBetween } from '@cloudscape-design/components';
 
 import EditScreenLayout from './EditScreenLayout';
+import ProcessingReportContent from './ProcessingReportContent';
 import type { EditView } from './use-edit-view';
 
-export type EditAction = 'reprocess' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup';
+export type EditAction = 'process' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup';
 
 /** Hover text of Skip while it is available. */
 export const SKIP_HINT = 'Give this item back to its queue, unassigned and not finished.';
@@ -26,14 +27,16 @@ export interface EditActionsProps {
   /** The action running now; every button is disabled meanwhile. */
   busy: EditAction | null;
   onAction: (action: EditAction) => void;
-  /** Offer History (field edits, review activity and the processing report). */
+  /** Offer History (field edits and review activity). */
   onShowHistory?: () => void;
+  /** Offer Processing Report (how the open section was extracted). EditScreen sets it. */
+  onShowReport?: () => void;
   /**
    * Offer Claim (an Annotator viewing an unassigned item): assigns the item to them,
-   * after which it can be worked. Shown with History only.
+   * after which it can be worked. Shown with History and Processing Report only.
    */
   showClaim?: boolean;
-  /** Offer Edit Page Grouping. */
+  /** Offer Edit Page Class (the pages and class of each section). */
   showRegroup?: boolean;
   regroupDisabledReason?: string;
   /** Offer Skip: give the item back to its queue, unassigned and not finished. */
@@ -61,6 +64,7 @@ const EditActions = ({
   busy,
   onAction,
   onShowHistory,
+  onShowReport,
   showClaim = false,
   showRegroup = false,
   regroupDisabledReason,
@@ -77,9 +81,16 @@ const EditActions = ({
 }: EditActionsProps): React.JSX.Element => {
   const working = busy !== null ? 'Working…' : undefined;
   const history = onShowHistory && (
-    <span title={working ? undefined : 'The field edits made to this document, who worked the item, and the processing report'}>
+    <span title={working ? undefined : 'The field edits made to this document, and who worked the item'}>
       <Button disabled={!!working} onClick={onShowHistory}>
         History
+      </Button>
+    </span>
+  );
+  const report = onShowReport && (
+    <span title={working ? undefined : 'How the open section was extracted'}>
+      <Button disabled={!!working} onClick={onShowReport}>
+        Processing Report
       </Button>
     </span>
   );
@@ -99,6 +110,7 @@ const EditActions = ({
       <SpaceBetween direction="horizontal" size="xs">
         {viewSwitch}
         {history}
+        {report}
         <span title={working ? undefined : 'Assign this item to you, then work it here or from Home › Tasks'}>
           <Button variant="primary" disabled={!!working && busy !== 'claim'} loading={busy === 'claim'} onClick={() => onAction('claim')}>
             Claim
@@ -116,9 +128,10 @@ const EditActions = ({
     <SpaceBetween direction="horizontal" size="xs">
       {viewSwitch}
       {history}
+      {report}
       {showRegroup && (
         <Button iconName="edit" disabled={!!regroupReason} disabledReason={regroupReason} onClick={() => onAction('regroup')}>
-          Edit Page Grouping
+          Edit Page Class
         </Button>
       )}
       {showSkip && (
@@ -145,10 +158,10 @@ const EditActions = ({
           variant="primary"
           disabled={!!primaryReason}
           disabledReason={primaryReason}
-          loading={busy === 'reprocess'}
-          onClick={() => onAction('reprocess')}
+          loading={busy === 'process'}
+          onClick={() => onAction('process')}
         >
-          Reprocess
+          Process Changes
         </Button>
       </span>
     </SpaceBetween>
@@ -177,34 +190,80 @@ interface EditScreenProps {
   context?: React.ReactNode;
   /** Dialogs the actions open (the skip reason, History, page grouping). */
   dialogs?: React.ReactNode;
+  /**
+   * The open section's result, for Processing Report; null while no section is open.
+   * Omitted, the bar has no Processing Report.
+   */
+  reportSectionData?: Record<string, unknown> | null;
   /** The Document Editor panel. */
   children: React.ReactNode;
 }
 
-const EditScreen = ({ title, status, objectKey, actions, notices, context, dialogs, children }: EditScreenProps): React.JSX.Element => (
-  <EditScreenLayout
-    header={
-      <SpaceBetween size="s">
-        <Header variant="h1" description={<span title={objectKey}>{objectKey}</span>} actions={<EditActions {...actions} />}>
-          {title}
-          {status && (
-            <>
-              {' '}
-              {/* The status reads as the subtitle does (font, size and colour), not as the title. */}
-              <Box variant="span" fontSize="body-m" fontWeight="normal" color="text-body-secondary">
-                ({status})
-              </Box>
-            </>
-          )}
-        </Header>
-        {notices}
-      </SpaceBetween>
+/** The open section's processing report, opened from the bar. */
+const ProcessingReportModal = ({ sectionData, onDismiss }: { sectionData: Record<string, unknown> | null; onDismiss: () => void }) => (
+  <Modal
+    visible
+    size="large"
+    onDismiss={onDismiss}
+    header="Processing Report"
+    footer={
+      <Box float="right">
+        <Button variant="primary" onClick={onDismiss}>
+          Close
+        </Button>
+      </Box>
     }
-    context={context}
   >
-    {children}
-    {dialogs}
-  </EditScreenLayout>
+    <ProcessingReportContent sectionData={sectionData} />
+  </Modal>
 );
+
+const EditScreen = ({
+  title,
+  status,
+  objectKey,
+  actions,
+  notices,
+  context,
+  dialogs,
+  reportSectionData,
+  children,
+}: EditScreenProps): React.JSX.Element => {
+  const [showReport, setShowReport] = useState(false);
+  const offerReport = reportSectionData !== undefined;
+  return (
+    <EditScreenLayout
+      header={
+        <SpaceBetween size="s">
+          <Header
+            variant="h1"
+            description={<span title={objectKey}>{objectKey}</span>}
+            actions={<EditActions {...actions} onShowReport={offerReport ? () => setShowReport(true) : undefined} />}
+          >
+            {title}
+            {status && (
+              <>
+                {' '}
+                {/* The status reads as the subtitle does (font, size and colour), not as the title. */}
+                <Box variant="span" fontSize="body-m" fontWeight="normal" color="text-body-secondary">
+                  ({status})
+                </Box>
+              </>
+            )}
+          </Header>
+          {notices}
+        </SpaceBetween>
+      }
+      context={context}
+    >
+      {children}
+      {dialogs}
+      {/* Mounted only while open, so its buttons are not on the screen otherwise. */}
+      {showReport && offerReport && (
+        <ProcessingReportModal sectionData={reportSectionData ?? null} onDismiss={() => setShowReport(false)} />
+      )}
+    </EditScreenLayout>
+  );
+};
 
 export default EditScreen;
