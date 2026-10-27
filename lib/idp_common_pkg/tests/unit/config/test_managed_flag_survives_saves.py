@@ -406,7 +406,7 @@ def test_a_body_saved_without_managed_never_puts_it_in_the_body(manager, name):
 
 @pytest.fixture
 def update_configuration_module(monkeypatch):
-    sys.modules.setdefault("cfnresponse", MagicMock())
+    monkeypatch.setitem(sys.modules, "cfnresponse", MagicMock())
     monkeypatch.syspath_prepend(str(_UPDATE_CONFIGURATION_DIR))
     sys.modules.pop("index", None)
     module = importlib.import_module("index")
