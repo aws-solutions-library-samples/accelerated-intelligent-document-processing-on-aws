@@ -3,10 +3,10 @@
 
 /**
  * The queue dialog in HITL › Queue Management. What has to hold: creating reads
- * "Create Queue"; the fields paired in the two columns each carry a one-line
- * description so the inputs line up; a production queue's confidence threshold and
- * Enabled switch are prefilled, validated (0 to 1) and sent on save; and a Test Studio
- * queue, which has neither, saves without them. The dialog has no reject-reasons
+ * "Create Queue"; the fields in the two columns each carry a one-line description so
+ * the inputs line up; a production queue has no confidence threshold, and its Enabled
+ * switch is prefilled and sent on save; and a Test Studio queue, which has no switch,
+ * saves without it. The dialog has no reject-reasons
  * editor: an existing queue's stored list is sent back unchanged and a new queue gets
  * the backend's defaults.
  */
@@ -36,10 +36,10 @@ const queue = (over: Partial<ReviewQueueDefinition> = {}): ReviewQueueDefinition
   priority: 1,
   checklist: [],
   rejectReasons: [],
+  skipReasons: ['Out of time'],
   timeLimitMinutes: 60,
   eligibleAnnotators: [],
   isDefaultQueue: false,
-  confidenceThreshold: 0.65,
   enabled: false,
   ...over,
 });
@@ -99,21 +99,20 @@ describe('the queue dialog', () => {
     expect(modal().findHeader().getElement().textContent).toBe('Queue Settings: Claims');
   });
 
-  it('pairs Queue id/Name, Priority/Time limit and Confidence threshold/Enabled, each with a one-line description', () => {
+  it('pairs Queue id/Name and Priority/Time limit, then Enabled, each with a one-line description', () => {
     open();
     const all = createWrapper(document.body).findAllFormFields();
-    const fields = all.slice(0, 6);
-    // The six share one two-column layout, which the full-width fields below are outside.
+    const fields = all.slice(0, 5);
+    // The five share one two-column layout, which the full-width fields below are outside.
     const first = fields[0].getElement();
     let layout: HTMLElement | null = first.parentElement;
-    while (layout && !layout.contains(fields[5].getElement())) layout = layout.parentElement;
+    while (layout && !layout.contains(fields[4].getElement())) layout = layout.parentElement;
     expect(layout?.contains(field('Description').getElement())).toBe(false);
     expect(fields.map((f) => f.findLabel()?.getElement().textContent)).toEqual([
       'Queue id',
       'Name',
       'Priority',
       'Time limit (minutes)',
-      'Confidence threshold',
       'Enabled',
     ]);
     for (const f of fields) {
@@ -124,58 +123,46 @@ describe('the queue dialog', () => {
     expect(field('Queue id').findDescription()!.getElement().textContent).not.toMatch(/hitl\.review_queues/);
   });
 
-  it('explains that routing goes to Default under a non-Default queue threshold', () => {
+  it('has no confidence threshold field', () => {
     open({ queue: queue() });
-    expect(field('Confidence threshold').findConstraint()!.getElement().textContent).toContain(
-      'Used when documents are routed to this queue; today all routing goes to Default.',
+    const labels = createWrapper(document.body)
+      .findAllFormFields()
+      .map((f) => f.findLabel()?.getElement().textContent);
+    expect(labels).not.toContain('Confidence threshold');
+  });
+
+  it('describes the Default queue as where documents with confidence alerts arrive', () => {
+    open({ queue: queue({ id: 'default', name: 'Default', isDefaultQueue: true }) });
+    expect(modal().findContent().getElement().textContent).toContain(
+      'Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.',
     );
   });
 
-  it('describes the Default queue as where low-confidence documents arrive', () => {
-    open({ queue: queue({ id: 'default', name: 'Default', isDefaultQueue: true }) });
-    expect(modal().findContent().getElement().textContent).toContain('Low-confidence documents from the pipeline arrive here.');
-    expect(field('Confidence threshold').findConstraint()!.getElement().textContent).not.toContain('today all routing');
-  });
-
-  it('sends the threshold and Enabled switch on create, defaulting to 0.8 and on', async () => {
+  it('sends the Enabled switch on create, defaulting to on, and no threshold', async () => {
     const onSaved = open();
     setInput('Queue id', 'claims');
     setInput('Name', 'Claims');
     clickSave();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(createReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ id: 'claims', confidenceThreshold: 0.8, enabled: true }));
+    expect(createReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ id: 'claims', enabled: true }));
+    expect(createReviewQueue.mock.calls[0][0]).not.toHaveProperty('confidenceThreshold');
   });
 
-  it('prefills the stored threshold and switch on edit and sends the edited values', async () => {
+  it('prefills the stored switch on edit and sends the edited value', async () => {
     const onSaved = open({ queue: queue() });
-    expect(field('Confidence threshold').findControl()!.findInput()!.getInputValue()).toBe('0.65');
     const toggle = field('Enabled').findControl()!.findToggle()!;
     expect(toggle.findNativeInput().getElement().checked).toBe(false);
-    setInput('Confidence threshold', '0.9');
     fireEvent.click(toggle.findNativeInput().getElement());
     clickSave();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ id: 'claims', confidenceThreshold: 0.9, enabled: true }));
+    expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ id: 'claims', enabled: true }));
+    expect(updateReviewQueue.mock.calls[0][0]).not.toHaveProperty('confidenceThreshold');
   });
 
-  it.each(['1.5', '-0.1', '', 'abc'])('refuses the threshold %j', (value) => {
-    open({ queue: queue() });
-    setInput('Confidence threshold', value);
-    clickSave();
-    expect(field('Confidence threshold').findError()?.getElement().textContent).toBe('Enter a number from 0 to 1.');
-    expect(updateReviewQueue).not.toHaveBeenCalled();
-  });
-
-  it.each(['0', '1', '0.05'])('accepts the threshold %j', async (value) => {
-    const onSaved = open({ queue: queue() });
-    setInput('Confidence threshold', value);
-    clickSave();
-    await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ confidenceThreshold: Number(value) }));
-  });
-
-  it('leaves the threshold and switch off a Test Studio queue, which has neither', async () => {
-    const onSaved = open({ testSet: { testSetId: 'ts-1', name: 'Invoices', priority: 0, claimLeaseMinutes: 30 } });
+  it('leaves the switch off a Test Studio queue, which has none', async () => {
+    const onSaved = open({
+      testSet: { testSetId: 'ts-1', name: 'Invoices', priority: 0, claimLeaseMinutes: 30, skipReasons: ['Out of time'] },
+    });
     const labels = createWrapper(document.body)
       .findAllFormFields()
       .map((f) => f.findLabel()?.getElement().textContent);
@@ -186,6 +173,8 @@ describe('the queue dialog', () => {
     const sent = updateTestSetQueue.mock.calls[0][0] as Record<string, unknown>;
     expect(sent).not.toHaveProperty('confidenceThreshold');
     expect(sent).not.toHaveProperty('enabled');
+    // A Test Studio queue has skip reasons too, saved with its settings.
+    expect(sent.skipReasons).toEqual(['Out of time']);
   });
 
   it('has no reject-reasons editor, and an edit keeps the stored list', async () => {
@@ -198,6 +187,33 @@ describe('the queue dialog', () => {
     clickSave();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ rejectReasons: ['Illegible', 'Wrong document'] }));
+  });
+
+  it('edits the skip reasons one per line, trimmed and without duplicates', async () => {
+    const onSaved = open({ queue: queue({ skipReasons: ['Out of time'] }) });
+    const textarea = field('Skip reasons').findControl()!.findTextarea()!;
+    expect(textarea.getTextareaValue()).toBe('Out of time');
+    textarea.setTextareaValue(' Out of time \n\nNeeds a specialist\nOut of time');
+    clickSave();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ skipReasons: ['Out of time', 'Needs a specialist'] }));
+  });
+
+  it('refuses to save an existing queue with no skip reasons', async () => {
+    open({ queue: queue() });
+    field('Skip reasons').findControl()!.findTextarea()!.setTextareaValue('  \n ');
+    clickSave();
+    await waitFor(() => expect(field('Skip reasons').findError()?.getElement().textContent).toBe('Enter at least one reason.'));
+    expect(updateReviewQueue).not.toHaveBeenCalled();
+  });
+
+  it('sends no skip reasons for a new queue left empty, so it gets the defaults', async () => {
+    const onCreated = open();
+    setInput('Queue id', 'claims');
+    setInput('Name', 'Claims');
+    clickSave();
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect((createReviewQueue.mock.calls[0][0] as Record<string, unknown>).skipReasons).toBeUndefined();
   });
 
   it('sends no reject reasons for a new queue, so it gets the defaults', async () => {

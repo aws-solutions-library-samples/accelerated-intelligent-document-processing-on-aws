@@ -93,6 +93,58 @@ export const normalizeHitlStatus = (raw: string | null | undefined): HitlView =>
 
 export const isQueueManaged = (raw: string | null | undefined): boolean => normalizeHitlStatus(raw).queueManaged;
 
+/**
+ * Whether the document's review has finished: a legacy review completed or skipped, or
+ * a queue review that ended complete or rejected.
+ *
+ * `COMPLETED` is the one finished spelling a real writer stored that the exact-match
+ * normaliser does not know: the earlier SageMaker A2I flow wrote it, and retained rows
+ * may still carry it. The server-side check in `process_changes_resolver` makes the
+ * same exception.
+ */
+export const isHitlReviewFinished = (raw: string | null | undefined): boolean => {
+  const { kind } = normalizeHitlStatus(raw);
+  return kind === 'complete' || kind === 'rejected' || kind === 'skipped' || raw === 'COMPLETED';
+};
+
+/**
+ * A document waiting in a production review queue. It is reviewed from its queue item
+ * (Review), and edited nowhere else until the review finishes: an edit made on the
+ * document page bypasses the item's assignment and is overwritten by the reviewer's
+ * corrections when the review completes.
+ */
+export const isInReviewQueue = (raw: string | null | undefined): boolean => {
+  const view = normalizeHitlStatus(raw);
+  return view.queueManaged && view.kind === 'in_review';
+};
+
+/**
+ * Why a legacy review is finished without anyone checking it (Skip All Reviews).
+ * The server accepts only these: `SKIP_ALL_REASONS` in
+ * `lib/idp_common_pkg/idp_common/review_queues/statuses.py`, asserted equal by
+ * `review-status.skipAllReasons.test.ts`.
+ */
+export const SKIP_ALL_REASONS: readonly string[] = [
+  'Extracted values look correct',
+  'Review not needed for this document',
+  'Duplicate document',
+  'Other (see note)',
+];
+
+/** The reason (and note) recorded with a document's latest Skip All Reviews, if any. */
+export const lastSkipAllReason = (history: unknown): { reason: string; note?: string } | null => {
+  const entries = (Array.isArray(history) ? history : []) as Array<Record<string, unknown> | null>;
+  const entry = [...entries].reverse().find((e) => e?.action === 'skip_all' && typeof e.reason === 'string');
+  if (!entry) return null;
+  return { reason: entry.reason as string, note: typeof entry.note === 'string' ? entry.note : undefined };
+};
+
+/** Why editing is off on the document page while it is in a review queue. */
+export const inReviewQueueEditReason = (canWorkReviewQueues: boolean): string =>
+  canWorkReviewQueues
+    ? 'This document is in a review queue. Choose Review to work on it there.'
+    : 'This document is in a review queue. An Admin or Annotator reviews it there.';
+
 export interface StateView {
   label: string;
   type: StatusIndicatorProps.Type;

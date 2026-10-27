@@ -1017,3 +1017,1082 @@ class TestFormatAwareMatching:
         assert all(
             r["d"]["geometry_source"] == g._SOURCE_NORMALIZED for r in out["rows"]
         )
+
+
+class TestWeakPartialDemotion:
+    """A sub-half-coverage substring match is ranked last, not rejected (#1519).
+
+    ``_TIER_PARTIAL`` had no coverage floor, which caused two failures: a fragment
+    was accepted as the value's location, and because any candidate
+    short-circuits the fuzzy and Levenshtein sweeps, a fragment also suppressed
+    the match that was right.
+
+    Rejecting fragments fixes both and costs more than it saves — measured over
+    265 fields, 48 of the 62 sub-floor matches point at a value that genuinely is
+    on the page across several lines, against 14 coincidences, and no absolute-size
+    rule beats break-even. So a fragment is demoted below the whole-string tiers
+    instead: it loses to a better match, and still supplies the only box where
+    there is none. Measured over 50 sections through the full grounding path, no
+    box is lost and 10 move to a better line.
+    """
+
+    def test_a_header_fragment_does_not_beat_the_line_it_fragments(self):
+        """The headline case. OCR read "via" as "vla", so EXACT misses by one
+        character. The page also carries an ``IDENTIFIED`` column header, which is
+        a substring of the value at 29% coverage. The box must land on the
+        sentence, not the header."""
+        pd = {
+            1: _page(
+                [
+                    _line("IDENTIFIED", 0.40, 0.13, width=0.07),
+                    _line(
+                        "Above identified vla arrest report.", 0.07, 0.37, width=0.23
+                    ),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Above identified via arrest report.", pd
+        )
+        assert geom["boundingBox"]["top"] == 0.37, "matched the header, not the value"
+        assert geom["boundingBox"]["width"] == 0.23
+
+    def test_a_single_letter_loses_to_a_whole_string_match(self):
+        """``"D."`` normalizes to the single letter ``d``, a substring of most
+        English values, and was measured as a live candidate for a 34-character
+        sentence. It must not win against a line resembling the whole value."""
+        pd = {
+            1: _page(
+                [
+                    _line("D.", 0.62, 0.24, width=0.014),
+                    _line(
+                        "Above identified vla arrest report.", 0.07, 0.37, width=0.23
+                    ),
+                ]
+            )
+        }
+        geom, _s, _c = g.match_value_to_geometry(
+            "Above identified via arrest report.", pd
+        )
+        assert geom["boundingBox"]["top"] == 0.37
+
+    def test_a_fragment_is_still_used_when_nothing_better_exists(self):
+        """Why fragments are demoted rather than rejected. Measured over 265
+        fields, 48 of the 62 sub-floor matches point at a value that really is on
+        the page across several lines, against 14 coincidences — so dropping them
+        all loses more than it saves.
+
+        The fixture is chosen so that **only** the weak tier can produce this box:
+        17.4% coverage puts it under the floor, token overlap of 0.22 is below the
+        fuzzy threshold, and the length ratio means the Levenshtein ceiling skips
+        it. If sub-floor fragments were rejected there would be no box at all, so
+        this test reds under that change rather than passing either way.
+        """
+        value = (
+            "Carbon fibre maincase (gearbox); Carbon plate floor; Kevlar side panels"
+        )
+        pd = {1: _page([_line("Carbon plate", 0.1, 0.3)])}
+
+        # Assert the mechanism, not just the outcome: the only candidate is the
+        # demoted tier.
+        nv = g._normalize(value)
+        candidates = g._collect_candidates_in_page(nv, g._tokens(nv), pd[1], 1)
+        assert [tier for tier, *_ in candidates] == [g._TIER_WEAK_PARTIAL]
+
+        geom, _s, _c = g.match_value_to_geometry(value, pd)
+        assert geom is not None
+        assert geom["boundingBox"]["top"] == 0.3
+
+    def test_a_fragment_is_ranked_below_every_whole_string_tier(self):
+        assert g._TIER_WEAK_PARTIAL > g._TIER_LEVENSHTEIN > g._TIER_FUZZY
+        assert g._TIER_WEAK_PARTIAL > g._TIER_PARTIAL
+
+    def test_a_correct_prefix_of_a_two_line_value_still_matches(self):
+        """Measured: an address whose first line covers 65% of the value."""
+        pd = {1: _page([_line("PO Box 307, Shortland Street", 0.2, 0.44)])}
+        geom, source, _ = g.match_value_to_geometry(
+            "PO Box 307, Shortland Street, Auckland 1140", pd
+        )
+        assert source == "ocr"
+        assert geom["boundingBox"]["top"] == 0.44
+
+    def test_a_correct_suffix_still_matches(self):
+        """Measured: an author line whose email suffix covers 52.6% of the value."""
+        pd = {1: _page([_line("menamul@kfupm.edu.sa", 0.3, 0.6)])}
+        geom, _source, _ = g.match_value_to_geometry(
+            "M. Enamul Hossain, menamul@kfupm.edu.sa", pd
+        )
+        assert geom["boundingBox"]["top"] == 0.6
+
+    def test_the_floor_decides_the_tier_not_whether_there_is_a_box(self):
+        """Both sides of the floor still yield a box when they are the only
+        candidate — the floor only decides which tier they compete at. Measured
+        against the NORMALIZED value, since that is what matching compares."""
+        assert g._PARTIAL_MIN_COVERAGE == 0.5
+        value = "abcdefgh"  # 8 chars normalized
+        at_floor = {1: _page([_line("abcd", 0.1, 0.2)])}  # 4/8 == 0.5 -> PARTIAL
+        below = {1: _page([_line("abc", 0.1, 0.3)])}  # 3/8 < 0.5 -> WEAK_PARTIAL
+        assert g.match_value_to_geometry(value, at_floor) is not None
+        assert g.match_value_to_geometry(value, below) is not None
+        # But a sub-floor fragment never beats a near-whole-string match.
+        both = {1: _page([_line("abc", 0.1, 0.3), _line("abcdefgX", 0.5, 0.6)])}
+        geom, _s, _c = g.match_value_to_geometry(value, both)
+        assert geom["boundingBox"]["top"] == 0.6
+
+
+class TestLevenshteinCanReach:
+    """The O(1) ceiling in front of the Levenshtein DP is exact, not heuristic.
+
+    It exists because the ``_PARTIAL_MIN_COVERAGE`` floor (#1519) stopped
+    fragments short-circuiting the sweep, so the DP started running against every
+    line on the page for every long model-composed value. Measured over 50 real
+    sections, grounding went 4.6s -> 25.4s with 98% of it inside ``fuzz_score``;
+    with this guard it is 0.52s and the grounding results are byte-identical.
+    """
+
+    def test_it_never_skips_a_pair_that_would_have_matched(self):
+        """The property that makes skipping safe: if the guard says a pair cannot
+        reach the threshold, the real scorer must agree. Checked over pairs built
+        to straddle the bound rather than a hand-picked table."""
+        thr = g._LEVENSHTEIN_MATCH_THRESHOLD
+        base = "above identified via arrest report"
+        pairs = [(base, base[:n]) for n in range(1, len(base) + 1)]
+        pairs += [(base, base + "x" * n) for n in range(1, 30)]
+        pairs += [
+            (base, "identified"),
+            (base, "d"),
+            (base, "above identified vla arrest report"),
+            ("unknown", "un"),
+            ("1,234.00", "1234.00"),
+            ("", "abc"),
+            ("abc", ""),
+        ]
+        skipped_but_matching = [
+            (a, b)
+            for a, b in pairs
+            if not g._levenshtein_can_reach(a, b, thr)
+            and g._levenshtein_sim(a, b) >= thr
+        ]
+        assert skipped_but_matching == []
+
+    def test_the_known_recovery_case_is_not_skipped(self):
+        """The one-character OCR slip #1519 turns on must survive the guard, or
+        the fix it enables is silently undone."""
+        thr = g._LEVENSHTEIN_MATCH_THRESHOLD
+        value, ocr = (
+            "above identified via arrest report",
+            "above identified vla arrest report",
+        )
+        assert g._levenshtein_can_reach(value, ocr, thr)
+        assert g._levenshtein_sim(value, ocr) >= thr
+
+    def test_a_wildly_different_length_is_skipped(self):
+        """The case that was costing the time: a long composed value against the
+        short lines of a page."""
+        thr = g._LEVENSHTEIN_MATCH_THRESHOLD
+        value = "This handwritten document is a laboratory data sheet recording results"
+        assert not g._levenshtein_can_reach(value, "UN 173", thr)
+
+    def test_an_unavailable_scorer_does_not_narrow_the_tier(self):
+        """If the evaluation module cannot be imported the guard must allow the
+        pair through, so the tier degrades to inert (score 0.0) exactly as before
+        rather than quietly rejecting candidates."""
+        with patch.dict("sys.modules", {"idp_common.evaluation.text_matching": None}):
+            assert g._levenshtein_can_reach("abc", "abcdefghijklmnop", 0.8) is True
+
+
+class TestWeakBoxProvenance:
+    """A fragment-based box is tagged ``ocr-weak`` so it is auditable (#1519).
+
+    Without a distinct tag it is recorded as plain ``"ocr"``, identical to a
+    verbatim match, and neither a reviewer nor a later measurement can tell how
+    much of the value a box rests on. Counting this tag over a corpus is how to
+    answer "how many boxes stand on a fragment" from stored artifacts alone.
+    """
+
+    def test_a_fragment_box_is_tagged_weak(self):
+        value = (
+            "Carbon fibre maincase (gearbox); Carbon plate floor; Kevlar side panels"
+        )
+        pd = {1: _page([_line("Carbon plate", 0.1, 0.3)])}
+        _geom, source, _conf = g.match_value_to_geometry(value, pd)
+        assert source == g._SOURCE_WEAK == "ocr-weak"
+
+    def test_a_strong_match_keeps_plain_ocr_provenance(self):
+        pd = {1: _page([_line("Account: 12345", 0.1, 0.05)])}
+        _geom, source, _conf = g.match_value_to_geometry("Account: 12345", pd)
+        assert source == "ocr"
+
+    def test_an_at_floor_partial_is_not_tagged_weak(self):
+        """Only the sub-floor tier is weak; a half-or-more prefix is an ordinary
+        match and must not be labelled as resting on a fragment."""
+        pd = {1: _page([_line("PO Box 307, Shortland Street", 0.2, 0.44)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            "PO Box 307, Shortland Street, Auckland 1140", pd
+        )
+        assert source == "ocr"
+
+
+# A line holding the coincidence ("75" inside an invoice id) placed FIRST in reading
+# order and right where the LLM estimated the box, so every tie-break that existed
+# before #1565 — reading order, row order, proximity — picks it.
+_INVOICE_ID = _line("Invoice No. 08337510", 0.1, 0.1)
+_NEAR_INVOICE_ID = {
+    "page": 1,
+    "boundingBox": {"left": 0.1, "top": 0.1, "width": 0.1, "height": 0.02},
+}
+
+
+class TestNumberInsideALongerNumber:
+    """A number found only inside a longer digit run ranks below a whole token (#1565).
+
+    A NUMBER value is searched in several surface forms (``75.0`` as ``"75"``,
+    ``"75.00"``, ``"$75"``...), and a short one is contained by coincidence in
+    any longer number. Ranked as an ordinary substring hit, it tied with the line
+    that prints the value, and the tie-break — not evidence — chose the box.
+
+    It is demoted one place rather than rejected, because a digit run containing
+    the value is sometimes the right line: a value whose cents were dropped, or a
+    long number with one digit misread. Those keep their box wherever nothing
+    printing the value as a whole token exists — see ``TestKeepsTheBoxWhen...``.
+    """
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},  # ocr_only scalar: first in reading order
+            {"occurrence_index": 0},  # ocr_only list row
+            {"preferred_geometry": _NEAR_INVOICE_ID},  # llm_grounded proximity
+        ],
+        ids=["reading-order", "row-order", "proximity"],
+    )
+    @pytest.mark.parametrize(
+        "value, genuine",
+        [
+            (75.0, "Rate $75.00 NM"),  # the variant "75" is inside 08337510
+            (6.0, "Fee $6.00 each"),  # the primary "6.0" is inside 126.00
+        ],
+    )
+    def test_the_whole_token_wins_over_the_embedded_one(self, value, genuine, kwargs):
+        pd = {
+            1: _page(
+                [
+                    _INVOICE_ID,
+                    _line("126.00 total", 0.1, 0.2),
+                    _line(genuine, 0.1, 0.6),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}, **kwargs
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.6)
+
+    def test_a_later_row_maps_to_the_later_whole_token(self):
+        """Row order counts whole-token occurrences only. Before, the embedded id
+        between the two rows took the second slot, so row 1 landed on it."""
+        pd = {
+            1: _page(
+                [
+                    _line("Line 1 $75.00", 0.1, 0.1),
+                    _line("Invoice No. 08337510", 0.1, 0.3),
+                    _line("Line 2 $75.00", 0.1, 0.5),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            75.0, pd, schema_hint={"type": "number"}, occurrence_index=1
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+
+    def test_the_tie_existed_on_the_substring_tier(self):
+        """Pins the mechanism: the embedded line is a candidate at its own tier,
+        not dropped, and the genuine line is an ordinary substring hit."""
+        page = _page([_INVOICE_ID, _line("Rate $75.00 NM", 0.1, 0.6)])
+        variants = g._value_variants(75.0, g.HINT_NUMBER)
+        candidates = g._collect_candidates_in_page(
+            g._normalize(75.0),
+            g._tokens(g._normalize(75.0)),
+            page,
+            1,
+            norm_variants=variants,
+            raw_value=75.0,
+            hint=g.HINT_NUMBER,
+        )
+        by_top = {round(c[1]["boundingBox"]["top"], 3): c[0] for c in candidates}
+        assert by_top == {
+            0.1: g._TIER_SUBSTRING_EMBEDDED,
+            0.6: g._TIER_SUBSTRING,
+        }
+
+    def test_the_tier_sits_between_substring_and_span(self):
+        assert g._TIER_SUBSTRING < g._TIER_SUBSTRING_EMBEDDED < g._TIER_SPAN
+
+    @pytest.mark.parametrize(
+        "value, coincidence, genuine",
+        [
+            (75, "Ref 0833751", "Total: 75%"),
+            (75, "Ref 0833751", "Weight 75 kg"),
+            (75, "Ref 0833751", "Weight 75kg"),
+            (75, "Ref 0833751", "Qty 75, 80"),
+            (75, "Ref 0833751", "Paid in full at 75."),
+            (75, "Ref 0833751", "USD75.00"),
+            (-75.0, "Ref 2-75001", "Credit (75.00)"),
+            (-75.0, "Ref 2-75001", "Credit -75.00"),
+            (1234.5, "Acct 11234.50", "Total $1,234.50"),
+            (275.0, "Subtotal 1,275.00", "Discount $275.00"),
+            (34, "Balance 272243.34", "Qty 34"),
+            # Padded with zeros the substring is embedded, but the whole line is
+            # the value numerically, so it is not demoted.
+            (75, "Ref 0833751", "075.00"),
+            # ... and so is the number around it, inside a longer line.
+            (75, "Ref 0833751", "Amount 075.00"),
+            (75, "Ref 0833751", "Rate 75.000 per hour"),
+            # A sign given only by accounting parentheses.
+            (-75.0, "Ref 2-75001", "(075.00)"),
+            # A negative value printed unsigned inside a longer line, as the
+            # unsigned variant already matches it when it stands alone.
+            (-75.0, "Ref 2-75001", "Credit 075.00 CR"),
+        ],
+    )
+    def test_symbols_units_and_separators_are_token_boundaries(
+        self, value, coincidence, genuine
+    ):
+        pd = {1: _page([_line(coincidence, 0.1, 0.1), _line(genuine, 0.1, 0.6)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.6)
+
+
+class TestAZeroPaddedIntegerIsTheValue:
+    """``001`` for 1 is a whole token, so the LLM box still chooses between it and
+    another whole ``1`` exactly as before, instead of the tier overriding it."""
+
+    def test_proximity_still_decides(self):
+        pd = {
+            1: _page(
+                [_line("Item 001 Widget", 0.1, 0.1), _line("Page 1 of 3", 0.1, 0.6)]
+            )
+        }
+        near_item = {
+            "page": 1,
+            "boundingBox": {"left": 0.1, "top": 0.1, "width": 0.1, "height": 0.02},
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            1, pd, schema_hint={"type": "integer"}, preferred_geometry=near_item
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestARatioIsNotADate:
+    """Only a date's slash joins digits. A ratio, score, dose or "page n/m" prints
+    numbers that are values in their own right, so they keep competing as whole
+    tokens and the LLM box still chooses between them and any other line."""
+
+    @pytest.mark.parametrize(
+        "value, ratio, other",
+        [
+            (120, "BP 120/80 mmHg", "Heart rate 120 bpm"),
+            (75, "Score: 75/100", "Page 75"),
+            (325, "Hydrocodone 10/325 mg", "Ref 325"),
+            (3, "Page 3/12", "Qty 3"),
+        ],
+    )
+    def test_proximity_still_decides(self, value, ratio, other):
+        pd = {1: _page([_line(ratio, 0.1, 0.1), _line(other, 0.1, 0.6)])}
+        near = {
+            "page": 1,
+            "boundingBox": {"left": 0.1, "top": 0.1, "width": 0.1, "height": 0.02},
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}, preferred_geometry=near
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestEuropeanDecimalCommaIsNotDemoted:
+    """A decimal comma ends the integer part, so ``1250`` in ``1250,00`` is whole.
+
+    No surface form of a number renders a decimal comma, so for a European amount
+    the integer part is the only form that matches at all. Read as embedded, it
+    lost the box to any other line printing that integer — a page number, a
+    quantity — even with the LLM's box on the amount."""
+
+    @pytest.mark.parametrize(
+        "value, amount, decoy, kwargs",
+        [
+            (1250.0, "Summe 1250,00 €", "Seite 1250", {"preferred_geometry": True}),
+            (75, "Gesamtbetrag 75,00 EUR", "Menge 75 Stk", {}),
+            (75, "Gesamtbetrag 75,00 EUR", "Menge 75 Stk", {"occurrence_index": 0}),
+            (75, "Gesamtbetrag 75,5 EUR", "Menge 75 Stk", {}),
+        ],
+    )
+    def test_the_amount_keeps_its_box(self, value, amount, decoy, kwargs):
+        pd = {1: _page([_line(amount, 0.1, 0.1), _line(decoy, 0.1, 0.6)])}
+        if kwargs.get("preferred_geometry"):
+            kwargs = {
+                "preferred_geometry": {
+                    "page": 1,
+                    "boundingBox": {
+                        "left": 0.1,
+                        "top": 0.1,
+                        "width": 0.1,
+                        "height": 0.02,
+                    },
+                }
+            }
+        geom, _source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}, **kwargs
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestProvenanceIsUnchangedForAWholeNumber:
+    """A value whose own form sits inside the printed one keeps ``"ocr"``.
+
+    ``75.0`` is inside ``75.00``; the number around it is the value, so the primary
+    form counts as whole and the hit is not reported as a format-normalized one."""
+
+    @pytest.mark.parametrize(
+        "value, text, schema_type",
+        [
+            (75.0, "Total: $75.00 due", "number"),
+            (75, "Total: $75.00 due", "number"),
+            ("75", "Total: $75.00 due", "number"),
+            (-75, "Refund (75.00) issued", "number"),
+            (3, "Worked 3.0 hrs", "integer"),
+            (1654.8, "Net 1654.80 USD", "number"),
+        ],
+    )
+    def test_tag(self, value, text, schema_type):
+        pd = {1: _page([_line(text, 0.1, 0.4)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": schema_type}
+        )
+        assert source == "ocr"
+
+
+class TestKeepsTheBoxWhenOnlyAnEmbeddedHitExists:
+    """Demotion, not rejection: with nothing better, the embedded line still wins.
+
+    These are the shapes a token-boundary *gate* would lose: a value whose
+    precision the model dropped, and a long number with a digit misread. The box
+    is on the right line in both, and it is the box that lets a reviewer see the
+    value is wrong.
+    """
+
+    @pytest.mark.parametrize(
+        "value, line",
+        [
+            ("272243", "Wages 272243.34"),  # cents dropped
+            ("26667", "Local income tax 26667.02"),  # cents dropped
+            ("919133317", "⑆604632435⑆ 9191333178 ⑈3218⑈"),  # MICR
+        ],
+    )
+    def test_the_only_candidate_is_kept(self, value, line):
+        pd = {1: _page([_line("Header", 0.1, 0.05), _line(line, 0.1, 0.5)])}
+        geom, source, _conf = g.match_value_to_geometry(
+            value, pd, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+        assert source == "ocr"
+
+    def test_a_date_component_does_not_take_the_box(self):
+        """A dropped-decimals value must not find a 'whole' token inside a date.
+
+        Measured on the repository's sample PDFs: with the slash read as a
+        boundary, ``17`` for ``$17.49`` landed on ``12/17/2024`` instead."""
+        pd = {
+            1: _page(
+                [_line("Price as of 12/17/2024", 0.1, 0.1), _line("$17.49", 0.6, 0.5)]
+            )
+        }
+        near_price = {
+            "page": 1,
+            "boundingBox": {"left": 0.6, "top": 0.5, "width": 0.1, "height": 0.02},
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "17", pd, schema_hint={"type": "number"}, preferred_geometry=near_price
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+
+    def test_it_still_outranks_a_character_level_near_miss(self):
+        """Placed above SPAN, the embedded hit keeps short-circuiting the fuzzy
+        sweeps as a substring hit did. Ranked any lower, the near-miss "272248"
+        (similarity 0.83) would take the box from the line that holds the value."""
+        pd = {1: _page([_line("272248", 0.1, 0.1), _line("Wages 272243.34", 0.1, 0.5)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            "272243", pd, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.5)
+
+
+class TestTheDemotionIsScopedToNumbers:
+    """Only a NUMBER value is demoted, and that is a scope decision.
+
+    The coincidence this addresses comes from the numeric surface forms
+    (``_value_variants``), and its effect was measured over numeric values only.
+    A string value that contains digits ("Suite 75") is left exactly as it was;
+    extending the rule to strings would need its own measurement, so this test
+    pins the current scope rather than asserting it is the ideal one."""
+
+    def test_a_string_value_keeps_reading_order(self):
+        pd = {
+            1: _page(
+                [_line("Suite 750", 0.1, 0.1), _line("Suite 75, Floor 2", 0.1, 0.5)]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Suite 75", pd, schema_hint={"type": "string"}
+        )
+        assert geom["boundingBox"]["top"] == pytest.approx(0.1)
+
+
+class TestOnlyInsideLongerNumber:
+    @pytest.mark.parametrize(
+        "variant, text, embedded",
+        [
+            ("75", "08337510", True),
+            ("75", "175", True),  # the joining digit is the first character
+            ("17", "12/17/2024", True),  # a date component
+            ("12", "exp 12/2024", True),  # month and four-digit year
+            ("2024", "2024/12/17", True),
+            ("78", "bp 128/78.", False),  # a ratio, not a date
+            ("120", "bp 120/80 mmhg", False),
+            ("75", "score: 75/100", False),
+            ("3", "page 3/12", False),
+            ("65", "tire 205/65r15", False),
+            ("7", "7/7/7/7/7/7/7", False),  # too long to be a date
+            ("75", "75/hr", False),  # a slash before a unit is a boundary
+            ("6.0", "126.00 total", True),
+            ("75", "75.34", True),  # decimal tail
+            ("34", "272243.34", True),  # decimal head
+            ("275", "1,275", True),  # thousands comma
+            ("75", "1,750", True),
+            ("75", "$75", False),
+            ("75", "75%", False),
+            ("75", "75 kg", False),
+            ("75", "75kg", False),
+            ("75", "(75)", False),
+            ("75", "-75", False),
+            ("75", "75.", False),  # sentence-final full stop
+            ("75", "75, 80", False),  # list comma followed by a space
+            ("75", "0751 then 75 again", False),  # one whole occurrence suffices
+            ("-75", "2-750", True),  # the sign is the variant's own, only right checked
+            ("-75", "2-75 x", False),  # ... so a digit before the sign is not a join
+            ("75", "no number here", False),  # absent: not "embedded"
+            ("", "08337510", False),  # an empty variant is never embedded
+            ("75", "/75 x9", False),  # a leading slash must not wrap to the end
+            ("75", "no.75", False),  # a full stop after a letter is no join
+            ("1250", "1250,00", False),  # decimal comma
+            ("75", "75,5 kg", False),  # decimal comma, one digit
+            ("75", "75,000", True),  # thousands group
+            ("75", "75,0001", True),  # not a two-digit decimal tail
+            ("50", "75,50", True),  # the fraction of a decimal-comma amount
+            ("75", "75²", False),  # a superscript is not an ASCII digit
+            ("18", "9:18", False),  # a colon is a boundary (measured; see README)
+            ("75", "10-75", False),  # a hyphen is a boundary
+            # Known cost of the rule: a list written without spaces reads as one
+            # number, so its later items are embedded.
+            ("20", "10,20,30", True),
+        ],
+    )
+    def test_boundaries(self, variant, text, embedded):
+        assert g._only_inside_longer_number(variant, text) is embedded
+
+    @pytest.mark.parametrize(
+        "variant, text, value, embedded",
+        [
+            ("75.00", "amount 075.00", 75.0, False),
+            ("75", "rate 75.000 per hour", 75.0, False),
+            ("6.0", "126.00 total", 6.0, True),
+            ("17", "12/17/2024", 17.0, True),  # a slash join is never re-read
+            ("17.5", "3/17.5", 17.5, False),  # a ratio's slash is a boundary
+            ("10 10", "110 10 10", 1010.0, False),  # a spaced variant is not skipped
+            ("272243", "wages 272243.34", 272243.0, True),
+            # A zero-padded integer is the value too: an item or line number.
+            ("75", "qty 0075 units", 75.0, False),
+            ("1", "item 001 widget", 1.0, False),
+            ("75", "075,000", 75.0, True),  # 75,000: the comma is part of it
+        ],
+    )
+    def test_the_number_around_it(self, variant, text, value, embedded):
+        assert g._only_inside_longer_number(variant, text, value) is embedded
+
+    def test_a_long_digit_run_is_read_once(self):
+        """Every occurrence inside one longer number shares it, so it is read once.
+
+        Read per occurrence, a line of 20,000 zeros took about 37 seconds for the
+        value 0 — a quadratic scan in the Lambda's wall-clock budget."""
+        with patch.object(g, "_containing_number", wraps=g._containing_number) as spy:
+            assert g._only_inside_longer_number("0", "1" + "0" * 5000, 0.0)
+        assert spy.call_count == 1
+
+
+class TestTheDateShapeOfASlash:
+    """Pins which slash-joined runs read as dates, input by input.
+
+    Each case is one where a plausible variant of ``_slash_in_date`` decides
+    differently, so each assertion records today's outcome rather than an ideal.
+    ``fy 2024/25`` reading as a date is an accepted residual: a ratio written in a
+    date's shape is treated as one (see the module README)."""
+
+    @pytest.mark.parametrize(
+        "variant, text, embedded",
+        [
+            # Eleven characters: longer than any date, so not one.
+            ("12", "123/12/2024", False),
+            # A trailing slash makes the whole run something other than a date.
+            ("12", "1/12/2024/", False),
+            # One slash beside a leading four-digit year is a date shape.
+            ("25", "fy 2024/25", True),
+            ("12", "2024/12", True),
+            # The run is read across every slash on both sides of this one.
+            ("3", "3/12/2024", True),
+            ("1", "1/1/2024", True),
+            ("24", "12/17/24", True),
+        ],
+    )
+    def test_outcome(self, variant, text, embedded):
+        assert g._only_inside_longer_number(variant, text) is embedded
+
+
+class TestSeparatorAtALineBreak:
+    """A value written across OCR lines carries a separator the page does not (#1520).
+
+    The document reads ``"510 W. 24th Street, #2"`` then ``"Sioux Falls, SD 57105"``;
+    extraction returns the two joined by ``", "``. The span tier joins consecutive
+    lines with a single space and demands exact equality, so that one extra comma
+    defeated it and the field fell back to a fragment — the real measured box for
+    this address was the OCR line ``"1"``.
+    """
+
+    def test_an_address_split_at_a_comma_spans_both_lines(self):
+        pd = {
+            1: _page(
+                [
+                    _line("510 W. 24th Street, #2", 0.2, 0.30, width=0.3, height=0.02),
+                    _line("Sioux Falls, SD 57105", 0.2, 0.33, width=0.3, height=0.02),
+                ]
+            )
+        }
+        geom, source, _conf = g.match_value_to_geometry(
+            "510 W. 24th Street, #2, Sioux Falls, SD 57105", pd
+        )
+        assert source == "ocr"
+        bb = geom["boundingBox"]
+        # The union covers BOTH lines, not just one of them.
+        assert bb["top"] == pytest.approx(0.30)
+        assert bb["height"] == pytest.approx(0.05)
+
+    def test_the_fragment_box_is_what_this_replaces(self):
+        """Without the span, the only candidate is a one-character fragment.
+
+        Keyed on the measured failure rather than on the fix: with the second
+        address line absent there is no span to find, so the ladder still falls to
+        the fragment and tags it ``ocr-weak``. That the fix did not simply widen
+        every match is the property under test.
+        """
+        pd = {1: _page([_line("1", 0.5, 0.28, width=0.002, height=0.005)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            "510 W. 24th Street, #2, Sioux Falls, SD 57105", pd
+        )
+        assert source == g._SOURCE_WEAK
+
+    def test_a_comma_joined_list_matches_a_comma_free_line(self):
+        """The reported shape: the page renders the items without separators."""
+        pd = {
+            1: _page(
+                [
+                    _line("Keywords Particulate matter Air pollution", 0.1, 0.70),
+                    _line("Cardiovascular Respiratory Public policy", 0.5, 0.76),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Particulate matter, Air pollution, Cardiovascular, "
+            "Respiratory, Public policy",
+            pd,
+        )
+        assert geom is not None
+        assert geom["boundingBox"]["top"] == pytest.approx(0.76)
+
+    def test_semicolons_are_separators_too(self):
+        pd = {1: _page([_line("Chronic pain disc pain cell therapy", 0.1, 0.2)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Chronic pain; disc pain; cell therapy", pd
+        )
+        assert geom is not None
+
+    def test_a_slash_survives_normalization(self):
+        """``/`` is excluded from the separator set, and that is load-bearing.
+
+        It is the separator ``_value_variants`` builds its ``%m/%d/%Y`` forms from,
+        so collapsing it would let a reformatted variant outrank the line carrying
+        the value verbatim — measured as five date boxes moving to a different
+        rendering of the same date, two of them onto another page. Asserted on
+        ``_normalize`` directly because that is where the exclusion lives; what it
+        protects is covered by ``TestVerbatimBeatsFormatBridged``.
+        """
+        assert g._normalize("Request/Approval") == "request/approval"
+        assert g._normalize("04/11/2013") == "04/11/2013"
+        # The two that ARE collapsed, for contrast.
+        assert g._normalize("Yes, No") == "yes no"
+        assert g._normalize("disc pain; cell therapy") == "disc pain cell therapy"
+
+    def test_a_pipe_is_not_a_separator_this_collapses(self):
+        """``|`` is outside the rule, for a reason of its own.
+
+        It is not a list separator a model inserted at a join — it delimits
+        Markdown table cells in OCR text, where collapsing it would merge adjacent
+        cells into one string. Stated separately so the two exclusions are not read
+        as one reason.
+        """
+        assert g._normalize("Total | 1234") == "total | 1234"
+
+    def test_a_separator_inside_a_token_survives(self):
+        """Only a separator followed by whitespace is a join the model inserted.
+
+        One *inside* a token is digit grouping or OCR noise. Collapsing those costs
+        60 boxes on a deliberately-garbled OCR corpus, and the mechanism is that
+        substituting a space **adds a character that was never there**:
+        ``_levenshtein_sim`` compares punctuation-stripped strings, so a comma is
+        already invisible to it while a space is not.
+        """
+        assert g._normalize("2,6,6914") == "2,6,6914"
+        assert g._normalize("1,234.00") == "1,234.00"
+
+    def test_a_garbled_amount_still_matches_by_character_similarity(self):
+        """``"2,6,6914"`` is a mangled ``"2,669.14"`` and the box was correct.
+
+        The end-to-end form of the test above: the Levenshtein tier reaches this
+        value, and a separator rule that touched the token would take the tier out
+        rather than merely change what it ranks.
+        """
+        pd = {1: _page([_line("2,6,6914", 0.40, 0.36, width=0.03, height=0.013)])}
+        geom, source, _conf = g.match_value_to_geometry(2669.14, pd)
+        assert geom is not None
+        # The Levenshtein rung specifically — asserting only that a box came back
+        # would pass on a substring hit and so could not tell the named path from
+        # any other.
+        assert source == g._SOURCE_FUZZY == "ocr-fuzzy"
+
+
+class TestVerbatimBeatsFormatBridged:
+    """A line carrying the value as extracted outranks a reformatted rendering.
+
+    Grounding answers "where did this value come from", so the line holding the
+    value verbatim is better evidence than a different rendering of the same logical
+    value elsewhere on the page. Both halves are measured regressions that the
+    separator change would otherwise have introduced (#1520).
+    """
+
+    def test_a_variant_exact_beats_a_primary_substring_at_a_worse_tier(self):
+        """⚠️ The preference is same-tier only, and this is why.
+
+        "Verbatim" is meaningful for a string and arbitrary for a number:
+        ``str(6.0)`` is ``"6.0"``, which is a substring of ``"126.00"``. Preferring a
+        primary hit across tiers would therefore rank a SUBSTRING inside an unrelated
+        amount above a variant that matched the right amount EXACTly, and the box
+        would land on the wrong figure. A number's realistic renderings are its
+        variants, not whichever form ``str`` happens to produce.
+
+        What this pins is the **combination**, measured rather than assumed: the
+        wrong box needs a cross-tier preference *and* an exact-index fast path that
+        falls through when only a variant hit, since otherwise the primary substring
+        candidate is never collected. Re-introducing either alone leaves this green;
+        re-introducing both turns it red.
+        """
+        pd = {
+            1: _page(
+                [
+                    _line("$126.00", 0.20, 0.10),
+                    _line("$6.00", 0.20, 0.30),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(6.0, pd)
+        # The $6.00 line, not the $126.00 line that merely contains "6.0".
+        assert geom["boundingBox"]["top"] == pytest.approx(0.30)
+
+    def test_a_verbatim_exact_on_a_later_page_beats_a_variant_on_an_earlier_one(self):
+        """The tie-break is positional, so page order would otherwise decide it.
+
+        The separator collapse is what creates this tie: page 1's ``Apr 15, 2011``
+        variant now normalizes equal to its OCR line, so both pages produce
+        EXACT-tier hits and reading order reaches page 1 first. Without the collapse
+        the variant's comma survives normalization, so page 2's verbatim hit is the
+        only candidate and there is nothing to disambiguate.
+        """
+        pd = {
+            1: _page([_line("APR 15 2011", 0.79, 0.13)]),
+            2: _page([_line("4-15-11", 0.75, 0.18)]),
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert source == "ocr"
+        assert geom["page"] == 2
+
+    def test_a_variant_still_wins_when_the_value_is_not_on_the_page_verbatim(self):
+        """The preference must not disable format bridging, only rank below it."""
+        pd = {1: _page([_line("April 11, 2013", 0.3, 0.2)])}
+        geom, source, _conf = g.match_value_to_geometry("2013-04-11", pd)
+        assert geom is not None
+        assert source == g._SOURCE_NORMALIZED
+
+    def test_a_fragment_does_not_beat_a_variant_that_matched_in_full(self):
+        """The preference is bounded to whole-string tiers.
+
+        A ``_TIER_WEAK_PARTIAL`` fragment of the value is weaker evidence than a
+        variant that matched the whole of it, which is the ordering #1519
+        established; extending the verbatim preference below SPAN would invert it.
+        """
+        pd = {
+            1: _page(
+                [
+                    _line("April 11, 2013", 0.3, 0.2),
+                    _line("4", 0.9, 0.9, width=0.002),
+                ]
+            )
+        }
+        _geom, source, _conf = g.match_value_to_geometry("2013-04-11", pd)
+        assert source == g._SOURCE_NORMALIZED
+
+
+class TestRowOrderWithVariantOnlyMatches:
+    """Repeated list values that ground only through a format variant (#1520).
+
+    This is the shape ``geometry.mode: ocr_only`` plus ``occurrence_index`` exists
+    for — an Amount column the model emitted as ``1234.00`` against OCR
+    ``$1,234.00``, the same value on several rows — and it is the shape a duplicate
+    candidate corrupts invisibly: the row-order path indexes into the sorted list,
+    so one duplicate per line shifts every row's box down by one and clamps the
+    last rows onto the final entry. The box is on the right text and the wrong row,
+    which no assertion about the source or the tier would catch.
+
+    The invariant that keeps it correct is that the exact-index fast path either
+    short-circuits or leaves ``candidates`` empty for the full scan, so a line is
+    never collected twice. These tests hold that from the outside.
+    """
+
+    def test_each_row_gets_its_own_line_when_only_a_variant_matches(self):
+        pd = {
+            1: _page(
+                [
+                    _line("$1,234.00", 0.2, 0.10),
+                    _line("$1,234.00", 0.2, 0.15),
+                    _line("$1,234.00", 0.2, 0.20),
+                ]
+            )
+        }
+        tops = []
+        for occ in range(3):
+            geom, source, _conf = g.match_value_to_geometry(
+                1234.00, pd, None, occ, {"type": "number"}
+            )
+            assert source == g._SOURCE_NORMALIZED, "should ground via a variant"
+            tops.append(round(geom["boundingBox"]["top"], 2))
+        assert tops == [0.10, 0.15, 0.20]
+
+    def test_iso_dates_against_slash_rendered_lines_map_row_for_row(self):
+        pd = {
+            1: _page(
+                [
+                    _line("06/30/2014", 0.2, 0.10),
+                    _line("06/30/2014", 0.2, 0.15),
+                ]
+            )
+        }
+        tops = [
+            round(
+                g.match_value_to_geometry(
+                    "2014-06-30", pd, None, occ, {"type": "string", "format": "date"}
+                )[0]["boundingBox"]["top"],
+                2,
+            )
+            for occ in range(2)
+        ]
+        assert tops == [0.10, 0.15]
+
+    def test_a_verbatim_repeated_value_still_maps_row_for_row(self):
+        """The fast-path side of the same invariant."""
+        pd = {1: _page([_line("ACME", 0.2, 0.10), _line("ACME", 0.2, 0.15)])}
+        tops = [
+            round(
+                g.match_value_to_geometry("ACME", pd, None, occ)[0]["boundingBox"][
+                    "top"
+                ],
+                2,
+            )
+            for occ in range(2)
+        ]
+        assert tops == [0.10, 0.15]
+
+
+class TestTheVerbatimPreferenceComposesWithTheNumericDemotion:
+    """The preference and the embedded-number demotion decide different things.
+
+    The demotion settles whether a coincidental numeric hit is a candidate at all —
+    ``"75"`` inside the id ``"08337510"`` ranks below a whole numeric token. The
+    preference then settles a tie between a verbatim hit and a format-bridged one at
+    the same tier. Neither subsumes the other, and the combination is what puts the
+    box on the amount rather than on the id (#1565 for the demotion, #1520 here).
+
+    These tests are the join: they assert the outcome is independent of reading
+    order, which is what distinguishes evidence from position.
+    """
+
+    def test_the_amount_wins_over_an_invoice_id_in_either_order(self):
+        for first, second in (("08337510", "$75.00 NM"), ("$75.00 NM", "08337510")):
+            pd = {1: _page([_line(first, 0.1, 0.10), _line(second, 0.1, 0.20)])}
+            geom, _source, _conf = g.match_value_to_geometry(
+                75.0, pd, None, None, {"type": "number"}
+            )
+            expected = 0.10 if first == "$75.00 NM" else 0.20
+            assert geom["boundingBox"]["top"] == pytest.approx(expected)
+
+    def test_the_amount_wins_over_a_larger_amount_in_either_order(self):
+        for first, second in (
+            ("126.00 total", "Fee $6 each"),
+            ("Fee $6 each", "126.00 total"),
+        ):
+            pd = {1: _page([_line(first, 0.1, 0.10), _line(second, 0.1, 0.20)])}
+            geom, _source, _conf = g.match_value_to_geometry(
+                6.0, pd, None, None, {"type": "number"}
+            )
+            expected = 0.10 if first == "Fee $6 each" else 0.20
+            assert geom["boundingBox"]["top"] == pytest.approx(expected)
+
+    def test_a_truncated_account_number_keeps_its_box(self):
+        """Demotion rather than rejection is why this still grounds.
+
+        The model transcribed this nine of ten digits. The box is on the right field
+        and the highlight is what lets a reviewer catch the error, so the hit is
+        ranked low rather than discarded.
+        """
+        pd = {
+            1: _page(
+                [_line("\u2446604632435\u2446 9191333178 \u24483218\u2448", 0.1, 0.10)]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            919133317, pd, None, None, {"type": "number"}
+        )
+        assert geom is not None
+
+    def test_a_value_whose_cents_the_model_dropped_keeps_its_box(self):
+        pd = {1: _page([_line("272243.34", 0.1, 0.10)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            272243, pd, None, None, {"type": "number"}
+        )
+        assert geom is not None
+
+    def test_a_date_still_prefers_its_own_line_across_pages(self):
+        """What the preference itself is for, unchanged by the demotion."""
+        pd = {
+            1: _page([_line("APR 15 2011", 0.79, 0.13)]),
+            2: _page([_line("4-15-11", 0.75, 0.18)]),
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert source == "ocr"
+        assert geom["page"] == 2
+
+
+class TestRowOrderSurvivesMixedRendering:
+    """⚠️ The verbatim preference must never run while a row mapping is in play.
+
+    With ``occurrence_index`` set, row *i* is the *i*-th candidate in reading order,
+    so position in that list **is** the row correspondence. Filtering by provenance
+    destroys it: a column where one occurrence is rendered verbatim and the others
+    only match through a variant narrows to the single verbatim candidate, the
+    ``len(best) == 1`` return fires, and every row is handed the same box.
+
+    The all-verbatim and all-variant cases both pass either way, which is why this
+    needs its own fixture — and why the failure is invisible to a measurement that
+    reads moved boxes one at a time: three rows pointing at the same plausible line
+    each look right in isolation.
+    """
+
+    MIXED = [("06/30/14", 0.10), ("06/30/2014", 0.20), ("06/30/2014", 0.30)]
+
+    def _tops(self, lines, value, rows, hint=None):
+        pd = {1: _page([_line(t, 0.1, top) for t, top in lines])}
+        return [
+            round(
+                g.match_value_to_geometry(value, pd, None, i, hint)[0]["boundingBox"][
+                    "top"
+                ],
+                2,
+            )
+            for i in range(rows)
+        ]
+
+    def test_one_verbatim_and_two_variant_rows_get_three_distinct_boxes(self):
+        tops = self._tops(
+            self.MIXED, "06/30/14", 3, {"type": "string", "format": "date"}
+        )
+        assert tops == [0.10, 0.20, 0.30], (
+            "each row must map to its own occurrence in reading order"
+        )
+        assert len(set(tops)) == 3
+
+    def test_two_verbatim_and_one_variant_row_also_map_one_to_one(self):
+        lines = [("06/30/14", 0.10), ("06/30/14", 0.20), ("06/30/2014", 0.30)]
+        tops = self._tops(lines, "06/30/14", 3, {"type": "string", "format": "date"})
+        assert tops == [0.10, 0.20, 0.30]
+
+    def test_a_scalar_still_gets_the_preference(self):
+        """The preference exists for the no-index case and must survive there."""
+        pd = {
+            1: _page([_line("APR 15 2011", 0.79, 0.13)]),
+            2: _page([_line("4-15-11", 0.75, 0.18)]),
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert source == "ocr"
+        assert geom["page"] == 2
+
+
+class TestTheSpatialSignalOutranksTheVerbatimPreference:
+    """Under ``llm_grounded`` the model's own box is the disambiguator.
+
+    ``preferred_geometry`` is why that mode exists: the model says roughly where the
+    value is, and the nearest candidate wins. Filtering by provenance first could
+    discard a separator-bridged candidate sitting exactly where the model pointed,
+    in favour of a verbatim one elsewhere on the page — the opposite of what the
+    spatial signal is for. The preference therefore runs only when neither
+    disambiguator is present.
+    """
+
+    def test_the_candidate_nearest_the_model_box_wins_over_a_verbatim_one(self):
+        pd = {
+            1: _page(
+                [
+                    _line("Apr 15, 2011", 0.20, 0.80),
+                    _line("4-15-11", 0.20, 0.10),
+                ]
+            )
+        }
+        # The model put the value near the BOTTOM of the page, where the variant is.
+        preferred = {
+            "boundingBox": {"left": 0.20, "top": 0.80, "width": 0.1, "height": 0.02},
+            "page": 1,
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd, preferred)
+        assert geom["boundingBox"]["top"] == pytest.approx(0.80), (
+            "the spatial signal must decide, not provenance"
+        )
+        assert source == g._SOURCE_NORMALIZED
+
+    def test_without_a_model_box_the_verbatim_line_wins(self):
+        """ocr_only: no spatial signal, so the preference applies as designed."""
+        pd = {
+            1: _page(
+                [
+                    _line("Apr 15, 2011", 0.20, 0.80),
+                    _line("4-15-11", 0.20, 0.10),
+                ]
+            )
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert geom["boundingBox"]["top"] == pytest.approx(0.10)
+        assert source == "ocr"

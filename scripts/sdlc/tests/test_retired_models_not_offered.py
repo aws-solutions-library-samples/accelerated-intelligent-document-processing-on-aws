@@ -168,12 +168,17 @@ def test_a_retired_model_id_still_loads_in_a_stored_config(model_id: str):
     has to deal with stored configs deliberately.
     """
     models = pytest.importorskip("idp_common.config.models")
-    for section, kwargs in (
-        (models.ExtractionConfig, {"model": model_id}),
-        (models.ClassificationConfig, {"model": model_id}),
-        (models.SummarizationConfig, {"model": model_id}),
+    for section in (models.ExtractionConfig, models.SummarizationConfig):
+        assert section(model=model_id).model == model_id
+    # Classification models live inside each call; a stored flat `model` (the
+    # shape a pre-0.9 profile has) migrates into every one of them.
+    classification = models.ClassificationConfig.model_validate({"model": model_id})
+    for call in (
+        classification.one_stage.llm,
+        classification.two_stage.boundary_detection.llm,
+        classification.two_stage.section_classification.llm,
     ):
-        assert section(**kwargs).model == model_id
+        assert call.model == model_id
 
 
 @pytest.mark.parametrize("model_id", sorted(RETIRED_MODEL_IDS))

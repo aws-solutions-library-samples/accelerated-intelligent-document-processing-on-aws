@@ -12,6 +12,7 @@ from idp_common.dynamodb.client import (
     DynamoDBClient,
     DynamoDBError,
     DynamoDBTransactionCanceledError,
+    DynamoDBUnprocessedKeysError,
 )
 from idp_common.dynamodb.service import DocumentDynamoDBService
 from idp_common.dynamodb.ttl import calculate_ttl
@@ -20,6 +21,7 @@ __all__ = [
     "DynamoDBClient",
     "DynamoDBError",
     "DynamoDBTransactionCanceledError",
+    "DynamoDBUnprocessedKeysError",
     "DocumentDynamoDBService",
     "calculate_ttl",
 ]

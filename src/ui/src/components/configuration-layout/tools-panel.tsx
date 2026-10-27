@@ -35,6 +35,16 @@ const ToolsPanel = (): React.JSX.Element => (
               JSON Schema Migration
             </a>
           </li>
+          <li>
+            <a href={`${DOCS_BASE_URL}/classification/`} target="_blank" rel="noopener noreferrer">
+              Classification
+            </a>
+          </li>
+          <li>
+            <a href={`${DOCS_BASE_URL}/migration-v0612-to-v0613/`} target="_blank" rel="noopener noreferrer">
+              Classification settings in v0.6.13
+            </a>
+          </li>
         </ul>
       </div>
     }
@@ -53,6 +63,16 @@ const ToolsPanel = (): React.JSX.Element => (
         that same table to open, activate, compare, import, or delete profiles.
       </p>
 
+      <h3>Classification</h3>
+      <p>
+        Classification settings are grouped by the model call that uses them. <strong>Strategy</strong> picks <strong>One stage</strong>{' '}
+        (one call finds the section boundaries and the classes) or <strong>Two stage</strong> (find the boundaries first, then classify each
+        section), and only the calls that strategy makes are shown. Those two labels are stored as <code>strategy: single_pass</code> and{' '}
+        <code>strategy: two_stage</code>, which is what the JSON and YAML views show and what an uploaded file must use. A profile saved
+        before v0.6.13 is converted when it is read; its model and parameters are copied into every call, so each can then be changed on its
+        own.
+      </p>
+
       <h3>Editing</h3>
       <ul>
         <li>
@@ -61,7 +81,8 @@ const ToolsPanel = (): React.JSX.Element => (
         </li>
         <li>
           Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules,
-          and the <strong>Prompt Preview</strong> tab to see the exact prompts sent to the model.
+          and the <strong>Prompt Preview</strong> tab to see what each step&apos;s prompt includes, with your configuration values filled
+          in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.
         </li>
         <li>
           Edited fields show an orange dot; a per-field <strong>Restore default</strong> resets a single value. An unsaved-changes banner

@@ -24,7 +24,10 @@ from idp_common.config_scope import (  # type: ignore
     user_row_key,
 )
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
-from idp_common.dynamodb.client import DynamoDBError  # type: ignore
+from idp_common.dynamodb.client import (  # type: ignore
+    DynamoDBError,
+    DynamoDBUnprocessedKeysError,
+)
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
     DEFAULT_PAGES_PER_DOC,
@@ -39,6 +42,7 @@ from idp_common.review_queues.annotators import (  # type: ignore
     cognito_account,
     persona_for_groups,
 )
+from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS  # type: ignore
 from idp_common.review_queues.statuses import LEGACY_DONE  # type: ignore
 from idp_common.review_queues.testset_docs import (  # type: ignore
     SUMMARY_BUILDING,
@@ -321,12 +325,12 @@ ADMIN_ONLY_FIELDS = (
 
 
 # Admin and Annotator, not Author: the Test Studio queues (Admins see every set, an
-# Annotator only the sets whose queue lists them: My Work › Queues), and an
-# Annotator claiming a document of such a set, which assigns it to them.
-ADMIN_AND_ANNOTATOR_FIELDS = (
-    "listTestSetQueues",
-    "claimTestSetDocument",
-)
+# Annotator only the sets whose queue lists them: My Work › Queues).
+ADMIN_AND_ANNOTATOR_FIELDS = ("listTestSetQueues",)
+
+# Annotator only: an Annotator listed on a set's queue claims one of its documents,
+# which assigns it to them. Admins assign (assignTestSetDocuments) rather than claim.
+ANNOTATOR_ONLY_FIELDS = ("claimTestSetDocument",)
 
 #: Operations slower than this are logged at WARNING, so slow pages can be traced.
 SLOW_OP_MS = 3000
@@ -348,7 +352,8 @@ def _dispatch(event, context):
     logger.info(f"Test set resolver invoked with field_name: {field_name}")
 
     # Defense-in-depth: test-set operations are Admin+Author, plus the
-    # ANNOTATOR_ALLOWED_FIELDS allowlist.
+    # ANNOTATOR_ALLOWED_FIELDS allowlist; ADMIN_ONLY_FIELDS, ADMIN_AND_ANNOTATOR_FIELDS
+    # and ANNOTATOR_ONLY_FIELDS narrow or replace that default.
     # Allow direct Lambda invocations (no 'identity' field or identity=None) for CI/automation.
     # AppSync invocations always have 'identity' with non-None value, so RBAC is still enforced for UI users.
     # Security: Direct invocation path is gated by IAM (lambda:InvokeFunction permission on this ARN),
@@ -359,6 +364,8 @@ def _dispatch(event, context):
             allowed_groups = ["Admin"]
         elif field_name in ADMIN_AND_ANNOTATOR_FIELDS:
             allowed_groups = ["Admin", "Annotator"]
+        elif field_name in ANNOTATOR_ONLY_FIELDS:
+            allowed_groups = [ANNOTATOR_GROUP]
         else:
             allowed_groups = ["Admin", "Author"]
             if field_name in ANNOTATOR_ALLOWED_FIELDS:
@@ -3068,7 +3075,10 @@ def get_annotation_queue(args, event=None):
 
     result = {
         "testSetId": test_set_id,
+        "name": meta.get("name"),
         "claimLeaseMinutes": time_limit_minutes(meta),
+        # What a Skip may give as its reason (skipTestSetDocument).
+        "skipReasons": _skip_reasons(meta),
         # BUILDING while the background build of the set's summaries runs; the
         # documents listed so far are returned meanwhile.
         "summaryStatus": summary_status,
@@ -3128,8 +3138,6 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     if not per_doc_run and not default_run:
         return {}
 
-    table_name = os.environ["TRACKING_TABLE"]
-    resource = boto3.resource("dynamodb")
     state = {}
 
     # BatchGetItem rather than a GetItem per document; batches cap at 100 keys.
@@ -3146,25 +3154,28 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     for start in range(0, len(all_keys), 100):
         batch = [{"PK": pk, "SK": "none"} for pk in all_keys[start : start + 100]]
         try:
-            pending = {table_name: {"Keys": batch}}
-            # UnprocessedKeys is normal under throttling; unretried keys would
-            # silently report their documents as unclaimed.
-            for _ in range(4):
-                response = resource.batch_get_item(RequestItems=pending)
-                for item in response.get("Responses", {}).get(table_name, []):
-                    object_key = keys_by_pk.get(item.get("PK", ""))
-                    if not object_key:
-                        continue
-                    state[object_key] = {
-                        "owner": item.get("HITLReviewOwner") or "",
-                        "status": item.get("HITLStatus") or "",
-                        # The item's presence proves the run processed this
-                        # document, which is a precondition for claiming it.
-                        "exists": True,
-                    }
-                pending = response.get("UnprocessedKeys") or {}
-                if not pending:
-                    break
+            # UnprocessedKeys is normal under throttling. The helper retries them
+            # with backoff and raises if any remain; the rows it did read are
+            # still used, so only the documents left unread lose their state.
+            try:
+                rows = db_client.batch_get_items(batch)
+            except DynamoDBUnprocessedKeysError as e:
+                logger.warning(
+                    f"Could not read claim state for every document in a batch "
+                    f"of {len(batch)}: {e}"
+                )
+                rows = e.items
+            for item in rows:
+                object_key = keys_by_pk.get(item.get("PK", ""))
+                if not object_key:
+                    continue
+                state[object_key] = {
+                    "owner": item.get("HITLReviewOwner") or "",
+                    "status": item.get("HITLStatus") or "",
+                    # The item's presence proves the run processed this
+                    # document, which is a precondition for claiming it.
+                    "exists": True,
+                }
         except Exception as e:  # noqa: BLE001 — a missing claim is not an error
             logger.warning(
                 f"Could not read claim state for {len(batch)} document(s): {e}"
@@ -3383,14 +3394,16 @@ def estimate_review_effort(args):
         pages_per_doc,
         ground_truth_docs,
         alerts_per_doc,
+        inspected_docs,
+        whole_set_inspected,
     ) = _collect_doc_confidences(test_set_id)
 
     # The set's real size, which may exceed the sample. Using the sample size as the
     # total understates the work, the effort and the audit pool by however far the
-    # set exceeds MAX_DOCS_FOR_ESTIMATE.
-    total_docs = int(meta.get("fileCount", 0) or 0) or len(doc_confidences)
-    # Ground truth is not reviewable work, so it comes off the total.
-    total_docs = max(0, total_docs - ground_truth_docs)
+    # set exceeds MAX_DOCS_FOR_ESTIMATE. The stored counter can lag the set, and
+    # the set holds at least what was just read, so it never sizes below that.
+    set_size = max(int(meta.get("fileCount", 0) or 0), inspected_docs)
+    total_docs = _reviewable_docs(set_size, inspected_docs, ground_truth_docs)
     sampled_docs = len(doc_confidences)
 
     # A sample is treated as representative and repeated across the whole set, so the
@@ -3434,12 +3447,48 @@ def estimate_review_effort(args):
     result["reliabilityTable"] = curve.reliability_table(prior)
     # Surfaced so a caller can say how much of the set was actually inspected.
     result["sampledDocs"] = sampled_docs
+    # What the reviewable size was scaled from. A sample with no reviewable
+    # document scales to zero, which is a statement about the whole set only when
+    # the sample read all of it; otherwise documents outside the sample were never
+    # read and a caller must not report the set as fully labelled (#1479).
+    result["inspectedDocs"] = inspected_docs
+    result["setDocs"] = set_size
+    # Whether the listing was read to its end. Decided by the listing rather than
+    # by inspectedDocs against setDocs, because setDocs rests on a stored counter
+    # that can be stale or absent, and a sample cut by the cap or the time budget
+    # must never read as the whole set.
+    result["wholeSetInspected"] = whole_set_inspected
     logger.info(
         f"estimateReviewEffort({test_set_id}, target={target_accuracy}): "
         f"{estimate.docs_to_review}/{total_docs} docs, "
         f"confidence={estimate.estimate_confidence.value}"
     )
     return result
+
+
+def _reviewable_docs(set_size, inspected_docs, ground_truth_docs):
+    """How many of ``set_size`` documents are reviewable work, from the sample.
+
+    Ground truth is not reviewable work, so it comes off the total -- but it is
+    counted over the inspected sample only, which MAX_DOCS_FOR_ESTIMATE caps. The
+    sample's confidences are extrapolated across the whole set, so its ground-truth
+    count has to be extrapolated the same way: the sample's reviewable fraction is
+    applied to the set's size. Subtracting the raw count instead planned review for
+    every uninspected document, so a 500-document set sampled as 200 of 200 ground
+    truth estimated 300 documents to review (#1479).
+
+    The sample is the first documents in listing order, not a random draw, so the
+    fraction assumes ground truth is spread independently of key order. A set whose
+    labelled files sort together is mis-sized in either direction; no set-wide
+    ground-truth count is stored that could be read instead.
+
+    Rounded up, so a sample holding any reviewable document never estimates zero.
+    With nothing inspected there is no fraction to apply, and the whole set counts.
+    """
+    if inspected_docs <= 0:
+        return max(0, set_size)
+    reviewable_sampled = max(0, inspected_docs - ground_truth_docs)
+    return max(0, -(-set_size * reviewable_sampled // inspected_docs))  # ceil
 
 
 # Cap on how many documents the estimator reads confidences for. Every section on a
@@ -3521,10 +3570,16 @@ def _collect_doc_confidences(test_set_id):
     ordering would not describe the work the user is about to do.
 
     Returns ``(confidences, fields_per_doc, pages_per_doc, ground_truth_docs,
-    alerts_per_doc)``. The
+    alerts_per_doc, inspected_docs, whole_set_inspected)``. The
     two shape figures fall back to the module defaults when the baseline carries
     nothing to measure. ``ground_truth_docs`` counts inspected documents that already
     have ground truth and are therefore absent from ``confidences``.
+    ``inspected_docs`` is how many documents the sample read, ground truth included:
+    the denominator for scaling the sample's ground-truth fraction to the set.
+    ``whole_set_inspected`` is True only when the listing ended inside the time
+    budget. A page cut by the budget also ends with no token, so a listing that
+    finished after the budget passed is reported as partial: the safe direction,
+    since a partial sample is never called the whole set.
     """
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     documents = []
@@ -3554,6 +3609,8 @@ def _collect_doc_confidences(test_set_id):
                 "sample"
             )
             break
+
+    whole_set_inspected = not next_token and time.monotonic() <= deadline
 
     confidences = []
     alert_counts = []
@@ -3623,6 +3680,8 @@ def _collect_doc_confidences(test_set_id):
         max(1.0, pages_per_doc),
         ground_truth_docs,
         alerts_per_doc,
+        len(documents),
+        whole_set_inspected,
     )
 
 
@@ -4664,17 +4723,10 @@ def _load_test_set_records():
         if gsi_items:
             # Step 2: BatchGetItem to fetch full records from base table
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi_items]
-            # DynamoDB BatchGetItem supports max 100 keys per call
-            for i in range(0, len(keys), 100):
-                batch_keys = keys[i : i + 100]
-                batch_response = boto3.resource("dynamodb").batch_get_item(
-                    RequestItems={os.environ["TRACKING_TABLE"]: {"Keys": batch_keys}}
-                )
-                items.extend(
-                    batch_response.get("Responses", {}).get(
-                        os.environ["TRACKING_TABLE"], []
-                    )
-                )
+            # The helper chunks at 100 and retries UnprocessedKeys with backoff.
+            # Dropping them would silently omit sets from the listing; if any
+            # remain after its retries it raises, and the scan below runs instead.
+            items = db_client.batch_get_items(keys)
             logger.info(f"BatchGetItem returned {len(items)} full testset records")
     except Exception as e:
         logger.warning(f"GSI+BatchGet failed, falling back to scan: {e}")
@@ -4793,9 +4845,25 @@ def skip_test_set_document(args, event=None):
         raise ValueError("Invalid test set id")
     if not object_key or ".." in object_key or object_key.startswith("/"):
         raise ValueError("Invalid object key")
+    reason = args.get("reason")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if reason not in _skip_reasons(meta or {}):
+        raise ValueError(
+            "REASON_REQUIRED: choose a skip reason from this test set's queue settings"
+        )
+    note = (args.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
     caller = (caller_email(event) or "").lower()
     store = _doc_store()
-    store.unassign(test_set_id, object_key)
+    store.unassign(
+        test_set_id,
+        object_key,
+        skip={
+            "by": caller,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
+            **({"note": note} if note else {}),
+        },
+    )
     store_assigned_count(_get_tracking_table(), store, test_set_id)
     logger.info(f"skipTestSetDocument {test_set_id}/{object_key} by {caller}")
     return {"testSetId": test_set_id, "objectKey": object_key, "skipped": True}
@@ -4854,7 +4922,16 @@ _QUEUE_SETTING_ATTRS = {
     "timeLimitMinutes": "TimeLimitMinutes",
     "eligibleAnnotators": "QueueEligibleAnnotators",
     "checklist": "QueueChecklist",
+    "skipReasons": "QueueSkipReasons",
 }
+
+#: Longest skip note kept, the review queues' note limit.
+MAX_SKIP_NOTE = 1000
+
+
+def _skip_reasons(item):
+    """The set's skip reasons: its own list, or the review queues' defaults."""
+    return [str(r) for r in (item.get("QueueSkipReasons") or DEFAULT_SKIP_REASONS)]
 
 
 def _queue_settings_view(item):
@@ -4866,6 +4943,7 @@ def _queue_settings_view(item):
             str(e) for e in (item.get("QueueEligibleAnnotators") or [])
         ],
         "checklist": [str(c) for c in (item.get("QueueChecklist") or [])],
+        "skipReasons": _skip_reasons(item),
     }
 
 
@@ -4914,6 +4992,15 @@ def update_test_set_queue(args):
         if len(items) > 20:
             raise ValueError("checklist has at most 20 items")
         values["checklist"] = items
+    if data.get("skipReasons"):
+        reasons = list(
+            dict.fromkeys(
+                str(r).strip()[:200] for r in data["skipReasons"] if str(r).strip()
+            )
+        )
+        if not reasons or len(reasons) > 20:
+            raise ValueError("skipReasons lists 1 to 20 reasons")
+        values["skipReasons"] = reasons
     if not values:
         raise ValueError("Nothing to update")
     # Before the write, so a listed user who isn't an Annotator refuses the save.

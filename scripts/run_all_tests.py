@@ -185,6 +185,10 @@ RUN_ROOTS = [
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
     # Configuration-revision pinning on a test run.
     "nested/api-resolvers/src/lambda/test_runner",
+    # The other half of that: a stored run's configuration is read back in the
+    # current config format, the same way on both storage shapes, so comparing two
+    # runs captured either side of a format change reports only real differences.
+    "nested/api-resolvers/src/lambda/test_results_resolver",
     "nested/api-resolvers/src/lambda/test_set_resolver",
     # Reprocess resolver: output-data deletion on reprocess (nested-stack
     # namespace handling). Arrived with #719 unregistered, which made `make test`
@@ -221,6 +225,10 @@ RUN_ROOTS = [
     # Review queue sweeper: the no-table path, the deadline and the wiring.
     "src/lambda/review_queue_sweeper",
     "src/lambda/save_reporting_data",
+    # Test run sweeper: admission, the deadline bound, and the enqueue throttle
+    # it shares with the read resolver. The derivation it calls is tested in
+    # idp_common; this suite pins that a sweep which does nothing fails (#1620).
+    "src/lambda/test_run_sweeper",
     # DockerBuildRun's ECR image verification: the bounded image-scan wait and the
     # presence poll. An unbounded wait here fails the stack at CloudFormation's
     # one-hour custom-resource limit with an error that names the cfn-response

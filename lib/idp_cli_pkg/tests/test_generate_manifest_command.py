@@ -61,6 +61,17 @@ def _write(path, text="%PDF-1.4 fake\n"):
     return path
 
 
+def _filesystem_is_case_insensitive(directory):
+    """Whether `directory` sits on a filesystem that folds case (macOS APFS by default).
+
+    There, `gt.pdf/` and `GT.PDF/` are one directory, so a test that needs both to
+    exist at once has no way to set its scenario up.
+    """
+    probe = directory / "case-probe"
+    probe.mkdir()
+    return (directory / "CASE-PROBE").exists()
+
+
 def _read_manifest_rows(path):
     """Parse a generated manifest back into a list of dicts, via the csv module."""
     with open(path, newline="") as handle:
@@ -563,6 +574,8 @@ def test_two_baseline_directories_differing_only_in_case_are_refused(runner, tmp
     """
     from idp_cli.cli import generate_manifest
 
+    if _filesystem_is_case_insensitive(tmp_path):
+        pytest.skip("needs a case-sensitive filesystem to hold gt.pdf/ and GT.PDF/")
     docs = tmp_path / "docs"
     _write(docs / "gt.pdf")
     baselines = tmp_path / "baselines"

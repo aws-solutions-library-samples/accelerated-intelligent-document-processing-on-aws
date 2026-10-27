@@ -81,9 +81,18 @@ where a `Page 2` indicator on a photographed form was silently dropped at 150
 DPI and read correctly at 98% confidence at 300 DPI.
 
 If you need to cut LLM cost, reduce the image sent to the *LLM* stages via
-`classification.image` / `extraction.image` /
-`extraction.confidence.image` — those downscale the stored page image for the
+each classification call's `image` block (for example
+`classification.one_stage.llm.image`, and under `strategy: two_stage`
+`classification.two_stage.boundary_detection.llm.image` and
+`classification.two_stage.section_classification.llm.image`) / `extraction.image`
+/ `extraction.confidence.image` — those downscale the stored page image for the
 prompt only, leaving OCR at full fidelity.
+
+⚠️ **A classification call's `image` block honours only `target_width` and
+`target_height`.** The same four fields validate there as under `ocr.image`, so
+writing `dpi` or `preprocessing` on a classification call raises no error and
+does nothing: rasterization DPI and binarization are decisions OCR makes once,
+and only `ocr.image` reads them.
 
 ## When to change the defaults
 
@@ -151,4 +160,4 @@ the configuration was saved or uploaded rather than in the OCR function's logs.
 | Raised the ceiling but nothing changed | You also need to raise `dpi` — the ceiling cannot upscale. |
 | Tables misaligned, handwriting errors | Keep 300 DPI; consider enabling `ocr.image.preprocessing` for uneven lighting. |
 | Memory errors | Lower `max_workers`, or lower the ceiling for oversized pages. |
-| High LLM cost | Downscale at `classification.image` / `extraction.image`, not at `ocr.image`. |
+| High LLM cost | Downscale at a classification call's `image` / `extraction.image`, not at `ocr.image`. |

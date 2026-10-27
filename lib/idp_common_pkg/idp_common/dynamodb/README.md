@@ -45,8 +45,10 @@ single `query` response.
 
 **`batch_get_items` raises instead of returning a partial result.** Keys DynamoDB
 leaves in `UnprocessedKeys` are re-submitted with exponential backoff and full
-jitter; when `max_attempts` runs out the call raises `DynamoDBError` with
-`error_code == "UnprocessedKeys"`. `batch_write_items` does the same with
+jitter; when `max_attempts` runs out the call raises
+`DynamoDBUnprocessedKeysError`, a `DynamoDBError` with
+`error_code == "UnprocessedKeys"` whose `items` holds the rows read before it gave
+up, for a caller that can use a partial answer on purpose. `batch_write_items` does the same with
 `error_code == "UnprocessedItems"`. A batch of up to 100 keys with nothing
 unprocessed behaves as it always did.
 
@@ -94,8 +96,17 @@ profile head record, which is where it went wrong.
 
 High-level service for document operations:
 - `create_document()` - Create new documents with list partitioning
-- `update_document()` - Update existing documents
-- `get_document()` - Retrieve documents by object key
+- `update_document(document, expected_status=None)` - Update existing documents.
+  With `expected_status`, the write lands only if the stored `ObjectStatus` is
+  still that value, and otherwise raises `DynamoDBError` with error code
+  `ConditionalCheckFailedException`
+- `get_document(object_key, consistent_read=False)` - Retrieve documents by
+  object key. The default read is eventually consistent, so pass
+  `consistent_read=True` when deciding from a write that has just landed
+- `claim_for_execution(object_key)` - A conditional write that changes nothing
+  and returns False if the document is ABORTED or has no tracking record. The
+  queue processor calls it immediately before starting an execution, so a
+  QUEUED document aborted after the processor read it is not started
 - `list_documents()` - List documents with date filtering
 - `list_documents_date_hour()` - List by specific date/hour
 - `list_documents_date_shard()` - List by date/shard

@@ -51,7 +51,11 @@ Evaluated on the full 293-document dataset using IDP Accelerator v0.5.0 (pattern
 - **Extraction**: Nova 2 Lite (`us.amazon.nova-2-lite-v1:0`)
 - **OCR**: Textract (Layout feature)
 
-To use Sonnet 4.6 for extraction, change `extraction.model` to `us.anthropic.claude-sonnet-4-6-20250929-v1:0`.
+To use Sonnet 4.6 for extraction, change `extraction.model` to
+`us.anthropic.claude-sonnet-4-6` (or `us.anthropic.claude-sonnet-4-6:1m` for the
+extended-context variant). These are the ids the stack parameter's enum and
+`config_library/pricing.yaml` carry; a dated `-v1:0` suffix is not one of them and
+config validation rejects it with `extraction.model has invalid model ID`.
 
 ## Configuration Variants In This Directory
 
@@ -71,7 +75,7 @@ explicitly — `idp-cli config-upload -f <path>`, `idp-cli deploy --custom-confi
 ### Running the fine-tuned arm
 
 `fine_tuned_config.yaml` exists to measure a **fine-tuned** Nova 2 Lite against the
-base model, on both `classification.model` and `extraction.model`. A fine-tuned model
+base model, on both `classification.one_stage.llm.model` and `extraction.model`. A fine-tuned model
 is reached through a Bedrock `custom-model-deployment` ARN, which is account-scoped: it
 resolves only in the account that owns the deployment, and from anywhere else Bedrock
 answers `AccessDeniedException` — *"the provided resource ARN is from a different
@@ -99,17 +103,20 @@ To run the fine-tuned arm:
    reporting for the run — a model with no pricing entry records a NULL cost rather
    than a wrong one, so the run's spend is reported as incomplete.
 
-### One log line to expect on the first extraction call
+### What a substituted ARN does to the output budget
 
-`extraction.max_tokens` in this file is `65535`, and Nova 2 Lite's output cap is
-10,000. Bedrock rejects the first request with a `ValidationException` naming the
-limit, the client reads the cap and retries, and the run proceeds — so this is noise
-rather than a failure, and the same pairing already appears elsewhere in this
-directory. It is called out because until now the stage never got this far: the
-account-scoped ARN failed with `AccessDeniedException` first, and the limits lookup
-that would have flagged the mismatch had no entry for that ARN and was swallowed.
-Setting `max_tokens: '10000'` — the value the sibling blocks in this file already use
-— avoids the round trip.
+Extraction has no `max_tokens` setting — it always requests the model's maximum
+output, resolved from `config_library/model_config_limits.yaml`. That lookup matches
+on the model id, so `us.amazon.nova-2-lite-v1:0` resolves to Nova's 10,000-token
+output limit and a 300,000-token input window.
+
+A `custom-model-deployment` ARN matches no pattern in that file, so the lookup falls
+back to its conservative unmatched defaults — a smaller output budget and input
+window than the base model actually has. Nothing fails and nothing is logged as an
+error, but a fine-tuned arm sized off those defaults is not sized the same way as the
+base arm it is being compared against. If the comparison is about long outputs, add a
+pattern for your deployment id to `model_config_limits.yaml` so both arms resolve the
+same limits.
 
 ## Processing Mode
 

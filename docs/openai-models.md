@@ -121,7 +121,7 @@ Astra out of `CACHEPOINT_SUPPORTED_MODELS`.
 | Capability | Supported? | Notes |
 |---|---|---|
 | OCR (Bedrock backend) | ✅ | Image + text input |
-| Classification | ✅ | Page-level and holistic |
+| Classification | ✅ | Both strategies, both granularities |
 | Extraction (standard) | ✅ | Text + page images |
 | **Agentic / advanced extraction** | ✅ | Astra reaches Converse and emits `toolUse` under a forced `toolChoice`. **This is the key difference from GPT-5.x.** |
 | Confidence (assessment) | ✅ | |
@@ -243,7 +243,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 | Capability | Supported? | Notes |
 |---|---|---|
 | OCR (Bedrock backend) | ✅ | Image + text input |
-| Classification | ✅ | Page-level and holistic |
+| Classification | ✅ | Both strategies, both granularities |
 | Extraction (standard) | ✅ | Text + page images |
 | Confidence (assessment) | ✅ | `separate` and `integrated` modes on the simple (non-agentic) path |
 | Summarization | ✅ | |
@@ -319,8 +319,10 @@ GPT-5.4 only.
 
 If the IDP stack is deployed in a region where the selected model is not
 available, the accelerator routes the `bedrock-mantle` request to a
-known-available region (logging a warning about cross-region data movement). To
-pin the region explicitly, set `BEDROCK_MANTLE_REGION`. EU-region deployments
+known-available region (logging a warning about cross-region data movement). The
+`BEDROCK_MANTLE_REGION` environment variable pins it explicitly, but no template sets
+it — see the note under [GPT-5.x environment variables](#gpt-5x-environment-variables)
+below. EU-region deployments
 **hide** these models from the configuration picklists entirely (they are not
 callable there). See [EU Region Model Support](eu-region-model-support.md).
 
@@ -335,11 +337,24 @@ cross-account hub role, that role must also grant these `bedrock-mantle` actions
 
 ### GPT-5.x environment variables
 
-| Variable | Purpose | Default |
+⚠️ **None of these are set by any template, so in a deployed stack all three sit at
+their defaults.** `openai_responses.py` reads them, but no `*.yaml` in the repository
+puts them into a Lambda's environment and no stack parameter feeds them. They are
+useful when running `idp_common` outside a deployed stack — a notebook, a local script,
+a test — and for a deliberate manual override on a function you have already deployed,
+which the next stack update will drop. To pin the `bedrock-mantle` region for a stack,
+add the variable to the generating Lambdas in the template rather than editing one
+function in the console.
+
+| Variable | Purpose | Default (and, today, the effective value in a stack) |
 |---|---|---|
-| `BEDROCK_MANTLE_REGION` | Pin the `bedrock-mantle` region for all GPT-5.x calls | Derived from the stack region with a per-model fallback |
+| `BEDROCK_MANTLE_REGION` | Pin the `bedrock-mantle` region for all GPT-5.x calls | Unset — the region is derived from the stack region with a per-model fallback |
 | `BEDROCK_MANTLE_SIGNING_NAME` | SigV4 signing service name | `bedrock-mantle` |
 | `BEDROCK_MANTLE_REASONING_EFFORT` | Global fallback reasoning effort when a service config omits `reasoning_effort` | `medium` |
+
+The per-service `reasoning_effort` configuration field is the supported way to change
+reasoning effort in a deployed stack; the environment variable above is only the
+fallback for a service whose config omits it.
 
 ## Pricing
 

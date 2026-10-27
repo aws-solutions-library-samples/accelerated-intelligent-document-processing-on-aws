@@ -305,7 +305,7 @@ Every hour, for the sealed hour N-1:
 | `doc-chat` | Chat-with-document + streaming chat | User chat about a specific doc |
 | `test-set-mgmt` | Test set CRUD + S3 polling | Test Studio UI + on-open scan |
 | `test-runner` | Kick off test runs + copy files | User clicks "Run test" |
-| `test-results` | Aggregate test runs + serve dashboard reads | End-of-run + results page open |
+| `test-results` | Aggregate test runs + serve dashboard reads | Scheduled end-of-run sweep + results page open |
 | `config-mgmt` | Config CRUD, apply-preset custom resource | Config UI + feature installs |
 | `capacity-planner` | Capacity calculation tool | User action |
 | `policy-discovery` | Policy Discovery API + async processor | Admin action |
@@ -443,6 +443,10 @@ passes a naive test — while matching nothing a real deployment emits.
 
 **Explicitly NOT data plane (in the same templates):**
 `TestExecutionAggregationFunction` (post-run orchestration),
+`TestRunSweeperFunction` (scheduled reconciliation of finished test runs
+— it reads a run's documents, so its cost scales with test volume, but
+its trigger is a schedule rather than a document arrival; `test-results`
+component),
 `MLflowLoggerFunction` (per-run write-up),
 `CodeBuildTrigger` / `BDAOCRProjectFunction` (one-shot CFN custom
 resources), `TestFileCopierFunction` (test-run seeding — scales with

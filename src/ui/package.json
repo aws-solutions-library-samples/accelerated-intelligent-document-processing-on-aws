@@ -33,7 +33,7 @@
     "axios": "^1.20.0",
     "brace-expansion": "^2.1.7",
     "chart.js": "^4.5.0",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "form-data": "^4.0.4",
     "immer": "^10.1.3",
     "js-yaml": "^4.3.2",
@@ -115,19 +115,19 @@
     "typescript-eslint": "^8.32.0",
     "vite": "^7.3.7",
     "vite-plugin-svgr": "^4.5.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "nth-check": "^2.0.1",
     "fast-xml-parser": ">=5.5.6",
     "monaco-editor": {
-      "dompurify": ">=3.3.2"
+      "dompurify": ">=3.4.17"
     },
     "esbuild": ">=0.28.1",
     "nanoid": "^3.3.18",
     "browserslist": ">=4.28.7",
-    "fast-uri": "^3.1.6",
-    "@graphql-tools/utils": "^12.0.1",
+    "fast-uri": "^3.1.9",
+    "@graphql-tools/utils": "12.0.1",
     "follow-redirects": "^1.16.1"
   }
 }

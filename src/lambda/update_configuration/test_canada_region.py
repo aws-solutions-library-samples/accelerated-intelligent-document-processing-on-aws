@@ -189,6 +189,14 @@ def test_every_swap_target_is_offered_in_canada_and_every_source_is_not():
 # --- the default swaps, on the real system defaults ------------------------
 
 
+#: Where each classification call keeps its model (config format 0.9).
+CLASSIFICATION_CALLS = (
+    "one_stage.llm",
+    "two_stage.boundary_detection.llm",
+    "two_stage.section_classification.llm",
+)
+
+
 @pytest.mark.unit
 def test_the_shipped_defaults_are_rewritten_for_canada_and_nothing_else_is():
     """The three stock defaults ca-central-1 cannot call, and only those."""
@@ -203,7 +211,8 @@ def test_the_shipped_defaults_are_rewritten_for_canada_and_nothing_else_is():
     assert (
         before["discovery.multi_document.embedding_model_id"] == "us.cohere.embed-v4:0"
     )
-    assert before["classification.model"] == "us.amazon.nova-2-lite-v1:0"
+    for call in CLASSIFICATION_CALLS:
+        assert before[f"classification.{call}.model"] == "us.amazon.nova-2-lite-v1:0"
 
     after = dict(_string_leaves(index.swap_model_ids(cfg, "ca")))
     assert after["extraction.confidence.model"] == "ca.amazon.nova-lite-v1:0"
@@ -215,7 +224,9 @@ def test_the_shipped_defaults_are_rewritten_for_canada_and_nothing_else_is():
         after["discovery.multi_document.embedding_model_id"]
         == "global.cohere.embed-v4:0"
     )
-    assert after["classification.model"] == "us.amazon.nova-2-lite-v1:0"
+    # Every classification call's model is walked, and none of them is swapped.
+    for call in CLASSIFICATION_CALLS:
+        assert after[f"classification.{call}.model"] == "us.amazon.nova-2-lite-v1:0"
     assert after.keys() == before.keys()
     assert {path for path in before if before[path] != after[path]} == {
         "extraction.confidence.model",

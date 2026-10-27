@@ -36,7 +36,10 @@ python3 publish.py idp-1234567890 idp us-east-1 --verbose
 ```
 
 The build process:
-- Checks system dependencies (AWS CLI, SAM CLI, Docker, Python 3.12+, Node.js 22.12+)
+- Checks system dependencies — the publisher's prerequisite check requires `aws`,
+  `sam` and `uv` on the path, plus a minimum SAM and Python version. **Docker is not
+  required to publish**; container images are built during stack deployment by
+  CodeBuild (see "Container-image Lambdas" below)
 - Builds CloudFormation templates and assets using SAM
 - All pattern functions are built within the unified pattern directory
 - Uploads artifacts to S3 bucket named `<cfn_bucket_basename>-<region>`
@@ -944,7 +947,7 @@ The unified architecture supports two processing modes, controlled by the `use_b
 
 2. **Pipeline Mode** (formerly Pattern 2)
    - OCR with Amazon Textract
-   - Classification with Bedrock (page-level or holistic)
+   - Classification with Bedrock (`page` or `packet` granularity; one-stage or two-stage strategy)
    - Extraction with Bedrock (traditional or agentic)
    - Supports few-shot examples
    - Optional agentic extraction with deterministic table parsing
@@ -1049,12 +1052,23 @@ Configuration is managed via DynamoDB Configuration Table with two record types:
 - **Default**: Built-in pattern configurations from `config_library/`
 - **Custom**: User-provided overrides (via CustomConfigPath parameter or CLI)
 
-Configuration presets available:
-- **Pattern 1**: `lending-package-sample`, `realkie-fcc-verified`
-- **Pattern 2**: `lending-package-sample`, `rvl-cdip`, `rvl-cdip-with-few-shot-examples`, `bank-statement-sample`, `realkie-fcc-verified`
-- **Pattern 3**: `rvl-cdip`
+The presets live in `config_library/unified/`, one directory each, and the directory
+name is the value the **Configuration Preset** stack parameter takes. Enumerate them
+with `ls config_library/unified/` rather than trusting a list here:
 
-Custom configurations override selected pattern presets when specified.
+`bank-statement-sample`, `docsplit`, `ds11-passport-application`, `fake-w2`,
+`healthcare-multisection-package`, `lending-package-sample`,
+`lending-package-sample-govcloud`, `ocr-benchmark`, `realkie-fcc-verified`,
+`rule-validation`, `rvl-cdip`, `rvl-cdip-package-sample`,
+`rvl-cdip-with-few-shot-examples`.
+
+⚠️ **Presets are not keyed by processing mode, and there is no BDA preset.** Resolve
+`use_bda` through the real merge and every one of them comes out `false` — most set it
+explicitly, the rest inherit the default — and each preset's `notes` string says to
+set `use_bda: true` for BDA mode. Mode is a flag you flip on whichever preset you
+chose, not an axis the presets are organised along.
+
+Custom configurations override the selected preset when specified.
 
 ## Development Practices
 
@@ -1068,7 +1082,7 @@ Custom configurations override selected pattern presets when specified.
   - Target version: Python 3.12
 
 - **JavaScript/TypeScript**:
-  - ESLint configuration in `src/ui/.eslintrc`
+  - ESLint configuration in `src/ui/eslint.config.js`
   - Run `npm run lint` in `src/ui/` to verify
 
 ### Testing Standards
@@ -1370,14 +1384,25 @@ and the reasoning is in each hook's header.
 
 ## Important Implementation Details
 
-### Pattern-2 Container Deployment
+### Container-image Lambdas
 
-Pattern-2 functions are deployed as container images (not ZIP files) due to size constraints. The build process:
-1. Builds container images using Docker
-2. Pushes images to ECR
-3. Lambda functions reference ECR image URIs
+Some Lambda functions are deployed as container images rather than ZIP files, because
+their dependencies do not fit the ZIP limits. **This is not mode-specific**: the
+image-packaged functions in `patterns/unified/template.yaml` include the BDA-branch
+functions as well as the pipeline ones, and `nested/multi-doc-discovery/template.yaml`
+has its own. Grep `PackageType: Image` for the current set rather than assuming a
+split by mode.
 
-Ensure Docker is running and you have ECR permissions when building Pattern-2.
+⚠️ **The images are built during stack deployment, not during publishing, so you do
+not need Docker to publish.** One CodeBuild project (`DockerBuildProject` in
+`patterns/unified/template.yaml`) builds every image, keyed on a content hash of the
+packaged source, and the functions reference the resulting ECR image URIs through
+`ImageUri`. `publish.py` only uploads the source zip CodeBuild will read; it contains
+no `docker`, `ecr` or `image` reference at all, and the publisher's prerequisite check
+requires `aws`, `sam` and `uv` — Docker is not among them.
+
+Docker *is* needed for local Lambda testing (`sam local invoke`, below) and for the
+containerised dry run of the MR UX test. Neither is part of publishing or deploying.
 
 ### GovCloud Compatibility
 
@@ -1422,9 +1447,17 @@ The build system uses checksums to avoid rebuilding UI unnecessarily:
 
 ## Sample Documents
 
-Testing samples available in `samples/`:
-- **Pattern 1 & 2**: `lending_package.pdf`
-- **Pattern 3**: `rvl_cdip_package.pdf`
+Testing samples live in `samples/`. They are associated with **presets**, not with
+patterns or modes, and the mapping is `config_library/samples-manifest.json` — read
+that for which preset a sample is designed for. It is **generated**, not committed:
+`generate_samples_manifest` in the SDK publisher scans `samples/` at publish time and
+writes one entry per top-level document plus one per known batch subdirectory, each
+carrying a `configId` naming a `config_library/unified` preset (or null when the
+sample is unassociated). So do not hand-maintain a list of samples here; a new file
+dropped into `samples/` is indexed automatically.
+
+`lending_package.pdf` is the general-purpose packet to reach for when you just need a
+document to push through a stack.
 
 ## Validation Scripts
 
@@ -1481,7 +1514,10 @@ Request access to these models in Amazon Bedrock before deployment:
 
 - Amazon Bedrock (Foundational Models, Data Automation, Knowledge Bases)
 - Amazon Textract
-- Amazon SageMaker (for Pattern-3 UDOP endpoint)
+- Amazon SageMaker — **optional MLflow tracking only** (the `MlflowTrackingURI`
+  parameter takes a tracking-server ARN you already own). No template declares an
+  `AWS::SageMaker::*` resource, so the solution deploys no SageMaker inference
+  endpoint; the removed UDOP endpoint is not part of this architecture
 - AWS Lambda
 - AWS Step Functions
 - Amazon S3
@@ -1505,12 +1541,16 @@ Use `--verbose` flag with publish.py to see detailed error messages:
 python3 publish.py idp-1234567890 idp us-east-1 --verbose
 ```
 
-### Pattern-2 Container Build Issues
+### Container Image Build Issues
 
-Ensure:
-- Docker daemon is running
-- AWS credentials have ECR permissions
-- Sufficient disk space for container images
+Image builds happen inside the `DockerBuildProject` CodeBuild project during stack
+deployment, so a failure shows up as a stuck or failed CloudFormation resource rather
+than as a local error, and the evidence is in the CodeBuild build log. Check:
+- The CodeBuild project's log for the failing image
+- That the deployment role can push to the stack's ECR repository
+- That the unified-pattern source zip the publisher uploaded is the revision you
+  expect — the build is keyed on a content hash, so an unchanged hash reuses the
+  existing image rather than rebuilding
 
 ### UI Build Issues
 
@@ -1548,6 +1588,7 @@ that domain:
 | `.claude/skills/fix-single-issue.md` | Fixing **one** GitHub issue end to end ("fix #1146") — read the issue and its comments, check `author_association`, branch from `develop`, fix with the mutation bar, run the cheap local pre-filter, open a PR against `develop`, then **wait for the six CI contexts and the advisory `AI PR Review` to come back clean** and iterate until they do. The single-issue sibling of `work-the-backlog.md`, and the gate is the opposite: with no batch to amortise a CI run over, the PR's own checks are the gate rather than a local battery. Includes the wait expressed as a **backgrounded** child (a turn ending with nothing outstanding ends the run), keying the review wait on the `<!-- ai-review: sha=... -->` marker for the current head SHA rather than on "a comment exists", and the three ways the wait can be about nothing — "no checks reported" meaning the PR is not mergeable, a green mark going stale when the base moves, and a queued job having no deadline |
 | `.claude/skills/work-the-backlog-hazards.md` | The measured hazards and bounds for the backlog loop — **required reading in every fixer and reviewer brief**, split out of `work-the-backlog.md` because that file is read in full at every invocation by a coordinator whose context is the scarce resource. Most entries are shapes where a wrong result is indistinguishable from a right one |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |
+| `.claude/skills/remove-classification-flat-keys.md` | Removing, in a later release, the reader for the pre-0.9 **flat** classification keys (`classification.model`, `.task_prompt`, `.granularity`, …) — first check that no retained pinned revision predates config format 0.9, because revision bodies are immutable and converted in memory on every load; then replace the conversion with a refusal (never a silent default) and the file list of what to remove |
 | `.claude/skills/sync-pii-anonymizer.md` | Re-syncing the **vendored** copy of `awslabs/pii-anonymizer` at `feature-platform/pii-anonymizer/hook/vendor/` after upstream fixes a bug or adds a feature — diff against the commit pinned in `PROVENANCE.md`, re-copy only the documented document closure via `resync.sh` (never audio, handlers, infra or observability), chase newly-added intra-project imports that grow the closure, then verify nothing excluded leaked in |
 | `.claude/skills/create-hf-dataset-pr.md` | Contributing a data/label correction to an external HuggingFace dataset via a community PR (parquet key-order gotcha, verification, review artifacts) |
 | `.claude/skills/testing-qa.md` | Writing tests, pytest patterns, moto, conftest setup |

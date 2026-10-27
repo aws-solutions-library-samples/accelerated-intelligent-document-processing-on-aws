@@ -125,8 +125,9 @@ stack parameter itself still shows the default). An explicit choice is passed
 through unchanged, so it must be one ca-central-1 can call, such as
 `us.amazon.nova-2-lite-v1:0`, `us.anthropic.claude-sonnet-4-5-20250929-v1:0` or
 `global.anthropic.claude-sonnet-4-5-20250929-v1:0`. The
-Knowledge Base embedding model, `amazon.titan-embed-text-v2:0`, is supported
-in ca-central-1. See [Document Knowledge Base Query](./knowledge-base.md#configuration).
+default Knowledge Base embedding model (`KnowledgeBaseEmbeddingModel`),
+`amazon.titan-embed-text-v2:0`, is supported in ca-central-1; confirm a Cohere
+alternative is offered in the region before selecting it. See [Document Knowledge Base Query](./knowledge-base.md#configuration).
 
 ## Known limitations
 

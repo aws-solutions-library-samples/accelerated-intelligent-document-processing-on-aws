@@ -555,8 +555,11 @@ treats that file as diagnostics only.
   and Function URL hosts, and its buckets by exact name, never by a name prefix,
   on their regional S3 hosts and, in the commercial partition, the global ones the
   backend presigns its file URLs with), plus one static host, and only when every
-  address the name resolves to is public. Instance metadata, the DevTools port and
-  private addresses are refused, and every refusal is logged to `refusals.jsonl`,
+  address the name resolves to is public or, for an AWS service name, every one is
+  a VPC endpoint's private address, which is how an interface endpoint with private
+  DNS answers inside its VPC, as the CI runners' SSM endpoint does. Instance
+  metadata, loopback, link-local addresses and the DevTools port are refused for
+  every name, and every refusal is logged to `refusals.jsonl`,
   a request the proxy cannot parse included. The proxy also bounds how many
   connections are open at once and how long and how large a request head may be,
   so a slow or malformed client cannot hold it. Its working directory is
@@ -1814,13 +1817,10 @@ Four routes can still take part of that stack:
 - The apigw test-VPC reaper does not consult the set, so an
   `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
   reaper's age gate. Nothing creates one for that stack.
-- Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
-  disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
-  so that stack's distribution survives only while it stays enabled. The same
-  teardown tries to delete `idp-ux-nightly-security-headers-policy` whenever
-  that stack reads as failed (`UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`, or a
-  creation that failed or rolled back), which CloudFront refuses only while a
-  distribution still uses the policy.
+- Its CloudFront distribution and response headers policy are not at risk
+  from another run's teardown (`idp-cli delete --force-delete-all`): a teardown
+  acts only on the distributions and policy its own stack's resource list
+  records, so another stack's are never candidates.
 - The set protects names, not dependencies. A run's `-iam` service role and
   permissions boundary go at that run's teardown, which deletes every `idp-`
   role that names the boundary before the boundary itself, so a stack deployed

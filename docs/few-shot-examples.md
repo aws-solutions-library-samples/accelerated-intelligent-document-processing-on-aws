@@ -1,15 +1,23 @@
 ---
-title: "Few-Shot Examples in Pattern-2: Classification and Extraction"
+title: "Few-Shot Examples in Pipeline Mode: Classification and Extraction"
 ---
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-# Few-Shot Examples in Pattern-2: Classification and Extraction
+# Few-Shot Examples in Pipeline Mode: Classification and Extraction
 
 ## Overview
 
-Pattern-2 supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+Pipeline mode supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+
+Few-shot examples apply to **pipeline mode only** — the processing mode that runs
+Amazon Textract or LLM-based OCR, then classification and extraction as separate
+Bedrock inferences. They reach the model through the `{FEW_SHOT_EXAMPLES}`
+placeholder in the classification and extraction prompts, and BDA mode runs
+neither of those steps: Amazon Bedrock Data Automation performs classification
+and extraction itself. Examples declared on a class are therefore ignored when
+`use_bda` selects BDA mode, with no error.
 
 ## What is Few-Shot Learning?
 
@@ -36,7 +44,7 @@ Consider using few-shot examples when:
 
 ## Configuration Structure
 
-Few-shot examples are configured within document class definitions using JSON Schema format in your Pattern-2 configuration:
+Few-shot examples are configured within document class definitions using JSON Schema format in your configuration:
 
 ```yaml
 classes:
@@ -186,7 +194,7 @@ The system uses these environment variables for resolving relative paths:
 
 ### Multimodal vs Text-Only Examples
 
-Few-shot examples in Pattern-2 support both multimodal and text-only approaches:
+Few-shot examples support both multimodal and text-only approaches:
 
 **Multimodal Examples (Recommended)**:
 - Include both `x-aws-idp-image-path` and text descriptions in prompts
@@ -226,9 +234,9 @@ examples:
     x-aws-idp-image-path: "config_library/unified/your_config/example-images/invoice1.pdf"
 ```
 
-## How Few-Shot Examples Work in Pattern-2
+## How Few-Shot Examples Work
 
-Pattern-2 uses few-shot examples differently for classification and extraction tasks:
+Pipeline mode uses few-shot examples differently for classification and extraction tasks:
 
 ### Classification Process
 
@@ -239,10 +247,31 @@ When classifying documents:
 - **Benefit**: Model sees visual and/or textual examples of each class to make better classification decisions
 - **Filtering**: Only examples with non-empty `x-aws-idp-class-prompt` fields are included
 
+⚠️ **Which classification prompt carries the examples depends on
+`classification.strategy`.** Every prompt example on this page edits
+`classification.one_stage.page.task_prompt`, which is the right place under
+`strategy: single_pass` (*One stage* in the configuration editor) — the default.
+Under `strategy: two_stage`:
+
+- `{FEW_SHOT_EXAMPLES}` belongs in
+  `classification.two_stage.section_classification.llm.task_prompt`, the call
+  that assigns the class. The shipped prompt there carries the placeholder, so
+  defining examples is enough.
+- The **boundary detection** prompts
+  (`classification.two_stage.boundary_detection.llm.page.task_prompt` and
+  `…llm.packet.task_prompt`) deliberately carry no class vocabulary and no
+  examples — they carry `{BOUNDARY_HINTS}` instead. Withholding the class list
+  and the examples from the boundary pass is where two stage's prefix saving
+  comes from, so adding `{FEW_SHOT_EXAMPLES}` to a boundary detection prompt spends
+  exactly the tokens the strategy exists to avoid, on a call that is only being
+  asked where sections start.
+- Editing `one_stage.page.task_prompt` under `two_stage` changes nothing and
+  raises no error, because that block is not read.
+
 ### Extraction Process
 
 When extracting attributes from documents:
-- **Example Scope**: Uses examples ONLY from the specific document class being processed
+- **Example Scope**: Uses examples ONLY from the class of the section being processed
 - **Purpose**: Show the expected attribute extraction format and values
 - **Content**: Uses `x-aws-idp-attributes-prompt` field from examples (with optional images)
 - **Benefit**: Model sees concrete examples of what the extraction output should look like
@@ -383,20 +412,22 @@ Ensure your classification and extraction task prompts include the `{FEW_SHOT_EX
 **Standard Few-Shot Configuration:**
 ```yaml
 classification:
-  task_prompt: |
-    Classify this document into exactly one of these categories:
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document into exactly one of these categories:
     
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
+        <few_shot_examples>
+        {FEW_SHOT_EXAMPLES}
+        </few_shot_examples>
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    <document_content>
-    {DOCUMENT_TEXT}
-    </document_content>
+        <document_content>
+        {DOCUMENT_TEXT}
+        </document_content>
 
 extraction:
   task_prompt: |
@@ -417,24 +448,26 @@ extraction:
 **Enhanced Configuration with Image Placement:**
 ```yaml
 classification:
-  task_prompt: |
-    Classify this document into exactly one of these categories:
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document into exactly one of these categories:
     
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
+        <few_shot_examples>
+        {FEW_SHOT_EXAMPLES}
+        </few_shot_examples>
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    Now examine this new document:
-    {DOCUMENT_IMAGE}
+        Now examine this new document:
+        {DOCUMENT_IMAGE}
     
-    Document text:
-    {DOCUMENT_TEXT}
+        Document text:
+        {DOCUMENT_TEXT}
     
-    Classification:
+        Classification:
 
 extraction:
   task_prompt: |
@@ -846,11 +879,13 @@ classes:
         # No x-aws-idp-image-path - text-only example
 
 classification:
-  task_prompt: |
-    Classify this document: {CLASS_NAMES_AND_DESCRIPTIONS}
-    Examples: {FEW_SHOT_EXAMPLES}
-    <<CACHEPOINT>>
-    Document: {DOCUMENT_TEXT}
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document: {CLASS_NAMES_AND_DESCRIPTIONS}
+        Examples: {FEW_SHOT_EXAMPLES}
+        <<CACHEPOINT>>
+        Document: {DOCUMENT_TEXT}
 
 extraction:
   task_prompt: |
@@ -866,24 +901,26 @@ For production use with optimal caching:
 
 ```yaml
 classification:
-  task_prompt: |
-    You are a document classification expert. Classify the document into exactly one category.
+  one_stage:
+    page:
+      task_prompt: |
+        You are a document classification expert. Classify the document into exactly one category.
     
-    Available Categories:
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+        Available Categories:
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    Study these examples of each category:
-    {FEW_SHOT_EXAMPLES}
+        Study these examples of each category:
+        {FEW_SHOT_EXAMPLES}
     
-    Instructions:
-    - Analyze the document layout, content, and formatting
-    - Return only the category name, no explanation
-    - Consider both visual structure and text content shown in examples
+        Instructions:
+        - Analyze the document layout, content, and formatting
+        - Return only the category name, no explanation
+        - Consider both visual structure and text content shown in examples
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    Document to classify:
-    {DOCUMENT_TEXT}
+        Document to classify:
+        {DOCUMENT_TEXT}
 
 extraction:
   task_prompt: |
@@ -919,4 +956,4 @@ The few-shot examples feature continues to evolve with planned enhancements:
 - **Hybrid Examples**: Better integration of text and image content within examples
 - **Enhanced Multi-Image Support**: Advanced algorithms for optimal image selection from directories
 
-Few-shot examples with prompt caching represent a significant step forward in making Pattern-2 more accurate, cost-effective, and easier to configure for diverse document processing scenarios. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.
+Few-shot examples with prompt caching represent a significant step forward in making pipeline mode more accurate, cost-effective, and easier to configure for diverse document processing scenarios. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.

@@ -443,8 +443,8 @@ def test_required_arg_count_is_stable(spec):
     saveReviewDraft, completeReviewItem, rejectReviewItem, removeReviewItem,
     forceReleaseReviewItem, reassignReviewItem, moveReviewItem and the rest of
     that family) 117–138, claimTestSetDocument the 139th, and
-    takeOverReviewItem the 140th)."""
+    takeOverReviewItem the 140th, saveSectionReviewEdits the 141st)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 140
+    assert len(required) == 141

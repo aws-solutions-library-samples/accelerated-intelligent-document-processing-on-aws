@@ -42,7 +42,6 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
 - [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
-- [Criteria Validation](./criteria-validation.md) - Document validation against dynamic business rules using LLMs
 - [OCR Image Sizing Guide](./ocr-image-sizing-guide.md) - Optimizing image sizes for OCR processing
 - [Languages](./languages.md) - Multi-language support
 
@@ -100,6 +99,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Migration
 
+- [Migration v0.6.12 to v0.6.13](./migration-v0612-to-v0613.md) - Classification settings nested by model call (config format 0.9)
 - [Migration v0.4 to v0.5](./migration-v04-to-v05.md) - Upgrading from v0.4.x to v0.5.x (Unified Pattern)
 
 ### GovCloud

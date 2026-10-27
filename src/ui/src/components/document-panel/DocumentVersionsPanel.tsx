@@ -70,6 +70,12 @@ interface DocumentVersionsPanelProps {
    * return to the current version.
    */
   onViewVersion?: (runId: string | null, detail: DocumentVersionDetail | null) => void;
+  /**
+   * When the document's current run finished. A run is recorded as a version when
+   * it completes, so a change here means the list on screen is out of date: a
+   * document reprocessed while its page was open finished with the old list shown.
+   */
+  completionTime?: string | null;
 }
 
 /** Full run detail returned by getDocumentVersion (Sections/Pages + Files). */
@@ -102,7 +108,12 @@ const statusIndicator = (status: string): React.JSX.Element => {
   }
 };
 
-const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }: DocumentVersionsPanelProps): React.JSX.Element => {
+const DocumentVersionsPanel = ({
+  objectKey,
+  viewingRunId = null,
+  onViewVersion,
+  completionTime = null,
+}: DocumentVersionsPanelProps): React.JSX.Element => {
   const { isAdmin } = useUserRole();
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [loading, setLoading] = useState(false);
@@ -135,7 +146,7 @@ const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }
 
   useEffect(() => {
     loadVersions();
-  }, [loadVersions]);
+  }, [loadVersions, completionTime]);
 
   const handleCompare = async () => {
     if (selectedForCompare.length !== 2) return;

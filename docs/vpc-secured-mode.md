@@ -43,7 +43,7 @@ Dependencies to mirror:
 Options for providing these dependencies:
 
 1. Private registry + code changes — Mirror images to your internal container registry (e.g., private ECR, Artifactory, Nexus) and update 
-Dockerfile.optimized and patterns/pattern-2/buildspec.yml to reference your internal URLs. For Python packages, configure uv to use your internal PyPI 
+`Dockerfile.optimized` and `patterns/unified/buildspec.yml` to reference your internal URLs. For Python packages, configure uv to use your internal PyPI 
 mirror (e.g., AWS CodeArtifact) by setting UV_INDEX_URL in the Dockerfile.
 
 2. Private DNS overrides — Configure your VPC's private hosted zone to resolve public registry domains (ghcr.io, public.ecr.aws, pypi.org) to internal 
@@ -52,7 +52,15 @@ domains.
 
 ### Required VPC Endpoints
 
-> **Note:** VPC-Secured deployment is currently only supported for Pattern 2 (Textract + Bedrock).
+> **Note:** VPC-secured deployment is not tied to a processing mode. `DeployInVPC`,
+> `VpcId`, `PrivateSubnetIds`, `LambdaSubnetIds` and `LambdaSecurityGroupId` are
+> top-level stack parameters, and no condition derives from the `use_bda`
+> configuration flag — so both pipeline mode and BDA mode can run in the VPC.
+> ⚠️ The endpoint list below, and the [automated script](#automated-endpoint-creation),
+> cover **pipeline mode** (Textract plus the Bedrock runtime). BDA mode calls
+> `bedrock-data-automation-runtime`, which neither the list nor the script
+> includes; add an interface endpoint for it before processing documents with
+> `use_bda: true` in an environment without outbound internet access.
 
 #### Gateway Endpoints
 - **S3**: `com.amazonaws.region.s3`

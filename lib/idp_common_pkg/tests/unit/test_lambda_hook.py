@@ -634,12 +634,21 @@ class TestPydanticConfigModels:
     def test_classification_config_with_lambda_hook(self):
         from idp_common.config.models import ClassificationConfig
 
-        config = ClassificationConfig(
-            model="LambdaHook",
-            model_lambda_hook_arn="arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-classifier",
+        config = ClassificationConfig.model_validate(
+            {
+                "model": "LambdaHook",
+                "model_lambda_hook_arn": "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-classifier",
+            }
         )
-        assert config.model == "LambdaHook"
-        assert config.model_lambda_hook_arn is not None
+        # Flat keys migrate on construction: the model to the one-stage call (and
+        # to both two-stage calls, which inherited it), the hook to every call.
+        for call in (
+            config.one_stage.llm,
+            config.two_stage.boundary_detection.llm,
+            config.two_stage.section_classification.llm,
+        ):
+            assert call.model == "LambdaHook"
+            assert call.model_lambda_hook_arn is not None
 
     def test_confidence_config_with_lambda_hook(self):
         # v0.6: confidence assessment config is extraction.confidence

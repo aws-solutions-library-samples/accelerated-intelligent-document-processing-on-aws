@@ -33,8 +33,8 @@ notice:
   wrong one for a measurement — the cell would describe whatever the prompt
   happens to say rather than the combination its name claims.
 * **The cost filter covers all three metering contexts.** ``single_pass`` bills
-  under ``Classification/`` while ``two_stage`` bills under ``Segmentation/``
-  and ``Labeling/`` and emits no ``Classification/`` entry at all. Filtering on
+  under ``Classification/`` while ``two_stage`` bills under ``BoundaryDetection/``
+  and ``SectionClassification/`` and emits no ``Classification/`` entry at all. Filtering on
   ``Classification/`` alone — which the driver did — matched nothing for a
   two-stage run and returned a cost of ``0.0``, making the configuration with an
   extra call per segment look like the free one.
@@ -99,9 +99,10 @@ def test_every_variant_sets_modality_explicitly(docsplit_base, a_model, variant)
     placeholders — correct for a user, wrong for a measurement, because the cell
     would then describe the prompt rather than the combination it is named for."""
     cfg = _config(docsplit_base, a_model, variant)
-    modality = cfg["classification"]["modality"]
-    assert isinstance(modality.get("text"), bool)
-    assert isinstance(modality.get("images"), bool)
+    for path in bench.CALL_PATHS:
+        modality = bench._get(cfg["classification"], *path, "modality")
+        assert isinstance(modality.get("text"), bool), path
+        assert isinstance(modality.get("images"), bool), path
 
 
 @pytest.mark.parametrize("variant", sorted(bench.VARIANTS))
@@ -121,7 +122,13 @@ def test_a_packet_variant_gets_the_packet_prompt(docsplit_base, a_model, variant
     one class plus a boundary verdict and is read by a different parser, so a
     packet cell running the page prompt fails every document."""
     cfg = _config(docsplit_base, a_model, variant)
-    packet_prompt = cfg["classification"]["packet"]["task_prompt"]
+    cls = cfg["classification"]
+    reader = (
+        cls["two_stage"]["boundary_detection"]["llm"]
+        if bench.VARIANTS[variant].get("strategy") == "two_stage"
+        else cls["one_stage"]
+    )
+    packet_prompt = reader["packet"]["task_prompt"]
     # The keys the parser reads, not just the word "segments".
     for key in ("segments", "ordinal_start_page", "ordinal_end_page"):
         assert key in packet_prompt
@@ -135,13 +142,12 @@ def test_a_two_stage_variant_gets_both_stage_prompts(docsplit_base, a_model, var
     cfg = _config(docsplit_base, a_model, variant)
     cls = cfg["classification"]
     granularity = bench.VARIANTS[variant]["granularity"]
-    stage_a = (
-        cls["segmentation"]["packet"]["task_prompt"]
-        if granularity == "packet"
-        else cls["segmentation"]["task_prompt"]
-    )
-    assert stage_a, "Stage A would fall back to the single-pass prompt"
-    assert cls["labeling"]["task_prompt"]
+    boundary_detection = cls["two_stage"]["boundary_detection"]["llm"]
+    stage_a = boundary_detection["packet" if granularity == "packet" else "page"][
+        "task_prompt"
+    ]
+    assert stage_a, "Stage A would fall back to the shipped prompt"
+    assert cls["two_stage"]["section_classification"]["llm"]["task_prompt"]
 
 
 def test_stage_a_carries_no_class_vocabulary(docsplit_base, a_model):
@@ -149,7 +155,9 @@ def test_stage_a_carries_no_class_vocabulary(docsplit_base, a_model):
     reintroduces the class list, two-stage still works and costs what
     single-pass cost — the one failure mode with no symptom."""
     cfg = _config(docsplit_base, a_model, "twostage-packet")
-    stage_a = cfg["classification"]["segmentation"]["packet"]["task_prompt"]
+    stage_a = cfg["classification"]["two_stage"]["boundary_detection"]["llm"]["packet"][
+        "task_prompt"
+    ]
     assert "{CLASS_NAMES_AND_DESCRIPTIONS}" not in stage_a
     assert "{FEW_SHOT_EXAMPLES}" not in stage_a
 
@@ -161,9 +169,9 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
     stored classification settings, with nothing forced. Asserted on `modality`
     specifically, which is the whole of what it claims."""
     cfg = _config(docsplit_base, a_model, None)
-    assert "modality" not in cfg["classification"] or cfg["classification"][
-        "modality"
-    ] == {"text": "", "images": ""}
+    for path in bench.CALL_PATHS:
+        modality = bench._get(cfg["classification"], *path, "modality")
+        assert modality in (None, {"text": "", "images": ""}), (path, modality)
 
 
 # --------------------------------------------------------------------------
@@ -174,40 +182,78 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
 @pytest.mark.parametrize(
     ("variant", "break_it", "expected"),
     [
-        ("packet-both", lambda c: c.update(granularity="page"), "granularity"),
         (
             "packet-both",
-            lambda c: c["modality"].update(images=False),
+            lambda c: c["one_stage"].update(granularity="page"),
+            "granularity",
+        ),
+        (
+            "twostage-packet",
+            lambda c: c["two_stage"]["boundary_detection"]["llm"].update(
+                granularity="page"
+            ),
+            "granularity",
+        ),
+        (
+            "packet-both",
+            lambda c: c["one_stage"]["llm"]["modality"].update(images=False),
             "modality.images",
         ),
-        ("page-text", lambda c: c["modality"].update(text=False), "modality.text"),
+        (
+            "page-text",
+            lambda c: c["one_stage"]["llm"]["modality"].update(text=False),
+            "modality.text",
+        ),
+        (
+            # Each two-stage call is checked: section classification is not the
+            # boundary detection call's shadow.
+            "twostage-page",
+            lambda c: c["two_stage"]["section_classification"]["llm"][
+                "modality"
+            ].update(text=False),
+            "section_classification.llm.modality.text",
+        ),
         ("twostage-packet", lambda c: c.update(strategy="single_pass"), "strategy"),
         (
             # Mentions "segments" in prose but asks for no page ordinals, so the
             # parser cannot read what comes back. A substring test for the word
             # alone would pass this.
             "packet-both",
-            lambda c: c["packet"].update(task_prompt="return the segments please"),
+            lambda c: c["one_stage"]["packet"].update(
+                task_prompt="return the segments please"
+            ),
             "packet.task_prompt",
         ),
         (
             "packet-both",
-            lambda c: c["packet"].update(task_prompt=""),
+            lambda c: c["one_stage"]["packet"].update(task_prompt=""),
             "packet.task_prompt",
         ),
         (
             "twostage-packet",
-            lambda c: c["segmentation"]["packet"].update(task_prompt=""),
-            "Stage A",
+            lambda c: c["two_stage"]["boundary_detection"]["llm"]["packet"].update(
+                task_prompt=""
+            ),
+            "boundary detection task_prompt",
         ),
         (
             "twostage-packet",
-            lambda c: c["labeling"].update(task_prompt=""),
-            "labeling.task_prompt",
+            lambda c: c["two_stage"]["section_classification"]["llm"].update(
+                task_prompt=""
+            ),
+            "section_classification.llm.task_prompt",
         ),
         (
             "page-both",
-            lambda c: c["confidence"].update(task_prompt_topk=""),
+            lambda c: c["one_stage"]["llm"]["confidence"].update(task_prompt_topk=""),
+            "confidence.task_prompt_topk",
+        ),
+        (
+            # Two-stage reads confidence from section classification.
+            "twostage-page",
+            lambda c: c["two_stage"]["section_classification"]["llm"][
+                "confidence"
+            ].update(task_prompt_topk=""),
             "confidence.task_prompt_topk",
         ),
     ],
@@ -242,8 +288,8 @@ def test_an_unknown_variant_is_not_in_the_table():
 def test_all_three_classification_contexts_are_in_the_filter():
     assert set(bench.CLASSIFICATION_CONTEXTS) == {
         "Classification/",
-        "Segmentation/",
-        "Labeling/",
+        "BoundaryDetection/",
+        "SectionClassification/",
     }
 
 
@@ -254,33 +300,33 @@ def test_a_two_stage_run_is_not_reported_as_free():
     call per segment look like the cheap one, which is the most misleading
     possible answer in a cost comparison."""
     metering = {
-        "Segmentation/bedrock/us.amazon.nova-2-lite-v1:0": {
+        "BoundaryDetection/bedrock/us.amazon.nova-2-lite-v1:0": {
             "inputTokens": 1000,
             "outputTokens": 100,
         },
-        "Segmentation/lambda/requests": {"requests": 1},
-        "Labeling/bedrock/us.amazon.nova-2-lite-v1:0": {
+        "BoundaryDetection/lambda/requests": {"requests": 1},
+        "SectionClassification/bedrock/us.amazon.nova-2-lite-v1:0": {
             "inputTokens": 2000,
             "outputTokens": 200,
         },
-        "Labeling/lambda/requests": {"requests": 3},
+        "SectionClassification/lambda/requests": {"requests": 3},
     }
     _cost, tokens, _why, by_context = bench.classification_cost(metering)
     assert tokens["inputTokens"] == 3000
     assert tokens["outputTokens"] == 300
-    assert set(by_context) == {"Segmentation", "Labeling"}
+    assert set(by_context) == {"BoundaryDetection", "SectionClassification"}
 
 
 def test_the_two_halves_are_reported_separately():
     """ "Which half is the money in?" is the question the strategy is chosen on,
     and a single total cannot answer it."""
     metering = {
-        "Segmentation/bedrock/m": {"inputTokens": 10, "outputTokens": 1},
-        "Labeling/bedrock/m": {"inputTokens": 90, "outputTokens": 9},
+        "BoundaryDetection/bedrock/m": {"inputTokens": 10, "outputTokens": 1},
+        "SectionClassification/bedrock/m": {"inputTokens": 90, "outputTokens": 9},
     }
     _cost, _tokens, _why, by_context = bench.classification_cost(metering)
-    assert by_context["Segmentation"]["inputTokens"] == 10
-    assert by_context["Labeling"]["inputTokens"] == 90
+    assert by_context["BoundaryDetection"]["inputTokens"] == 10
+    assert by_context["SectionClassification"]["inputTokens"] == 90
 
 
 def test_the_per_context_lambda_invocation_count_is_captured():
@@ -435,15 +481,21 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
             # A bare `<ctx>/<model>` exercises the context bucketing and NOTHING
             # ELSE — not pricing, not the `/bedrock/` call-count branch — while
             # looking like it covers both.
-            f"Segmentation/bedrock/{model}": {"inputTokens": 100, "outputTokens": 10},
-            f"Labeling/bedrock/{model}": {"inputTokens": 50, "outputTokens": 5},
+            f"BoundaryDetection/bedrock/{model}": {
+                "inputTokens": 100,
+                "outputTokens": 10,
+            },
+            f"SectionClassification/bedrock/{model}": {
+                "inputTokens": 50,
+                "outputTokens": 5,
+            },
             # `lambda_invocations` comes only from this key shape, and
             # `bedrock_calls` only from a `requests` unit under a `/bedrock/`
             # key — the two counts the rest of this suite exists to keep
             # distinct. A fixture without this reports 0 invocations and the
             # per-document figure below would assert nothing.
-            "Segmentation/lambda/requests": {"requests": 1},
-            "Labeling/lambda/requests": {"requests": 1},
+            "BoundaryDetection/lambda/requests": {"requests": 1},
+            "SectionClassification/lambda/requests": {"requests": 1},
         }
 
     def _run(self, monkeypatch, bucket_name="out-bucket", n_docs=3):
@@ -491,14 +543,14 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
         three times cheaper than it is."""
         out, _ = self._run(monkeypatch, n_docs=3)
         by_context = out["classification_by_context"]
-        assert set(by_context) == {"Segmentation", "Labeling"}
-        assert by_context["Segmentation"]["inputTokens"] == 300
-        assert by_context["Labeling"]["inputTokens"] == 150
+        assert set(by_context) == {"BoundaryDetection", "SectionClassification"}
+        assert by_context["BoundaryDetection"]["inputTokens"] == 300
+        assert by_context["SectionClassification"]["inputTokens"] == 150
         assert out["classification_tokens"]["inputTokens"] == 450
 
     def test_invocations_per_document_is_per_document_not_per_corpus(self, monkeypatch):
         out, _ = self._run(monkeypatch, n_docs=3)
-        for context in ("Segmentation", "Labeling"):
+        for context in ("BoundaryDetection", "SectionClassification"):
             assert (
                 out["classification_by_context"][context][
                     "lambda_invocations_per_document"
@@ -611,19 +663,19 @@ def test_the_bedrock_call_count_is_captured_per_context():
     """⚠️ The count packet granularity's N-calls-to-one claim is about.
 
     Measured on IDP1: a two-stage, page-granularity run over a 6-page document
-    reported `requests: 6` under BOTH `Segmentation/bedrock/<model>` and
-    `Labeling/bedrock/<model>` — one Stage A call per page and one Stage B call
+    reported `requests: 6` under BOTH `BoundaryDetection/bedrock/<model>` and
+    `SectionClassification/bedrock/<model>` — one Stage A call per page and one Stage B call
     per segment. So the runtime does meter per-call counts, and they are per
     stage.
     """
     metering = {
-        "Segmentation/bedrock/m": {"inputTokens": 100, "requests": 6},
-        "Labeling/bedrock/m": {"inputTokens": 50, "requests": 6},
+        "BoundaryDetection/bedrock/m": {"inputTokens": 100, "requests": 6},
+        "SectionClassification/bedrock/m": {"inputTokens": 50, "requests": 6},
         "Classification/lambda/requests": {"requests": 1},
     }
     _c, _t, _w, by_context = bench.classification_cost(metering)
-    assert by_context["Segmentation"]["bedrock_calls"] == 6
-    assert by_context["Labeling"]["bedrock_calls"] == 6
+    assert by_context["BoundaryDetection"]["bedrock_calls"] == 6
+    assert by_context["SectionClassification"]["bedrock_calls"] == 6
     # And the Lambda invocation is where the runtime puts it, not with the spend.
     assert by_context["Classification"]["lambda_invocations"] == 1
 
@@ -869,7 +921,7 @@ def test_a_broken_cell_is_caught_before_anything_launches(monkeypatch):
     def broken(*args, **kwargs):
         cfg = real(*args, **kwargs)
         if kwargs.get("variant") == "packet-text":
-            cfg["classification"]["packet"]["task_prompt"] = ""
+            cfg["classification"]["one_stage"]["packet"]["task_prompt"] = ""
         return cfg
 
     monkeypatch.setattr(bench, "build_config", broken)

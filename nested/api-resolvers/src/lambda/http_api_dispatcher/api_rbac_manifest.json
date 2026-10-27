@@ -55,7 +55,6 @@
       "Annotator"
     ],
     "claimTestSetDocument": [
-      "Admin",
       "Annotator"
     ],
     "clearDraftLabels": [
@@ -567,6 +566,10 @@
     "saveReviewDraft": [
       "Admin",
       "Annotator"
+    ],
+    "saveSectionReviewEdits": [
+      "Admin",
+      "Reviewer"
     ],
     "saveTestSetDocumentSection": [
       "Admin",

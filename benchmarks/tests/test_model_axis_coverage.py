@@ -56,7 +56,9 @@ LIMITS = os.path.join(REPO, "config_library", "model_config_limits.yaml")
 _MODEL_KEYS = frozenset(
     {
         "extraction.model",
-        "classification.model",
+        "classification.one_stage.llm.model",
+        "classification.two_stage.boundary_detection.llm.model",
+        "classification.two_stage.section_classification.llm.model",
         "assessment.model",
         "summarization.model",
         "ocr.model_id",

@@ -830,7 +830,7 @@ execution roles in `patterns/unified/template.yaml` — which carry their own
 narrowly scoped Textract and SageMaker grants. Neither service has a
 CloudFormation resource type anywhere in the solution: Textract has no
 `AWS::Textract::*` types at all, and the optional MLflow tracking server is
-referenced by ARN through the `MlflowTrackingServerArn` parameter rather than
+referenced by URI through the `MlflowTrackingURI` parameter rather than
 created by the stack. CloudFormation therefore never calls either service, so
 granting them to the deployment role added reachable permissions with no
 deployment benefit.

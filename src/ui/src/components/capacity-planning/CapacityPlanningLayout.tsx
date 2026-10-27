@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 /* eslint-disable react/no-array-index-key */
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { calculateCapacity as calculateCapacityOp } from '../../graphql/generated';
 import {
@@ -25,11 +25,21 @@ import {
 import useConfiguration from '../../hooks/use-configuration';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useSettingsContext from '../../contexts/settings';
+import { ConsoleLogger } from 'aws-amplify/utils';
 import useDocumentsContext from '../../contexts/documents';
+import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENTS_TO_DETAIL, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
 import { parseMetering } from '../../graphql/awsjson-parsers';
+import { classificationModelOf } from '../../utils/classification-config';
+
+// Two-stage classification meters its halves as BoundaryDetection and
+// SectionClassification instead of Classification; all three are the
+// classification step.
+
+const logger = new ConsoleLogger('CapacityPlanningLayout');
+const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'BoundaryDetection/', 'SectionClassification/'];
 
 // Type definitions for configuration and state
 interface Configuration {
@@ -182,6 +192,8 @@ const CapacityPlanningLayout = () => {
   const { settings: deploymentSettings } = useSettingsContext();
   const {
     documents,
+    getDocumentDetailsFromIds,
+    hasListBeenLoaded,
     isDocumentsListLoading,
     setIsDocumentsListLoading,
     periodsToLoad,
@@ -193,17 +205,27 @@ const CapacityPlanningLayout = () => {
   const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
   const [manualPattern, setManualPattern] = useState<string | null>(null);
 
+  // The list is loaded by whichever page asks for it first, and only the Document
+  // List used to ask, so opening Capacity Planning directly left Populate with
+  // nothing to read ("Please visit the Documents tab first").
+  useEffect(() => {
+    // The same guard the Document List uses before starting the load.
+    if (!isDocumentsListLoading && !hasListBeenLoaded) {
+      setIsDocumentsListLoading(true);
+    }
+  }, []); // Once, on mount: afterwards the list hook owns reloading
+
   // Log documents availability for debugging
   useEffect(() => {
-    console.log('[CapacityPlanning] Documents from context:', documents?.length || 0, 'documents');
-    console.log('[CapacityPlanning] Loading state:', isDocumentsListLoading);
+    logger.debug('[CapacityPlanning] Documents from context:', documents?.length || 0, 'documents');
+    logger.debug('[CapacityPlanning] Loading state:', isDocumentsListLoading);
   }, [documents, isDocumentsListLoading]);
 
   // Log configuration availability for debugging
   useEffect(() => {
-    console.log('[CapacityPlanning] Configuration loaded:', configuration ? 'Yes' : 'No');
+    logger.debug('[CapacityPlanning] Configuration loaded:', configuration ? 'Yes' : 'No');
     if (configuration) {
-      console.log('[CapacityPlanning] Config classes:', configuration.classes?.length || 0);
+      logger.debug('[CapacityPlanning] Config classes:', configuration.classes?.length || 0);
     }
   }, [configuration]);
 
@@ -215,14 +237,14 @@ const CapacityPlanningLayout = () => {
       if (activeVersion) {
         const activeVersionOption = versionOptions.find((option) => option.value === activeVersion.versionName);
         if (activeVersionOption) {
-          console.log('Setting selected configuration profile to active:', activeVersionOption.value);
+          logger.debug('Setting selected configuration profile to active:', activeVersionOption.value);
           setSelectedConfigVersion(activeVersionOption);
           return;
         }
       }
       // Fallback: select first available (scoped) version
       if (versionOptions.length > 0) {
-        console.log('Using first available scoped version:', versionOptions[0].value);
+        logger.debug('Using first available scoped version:', versionOptions[0].value);
         setSelectedConfigVersion(versionOptions[0]);
       }
     }
@@ -232,7 +254,7 @@ const CapacityPlanningLayout = () => {
   // Note: useConfiguration hook already fetches 'default' on mount, so this will fetch the active version after it's determined
   useEffect(() => {
     if (selectedConfigVersion) {
-      console.log('Fetching configuration for version:', selectedConfigVersion.value);
+      logger.debug('Fetching configuration for version:', selectedConfigVersion.value);
       fetchConfiguration(selectedConfigVersion.value, true); // Use silent=true to avoid showing loading state
     }
   }, [selectedConfigVersion]); // fetchConfiguration is not memoized, so we only depend on selectedConfigVersion
@@ -272,6 +294,11 @@ const CapacityPlanningLayout = () => {
   });
 
   const [loading, setLoading] = useState(false);
+  // Populate reads documents in rounds, so it takes long enough to need its own state.
+  const [isPopulating, setIsPopulating] = useState(false);
+  const [samplingNote, setSamplingNote] = useState<string | null>(null);
+  // Documents already read this session, so each press reaches further back.
+  const readDetailKeysRef = useRef<Set<string>>(new Set());
   const [hasCalculated, setHasCalculated] = useState(false);
   const [results, setResults] = useState<CapacityResult | null>(null);
   const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
@@ -356,7 +383,7 @@ const CapacityPlanningLayout = () => {
         // Get default max tokens per request by step type from environment - required for capacity planning
         const defaultTokensConfig = import.meta.env.VITE_DEFAULT_TOKENS_BY_STEP;
         if (!defaultTokensConfig) {
-          console.warn('VITE_DEFAULT_TOKENS_BY_STEP environment variable is not configured');
+          logger.warn('VITE_DEFAULT_TOKENS_BY_STEP environment variable is not configured');
           return 1; // Return minimal value when config missing
         }
 
@@ -364,7 +391,7 @@ const CapacityPlanningLayout = () => {
         try {
           defaults = JSON.parse(defaultTokensConfig);
         } catch (e) {
-          console.error('VITE_DEFAULT_TOKENS_BY_STEP contains invalid JSON');
+          logger.error('VITE_DEFAULT_TOKENS_BY_STEP contains invalid JSON');
           return 1;
         }
 
@@ -372,7 +399,7 @@ const CapacityPlanningLayout = () => {
         if (!maxTokensPerRequest) {
           const defaultMaxTokens = import.meta.env.VITE_DEFAULT_MAX_TOKENS_PER_REQUEST;
           if (!defaultMaxTokens) {
-            console.warn(`No token configuration found for step type: ${stepType}`);
+            logger.warn(`No token configuration found for step type: ${stepType}`);
             return 1;
           }
           maxTokensPerRequest = parseInt(defaultMaxTokens, 10);
@@ -409,9 +436,9 @@ const CapacityPlanningLayout = () => {
           if (key.includes('/bedrock/') && metrics.requests) {
             const pageCount = Number(metrics.requests) || 0;
             data.avgPages = Math.max(data.avgPages, pageCount);
-            console.log(`📄 Extracted page count from ${key}: ${pageCount} pages`);
+            logger.debug(`📄 Extracted page count from ${key}: ${pageCount} pages`);
           }
-        } else if (key.startsWith('Classification/')) {
+        } else if (CLASSIFICATION_METERING_PREFIXES.some((prefix) => key.startsWith(prefix))) {
           const tokenCount = metrics.totalTokens || (metrics.inputTokens || 0) + (metrics.outputTokens || 0);
           data.classificationTokens += Number(tokenCount) || 0;
           data.classificationRequests += estimateRequestsFromTokens(tokenCount, 'Classification');
@@ -439,15 +466,15 @@ const CapacityPlanningLayout = () => {
           const pages = Number(metrics.pages) || 0;
           // Extract page count from BDA pattern
           data.avgPages = Math.max(data.avgPages, pages);
-          console.log(`📄 Extracted page count from BDA ${key}: ${pages} pages`);
+          logger.debug(`📄 Extracted page count from BDA ${key}: ${pages} pages`);
           const tokensPerPageConfig = import.meta.env.VITE_BDA_TOKENS_PER_PAGE;
           if (!tokensPerPageConfig) {
-            console.warn('VITE_BDA_TOKENS_PER_PAGE environment variable is not configured for BDA pattern');
+            logger.warn('VITE_BDA_TOKENS_PER_PAGE environment variable is not configured for BDA pattern');
             return; // Skip this entry in forEach
           }
           const estimatedTokensPerPage = parseInt(tokensPerPageConfig, 10);
           if (Number.isNaN(estimatedTokensPerPage)) {
-            console.error('VITE_BDA_TOKENS_PER_PAGE must be a valid number');
+            logger.error('VITE_BDA_TOKENS_PER_PAGE must be a valid number');
             return; // Skip this entry in forEach
           }
           const totalTokens = pages * estimatedTokensPerPage;
@@ -458,17 +485,17 @@ const CapacityPlanningLayout = () => {
         if (metrics.pages && !key.startsWith('BDAProject/')) {
           const pageCount = Number(metrics.pages) || 0;
           data.avgPages = Math.max(data.avgPages, pageCount);
-          console.log(`📄 Extracted page count from ${key}.pages: ${pageCount} pages`);
+          logger.debug(`📄 Extracted page count from ${key}.pages: ${pageCount} pages`);
         }
         if (metrics.pageCount) {
           const pageCount = Number(metrics.pageCount) || 0;
           data.avgPages = Math.max(data.avgPages, pageCount);
-          console.log(`📄 Extracted page count from ${key}.pageCount: ${pageCount} pages`);
+          logger.debug(`📄 Extracted page count from ${key}.pageCount: ${pageCount} pages`);
         }
         if (metrics.PageCount) {
           const pageCount = Number(metrics.PageCount) || 0;
           data.avgPages = Math.max(data.avgPages, pageCount);
-          console.log(`📄 Extracted page count from ${key}.PageCount: ${pageCount} pages`);
+          logger.debug(`📄 Extracted page count from ${key}.PageCount: ${pageCount} pages`);
         }
       }
     });
@@ -518,10 +545,10 @@ const CapacityPlanningLayout = () => {
     }
 
     // Add diagnostic logging
-    console.log(`🔍 Validating document: ${doc.ObjectKey}`);
-    console.log(`  - Sections: ${sections.length}`);
-    console.log(`  - DocumentClass field: ${doc.DocumentClass || 'none'}`);
-    console.log(
+    logger.debug(`🔍 Validating document: ${doc.ObjectKey}`);
+    logger.debug(`  - Sections: ${sections.length}`);
+    logger.debug(`  - DocumentClass field: ${doc.DocumentClass || 'none'}`);
+    logger.debug(
       `  - Classes from Sections: ${
         sections
           .map((s: Section) => s.Class)
@@ -529,8 +556,8 @@ const CapacityPlanningLayout = () => {
           .join(', ') || 'none'
       }`,
     );
-    console.log(`  - Unique classes found: ${Array.from(uniqueClasses).join(', ') || 'none'}`);
-    console.log(`  - Configured types: ${Array.from(configuredTypes).join(', ')}`);
+    logger.debug(`  - Unique classes found: ${Array.from(uniqueClasses).join(', ') || 'none'}`);
+    logger.debug(`  - Configured types: ${Array.from(configuredTypes).join(', ')}`);
 
     // Allow multi-class documents but flag them
     const isMultiClass = uniqueClasses.size > 1;
@@ -548,7 +575,7 @@ const CapacityPlanningLayout = () => {
     }
 
     if (isMultiClass) {
-      console.log(`  ⚠️  Multi-class document with ${documentClasses.length} classes: ${documentClasses.join(', ')}`);
+      logger.debug(`  ⚠️  Multi-class document with ${documentClasses.length} classes: ${documentClasses.join(', ')}`);
     }
 
     // For single-class, documentClass is the one class; for multi-class, it's a concatenated string for display
@@ -562,21 +589,21 @@ const CapacityPlanningLayout = () => {
         // Check each class for multi-class documents
         documentClasses.forEach((cls) => {
           if (!configuredTypes.has(cls)) {
-            console.log(`  ⚠️  Document class "${cls}" NOT found in configured types (${Array.from(configuredTypes).join(', ')})`);
-            console.log(`  ℹ️  Allowing for capacity planning since document has metering data`);
+            logger.debug(`  ⚠️  Document class "${cls}" NOT found in configured types (${Array.from(configuredTypes).join(', ')})`);
+            logger.debug(`  ℹ️  Allowing for capacity planning since document has metering data`);
           }
         });
       } else {
         if (!configuredTypes.has(documentClass)) {
-          console.log(`  ⚠️  Document class "${documentClass}" NOT found in configured types (${Array.from(configuredTypes).join(', ')})`);
-          console.log(`  ℹ️  Allowing for capacity planning since document has metering data`);
+          logger.debug(`  ⚠️  Document class "${documentClass}" NOT found in configured types (${Array.from(configuredTypes).join(', ')})`);
+          logger.debug(`  ℹ️  Allowing for capacity planning since document has metering data`);
         } else {
-          console.log(`  ✅ Document class "${documentClass}" found in configured types`);
+          logger.debug(`  ✅ Document class "${documentClass}" found in configured types`);
         }
       }
     }
 
-    console.log(`  ✅ Document validated successfully with class${isMultiClass ? 'es' : ''}: ${documentClass}`);
+    logger.debug(`  ✅ Document validated successfully with class${isMultiClass ? 'es' : ''}: ${documentClass}`);
     return {
       valid: true,
       documentClass,
@@ -586,44 +613,68 @@ const CapacityPlanningLayout = () => {
   };
 
   const fetchRecentDocuments = async () => {
-    console.log('fetchRecentDocuments called');
-    console.log('documents:', documents);
+    if (isPopulating) return;
+    setIsPopulating(true);
+    logger.debug('fetchRecentDocuments called');
+    logger.debug('documents:', documents);
 
     try {
       if (!documents || documents.length === 0) {
+        // A backstop for the mount effect's request; normally the load has started.
+        if (!hasListBeenLoaded) {
+          setIsDocumentsListLoading(true);
+        }
         addNotification(
           'warning',
-          'Please visit the Documents tab first to load document data, then return to Capacity Planning.',
+          isDocumentsListLoading || !hasListBeenLoaded
+            ? 'Documents are still loading. Try again in a moment.'
+            : 'No processed documents were found in the Document List period. Choose a longer period there, then try again.',
           'No documents available',
         );
         return;
       }
 
+      // List rows carry no Metering or Sections; fetch the full record of the most
+      // recent completed documents so their token counts and classes can be read.
+      const detailKeys = documentsNeedingDetail(documents, MAX_DOCUMENTS_TO_DETAIL, readDetailKeysRef.current);
+      const detailed = await fetchInChunks(detailKeys, (chunk) => getDocumentDetailsFromIds(chunk, { reportErrors: false }));
+      const beyondCap = documentsBeyondCap(documents, MAX_DOCUMENTS_TO_DETAIL, readDetailKeysRef.current);
+      setSamplingNote(
+        beyondCap > 0
+          ? `Read ${detailKeys.length} completed documents; ${beyondCap} older ${beyondCap === 1 ? 'one has' : 'ones have'} not been read yet. Choose Populate again to read them.`
+          : null,
+      );
+      // Only what came back counts as read: a failed read is the one worth retrying.
+      detailed.forEach((doc) => readDetailKeysRef.current.add(String(doc.ObjectKey)));
+      const unreadable = detailKeys.length - detailed.length;
+      if (unreadable > 0) {
+        addNotification(
+          'warning',
+          `${unreadable} of ${detailKeys.length} recent documents could not be read and were left out. Try again to include them.`,
+          'Some documents were skipped',
+        );
+      }
+      const pool = withDetails(documents, detailed);
+
       // Get configured document types for validation
       const configuredTypes = getConfiguredDocumentTypes();
-      console.log('Configured document types:', Array.from(configuredTypes));
+      logger.debug('Configured document types:', Array.from(configuredTypes));
 
-      console.log('Total documents:', documents.length);
-      if (documents.length > 0) {
-        console.log('Sample document:', documents[0]);
-        console.log('Sample document keys:', Object.keys(documents[0]));
-        console.log('Sample document Metering:', documents[0].Metering);
-        console.log('Sample document ObjectStatus:', documents[0].ObjectStatus);
-      }
+      logger.debug('Populate: documents considered', { listed: pool.length, fetchedInFull: detailed.length });
 
       // Check different document statuses
-      const completedDocs = documents.filter((doc) => doc.ObjectStatus === 'COMPLETED');
-      const docsWithMetering = documents.filter((doc) => doc.Metering);
-      const completedWithMetering = documents.filter((doc) => doc.ObjectStatus === 'COMPLETED' && doc.Metering);
+      const completedDocs = pool.filter((doc) => doc.ObjectStatus === 'COMPLETED');
+      const docsWithMetering = pool.filter((doc) => doc.Metering);
+      const completedWithMetering = pool.filter((doc) => doc.ObjectStatus === 'COMPLETED' && doc.Metering);
 
-      console.log('Completed documents:', completedDocs.length);
-      console.log('Documents with metering:', docsWithMetering.length);
-      console.log('Completed with metering:', completedWithMetering.length);
+      logger.debug('Completed documents:', completedDocs.length);
+      logger.debug('Documents with metering:', docsWithMetering.length);
+      logger.debug('Completed with metering:', completedWithMetering.length);
 
       // Log first completed document details
       if (completedDocs.length > 0) {
-        console.log('First completed document:', completedDocs[0]);
-        console.log('First completed document Metering field:', completedDocs[0].Metering);
+        logger.debug('First completed document:', completedDocs[0]);
+        logger.debug('First completed document Metering field:', completedDocs[0].Metering);
       }
 
       // Try to find any documents with metering data, regardless of status
@@ -632,13 +683,13 @@ const CapacityPlanningLayout = () => {
       // If no completed documents with metering, try any documents with metering
       if (candidateDocuments.length === 0) {
         candidateDocuments = docsWithMetering;
-        console.log('No completed documents with metering, trying any documents with metering');
+        logger.debug('No completed documents with metering, trying any documents with metering');
       }
 
       // If still no documents, show detailed error
       if (candidateDocuments.length === 0) {
         const statusCounts: Record<string, number> = {};
-        documents.forEach((doc) => {
+        pool.forEach((doc) => {
           const status = String(doc.ObjectStatus ?? 'Unknown');
           statusCounts[status] = (statusCounts[status] || 0) + 1;
         });
@@ -657,7 +708,7 @@ const CapacityPlanningLayout = () => {
                 ))}
               </ul>
             </Box>
-            <Box variant="small">Documents may be missing metering information. Check the browser console for details.</Box>
+            <Box variant="small">Documents may be missing metering information.</Box>
           </>,
           'No Metering Data Found',
         );
@@ -670,7 +721,7 @@ const CapacityPlanningLayout = () => {
         .map((doc) => {
           const meteringData = parseMetering(doc.Metering as string) || {};
           if (!meteringData || Object.keys(meteringData).length === 0) {
-            console.warn('Failed to parse metering data for', doc.ObjectKey);
+            logger.warn('Failed to parse metering data for', doc.ObjectKey);
             return null;
           }
 
@@ -679,7 +730,7 @@ const CapacityPlanningLayout = () => {
 
           if (!validation.valid) {
             validationErrors.push(validation.error ?? 'Unknown validation error');
-            console.warn('Document validation failed:', validation.error);
+            logger.warn('Document validation failed:', validation.error);
             return null;
           }
 
@@ -691,13 +742,13 @@ const CapacityPlanningLayout = () => {
             // Check for PageCount at document level
             if (doc.PageCount) {
               extractedData.avgPages = Number(doc.PageCount) || 0;
-              console.log(`📄 Extracted page count from doc.PageCount: ${extractedData.avgPages} pages`);
+              logger.debug(`📄 Extracted page count from doc.PageCount: ${extractedData.avgPages} pages`);
             } else if (doc.pageCount) {
               extractedData.avgPages = Number(doc.pageCount) || 0;
-              console.log(`📄 Extracted page count from doc.pageCount: ${extractedData.avgPages} pages`);
+              logger.debug(`📄 Extracted page count from doc.pageCount: ${extractedData.avgPages} pages`);
             } else if (doc.Pages) {
               extractedData.avgPages = Number(doc.Pages) || 0;
-              console.log(`📄 Extracted page count from doc.Pages: ${extractedData.avgPages} pages`);
+              logger.debug(`📄 Extracted page count from doc.Pages: ${extractedData.avgPages} pages`);
             } else if (doc.Sections && doc.Sections.length > 0) {
               // Try to get page count from sections
               const maxEndPage = Math.max(
@@ -707,12 +758,12 @@ const CapacityPlanningLayout = () => {
               );
               if (maxEndPage > 0) {
                 extractedData.avgPages = maxEndPage;
-                console.log(`📄 Extracted page count from Sections EndPage: ${extractedData.avgPages} pages`);
+                logger.debug(`📄 Extracted page count from Sections EndPage: ${extractedData.avgPages} pages`);
               }
             }
           }
 
-          console.log('Extracted data for', doc.ObjectKey, ':', extractedData);
+          logger.debug('Extracted data for', doc.ObjectKey, ':', extractedData);
 
           return {
             ObjectKey: String(doc.ObjectKey),
@@ -728,7 +779,7 @@ const CapacityPlanningLayout = () => {
 
       // Show validation errors if any documents were skipped
       if (validationErrors.length > 0) {
-        console.warn('Validation errors:', validationErrors);
+        logger.warn('Validation errors:', validationErrors);
         addNotification(
           'warning',
           <>
@@ -751,13 +802,15 @@ const CapacityPlanningLayout = () => {
         );
       }
 
-      console.log('Valid documents found:', validDocuments.length);
+      logger.debug('Valid documents found:', validDocuments.length);
       setRecentDocuments(validDocuments);
       setSelectedDocuments([]);
       setShowDocumentPicker(true);
     } catch (error) {
-      console.error('Error processing documents:', error);
+      logger.error('Error processing documents:', error);
       addNotification('error', 'Failed to process document data. Please try again.', 'Processing Error');
+    } finally {
+      setIsPopulating(false);
     }
   };
 
@@ -773,7 +826,7 @@ const CapacityPlanningLayout = () => {
     if (isMultiClass) {
       // Multi-class document: divide tokens equally among all classes
       const numClasses = documentClasses.length;
-      console.log(`📊 Populating multi-class document with ${numClasses} classes:`, documentClasses);
+      logger.debug(`📊 Populating multi-class document with ${numClasses} classes:`, documentClasses);
 
       documentClasses.forEach((docType) => {
         const existingIndex = updatedConfigs.findIndex((config) => config.type === docType);
@@ -1339,7 +1392,7 @@ const CapacityPlanningLayout = () => {
             const docConfig = documentConfigs.find((config) => config.type === docType);
 
             if (!docConfig) {
-              console.warn(`Document type "${docType}" in schedule not found in Expected Token Usage. Skipping.`);
+              logger.warn(`Document type "${docType}" in schedule not found in Expected Token Usage. Skipping.`);
               return; // Skip this time slot if document config not found
             }
 
@@ -1369,7 +1422,7 @@ const CapacityPlanningLayout = () => {
       // Only include OCR model when OCR backend is Bedrock (not Textract)
       const modelConfig = {
         extraction_model: configuration?.extraction?.model,
-        classification_model: configuration?.classification?.model,
+        classification_model: classificationModelOf(configuration?.classification),
         assessment_model: configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model,
         summarization_model: configuration?.summarization?.model,
         ocr_model: configuration?.ocr?.backend === 'bedrock' ? configuration?.ocr?.model_id : null,
@@ -1478,7 +1531,7 @@ const CapacityPlanningLayout = () => {
         return;
       }
 
-      console.log('🔍 Sending capacity calculation request:', input);
+      logger.debug('🔍 Sending capacity calculation request:', input);
 
       // Create client inside the function to ensure Amplify is configured
       const client = generateClient();
@@ -1487,14 +1540,14 @@ const CapacityPlanningLayout = () => {
         variables: { input: JSON.stringify(input) },
       });
 
-      console.log('📊 Capacity calculation response:', response);
+      logger.debug('📊 Capacity calculation response:', response);
 
       const responseData = response.data;
       if (responseData?.calculateCapacity) {
         // The response now has the proper GraphQL structure
         const result = responseData.calculateCapacity;
 
-        console.log('✅ API result:', result);
+        logger.debug('✅ API result:', result);
 
         // Check if API returned success
         if (result.success) {
@@ -1503,7 +1556,7 @@ const CapacityPlanningLayout = () => {
           return; // Exit early on success
         }
         // API returned structured error
-        console.warn('⚠️ API returned error:', result.errorMessage);
+        logger.warn('⚠️ API returned error:', result.errorMessage);
         setResults({
           success: false,
           errorMessage: result.errorMessage || 'API calculation failed',
@@ -1515,7 +1568,7 @@ const CapacityPlanningLayout = () => {
         });
       } else {
         // API returned null - Lambda function failed
-        console.warn('⚠️ API returned null - Lambda function may have failed');
+        logger.warn('⚠️ API returned null - Lambda function may have failed');
         setResults({
           success: false,
           errorMessage: 'Capacity calculation service is unavailable. The Lambda function may have encountered an error.',
@@ -1527,13 +1580,13 @@ const CapacityPlanningLayout = () => {
         });
       }
     } catch (error) {
-      console.error('❌ Capacity calculation error:', error);
+      logger.error('❌ Capacity calculation error:', error);
 
       // Log GraphQL errors specifically
       const gqlErr = error as { errors?: unknown[] };
       if (gqlErr.errors) {
         gqlErr.errors.forEach((gqlError: unknown, index: number) => {
-          console.error(`GraphQL Error ${index + 1}:`, gqlError);
+          logger.error(`GraphQL Error ${index + 1}:`, gqlError);
         });
       }
 
@@ -1688,7 +1741,7 @@ const CapacityPlanningLayout = () => {
 
       // Add other models
       [
-        { id: configuration?.classification?.model, step: 'Classification' },
+        { id: classificationModelOf(configuration?.classification), step: 'Classification' },
         { id: configuration?.extraction?.model, step: 'Extraction' },
         { id: configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model, step: 'Assessment' },
         { id: configuration?.summarization?.model, step: 'Summarization' },
@@ -1938,7 +1991,7 @@ const CapacityPlanningLayout = () => {
     } else {
       csvContent += `OCR,Textract (No model)\n`;
     }
-    csvContent += `Classification,"${configuration?.classification?.model || 'Not configured'}"\n`;
+    csvContent += `Classification,"${classificationModelOf(configuration?.classification) || 'Not configured'}"\n`;
     csvContent += `Extraction,"${configuration?.extraction?.model || 'Not configured'}"\n`;
     csvContent += `Assessment,"${(configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model) || 'Not configured'}"\n`;
     csvContent += `Summarization,"${configuration?.summarization?.model || 'Not configured'}"\n`;
@@ -2085,7 +2138,7 @@ const CapacityPlanningLayout = () => {
           </Alert>
         )}
 
-        {getDeployedPattern() === 'PATTERN-2' && !configuration?.classification?.model && !manualPattern && (
+        {getDeployedPattern() === 'PATTERN-2' && !classificationModelOf(configuration?.classification) && !manualPattern && (
           <Alert type="warning">
             <strong>⚠️ Pattern Detection Used Fallback.</strong> Using Pattern 2 default. Configure models in{' '}
             <strong>View/Edit Configuration</strong> for accurate calculations.
@@ -2215,7 +2268,7 @@ const CapacityPlanningLayout = () => {
                     <div>
                       <div>Classification</div>
                       <div style={{ fontSize: '0.8em', color: '#2f3b4a', fontWeight: 'normal' }}>
-                        Model: {configuration?.classification?.model || 'Not configured'}
+                        Model: {classificationModelOf(configuration?.classification) || 'Not configured'}
                       </div>
                     </div>
                   ),
@@ -2335,7 +2388,7 @@ const CapacityPlanningLayout = () => {
                 + Add Document Type
               </Button>
 
-              <Button variant="normal" iconName="refresh" onClick={fetchRecentDocuments}>
+              <Button variant="normal" iconName="refresh" onClick={fetchRecentDocuments} loading={isPopulating} disabled={isPopulating}>
                 Populate tokens from Documents
               </Button>
             </SpaceBetween>
@@ -2791,7 +2844,7 @@ const CapacityPlanningLayout = () => {
                       <li>No token usage configured (check Expected Token Usage section)</li>
                       <li>All OCR token values are zero</li>
                       <li>Backend calculation returned empty quota requirements</li>
-                      <li>Pattern detection issue (check browser console for logs)</li>
+                      <li>Pattern detection issue</li>
                     </ul>
                     <div>
                       <strong>Debug info:</strong>
@@ -3219,8 +3272,8 @@ const CapacityPlanningLayout = () => {
                               const assessmentTokens = parseFloat(String(docConfig.assessmentTokens || 0));
 
                               // Debug logging
-                              console.log(`DEBUG: Hour ${hour}, DocType: ${docType}, DocsPerHour: ${docsPerHour}`);
-                              console.log(
+                              logger.debug(`DEBUG: Hour ${hour}, DocType: ${docType}, DocsPerHour: ${docsPerHour}`);
+                              logger.debug(
                                 `DEBUG: Token config - OCR: ${ocrTokens}, Class: ${classificationTokens}, Extract: ${extractionTokens}, Assess: ${assessmentTokens}, Summ: ${summarizationTokens}`,
                               );
 
@@ -3234,7 +3287,7 @@ const CapacityPlanningLayout = () => {
                               const slotSummarizationTokens = summarizationTokens * docsPerHour;
                               const slotAssessmentTokens = assessmentTokens * docsPerHour;
 
-                              console.log(
+                              logger.debug(
                                 `DEBUG: Slot tokens - OCR: ${slotOcrTokens}, Class: ${slotClassificationTokens}, Extract: ${slotExtractionTokens}, Assess: ${slotAssessmentTokens}, Summ: ${slotSummarizationTokens}`,
                               );
 
@@ -3251,7 +3304,7 @@ const CapacityPlanningLayout = () => {
                                 slotSummarizationTokens +
                                 slotAssessmentTokens;
 
-                              console.log(`DEBUG: Hour ${hour} accumulated total: ${hourEntry.totalTokens}`);
+                              logger.debug(`DEBUG: Hour ${hour} accumulated total: ${hourEntry.totalTokens}`);
 
                               // Track document types
                               if (hourEntry.documentTypes && !hourEntry.documentTypes.includes(docType)) {
@@ -3262,11 +3315,11 @@ const CapacityPlanningLayout = () => {
 
                           // Find max tokens for scaling
                           const maxTokens = Math.max(...Object.values(hourlyBreakdown).map((h) => h.totalTokens), 1);
-                          console.log(`DEBUG: Max tokens for scaling: ${maxTokens}`);
+                          logger.debug(`DEBUG: Max tokens for scaling: ${maxTokens}`);
 
                           // Only show hours with processing activity
                           const activeHours = Object.values(hourlyBreakdown).filter((h) => h.totalTokens > 0);
-                          console.log(
+                          logger.debug(
                             `DEBUG: Active hours:`,
                             activeHours.map((h) => `Hour ${h.hour}: ${h.totalTokens} tokens`),
                           );
@@ -3875,6 +3928,7 @@ const CapacityPlanningLayout = () => {
         selectedDocuments={selectedDocuments as unknown as React.ComponentProps<typeof DocumentPickerModal>['selectedDocuments']}
         setSelectedDocuments={setSelectedDocuments as unknown as React.ComponentProps<typeof DocumentPickerModal>['setSelectedDocuments']}
         onUseSelectedDocuments={populateTokensFromMultipleDocuments}
+        samplingNote={samplingNote}
         onUseDocument={populateTokensFromDocument as unknown as React.ComponentProps<typeof DocumentPickerModal>['onUseDocument']}
         configuration={configuration}
         periodsToLoad={periodsToLoad}

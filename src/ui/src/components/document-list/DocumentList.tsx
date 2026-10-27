@@ -27,6 +27,8 @@ import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import DateRangeModal from '../common/DateRangeModal';
+import { isQueueManaged } from '../common/review-status';
+import { isPendingForReviewer } from './reviewer-pending-filter';
 import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
@@ -81,7 +83,7 @@ const DocumentList = (): React.JSX.Element => {
   const [currentUsername, setCurrentUsername] = useState('');
   const { settings } = useSettingsContext();
   const { currentCredentials } = useAppContext();
-  const { isAdmin, isReviewerOnly, canWrite, canReview } = useUserRole();
+  const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
   const navigate = useNavigate();
 
   // Bulk artifact download (ZIP) for the selected documents
@@ -146,23 +148,13 @@ const DocumentList = (): React.JSX.Element => {
     }
   }, []);
 
-  // Filter documents for reviewers - show only pending HITL reviews (not completed/skipped)
+  // Filter documents for reviewers - show only pending HITL reviews (not finished)
   // Note: Server-side RBAC filtering is now applied in the listDocuments resolver.
   // Reviewer-only users receive only HITL-pending + their own completed reviews from the API.
-  // This client-side filter is kept as a secondary safety net but is no longer the primary enforcement.
+  // This client-side filter is a secondary safety net (see isPendingForReviewer).
   const filteredDocumentList = useMemo(() => {
     if (isReviewerOnly) {
-      return documentList.filter((doc) => {
-        // Must have HITL triggered
-        if (!doc.hitlTriggered) return false;
-        // Exclude completed or skipped reviews
-        if (doc.hitlCompleted) return false;
-        const status = doc.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
-        if (status === 'skipped' || status === 'reviewskipped') return false;
-        if (status === 'completed' || status === 'reviewcompleted') return false;
-        // Show if unassigned or assigned to current user
-        return !doc.hitlReviewOwner || doc.hitlReviewOwner === currentUsername;
-      });
+      return documentList.filter((doc) => isPendingForReviewer(doc, currentUsername));
     }
     return documentList;
   }, [documentList, isReviewerOnly, currentUsername]);
@@ -293,7 +285,8 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleClaimReview = async () => {
     const client = generateClient();
-    const selectedItems = collectionProps.selectedItems as MappedDocument[];
+    // Queued documents are reviewed from their queue item; the server refuses them here.
+    const selectedItems = (collectionProps.selectedItems as MappedDocument[]).filter((item) => !isQueueManaged(item.hitlStatus));
     const isSingleSelection = selectedItems.length === 1;
 
     // Claim reviews for all selected documents
@@ -339,7 +332,7 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleReleaseReview = async () => {
     const client = generateClient();
-    for (const item of collectionProps.selectedItems as MappedDocument[]) {
+    for (const item of (collectionProps.selectedItems as MappedDocument[]).filter((doc) => !isQueueManaged(doc.hitlStatus))) {
       try {
         const result = await client.graphql({
           query: releaseReview,
@@ -550,7 +543,7 @@ const DocumentList = (): React.JSX.Element => {
             currentUsername={currentUsername}
           />
         }
-        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView)}
+        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView, canWorkReviewQueues)}
         items={items}
         loading={isDocumentsListLoading}
         loadingText="Loading documents"

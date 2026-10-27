@@ -100,9 +100,12 @@ export const claimNextItem = async (queueName: string): Promise<ClaimNextResult>
   return required(r.data?.claimNextReviewItem, 'claimNextReviewItem');
 };
 
-/** Skip: give a held item back to its queue, unassigned (the draft is kept). Holder only. */
-export const releaseItem = async (item: ItemRef): Promise<ReviewItem> => {
-  const r = await client.graphql({ query: releaseReviewItemMutation, variables: ref(item) });
+/**
+ * Skip: give a held item back to its queue, unassigned (the draft is kept). Holder only.
+ * `reason` comes from the queue's skip list; it and `note` go into the item's history.
+ */
+export const releaseItem = async (item: ItemRef, reason: string, note?: string): Promise<ReviewItem> => {
+  const r = await client.graphql({ query: releaseReviewItemMutation, variables: { ...ref(item), reason, note } });
   return required(r.data?.releaseReviewItem, 'releaseReviewItem');
 };
 

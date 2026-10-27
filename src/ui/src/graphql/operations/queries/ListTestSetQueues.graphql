@@ -14,6 +14,7 @@ query ListTestSetQueues {
     priority
     eligibleAnnotators
     checklist
+    skipReasons
     claimLeaseMinutes
     queueCountsAt
     updatedAt

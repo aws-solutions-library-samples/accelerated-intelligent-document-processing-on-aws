@@ -111,7 +111,7 @@ export const SectionClassMismatch = ({
         )}
         <Box variant="small" color="text-body-secondary">
           {spansMultipleClasses
-            ? 'Ground truth splits these pages into separate documents, so this section was extracted as one document when it is more than one.'
+            ? 'Ground truth splits these pages into separate sections, so this section was extracted as one when it is more than one.'
             : 'Fields in this section were extracted against the wrong schema, so its extraction scores are a symptom of the classification rather than the cause.'}
         </Box>
       </SpaceBetween>
@@ -181,7 +181,7 @@ export const SectionClassEvaluation = ({
       {!matched && (
         <Box variant="small" color="text-body-secondary" padding={{ top: 'xxs' }}>
           {fromIndex && fromIndex.expected.length > 1
-            ? 'Ground truth splits these pages into separate documents, so the fields below were extracted as one document when they are more than one.'
+            ? 'Ground truth splits these pages into separate sections, so the fields below were extracted as one section when they are more than one.'
             : "The fields below were extracted against this class's schema, so their scores reflect the wrong schema rather than a bad extraction."}
         </Box>
       )}

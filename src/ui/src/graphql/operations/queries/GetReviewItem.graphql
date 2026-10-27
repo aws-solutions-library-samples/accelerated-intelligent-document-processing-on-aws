@@ -55,6 +55,7 @@ query GetReviewItem($objectKey: String!) {
     }
     checklist
     rejectReasons
+    skipReasons
     claimCap
     myClaimCount
     history {

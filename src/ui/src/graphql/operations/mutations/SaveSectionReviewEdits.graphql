@@ -1,0 +1,12 @@
+mutation SaveSectionReviewEdits($objectKey: String!, $sectionId: String!, $editedData: AWSJSON!) {
+  saveSectionReviewEdits(objectKey: $objectKey, sectionId: $sectionId, editedData: $editedData) {
+    ObjectKey
+    ObjectStatus
+    HITLStatus
+    HITLSectionsPending
+    HITLSectionsCompleted
+    HITLSectionsSkipped
+    HITLReviewOwner
+    HITLReviewOwnerEmail
+  }
+}

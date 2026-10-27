@@ -110,13 +110,16 @@ Short key-value strings logged as MLflow params. These are filterable in the MLf
 | Parameter | Example Value | Source |
 |-----------|--------------|--------|
 | `test_run_id` | `abc-123-def` | Test run identifier |
-| `classification.model` | `us.amazon.nova-2-lite-v1:0` | Classification model ID |
-| `classification.temperature` | `0.0` | Classification temperature |
-| `classification.top_p` | `0.0` | Classification top_p |
-| `classification.top_k` | `5.0` | Classification top_k |
-| `classification.max_tokens` | `4096` | Classification max tokens |
-| `classification.enabled` | `True` | Classification enabled flag |
-| `classification.method` | `multimodalPageLevelClassification` | Classification method |
+| `classification.model` | `us.amazon.nova-2-lite-v1:0` | Model of the call that assigns the class under the active strategy: `classification.one_stage.llm.model` for `single_pass`, `classification.two_stage.section_classification.llm.model` for `two_stage` |
+| `classification.temperature` | `0.0` | The same call's `temperature` |
+| `classification.top_p` | `0.0` | The same call's `top_p` |
+| `classification.top_k` | `5.0` | The same call's `top_k` |
+| `classification.max_tokens` | `4096` | The same call's `max_tokens` |
+| `classification.strategy` | `single_pass` | `classification.strategy` |
+| `classification.granularity` | `page` | Granularity of the page-reading call: `classification.one_stage.granularity` for `single_pass`, `classification.two_stage.boundary_detection.llm.granularity` for `two_stage` (`page` when unset) |
+| `classification.boundary_detection.model` | `us.amazon.nova-2-lite-v1:0` | Two stage only: the boundary call's model, `classification.two_stage.boundary_detection.llm.model` |
+| `classification.modality.text` | `infer` | The class-assigning call's `llm.modality.text`; `infer` when unset, meaning the flag is inferred from the prompt's placeholders |
+| `classification.modality.images` | `infer` | The class-assigning call's `llm.modality.images`; `infer` when unset |
 | `extraction.model` | `us.amazon.nova-2-lite-v1:0` | Extraction model ID |
 | `extraction.temperature` | `0.0` | Extraction temperature |
 | `extraction.top_p` | `0.0` | Extraction top_p |
@@ -129,7 +132,17 @@ Short key-value strings logged as MLflow params. These are filterable in the MLf
 | `ocr.backend` | `textract` | OCR backend |
 | `use_bda` | `False` | BDA mode flag |
 
-Only parameters that exist in the configuration are logged — missing values are omitted, not set to empty strings.
+Only parameters that exist in the configuration are logged — missing values are omitted, not set to empty strings. The exception is the two `classification.modality.*` flags, which log `infer` when unset, because an unset flag is a setting rather than an absent one. The classification parameter names are the same under either strategy, so runs can be compared on one axis; `classification.strategy` says which call they describe.
+
+⚠️ **Several classification settings are not logged, so two runs differing only
+in one of them are indistinguishable in the MLflow UI.** The list above is the
+whole of what is logged; the ones most likely to be the variable in an experiment
+and absent from it are `two_stage.section_classification.pages` and its `k`,
+`two_stage.boundary_detection.llm.boundary_hints`, the packet
+`window_pages`/`overlap_pages`, `page.contextPagesCount`, `document_shape.*` and the
+class-confidence block. If you are sweeping one of those, put the value in the
+run name or log it yourself — otherwise the comparison records identical
+parameters for runs that were not the same configuration.
 
 ### Artifacts
 
@@ -138,7 +151,7 @@ Complex data structures logged as JSON files under the `metrics/` artifact path.
 | Artifact | Description |
 |----------|-------------|
 | `full_config.json` | Complete IDP configuration snapshot for the test run |
-| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization) |
+| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `single_pass`, the `classification.one_stage.page` or `classification.one_stage.packet` prompts for the active granularity; under `two_stage`, `classification.two_stage.section_classification.llm`'s, with the boundary call's prompts as `classification.boundary_detection.system_prompt` and `classification.boundary_detection.task_prompt` |
 | `class_definitions.json` | Document class schemas with field definitions and evaluation methods |
 | `weighted_overall_scores.json` | Weighted accuracy scores per document class |
 | `field_metrics.json` | Full per-field evaluation metrics |
@@ -161,20 +174,20 @@ classification.model            = "us.amazon.nova-2-lite-v1:0"
 classification.temperature      = "0.0"
 classification.top_p            = "0.0"
 classification.top_k            = "5.0"
-classification.max_tokens       = "4096"
-classification.method           = "multimodalPageLevelClassification"
-extraction.model                = "us.amazon.nova-2-lite-v1:0"
+classification.strategy         = "single_pass"
+classification.granularity      = "page"
+classification.modality.text    = "infer"
+classification.modality.images  = "infer"
+extraction.model                = "us.anthropic.claude-sonnet-5"
 extraction.temperature          = "0.0"
 extraction.top_p                = "0.0"
 extraction.top_k                = "5.0"
-extraction.max_tokens           = "65535"
 assessment.confidence_threshold = "0.8"
 assessment.list_batch_size      = "25"
-summarization.model             = "us.amazon.nova-pro-v1:0"
+summarization.model             = "us.anthropic.claude-sonnet-5:1m"
 summarization.temperature       = "0.0"
 summarization.top_p             = "0.0"
 summarization.top_k             = "5.0"
-summarization.max_tokens        = "4096"
 summarization.enabled           = "True"
 evaluation.model                = "us.amazon.nova-2-lite-v1:0"
 ocr.backend                     = "textract"
