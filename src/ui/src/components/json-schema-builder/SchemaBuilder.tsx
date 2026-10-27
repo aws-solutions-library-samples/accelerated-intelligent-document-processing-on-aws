@@ -350,7 +350,6 @@ const SchemaBuilder = ({
   const typeLabel = isRuleSchema ? 'policy' : 'document';
   const _typeLabelPlural = isRuleSchema ? 'rules' : 'documents';
   const TypeLabel = isRuleSchema ? 'Rule' : 'Document';
-  const TypesLabel = isRuleSchema ? 'Rules' : 'Documents';
   const _classLabel = isRuleSchema ? 'Policy Class' : 'Class';
   const classesLabel = isRuleSchema ? 'Policy Classes' : 'Classes';
   const _attributeLabel = isRuleSchema ? 'Rule' : 'Attribute';
@@ -482,14 +481,14 @@ const SchemaBuilder = ({
                   </Header>
 
                   {classes.filter((c) => c[X_AWS_IDP_DOCUMENT_TYPE]).length === 0 && (
-                    <Alert type="warning" header={`No ${TypesLabel} Types`}>
+                    <Alert type="warning" header={`No ${TypeLabel} Types`}>
                       No classes are marked as {typeLabel} types. Mark at least one class as a {typeLabel} type to generate {typeLabel}{' '}
                       schemas.
                     </Alert>
                   )}
 
                   <Box>
-                    {!isRuleSchema && <Header {...({ variant: 'h4' } as Record<string, unknown>)}>{TypesLabel} Types</Header>}
+                    {!isRuleSchema && <Header {...({ variant: 'h4' } as Record<string, unknown>)}>{TypeLabel} Types</Header>}
                     <SpaceBetween size="s">
                       {classes.filter((c) => c[X_AWS_IDP_DOCUMENT_TYPE]).length === 0 && (
                         <Box fontSize="body-s" color="text-body-secondary" padding="s">

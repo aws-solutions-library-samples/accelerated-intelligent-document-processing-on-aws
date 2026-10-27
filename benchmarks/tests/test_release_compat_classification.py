@@ -255,7 +255,7 @@ def test_nested_config_fails_against_the_previous_release(built, release_lib):
     dropped = {e.split(" ")[0] for e in errors}
     assert {
         "classification.one_stage",
-        "classification.file_shape",
+        "classification.document_shape",
         "classification.fallback_class",
     } <= dropped
 

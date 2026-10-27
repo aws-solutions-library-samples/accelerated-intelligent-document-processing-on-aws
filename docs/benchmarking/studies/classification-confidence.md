@@ -193,9 +193,9 @@ two_stage` the call that assigns a class is section classification, so the same
 settings live at
 `classification.two_stage.section_classification.llm.confidence.…` and the
 `one_stage` block is not read at all — editing it there changes nothing and
-produces no error. The segmentation call has no confidence block, because it
+produces no error. The boundary detection call has no confidence block, because it
 assigns no class. The cost figures also assume single-pass metering: a two-stage
-run's classification spend is reported under `Segmentation/` and
+run's classification spend is reported under `BoundaryDetection/` and
 `SectionClassification/` rather than `Classification/`.
 
 1. **`topk` is on by default, and that is the right default** — ~0.5 % of the bill

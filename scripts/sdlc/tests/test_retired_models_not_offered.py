@@ -175,7 +175,7 @@ def test_a_retired_model_id_still_loads_in_a_stored_config(model_id: str):
     classification = models.ClassificationConfig.model_validate({"model": model_id})
     for call in (
         classification.one_stage.llm,
-        classification.two_stage.segmentation.llm,
+        classification.two_stage.boundary_detection.llm,
         classification.two_stage.section_classification.llm,
     ):
         assert call.model == model_id

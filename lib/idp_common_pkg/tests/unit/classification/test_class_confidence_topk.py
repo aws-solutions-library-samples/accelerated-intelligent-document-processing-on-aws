@@ -304,11 +304,11 @@ class TestShippedDefault:
         )
         stored = _yaml.safe_load(open(os.path.normpath(path)))
         cls = stored["classification"]
-        # Both class-assigning calls carry confidence; segmentation does not.
+        # Both class-assigning calls carry confidence; boundary detection does not.
         assert cls["one_stage"]["llm"]["confidence"]["mode"] == "topk"
         section = cls["two_stage"]["section_classification"]["llm"]
         assert section["confidence"]["mode"] == "topk"
-        assert "confidence" not in cls["two_stage"]["segmentation"]["llm"]
+        assert "confidence" not in cls["two_stage"]["boundary_detection"]["llm"]
 
     def test_the_shipped_prompt_block_is_present_and_asks_for_candidates(self):
         """A default of `topk` with an empty block would silently ask nothing."""

@@ -31,7 +31,7 @@ so on.
 
 Each version records:
 
-- **When** it completed and which **configuration version** processed it
+- **When** it completed, and which **Configuration Profile** and **revision** processed it
 - Its section/page structure and metering (cost) snapshot
 - Per-section quality data — the low-confidence field alerts and any processing
   issues detected for that run — so a historical view shows the same
@@ -111,6 +111,10 @@ can:
   Deletion is reference-counted: any output object version also pinned by
   another retained version is kept, so deleting one version never corrupts
   another.
+
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
+
+![Compare versions dialog: one changed field in the Bank-Statement section, every other section identical](../images/webui-document-versions-compare.png)
 
 ### CLI
 

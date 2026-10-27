@@ -16,9 +16,11 @@
 import React from 'react';
 import { fireEvent, render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import EditScreen from '../EditScreen';
+import EditScreen, { CANCEL_ACCESSIBLE_NAME } from '../EditScreen';
 import type { EditActionsProps } from '../EditScreen';
 import { barButtonLabels, barButtons, buttonLabel, chooseMenuItem, findMenu, menuItems, menuNames } from './edit-bar';
 
@@ -52,6 +54,15 @@ describe('the edit screen action bar', () => {
     expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
     const reports = findMenu('Reports')!.getElement();
     expect(reports.compareDocumentPosition(button('Skip')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('names Cancel for what it does to unsaved edits, the marker the UX test commit guard reads', () => {
+    renderScreen(ALL);
+    expect(button('Cancel').getAttribute('aria-label')).toBe(CANCEL_ACCESSIBLE_NAME);
+    // The guard recognises an editor that saves by itself from this name; a bare
+    // Cancel would not do, since every dialog has one.
+    const guard = readFileSync(join(__dirname, '..', '..', '..', '..', '..', '..', 'scripts', 'ux_runner', 'story_relay.py'), 'utf-8');
+    expect(guard).toContain(`"${CANCEL_ACCESSIBLE_NAME.toLowerCase()}"`);
   });
 
   it('puts the read-only views in Reports and the occasional changes in More Actions, in Title Case', () => {

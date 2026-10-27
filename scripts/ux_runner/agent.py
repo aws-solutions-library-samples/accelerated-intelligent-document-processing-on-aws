@@ -50,7 +50,12 @@ The argv is fixed and carries no payload
 skips hooks, plugins, auto-memory and ``CLAUDE.md`` discovery (``--bare``), writes
 no session transcript (``--no-session-persistence``) and caps turns and spend. The
 model is chosen by ``ANTHROPIC_MODEL`` in the environment, and the prompt goes on
-stdin (:func:`run_agent`), never in argv: see ``processes``.
+stdin (:func:`run_agent`), never in argv: see ``processes``. A first-time-user
+story watched live runs the TUI instead (:func:`interactive_argv`), which has no
+stdin to read a prompt from. Its prompt is a file the TUI appends to its system
+prompt, and the person watching types :data:`OPENING_MESSAGE` once the session
+has started its server, because at the pinned release a message given as the
+TUI's argument is answered before the server's tools are offered.
 
 The result is parsed, not trusted
 ---------------------------------
@@ -118,6 +123,22 @@ DEVTOOLS_FLAGS: tuple[str, ...] = (
 #: orchestrator prepends the directory holding ``node``.
 DEFAULT_SEARCH_PATH = "/usr/local/bin:/usr/bin:/bin"
 
+#: The levels ``--effort`` takes, as the pinned CLI's own help lists them.
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+#: The four token counts of a session's ``usage`` object that are priced.
+USAGE_KEYS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+#: What the person types to open a watched or paired story session, once its
+#: ``ux-story`` server has started; the brief and the task are already in the
+#: session's system prompt.
+OPENING_MESSAGE = "Begin the task described in your instructions."
+
 #: The only names the AWS session handed to :func:`child_env` may use.
 _AWS_ENV_NAMES = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
 
@@ -131,6 +152,9 @@ class AgentResult:
     """The parsed outcome of one ``claude -p`` session.
 
     ``stop`` is one of ``end_turn``, ``max_turns``, ``budget`` or ``error``.
+    ``usage`` holds those of :data:`USAGE_KEYS` the answer reported as whole
+    numbers, so a cost can be computed from the tokens independently of the
+    CLI's own ``total_cost_usd``; it is ``None`` when the answer reported none.
     """
 
     text: str
@@ -139,6 +163,7 @@ class AgentResult:
     duration_s: float | None
     stop: str
     is_error: bool
+    usage: Mapping[str, int] | None = None
 
 
 def aws_env_from(source: Mapping[str, str]) -> dict[str, str]:
@@ -255,6 +280,64 @@ def mcp_servers(
     }
 
 
+def story_server(
+    *,
+    toolchain: paths.Toolchain,
+    story_adapter: Path,
+    index: Path,
+    out: Path,
+    start: Path,
+    budget: int,
+    python: str,
+    home: Path,
+    recorder_out: Path | None = None,
+    search_path: str = DEFAULT_SEARCH_PATH,
+) -> dict[str, Any]:
+    """The one MCP server a story flow's ``claude`` sees: ``ux-story`` in relay mode.
+
+    Keyed by ``tool_profiles.STORY_SERVER``, the name the STORY profile's tool ids
+    use. It runs ``python -I -B`` under ``/usr/bin/env -i`` with the same explicit
+    environment :func:`mcp_servers` gives both of its servers and an empty ``env``
+    map, so it inherits nothing of ``claude``'s. It starts the pinned
+    chrome-devtools-mcp itself with this ``PATH`` and ``HOME``, and writes only
+    under ``out``, where it creates the journal, and ``recorder_out``. ``budget``
+    is the flow's action budget, a whole number of at least 1, or
+    :class:`AgentError` is raised.
+    """
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise AgentError("the story server's action budget is a whole number from 1")
+    args = [
+        "-i",
+        f"PATH={search_path}",
+        f"HOME={home}",
+        "LANG=C.UTF-8",
+        python,
+        "-I",
+        "-B",
+        str(story_adapter),
+        "--index",
+        str(index),
+        "--out",
+        str(out),
+        "--start",
+        str(start),
+        "--budget",
+        str(budget),
+        "--devtools",
+        str(toolchain.devtools_mcp),
+    ]
+    if recorder_out is not None:
+        args += ["--recorder-out", str(recorder_out)]
+    return {
+        tool_profiles.STORY_SERVER: {
+            "type": "stdio",
+            "command": "/usr/bin/env",
+            "args": args,
+            "env": {},
+        }
+    }
+
+
 def write_mcp_config(path: Path, servers: Mapping[str, Any]) -> Path:
     """Write ``{"mcpServers": servers}`` to ``path``, readable by its owner only.
 
@@ -273,10 +356,36 @@ def write_mcp_config(path: Path, servers: Mapping[str, Any]) -> Path:
     return path
 
 
+def _effort_flag(effort: str | None) -> list[str]:
+    """``--effort <level>`` for a pinned level, nothing for ``None``.
+
+    Anything but one of :data:`EFFORT_LEVELS` raises :class:`AgentError`, so a
+    misspelt level fails before a session starts rather than inside the CLI.
+    """
+    if effort is None:
+        return []
+    if effort not in EFFORT_LEVELS:
+        raise AgentError(f"--effort takes one of {', '.join(EFFORT_LEVELS)}")
+    return ["--effort", effort]
+
+
 def claude_argv(
-    claude: Path, mcp_config: Path, *, max_turns: int, max_budget_usd: float
+    claude: Path,
+    mcp_config: Path,
+    *,
+    max_turns: int,
+    max_budget_usd: float,
+    profile: tool_profiles.ToolProfile = tool_profiles.EXPERT,
+    effort: str | None = None,
 ) -> list[str]:
-    """The exact command line of the UX session. The prompt is not part of it."""
+    """The exact command line of the UX session. The prompt is not part of it.
+
+    ``profile`` supplies the granted and the denied tools. The default,
+    ``tool_profiles.EXPERT``, is the MR UX test's own pair of lists. ``effort``
+    pins the session's effort level with ``--effort`` after every other flag,
+    and adds nothing when it is ``None``, so the MR UX test's command line is the
+    same with or without this parameter.
+    """
     return [
         str(claude),
         "-p",
@@ -292,13 +401,64 @@ def claude_argv(
         "--tools",
         "",
         "--allowedTools",
-        *tool_profiles.EXPERT_ALLOWED_TOOLS,
+        *profile.allowed,
         "--disallowedTools",
-        *tool_profiles.EXPERT_DISALLOWED_TOOLS,
+        *profile.disallowed,
         "--max-turns",
         str(max_turns),
         "--max-budget-usd",
         f"{max_budget_usd:.2f}",
+        *_effort_flag(effort),
+    ]
+
+
+def interactive_argv(
+    claude: Path,
+    mcp_config: Path,
+    *,
+    prompt_file: Path,
+    profile: tool_profiles.ToolProfile,
+    effort: str | None = None,
+) -> list[str]:
+    """The pinned Claude TUI's command line; ``prompt_file`` extends its system prompt.
+
+    The flags of :func:`claude_argv` without the four that the pinned CLI applies
+    only with ``--print`` (``-p`` itself, ``--output-format``,
+    ``--no-session-persistence`` and ``--max-budget-usd``) and without
+    ``--max-turns``, which 2.1.281's help does not list and which is not shown
+    to bound an interactive session; a watched session's bounds are the relay's
+    and a wall clock instead. The session keeps its transcript in its own
+    ``HOME``, which is where its usage is read back from.
+
+    The prompt reaches the session as ``--append-system-prompt-file``, which the
+    TUI reads when it starts, and no message is given on the command line: at
+    2.1.281 an opening message passed as the TUI's argument is answered before
+    the MCP servers' tools are offered, so that first turn could not act
+    (``scripts/tests/fixtures/ux_story_transcript/probe.json``). The person
+    watching types :data:`OPENING_MESSAGE` instead, once the server is up, which
+    the transcript then counts as the session's one message. A relative
+    ``prompt_file`` raises :class:`AgentError`, because the TUI would read it
+    from its own working directory.
+    """
+    if not prompt_file.is_absolute():
+        raise AgentError(f"the prompt file {prompt_file} is not an absolute path")
+    return [
+        str(claude),
+        "--bare",
+        "--strict-mcp-config",
+        "--mcp-config",
+        str(mcp_config),
+        "--permission-mode",
+        PERMISSION_MODE,
+        "--tools",
+        "",
+        "--allowedTools",
+        *profile.allowed,
+        "--disallowedTools",
+        *profile.disallowed,
+        *_effort_flag(effort),
+        "--append-system-prompt-file",
+        str(prompt_file),
     ]
 
 
@@ -314,6 +474,22 @@ def _count(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def usage_from(value: object) -> dict[str, int] | None:
+    """The :data:`USAGE_KEYS` of a ``usage`` object that are whole numbers.
+
+    A count that is missing, negative, a bool or not an integer is left out
+    rather than read as zero, and ``None`` means the object held none of them.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    kept = {
+        key: count
+        for key in USAGE_KEYS
+        if (count := _count(value.get(key))) is not None and count >= 0
+    }
+    return kept or None
 
 
 def _result_object(payload: object) -> dict[str, Any] | None:
@@ -338,8 +514,9 @@ def parse_output(stdout: str) -> AgentResult:
     ``subtype`` decides ``stop``: ``success`` is ``end_turn``, ``error_max_turns``
     is ``max_turns``, any subtype naming a budget is ``budget``, and anything else
     is ``error``. Cost and turn count are kept only when they are numbers, so a
-    missing or renamed field reads as unknown rather than as zero. Output that is
-    not JSON raises :class:`AgentError` showing its first 400 characters.
+    missing or renamed field reads as unknown rather than as zero, and the token
+    counts of ``usage`` the same way (:func:`usage_from`). Output that is not JSON
+    raises :class:`AgentError` showing its first 400 characters.
     """
     try:
         payload = json.loads(stdout)
@@ -365,6 +542,7 @@ def parse_output(stdout: str) -> AgentResult:
         duration_s=duration_ms / 1000 if duration_ms is not None else None,
         stop=stop,
         is_error=bool(result.get("is_error")),
+        usage=usage_from(result.get("usage")),
     )
 
 

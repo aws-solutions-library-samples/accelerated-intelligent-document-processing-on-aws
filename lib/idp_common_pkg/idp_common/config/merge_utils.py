@@ -1219,7 +1219,7 @@ def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
     merged_config = _nested_classification(merged_config)
     if _classification_is_two_stage(merged_config):
         paths = [
-            ("two_stage", "segmentation", "llm"),
+            ("two_stage", "boundary_detection", "llm"),
             ("two_stage", "section_classification", "llm"),
         ]
     else:
@@ -1251,7 +1251,7 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
         granularity = str(block.get("granularity") or "page").strip().lower()
         side = "packet" if granularity == "packet" else "page"
         # The prompt sits under page/packet; the modality is on the llm block, which
-        # for one stage is a sibling of them and for segmentation is `block` itself.
+        # for one stage is a sibling of them and for boundary detection is `block` itself.
         llm = block if path[-1] == "llm" else _dict_at(block, "llm")
         return (
             "classification." + ".".join(path + (side, "task_prompt")),
@@ -1262,7 +1262,7 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
     if _classification_is_two_stage(merged_config):
         section_llm = _dict_at(cls, "two_stage", "section_classification", "llm")
         return [
-            reader("two_stage", "segmentation", "llm"),
+            reader("two_stage", "boundary_detection", "llm"),
             (
                 "classification.two_stage.section_classification.llm.task_prompt",
                 section_llm.get("task_prompt", ""),

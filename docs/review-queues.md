@@ -135,7 +135,7 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
     you type, or straight away with **Save**. **Process Changes** saves
     your latest edits and applies your corrections. The editor opens with **Fields
     to show** set to **Confidence alerts only** when the item has review reasons. **Edit Page Class** corrects
-    the document's split as part of the review: the board shows every section of
+    how the document is split into sections as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
     (a section you remove takes its draft with it). Only the item's holder can
     regroup it; an Admin's first regroup assigns an unassigned item to them.
@@ -163,7 +163,7 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
 - An assignment doesn't expire. If the queue's time limit passes while the item is
   still open, you get one **still to complete** reminder in the Inbox.
 
-Changing the document class isn't available for Production documents in review.
+Changing a section's class isn't available for Production documents in review.
 Regrouping pages is, from the queue item.
 
 ## Admin guide: Queue Management

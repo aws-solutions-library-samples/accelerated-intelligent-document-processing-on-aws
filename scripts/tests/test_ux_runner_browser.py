@@ -410,8 +410,29 @@ def test_main_signs_in_only_when_asked_and_only_after_both_self_tests(
     args, kwargs = world.seen["sign_in"]
     assert args[1].name == "Admin"
     assert kwargs["base_url"] == "http://localhost:3000/"
+    assert kwargs["dismiss_welcome"] is True
     assert world.seen["proxy"][1]["build_dir"] == build.resolve()
     assert world.session.calls == []
+
+
+@pytest.mark.unit
+def test_keep_welcome_signs_in_without_dismissing_the_welcome_page(
+    tmp_path: Path, fake_world: Callable[..., Recorded]
+) -> None:
+    """A first-visit story's browser must land on the welcome page."""
+    world = fake_world()
+    argv = _argv(tmp_path, "--web-url", WEB_URL, "--sign-in", "Admin", "--keep-welcome")
+    assert browser.main(argv) == 0
+    _, kwargs = world.seen["sign_in"]
+    assert kwargs["dismiss_welcome"] is False
+    assert kwargs["base_url"] == WEB_URL
+
+
+@pytest.mark.unit
+def test_keep_welcome_without_a_sign_in_is_refused() -> None:
+    with pytest.raises(SystemExit) as raised:
+        browser.parse_args(["--web-url", WEB_URL, "--keep-welcome"])
+    assert raised.value.code == 2
 
 
 @pytest.mark.unit
@@ -578,6 +599,7 @@ def test_the_defaults_are_the_documented_container_contract() -> None:
     assert args.cdp_listen == "0.0.0.0:9223"
     assert args.out == "/out/browser"
     assert args.sign_in is None and args.build_dir is None
+    assert args.keep_welcome is False
 
 
 @pytest.mark.unit

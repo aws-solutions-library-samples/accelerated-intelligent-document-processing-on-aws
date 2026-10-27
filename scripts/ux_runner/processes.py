@@ -61,6 +61,7 @@ Bounds worth knowing
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import select
 import selectors
@@ -337,17 +338,22 @@ class _Capture:
         """Feed and read until every pipe is closed and the child has exited, or
         until ``deadline`` on the monotonic clock; whether it got there.
 
-        A pipe still open at the deadline stays registered, so a later call
-        carries on where this one stopped.
+        An infinite ``deadline`` is none: it waits as long as the child runs,
+        since ``select`` and ``wait`` take no infinite timeout. A pipe still open
+        at the deadline stays registered, so a later call carries on where this
+        one stopped.
         """
+        unbounded = math.isinf(deadline) and deadline > 0
         while self._selector.get_map():
-            left = deadline - time.monotonic()
-            if left <= 0:
+            left = None if unbounded else deadline - time.monotonic()
+            if left is not None and left <= 0:
                 return False
             for key, _ in self._selector.select(left):
                 self._serve(*key.data)
         try:
-            self._popen.wait(timeout=max(deadline - time.monotonic(), 0))
+            self._popen.wait(
+                timeout=None if unbounded else max(deadline - time.monotonic(), 0)
+            )
         except subprocess.TimeoutExpired:
             return False
         return True
@@ -392,7 +398,8 @@ def run_in_group(
 ) -> Completed:
     """Run ``argv`` to completion in its own process group, ``input_text`` on stdin.
 
-    The group is killed on a timeout (SIGTERM, then SIGKILL), on any
+    ``timeout`` is in seconds; ``math.inf`` waits as long as the child runs. The
+    group is killed on a timeout (SIGTERM, then SIGKILL), on any
     ``BaseException`` raised while waiting (:class:`Terminated`,
     ``KeyboardInterrupt``: SIGTERM, five seconds, SIGKILL, then the exception
     propagates), and after every exit, because MCP servers can survive the

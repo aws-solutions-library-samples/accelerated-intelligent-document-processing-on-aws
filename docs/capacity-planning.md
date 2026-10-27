@@ -104,15 +104,19 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 ### 3. Document Token Usage Population
 
 **Automatic Token Population from Processed Documents**:
-- Integration with Documents context to access processed document data
+- Reads the completed documents in the Document List's current period. The list's rows
+  carry no metering, so the full record of the most recent completed documents (up to 25)
+  is fetched when you choose **Populate tokens from Documents**, one request per document,
+  a few at a time.
+  Opening Capacity Planning starts the list load if no other page has.
 - Extraction of token usage from metering data structure
 - Support for multiple document selection and batch population
 - Document picker modal with filtering and selection capabilities
 - **Single-class document validation** - multi-class documents are not supported
 
 **Metering Data Processing**:
-- Context-prefixed key parsing (OCR/, Classification/, Segmentation/, SectionClassification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
-- All three classification contexts are summed into the one classification figure: `Classification/` carries the Bedrock tokens under `strategy: single_pass`, and `Segmentation/` and `SectionClassification/` carry them under `strategy: two_stage` (see [Which context the tokens arrive under](#which-context-the-tokens-arrive-under))
+- Context-prefixed key parsing (OCR/, Classification/, BoundaryDetection/, SectionClassification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
+- All three classification contexts are summed into the one classification figure: `Classification/` carries the Bedrock tokens under `strategy: single_pass`, and `BoundaryDetection/` and `SectionClassification/` carry them under `strategy: two_stage` (see [Which context the tokens arrive under](#which-context-the-tokens-arrive-under))
 - Token count aggregation from inputTokens, outputTokens, and totalTokens fields
 - Request count calculation: average requests per document from metering samples
 - Page count extraction from multiple sources:
@@ -324,7 +328,7 @@ worth reading before you write a report that filters on a prefix:
 | Strategy | Bedrock token keys | Lambda keys |
 |---|---|---|
 | `single_pass` | `Classification/bedrock/<model>` | `Classification/lambda/requests`, `Classification/lambda/duration` |
-| `two_stage` | `Segmentation/bedrock/<model>` and `SectionClassification/bedrock/<model>` — **no** `Classification/bedrock/*` key at all | `Classification/lambda/requests`, `Classification/lambda/duration` |
+| `two_stage` | `BoundaryDetection/bedrock/<model>` and `SectionClassification/bedrock/<model>` — **no** `Classification/bedrock/*` key at all | `Classification/lambda/requests`, `Classification/lambda/duration` |
 
 The Lambda keys stay under `Classification/` either way because one Lambda
 function runs both stages, and its invocation is metered under the step's name.
@@ -333,10 +337,10 @@ cost of a two-stage run and none of its Bedrock cost, and reads as a
 classification step that invoked the model zero times. Sum all three prefixes,
 as Capacity Planning does.
 
-A two-stage run under a declared file shape
-(`classification.file_shape.sectionSplitting` of `disabled` or `page`) emits no
-`Segmentation/` keys at all, because the boundaries are asserted rather than
-detected and the segmentation call never runs.
+A two-stage run under a declared document shape
+(`classification.document_shape.sectionSplitting` of `disabled` or `page`) emits no
+`BoundaryDetection/` keys at all, because the boundaries are asserted rather than
+detected and the boundary detection call never runs.
 
 **Page Count Extraction Priority**:
 1. OCR Bedrock requests count (`metrics.requests`)
@@ -590,8 +594,8 @@ part of the report.
 - **Solution**: Visit "View/Edit Configuration" tab first to load pattern configuration
 
 **No Documents Available for Token Population**:
-- **Symptom**: Alert "No documents available. Please visit the Documents tab first"
-- **Solution**: Visit Documents tab to load document data, then return to Capacity Planning
+- **Symptom**: Alert "No documents available" saying the documents are still loading, or that none were found in the Document List period
+- **Solution**: Wait for the load and try again, or choose a longer period with the Document List's **Load** menu
 
 **Document Type Not in Configuration**:
 - **Symptom**: "Document type 'X' is not defined in configuration"

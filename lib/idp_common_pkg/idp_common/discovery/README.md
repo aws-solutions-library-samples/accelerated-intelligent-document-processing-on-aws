@@ -81,7 +81,7 @@ result = discovery.discovery_classes_with_document(
 
 ### Auto-Detect Document Sections
 
-For multi-document packets, auto-detect section boundaries:
+For packets, auto-detect section boundaries:
 
 ```python
 sections = discovery.auto_detect_sections(

@@ -173,6 +173,7 @@ CONFIGURATION
   Delete config profile           ✅      ❌       ❌        ❌
   Set active profile              ✅      ✅†      ❌        ❌
   Sync BDA                        ✅      ✅†      ❌        ❌
+  Manage prefix mappings          ✅      ❌       ❌        ❌
 
 CONFIGURATION PROFILE REVISIONS
   View/compare revisions          ✅      ✅†      ❌        ✅†
@@ -456,7 +457,7 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it |
 | **Document Objects in S3** (server-side) | `document_scope` finds the document that owns an Input- or Output-bucket key — walking the key's `/` boundaries longest-first against the tracking table — and matches its `ConfigVersion` against `allowedConfigVersions` on all three object-read operations (`getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls`), before any S3 call. Fails closed twice over: a key no tracked document owns is refused, and so is a document carrying no `ConfigVersion`. The refusal text is the same non-disclosing 403 the key check uses, and on the batch operation a single refusal fails the whole request, so it cannot be used to probe which documents are in scope key by key |
 | **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
-| **Default Version Selection** (UI) | All version pickers auto-select the first available scoped version |
+| **Default Version Selection** (UI) | Version pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
 
 ### Affected UI Components
 
@@ -464,11 +465,11 @@ All pages with config version selectors automatically respect scope:
 
 | Page | Behavior |
 |------|----------|
-| **View/Edit Configuration** | Shows only scoped versions in Versions panel; loads first scoped version |
+| **View/Edit Configuration** | Shows only scoped versions in the Configuration Profiles table. Waits for that list, then opens the active profile if it is in scope, otherwise the first scoped one; a `?version=` link opens its profile directly. When no existing profile is in the user's scope the page says so instead of opening one |
 | **Upload Documents** | Version picker shows only scoped versions |
 | **Discovery** | Version picker shows only scoped versions |
 | **Test Studio** | Test runner version picker shows only scoped versions |
-| **Capacity Planning** | Version picker shows only scoped versions |
+| **Capacity Planning** | Version picker shows only scoped versions, and says so when none is in the user's scope |
 | **Reprocess Document** | Defaults to document's current ConfigVersion (if in scope) |
 | **Document List** | Server-side filtered — only shows documents matching scoped versions |
 

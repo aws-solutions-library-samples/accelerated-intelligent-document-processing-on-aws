@@ -37,7 +37,9 @@ import {
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useUserRole from '../../hooks/use-user-role';
 import { describeClassConfigSource, resolveClassConfigVersion } from './classConfigVersion';
+import { isProfileReadable } from '../../utils/readable-profile';
 import { getConfigClassOptions } from '../common/config-class-options';
 import useTestDocPages from '../../hooks/use-test-doc-pages';
 import { renderLoadedLabelSource } from './TestSetDetail';
@@ -273,13 +275,15 @@ const GroundTruthSectionEditor = ({
   // badge below name where the classes came from.
   const stampedConfigVersion = (localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined;
   const { versions } = useConfigurationVersions();
+  const { allowedConfigVersions, loading: roleLoading } = useUserRole();
   const activeConfigVersion = useMemo(() => versions.find((v) => v.isActive)?.versionName, [versions]);
   const classConfig = useMemo(
     () => resolveClassConfigVersion(stampedConfigVersion, configVersion, activeConfigVersion),
     [stampedConfigVersion, configVersion, activeConfigVersion],
   );
   const classConfigVersion = classConfig.version;
-  const { mergedConfig } = useConfiguration(classConfigVersion);
+  const classConfigReadable = isProfileReadable(classConfigVersion, versions, { allowedConfigVersions, loading: roleLoading });
+  const { mergedConfig } = useConfiguration(classConfigReadable ? classConfigVersion : null);
   const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
   const editHistoryCount = Array.isArray(localData?._editHistory) ? (localData._editHistory as unknown[]).length : 0;
 

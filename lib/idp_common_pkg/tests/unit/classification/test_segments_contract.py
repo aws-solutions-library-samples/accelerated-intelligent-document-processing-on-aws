@@ -123,7 +123,9 @@ class TestSegment:
         segment = Segment(page_ids=["7"])
         assert segment.start_page == segment.end_page == "7"
 
-    def test_the_class_is_optional_so_a_segmentation_only_stage_needs_no_rework(self):
+    def test_the_class_is_optional_so_a_boundary_detection_only_stage_needs_no_rework(
+        self,
+    ):
         """The whole reason ``doc_class`` is Optional — two-stage Stage A emits
         segments with no class at all, and Stage B fills them in."""
         segment = Segment(page_ids=["1", "2"])

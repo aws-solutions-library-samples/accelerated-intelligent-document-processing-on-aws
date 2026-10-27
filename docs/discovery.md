@@ -81,7 +81,7 @@ This analysis produces structured configuration templates that can be used to co
 - **📋 Configuration Generation**: Creates ready-to-use configuration templates for document processing
 - **🎯 Ground Truth Support**: Leverages existing labeled data to improve discovery accuracy
 - **📄 Multi-Section Discovery**: Discover multiple document classes from a single multi-page PDF package by defining page ranges
-- **✨ AI Auto-Detect Sections**: Automatically identify document section boundaries using LLM analysis
+- **✨ AI Auto-Detect Sections**: Automatically identify section boundaries using LLM analysis
 - **🏷️ Class Name Hints**: Pre-label discovered classes from auto-detect or manual labels
 - **🔧 Configurable Models**: Supports multiple Bedrock models with customizable parameters
 - **📝 Custom Prompts**: Allows fine-tuning of analysis behavior through prompt engineering
@@ -327,7 +327,7 @@ In Multi-Section Package mode, the UI displays:
 
 #### AI Auto-Detect Sections
 
-The **"✨ Auto-detect sections"** button uses an LLM to automatically identify document section boundaries:
+The **"✨ Auto-detect sections"** button uses an LLM to automatically identify section boundaries:
 
 1. The PDF is uploaded to S3
 2. The `autoDetectSections` GraphQL mutation calls a Lambda that sends the full PDF to Bedrock
@@ -968,8 +968,8 @@ result = discovery.discovery_classes_with_document_and_ground_truth(
 
 Discovery is the one stage that sees the pages while authoring the schema, so it
 is also asked — in the same model call, as diagnostic metadata that is stripped
-before the schema is validated — how many separate, complete documents of the
-discovered class the sample contains. The question is the one the extraction
+before the schema is validated — how many separate, complete records (instances) of
+the discovered class the sample contains. The question is the one the extraction
 [multi-instance detection probe](extraction-and-confidence.md#multi-instance-sections-x-aws-idp-multi-instance)
 uses ("count complete documents, not pages, sections or repeated headers"), so the
 two signals agree.
@@ -978,7 +978,7 @@ When the answer is two or more, the job carries a **suggestion**, never a config
 write:
 
 - **Job details page** (single-document discovery): *"This sample appears to
-  contain N 'X' records"* with an **Enable several documents per section** action.
+  contain N 'X' records"* with an **Enable several records per section** action.
   Clicking it sets `x-aws-idp-multi-instance: true` on that class in the job's
   configuration version (clearing any `x-aws-idp-instance-array` designation) and
   reminds you that committed evaluation baselines for the class then need

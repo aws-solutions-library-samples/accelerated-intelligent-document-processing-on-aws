@@ -298,7 +298,7 @@ By default, Bedrock usage appears in AWS Cost Explorer as a single line item per
 > **💡 Tip:** Create separate inference profiles for each processing stage (classification, extraction, assessment) if you need per-stage cost breakdowns.
 >
 > Under `classification.strategy: two_stage` classification is **two** separately
-> metered stages — `Segmentation` and `SectionClassification` — each with its own
+> metered stages — `BoundaryDetection` and `SectionClassification` — each with its own
 > model field, so it can take two inference profiles. Under `single_pass` (*One
 > stage* in the editor) it is one stage metered as `Classification`.
 
@@ -307,7 +307,7 @@ By default, Bedrock usage appears in AWS Cost Explorer as a single line item per
 1. In the IDP web UI, go to **View/Edit Configuration**
 2. Toggle to **JSON View** or **YAML View**
 3. Find the `model` or `model_id` fields in the relevant processing step sections — for example:
-   - **Classification**: `classification.one_stage.llm.model` (or, under `strategy: two_stage`, each call's `llm.model`: `classification.two_stage.segmentation.llm.model` and `classification.two_stage.section_classification.llm.model`)
+   - **Classification**: `classification.one_stage.llm.model` (or, under `strategy: two_stage`, each call's `llm.model`: `classification.two_stage.boundary_detection.llm.model` and `classification.two_stage.section_classification.llm.model`)
    - **Extraction**: `extraction.model`
    - **Assessment (confidence)**: `extraction.confidence.model`
    - **Summarization**: `summarization.model`

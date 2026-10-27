@@ -26,6 +26,8 @@ interface VersionOption {
 interface UseConfigurationVersionsReturn {
   versions: ConfigVersion[];
   loading: boolean;
+  /** True once the first list request has settled, whether or not it succeeded. */
+  loaded: boolean;
   error: string | null;
   fetchVersions: () => Promise<void>;
   fetchVersion: (versionName: string) => Promise<{ schema: unknown; default: unknown; custom: unknown }>;
@@ -42,10 +44,11 @@ interface UseConfigurationVersionsReturn {
 const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
   const [allVersions, setAllVersions] = useState<ConfigVersion[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Get updateConfiguration from useConfiguration hook
-  const { updateConfiguration } = useConfiguration();
+  const { updateConfiguration } = useConfiguration(null);
 
   // Get user's configuration profile scope for filtering
   const { allowedConfigVersions } = useUserRole();
@@ -99,6 +102,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
       setError(graphqlErr.message || 'Failed to fetch versions');
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   };
 
@@ -261,6 +265,7 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
   return {
     versions,
     loading,
+    loaded,
     error,
     fetchVersions,
     fetchVersion,

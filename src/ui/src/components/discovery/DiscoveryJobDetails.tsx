@@ -269,7 +269,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
         variables: {
           versionName: job.version,
           customConfig: JSON.stringify({ classes: next }),
-          description: `Discovery suggestion: several documents per section on '${multiInstanceHint.class_name}'`,
+          description: `Discovery suggestion: several records per section on '${multiInstanceHint.class_name}'`,
         },
       });
       const out = (upd as any)?.data?.updateConfiguration;
@@ -504,19 +504,19 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
                   applyState !== 'unchanged' &&
                   job.version ? (
                     <Button onClick={applyMultiInstanceHint} loading={applyState === 'applying'}>
-                      Enable several documents per section
+                      Enable several records per section
                     </Button>
                   ) : undefined
                 }
               >
                 <SpaceBetween size="xs">
                   <Box>
-                    If sections of this class can hold several records, enable <strong>Documents per section → Several</strong> on the
-                    class. If instead each record should be its own section, configure section splitting in classification. Discovery only
-                    suggests this; it did not change the class.
+                    If sections of this class can hold several records, enable <strong>Records per section → Several</strong> on the class.
+                    If instead each record should be its own section, configure section splitting in classification. Discovery only suggests
+                    this; it did not change the class.
                   </Box>
                   {(multiInstanceHint.already_multi_instance || applyState === 'unchanged') && (
-                    <StatusIndicator type="success">Several documents per section is already enabled on this class</StatusIndicator>
+                    <StatusIndicator type="success">Several records per section is already enabled on this class</StatusIndicator>
                   )}
                   {applyState === 'applied' && (
                     <StatusIndicator type="success">

@@ -113,7 +113,7 @@ def test_the_page_limit_predicate_answers_the_shared_table(value, expected, why)
 
 #: The two spellings JSON cannot carry, so they cannot live in the shared table —
 #: `Infinity` and `NaN` are not JSON. They belong here rather than in the
-#: `FileShapeConfig` suite because what they threaten is the *migration* predicate:
+#: `DocumentShapeConfig` suite because what they threaten is the *migration* predicate:
 #: it truncates, and `int(inf)` raises `OverflowError` while `int(nan)` raises
 #: `ValueError`. `conversion_notices` calls it from above the `try` that wraps the
 #: merge, so a raise there aborts `idp-cli config-validate` with a traceback instead
@@ -142,10 +142,10 @@ def test_a_non_finite_page_limit_is_answered_rather_than_raised(value):
 def test_a_non_finite_page_limit_normalises_in_the_model_too(value):
     """The two predicates must agree about it, which is the table's whole point —
     they just cannot agree *in* the table, because JSON has no spelling for it."""
-    from idp_common.config.models import FileShapeConfig
+    from idp_common.config.models import DocumentShapeConfig
 
     assert (
-        FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+        DocumentShapeConfig(maxPagesForClassification=value).maxPagesForClassification
         == "ALL"
     )
 

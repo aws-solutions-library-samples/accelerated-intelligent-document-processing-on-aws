@@ -117,7 +117,7 @@ class TestShippedPromptsCarryPlaceholder:
     )
     def test_default_classification_prompt_includes_few_shot_placeholder(self, path):
         """Every class-assigning classification prompt carries it too — same
-        silent-drop failure otherwise. Segmentation assigns no class, so its
+        silent-drop failure otherwise. Boundary detection assigns no class, so its
         prompts take no examples."""
         prompt = load_system_defaults("pattern-2")["classification"]
         for key in path:

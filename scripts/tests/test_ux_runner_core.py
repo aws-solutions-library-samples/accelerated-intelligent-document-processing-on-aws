@@ -471,6 +471,21 @@ def test_a_redactor_built_from_the_ui_env_leaves_no_stack_identifier() -> None:
 
 
 @pytest.mark.unit
+def test_the_web_url_line_is_redacted_whole_and_by_its_host() -> None:
+    """A run against the deployed UI reads the stack's web URL from a line of the
+    variable itself, so it identifies the stack from the first line printed."""
+    url = "https://d1a2b3c4d5e6f7.cloudfront.net/"
+    values = redact.values_from_ui_env({**_ui_env(), "UX_TEST_WEB_URL": url})
+    assert url in values
+    assert "d1a2b3c4d5e6f7.cloudfront.net" in values
+    out = redact.Redactor(values)(
+        f"opened {url}#/documents, then d1a2b3c4d5e6f7.cloudfront.net refused"
+    )
+    assert "cloudfront" not in out
+    assert "d1a2b3c4d5e6f7" not in out
+
+
+@pytest.mark.unit
 def test_absent_and_empty_ui_env_keys_contribute_nothing() -> None:
     assert redact.values_from_ui_env({}) == []
     assert (

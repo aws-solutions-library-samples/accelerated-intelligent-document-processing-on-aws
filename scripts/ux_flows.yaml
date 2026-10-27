@@ -50,7 +50,7 @@ flows:
     paths:
       - src/ui/src/components/test-studio/AnnotationQueueLanding.tsx
       - src/ui/src/components/test-studio/AnnotationWorkspace.tsx
-      - src/ui/src/components/test-studio/GroundTruthVisualEditor.tsx
+      - src/ui/src/components/test-studio/GroundTruthSectionEditor.tsx
       - src/ui/src/components/test-studio/TestSetDocumentDetail.tsx
     setup:
       - A test set exists with at least one labeled document.

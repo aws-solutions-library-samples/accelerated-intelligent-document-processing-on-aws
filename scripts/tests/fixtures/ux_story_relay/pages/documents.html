@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
+<!-- SPDX-License-Identifier: MIT-0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Document List</title>
+<style>.hidden { display: none; }</style>
+</head>
+<body>
+<header>
+  <a href="/documents.html">AWS IDP Accelerator Console</a>
+  <button type="button" id="user" aria-haspopup="menu" aria-expanded="false">new-analyst (Author)</button>
+  <div role="menu" aria-label="User menu" id="usermenu" class="hidden">
+    <div role="menuitem" tabindex="0" id="signout">Sign out</div>
+  </div>
+</header>
+<nav aria-label="Side navigation">
+  <ul>
+    <li><a href="/documents.html">Document List</a></li>
+    <li><a href="/upload.html">Upload Document(s)</a></li>
+    <li><a href="/documents.html#profiles">Configuration Profiles</a></li>
+    <li><a href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list" target="_blank" rel="noopener">Documentation</a></li>
+  </ul>
+</nav>
+<main>
+  <h1>Documents (2)</h1>
+  <div role="toolbar" aria-label="Document actions">
+    <button type="button">Refresh</button>
+    <button type="button">Reprocess</button>
+    <button type="button">Delete</button>
+    <button type="button" aria-label="Download results"><svg aria-hidden="true" width="8" height="8"></svg></button>
+    <button type="button"><svg aria-hidden="true" width="8" height="8"></svg></button>
+    <button type="button" id="add">Add prefix mapping</button>
+    <button type="button">Create test set</button>
+  </div>
+  <label for="filter">Find documents</label>
+  <input id="filter" type="search">
+  <label><input type="checkbox" id="tests"> Show Test Studio runs</label>
+  <table>
+    <thead><tr><th>Object name</th><th>Status</th><th>Configuration</th></tr></thead>
+    <tbody>
+      <tr><td><a href="#doc-1">lending_package.pdf</a></td><td>COMPLETED</td><td>lending-package-sample</td></tr>
+      <tr><td><a href="#doc-2">rvl_cdip_package.pdf</a></td><td>COMPLETED</td><td>rvl-cdip</td></tr>
+    </tbody>
+  </table>
+  <p>Read <a href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands">Prefix mappings</a> before you add one.</p>
+  <ul aria-label="Columns">
+    <li draggable="true" id="col-status">Status</li>
+    <li draggable="true" id="col-config">Configuration</li>
+  </ul>
+  <div role="dialog" aria-modal="true" aria-labelledby="dlg-title" id="dlg" class="hidden">
+    <h2 id="dlg-title">Add prefix mapping</h2>
+    <label for="prefix">S3 prefix</label>
+    <input id="prefix" type="text">
+    <label for="profile">Configuration profile</label>
+    <select id="profile"><option>lending-package-sample</option><option>bank-statement-sample</option></select>
+    <button type="button" id="cancel">Cancel</button>
+    <button type="button">Add another prefix</button>
+    <button type="button">Save</button>
+    <a href="#new-profile">New profile</a>
+  </div>
+</main>
+<script>
+  document.getElementById("add").addEventListener("click", () => {
+    document.getElementById("dlg").classList.remove("hidden");
+  });
+  document.getElementById("cancel").addEventListener("click", () => {
+    document.getElementById("dlg").classList.add("hidden");
+  });
+  document.getElementById("user").addEventListener("click", () => {
+    const menu = document.getElementById("usermenu");
+    const open = menu.classList.toggle("hidden") === false;
+    document.getElementById("user").setAttribute("aria-expanded", String(open));
+  });
+</script>
+</body>
+</html>

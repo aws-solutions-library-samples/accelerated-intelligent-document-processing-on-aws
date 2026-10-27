@@ -413,7 +413,7 @@ The evaluation framework provides different comparison methods optimized for var
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
 | **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
 | **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
-| **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses document-level match threshold for item pairing |
+| **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses the class-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
 
 ### ⚠️ Do not use `LLM` on a field inside a list
@@ -467,7 +467,7 @@ Evaluation reports display thresholds **only for methods that use similarity-bas
 - `Fuzzy (threshold: 0.85)` - Using field-specific configuration
 - `Levenshtein (threshold: 0.70)` - Using default
 - `Semantic (threshold: 0.70)` - Using default
-- `Hungarian (threshold: 0.80)` - Using document-level match threshold
+- `Hungarian (threshold: 0.80)` - Using class-level match threshold
 
 **Methods WITHOUT Threshold Display:**
 - `Exact` - Binary comparison (no threshold concept)
@@ -1010,7 +1010,7 @@ Result: 2/3 sections correct = 66.7% accuracy
 
 **Calculation**: Same as "Without Order" but the page indices list must match exactly (same pages, same order).
 
-**Use Case**: Verify that multi-page documents maintain correct page sequence.
+**Use Case**: Verify that multi-page sections maintain correct page sequence.
 
 **Example**:
 ```
@@ -1041,7 +1041,7 @@ to the class dropdown, which is where the class can actually be corrected.
 A section's verdict is derived from **its pages**, not by pairing it with a
 ground-truth section. When the split itself is wrong there is no single
 counterpart section to compare against, but every page still has a ground-truth
-class — so a section that merged two ground-truth documents reports *both*
+class — so a section that merged two ground-truth sections reports *both*
 classes it spans ("Section spans more than one ground-truth class") instead of
 an unhelpful "no match". A section is flagged even when one of the classes it
 spans equals its own, because in that case the boundary is what is wrong.

@@ -2524,7 +2524,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   form and keep it. A second warning appears for the one conversion that
   **changes behaviour**: a `maxPagesForClassification` page limit combined with
   boundary detection is converted to `sectionSplitting: disabled`, after which a
-  short multi-document file becomes one section where it used to be split. Both
+  short packet becomes one section where it used to be split. Both
   are warnings, not errors — the file is valid and will run.
 - **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
@@ -2968,7 +2968,7 @@ idp-cli abort-test-run \
 - Document workflows are stopped via Step Functions execution abort
 
 **Limitations:**
-- Cannot abort test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED**
+- Cannot abort test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED**
 - The abort operation waits up to 25 seconds for documents to reach terminal state
 
 ---

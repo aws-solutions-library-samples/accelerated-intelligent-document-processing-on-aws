@@ -24,6 +24,13 @@ import type { EditView } from './use-edit-view';
 
 export type EditAction = 'process' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup' | 'baseline';
 
+/**
+ * Accessible name of Cancel. It says what Cancel does to unsaved edits, and it is the
+ * marker the UX test's commit guard reads as "this editor may save its own edits"
+ * (`AUTOSAVE_CONTROLS` in `scripts/ux_runner/story_relay.py`), so keep the two in step.
+ */
+export const CANCEL_ACCESSIBLE_NAME = 'Cancel and discard changes';
+
 /** Hover text of Skip while it is available. */
 export const SKIP_HINT = 'Give this item back to its queue, unassigned and not finished.';
 
@@ -185,7 +192,12 @@ const EditActions = ({
       )}
       {showCancel && (
         <span title={cancelReason ? undefined : 'Discard your unsaved changes and leave'}>
-          <Button disabled={!!cancelReason} disabledReason={cancelReason} onClick={() => onAction('cancel')}>
+          <Button
+            ariaLabel={CANCEL_ACCESSIBLE_NAME}
+            disabled={!!cancelReason}
+            disabledReason={cancelReason}
+            onClick={() => onAction('cancel')}
+          >
             Cancel
           </Button>
         </span>

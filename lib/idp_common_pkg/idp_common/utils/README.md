@@ -276,9 +276,19 @@ pools: `assessment.batching` maps concurrent confidence batches over one, and
 the calling context would therefore leave the gate inert in exactly the concurrent
 confidence batch a 300 s request is retried in. `set_lambda_deadline_epoch` writes a
 process-wide value alongside the ContextVar and `get_lambda_deadline_epoch` falls back
-to it, so no fan-out site has to remember `contextvars.copy_context().run`. The cost is
-the contract on that function: **publish at the start of every invocation,
-unconditionally**, or a warm container keeps the previous one's deadline.
+to it, so no fan-out site has to remember `contextvars.copy_context().run`.
+
+⚠️ **The cost is that a published deadline outlives its invocation unless something
+takes it back**, so the contract on `set_lambda_deadline_epoch` is that it is called
+inside `lambda_deadline.lambda_deadline_scope`, which each publishing handler wraps
+around its whole invocation. On return or raise the scope puts both stores back to
+what they held on entry. Without it, whatever runs next in the same process — the next
+warm invocation until it publishes its own, or a later test in the same pytest run —
+reads a deadline that belongs to an invocation that has ended, and once that deadline
+has passed every retry ladder there gives up after its first failure.
+`tests/unit/lambdas/test_handler_deadline_scope.py` drives each publishing handler and
+asserts its deadline is gone once it returns or raises, and derives the set of
+publishers from the tree, so a new one that is not driven there fails.
 
 Note what a reserve cannot promise. `clamp_sleep_to_budgets` keeps
 `DEADLINE_RESERVE_SECONDS` of the remaining budget unspent so a sleep does not end
