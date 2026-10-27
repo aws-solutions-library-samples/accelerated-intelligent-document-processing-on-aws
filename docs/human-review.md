@@ -76,7 +76,7 @@ Admins have full access to all system features:
 | Upload Documents | ✅ Allowed |
 | View/Edit Extraction Results | ✅ Full access |
 | Complete Section Reviews | ✅ Allowed |
-| Skip All Reviews | ✅ Allowed (Admin only) |
+| Skip All Reviews | ✅ Allowed on any document |
 | Release Any Review | ✅ Allowed (can release reviews owned by others) |
 | View/Edit Configuration | ✅ Full access |
 | User Management | ✅ Full access (create/delete users) |
@@ -95,13 +95,13 @@ Reviewers have limited access focused on document review tasks:
 | View/Edit Extraction Results | ✅ Can view and edit (only for owned documents) |
 | Complete Section Reviews | ✅ Allowed (only for owned documents) |
 | Release Review | ✅ Can release own reviews only |
-| Skip All Reviews | ❌ Not allowed (Admin only) |
+| Skip All Reviews | ✅ Only on a review that is still waiting (raised, and not completed or skipped) |
 | View/Edit Configuration | ❌ Not allowed |
 | User Management | ❌ Not allowed |
 | Discovery | ❌ Not allowed |
 | Analytics & Agents | ❌ Limited access |
 
-**Note:** Reviewers see only documents that are waiting for review and unclaimed, including a review another reviewer has released back to the queue, or documents they have claimed for review. A review leaves the Reviewer's list once it is completed or skipped. It stays listed for the reviewer who owns it only on documents processed by earlier versions, which carry the legacy `HITLTriggered` flag, or when a finished review is claimed again, which sets it back to **Review In Progress**.
+**Note:** Reviewers see only documents that are waiting for review and unclaimed, including a review another reviewer has released back to the queue, or documents they have claimed for review. A review leaves the Reviewer's list once it is completed or skipped. It stays listed for the reviewer who owns it only on documents processed by earlier versions, which carry the legacy `HITLTriggered` flag.
 
 ### Managing Users
 
@@ -203,6 +203,7 @@ HITL review is automatically triggered when:
    - Document returns to **Review Pending** status
    - Another reviewer can claim it
    - Only a claimed review can be released: releasing a document nobody has claimed is refused
+   - A finished review (completed or skipped) can be neither claimed nor released, by any user, Admins included
 
 **For Admins:**
 
@@ -212,6 +213,7 @@ Admins have additional capabilities:
   - Choose a reason (for example **Extracted values look correct** or **Duplicate document**) and optionally add a note; both are recorded with the skip in the review history, and the document page shows them as **Skip Reason**
   - Document status changes to **Review Skipped**
   - The **Review Completed By** field records the admin who skipped
+  - Reviewers can skip too, but only a review that is still waiting: the server refuses a Reviewer's skip on a document whose review has finished or was never raised, which is also where the button is hidden
   - Downstream reprocessing (Summarization/Evaluation) is triggered automatically — consistent with completing all sections — which also fires the optional post-processing Lambda hook (`PostProcessingLambdaHookFunctionArn`) on workflow completion
   
 - **Release Any Review**: Admins can release reviews owned by other users
@@ -300,7 +302,7 @@ The section review interface provides:
 |--------|--------------|-------------|
 | **Start Review** | Reviewers, Admins | Claim a pending document for review |
 | **Release Review** | Owner, Admins | Release document back to pending status |
-| **Skip All Reviews** | Admins only | Skip all remaining sections |
+| **Skip All Reviews** | Reviewers (on a review still waiting), Admins | Skip all remaining sections |
 | **Mark Review Complete** | Owner, Admins | Complete review for a section |
 
 ### Document Editor

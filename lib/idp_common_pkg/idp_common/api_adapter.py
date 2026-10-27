@@ -187,6 +187,71 @@ class ResourceAccessDenied(PermissionError):
     """
 
 
+class ReportedServerError(RuntimeError):
+    """A server-side fault whose message the resolver wrote for the caller.
+
+    Mapped to HTTP **500** with ``errorType: "InternalError"`` and the message
+    passed through **verbatim**, by :func:`api_resolver` below and by the
+    dispatcher in ``nested/api-resolvers/src/lambda/http_api_dispatcher/index.py``.
+    Every other unexpected exception reaches the caller as
+    :func:`internal_error_payload` instead: a generic message and a request id, with
+    the exception text kept in the log, because an unexpected exception's text is
+    not written for a reader and routinely names internal resources (an AWS
+    authorization message names the role and resource ARNs).
+
+    Raise this only with a message you composed for the person who made the call,
+    which names no internal identifier, for a fault they need the detail of to act
+    on — ``deleteDocument`` reports which documents could not be completely deleted
+    and why, with ARNs redacted. For a refusal, raise ``PermissionError``,
+    ``ValueError`` or :class:`ResourceNotFound` instead, which map to 403, 400 and
+    404 with their messages intact.
+
+    Recognised by **class name**, like :class:`ResourceNotFound`: a resolver reached
+    through ``lambda:Invoke`` surfaces its exception as the ``errorType`` string, so
+    a resolver with no ``idp_common`` dependency may declare its own class of this
+    name. A subclass of ``RuntimeError`` so code catching that still catches it.
+    """
+
+
+#: The message an unexpected server error reaches the caller with. The request id
+#: is the one the dispatcher logs the full error under.
+INTERNAL_ERROR_MESSAGE = "An unexpected server error occurred. Request ID: {request_id}"
+
+
+def request_id_of(context: Any, event: Optional[Dict[str, Any]] = None) -> str:
+    """The id an operator finds this invocation's log lines by.
+
+    The Lambda request id when there is a context (it prefixes every line this
+    invocation logs), else API Gateway's request id from the event, else a fresh
+    one, so a response never carries an empty reference.
+    """
+    request_id = getattr(context, "aws_request_id", None)
+    if isinstance(request_id, str) and request_id:
+        return request_id
+    request_context = (event or {}).get("requestContext") or {}
+    request_id = (
+        request_context.get("requestId") if isinstance(request_context, dict) else None
+    )
+    if isinstance(request_id, str) and request_id:
+        return request_id
+    import uuid
+
+    return str(uuid.uuid4())
+
+
+def internal_error_payload(request_id: str) -> Dict[str, Any]:
+    """The 500 body for an unexpected server error: no exception text, an id."""
+    return {
+        "errors": [
+            {
+                "message": INTERNAL_ERROR_MESSAGE.format(request_id=request_id),
+                "errorType": "InternalError",
+                "requestId": request_id,
+            }
+        ]
+    }
+
+
 class _DecimalEncoder(json.JSONEncoder):
     """Encode DynamoDB ``Decimal`` values as int/float for JSON responses."""
 
@@ -534,7 +599,9 @@ def api_resolver(fn: Callable[[Dict[str, Any], Any], Any]) -> Callable:
         * ``PermissionError``           -> 403
         * ``ValueError`` / ``KeyError`` -> 400
         * ``ResourceNotFound``          -> 404
-        * anything else                 -> 500
+        * ``ReportedServerError``       -> 500, message passed through
+        * anything else                 -> 500, a generic message and a request
+          id; the exception text goes to the log only
       The error body matches the GraphQL shape the UI already parses:
       ``{"errors": [{"message": ..., "errorType": ...}]}``.
     - For a resolver-shaped (direct) invocation, returns the handler result
@@ -571,12 +638,29 @@ def api_resolver(fn: Callable[[Dict[str, Any], Any], Any]) -> Callable:
             return _http_response(
                 400, {"errors": [{"message": str(e), "errorType": "BadRequest"}]}
             )
-        except Exception as e:  # noqa: BLE001 - surface as 500 to the client
-            logger.error("Resolver error: %s", e, exc_info=True)
+        except ReportedServerError as e:
+            request_id = request_id_of(context, event)
+            logger.error(
+                "Resolver error (request %s): %s", request_id, e, exc_info=True
+            )
             return _http_response(
                 500,
-                {"errors": [{"message": str(e), "errorType": "InternalError"}]},
+                {
+                    "errors": [
+                        {
+                            "message": str(e),
+                            "errorType": "InternalError",
+                            "requestId": request_id,
+                        }
+                    ]
+                },
             )
+        except Exception as e:  # noqa: BLE001 - surface as 500 to the client
+            request_id = request_id_of(context, event)
+            logger.error(
+                "Resolver error (request %s): %s", request_id, e, exc_info=True
+            )
+            return _http_response(500, internal_error_payload(request_id))
         return _http_response(200, result)
 
     return wrapper

@@ -967,7 +967,7 @@ const SectionsPanel = ({
       }
     } catch (error) {
       logger.error('Failed to skip all sections review:', error);
-      alert(`Failed to skip all sections: ${(error as Error).message || 'Unknown error'}`);
+      alert(`Failed to skip all sections: ${getErrorMessage(error)}`);
     } finally {
       setIsSkipping(false);
     }

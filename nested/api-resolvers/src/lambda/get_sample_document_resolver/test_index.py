@@ -99,3 +99,24 @@ def test_presigns_nested_batch_file(resolver):
     result = resolver.handler(_event("samples/w2/W2_0.pdf", groups=("Viewer",)))
     assert result["s3Key"] == "samples/w2/W2_0.pdf"
     assert "response-content-disposition=inline" in result["url"]
+
+
+@pytest.mark.unit
+def test_a_presign_failure_is_reported_with_a_message_for_the_caller(
+    resolver, monkeypatch
+):
+    """``ReportedServerError`` is the class the dispatcher passes a 500 message
+    through for; any other class now reaches the caller as a generic message."""
+    from botocore.exceptions import ClientError
+
+    def _fail(*_args, **_kwargs):
+        raise ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "arn:aws:iam::1:role/x"}},
+            "GeneratePresignedUrl",
+        )
+
+    monkeypatch.setattr(resolver.s3_client, "generate_presigned_url", _fail)
+    with pytest.raises(Exception) as excinfo:
+        resolver.handler(_event("samples/bank-statement.pdf"))
+    assert type(excinfo.value).__name__ == "ReportedServerError"
+    assert str(excinfo.value) == "Could not generate a link for the requested sample"

@@ -50,6 +50,7 @@ import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadM
 import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
 import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
+import { getErrorMessage } from '../../utils/errorUtils';
 import { documentEditHref, reviewItemHref } from '../../routes/constants';
 import { PROCESSING_REASON, isEditableStatus } from '../review-workspace/direct-edit-status';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
@@ -823,7 +824,7 @@ export const DocumentPanel = ({
       }
     } catch (error) {
       logger.error('Failed to claim review:', error);
-      setErrorMessage(`Failed to start review: ${(error as Error).message || 'Unknown error'}`);
+      setErrorMessage(`Failed to start review: ${getErrorMessage(error)}`);
     } finally {
       setIsClaimingReview(false);
     }
