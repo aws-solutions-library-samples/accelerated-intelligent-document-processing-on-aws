@@ -344,7 +344,7 @@ def test_a_groups_claim_delivered_as_a_bare_string_still_authorizes(mod, table):
     intersects a set of words with a set of characters and comes back empty, so a
     legitimate reviewer would be refused every operation.
     """
-    put_doc(table, HITLReviewOwner="")
+    put_doc(table, HITLStatus="Review Pending", HITLReviewOwner="")
     with patch.object(
         mod,
         "create_document_service",
@@ -591,7 +591,7 @@ def test_an_in_scope_annotator_may_claim_a_document_from_their_own_test_set(mod,
     A scope check that refused every annotator would satisfy both of them and break
     the collaborative labelling queue outright.
     """
-    put_doc(table, TestSetId="ts-mine", HITLReviewOwner="")
+    put_doc(table, TestSetId="ts-mine", HITLStatus="Review Pending", HITLReviewOwner="")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
     document = FakeDocument([FakeSection("sec-1")])
     with patch.object(
@@ -1633,7 +1633,7 @@ def test_claiming_an_unowned_document_records_the_owner_and_starts_the_review(
 
 @pytest.mark.unit
 def test_a_document_already_owned_by_someone_else_cannot_be_claimed(mod, table):
-    put_doc(table, HITLReviewOwner="bob")
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="bob")
     document = FakeDocument([FakeSection("sec-1")])
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
@@ -1658,7 +1658,7 @@ def test_reclaiming_your_own_document_is_allowed(mod, table):
 @pytest.mark.unit
 def test_an_empty_owner_attribute_does_not_block_a_claim(mod, table):
     """A released document stores `""` rather than dropping the attribute."""
-    put_doc(table, HITLReviewOwner="")
+    put_doc(table, HITLStatus="Review Pending", HITLReviewOwner="")
     document = FakeDocument([FakeSection("sec-1")])
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)

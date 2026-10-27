@@ -27,6 +27,12 @@ no live writer stores and retained rows may carry; it is planted with a raw
 A queue review that ended ``complete`` or ``rejected`` is refused before either
 function runs, by ``_assert_not_queue_managed`` (``QUEUE_MANAGED``), and is pinned
 in ``test_index_review_lifecycle.py``.
+
+``claimReview`` also needs a review to have been raised (``_review_raised``, the web
+UI's ``hitlTriggered``: ``HITLTriggered`` true, or ``HITLStatus`` set and not
+``N/A``), for every caller, and refuses otherwise with ``NO_REVIEW_PENDING``, the
+code Skip All Reviews uses for the same rule. An ownerless ``Review Pending`` row an
+earlier version left is a raised review and is still claimed.
 """
 
 from __future__ import annotations
@@ -663,3 +669,207 @@ def test_skip_all_itself_refuses_a_queue_outcome_for_a_reviewer(mod, status):
     with pytest.raises(ValueError, match=FINISHED_MESSAGE):
         _run_skip_all(mod, is_admin=False)
     assert row(mod) == before
+
+
+# --------------------------------------------------------------------------
+# claimReview: a review must have been raised
+# --------------------------------------------------------------------------
+
+NO_REVIEW_MESSAGE = "^NO_REVIEW_PENDING: "
+CALLERS = [("bob", ("Reviewer",)), ("root", ("Admin",))]
+CALLER_IDS = ["reviewer", "admin"]
+
+
+def plant(mod, **attributes):
+    """Replace the row with exactly these attributes, as a retained row may be."""
+    mod.dynamodb.Table(TRACKING).put_item(Item={**KEY, **attributes})
+
+
+#: Rows no review was raised on. ``null`` is a stored NULL, which the rule reads as
+#: unset and which the condition must too.
+NOT_RAISED = {
+    "absent": {},
+    "N/A": {"HITLStatus": "N/A"},
+    "empty": {"HITLStatus": ""},
+    "null": {"HITLStatus": None},
+    "flag-false": {"HITLTriggered": False, "HITLStatus": "N/A"},
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stored", NOT_RAISED, ids=list(NOT_RAISED))
+@pytest.mark.parametrize("caller", CALLERS, ids=CALLER_IDS)
+def test_a_document_no_review_was_raised_on_cannot_be_claimed(mod, stored, caller):
+    """Admins included: claiming writes Review In Progress, which lists the
+    document as a review in progress for an Admin as much as for a Reviewer."""
+    plant(mod, **NOT_RAISED[stored])
+    before = row(mod)
+    user, groups = caller
+    with pytest.raises(ValueError, match=NO_REVIEW_MESSAGE):
+        claim(mod, user, groups)
+    assert row(mod) == before
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("caller", CALLERS, ids=CALLER_IDS)
+def test_an_old_ownerless_review_pending_row_is_still_claimed(mod, caller):
+    """Rows an earlier version left: ``Review Pending`` with no owner attribute and
+    no ``HITLTriggered``. They are not backfilled, and they are owed reviews."""
+    plant(mod, HITLStatus=LegacyHitlStatus.REVIEW_PENDING.value)
+    user, groups = caller
+    claim(mod, user, groups)
+    stored = row(mod)
+    assert stored["HITLReviewOwner"] == user
+    assert stored["HITLStatus"] == LegacyHitlStatus.IN_PROGRESS.value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "setup", ["pipeline-pending", "released", "HITLTriggered-only", "flag-and-N/A"]
+)
+@pytest.mark.parametrize("caller", CALLERS, ids=CALLER_IDS)
+def test_a_raised_review_is_still_claimed(mod, setup, caller):
+    if setup == "released":
+        claim(mod)
+        release(mod)
+        assert row(mod)["HITLStatus"] == LegacyHitlStatus.REVIEW_PENDING.value
+    elif setup == "HITLTriggered-only":
+        plant(mod, HITLTriggered=True)
+    elif setup == "flag-and-N/A":
+        # The flag alone is enough, whatever the status says.
+        plant(mod, HITLTriggered=True, HITLStatus="N/A")
+    user, groups = caller
+    claim(mod, user, groups)
+    stored = row(mod)
+    assert stored["HITLReviewOwner"] == user
+    assert stored["HITLStatus"] == LegacyHitlStatus.IN_PROGRESS.value
+
+
+@pytest.mark.unit
+def test_a_finished_review_is_refused_as_finished_and_not_as_unraised(mod):
+    """The finished check comes first, so the message says what happened."""
+    finish(mod, "completeSectionReview")
+    with pytest.raises(ValueError, match=FINISHED_MESSAGE):
+        claim(mod, "bob")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "unraise",
+    [
+        {"SET": {"HITLStatus": "N/A"}},
+        {"REMOVE": ["HITLStatus", "HITLPendingReview"]},
+    ],
+    ids=["set-N/A", "removed"],
+)
+def test_a_review_withdrawn_between_the_read_and_the_claim_is_refused(mod, unraise):
+    """The write's condition holds the rule, not only the read before it.
+
+    The review is raised when ``claim_review`` reads the row and gone by the time
+    the update is sent, so only the ``ConditionExpression`` can refuse it, and the
+    re-read after it phrases the refusal.
+    """
+    real_table = mod.dynamodb.Table(TRACKING)
+
+    class WithdrawnJustBeforeTheWrite:
+        def __getattr__(self, name):
+            return getattr(real_table, name)
+
+        def update_item(self, **kwargs):
+            if "SET" in unraise:
+                real_table.update_item(
+                    Key=KEY,
+                    UpdateExpression="SET HITLStatus = :s",
+                    ExpressionAttributeValues={":s": unraise["SET"]["HITLStatus"]},
+                )
+            else:
+                real_table.update_item(
+                    Key=KEY, UpdateExpression="REMOVE " + ", ".join(unraise["REMOVE"])
+                )
+            return real_table.update_item(**kwargs)
+
+    with patch.object(
+        mod.dynamodb, "Table", return_value=WithdrawnJustBeforeTheWrite()
+    ):
+        with pytest.raises(ValueError, match=NO_REVIEW_MESSAGE):
+            mod.claim_review(OBJECT_KEY, "bob", "bob@example.com")
+    stored = row(mod)
+    assert "HITLReviewOwner" not in stored
+    assert stored.get("HITLStatus") != LegacyHitlStatus.IN_PROGRESS.value
+
+
+@pytest.mark.unit
+def test_an_unraised_claim_is_refused_before_any_write_and_logged(mod, caplog):
+    """The read refuses it, consistently, so no conditional write is attempted and
+    the log says why. moto answers every read consistently, so the flag is asserted
+    on the call."""
+    plant(mod, HITLStatus="N/A")
+    real_table = mod.dynamodb.Table(TRACKING)
+    reads, writes = [], []
+
+    class RecordingTable:
+        def __getattr__(self, name):
+            return getattr(real_table, name)
+
+        def get_item(self, **kwargs):
+            reads.append(kwargs)
+            return real_table.get_item(**kwargs)
+
+        def update_item(self, **kwargs):
+            writes.append(kwargs)
+            return real_table.update_item(**kwargs)
+
+    with (
+        patch.object(mod.dynamodb, "Table", return_value=RecordingTable()),
+        caplog.at_level("WARNING"),
+    ):
+        with pytest.raises(ValueError, match=NO_REVIEW_MESSAGE):
+            mod.claim_review(OBJECT_KEY, "bob")
+    assert writes == []
+    assert reads and all(read.get("ConsistentRead") is True for read in reads)
+    assert "no review was raised" in caplog.text
+
+
+#: Rows the rule and the write's condition are compared on. Written out, with the
+#: verdict the web UI's ``hitlTriggered`` gives each, so the test does not only
+#: share the code's reading.
+RAISED_CASES = [
+    ({}, False),
+    ({"HITLStatus": ""}, False),
+    ({"HITLStatus": "N/A"}, False),
+    ({"HITLStatus": None}, False),
+    ({"HITLTriggered": False}, False),
+    ({"HITLTriggered": False, "HITLStatus": "N/A"}, False),
+    ({"HITLStatus": "PendingReview"}, True),
+    ({"HITLStatus": "Review Pending"}, True),
+    ({"HITLStatus": "InProgress"}, True),
+    ({"HITLStatus": "Completed"}, True),
+    ({"HITLTriggered": True}, True),
+    ({"HITLTriggered": True, "HITLStatus": "N/A"}, True),
+    ({"HITLTriggered": False, "HITLStatus": "Review Pending"}, True),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "attributes,raised", RAISED_CASES, ids=[repr(c[0]) for c in RAISED_CASES]
+)
+def test_the_raised_condition_agrees_with_the_rule(mod, attributes, raised):
+    """Measured through moto's expression engine, not DynamoDB's."""
+    plant(mod, **attributes)
+    assert mod._review_raised(row(mod)) is raised
+    condition, values = mod._review_raised_condition()
+    write = {
+        "Key": KEY,
+        "UpdateExpression": "SET Probe = :p",
+        "ConditionExpression": condition,
+        "ExpressionAttributeValues": {":p": "x", **values},
+    }
+    if raised:
+        mod.dynamodb.Table(TRACKING).update_item(**write)
+        assert row(mod)["Probe"] == "x"
+    else:
+        with pytest.raises(
+            mod.dynamodb.meta.client.exceptions.ConditionalCheckFailedException
+        ):
+            mod.dynamodb.Table(TRACKING).update_item(**write)

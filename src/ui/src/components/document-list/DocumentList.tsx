@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useEffect, useState, useMemo } from 'react';
-import { Table, Pagination, TextFilter, Box, Link, SpaceBetween } from '@cloudscape-design/components';
+import { Alert, Table, Pagination, TextFilter, Box, Link, SpaceBetween } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
@@ -33,6 +33,7 @@ import { exportDocuments, triggerBrowserDownload } from '../document-panel/docum
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
 import { claimReview, releaseReview } from '../../graphql/generated';
+import { getErrorMessage } from '../../utils/errorUtils';
 
 import type { MappedDocument } from './documents-table-config';
 import {
@@ -46,6 +47,7 @@ import {
   SELECTION_LABELS,
   DEFAULT_PREFERENCES,
   DEFAULT_SORT_COLUMN,
+  isClaimableForReview,
 } from './documents-table-config';
 import { testExecutionsHref } from '../../routes/constants';
 
@@ -81,6 +83,7 @@ const DocumentList = (): React.JSX.Element => {
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
   const [currentUsername, setCurrentUsername] = useState('');
+  const [claimErrors, setClaimErrors] = useState<string[]>([]);
   const { settings } = useSettingsContext();
   const { currentCredentials } = useAppContext();
   const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
@@ -285,11 +288,14 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleClaimReview = async () => {
     const client = generateClient();
-    // Queued documents are reviewed from their queue item; the server refuses them here.
-    const selectedItems = (collectionProps.selectedItems as MappedDocument[]).filter((item) => !isQueueManaged(item.hitlStatus));
+    // Only the selected documents Start Review can claim: a review raised, not
+    // finished, not owned, and not in a review queue. The server refuses the rest.
+    const selectedItems = (collectionProps.selectedItems as MappedDocument[]).filter(isClaimableForReview);
     const isSingleSelection = selectedItems.length === 1;
+    const failures: string[] = [];
+    setClaimErrors([]);
 
-    // Claim reviews for all selected documents
+    // Claim reviews for the claimable selected documents
     for (const item of selectedItems) {
       try {
         const result = await client.graphql({
@@ -316,14 +322,16 @@ const DocumentList = (): React.JSX.Element => {
         );
       } catch (e) {
         logger.error('Error claiming review', e);
+        failures.push(`${item.objectKey}: ${getErrorMessage(e)}`);
       }
     }
 
     // Clear selection
     actions.setSelectedItems([]);
+    setClaimErrors(failures);
 
-    // If single document selected, navigate to document details
-    if (isSingleSelection) {
+    // If the one selected document was claimed, navigate to its details
+    if (isSingleSelection && failures.length === 0) {
       const documentId = selectedItems[0].objectKey;
       logger.debug('Navigating to document details:', documentId);
       navigate(`/documents/${encodeURIComponent(documentId)}`);
@@ -495,6 +503,13 @@ const DocumentList = (): React.JSX.Element => {
 
   return (
     <>
+      {claimErrors.length > 0 && (
+        <Alert type="error" dismissible onDismiss={() => setClaimErrors([])} header="Start Review was refused">
+          {claimErrors.map((message) => (
+            <div key={message}>{message}</div>
+          ))}
+        </Alert>
+      )}
       <Table
         {...collectionProps}
         header={
