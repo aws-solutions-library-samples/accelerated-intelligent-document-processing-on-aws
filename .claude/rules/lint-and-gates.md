@@ -5,8 +5,10 @@ exemptions are handled, and how CI parity is kept.
 
 ## Must
 - Before every commit, run `make lint` (or `make fastlint`), `make test` and
-  `make typecheck`. Before opening a PR, also run `make srt-scan` and read its
-  findings table instead of trusting the exit code.
+  `make typecheck`.
+- Read the SRT result on the PR before merging; both CIs run it on every PR. Run
+  `make srt-scan` locally only when you need the answer before CI does, and then
+  read its findings table instead of trusting the exit code.
 - Run `make dep-audit` whenever dependencies change.
 - Use `make lint-cicd` when you need the CI-equivalent run. A UI-lint checksum hit
   is a skip, not a pass.

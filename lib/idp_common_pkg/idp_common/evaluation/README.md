@@ -259,6 +259,16 @@ durations would be the next refinement.
 
 ## Usage
 
+⚠️ **A class written in the pre-JSON-Schema style is accepted and then ignored
+here.** `SticklerConfigMapper.build_all_stickler_configs` keys its per-class
+configuration on `x-aws-idp-document-type`, so a class carrying a bare `name:`
+and an `attributes:` list produces **no** Stickler configuration at all — one
+`Document class missing x-aws-idp-document-type` log line, and then evaluation
+falls back to inferring a schema from the expected data. Every
+`evaluation_method` and `evaluation_threshold` written that way is silently
+unused, and the run still reports scores, so there is nothing in the report to
+read the omission off. Use the extension keys shown below.
+
 ```python
 from idp_common.models import Document, Status
 from idp_common import ocr, classification, extraction, evaluation
@@ -274,91 +284,103 @@ config = {
             "task_prompt": "I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS}..."
         }
     },
+    # Classes are JSON Schema documents with x-aws-idp-* extensions. The class
+    # name comes from x-aws-idp-document-type, nested objects and list items
+    # from $defs + $ref, and per-field evaluation settings from
+    # x-aws-idp-evaluation-method / x-aws-idp-evaluation-threshold.
     "classes": [
         {
-            "name": "Bank Statement",
-            "attributes": [
-                # Simple Attributes
-                {
-                    "name": "Account Number",
-                    "description": "Primary account identifier",
-                    "attributeType": "simple",  # or omit for default
-                    "evaluation_method": "EXACT"
-                },
-                {
-                    "name": "Statement Period",
-                    "description": "Statement period (e.g., January 2024)",
-                    "attributeType": "simple",
-                    "evaluation_method": "FUZZY",
-                    "evaluation_threshold": 0.8
-                },
-                
-                # Group Attributes - nested object structures
-                {
-                    "name": "Account Holder Address",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "Bank Statement",
+            "type": "object",
+            "x-aws-idp-document-type": "Bank Statement",
+            "description": "Monthly bank account statement",
+            "$defs": {
+                # Nested object structure
+                "Account Holder Address": {
+                    "type": "object",
                     "description": "Complete address information for the account holder",
-                    "attributeType": "group",
-                    "groupAttributes": [
-                        {
-                            "name": "Street Number",
+                    "properties": {
+                        "Street Number": {
+                            "type": "string",
                             "description": "House or building number",
-                            "evaluation_method": "FUZZY",
-                            "evaluation_threshold": 0.9
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": "0.9"
                         },
-                        {
-                            "name": "Street Name",
+                        "Street Name": {
+                            "type": "string",
                             "description": "Name of the street",
-                            "evaluation_method": "FUZZY",
-                            "evaluation_threshold": 0.8
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": "0.8"
                         },
-                        {
-                            "name": "City",
+                        "City": {
+                            "type": "string",
                             "description": "City name",
-                            "evaluation_method": "FUZZY",
-                            "evaluation_threshold": 0.9
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": "0.9"
                         },
-                        {
-                            "name": "State",
+                        "State": {
+                            "type": "string",
                             "description": "State abbreviation",
-                            "evaluation_method": "EXACT"
+                            "x-aws-idp-evaluation-method": "EXACT"
                         },
-                        {
-                            "name": "ZIP Code",
+                        "ZIP Code": {
+                            "type": "string",
                             "description": "Postal code",
-                            "evaluation_method": "EXACT"
+                            "x-aws-idp-evaluation-method": "EXACT"
                         }
-                    ]
+                    }
                 },
-                
-                # List Attributes - arrays of items with consistent structure
-                {
-                    "name": "Transactions",
-                    "description": "List of all transactions in the statement period",
-                    "attributeType": "list",
-                    "listItemTemplate": {
-                        "itemDescription": "Individual transaction record",
-                        "itemAttributes": [
-                            {
-                                "name": "Date",
-                                "description": "Transaction date",
-                                "evaluation_method": "FUZZY",
-                                "evaluation_threshold": 0.9
-                            },
-                            {
-                                "name": "Description",
-                                "description": "Transaction description or merchant name",
-                                "evaluation_method": "SEMANTIC",
-                                "evaluation_threshold": 0.7
-                            },
-                            {
-                                "name": "Amount",
-                                "description": "Transaction amount",
-                                "evaluation_method": "NUMERIC_EXACT"
-                            }
-                        ]
+                # Repeated item structure, referenced from a list property
+                "Transaction": {
+                    "type": "object",
+                    "properties": {
+                        "Date": {
+                            "type": "string",
+                            "description": "Transaction date",
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": "0.9"
+                        },
+                        "Description": {
+                            "type": "string",
+                            "description": "Transaction description or merchant name",
+                            "x-aws-idp-evaluation-method": "SEMANTIC",
+                            "x-aws-idp-evaluation-threshold": "0.7"
+                        },
+                        "Amount": {
+                            "type": "number",
+                            "description": "Transaction amount",
+                            "x-aws-idp-evaluation-method": "NUMERIC_EXACT"
+                        }
                     }
                 }
-            ]
+            },
+            "properties": {
+                # Scalar fields
+                "Account Number": {
+                    "type": "string",
+                    "description": "Primary account identifier",
+                    "x-aws-idp-evaluation-method": "EXACT"
+                },
+                "Statement Period": {
+                    "type": "string",
+                    "description": "Statement period (e.g., January 2024)",
+                    "x-aws-idp-evaluation-method": "FUZZY",
+                    "x-aws-idp-evaluation-threshold": "0.8"
+                },
+                # Nested object
+                "Account Holder Address": {
+                    "description": "Complete address information for the account holder",
+                    "$ref": "#/$defs/Account Holder Address"
+                },
+                # List of items with a consistent structure
+                "Transactions": {
+                    "type": "array",
+                    "description": "List of all transactions in the statement period",
+                    "x-aws-idp-list-item-description": "Individual transaction record",
+                    "items": {"$ref": "#/$defs/Transaction"}
+                }
+            }
         }
     ]
 }

@@ -33,15 +33,20 @@ RESOLVERS = [
 #: canonical file name -> vendored file name
 MODULES = {"statuses.py": "review_statuses.py"}
 
-#: The document lookup function also carries no idp_common layer and reads the
-#: review status values from its own ``review_statuses.py`` copy.
+#: The document lookup function and the GSI attribute backfill worker also carry
+#: no idp_common layer and read the review status values from their own
+#: ``review_statuses.py`` copies.
 LOOKUP_FUNCTION = REPO_ROOT / "src/lambda/lookup_function"
+BACKFILL_WORKER = REPO_ROOT / "src/lambda/backfill_gsi_attributes"
 
 PAIRS = [
     (CANONICAL_DIR / canonical, resolver / vendored)
     for canonical, vendored in MODULES.items()
     for resolver in RESOLVERS
-] + [(CANONICAL_DIR / "statuses.py", LOOKUP_FUNCTION / "review_statuses.py")]
+] + [
+    (CANONICAL_DIR / "statuses.py", function / "review_statuses.py")
+    for function in (LOOKUP_FUNCTION, BACKFILL_WORKER)
+]
 
 
 @pytest.mark.unit

@@ -8,7 +8,11 @@ from unittest import mock
 import pytest
 from moto import mock_aws
 
-from idp_common.dynamodb.client import DynamoDBClient, DynamoDBError
+from idp_common.dynamodb.client import (
+    DynamoDBClient,
+    DynamoDBError,
+    DynamoDBUnprocessedKeysError,
+)
 
 from ._gsi_table import REGION, TABLE, make_table
 
@@ -99,6 +103,32 @@ class TestBatchGet:
                 self.client.batch_get_items([{"PK": "p", "SK": "b"}], max_attempts=2)
         assert exc.value.error_code == "UnprocessedKeys"
         assert fake.call_count == 2
+
+    def test_exhausted_retries_carry_the_rows_already_read(self):
+        unprocessed = {TABLE: {"Keys": [{"PK": "p", "SK": "b"}]}}
+        fake = mock.Mock(
+            side_effect=[
+                {
+                    "Responses": {TABLE: [{"PK": "p", "SK": "a"}]},
+                    "UnprocessedKeys": unprocessed,
+                },
+                {
+                    "Responses": {TABLE: [{"PK": "p", "SK": "c"}]},
+                    "UnprocessedKeys": unprocessed,
+                },
+            ]
+        )
+        keys = [{"PK": "p", "SK": s} for s in ("a", "b", "c")]
+        with (
+            mock.patch.object(self.client.dynamodb, "batch_get_item", fake),
+            mock.patch("idp_common.dynamodb.client.time.sleep"),
+        ):
+            with pytest.raises(DynamoDBUnprocessedKeysError) as exc:
+                self.client.batch_get_items(keys, max_attempts=2)
+        assert isinstance(exc.value, DynamoDBError)
+        assert exc.value.error_code == "UnprocessedKeys"
+        # Rows from every attempt, not only the first or the last.
+        assert exc.value.items == [{"PK": "p", "SK": "a"}, {"PK": "p", "SK": "c"}]
 
     def test_empty_keys_return_empty(self):
         assert self.client.batch_get_items([]) == []

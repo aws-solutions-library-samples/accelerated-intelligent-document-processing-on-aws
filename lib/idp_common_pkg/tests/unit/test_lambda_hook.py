@@ -644,7 +644,7 @@ class TestPydanticConfigModels:
         # to both two-stage calls, which inherited it), the hook to every call.
         for call in (
             config.one_stage.llm,
-            config.two_stage.segmentation.llm,
+            config.two_stage.boundary_detection.llm,
             config.two_stage.section_classification.llm,
         ):
             assert call.model == "LambdaHook"

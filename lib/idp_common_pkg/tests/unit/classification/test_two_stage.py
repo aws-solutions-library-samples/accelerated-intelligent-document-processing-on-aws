@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""``classification.strategy: two_stage`` — segmentation, then labeling (#1329).
+"""``classification.strategy: two_stage`` — boundary detection, then section classification (#1329).
 
 A single-pass call does two different jobs at once and pays for it twice. Every
 boundary decision carries the whole class vocabulary — the class list, every
@@ -18,7 +18,7 @@ optional. Stage B makes one call per segment.
 Three properties here are the ones a refactor could lose without any structural
 test noticing:
 
-- **The two halves are metered separately**, under ``Segmentation`` and
+- **The two halves are metered separately**, under ``BoundaryDetection`` and
   ``SectionClassification``, while single-pass stays ``Classification`` with unchanged units.
   That split is what makes "is this actually cheaper on my documents?"
   answerable from the cost table rather than from arithmetic.
@@ -59,7 +59,7 @@ LABEL_PROMPT = (
 )
 
 #: A Stage A prompt that asks for everything Stage A is supposed to withhold.
-#: An operator can write this — the segmentation prompts are editable — so the
+#: An operator can write this — the boundary detection prompts are editable — so the
 #: guarantee has to hold against it rather than against the shipped prompt,
 #: which happens not to reference either placeholder and so makes the question
 #: unobservable.
@@ -229,16 +229,16 @@ class _Router:
         self.calls.append((stage, content))
         text = "".join(b["text"] for b in content if "text" in b)
 
-        if stage == ClassificationService.STAGE_SEGMENTATION:
+        if stage == ClassificationService.STAGE_BOUNDARY_DETECTION:
             if self.packet_segments:
-                return _reply({"segments": self.packet_segments}, "Segmentation")
+                return _reply({"segments": self.packet_segments}, "BoundaryDetection")
             # Page-granularity Stage A: find which page this call is about.
             for page_id, boundary in self.boundaries.items():
                 if f"(document page {page_id})" in text or f"PAGE-{page_id}" in text:
-                    return _reply({"document_boundary": boundary}, "Segmentation")
-            return _reply({"document_boundary": "continue"}, "Segmentation")
+                    return _reply({"document_boundary": boundary}, "BoundaryDetection")
+            return _reply({"document_boundary": "continue"}, "BoundaryDetection")
 
-        if stage == ClassificationService.STAGE_LABELING:
+        if stage == ClassificationService.STAGE_SECTION_CLASSIFICATION:
             label = self.labels.pop(0) if self.labels else "invoice"
             return _reply({"class": label}, "SectionClassification")
 
@@ -296,16 +296,18 @@ class TestStrategyConfig:
 
 @pytest.mark.unit
 class TestStagePromptResolution:
-    def test_stage_a_uses_the_page_segmentation_prompt_at_page_granularity(self):
+    def test_stage_a_uses_the_page_boundary_detection_prompt_at_page_granularity(self):
         service = _service(granularity="page")
-        config = service._get_classification_config(service.STAGE_SEGMENTATION)
+        config = service._get_classification_config(service.STAGE_BOUNDARY_DETECTION)
         assert config["task_prompt"].startswith("Does a document start here?")
         assert config["system_prompt"] == "stage A system"
-        assert config["metering_context"] == "Segmentation"
+        assert config["metering_context"] == "BoundaryDetection"
 
-    def test_stage_a_uses_the_packet_segmentation_prompt_at_packet_granularity(self):
+    def test_stage_a_uses_the_packet_boundary_detection_prompt_at_packet_granularity(
+        self,
+    ):
         service = _service(granularity="packet")
-        config = service._get_classification_config(service.STAGE_SEGMENTATION)
+        config = service._get_classification_config(service.STAGE_BOUNDARY_DETECTION)
         assert config["task_prompt"].startswith("Split this packet into ranges.")
         assert config["system_prompt"] == "stage A packet system"
 
@@ -314,7 +316,9 @@ class TestStagePromptResolution:
         the boundaries were found."""
         for granularity in ("page", "packet"):
             service = _service(granularity=granularity)
-            config = service._get_classification_config(service.STAGE_LABELING)
+            config = service._get_classification_config(
+                service.STAGE_SECTION_CLASSIFICATION
+            )
             assert config["system_prompt"] == "stage B system"
             assert config["metering_context"] == "SectionClassification"
 
@@ -331,17 +335,24 @@ class TestStagePromptResolution:
             labeling={"model": "us.amazon.nova-2-lite-v1:0"},
         )
         assert (
-            service._get_classification_config(service.STAGE_SEGMENTATION)["model_id"]
+            service._get_classification_config(service.STAGE_BOUNDARY_DETECTION)[
+                "model_id"
+            ]
             == "us.anthropic.claude-sonnet-5"
         )
         assert (
-            service._get_classification_config(service.STAGE_LABELING)["model_id"]
+            service._get_classification_config(service.STAGE_SECTION_CLASSIFICATION)[
+                "model_id"
+            ]
             == "us.amazon.nova-2-lite-v1:0"
         )
 
     def test_an_unset_stage_model_falls_back_to_the_shared_one(self):
         service = _service()
-        for stage in (service.STAGE_SEGMENTATION, service.STAGE_LABELING):
+        for stage in (
+            service.STAGE_BOUNDARY_DETECTION,
+            service.STAGE_SECTION_CLASSIFICATION,
+        ):
             assert (
                 service._get_classification_config(stage)["model_id"]
                 == "us.amazon.nova-2-lite-v1:0"
@@ -351,7 +362,7 @@ class TestStagePromptResolution:
         """Stage A reports no class, so there is no class to be confident
         about, and output tokens spent here buy a number describing nothing."""
         service = _service(confidence={"mode": "topk", "task_prompt_topk": "BLOCK"})
-        prompt = service._get_classification_config(service.STAGE_SEGMENTATION)[
+        prompt = service._get_classification_config(service.STAGE_BOUNDARY_DETECTION)[
             "task_prompt"
         ]
         assert "BLOCK" not in prompt
@@ -367,9 +378,9 @@ class TestStagePromptResolution:
                 "task_prompt_topk_packet": "PACKET BLOCK",
             },
         )
-        prompt = service._get_classification_config(service.STAGE_LABELING)[
-            "task_prompt"
-        ]
+        prompt = service._get_classification_config(
+            service.STAGE_SECTION_CLASSIFICATION
+        )["task_prompt"]
         assert "PAGE BLOCK 2" in prompt
         assert "PACKET BLOCK" not in prompt
 
@@ -381,13 +392,17 @@ class TestBoundaryHints:
         vocabulary leaves two-stage working and costing what single-pass cost."""
         service = _service()
         assert (
-            service._format_boundary_hints(ClassificationService.STAGE_SEGMENTATION)
+            service._format_boundary_hints(
+                ClassificationService.STAGE_BOUNDARY_DETECTION
+            )
             == ""
         )
 
     def test_class_names_sends_names_only(self):
         service = _service(segmentation={"boundary_hints": "class_names"})
-        hints = service._format_boundary_hints(ClassificationService.STAGE_SEGMENTATION)
+        hints = service._format_boundary_hints(
+            ClassificationService.STAGE_BOUNDARY_DETECTION
+        )
         assert "invoice" in hints and "receipt" in hints
         # Not the descriptions, which are the bulk of the prefix.
         assert A_CLASS_DESCRIPTION not in hints
@@ -396,7 +411,7 @@ class TestBoundaryHints:
         "stage",
         [
             ClassificationService.STAGE_CLASSIFICATION,
-            ClassificationService.STAGE_LABELING,
+            ClassificationService.STAGE_SECTION_CLASSIFICATION,
         ],
     )
     def test_no_other_stage_can_render_the_hints_block(self, stage):
@@ -420,7 +435,7 @@ class TestBoundaryHints:
         ):
             service.two_stage_classify_document(document)
 
-        stage_a = [c for stage, c in router.calls if stage == "segmentation"]
+        stage_a = [c for stage, c in router.calls if stage == "boundary_detection"]
         assert stage_a
         for content in stage_a:
             text = "".join(b["text"] for b in content if "text" in b)
@@ -444,7 +459,7 @@ def _stage_a_text(service, document, router) -> str:
     stage_a = [
         content
         for stage, content in router.calls
-        if stage == ClassificationService.STAGE_SEGMENTATION
+        if stage == ClassificationService.STAGE_BOUNDARY_DETECTION
     ]
     assert stage_a, "no Stage A call was made, so this proves nothing"
     return "\n".join(b["text"] for content in stage_a for b in content if "text" in b)
@@ -454,13 +469,13 @@ def _stage_a_text(service, document, router) -> str:
 class TestStageAWithholdsTheVocabularyOnEveryPath:
     """Stage A had three content builders, each withholding a different subset.
 
-    ``_segment_pages`` passed an empty class listing (page granularity with no
+    ``_detect_page_boundaries`` passed an empty class listing (page granularity with no
     context pages); the context-page builder passed the full list and the packet
     builder the full markdown table. All three rendered the schema attribute
     listing in full and spliced every configured few-shot example in at
     ``{FEW_SHOT_EXAMPLES}``, so the page/no-context path withheld the plain
     class listing and nothing else, and no path delivered the guarantee the
-    strategy is sold on. The shipped segmentation prompts reference none of
+    strategy is sold on. The shipped boundary detection prompts reference none of
     those placeholders, so the leak was invisible until an operator edited a
     prompt — and when it fired, two-stage still worked and simply cost what
     single-pass cost, which is the failure mode with no symptom. The guarantee
@@ -518,7 +533,7 @@ class TestStageAWithholdsTheVocabularyOnEveryPath:
         stage_b = [
             content
             for stage, content in router.calls
-            if stage == ClassificationService.STAGE_LABELING
+            if stage == ClassificationService.STAGE_SECTION_CLASSIFICATION
         ]
         assert stage_b
         text = "\n".join(
@@ -629,7 +644,7 @@ class TestBoundaryHintsDoNotLeakIntoSinglePass:
             segmentation={"boundary_hints": "class_names"},
         )
         config = service._get_classification_config(
-            ClassificationService.STAGE_LABELING
+            ClassificationService.STAGE_SECTION_CLASSIFICATION
         )
         content = service._build_packet_content(
             config["task_prompt"], "page 1 text", [], stage=config["stage"]
@@ -704,7 +719,9 @@ class TestTwoStagePacket:
         ):
             return service.two_stage_classify_document(document)
 
-    def test_one_segmentation_call_then_one_labeling_call_per_segment(self):
+    def test_one_boundary_detection_call_then_one_section_classification_call_per_segment(
+        self,
+    ):
         service = _service(granularity="packet")
         router = _Router(
             packet_segments=[
@@ -716,8 +733,8 @@ class TestTwoStagePacket:
         result = self._run(service, _document(4), router)
 
         stages = [stage for stage, _ in router.calls]
-        assert stages.count("segmentation") == 1
-        assert stages.count("labeling") == 2
+        assert stages.count("boundary_detection") == 1
+        assert stages.count("section_classification") == 2
         assert [s.page_ids for s in result.sections] == [["1", "2"], ["3", "4"]]
         assert [s.classification for s in result.sections] == ["invoice", "receipt"]
 
@@ -743,11 +760,11 @@ class TestTwoStagePacket:
         )
         result = self._run(service, _document(2), router)
 
-        assert "Segmentation/bedrock/nova" in result.metering
+        assert "BoundaryDetection/bedrock/nova" in result.metering
         assert "SectionClassification/bedrock/nova" in result.metering
         assert "Classification/bedrock/nova" not in result.metering
         # One Stage A call, two Stage B calls.
-        assert result.metering["Segmentation/bedrock/nova"]["inputTokens"] == 10
+        assert result.metering["BoundaryDetection/bedrock/nova"]["inputTokens"] == 10
         assert (
             result.metering["SectionClassification/bedrock/nova"]["inputTokens"] == 20
         )
@@ -766,7 +783,7 @@ class TestTwoStagePacket:
         service = _service(granularity="packet")
         router = self._router_for_two_segments()
         self._run(service, _document(2), router)
-        assert [stage for stage, _ in router.calls].count("labeling") == 2
+        assert [stage for stage, _ in router.calls].count("section_classification") == 2
 
     def test_a_forced_class_skips_stage_b_entirely(self):
         """The document's NAME asserts the class, so there is nothing to label —
@@ -784,7 +801,7 @@ class TestTwoStagePacket:
                 _document(2), forced_class="receipt"
             )
 
-        assert [stage for stage, _ in router.calls].count("labeling") == 0
+        assert [stage for stage, _ in router.calls].count("section_classification") == 0
         assert all(s.classification == "receipt" for s in result.sections)
         # The operator's assertion is not the model's, so it carries no score.
         assert all(s.confidence is None for s in result.sections)
@@ -793,7 +810,7 @@ class TestTwoStagePacket:
         service = _service(granularity="packet")
 
         def boom(content, config):  # noqa: ARG001 - content unused, stage decides
-            if config.get("stage") == "segmentation":
+            if config.get("stage") == "boundary_detection":
                 raise RuntimeError("throttled")
             return _reply({"class": "invoice"}, "SectionClassification")
 
@@ -811,7 +828,7 @@ class TestTwoStagePacket:
         service = _service(granularity="packet")
 
         def flaky(content, config):
-            if config.get("stage") == "segmentation":
+            if config.get("stage") == "boundary_detection":
                 return _reply(
                     {
                         "segments": [
@@ -819,7 +836,7 @@ class TestTwoStagePacket:
                             {"ordinal_start_page": 2, "ordinal_end_page": 2},
                         ]
                     },
-                    "Segmentation",
+                    "BoundaryDetection",
                 )
             if "(document page 2)" in "".join(
                 b["text"] for b in content if "text" in b
@@ -861,9 +878,9 @@ class TestTwoStagePage:
         result = self._run(service, _document(3), router)
 
         stages = [stage for stage, _ in router.calls]
-        assert stages.count("segmentation") == 3
+        assert stages.count("boundary_detection") == 3
         # Two segments: pages 1-2 and page 3.
-        assert stages.count("labeling") == 2
+        assert stages.count("section_classification") == 2
         assert [s.page_ids for s in result.sections] == [["1", "2"], ["3"]]
 
     def test_labeling_is_per_segment_not_per_page(self):
@@ -874,8 +891,8 @@ class TestTwoStagePage:
         result = self._run(service, _document(8), router)
 
         stages = [stage for stage, _ in router.calls]
-        assert stages.count("segmentation") == 8
-        assert stages.count("labeling") == 1
+        assert stages.count("boundary_detection") == 8
+        assert stages.count("section_classification") == 1
         assert result.sections[0].page_ids == [str(i) for i in range(1, 9)]
 
     def test_the_boundary_signal_is_persisted_on_the_page(self):
@@ -908,23 +925,32 @@ class TestLabelingPages:
 
     def test_first_sends_only_the_opening_page(self):
         service = _service(labeling={"pages": "first"})
-        assert service._labeling_pages(self._segment(5)) == ["1"]
+        assert service._section_classification_pages(self._segment(5)) == ["1"]
 
     def test_first_k_is_the_default_and_sends_k_pages(self):
         service = _service()
-        assert service._labeling_pages(self._segment(5)) == ["1", "2"]
+        assert service._section_classification_pages(self._segment(5)) == ["1", "2"]
 
     def test_k_is_configurable(self):
         service = _service(labeling={"pages": "first_k", "k": "3"})
-        assert service._labeling_pages(self._segment(5)) == ["1", "2", "3"]
+        assert service._section_classification_pages(self._segment(5)) == [
+            "1",
+            "2",
+            "3",
+        ]
 
     def test_all_sends_every_page(self):
         service = _service(labeling={"pages": "all"})
-        assert service._labeling_pages(self._segment(4)) == ["1", "2", "3", "4"]
+        assert service._section_classification_pages(self._segment(4)) == [
+            "1",
+            "2",
+            "3",
+            "4",
+        ]
 
     def test_a_segment_shorter_than_k_sends_what_it_has(self):
         service = _service(labeling={"pages": "first_k", "k": "5"})
-        assert service._labeling_pages(self._segment(2)) == ["1", "2"]
+        assert service._section_classification_pages(self._segment(2)) == ["1", "2"]
 
 
 # --------------------------------------------------------------------------
@@ -943,10 +969,10 @@ class TestStageBClassValidation:
         calls = {"n": 0}
 
         def router(content, config):
-            if config.get("stage") == "segmentation":
+            if config.get("stage") == "boundary_detection":
                 return _reply(
                     {"segments": [{"ordinal_start_page": 1, "ordinal_end_page": 2}]},
-                    "Segmentation",
+                    "BoundaryDetection",
                 )
             index = min(calls["n"], len(replies) - 1)
             calls["n"] += 1
@@ -1012,7 +1038,10 @@ class TestComposition:
             patch.object(service, "_invoke_bedrock_model", side_effect=router),
         ):
             service.classify_document(_document(2))
-        assert {stage for stage, _ in router.calls} == {"segmentation", "labeling"}
+        assert {stage for stage, _ in router.calls} == {
+            "boundary_detection",
+            "section_classification",
+        }
 
     def test_section_splitting_still_applies_to_the_labeled_segments(self):
         service = _service(granularity="packet", sectionSplitting="page")
@@ -1066,7 +1095,7 @@ class TestComposition:
         ):
             service.two_stage_classify_document(_document(7))
         # Windows over 7 pages at 3/1: [1-3], [3-5], [5-7].
-        assert [stage for stage, _ in router.calls].count("segmentation") == 3
+        assert [stage for stage, _ in router.calls].count("boundary_detection") == 3
 
     def test_a_document_with_no_pages_fails_cleanly(self):
         service = _service()
@@ -1080,7 +1109,7 @@ class TestComposition:
 class TestAPreUpgradeProfileWithEmptyStagePrompts:
     """⚠️ Reported from a live stack: an existing profile switched to
     ``two_stage`` + ``packet`` failed EVERY document in ~28s with "Two-stage
-    segmentation (Stage A) produced no segments", while a profile created after
+    boundary detection (Stage A) produced no segments", while a profile created after
     the upgrade worked end to end.
 
     The cause is not in this service. A profile stored in "full" format before
@@ -1140,7 +1169,7 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
         )
         with caplog.at_level(logging.WARNING):
             prompt = service._stage_prompt(
-                ClassificationService.STAGE_SEGMENTATION, "task_prompt"
+                ClassificationService.STAGE_BOUNDARY_DETECTION, "task_prompt"
             )
         assert prompt, "Stage A resolved to an empty prompt"
         assert "PAGE PROMPT" not in prompt, (
@@ -1153,7 +1182,7 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
     def test_an_empty_labeling_prompt_uses_the_shipped_one(self):
         service = self._service({"labeling": {"task_prompt": ""}})
         prompt = service._stage_prompt(
-            ClassificationService.STAGE_LABELING, "task_prompt"
+            ClassificationService.STAGE_SECTION_CLASSIFICATION, "task_prompt"
         )
         assert prompt
         assert "PAGE PROMPT" not in prompt
@@ -1178,7 +1207,7 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
         service = self._service({"segmentation": {"packet": {"task_prompt": mine}}})
         assert (
             service._stage_prompt(
-                ClassificationService.STAGE_SEGMENTATION, "task_prompt"
+                ClassificationService.STAGE_BOUNDARY_DETECTION, "task_prompt"
             )
             == mine
         )
@@ -1188,7 +1217,7 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
         shipped = ClassificationService._shipped_classification_defaults()
         assert shipped, "the shipped classification defaults did not load"
         assert shipped["one_stage"]["packet"]["task_prompt"].strip()
-        assert shipped["two_stage"]["segmentation"]["llm"]["packet"][
+        assert shipped["two_stage"]["boundary_detection"]["llm"]["packet"][
             "task_prompt"
         ].strip()
         assert shipped["two_stage"]["section_classification"]["llm"][
@@ -1210,14 +1239,14 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
 
 
 # --------------------------------------------------------------------------
-# A declared file shape fixes the segments, so segmentation is skipped
+# A declared document shape fixes the segments, so boundary detection is skipped
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestADeclaredFileShapeSkipsSegmentation:
+class TestADeclaredDocumentShapeSkipsBoundaryDetection:
     """Under "one document" or "one per page" the segments are known before any
-    call, and section forming would discard whatever segmentation returned. At
+    call, and section forming would discard whatever boundary detection returned. At
     packet granularity with images that is the expensive call, so it is not made.
     """
 
@@ -1243,10 +1272,12 @@ class TestADeclaredFileShapeSkipsSegmentation:
         router = _Router(labels=["receipt"])
         result = self._run(service, _document(4), router)
 
-        assert self._stages(router) == [ClassificationService.STAGE_LABELING]
+        assert self._stages(router) == [
+            ClassificationService.STAGE_SECTION_CLASSIFICATION
+        ]
         assert [s.page_ids for s in result.sections] == [["1", "2", "3", "4"]]
         assert result.sections[0].classification == "receipt"
-        assert not any(k.startswith("Segmentation/") for k in result.metering)
+        assert not any(k.startswith("BoundaryDetection/") for k in result.metering)
         # The one call saw every page, because `pages: all` asked for it.
         text = "".join(b["text"] for b in router.calls[0][1] if "text" in b)
         assert all(f"PAGE-{i}" in text for i in range(1, 5))
@@ -1256,13 +1287,19 @@ class TestADeclaredFileShapeSkipsSegmentation:
         router = _Router(labels=["invoice", "receipt", "invoice"])
         result = self._run(service, _document(3), router)
 
-        assert self._stages(router) == [ClassificationService.STAGE_LABELING] * 3
+        assert (
+            self._stages(router)
+            == [ClassificationService.STAGE_SECTION_CLASSIFICATION] * 3
+        )
         assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
 
-    def test_detected_boundaries_still_run_segmentation(self):
-        """The default is untouched: there, boundaries are what segmentation is for."""
+    def test_detected_boundaries_still_run_boundary_detection(self):
+        """The default is untouched: there, boundaries are what boundary detection is for."""
         service = _service(sectionSplitting="llm_determined")
         router = _Router(boundaries={"1": "start", "2": "continue"}, labels=["invoice"])
         self._run(service, _document(2), router)
 
-        assert self._stages(router).count(ClassificationService.STAGE_SEGMENTATION) == 2
+        assert (
+            self._stages(router).count(ClassificationService.STAGE_BOUNDARY_DETECTION)
+            == 2
+        )

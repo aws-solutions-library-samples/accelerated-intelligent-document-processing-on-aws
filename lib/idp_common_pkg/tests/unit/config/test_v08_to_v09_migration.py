@@ -51,7 +51,7 @@ from idp_common.config.models import (
 FIXTURES = Path(__file__).parent / "fixtures"
 CALLS = (
     "one_stage.llm",
-    "two_stage.segmentation.llm",
+    "two_stage.boundary_detection.llm",
     "two_stage.section_classification.llm",
 )
 CLASSES = [
@@ -111,7 +111,7 @@ class TestTheShippedDefaultsAreEquivalent:
         )
         assert cls.fallback_class == old["invalidClassFallback"]
         assert cls.one_stage.llm.confidence.mode == old["confidence"]["mode"]
-        assert cls.file_shape.sectionSplitting == old["sectionSplitting"]
+        assert cls.document_shape.sectionSplitting == old["sectionSplitting"]
 
     def test_a_0_6_12_profile_builds_the_same_request(self):
         old = _fixture("base-classification-0.6.12.yaml")
@@ -159,7 +159,7 @@ class TestASparseDelta:
         assert cls.one_stage.page == defaults.classification.one_stage.page
         assert cls.two_stage == defaults.classification.two_stage.model_copy(
             update={
-                "segmentation": cls.two_stage.segmentation,
+                "boundary_detection": cls.two_stage.boundary_detection,
                 "section_classification": cls.two_stage.section_classification,
             }
         )
@@ -270,19 +270,19 @@ class TestTwoStageStages:
                 "labeling": {"model": "label-model"},
             }
         ).classification
-        assert cls.two_stage.segmentation.llm.model == "shared"
+        assert cls.two_stage.boundary_detection.llm.model == "shared"
         assert cls.two_stage.section_classification.llm.model == "label-model"
         # The parameters reached both stages, including the one with its own model.
-        assert cls.two_stage.segmentation.llm.temperature == 0.2
+        assert cls.two_stage.boundary_detection.llm.temperature == 0.2
         assert cls.two_stage.section_classification.llm.temperature == 0.2
 
-    def test_the_packet_window_reaches_segmentation_too(self):
+    def test_the_packet_window_reaches_boundary_detection_too(self):
         cls = IDPConfig(
             classification={"packet": {"window_pages": 7, "overlap_pages": 1}}
         ).classification
         assert cls.one_stage.packet.window_pages == 7
-        assert cls.two_stage.segmentation.llm.packet.window_pages == 7
-        assert cls.two_stage.segmentation.llm.packet.overlap_pages == 1
+        assert cls.two_stage.boundary_detection.llm.packet.window_pages == 7
+        assert cls.two_stage.boundary_detection.llm.packet.overlap_pages == 1
 
     def test_stage_prompts_land_in_their_own_blocks(self):
         cls = IDPConfig(
@@ -295,7 +295,7 @@ class TestTwoStageStages:
                 "labeling": {"task_prompt": "label", "pages": "all"},
             }
         ).classification
-        seg = cls.two_stage.segmentation.llm
+        seg = cls.two_stage.boundary_detection.llm
         assert seg.page.task_prompt == "seg page"
         assert seg.packet.task_prompt == "seg packet"
         assert seg.boundary_hints == "class_names"
@@ -307,7 +307,7 @@ class TestTwoStageStages:
         c = cls.classification
         assert c.one_stage.llm.confidence.mode == "verbalized"
         assert c.two_stage.section_classification.llm.confidence.mode == "verbalized"
-        assert not hasattr(c.two_stage.segmentation.llm, "confidence")
+        assert not hasattr(c.two_stage.boundary_detection.llm, "confidence")
 
 
 # --------------------------------------------------------------------------
@@ -338,7 +338,10 @@ class TestModality:
                 }
             }
         )
-        for stage in (service.STAGE_SEGMENTATION, service.STAGE_LABELING):
+        for stage in (
+            service.STAGE_BOUNDARY_DETECTION,
+            service.STAGE_SECTION_CLASSIFICATION,
+        ):
             assert service._resolve_modality(stage=stage) == (True, False), stage
 
     def test_an_explicit_flag_is_not_overwritten_by_inference(self):
@@ -349,7 +352,7 @@ class TestModality:
                 "modality": {"images": True},
             }
         ).classification
-        assert cls.two_stage.segmentation.llm.modality.images is True
+        assert cls.two_stage.boundary_detection.llm.modality.images is True
 
 
 # --------------------------------------------------------------------------
@@ -369,7 +372,7 @@ class TestThePageLimit:
                     }
                 }
             )
-        shape = out["classification"]["file_shape"]
+        shape = out["classification"]["document_shape"]
         assert shape == {
             "sectionSplitting": "disabled",
             "maxPagesForClassification": "3",
@@ -378,7 +381,7 @@ class TestThePageLimit:
 
     def test_a_limit_with_no_splitting_key_also_becomes_one_document(self):
         out = migrate_v08_to_v09({"classification": {"maxPagesForClassification": 2}})
-        assert out["classification"]["file_shape"]["sectionSplitting"] == "disabled"
+        assert out["classification"]["document_shape"]["sectionSplitting"] == "disabled"
 
     @pytest.mark.parametrize(
         "value",
@@ -398,7 +401,8 @@ class TestThePageLimit:
                 }
             )
         assert (
-            out["classification"]["file_shape"]["sectionSplitting"] == "llm_determined"
+            out["classification"]["document_shape"]["sectionSplitting"]
+            == "llm_determined"
         )
         assert "maxPagesForClassification" not in caplog.text
 
@@ -421,13 +425,14 @@ class TestThePageLimit:
             }
         )
         assert (
-            out["classification"]["file_shape"]["sectionSplitting"] == "llm_determined"
+            out["classification"]["document_shape"]["sectionSplitting"]
+            == "llm_determined"
         )
         # And it reaches the validator as "no limit" rather than as "one page".
         assert (
             IDPConfig(
                 classification=out["classification"]
-            ).classification.file_shape.maxPagesForClassification
+            ).classification.document_shape.maxPagesForClassification
             == "ALL"
         )
 
@@ -447,7 +452,7 @@ class TestThePageLimit:
                 }
             }
         )
-        assert out["classification"]["file_shape"]["sectionSplitting"] == "bogus"
+        assert out["classification"]["document_shape"]["sectionSplitting"] == "bogus"
         with pytest.raises(Exception, match="sectionSplitting"):
             IDPConfig(classification=out["classification"])
 
@@ -471,12 +476,12 @@ class TestThePageLimit:
                 }
             }
         )
-        shape = out["classification"]["file_shape"]
+        shape = out["classification"]["document_shape"]
         assert shape["sectionSplitting"] == "disabled"
         assert (
             IDPConfig(
                 classification=out["classification"]
-            ).classification.file_shape.maxPagesForClassification
+            ).classification.document_shape.maxPagesForClassification
             == "3"
         ), "the page limit must survive, or the conversion achieved nothing"
 
@@ -495,7 +500,7 @@ class TestThePageLimit:
                         "sectionSplitting": value,
                     }
                 }
-            )["classification"]["file_shape"]["sectionSplitting"]
+            )["classification"]["document_shape"]["sectionSplitting"]
 
         assert shape("") == "disabled"
         assert shape("bogus") == "bogus"
@@ -510,7 +515,7 @@ class TestThePageLimit:
                 }
             }
         )
-        assert out["classification"]["file_shape"]["sectionSplitting"] == "disabled"
+        assert out["classification"]["document_shape"]["sectionSplitting"] == "disabled"
 
 
 # --------------------------------------------------------------------------
@@ -527,7 +532,7 @@ class TestAbsentIsNotCleared:
     def test_an_absent_key_writes_nothing(self):
         out = migrate_v08_to_v09({"classification": {"model": "m"}})
         assert "page" not in out["classification"].get("one_stage", {})
-        assert "file_shape" not in out["classification"]
+        assert "document_shape" not in out["classification"]
 
 
 # --------------------------------------------------------------------------
@@ -771,8 +776,8 @@ class TestASaveAfterTheUpgrade:
         )
         # The 0.6.12 settings the edit did not touch are still the profile's.
         assert cls.one_stage.llm.model == "us.amazon.nova-lite-v1:0"
-        assert cls.two_stage.segmentation.llm.model == "us.amazon.nova-lite-v1:0"
-        assert cls.two_stage.segmentation.llm.temperature == 0.3
+        assert cls.two_stage.boundary_detection.llm.model == "us.amazon.nova-lite-v1:0"
+        assert cls.two_stage.boundary_detection.llm.temperature == 0.3
 
     def test_an_old_flat_upload_lands_in_every_call(self, monkeypatch):
         """An `idp-cli config-upload` of a file written for 0.6.12."""
@@ -796,7 +801,7 @@ class TestASaveAfterTheUpgrade:
 @pytest.mark.unit
 class TestAMisplacedSettingIsReported:
     """One stage keeps granularity, page and packet on its own block, while
-    segmentation keeps them on its ``llm`` block. A hand-written config that
+    boundary detection keeps them on its ``llm`` block. A hand-written config that
     mirrors one spelling in the other place is not read, so the unknown-key
     report (what ``idp-cli config-validate`` prints) must name it and say where
     it belongs."""
@@ -805,8 +810,8 @@ class TestAMisplacedSettingIsReported:
         ("written", "belongs"),
         [
             (
-                {"two_stage": {"segmentation": {"granularity": "packet"}}},
-                "classification.two_stage.segmentation.llm.granularity",
+                {"two_stage": {"boundary_detection": {"granularity": "packet"}}},
+                "classification.two_stage.boundary_detection.llm.granularity",
             ),
             (
                 {"one_stage": {"llm": {"granularity": "packet"}}},
@@ -825,14 +830,14 @@ class TestAMisplacedSettingIsReported:
 class TestAFlatModelOnANestedTwoStageProfile:
     """An old script setting `classification.model` on a v0.9 profile."""
 
-    def _hybrid(self, segmentation_model, section_model):
+    def _hybrid(self, boundary_detection_model, section_model):
         return {
             "classification": {
                 "model": "flat-model",
                 "strategy": "two_stage",
                 "one_stage": {"llm": {"model": "old-model"}},
                 "two_stage": {
-                    "segmentation": {"llm": {"model": segmentation_model}},
+                    "boundary_detection": {"llm": {"model": boundary_detection_model}},
                     "section_classification": {"llm": {"model": section_model}},
                 },
             }
@@ -843,7 +848,7 @@ class TestAFlatModelOnANestedTwoStageProfile:
             "classification"
         ]
         assert cls["one_stage"]["llm"]["model"] == "flat-model"
-        assert cls["two_stage"]["segmentation"]["llm"]["model"] == "seg-model"
+        assert cls["two_stage"]["boundary_detection"]["llm"]["model"] == "seg-model"
         assert (
             cls["two_stage"]["section_classification"]["llm"]["model"]
             == "section-model"
@@ -851,7 +856,7 @@ class TestAFlatModelOnANestedTwoStageProfile:
 
     def test_a_stage_following_the_one_stage_model_follows_the_flat_one(self):
         cls = migrate_v08_to_v09(self._hybrid("old-model", ""))["classification"]
-        assert cls["two_stage"]["segmentation"]["llm"]["model"] == "flat-model"
+        assert cls["two_stage"]["boundary_detection"]["llm"]["model"] == "flat-model"
         assert (
             cls["two_stage"]["section_classification"]["llm"]["model"] == "flat-model"
         )
@@ -874,14 +879,16 @@ class TestAFlatParameterOnANestedTwoStageProfile:
     config: absent, blank, or equal to the one-stage value the profile already had.
     """
 
-    def _hybrid(self, segmentation: Dict[str, Any], section: Dict[str, Any], **flat):
+    def _hybrid(
+        self, boundary_detection: Dict[str, Any], section: Dict[str, Any], **flat
+    ):
         return {
             "config_format_version": "0.9",
             "classification": {
                 "strategy": "two_stage",
                 "one_stage": {"llm": {"temperature": 0.0, "top_k": 5}},
                 "two_stage": {
-                    "segmentation": {"llm": segmentation},
+                    "boundary_detection": {"llm": boundary_detection},
                     "section_classification": {"llm": section},
                 },
                 **flat,
@@ -893,7 +900,7 @@ class TestAFlatParameterOnANestedTwoStageProfile:
             self._hybrid({"temperature": 0.7}, {"temperature": 0.9}, temperature="0.0")
         )["classification"]
         assert cls["one_stage"]["llm"]["temperature"] == "0.0"
-        assert cls["two_stage"]["segmentation"]["llm"]["temperature"] == 0.7
+        assert cls["two_stage"]["boundary_detection"]["llm"]["temperature"] == 0.7
         assert cls["two_stage"]["section_classification"]["llm"]["temperature"] == 0.9
 
     def test_a_stage_following_the_one_stage_value_follows_the_flat_one(self):
@@ -907,7 +914,7 @@ class TestAFlatParameterOnANestedTwoStageProfile:
         cls = migrate_v08_to_v09(
             self._hybrid({"temperature": 0.0}, {}, temperature="0.4")
         )["classification"]
-        assert cls["two_stage"]["segmentation"]["llm"]["temperature"] == "0.4"
+        assert cls["two_stage"]["boundary_detection"]["llm"]["temperature"] == "0.4"
         assert cls["two_stage"]["section_classification"]["llm"]["temperature"] == "0.4"
 
     @pytest.mark.parametrize("blank", ["", "   ", None])
@@ -915,7 +922,9 @@ class TestAFlatParameterOnANestedTwoStageProfile:
         cls = migrate_v08_to_v09(
             self._hybrid({"reasoning_effort": blank}, {}, reasoning_effort="high")
         )["classification"]
-        assert cls["two_stage"]["segmentation"]["llm"]["reasoning_effort"] == "high"
+        assert (
+            cls["two_stage"]["boundary_detection"]["llm"]["reasoning_effort"] == "high"
+        )
 
     def test_a_sub_block_is_protected_key_by_key(self):
         """`image` and `modality` merge per key, so the protection has to as well.
@@ -930,9 +939,11 @@ class TestAFlatParameterOnANestedTwoStageProfile:
                 image={"target_width": 1000},
             )
         )["classification"]
-        segmentation_image = cls["two_stage"]["segmentation"]["llm"]["image"]
-        assert segmentation_image["target_width"] == 800
-        assert segmentation_image["target_height"] == 1200
+        boundary_detection_image = cls["two_stage"]["boundary_detection"]["llm"][
+            "image"
+        ]
+        assert boundary_detection_image["target_width"] == 800
+        assert boundary_detection_image["target_height"] == 1200
         assert cls["one_stage"]["llm"]["image"]["target_width"] == 1000
 
     def test_a_pure_flat_config_is_converted_exactly_as_before(self):
@@ -956,7 +967,7 @@ class TestAFlatParameterOnANestedTwoStageProfile:
             }
         )["classification"]
         for path in (
-            cls["two_stage"]["segmentation"]["llm"],
+            cls["two_stage"]["boundary_detection"]["llm"],
             cls["two_stage"]["section_classification"]["llm"],
         ):
             assert path["temperature"] == "0.3"
@@ -1054,7 +1065,7 @@ class TestAStoredTypoDoesNotWedgeAProfile:
             merge_config_with_defaults({}, validate=False)["classification"]
         )
         cls["one_stage"]["llm"]["reasoning_effort"] = self.TYPO
-        cls["two_stage"]["segmentation"]["llm"]["reasoning_effort"] = self.TYPO
+        cls["two_stage"]["boundary_detection"]["llm"]["reasoning_effort"] = self.TYPO
         return cls
 
     def test_a_nested_profile_holding_a_typo_still_reads(self, monkeypatch):
@@ -1071,7 +1082,7 @@ class TestAStoredTypoDoesNotWedgeAProfile:
         )
         assert resolved.classification.one_stage.llm.reasoning_effort == "medium"
         assert (
-            resolved.classification.two_stage.segmentation.llm.reasoning_effort
+            resolved.classification.two_stage.boundary_detection.llm.reasoning_effort
             == "medium"
         )
 
@@ -1091,7 +1102,7 @@ class TestAStoredTypoDoesNotWedgeAProfile:
         )["classification"]
         for path in (
             ("one_stage", "llm"),
-            ("two_stage", "segmentation", "llm"),
+            ("two_stage", "boundary_detection", "llm"),
             ("two_stage", "section_classification", "llm"),
         ):
             node = converted

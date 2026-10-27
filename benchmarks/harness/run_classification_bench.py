@@ -134,7 +134,7 @@ VARIANTS = {
 #: Every model call a classification config can make, under ``classification``.
 CALL_PATHS = (
     ("one_stage", "llm"),
-    ("two_stage", "segmentation", "llm"),
+    ("two_stage", "boundary_detection", "llm"),
     ("two_stage", "section_classification", "llm"),
 )
 
@@ -165,7 +165,7 @@ def _get(root, *path):
 def _reader(cls, strategy):
     """The block whose granularity and page prompts are in force."""
     if strategy == "two_stage":
-        return _get(cls, "two_stage", "segmentation", "llm") or {}
+        return _get(cls, "two_stage", "boundary_detection", "llm") or {}
     return cls.get("one_stage") or {}
 
 
@@ -325,7 +325,7 @@ def variant_merge_problems(cfg, variant, mode):
         side = "packet" if spec["granularity"] == "packet" else "page"
         if not (_get(reader, side, "task_prompt") or ""):
             problems.append(
-                f"the {spec['granularity']} segmentation task_prompt is empty after "
+                f"the {spec['granularity']} boundary detection task_prompt is empty after "
                 "merge, so two-stage would fall back to the shipped prompt rather "
                 "than the one this cell names"
             )
@@ -378,7 +378,7 @@ def launch(stack, testset_id, version, context, n_files):
 #: Metering context prefixes that belong to the classification step.
 #:
 #: ⚠️ **Three, not one.** `single_pass` bills under `Classification/`; `two_stage`
-#: bills its halves under `Segmentation/` and `SectionClassification/` and emits NO
+#: bills its halves under `BoundaryDetection/` and `SectionClassification/` and emits NO
 #: `Classification/` entry at all (GitHub #1329). Filtering on `Classification/`
 #: alone — which this function did — matched nothing for a two-stage run and
 #: returned a cost of `0.0`, so the configuration with an extra call per segment
@@ -387,7 +387,7 @@ def launch(stack, testset_id, version, context, n_files):
 #: (#1079, #1146): adding nothing is the same arithmetic as adding zero.
 CLASSIFICATION_CONTEXTS = (
     "Classification/",
-    "Segmentation/",
+    "BoundaryDetection/",
     "SectionClassification/",
 )
 
@@ -441,12 +441,12 @@ def classification_cost(metering):
             #       invocation, so this reads 1 for `page` and `packet` alike and
             #       cannot tell them apart. In a two-stage run the single
             #       invocation lands under `Classification` while the spend lands
-            #       under `Segmentation`/`SectionClassification`, so those two read 0.
+            #       under `BoundaryDetection`/`SectionClassification`, so those two read 0.
             #
             #   `<ctx>/bedrock/<model>` `requests` -> BEDROCK CALLS. This is the
             #       count packet granularity's N-calls-to-one claim is about, and
             #       it is per stage: a two-stage page-granularity run on a 6-page
-            #       document measured 6 under `Segmentation` and 6 under
+            #       document measured 6 under `BoundaryDetection` and 6 under
             #       `SectionClassification`.
             #
             # ⚠️ The Bedrock count is NOT always present — the same stack emitted
@@ -770,7 +770,7 @@ def score_run(res, run_id):
         else None,
         "classification_tokens": cls_tokens,
         # Per metering context, so a two-stage run shows where the money and the
-        # tokens went — Segmentation or SectionClassification — rather than only their sum.
+        # tokens went — BoundaryDetection or SectionClassification — rather than only their sum.
         # See the note on `lambda_invocations` above for what that count does and
         # does not evidence.
         # `totals`, not `bucket` — see the loop above. A comprehension scopes its

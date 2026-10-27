@@ -31,7 +31,7 @@ so on.
 
 Each version records:
 
-- **When** it completed and which **configuration version** processed it
+- **When** it completed, and which **Configuration Profile** and **revision** processed it
 - Its section/page structure and metering (cost) snapshot
 - Per-section quality data — the low-confidence field alerts and any processing
   issues detected for that run — so a historical view shows the same
@@ -77,10 +77,15 @@ Noncurrent S3 object versions (the byte-store for version history) are expired o
 the same schedule via bucket lifecycle rules, so version history does not grow
 unbounded. Deleting a version (below) reclaims its storage immediately.
 
-> **Always on.** Versioning uses infrastructure the solution already had (S3
-> bucket versioning) plus one small tracking-table record per run, so it is
-> enabled by default. To disable run-record creation, set the WorkflowTracker
-> Lambda's `DOCUMENT_VERSIONING_ENABLED` environment variable to `false`.
+> **Always on, and there is no stack parameter to turn it off.** Versioning uses
+> infrastructure the solution already had (S3 bucket versioning) plus one small
+> tracking-table record per run, so it is on in every deployment. The
+> `WorkflowTracker` Lambda reads a `DOCUMENT_VERSIONING_ENABLED` environment
+> variable and skips run-record creation when it is not `true`, but the template
+> sets that variable to the literal `"true"` with no `!Ref` behind it. Editing it
+> in the Lambda console does suppress run records — until the next stack update,
+> which restores the literal and silently re-enables versioning. Treat the feature
+> as unconditional, and change the template if you genuinely need it off.
 
 ## Viewing and managing versions
 
@@ -106,6 +111,10 @@ can:
   Deletion is reference-counted: any output object version also pinned by
   another retained version is kept, so deleting one version never corrupts
   another.
+
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
+
+![Compare versions dialog: one changed field in the Bank-Statement section, every other section identical](../images/webui-document-versions-compare.png)
 
 ### CLI
 

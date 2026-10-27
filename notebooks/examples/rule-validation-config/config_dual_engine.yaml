@@ -27,7 +27,7 @@ classification:
 
         Return JSON: {"pages": [{"page_id": "1", "classification": "invoice", "confidence": 0.99}]}
   two_stage:
-    segmentation:
+    boundary_detection:
       llm:
         model: us.anthropic.claude-sonnet-4-6
         temperature: '0'

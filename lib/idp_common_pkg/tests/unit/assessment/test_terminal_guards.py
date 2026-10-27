@@ -34,9 +34,10 @@ failure into a bounded, reported one:
   reads the shortfall two ways — as a share of the list and as an absolute row count
   (#1495) — so the band it passes in silence does not grow with the document.
 
-Note on scope: the batch SIZER that mis-estimates a multi-instance row's output
-(``cols=2 per_row~80`` for a row carrying 100 transactions) is NOT fixed here and
-#894 stays open for it. These tests pin the give-up behaviour only.
+Note on scope: these tests pin the give-up behaviour only. The batch sizer counts
+a multi-instance row by every leaf it emits, inner rows included (pinned in
+``test_confidence_batch_sizing.py``), but that cannot make one oversized instance
+fit, which is the case these guards report.
 """
 
 from __future__ import annotations

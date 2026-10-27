@@ -228,6 +228,60 @@ class _ScoresWhateverItIsAsked:
         return None
 
 
+class _ScoresWithEscalation(_ScoresWhateverItIsAsked):
+    def _resolve_confidence_escalation_model(self, class_label: str):
+        return "us.amazon.nova-pro-v1:0"
+
+
+def test_integrated_retry_reserves_the_fields_that_ride_every_call():
+    """Every integrated retry call carries the rest of the section unsliced
+    (``_retry_missing_rows`` slices only the target field), so both the primary
+    and the escalation batch must be sized with that rest reserved as the fixed
+    part of the call's output — the same rule the separate path follows."""
+    from idp_common.assessment import batching
+
+    svc = _svc()
+    svc._document_text = "doc"
+    svc._page_images = []
+    # Bounding-box geometry, so a call sized without it is distinguishable.
+    svc.config.extraction.geometry.mode = "llm_grounded"
+    svc.config.extraction.confidence.model = "us.amazon.nova-lite-v1:0"
+    section_info = SimpleNamespace(class_label="invoice")
+    extracted = {
+        "Items": [{"rate": str(i)} for i in range(5)],
+        "InvoiceNumber": "INV-1",
+        "Fees": [{"rate": "1"}],
+    }
+    merged = {
+        "Items": [{"rate": {"confidence": None}} for _ in range(5)],
+        "InvoiceNumber": {"confidence": 0.9},
+        "Fees": [{"rate": {"confidence": 0.9}}],
+    }
+    real = batching.compute_token_aware_batch_size
+    with (
+        patch(
+            "idp_common.assessment.service.AssessmentService",
+            return_value=_ScoresWithEscalation(),
+        ),
+        patch.object(batching, "compute_token_aware_batch_size", wraps=real) as sizer,
+    ):
+        svc._retry_missing_integrated_rows(
+            merged_assessment=merged,
+            extracted_fields=extracted,
+            section_info=section_info,
+        )
+    expected = {"InvoiceNumber": "INV-1", "Fees": [{"rate": "1"}]}
+    fixed_seen = [c.kwargs.get("fixed_results") for c in sizer.call_args_list]
+    # One primary and one escalation sizing for the one field with missing rows,
+    # each for its own model and both under the configured geometry.
+    assert fixed_seen == [expected, expected]
+    assert [c.args[0] for c in sizer.call_args_list] == [
+        "us.amazon.nova-lite-v1:0",
+        "us.amazon.nova-pro-v1:0",
+    ]
+    assert [c.args[2] for c in sizer.call_args_list] == ["llm_grounded"] * 2
+
+
 def test_integrated_recovers_a_scalar_only_class():
     """#1474 on the integrated path. The early return here was taken whenever no
     LIST field had missing rows, and its own comment named the consequence —

@@ -213,7 +213,10 @@ Standard build and publish:
 idp-cli publish --source-dir . --region us-east-1
 ```
 
-Pattern-2 container images are built automatically when Pattern-2 changes are detected. Ensure Docker is running and you have ECR permissions.
+The container-packaged Lambda functions are built in CodeBuild during stack
+deployment, not on this machine, so publishing needs no local Docker daemon and no
+ECR permissions of your own. Docker is needed here only for local Lambda testing
+with `sam local invoke`.
 
 ### Troubleshooting Build Issues
 

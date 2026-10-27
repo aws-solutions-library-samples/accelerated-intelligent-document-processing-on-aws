@@ -1329,7 +1329,7 @@ def score_classification(ev):
         # `split_accuracy_without_order` requires a predicted section to match on
         # BOTH its page set and its class, so a wrong boundary and a wrong label
         # are the same number there — and those two call for different fixes (a
-        # different segmentation prompt, or a different labelling model). The
+        # different boundary detection prompt, or a different labelling model). The
         # decomposition is exact: split = boundary x label.
         #
         # This is the pair that makes a granularity comparison worth running: a

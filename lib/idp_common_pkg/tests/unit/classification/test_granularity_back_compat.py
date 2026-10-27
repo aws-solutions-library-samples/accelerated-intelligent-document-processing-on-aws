@@ -156,7 +156,9 @@ class TestAliasTable:
         config = _shipped_classification()
         config["sectionSplitting"] = splitting
         service = _service(config)
-        assert service.config.classification.file_shape.sectionSplitting == splitting
+        assert (
+            service.config.classification.document_shape.sectionSplitting == splitting
+        )
 
     def test_max_pages_for_classification_still_overrides_splitting(self):
         """Documented pre-existing behaviour, deliberately NOT changed.

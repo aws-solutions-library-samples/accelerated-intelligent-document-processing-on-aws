@@ -31,6 +31,7 @@ from idp_common.assessment.service import AssessmentCoreResult
 NOVA_LITE = "us.amazon.nova-lite-v1:0"
 NOVA_PRO = "us.amazon.nova-pro-v1:0"  # 10K output cap
 CLAUDE_SONNET = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # 64K output cap
+CLAUDE3_HAIKU = "us.anthropic.claude-3-haiku-20240307-v1:0"  # 8,192 output cap
 
 
 def _rows(n: int) -> list[dict]:
@@ -125,9 +126,140 @@ def test_token_aware_sizes_by_column_count_not_value_length():
     # The 2-column row is NOT shrunk more than the 6-column row, even though its
     # values are far longer — value length no longer drives the estimate.
     assert narrow >= wide
-    # Nested/list sub-fields are NOT counted as scalar confidence columns.
+    # Nested/list sub-fields ARE counted, leaf by leaf: the model scores a nested
+    # group and each item of a nested list. 6 + 1 + 3 = 10 leaves -> 5000/400 = 12.
     with_nested = {**wide_short, "extra": {"nested": "obj"}, "items": [1, 2, 3]}
-    assert compute_token_aware_batch_size(NOVA_PRO, with_nested, "ocr_only", 25) == wide
+    assert compute_token_aware_batch_size(NOVA_PRO, with_nested, "ocr_only", 25) == 12
+
+
+def _scalar_heavy_section(n_rows: int) -> tuple[dict, dict]:
+    """A section whose scalars, which ride every slice unsliced, carry more output
+    than the half of a 10,000-token cap the safety fraction leaves free once each
+    leaf also emits a bounding box: 60 x 40 x 3 = 7,200 tokens."""
+    scalars = {f"Field{i}": f"value {i}" for i in range(60)}
+    return {"transactions": _rows(n_rows), **scalars}, scalars
+
+
+class _RowCountingService:
+    """Scores every row cleanly and records how many rows each call carried."""
+
+    def __init__(self, list_field: str):
+        self.list_field = list_field
+        self.calls: list[int] = []
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.calls.append(len(rows))
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: [{"amount": {"confidence": 0.9}} for _ in rows],
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=1.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 5}},
+        )
+
+
+def test_batched_path_reserves_the_output_that_rides_every_slice():
+    """The primary pass must size its batch against what is left of the cap after
+    the scalars that every slice repeats — not against the full safety fraction."""
+    data, scalars = _scalar_heavy_section(60)
+    rows = data["transactions"]
+    reserved = compute_token_aware_batch_size(
+        NOVA_PRO, rows, "llm_grounded", 25, fixed_results=scalars
+    )
+    unreserved = compute_token_aware_batch_size(NOVA_PRO, rows, "llm_grounded", 25)
+    # 2 leaves x 120 per row: (10,000 - 7,200 - 1,500) // 240 = 5, against
+    # 5,000 // 240 = 20 with nothing reserved.
+    assert (reserved, unreserved) == (5, 20)
+
+    svc = _RowCountingService("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results=data,
+        document_text="...",
+        page_images=[],
+        batch_size=25,
+        confidence_model_id=NOVA_PRO,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+    )
+    assert result["split_stats"]["derived_batch_size"] == reserved
+    assert svc.calls and max(svc.calls) == reserved
+
+
+def test_escalation_rung_reserves_the_output_that_rides_every_slice():
+    """The escalation batch is sized the same way: the scalars ride the stronger
+    model's calls too, and they are sized for the ESCALATION model's cap, not the
+    primary's. Nova Pro as the escalation model keeps the cap small enough for the
+    reserve to bind; Claude 3 Haiku as the primary has a smaller cap that, with the
+    same reserve, leaves room for only one row, so sizing the escalation batch off
+    the primary model would show up as one-row escalation calls."""
+    data, scalars = _scalar_heavy_section(12)
+    svc = LadderService("transactions", NOVA_PRO, primary_max_rows=0)
+    assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results=data,
+        document_text="...",
+        page_images=[],
+        batch_size=25,
+        confidence_model_id=CLAUDE3_HAIKU,
+        geometry_mode="llm_grounded",
+        escalation_enabled=True,
+        escalation_model=NOVA_PRO,
+        max_escalation_rounds=1,
+    )
+    expected = compute_token_aware_batch_size(
+        NOVA_PRO, data["transactions"], "llm_grounded", 25, fixed_results=scalars
+    )
+    assert expected == 5
+    assert (
+        compute_token_aware_batch_size(
+            CLAUDE3_HAIKU,
+            data["transactions"],
+            "llm_grounded",
+            25,
+            fixed_results=scalars,
+        )
+        == 1
+    )
+    assert svc.escalation_calls and max(svc.escalation_calls) == expected
+
+
+def test_the_longest_list_is_sliced_and_every_other_list_is_reserved():
+    """With two lists the longest is the one sliced, so it is the other one — not
+    the longest — that rides every call and is reserved. Reserving the wrong one
+    would size a 200-row list's batch as if 200 rows rode with every slice."""
+    data = {
+        "fees": [{"label": f"fee {i}", "amount": "1.00"} for i in range(10)],
+        "transactions": _rows(200),
+    }
+    svc = _RowCountingService("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results=data,
+        document_text="...",
+        page_images=[],
+        batch_size=25,
+        confidence_model_id=NOVA_PRO,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+    )
+    expected = compute_token_aware_batch_size(
+        NOVA_PRO,
+        data["transactions"],
+        "llm_grounded",
+        25,
+        fixed_results={"fees": data["fees"]},
+    )
+    # 20 fee leaves x 120 = 2,400 reserved: min(5,000, 10,000 - 2,400 - 1,500)
+    # // 240 = 20.
+    assert expected == 20
+    assert result["split_stats"]["derived_batch_size"] == expected
 
 
 # --------------------------------------------------------------------------- #

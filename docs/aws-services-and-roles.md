@@ -38,10 +38,19 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon Bedrock** | Provides foundation models for document understanding | ✓ | ✓ |
 | **Amazon Bedrock Guardrails** | Enforces content safety, information security, model usage policies, and [Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning.html) | ✓ | ✓ |
 | **Amazon Textract** | Extracts text and data from documents (OCR) in Pipeline mode | | ✓ |
-| **Amazon SageMaker (MLflow)** | Optional managed MLflow tracking server for logging processing metrics/experiments (enabled via `MlflowTrackingServerArn`) | | ✓ |
+| **Amazon SageMaker (MLflow)** | Optional managed MLflow tracking server for logging processing metrics/experiments. Set `EnableMLflow=true` and give the server's ARN in `MlflowTrackingURI` (required when enabled). ⚠️ See the note below before relying on it. | | ✓ |
 | **Amazon Bedrock Knowledge Base** | Enables semantic document querying (optional) — backed by S3 Vectors (default) or OpenSearch Serverless | ✓ | ✓ |
 | **Bedrock Data Automation (BDA)** | Automates document processing workflows (BDA mode, `use_bda: true`) | ✓ | ✓ |
 | **Amazon Bedrock AgentCore** | Optional MCP gateway for external application access (enabled via `EnableMCP`) | ✓ | ✓ |
+
+> ⚠️ **MLflow logging does not currently reach the tracking server.** `EnableMLflow=true`
+> creates the `MLflowLoggerFunction` in the pattern stack and hands it `MlflowTrackingURI`,
+> and the function's one caller is the test-results resolver in `nested/api-resolvers/`.
+> The parent stack does not pass the pattern stack's `MLflowLoggerFunctionArn` output down
+> to that stack, so the resolver's `MLFLOW_LOGGER_FUNCTION_ARN` is always empty and the
+> logger is never invoked. The parameters above are wired correctly and the tracking server
+> is not charged for runs it never receives; nothing else is affected. Tracked in
+> [issue #1553](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1553).
 
 ### Auth & API Services
 

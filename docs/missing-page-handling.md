@@ -76,9 +76,30 @@ extraction:
 The Document Schema editor in **View / Edit Configuration → Document Schema** has first-class widgets for both extensions:
 
 - The **class inspector** (right pane when a class is selected) has a **"Page Types"** section with an "Add Page Type" button that opens an expandable editor for each entry's name, description, and regex.
-- The **property inspector** (right pane when a property is selected) shows a **"Source Page Types"** multi-select under a "Missing-Page Handling" header. The dropdown is populated from the page-type names declared on the parent class — so you cannot reference a page-type that doesn't exist.
+- The **property inspector** (right pane when a property is selected) shows a **"Source Page Types"** multi-select under a "Missing-Page Handling" header. The dropdown is populated from the page-type names declared on the parent class, so a property edited here can only name a page-type that exists.
 
 When no page types are declared on the parent class, the property-level widget is hidden so the inspector stays uncluttered.
+
+> ⚠️ **Only the dropdown constrains the names — a hand-edited config is not
+> checked, and the failure is silent data loss.** A name in
+> `x-aws-idp-source-page-types` that does not match any `name` under the class's
+> `x-aws-idp-page-types` is accepted by the configuration models and reported as
+> valid by `idp-cli config-validate`. At run time it can never be found among the
+> detected page types, so the property is treated as MISSING on **every**
+> document — omitted from `inference_result`, or set to `null`, even when its
+> pages were present and the model extracted the data. The same thing happens
+> when the class-level `name` is misspelled, or when its
+> `x-aws-idp-document-page-content-regex` never matches.
+>
+> So after editing these extensions by hand, process one document that definitely
+> contains every page type and confirm that no property you expected is reported
+> as missing. The section's `result.json` carries both halves of the comparison:
+> `page_type_resolution.present_page_types` is what was actually detected, and
+> each entry in `missing_fields_report` names the `expected_page_types` the
+> omitted property was looking for. A name that appears in the second list and
+> not the first is the mismatch. The same present/missing sets are logged by the
+> Extraction Lambda. Editing through the Document Schema editor avoids the whole
+> class of mistake.
 
 ## What the LLM sees
 

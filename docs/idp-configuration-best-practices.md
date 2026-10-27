@@ -398,7 +398,7 @@ properties:
 
 ### Packet granularity (`one_stage.granularity: packet`)
 
-This approach analyzes entire document packages to identify logical document boundaries.
+This approach analyzes an entire packet in one call to identify its section boundaries.
 Its prompts live at `classification.one_stage.packet.system_prompt` and
 `classification.one_stage.packet.task_prompt`. No preset in `config_library/unified/`
 sets packet granularity; set `classification.one_stage.granularity: packet` to use it.
@@ -556,9 +556,9 @@ classification:
   prompt
 - Strict constraint on using only defined document types
 - An `<output-format>` asking for `document_boundary` as well as `class`. That
-  verdict is what `classification.file_shape.sectionSplitting: llm_determined`
+  verdict is what `classification.document_shape.sectionSplitting: llm_determined`
   — the default — groups pages into sections with, so a page prompt that returns
-  only a class leaves every page looking like the start of a new document
+  only a class leaves every page looking like the start of a new section
 
 ## Extraction Prompt Customization
 
@@ -679,51 +679,61 @@ task_prompt: |
 
 ### Assessment Prompt Design
 
-Assessment prompts evaluate the confidence of extraction results:
+Confidence-assessment prompts evaluate the confidence of extraction results.
+They live under `extraction.confidence`:
 
 ```yaml
-assessment:
-  system_prompt: >-
-    You are a document analysis assessment expert. Your task is to evaluate the confidence 
-    of extraction results by analyzing the source document evidence. Respond only with JSON 
-    containing confidence scores for each extracted attribute.
-  
-  task_prompt: >-
-    <background>
-    You are an expert document analysis assessment system. Your task is to evaluate the 
-    confidence of extraction results for a document of class {DOCUMENT_CLASS}.
-    </background>
+extraction:
+  confidence:
+    system_prompt: >-
+      You are a document analysis assessment expert. Your task is to evaluate the
+      confidence of extraction results by analyzing the source document evidence.
+      Respond only with JSON containing confidence scores for each extracted attribute.
 
-    <task>
-    Analyze the extraction results against the source document and provide confidence 
-    assessments for each extracted attribute. Consider factors such as:
-    1. Text clarity and OCR quality in the source regions
-    2. Alignment between extracted values and document content
-    3. Presence of clear evidence supporting the extraction
-    4. Potential ambiguity or uncertainty in the source material
-    5. Completeness and accuracy of the extracted information
-    </task>
+    task_prompt: >-
+      <background>
+      You are an expert document analysis assessment system. Your task is to evaluate
+      the confidence of extraction results for a document of class {DOCUMENT_CLASS}.
+      </background>
 
-    <assessment-guidelines>
-    For each attribute, provide:
-    A confidence score between 0.0 and 1.0 where:
-       - 1.0 = Very high confidence, clear and unambiguous evidence
-       - 0.8-0.9 = High confidence, strong evidence with minor uncertainty
-       - 0.6-0.7 = Medium confidence, reasonable evidence but some ambiguity
-       - 0.4-0.5 = Low confidence, weak or unclear evidence
-       - 0.0-0.3 = Very low confidence, little to no supporting evidence
-    </assessment-guidelines>
+      <task>
+      Analyze the extraction results against the source document and provide confidence
+      assessments for each extracted attribute. Consider factors such as:
+      1. Text clarity and OCR quality in the source regions
+      2. Alignment between extracted values and document content
+      3. Presence of clear evidence supporting the extraction
+      4. Potential ambiguity or uncertainty in the source material
+      5. Completeness and accuracy of the extracted information
+      </task>
 
-    <<CACHEPOINT>>
+      <assessment-guidelines>
+      For each attribute, provide:
+      A confidence score between 0.0 and 1.0 where:
+         - 1.0 = Very high confidence, clear and unambiguous evidence
+         - 0.8-0.9 = High confidence, strong evidence with minor uncertainty
+         - 0.6-0.7 = Medium confidence, reasonable evidence but some ambiguity
+         - 0.4-0.5 = Low confidence, weak or unclear evidence
+         - 0.0-0.3 = Very low confidence, little to no supporting evidence
+      </assessment-guidelines>
 
-    <document-image>
-    {DOCUMENT_IMAGE}
-    </document-image>
+      <<CACHEPOINT>>
 
-    <extraction-results>
-    {EXTRACTION_RESULTS}
-    </extraction-results>
+      <document-image>
+      {DOCUMENT_IMAGE}
+      </document-image>
+
+      <extraction-results>
+      {EXTRACTION_RESULTS}
+      </extraction-results>
 ```
+
+> A top-level `assessment:` block is the pre-v0.6 spelling. Its recognised keys
+> — `system_prompt`, `task_prompt`, `model` and the rest — are relocated to
+> `extraction.confidence` (and `default_confidence_threshold` to
+> `hitl.confidence_threshold`) when the config is loaded, so an older config
+> still works. Keys it does **not** recognise are discarded with no warning, so
+> write new configs with the nesting above. See
+> [extraction-and-confidence.md](extraction-and-confidence.md).
 
 ### Evaluation Prompt Design
 
@@ -1025,7 +1035,7 @@ For models supporting cache checkpoints:
 ⚠️ **The snippets in this section show values, not paths.** Each parameter lives
 inside the model block of the call that uses it, and classification has three of
 them: `classification.one_stage.llm`,
-`classification.two_stage.segmentation.llm` and
+`classification.two_stage.boundary_detection.llm` and
 `classification.two_stage.section_classification.llm`. There is no
 `classification.temperature`. Writing one anyway is not an error — it is a
 pre-0.9 flat key, so it is converted on read and **copied into all three call
@@ -1206,7 +1216,7 @@ other classification setting has to go in:
 
 | `classification.strategy` | Configuration editor label | What it does |
 |---|---|---|
-| `single_pass` (default) | **One stage** | One call per page, or per packet, returns the boundaries and the classes together |
+| `single_pass` (default) | **One stage** | One call per page, or per packet, returns the section boundaries and the classes together |
 | `two_stage` | **Two stage** | A boundary pass that is sent no class vocabulary, then one call per detected section to classify that section |
 
 The stored value is `single_pass` or `two_stage`. *One stage* and *Two stage* are
@@ -1218,7 +1228,7 @@ has the full comparison and the cost argument.
 
 **Granularity is then read from the chosen strategy's own block.** Under
 `single_pass` it is `classification.one_stage.granularity`; under `two_stage` it
-is `classification.two_stage.segmentation.llm.granularity`, and
+is `classification.two_stage.boundary_detection.llm.granularity`, and
 `one_stage.granularity` is not read at all. The same applies to the page and
 packet settings underneath each — `contextPagesCount`, `window_pages`,
 `overlap_pages` and the prompts exist in both blocks, and only the active
@@ -1228,7 +1238,7 @@ strategy's copy is read.
 
 | Aspect | Packet granularity | Page granularity (default) |
 |--------|------------------------|---------------------------|
-| **Primary Use Case** | Multi-document packages where boundaries need the whole packet in view | Single documents and packets alike (the default) |
+| **Primary Use Case** | Packets whose section boundaries need the whole packet in view | Single-section documents and packets alike (the default) |
 | **Input Data** | OCR text + page images (subject to `one_stage.llm.modality`) | OCR text + page image (subject to `one_stage.llm.modality`) |
 | **Processing Method** | One call per packet (or window of `window_pages` pages) returning segments | One call per page returning a class and a start/continue boundary marker |
 | **Example Config** | None shipped; set `one_stage.granularity: packet` | `lending-package-sample`, `rvl-cdip` |
@@ -1236,7 +1246,7 @@ strategy's copy is read.
 | **Output Format** | Segmented page ranges | Per-page class and boundary marker |
 
 The paths in that table are the `single_pass` ones. Under `two_stage`, read
-`classification.two_stage.segmentation.llm.…` for each of them — that is the
+`classification.two_stage.boundary_detection.llm.…` for each of them — that is the
 call that reads pages — and note that the class no longer comes from it: the
 boundary pass returns page ranges only, and
 `classification.two_stage.section_classification` classifies each range.
@@ -1348,7 +1358,7 @@ classification:
 ```
 
 Under `strategy: two_stage` the equivalent blocks are
-`classification.two_stage.segmentation.llm.image` and
+`classification.two_stage.boundary_detection.llm.image` and
 `classification.two_stage.section_classification.llm.image`; the `one_stage`
 block above is not read. A classification call's `image` block honours only
 `target_width` and `target_height` — `dpi` and `preprocessing` validate there and
@@ -1590,11 +1600,11 @@ DataRetentionInDays:
 
 ### Bedrock OCR Configuration
 
-Pattern 2 supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR backend alongside Amazon Textract:
+Pipeline mode supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR backend alongside Amazon Textract:
 
 ```yaml
 ocr:
-  backend: "bedrock"  # Options: "textract", "bedrock", "none"
+  backend: "bedrock"  # Options: "textract", "bedrock", "bda", "none"
   model_id: "us.anthropic.claude-sonnet-4-6"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
@@ -1605,6 +1615,21 @@ ocr:
     target_height: ""    # Empty string = no resizing (recommended)
     preprocessing: true  # Enable adaptive binarization
 ```
+
+`ocr.backend` takes one of four values:
+
+| Value | Behaviour |
+|---|---|
+| `textract` | Amazon Textract (the default) |
+| `bedrock` | LLM-based OCR through the model in `ocr.model_id`, as configured above |
+| `bda` | Amazon Bedrock Data Automation, which is the backend to prefer for table-heavy documents |
+| `none` | No text extraction; page images only |
+
+> ⚠️ **The value is not validated when the config is saved.** A misspelled
+> backend is accepted by the configuration models and by `idp-cli
+> config-validate`, and is refused only when the OCR service starts up for a
+> document, which fails that document rather than the configuration. Check the
+> spelling against the table above.
 
 #### Supported Vision-Capable Models
 
@@ -1727,17 +1752,47 @@ ocr:
   backend: "textract"  # or "bedrock" based on requirements
 ```
 
-**Pitfall: Inappropriate Assessment Configuration**
-```yaml
-# Poor - assessment enabled for all documents
-assessment:
-  # No selective configuration
+**Pitfall: Paying for confidence scoring you do not need**
 
-# Better - selective assessment
-assessment:
-  # Only enable for critical document types
-  enabled_for_classes: ["invoice", "bank_statement"]
+Confidence assessment costs a model call per section, so on a high-volume
+workload you may not want it. **There is no per-class switch.** The control is
+`extraction.confidence.mode`, and it applies to every document the stack
+processes:
+
+```yaml
+extraction:
+  confidence:
+    mode: separate     # default — a distinct inference scores every field
 ```
+
+```yaml
+extraction:
+  confidence:
+    mode: integrated   # the extraction inference emits confidence in one pass,
+                       # which saves the second model call
+```
+
+```yaml
+extraction:
+  confidence:
+    mode: "off"        # no confidence scoring at all, and no extra model call
+                       # quote it — bare `off` is YAML's boolean false and is rejected
+```
+
+`integrated` is the usual answer when cost is the concern but you still want
+confidence; `"off"` when you do not. Unlike most of the settings on this page,
+`mode` *is* validated: a value other than `off`, `separate` or `integrated` is
+rejected when the config is saved. If you only need confidence on *some*
+document types, run them through a separate stack rather than trying to express
+it in one configuration.
+
+> ⚠️ **A key that does not exist is not reported.** There is no
+> `assessment.enabled_for_classes`, and writing one has no effect and produces no
+> warning: the pre-v0.6 top-level `assessment:` block is discarded on load apart
+> from the keys that have a current home, so an unrecognised key inside it leaves
+> nothing for the unknown-key check to see. `idp-cli config-validate` reports
+> such a config as valid, nothing appears in CloudWatch, and confidence
+> assessment stays on for every class. Set `extraction.confidence.mode` instead.
 
 ---
 
@@ -1821,7 +1876,7 @@ properties:
 
 **Classification Template** (one stage, page granularity — under
 `strategy: two_stage` the equivalents are
-`classification.two_stage.segmentation.llm.page.*` for the boundary pass and
+`classification.two_stage.boundary_detection.llm.page.*` for the boundary pass and
 `classification.two_stage.section_classification.llm.*` for the class pass):
 ```yaml
 classification:

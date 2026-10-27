@@ -42,7 +42,6 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
 - [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
-- [Criteria Validation](./criteria-validation.md) - Document validation against dynamic business rules using LLMs
 - [OCR Image Sizing Guide](./ocr-image-sizing-guide.md) - Optimizing image sizes for OCR processing
 - [Languages](./languages.md) - Multi-language support
 

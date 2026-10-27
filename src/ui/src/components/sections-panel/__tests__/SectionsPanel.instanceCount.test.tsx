@@ -57,7 +57,7 @@ const SECTIONS = [
         stage: 'extraction',
         severity: 'warning',
         code: 'extraction_multi_instance_suspected',
-        message: 'These pages appear to contain 5 separate PayStatement documents, but extraction returned 1.',
+        message: 'These pages appear to contain 5 separate PayStatement records, but extraction returned 1.',
       },
     ],
   },
@@ -121,10 +121,10 @@ describe('SectionsPanel multi-instance annotation', () => {
     // interactive explanation. Opening it is also what distinguishes the
     // emphasised state from the quiet ones without asserting on Cloudscape's
     // hashed style class names.
-    expect(screen.queryByText(/Multiple documents in one section/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Multiple records in one section/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('3'));
-    expect(screen.getByText(/Multiple documents in one section/)).toBeInTheDocument();
-    expect(screen.getByText(/3 separate BankStatement documents/)).toBeInTheDocument();
+    expect(screen.getByText(/Multiple records in one section/)).toBeInTheDocument();
+    expect(screen.getByText(/3 separate BankStatement records/)).toBeInTheDocument();
   });
 
   it('says nothing at all for a single-instance section', () => {
@@ -134,7 +134,7 @@ describe('SectionsPanel multi-instance annotation', () => {
     // Just the class name — the normal case must not spend a pixel.
     expect(cell.textContent).toBe('W2');
     fireEvent.click(cell);
-    expect(screen.queryByText(/Multiple documents in one section/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Multiple records in one section/)).not.toBeInTheDocument();
   });
 
   it('says nothing for an undetermined count either', () => {
@@ -164,7 +164,7 @@ describe('SectionsPanel suspected multi-instance annotation (#753)', () => {
     expect(cell.textContent).toContain('5');
 
     fireEvent.click(screen.getByText('5'));
-    expect(screen.getByText(/Documents may be missing from this section/)).toBeInTheDocument();
+    expect(screen.getByText(/Records may be missing from this section/)).toBeInTheDocument();
     expect(screen.getByText(/only the first was extracted/)).toBeInTheDocument();
     // The "recovered" wording asserts every instance was kept, which is false here.
     expect(screen.queryByText(/Each one was extracted as its own instance/)).not.toBeInTheDocument();
@@ -173,7 +173,7 @@ describe('SectionsPanel suspected multi-instance annotation (#753)', () => {
   it('still uses the factual wording when the count is a real recovered count', () => {
     renderPanel();
     fireEvent.click(screen.getByText('3'));
-    expect(screen.getByText(/Multiple documents in one section/)).toBeInTheDocument();
+    expect(screen.getByText(/Multiple records in one section/)).toBeInTheDocument();
     expect(screen.queryByText(/only the first was extracted/)).not.toBeInTheDocument();
   });
 });

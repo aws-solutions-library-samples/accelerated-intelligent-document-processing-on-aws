@@ -109,9 +109,9 @@ EXEMPT_SUBTREES: dict[str, str] = {
         "translator_config.yaml via handle_generate_rule_json (see the field's "
         "own description)."
     ),
-    "classification.two_stage.segmentation.boundary_model": (
+    "classification.two_stage.boundary_detection.boundary_model": (
         "Declared for a boundary-detection model (#1329), not implemented: "
-        "segmentation.method offers only 'llm', so a control would edit a setting "
+        "boundary_detection.method offers only 'llm', so a control would edit a setting "
         "nothing reads."
     ),
     "classification.two_stage.section_classification.embeddings": (
@@ -206,8 +206,8 @@ NOT_USER_SETTABLE: dict[str, str] = {
     "classification.one_stage.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
     ),
-    "classification.two_stage.segmentation.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
-    "classification.two_stage.segmentation.llm.image.preprocessing": (
+    "classification.two_stage.boundary_detection.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.two_stage.boundary_detection.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
     ),
     "classification.two_stage.section_classification.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",

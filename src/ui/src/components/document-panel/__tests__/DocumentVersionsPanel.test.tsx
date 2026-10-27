@@ -162,4 +162,18 @@ describe('DocumentVersionsPanel', () => {
     // Both run ids are addressable.
     expect(screen.getAllByLabelText(/20250707T141530Z-b/).length).toBeGreaterThan(0);
   });
+
+  // A run becomes a version when it completes. The list loaded once per document, so
+  // a document reprocessed while its page was open finished with the old list shown
+  // ("Version History (1)" beside a run that had already completed) until Refresh.
+  it('reloads the list when the document finishes another run', async () => {
+    const { rerender } = render(<DocumentVersionsPanel objectKey="doc.pdf" completionTime="2025-01-01T09:00:00Z" />);
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+    const listCalls = () => mockGraphql.mock.calls.filter(([arg]) => String(arg.query).includes('listDocumentVersions')).length;
+    expect(listCalls()).toBe(1);
+
+    rerender(<DocumentVersionsPanel objectKey="doc.pdf" completionTime="2025-07-07T14:15:30Z" />);
+
+    await waitFor(() => expect(listCalls()).toBe(2));
+  });
 });

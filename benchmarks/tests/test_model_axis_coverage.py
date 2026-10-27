@@ -57,7 +57,7 @@ _MODEL_KEYS = frozenset(
     {
         "extraction.model",
         "classification.one_stage.llm.model",
-        "classification.two_stage.segmentation.llm.model",
+        "classification.two_stage.boundary_detection.llm.model",
         "classification.two_stage.section_classification.llm.model",
         "assessment.model",
         "summarization.model",

@@ -42,7 +42,7 @@ classification:
       model: amazon.nova-pro-v1:0
       max_tokens: '4096'
   two_stage:
-    segmentation:
+    boundary_detection:
       llm:
         model: amazon.nova-pro-v1:0
         max_tokens: '4096'
