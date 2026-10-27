@@ -229,8 +229,10 @@ class TestAshConfig:
             )
 
     def test_dependency_suppressions_match_the_gating_allowlist(self):
-        """The ASH entries mirror dep_audit_allowlist.json. If a dependency is
-        upgraded and dropped there, this catches the stale ASH twin."""
+        """The ASH entries mirror dep_audit_allowlist.json in both directions. A
+        dependency upgraded and dropped there leaves a stale ASH twin, and an
+        advisory triaged there with no ASH twin comes back untriaged on the next
+        out-of-band ASH scan."""
         gating = {e["id"] for e in dep_audit.load_allowlist().values()}
         ash_ids = {
             s["rule_id"]
@@ -241,6 +243,11 @@ class TestAshConfig:
         assert not stale, (
             f"advisories suppressed for ASH but no longer in "
             f"dep_audit_allowlist.json: {sorted(stale)}"
+        )
+        missing = gating - ash_ids
+        assert not missing, (
+            f"advisories triaged in dep_audit_allowlist.json with no twin in "
+            f".ash/.ash.yaml: {sorted(missing)}"
         )
 
 

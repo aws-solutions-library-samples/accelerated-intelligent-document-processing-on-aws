@@ -52,7 +52,7 @@
     "id": "GHSA-3w55-933p-8pv5",
     "package": "strands-agents",
     "severity": "HIGH",
-    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage directory under the system temp dir follows a symbolic link another local user planted there. Only a caller that constructs a session manager reaches it: Agent's session_manager defaults to None and the SDK never creates a FileSessionManager itself, and nothing in this repo imports strands.session or passes session_manager, so no agent here writes session files. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin, the same upgrade GHSA-4v6f-7vjh-6x4m is waiting on. Re-check this entry if a session manager is ever added.",
+    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage directory under the system temp dir follows a symbolic link another local user planted there. Only a caller that constructs a session manager reaches it: Agent's session_manager defaults to None and the SDK never creates a FileSessionManager itself, and nothing in this repo imports strands.session or passes session_manager, so no agent here writes session files. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin and past the 1.43.0 that GHSA-4v6f-7vjh-6x4m needs, so one upgrade to 1.48.0 or later clears both. Re-check this entry if a session manager is ever added.",
     "triagedOn": "2026-10-27"
   }
 ]
