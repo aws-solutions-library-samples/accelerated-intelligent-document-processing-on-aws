@@ -27,13 +27,13 @@ import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import DateRangeModal from '../common/DateRangeModal';
-import { isQueueManaged } from '../common/review-status';
 import { isPendingForReviewer } from './reviewer-pending-filter';
 import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
 import { claimReview, releaseReview } from '../../graphql/generated';
 import { claimSelectedReviews, type ClaimedReview } from './claim-selected-reviews';
+import { releaseSelectedReviews, type ReleasedReview } from './release-selected-reviews';
 
 import type { MappedDocument } from './documents-table-config';
 import {
@@ -82,7 +82,8 @@ const DocumentList = (): React.JSX.Element => {
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
   const [currentUsername, setCurrentUsername] = useState('');
-  const [claimErrors, setClaimErrors] = useState<string[]>([]);
+  // Server refusals from the last Start Review or Release Review, shown above the table.
+  const [reviewRefusal, setReviewRefusal] = useState<{ header: string; messages: string[] } | null>(null);
   const { settings } = useSettingsContext();
   const { currentCredentials } = useAppContext();
   const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
@@ -287,7 +288,7 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleClaimReview = async () => {
     const client = generateClient();
-    setClaimErrors([]);
+    setReviewRefusal(null);
     const { claimed, failures, navigateTo } = await claimSelectedReviews(
       (collectionProps.selectedItems ?? []) as MappedDocument[],
       async (objectKey) => {
@@ -316,7 +317,7 @@ const DocumentList = (): React.JSX.Element => {
 
     // Clear selection
     actions.setSelectedItems([]);
-    setClaimErrors(failures);
+    if (failures.length) setReviewRefusal({ header: 'Start Review was refused', messages: failures });
 
     // If the one selected document was claimed, navigate to its details
     if (navigateTo) {
@@ -327,35 +328,29 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleReleaseReview = async () => {
     const client = generateClient();
-    for (const item of (collectionProps.selectedItems as MappedDocument[]).filter((doc) => !isQueueManaged(doc.hitlStatus))) {
-      try {
-        const result = await client.graphql({
-          query: releaseReview,
-          variables: { objectKey: item.objectKey },
-        });
-        const releaseData = (result as { data: { releaseReview: { HITLStatus: string } } }).data.releaseReview;
-        logger.debug('Released review for', item.objectKey, result);
+    setReviewRefusal(null);
+    const { released, failures } = await releaseSelectedReviews(
+      (collectionProps.selectedItems ?? []) as MappedDocument[],
+      async (objectKey) => {
+        const result = await client.graphql({ query: releaseReview, variables: { objectKey } });
+        logger.debug('Released review for', objectKey, result);
+        return (result as { data: { releaseReview: ReleasedReview } }).data.releaseReview;
+      },
+    );
+    if (failures.length) logger.error('Error releasing review', failures);
 
-        // Update the document in the list immediately
-        setDocumentList((prevList) =>
-          prevList.map((doc) =>
-            doc.objectKey === item.objectKey
-              ? {
-                  ...doc,
-                  hitlReviewOwner: '' as string,
-                  hitlReviewOwnerEmail: '' as string,
-                  hitlStatus: releaseData.HITLStatus,
-                }
-              : doc,
-          ),
-        );
-      } catch (e) {
-        logger.error('Error releasing review', e);
-      }
-    }
+    // Update the released documents in the list immediately
+    const byKey = new Map(released.map(({ objectKey, review }) => [objectKey, review]));
+    setDocumentList((prevList) =>
+      prevList.map((doc) => {
+        const review = byKey.get(doc.objectKey);
+        return review ? { ...doc, hitlReviewOwner: '', hitlReviewOwnerEmail: '', hitlStatus: review.HITLStatus } : doc;
+      }),
+    );
 
     // Clear selection
     actions.setSelectedItems([]);
+    if (failures.length) setReviewRefusal({ header: 'Release Review was refused', messages: failures });
   };
 
   /**
@@ -490,9 +485,9 @@ const DocumentList = (): React.JSX.Element => {
 
   return (
     <>
-      {claimErrors.length > 0 && (
-        <Alert type="error" dismissible onDismiss={() => setClaimErrors([])} header="Start Review was refused">
-          {claimErrors.map((message) => (
+      {reviewRefusal && (
+        <Alert type="error" dismissible onDismiss={() => setReviewRefusal(null)} header={reviewRefusal.header}>
+          {reviewRefusal.messages.map((message) => (
             <div key={message}>{message}</div>
           ))}
         </Alert>
