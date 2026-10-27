@@ -2132,7 +2132,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_CONFIG, "Save changes"),
         Shipped(
             "components/discovery/DiscoveryJobDetails.tsx",
-            "Enable several documents per section",
+            "Enable several records per section",
         ),
         Shipped(
             "components/custom-models/CreateConfigVersionModal.tsx",
