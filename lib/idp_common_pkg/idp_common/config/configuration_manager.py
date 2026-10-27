@@ -1928,10 +1928,15 @@ class ConfigurationManager:
         # reverting to default). Migration is idempotent, so this is a no-op for v0.6
         # input. (saveAsVersion/saveAsDefault/normal-update all merge, so migrate once
         # here at the single choke point.)
+        #
+        # `unstamped_is_current`: the input is a configuration being saved now. An
+        # editor delta never carries `config_format_version`, so without it a
+        # `max_log_events: 5` typed today would go through the v0.10 hop and be
+        # saved as 10; see `migrations.migrate_config`.
         if isinstance(config_dict, dict) and config_dict:
             from .migrations import migrate_config
 
-            config_dict = migrate_config(config_dict)
+            config_dict = migrate_config(config_dict, unstamped_is_current=True)
 
         # === Reset to default ===
         #
