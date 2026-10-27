@@ -283,7 +283,7 @@ const PagesPanel = ({
   const [modifiedPageIds, setModifiedPageIds] = useState<Set<string>>(new Set());
   const [selectedPage, setSelectedPage] = useState<PageItem | null>(null);
   const [showModalEditor, setShowModalEditor] = useState(false);
-  const [showPattern1Modal, setShowPattern1Modal] = useState(false);
+  const [showBdaModeModal, setShowBdaModeModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -351,12 +351,12 @@ const PagesPanel = ({
   // BDA mode, from the document's own configuration (`use_bda`) — not from the
   // stack's `IDPPattern`, which names the one unified pattern for every document.
   // Page edits (class reset, text edits) are structural and not offered there.
-  const isPattern1 = () => isBdaModeConfig(mergedConfig);
+  const isBdaMode = () => isBdaModeConfig(mergedConfig);
 
   // Handle Edit Pages button click
   const handleEditPagesClick = () => {
-    if (isPattern1()) {
-      setShowPattern1Modal(true);
+    if (isBdaMode()) {
+      setShowBdaModeModal(true);
     } else {
       setIsEditMode(true);
     }
@@ -646,12 +646,12 @@ const PagesPanel = ({
 
       {/* BDA mode: page edits are not offered */}
       <Modal
-        visible={showPattern1Modal}
-        onDismiss={() => setShowPattern1Modal(false)}
+        visible={showBdaModeModal}
+        onDismiss={() => setShowBdaModeModal(false)}
         header="Page edits are not available in BDA mode"
         footer={
           <Box float="right">
-            <Button variant="primary" onClick={() => setShowPattern1Modal(false)}>
+            <Button variant="primary" onClick={() => setShowBdaModeModal(false)}>
               Got it
             </Button>
           </Box>

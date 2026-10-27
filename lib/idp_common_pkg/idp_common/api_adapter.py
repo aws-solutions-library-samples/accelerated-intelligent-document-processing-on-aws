@@ -73,6 +73,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from decimal import Decimal
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional
@@ -234,8 +235,6 @@ def request_id_of(context: Any, event: Optional[Dict[str, Any]] = None) -> str:
     )
     if isinstance(request_id, str) and request_id:
         return request_id
-    import uuid
-
     return str(uuid.uuid4())
 
 
