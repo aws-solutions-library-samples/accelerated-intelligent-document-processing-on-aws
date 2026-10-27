@@ -24,6 +24,7 @@ import {
 } from '@cloudscape-design/components';
 import useConfiguration from '../../hooks/use-configuration';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useUserRole from '../../hooks/use-user-role';
 import useSettingsContext from '../../contexts/settings';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useDocumentsContext from '../../contexts/documents';
@@ -31,7 +32,9 @@ import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENT
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
+import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
 import { parseMetering } from '../../graphql/awsjson-parsers';
+import { chooseOpeningProfile, isProfileReadable } from '../../utils/readable-profile';
 import { classificationModelOf } from '../../utils/classification-config';
 
 // Two-stage classification meters its halves as BoundaryDetection and
@@ -186,9 +189,24 @@ interface SelectOption {
 const _DOCUMENT_LIST_SHARDS_PER_DAY = 6;
 
 const CapacityPlanningLayout = () => {
-  const { mergedConfig: configurationUntyped, fetchConfiguration } = useConfiguration();
+  const {
+    versions,
+    loaded: versionsLoaded,
+    loading: versionsLoading,
+    error: versionsError,
+    getVersionOptions,
+  } = useConfigurationVersions();
+  const { allowedConfigVersions, loading: roleLoading } = useUserRole();
+  const callerScope = { allowedConfigVersions, loading: roleLoading };
+  const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
+  const { mergedConfig: configurationUntyped, fetchConfiguration } = useConfiguration(
+    !selectedConfigVersion && isProfileReadable('default', versions, callerScope) ? 'default' : null,
+  );
   const configuration = configurationUntyped as Configuration | null;
-  const { versions, getVersionOptions } = useConfigurationVersions();
+  const openingProfile = chooseOpeningProfile(
+    { versions, loaded: versionsLoaded, loading: versionsLoading, error: versionsError },
+    callerScope,
+  );
   const { settings: deploymentSettings } = useSettingsContext();
   const {
     documents,
@@ -202,7 +220,6 @@ const CapacityPlanningLayout = () => {
     setCustomDateRange,
   } = useDocumentsContext();
 
-  const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
   const [manualPattern, setManualPattern] = useState<string | null>(null);
 
   // The list is loaded by whichever page asks for it first, and only the Document
@@ -251,7 +268,6 @@ const CapacityPlanningLayout = () => {
   }, [versions, selectedConfigVersion]); // getVersionOptions is not memoized
 
   // Fetch configuration when selected version changes
-  // Note: useConfiguration hook already fetches 'default' on mount, so this will fetch the active version after it's determined
   useEffect(() => {
     if (selectedConfigVersion) {
       logger.debug('Fetching configuration for version:', selectedConfigVersion.value);
@@ -2131,7 +2147,9 @@ const CapacityPlanningLayout = () => {
           </Alert>
         )}
 
-        {!configuration && (
+        {!configuration && openingProfile.status === 'none' && <NoConfigProfilesInScopeAlert />}
+
+        {!configuration && openingProfile.status !== 'none' && (
           <Alert type="warning">
             <strong>⚠️ Configuration not loaded.</strong> Please visit the <strong>View/Edit Configuration</strong> tab first to load your
             pattern configuration, then return to Capacity Planning.

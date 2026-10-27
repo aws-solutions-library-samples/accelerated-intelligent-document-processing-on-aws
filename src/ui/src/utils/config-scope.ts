@@ -422,6 +422,14 @@ const globToRegExp = (pattern: string): RegExp => {
 };
 
 /**
+ * Whether a scope restricts the caller at all.
+ *
+ * False for an empty or unset scope, and for one whose entries are all blank,
+ * because `normalize_scope` reduces each of those to unrestricted.
+ */
+export const isScopeRestricted = (scope: ConfigVersionScope): boolean => normalizeScope(scope) !== null;
+
+/**
  * Whether a scope permits a Configuration Profile.
  *
  * @param scope The caller's `allowedConfigVersions`, or null/empty for

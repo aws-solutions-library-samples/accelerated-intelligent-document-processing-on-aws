@@ -26,7 +26,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { scopeAllows } from '../config-scope';
+import { isScopeRestricted, scopeAllows } from '../config-scope';
 
 describe('scopeAllows — unrestricted scopes', () => {
   it('treats a null, undefined or empty scope as unrestricted', () => {
@@ -454,5 +454,23 @@ describe('scopeAllows — a set scope fails closed on a nameless profile', () =>
 
   it('still admits a named profile under a match-everything pattern', () => {
     expect(scopeAllows(['*'], 'anything')).toBe(true);
+  });
+});
+
+describe('isScopeRestricted', () => {
+  it('reads an unset, empty or all-blank scope as unrestricted, as normalize_scope does', () => {
+    expect(isScopeRestricted(null)).toBe(false);
+    expect(isScopeRestricted(undefined)).toBe(false);
+    expect(isScopeRestricted([])).toBe(false);
+    expect(isScopeRestricted([''])).toBe(false);
+    expect(isScopeRestricted(['  ', '\t'])).toBe(false);
+    expect(isScopeRestricted('')).toBe(false);
+  });
+
+  it('reads any usable entry, exact or pattern, as a restriction', () => {
+    expect(isScopeRestricted(['lending'])).toBe(true);
+    expect(isScopeRestricted(['tenant-a_*'])).toBe(true);
+    expect(isScopeRestricted(['  ', 'lending'])).toBe(true);
+    expect(isScopeRestricted('lending')).toBe(true);
   });
 });
