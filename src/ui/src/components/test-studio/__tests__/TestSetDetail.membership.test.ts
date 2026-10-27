@@ -142,7 +142,7 @@ describe('an empty set', () => {
 
   it('cannot be annotated from the table', () => {
     expect(TEST_SETS).toMatch(
-      /id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems\.length !== 1 \|\| !selectedItems\[0\]\?\.fileCount/,
+      /id: 'annotate', text: 'Edit ground truth', disabled: selectedItems\.length !== 1 \|\| !selectedItems\[0\]\?\.fileCount/,
     );
   });
 

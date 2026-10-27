@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 from unittest.mock import MagicMock
 
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
@@ -19,9 +20,13 @@ os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 
-_cfnresponse = MagicMock()
+# A module object rather than a bare MagicMock: tests replace ``send`` with
+# ``monkeypatch.setattr``, and from pytest 9.2 undoing that on a MagicMock deletes
+# the attribute, so every later test found no ``send`` at all.
+_cfnresponse = types.ModuleType("cfnresponse")
 _cfnresponse.SUCCESS = "SUCCESS"
 _cfnresponse.FAILED = "FAILED"
+_cfnresponse.send = MagicMock()
 sys.modules.setdefault("cfnresponse", _cfnresponse)
 
 _HANDLER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

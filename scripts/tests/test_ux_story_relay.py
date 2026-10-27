@@ -1778,17 +1778,17 @@ _ANNOTATE = "components/test-studio/AnnotationWorkspace.tsx"
 _ASSIGN = "components/review-queues/AssignModal.tsx"
 _BREAKER = "components/common/CircuitBreakerPanel.tsx"
 _CONFIG = "components/configuration-layout/ConfigurationLayout.tsx"
-_EDITOR = "components/review-workspace/SectionEditor.tsx"
-_FRAME = "components/review-workspace/AnnotationFrame.tsx"
+_EDITOR = "components/edit-screen/SectionEditor.tsx"
+_FRAME = "components/edit-screen/EditScreen.tsx"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
-_PRODUCTION = "components/review-workspace/ProductionAnnotation.tsx"
+_PRODUCTION = "components/edit-screen/ProductionItemEdit.tsx"
 _QUEUE = "components/review-queues/ReviewQueuePage.tsx"
 _QUEUE_SETTINGS = "components/review-queues/QueueDefinitionModal.tsx"
 _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
 _TABLE = "components/document-list/documents-table-config.tsx"
-_TEST_SET_ITEM = "components/review-workspace/TestSetAnnotation.tsx"
+_TEST_SET_ITEM = "components/edit-screen/TestSetItemEdit.tsx"
 _UPLOAD = "components/upload-document/UploadDocumentPanel.tsx"
 _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
 
@@ -1842,11 +1842,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
         Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
-        Shipped(_FRAME, "Complete"),
+        Shipped(_FRAME, "Process Changes"),
         Shipped(_FRAME, "Save"),
         Shipped(
             _PRODUCTION,
-            "Discard Changes",
+            "Cancel and discard changes",
             source="autosaveMs={canEdit",
             kind="autosave",
         ),
@@ -1860,11 +1860,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/test-studio/TestSetDetail.tsx", "Delete draft labels"),
     ),
     "ClearReadInboxMessages": (Shipped(_INBOX, "Clear read", inside_dialog=True),),
-    "CompleteReviewItem": (Shipped(_FRAME, "Complete"),),
+    "CompleteReviewItem": (Shipped(_FRAME, "Process Changes"),),
     "CompleteSectionReview": (
         Shipped("components/document-viewer/VisualEditorModal.tsx", "Save All Changes"),
-        Shipped(_FRAME, "Complete"),
-        Shipped(_TEST_SET_ITEM, "Save labels", source='saveButtonText="Save labels"'),
+        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Save"),
     ),
     "CopyToBaseline": (
         Shipped(
@@ -1988,8 +1988,8 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_SUPERVISOR, "Move", source='label="Move"', inside_dialog=True),
     ),
     "OpenTestSetAnnotationDraft": (
-        Shipped(_TEST_SET_ITEM, "Start annotating"),
-        Shipped(_FRAME, "Complete"),
+        Shipped(_TEST_SET_ITEM, "Start editing"),
+        Shipped(_FRAME, "Process Changes"),
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
@@ -2014,8 +2014,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
     "ReextractTestSetDocument": (
         Shipped(
-            "components/test-studio/GroundTruthVisualEditor.tsx",
-            "Change class & re-extract",
+            "components/test-studio/GroundTruthSectionEditor.tsx",
+            "Re-extract",
+            source="'Re-extract'",
         ),
     ),
     "ReleaseReview": (Shipped(_TABLE, "Release Review"),),
@@ -2058,7 +2059,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_FRAME, "Save"),
         Shipped(
             _PRODUCTION,
-            "Discard Changes",
+            "Cancel and discard changes",
             source="autosaveMs={canEdit",
             kind="autosave",
         ),
@@ -2067,8 +2068,8 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/document-viewer/VisualEditorModal.tsx", "Save All Changes"),
     ),
     "SaveTestSetDocumentSection": (
-        Shipped(_FRAME, "Complete"),
-        Shipped(_TEST_SET_ITEM, "Save labels", source='saveButtonText="Save labels"'),
+        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Save"),
     ),
     "SendAgentChatMessage": (
         Shipped(
@@ -2161,7 +2162,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "UpdateTestSet": (Shipped("components/test-studio/TestSets.tsx", "Save"),),
     "UpdateTestSetDocumentSections": (
         Shipped(
-            "components/test-studio/GroundTruthVisualEditor.tsx", "Save page grouping"
+            "components/test-studio/GroundTruthSectionEditor.tsx", "Save page grouping"
         ),
     ),
     "UpdateTestSetQueue": (

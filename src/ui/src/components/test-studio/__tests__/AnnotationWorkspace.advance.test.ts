@@ -16,7 +16,7 @@
  * it had just saved for the better part of ten seconds, which reads as a save
  * that did nothing.
  *
- * The annotation screen now leaves the document as soon as its mutation lands and
+ * The edit screen now leaves the document as soon as its mutation lands and
  * the queue page reads the queue on arrival, so nothing waits on that reply. The
  * source-level checks pin the ways the fix can be undone: re-awaiting a reload
  * before leaving, announcing a document reviewed after only part of it was saved,
@@ -36,13 +36,13 @@ import { describe, expect, it } from 'vitest';
 const SOURCE = readFileSync(join(__dirname, '..', 'AnnotationWorkspace.tsx'), 'utf-8');
 // The per-document screen this page opens. Saving, completing and skipping happen
 // there, not in an in-page rail, so that is where the #1321 behaviour lives now.
-const SCREEN = readFileSync(join(__dirname, '..', '..', 'review-workspace', 'TestSetAnnotation.tsx'), 'utf-8');
+const SCREEN = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
 
 /*
  * Develop's `nextAvailableAfter` / `applyReviewedToQueue` unit tests are not carried
  * here. They pinned the in-page "Save & next in queue" rail, which this page no longer
- * has: it is a queue table, and each row opens the per-document annotation screen
- * (review-workspace/TestSetAnnotation.tsx), which returns to the queue (or My Work)
+ * has: it is a queue table, and each row opens the per-document edit screen
+ * (edit-screen/TestSetItemEdit.tsx), which returns to the queue (or Home › Tasks)
  * after Complete, Skip or the last section's save. There is no in-page advance, no
  * local next-document choice and no local retirement of a row left to test. The
  * intent of those tests — leave the saved document at once, and never claim a
@@ -63,7 +63,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     // while a ~9s getAnnotationQueue reply came back. The exit navigates straight
     // away; the queue page reads the queue itself on arrival.
     const success = handleAction.slice(0, handleAction.indexOf('} catch'));
-    expect(success).toContain('exit(queuePath,');
+    expect(success).toMatch(/exit\(\s*queuePath,/);
     expect(success).not.toContain('await reload');
     expect(handleSaved).not.toContain('await reload');
   });
@@ -75,7 +75,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
     expect(everyAt).toBeGreaterThan(-1);
     expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
-    expect(handleSaved).toContain('Check the other sections, then choose Complete.');
+    expect(handleSaved).toContain('Check the other sections, then choose Process Changes.');
   });
 
   it('does not report a skipped document as reviewed', () => {

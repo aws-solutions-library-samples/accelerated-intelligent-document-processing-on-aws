@@ -716,7 +716,7 @@ const TestSets = (): React.JSX.Element => {
               <ButtonDropdown
                 disabled={selectedItems.length === 0 || loading}
                 items={[
-                  { id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
+                  { id: 'annotate', text: 'Edit ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
                   { id: 'browse', text: 'Browse documents', disabled: selectedItems.length !== 1 },
                   {
                     // Exactly COMPLETED here, deliberately not `!isInFlux`: this

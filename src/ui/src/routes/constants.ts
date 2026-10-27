@@ -44,7 +44,7 @@ export const testSetItemPath = (testSetId: string, objectKey: string): string =>
   `${testSetQueuePath(testSetId)}/items/${encodeURIComponent(objectKey)}`;
 /**
  * Hash-link helper: href for a test set's queue under HITL › Queue Management, or
- * straight to one document's annotation screen. This link only navigates; access is enforced
+ * straight to one document's edit screen. This link only navigates; access is enforced
  * server-side against the user's allowedTestSets, so it grants nothing on its own
  * and is safe to share with a scoped annotator.
  */
@@ -111,7 +111,7 @@ export const isInternalRoute = (link?: string | null): link is string =>
   !hasWhitespaceOrControl(link);
 /** HITL › Queue Management: production review queues and Test Studio queues (Admin). */
 export const REVIEW_QUEUES_PATH = '/review-queues';
-/** My Work (Annotators): the caller's own Inbox, Tasks (assigned items) and Queues. */
+/** Home: every user's Inbox, and an Annotator's Tasks (assigned items) and Queues. */
 export const MY_WORK_PATH = '/my-work';
 export const MY_TASKS_PATH = `${MY_WORK_PATH}/tasks`;
 /** The queues that list the caller as an Annotator (production and Test Studio). */

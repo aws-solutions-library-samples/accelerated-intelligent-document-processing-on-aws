@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The one My Work › Tasks poll for the whole app. Mounted once in the authenticated
+// The one Home › Tasks poll for the whole app. Mounted once in the authenticated
 // shell for Annotators, so the navigation badge and the Tasks page share a single
 // 30-second poll: `listMyReviewWork` (assigned production items) and
 // `listMyTestSetTasks` (assigned Test Studio documents), in parallel.
@@ -43,7 +43,7 @@ export interface ReviewWorkContextValue {
   /** Discard polls started before now (call before a mutation). */
   beginMutation: () => void;
   /**
-   * Drop a finished work item (WorkItem.id) from My Work now, and keep it out of
+   * Drop a finished work item (WorkItem.id) from Home › Tasks now, and keep it out of
    * polls until the server stops returning it (at most SETTLED_HIDE_MS).
    */
   settle: (workItemId: string) => void;
@@ -105,7 +105,7 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
           const myItems = production.status === 'fulfilled' ? (production.value.data?.listMyReviewWork?.items ?? []) : prev.myItems;
           const testSetTasks = testSets.status === 'fulfilled' ? testSets.value.map(fromTestSetTask) : prev.testSetTasks;
           const failure = production.status === 'rejected' ? production.reason : testSets.status === 'rejected' ? testSets.reason : null;
-          if (failure) logger.error('My Work poll failed', failure);
+          if (failure) logger.error('Tasks poll failed', failure);
           const returned = new Set([...myItems.map(productionId), ...(testSetTasks ?? []).map((t) => t.id)]);
           const answered = new Set<string>();
           if (production.status === 'fulfilled') answered.add('p:');

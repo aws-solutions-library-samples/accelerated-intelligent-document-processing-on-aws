@@ -7,7 +7,7 @@ import type { SideNavigationProps } from '@cloudscape-design/components';
 import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH } from '../../routes/constants';
 
 export const HITL_SECTION = 'HITL';
-export const MY_WORK_SECTION = 'My Work';
+export const HOME_SECTION = 'Home';
 
 /** Tasks, with a badge counting the items assigned to the caller. */
 export const buildMyTasksNavLink = (count: number | null): SideNavigationProps.Link => {
@@ -24,11 +24,17 @@ export const buildMyTasksNavLink = (count: number | null): SideNavigationProps.L
   return link;
 };
 
-/** The "My Work" section (Annotators): Inbox, Tasks and Queues (the queues that list the caller). */
-export const buildMyWorkNavSection = (inboxLink: SideNavigationProps.Link, taskCount: number | null): SideNavigationProps.Section => ({
+/**
+ * The "Home" section, first in every user's navigation: the Inbox, and for an Annotator
+ * (who is assigned HITL work) Tasks and Queues (the queues that list the caller).
+ */
+export const buildHomeNavSection = (
+  inboxLink: SideNavigationProps.Link,
+  { showWork, taskCount }: { showWork: boolean; taskCount: number | null },
+): SideNavigationProps.Section => ({
   type: 'section',
-  text: MY_WORK_SECTION,
-  items: [inboxLink, buildMyTasksNavLink(taskCount), { type: 'link', text: 'Queues', href: `#${MY_QUEUES_PATH}` }],
+  text: HOME_SECTION,
+  items: showWork ? [inboxLink, buildMyTasksNavLink(taskCount), { type: 'link', text: 'Queues', href: `#${MY_QUEUES_PATH}` }] : [inboxLink],
 });
 
 /** The "HITL" section (Admins): Queue Management, where queues are defined and work is assigned. */

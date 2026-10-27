@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Pure decisions behind the annotate screen and its ground-truth editor: who may edit
+ * Pure decisions behind the edit screen and its ground-truth editor: who may edit
  * what, which save path is used, the version transition a session belongs to, and the
  * copy that explains each state.
  *
  * Kept out of the components so each rule is tested as a function rather than by
- * pattern-matching the component source, and so the shared review workspace can reuse
+ * pattern-matching the component source, and so the edit screen can reuse
  * them without importing a page.
  */
 
@@ -191,7 +191,7 @@ export const draftOpenedMessage = (opened: AnnotationDraft): string =>
 export const draftBadgeHover = (draft: AnnotationDraft): string =>
   `Corrections made here go into version ${draft.draftVersion}. Version ${draft.baseVersion}, the labels this set had before, is preserved and can still be scored against.`;
 
-export const DRAFT_PROMPT_HEADER = 'Annotating this set creates a new version of it';
+export const DRAFT_PROMPT_HEADER = 'Editing this set creates a new version of it';
 export const DRAFT_PROMPT_BODY =
   'Its current labels are preserved as a version you can go back to and score against, so a run that was measured against them stays reproducible. Your corrections go into the next version.';
 

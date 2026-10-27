@@ -32,8 +32,8 @@ import { draftBadgeHover, draftOpenedMessage, groundTruthAlertSuffix } from '../
 const HERE = join(__dirname, '..');
 const ROUTES = readFileSync(join(HERE, '..', '..', 'routes', 'ReviewQueuesRoutes.tsx'), 'utf-8');
 const TEST_STUDIO_ROUTES = readFileSync(join(HERE, '..', '..', 'routes', 'TestStudioRoutes.tsx'), 'utf-8');
-const SCREEN = readFileSync(join(HERE, '..', 'review-workspace', 'TestSetAnnotation.tsx'), 'utf-8');
-const ADAPTER = readFileSync(join(HERE, '..', 'review-workspace', 'test-set-adapter.ts'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
+const ADAPTER = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-adapter.ts'), 'utf-8');
 
 /** The body of one `const Name = (...) => { ... };` page component in the routes file. */
 const pageBody = (name: string): string => {
@@ -44,10 +44,10 @@ const pageBody = (name: string): string => {
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
 
 describe('one workspace instance per test set', () => {
-  it('remounts the queue page and the annotation screen when the set in the URL changes', () => {
-    expect(pageBody('TestSetQueuePage')).toMatch(/<AnnotationWorkspace key=\{testSetId\} mode="queue" \/>/);
+  it('remounts the queue page and the edit screen when the set in the URL changes', () => {
+    expect(pageBody('TestSetQueuePage')).toMatch(/<AnnotationWorkspace key=\{testSetId\} onName=\{onName\} \/>/);
     expect(pageBody('TestSetItemPage')).toMatch(
-      /<AnnotationScreen key=\{`\$\{testSetId\}\/\$\{objectKey\}`\} kind="test-set" onTestSet=\{onTestSet\} \/>/,
+      /<TestSetItemEdit\s+key=\{`\$\{testSetId\}\/\$\{objectKey\}`\}\s+testSetId=\{testSetId\}\s+objectKey=\{decodeURIComponent\(objectKey\)\}\s+onTestSet=\{onTestSet\}\s+\/>/,
     );
     // And the screen's own opened transition is dropped on a change of set or document.
     expect(ADAPTER).toMatch(/useEffect\(\(\) => \{\s*setQueue\(null\);\s*setOpenedDraft\(null\);/);

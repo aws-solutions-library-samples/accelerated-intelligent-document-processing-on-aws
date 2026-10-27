@@ -3,10 +3,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { SpaceBetween, Box, Button, StatusIndicator } from '@cloudscape-design/components';
-import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
-import { copyToBaseline } from '../../graphql/generated';
+import { copyDocumentToBaseline } from '../common/copy-to-baseline';
 import FileViewer from '../document-viewer/FileViewer';
 import { MarkdownReport } from '../document-viewer/MarkdownViewer';
 import EvaluationReport from '../document-viewer/EvaluationReport';
@@ -47,7 +46,6 @@ interface DocumentViewersProps {
   evaluationStatus?: string;
 }
 
-const client = generateClient();
 const logger = new ConsoleLogger('DocumentViewers');
 
 const ViewerControls = ({
@@ -199,35 +197,14 @@ const DocumentViewers = ({
   const handleSetAsBaseline = async () => {
     // Set in-progress status to disable button
     setCopyStatus('in-progress');
-
     try {
-      const result = await client.graphql({
-        query: copyToBaseline,
-        variables: {
-          objectKey,
-        },
-      });
-
-      // The Lambda returns immediately, so check the result
-      if ((result as { data: { copyToBaseline: { success: boolean; message: string } } }).data.copyToBaseline.success) {
-        // Operation started successfully, show temporary message
-        setCopyStatus('show-message');
-        logger.info('Copy operation started:', (result as { data: { copyToBaseline: { message: string } } }).data.copyToBaseline.message);
-      } else {
-        // Immediate failure (e.g., file not found)
-        setCopyStatus('error');
-        logger.error(
-          'Failed to start copy operation:',
-          (result as { data: { copyToBaseline: { message: string } } }).data.copyToBaseline.message,
-        );
-
-        // Clear error status after 5 seconds
-        setTimeout(() => setCopyStatus(null), 5000);
-      }
+      // The Lambda returns as soon as the copy has started.
+      const message = await copyDocumentToBaseline(objectKey);
+      setCopyStatus('show-message');
+      logger.info('Copy operation started:', message);
     } catch (error) {
       setCopyStatus('error');
       logger.error('Error initiating copy to evaluation baseline:', error);
-
       // Clear error status after 5 seconds
       setTimeout(() => setCopyStatus(null), 5000);
     }

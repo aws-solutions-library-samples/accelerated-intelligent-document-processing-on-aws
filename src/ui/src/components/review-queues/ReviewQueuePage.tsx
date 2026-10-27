@@ -4,10 +4,10 @@
 // One production queue: its progress and every item in it, with the Annotator each
 // one is assigned to. An Admin (HITL › Queue Management) selects items to assign,
 // unassign or move several at once, or uses ⋮ on a row. An Annotator listed on the
-// queue (My Work › Queues) claims items — one, the selected ones, or the next one —
-// which assigns them to the caller in My Work › Tasks. Annotate opens an item's
-// annotation screen without changing its assignment (read-only unless it is yours).
-import React, { useCallback, useMemo, useState } from 'react';
+// queue (Home › Queues) claims items — one, the selected ones, or the next one —
+// which assigns them to the caller in Home › Tasks. Edit opens an item's
+// edit screen without changing its assignment (read-only unless it is yours).
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Alert, Box, Button, Container, ContentLayout, Header, KeyValuePairs, SpaceBetween } from '@cloudscape-design/components';
@@ -20,6 +20,8 @@ import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from './QueueAnnotatorsTable';
+import QueueProgress from './QueueProgress';
+import useSavedQueueDefinitions from './use-saved-queue-definitions';
 import WorkItemsTable from './WorkItemsTable';
 import useSupervisorActions, { isAssignable, isRemovable, isSupervisorAction, isUnassignable } from './use-supervisor-actions';
 import useWorkItemActions from './use-work-item-actions';
@@ -44,9 +46,15 @@ const CLAIM_NEXT_REASONS: Record<string, string> = {
 const isClaimable = (item: ReviewItem): boolean => item.state === QueueItemState.OPEN;
 
 /** The Items table: Document, Source, Queue, Priority and State, then the row Actions menu. */
-const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state'] as const;
+// Annotator: who each document is assigned to (sortable), so a queue's work can be read by person.
+const ITEM_COLUMNS = ['document', 'source', 'queue', 'priority', 'state', 'owner'] as const;
 
-const ReviewQueuePage = (): React.JSX.Element => {
+interface ReviewQueuePageProps {
+  /** Told the queue's name whenever it loads or is saved (for the breadcrumbs). */
+  onName?: (name: string) => void;
+}
+
+const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element => {
   const { queue: rawQueue = '' } = useParams();
   const queueId = decodeURIComponent(rawQueue);
   const { setErrorMessage, setSuccessMessage } = useAppContext();
@@ -65,6 +73,8 @@ const ReviewQueuePage = (): React.JSX.Element => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  const savedDefinitions = useSavedQueueDefinitions();
+
   /** The queue definitions and health are Admin-only; an Annotator reads its own summary of the queue. */
   const loadContext = useCallback(async () => {
     if (isAdmin) {
@@ -75,7 +85,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
           return null;
         }),
       ]);
-      setDefinitions(defs);
+      setDefinitions(savedDefinitions.apply(defs));
       setHealth(ov?.queues.find((q) => q.summary.name === queueId) ?? null);
       return;
     }
@@ -84,7 +94,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
       return null;
     });
     if (mine) setMySummary(mine.queues.find((q) => q.name === queueId) ?? null);
-  }, [isAdmin, queueId]);
+  }, [isAdmin, queueId, savedDefinitions]);
 
   const load = useCallback(async () => {
     if (roleLoading) return;
@@ -123,7 +133,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
     }
   };
 
-  /** After a claim: the item is the caller's now, so reload the queue and My Work › Tasks. */
+  /** After a claim: the item is the caller's now, so reload the queue and Home › Tasks. */
   const afterClaim = async () => {
     await Promise.all([load(), reviewWork?.refresh()]);
   };
@@ -144,7 +154,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
     }
     if (ok > 0)
       setSuccessMessage(
-        `Claimed ${targets.length === 1 ? documentName(targets[0].objectKey) : `${ok} items`}. Work ${ok === 1 ? 'it' : 'them'} in My Work › Tasks.`,
+        `Claimed ${targets.length === 1 ? documentName(targets[0].objectKey) : `${ok} items`}. Work ${ok === 1 ? 'it' : 'them'} in Home › Tasks.`,
       );
     if (failed.length > 0)
       setErrorMessage(`Couldn't claim ${failed.length === 1 ? '1 item' : `${failed.length} items`}: ${failed.join('; ')}`);
@@ -162,7 +172,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
     try {
       const result = await claimNextItem(queueId);
       if (result.item) {
-        setSuccessMessage(`Claimed ${documentName(result.item.objectKey)}. Work it in My Work › Tasks.`);
+        setSuccessMessage(`Claimed ${documentName(result.item.objectKey)}. Work it in Home › Tasks.`);
       } else {
         setErrorMessage(CLAIM_NEXT_REASONS[result.reason ?? ''] ?? 'No item was claimed.');
       }
@@ -227,6 +237,9 @@ const ReviewQueuePage = (): React.JSX.Element => {
   };
 
   const title = definition?.name || summary?.displayName || queueId;
+  useEffect(() => {
+    if (title) onName?.(title);
+  }, [title, onName]);
   const eligible = definition?.eligibleAnnotators ?? [];
   const description = definition?.description || summary?.description || 'Production review queue.';
 
@@ -274,7 +287,16 @@ const ReviewQueuePage = (): React.JSX.Element => {
             {describeApiError(error, 'load this queue')}
           </Alert>
         )}
-        <Container header={<Header variant="h2">Queue Progress</Header>}>
+        {summary && (
+          <QueueProgress
+            // A finished item leaves its queue, so progress here is the work underway.
+            count={summary.claimed}
+            total={summary.unclaimed + summary.claimed}
+            countLabel="assigned or in progress"
+            description="The share of this queue's documents an Annotator is working on"
+          />
+        )}
+        <Container header={<Header variant="h2">Key Metrics</Header>}>
           {!isAdmin ? (
             mySummary ? (
               <KeyValuePairs
@@ -319,7 +341,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
           items={items ?? []}
           columns={ITEM_COLUMNS}
           loading={(items == null && error == null) || (refreshing && (items ?? []).length === 0)}
-          title="Items"
+          title="Documents"
           onRowAction={handleRowAction}
           extraRowActions={(item) => (isAdmin ? supervisor.menuItems(item.reviewItem) : claimMenuItems(item))}
           busyRowId={claiming}
@@ -379,8 +401,8 @@ const ReviewQueuePage = (): React.JSX.Element => {
           }
           description={
             isAdmin
-              ? 'Select items to assign them to an Annotator, unassign them or move them to another queue. Annotate opens an item without changing its assignment.'
-              : 'Open any item to view it. Claim an item waiting for review to work it in My Work › Tasks, or choose Next item to claim the next one.'
+              ? 'Select items to assign them to an Annotator, unassign them or move them to another queue. Edit opens an item without changing its assignment.'
+              : 'Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.'
           }
           footer={
             nextToken ? (
@@ -402,7 +424,13 @@ const ReviewQueuePage = (): React.JSX.Element => {
         annotatorsLoading={annotators == null}
         onDismiss={() => setSettingsOpen(false)}
         onSaved={(q) => {
-          if (q) setSuccessMessage(`Saved the queue ${q.name}.`);
+          if (q) {
+            setSuccessMessage(`Saved the queue ${q.name}.`);
+            // Show the saved definition at once (its name in the title and breadcrumb), and
+            // keep it through reads that still return the old one.
+            savedDefinitions.remember(q);
+            setDefinitions((defs) => savedDefinitions.apply(defs));
+          }
           setSettingsOpen(false);
           void load();
         }}

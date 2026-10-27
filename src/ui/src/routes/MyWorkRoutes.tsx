@@ -1,9 +1,9 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// My Work (Annotators): the caller's Tasks (items assigned to them) and Queues (the
-// queues that list them).
-// Inbox, the third page of the section, keeps its own route.
+// Home › Tasks and Home › Queues (Annotators): the caller's Tasks (items assigned to
+// them) and Queues (the queues that list them). Home › Inbox, which every user has,
+// keeps its own route.
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
@@ -14,7 +14,8 @@ import MyQueuesPage from '../components/review-queues/MyQueuesPage';
 import RequireRole from './RequireRole';
 import { MY_QUEUES_PATH, MY_TASKS_PATH } from './constants';
 
-const ROOT = { text: 'My Work', href: `#${MY_TASKS_PATH}` };
+const TASKS = { text: 'Tasks', href: `#${MY_TASKS_PATH}` };
+const QUEUES = { text: 'Queues', href: `#${MY_QUEUES_PATH}` };
 
 const MyWorkRoutes = (): React.JSX.Element => (
   <div>
@@ -24,7 +25,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
         <Route
           path="tasks"
           element={
-            <ReviewQueuesLayout root={ROOT} crumbs={[{ text: 'Tasks', href: `#${MY_TASKS_PATH}` }]}>
+            <ReviewQueuesLayout root={TASKS}>
               <MyTasksPage />
             </ReviewQueuesLayout>
           }
@@ -32,7 +33,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
         <Route
           path="queues"
           element={
-            <ReviewQueuesLayout root={ROOT} crumbs={[{ text: 'Queues', href: `#${MY_QUEUES_PATH}` }]}>
+            <ReviewQueuesLayout root={QUEUES}>
               <MyQueuesPage />
             </ReviewQueuesLayout>
           }

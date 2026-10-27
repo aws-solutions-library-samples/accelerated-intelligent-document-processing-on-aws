@@ -93,7 +93,7 @@ export const unassignTestSetDocuments = async (testSetId: string, objectKeys: st
 
 /**
  * Claim one unassigned, unreviewed Test Studio document: it is assigned to the caller
- * (no expiry) and shows in My Work › Tasks. Only an Annotator listed on the set's queue may.
+ * (no expiry) and shows in Home › Tasks. Only an Annotator listed on the set's queue may.
  */
 export const claimTestSetDocument = async (testSetId: string, objectKey: string): Promise<TestSetDocumentAssignment> => {
   const r = await client.graphql({ query: claimTestSetDocumentMutation, variables: { testSetId, objectKey } });

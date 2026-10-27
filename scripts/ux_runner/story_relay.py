@@ -21,7 +21,7 @@ The commit guard judges a click by the control's name, and a key that presses or
 submits (Enter, or Space on a control) by the element that has focus, whether
 ``press_key`` presses it or ``type_text`` types it: the pinned server types a line
 break as Enter and a space as Space. On a page whose editor may save its own edits,
-which the review workspace's does and marks with Discard Changes while it is
+which the edit screen's does and marks with Cancel and discard changes while it is
 editable (:data:`AUTOSAVE_CONTROLS`), it also refuses every call that changes a
 value there:
 the editing tools, a key other than Tab or Escape, and a click on a checkbox, option
@@ -176,13 +176,18 @@ COMMIT_VERBS: tuple[str, ...] = (
 #: confirmation ("Create queue", "Assign to…", "Move…"), or rearranges something on
 #: the page until it is saved ("Move up").
 DIALOG_VERBS: tuple[str, ...] = ("create", "add", "new", "assign", "reassign", "move")
-#: A control so named marks a page whose editor may save an edit by itself. The review
-#: workspace's editor saves a draft a moment after the last edit, and the first save
-#: of an unassigned item assigns it to the Admin who made it. It shows Discard Changes
-#: whenever it is editable, as every annotation frame and the configuration editor do,
-#: so on a page that does not save by itself this refuses only an edit a story could
-#: not save anyway; Save draft is what an older deployment's editor shows.
-AUTOSAVE_CONTROLS: tuple[str, ...] = ("save draft", "discard changes")
+#: A control so named marks a page whose editor may save an edit by itself. The edit
+#: screen's editor saves a draft a moment after the last edit, and the first save of an
+#: unassigned item assigns it to the Admin who made it. It shows Cancel, named Cancel
+#: and discard changes, whenever it is editable, on every route, and the configuration
+#: editor shows Discard Changes, so on a page that does not save by itself this refuses
+#: only an edit a story could not save anyway. A bare Cancel is not a marker: every
+#: dialog has one. Save draft is what an older deployment's editor shows.
+AUTOSAVE_CONTROLS: tuple[str, ...] = (
+    "save draft",
+    "discard changes",
+    "cancel and discard changes",
+)
 #: The browser tools that set a value wherever they are pointed.
 EDITING_TOOLS: tuple[str, ...] = ("fill", "fill_form", "type_text", "drag")
 #: Roles of the controls a click sets a value on.

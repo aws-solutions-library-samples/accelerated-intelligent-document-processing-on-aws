@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 //
 // One row shape for every kind of HITL work: production review queue items and Test
-// Studio documents. Queue Management and My Work › Tasks list both; each row opens
-// the annotation screen for its item. An Admin assigns work, or an Annotator listed
+// Studio documents. Queue Management and Home › Tasks list both; each row opens
+// the edit screen for its item. An Admin assigns work, or an Annotator listed
 // on the queue claims it.
 import type { ReviewItem, TestSetTask } from '../../graphql/generated/operation-types';
 import { reviewItemHref, testSetAnnotateHref } from '../../routes/constants';

@@ -37,7 +37,7 @@ import useUserRole from '../../hooks/use-user-role';
 import Navigation from '../genaiidp-layout/navigation';
 import { appLayoutLabels } from '../common/labels';
 import FileViewer from '../document-viewer/FileViewer';
-import GroundTruthVisualEditor from './GroundTruthVisualEditor';
+import GroundTruthSectionEditor from './GroundTruthSectionEditor';
 import { TEST_STUDIO_PATH, testSetDetailHref } from '../../routes/constants';
 import { formatSize } from './TestSetDetail';
 import type { TestSetDocumentItem } from './TestSetDetail';
@@ -168,7 +168,7 @@ const TestSetDocumentDetail = (): React.JSX.Element => {
                 {docView === 'source' ? (
                   <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} />
                 ) : (
-                  <GroundTruthVisualEditor
+                  <GroundTruthSectionEditor
                     bucket={testSetBucket}
                     inputKey={doc.inputKey}
                     objectKey={doc.objectKey}

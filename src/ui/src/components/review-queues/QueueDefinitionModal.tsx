@@ -248,15 +248,15 @@ const QueueDefinitionModal = ({
             <FormField
               label="Priority"
               description="Higher numbers are worked first."
-              constraintText="A whole number."
+              constraintText="A whole number. For information: orders the queues and Next item. Kept for when there is more than one queue; with only the Default queue it changes nothing yet."
               errorText={submitted ? priorityError : undefined}
             >
               <Input type="number" inputMode="numeric" value={priority} onChange={({ detail }) => setPriority(detail.value)} />
             </FormField>
             <FormField
               label="Time limit (minutes)"
-              description="When the Annotator is reminded."
-              constraintText={`An item still open after this long sends one reminder; assignments don't expire. 1 to ${MAX_TIME_LIMIT_MINUTES}.`}
+              description="When an assigned item's Annotator is reminded."
+              constraintText={`For information: one reminder is sent, and the item stays assigned (assignments don't expire). 1 to ${MAX_TIME_LIMIT_MINUTES}.`}
               errorText={submitted ? timeLimitError : undefined}
             >
               <Input type="number" inputMode="numeric" value={timeLimit} onChange={({ detail }) => setTimeLimit(detail.value)} />
@@ -283,7 +283,7 @@ const QueueDefinitionModal = ({
           </FormField>
           <FormField
             label="Eligible Annotators"
-            description="The Annotators who work this queue: they see it in My Work › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
+            description="The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
             stretch
           >
             <Multiselect

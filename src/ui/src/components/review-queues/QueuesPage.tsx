@@ -38,6 +38,7 @@ import QueueDefinitionModal from './QueueDefinitionModal';
 import type { TestSetQueueTarget } from './QueueDefinitionModal';
 import { fetchQueuesOverview, reviewErrorCode } from './review-api';
 import { deleteReviewQueue, listAnnotatorEmails, listReviewQueues, listTestSetQueues } from './reviewer-assignment';
+import useSavedQueueDefinitions from './use-saved-queue-definitions';
 
 const logger = new ConsoleLogger('QueuesPage');
 
@@ -99,6 +100,8 @@ const QueuesPage = (): React.JSX.Element => {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
 
+  const savedDefinitions = useSavedQueueDefinitions();
+
   // Production queues are cheap (two calls) and polled.
   const loadProduction = useCallback(async () => {
     setProductionLoading(true);
@@ -110,7 +113,7 @@ const QueuesPage = (): React.JSX.Element => {
           return null;
         }),
       ]);
-      setDefinitions(defs);
+      setDefinitions(savedDefinitions.apply(defs));
       setOverview(ov?.queues ?? null);
       setProductionError(null);
     } catch (err) {
@@ -119,7 +122,7 @@ const QueuesPage = (): React.JSX.Element => {
     } finally {
       setProductionLoading(false);
     }
-  }, []);
+  }, [savedDefinitions]);
 
   usePolling(loadProduction, { enabled: true, intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
 
@@ -230,6 +233,7 @@ const QueuesPage = (): React.JSX.Element => {
     setDeleteError(null);
     try {
       await deleteReviewQueue(deleting.queue.id);
+      savedDefinitions.forget(deleting.queue.id);
       setSuccessMessage(
         deleting.depth > 0
           ? `Deleted the queue ${deleting.queue.name}; its items moved to the Default queue.`
@@ -525,10 +529,9 @@ const QueuesPage = (): React.JSX.Element => {
         onSaved={(q) => {
           if (q) {
             setSuccessMessage(`Saved the queue ${q.name}.`);
-            // Show the saved definition at once; the reload below confirms it.
-            setDefinitions((defs) =>
-              defs && defs.some((d) => d.id === q.id) ? defs.map((d) => (d.id === q.id ? q : d)) : [...(defs ?? []), q],
-            );
+            // Show the saved definition at once, and keep it through reads that still return the old one.
+            savedDefinitions.remember(q);
+            setDefinitions((defs) => savedDefinitions.apply(defs ?? []));
           }
           setEditing(null);
           void loadProduction();

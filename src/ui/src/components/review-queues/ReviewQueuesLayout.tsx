@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The HITL pages' AppLayout (the InboxLayout shape): shared navigation and Flashbar,
-// breadcrumbs Home › Queue Management › page (or Home › My Work › page).
-import React from 'react';
+// breadcrumbs Home › Queue Management › page (or Home › Home › page).
+import React, { useState } from 'react';
 import { AppLayout, BreadcrumbGroup, Flashbar } from '@cloudscape-design/components';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
 
@@ -24,11 +24,21 @@ interface ReviewQueuesLayoutProps {
   root?: BreadcrumbGroupProps.Item;
   children: React.ReactNode;
   contentType?: 'default' | 'table' | 'wizard';
+  /** The info panel the info icon opens, as on the document pages; omitted, there is none. */
+  tools?: React.ReactNode;
 }
 
-const ReviewQueuesLayout = ({ crumbs = [], root, children, contentType = 'default' }: ReviewQueuesLayoutProps): React.JSX.Element => {
+const ReviewQueuesLayout = ({
+  crumbs = [],
+  root,
+  children,
+  contentType = 'default',
+  tools,
+}: ReviewQueuesLayoutProps): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const flashItems = mapNotificationsToFlashbar(useNotifications());
+  // Closed until asked for, as on the document pages.
+  const [toolsOpen, setToolsOpen] = useState(false);
   const items = [{ text: 'Home', href: '#/' }, root ?? QUEUE_MANAGEMENT_CRUMB, ...crumbs];
 
   return (
@@ -41,7 +51,10 @@ const ReviewQueuesLayout = ({ crumbs = [], root, children, contentType = 'defaul
       notifications={<Flashbar items={flashItems} />}
       breadcrumbs={<BreadcrumbGroup ariaLabel="Breadcrumbs" items={items} />}
       contentType={contentType}
-      toolsHide
+      tools={tools}
+      toolsHide={!tools}
+      toolsOpen={toolsOpen}
+      onToolsChange={({ detail }) => setToolsOpen(detail.open)}
       content={children}
     />
   );

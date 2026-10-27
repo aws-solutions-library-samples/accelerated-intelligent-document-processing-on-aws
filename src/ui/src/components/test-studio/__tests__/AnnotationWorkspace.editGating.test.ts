@@ -20,7 +20,7 @@
  *   save fields (review)  -> completeSectionReview      -> Admin, Reviewer, Annotator
  *   save fields (direct)  -> saveTestSetDocumentSection -> Admin, Author, Annotator
  *
- * The direct save is the annotation screen's (TestSetAnnotation, via the test-set
+ * The direct save is the edit screen's (TestSetItemEdit, via the test-set
  * adapter). The ground-truth editor's own fallback, used by the document view, writes
  * through `uploadDocument` (Admin, Author). So `Author` is refused the review save and
  * `Reviewer` the direct one, while the class is open to Admin, Author and Annotator. Gating everything on `canAnnotate` would have invited
@@ -56,8 +56,8 @@ import type { AnnotationRoles } from '../annotation-edit-flags';
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
-const ADAPTER = readFileSync(join(HERE, '..', 'review-workspace', 'test-set-adapter.ts'), 'utf-8');
-const SCREEN = readFileSync(join(HERE, '..', 'review-workspace', 'TestSetAnnotation.tsx'), 'utf-8');
+const ADAPTER = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-adapter.ts'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
 /** The cognito_groups declared on a mutation in schema.graphql. */
@@ -131,7 +131,7 @@ describe('AnnotationWorkspace edit gating', () => {
   });
 
   it('only promises editing to someone who can actually save it', () => {
-    // The annotation screen's alert already says "correct them if needed, then
+    // The edit screen's alert already says "correct them if needed, then
     // Complete"; the suffix tells a saver what saving does, and anyone else who can.
     expect(groundTruthAlertSuffix(true, DRAFT)).toBe(
       ' Saving a section, or Complete, writes the ground truth and counts the document as reviewed.',
@@ -177,7 +177,7 @@ describe('AnnotationWorkspace edit gating', () => {
 
   it('saves the direct path through the mutation those groups describe', () => {
     // canSaveDirectToBaseline mirrors saveTestSetDocumentSection only because the
-    // annotation screen always hands the editor its own save. If it stopped passing
+    // edit screen always hands the editor its own save. If it stopped passing
     // onSave, the editor would fall back to uploadDocument (Admin, Author) and an
     // Annotator would lose the edit to an authorization error.
     expect(groupsFor('uploadDocument').sort()).toEqual(['Admin', 'Author']);
@@ -193,7 +193,7 @@ describe('AnnotationWorkspace edit gating', () => {
  * the original class-correction bug, where the UI reported success and threw the change
  * away.
  */
-describe('GroundTruthVisualEditor class gating', () => {
+describe('GroundTruthSectionEditor class gating', () => {
   it('gates the class control on the class capability, not on field read-only', () => {
     expect(mayChangeClassFor(true, true)).toBe(true);
     expect(mayChangeClassFor(false, false)).toBe(false);
@@ -213,7 +213,7 @@ describe('GroundTruthVisualEditor class gating', () => {
  * fetch must not fall through to free text: a typed class no config defines produces a
  * section with no schema, which extracts nothing.
  */
-describe('GroundTruthVisualEditor class list unavailable', () => {
+describe('GroundTruthSectionEditor class list unavailable', () => {
   it('distinguishes "could not read the classes" from "there are none"', () => {
     expect(isClassListUnavailable(0, new Error('denied'), false)).toBe(true);
     expect(isClassListUnavailable(0, null, true)).toBe(true);
