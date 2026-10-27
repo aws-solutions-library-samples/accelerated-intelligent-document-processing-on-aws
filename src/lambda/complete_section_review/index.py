@@ -353,18 +353,21 @@ def _review_raised(doc):
 
     The web UI's ``hitlTriggered`` (``map-document-attributes.ts``): ``HITLTriggered``
     is true, or ``HITLStatus`` is set and not ``N/A``. An ownerless ``Review
-    Pending`` row written by an earlier version counts, by its status.
+    Pending`` row written by an earlier version counts, by its status. "Set" means a
+    non-empty string, which is what every writer stores, so that
+    :func:`_review_raised_condition` can say the same thing at the write.
     """
     status = doc.get("HITLStatus")
-    return doc.get("HITLTriggered") is True or (bool(status) and status != "N/A")
+    return doc.get("HITLTriggered") is True or (
+        isinstance(status, str) and status not in ("", "N/A")
+    )
 
 
 def _review_raised_condition():
     """``(condition, values)`` holding :func:`_review_raised` at the moment of a write.
 
-    ``attribute_type(..., S)`` rather than ``attribute_exists``, so a stored NULL
-    reads as unset here as it does in the rule. A non-string ``HITLStatus`` is
-    something no writer stores.
+    ``attribute_type(..., S)`` rather than ``attribute_exists``, so a stored NULL or
+    any other non-string ``HITLStatus`` reads as unset here as it does in the rule.
     """
     return (
         "(HITLTriggered = :raisedFlag OR (attribute_type(HITLStatus, :raisedType) "

@@ -33,7 +33,7 @@ import { exportDocuments, triggerBrowserDownload } from '../document-panel/docum
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
 import { claimReview, releaseReview } from '../../graphql/generated';
-import { getErrorMessage } from '../../utils/errorUtils';
+import { claimSelectedReviews, type ClaimedReview } from './claim-selected-reviews';
 
 import type { MappedDocument } from './documents-table-config';
 import {
@@ -47,7 +47,6 @@ import {
   SELECTION_LABELS,
   DEFAULT_PREFERENCES,
   DEFAULT_SORT_COLUMN,
-  isClaimableForReview,
 } from './documents-table-config';
 import { testExecutionsHref } from '../../routes/constants';
 
@@ -288,53 +287,41 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleClaimReview = async () => {
     const client = generateClient();
-    // Only the selected documents Start Review can claim: a review raised, not
-    // finished, not owned, and not in a review queue. The server refuses the rest.
-    const selectedItems = (collectionProps.selectedItems as MappedDocument[]).filter(isClaimableForReview);
-    const isSingleSelection = selectedItems.length === 1;
-    const failures: string[] = [];
     setClaimErrors([]);
+    const { claimed, failures, navigateTo } = await claimSelectedReviews(
+      (collectionProps.selectedItems ?? []) as MappedDocument[],
+      async (objectKey) => {
+        const result = await client.graphql({ query: claimReview, variables: { objectKey } });
+        logger.debug('Claimed review for', objectKey, result);
+        return (result as { data: { claimReview: ClaimedReview } }).data.claimReview;
+      },
+    );
+    if (failures.length) logger.error('Error claiming review', failures);
 
-    // Claim reviews for the claimable selected documents
-    for (const item of selectedItems) {
-      try {
-        const result = await client.graphql({
-          query: claimReview,
-          variables: { objectKey: item.objectKey },
-        });
-        const claimData = (
-          result as { data: { claimReview: { HITLReviewOwner: string; HITLReviewOwnerEmail: string; HITLStatus: string } } }
-        ).data.claimReview;
-        logger.debug('Claimed review for', item.objectKey, result);
-
-        // Update the document in the list immediately
-        setDocumentList((prevList) =>
-          prevList.map((doc) =>
-            doc.objectKey === item.objectKey
-              ? {
-                  ...doc,
-                  hitlReviewOwner: claimData.HITLReviewOwner,
-                  hitlReviewOwnerEmail: claimData.HITLReviewOwnerEmail,
-                  hitlStatus: claimData.HITLStatus,
-                }
-              : doc,
-          ),
-        );
-      } catch (e) {
-        logger.error('Error claiming review', e);
-        failures.push(`${item.objectKey}: ${getErrorMessage(e)}`);
-      }
-    }
+    // Update the claimed documents in the list immediately
+    const byKey = new Map(claimed.map(({ objectKey, review }) => [objectKey, review]));
+    setDocumentList((prevList) =>
+      prevList.map((doc) => {
+        const review = byKey.get(doc.objectKey);
+        return review
+          ? {
+              ...doc,
+              hitlReviewOwner: review.HITLReviewOwner,
+              hitlReviewOwnerEmail: review.HITLReviewOwnerEmail,
+              hitlStatus: review.HITLStatus,
+            }
+          : doc;
+      }),
+    );
 
     // Clear selection
     actions.setSelectedItems([]);
     setClaimErrors(failures);
 
     // If the one selected document was claimed, navigate to its details
-    if (isSingleSelection && failures.length === 0) {
-      const documentId = selectedItems[0].objectKey;
-      logger.debug('Navigating to document details:', documentId);
-      navigate(`/documents/${encodeURIComponent(documentId)}`);
+    if (navigateTo) {
+      logger.debug('Navigating to document details:', navigateTo);
+      navigate(`/documents/${encodeURIComponent(navigateTo)}`);
     }
   };
 

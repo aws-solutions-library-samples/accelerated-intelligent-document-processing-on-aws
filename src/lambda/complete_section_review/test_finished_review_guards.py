@@ -745,12 +745,10 @@ def test_a_raised_review_is_still_claimed(mod, setup, caller):
     assert stored["HITLStatus"] == LegacyHitlStatus.IN_PROGRESS.value
 
 
-@pytest.mark.unit
-def test_a_finished_review_is_refused_as_finished_and_not_as_unraised(mod):
-    """The finished check comes first, so the message says what happened."""
-    finish(mod, "completeSectionReview")
-    with pytest.raises(ValueError, match=FINISHED_MESSAGE):
-        claim(mod, "bob")
+# No test pins the order of the finished and raised checks in ``claim_review``:
+# every status ``_review_finished`` accepts is a non-empty string other than
+# ``N/A``, so a finished review is always a raised one and either order refuses it
+# as finished. ``test_a_finished_review_cannot_be_claimed`` asserts that message.
 
 
 @pytest.mark.unit
@@ -838,6 +836,10 @@ RAISED_CASES = [
     ({"HITLStatus": ""}, False),
     ({"HITLStatus": "N/A"}, False),
     ({"HITLStatus": None}, False),
+    # Non-string statuses no writer stores; both sides read them as unset.
+    ({"HITLStatus": 1}, False),
+    ({"HITLStatus": True}, False),
+    ({"HITLStatus": ["Review Pending"]}, False),
     ({"HITLTriggered": False}, False),
     ({"HITLTriggered": False, "HITLStatus": "N/A"}, False),
     ({"HITLStatus": "PendingReview"}, True),
@@ -855,7 +857,13 @@ RAISED_CASES = [
     "attributes,raised", RAISED_CASES, ids=[repr(c[0]) for c in RAISED_CASES]
 )
 def test_the_raised_condition_agrees_with_the_rule(mod, attributes, raised):
-    """Measured through moto's expression engine, not DynamoDB's."""
+    """Measured through moto's expression engine, not DynamoDB's.
+
+    moto compares ``HITLTriggered = :raisedFlag`` by value without its type, so it
+    would read a stored NULL or Number ``1`` as equal to ``true``, where DynamoDB
+    compares types. No writer stores either, and this table cannot discriminate
+    them, so they are left out rather than asserted wrongly.
+    """
     plant(mod, **attributes)
     assert mod._review_raised(row(mod)) is raised
     condition, values = mod._review_raised_condition()
