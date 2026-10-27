@@ -836,7 +836,9 @@ RAISED_CASES = [
     ({"HITLStatus": ""}, False),
     ({"HITLStatus": "N/A"}, False),
     ({"HITLStatus": None}, False),
-    # Non-string statuses no writer stores; both sides read them as unset.
+    # Non-string statuses no writer stores. Both server sides read them as unset;
+    # the web UI's truthiness test would read them as raised, so the server is the
+    # stricter of the two here.
     ({"HITLStatus": 1}, False),
     ({"HITLStatus": True}, False),
     ({"HITLStatus": ["Review Pending"]}, False),

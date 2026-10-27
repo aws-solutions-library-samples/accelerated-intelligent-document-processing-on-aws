@@ -46,4 +46,10 @@ describe('claimSelectedReviews', () => {
     expect(several.navigateTo).toBeNull();
     expect(several.claimed.map((c) => c.objectKey)).toEqual(['a.pdf', 'b.pdf']);
   });
+
+  it('counts an empty claim result as a refusal', async () => {
+    const result = await claimSelectedReviews([row('owed.pdf')], vi.fn().mockResolvedValue(null));
+    expect(result.failures).toEqual(['owed.pdf: claimReview returned no document']);
+    expect(result.navigateTo).toBeNull();
+  });
 });

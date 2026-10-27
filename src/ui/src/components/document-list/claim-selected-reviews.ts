@@ -35,7 +35,9 @@ export const claimSelectedReviews = async (
   const failures: string[] = [];
   for (const item of claimable) {
     try {
-      claimed.push({ objectKey: item.objectKey, review: await claim(item.objectKey) });
+      const review = await claim(item.objectKey);
+      if (!review) throw new Error('claimReview returned no document');
+      claimed.push({ objectKey: item.objectKey, review });
     } catch (e) {
       failures.push(`${item.objectKey}: ${getErrorMessage(e)}`);
     }
