@@ -18,6 +18,7 @@ its `make` target and the skill that documents how to run it.
 | API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test.md` |
 | ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
 | UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test.md` |
+| First-time-user stories in a confined browser (one intent-only story as one persona, judged from the journal of its tool calls; unattended, watched or paired) | `make ai-ux-test-stories-local STORY=…` · `make ai-ux-test-stories-pair STORY=… AS=…` | `.claude/skills/ux-test-stories.md` |
 | APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests.md` |
 | WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
@@ -96,15 +97,18 @@ payload-robustness corpus covers that goal directly. See
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **nightly plus a manual button**, and the
-advisory `ux_review` stage runs only on a merge request that changes `src/ui/`.
+advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
+`CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
+nightly schedule or on request.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
 | **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
-| **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only |
+| **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
+| **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline, on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
 ⚠️ **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
 hosting, Jobs API) do not run in this job**, and moving it to a nightly schedule
@@ -284,13 +288,13 @@ GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
-| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests | ux_test_build / ai_ux_test³ |
-|-------|:---:|:---:|:---:|:---:|:---:|
-| Push to any branch, **no MR** | ✅ | — | — | — | — |
-| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) | — |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) | ✅ auto if `src/ui/` changed |
-| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** | — |
-| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — |
+| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests | ux_test_build / ai_ux_test³ | ai_ux_test_stories⁴ | ux_nightly⁴ |
+|-------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Push to any branch, **no MR** | ✅ | — | — | — | — | — | — |
+| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) | — | — | — |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) | ✅ auto if `src/ui/` changed | ✅ auto if `CHANGELOG.md` changed | — |
+| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** | — | — | ▶️ **manual** |
+| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — | — | ✅ auto |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied
@@ -645,26 +649,27 @@ treats that file as diagnostics only.
   page has loaded it, with its sign-in address before that on a full page load.
 - A video is made of the review stack and of no other, because its frames are not
   redacted, and that is enforced in `scripts/sdlc/ai_ux_test.py`, not left to the
-  default `--stack`. `review_stack_problem` checks three statements of which stack
-  the run is using, and all three must name `idp-ux-nightly`: `--stack`; the
-  settings parameter `UX_TEST_UI_ENV` names, which must be exactly `idp-ux-nightly-Settings`, as
-  `template.yaml` names it, so a lookalike stack whose buckets pass the egress
-  rules' name-prefix check still fails; and the stack name the signed-in sidebar
-  shows, which the UI reads from that parameter with the persona's own Cognito
-  credentials, whose role can read no other stack's, so a `UX_TEST_UI_ENV` that
-  pairs the review stack's parameter with another stack's pools leaves the page with
-  no stack name to show. It is decided once the persona is signed in, before the
-  recorder starts, and `_Run._video` applies it before anything is rendered. Against
-  any other stack the findings are posted with a line saying the video was withheld,
-  no mp4 is rendered, so none is uploaded or kept in the job's artifacts, and
-  `summary.json` records `stack.review_stack` and `recording.video_withheld`. The
-  review stack's own page fails the third check when it does not show the stack's
-  name, as when an MR changes the sidebar's stack item or the settings arrive after
-  the page is read; that run loses its video too, and its line says the stack could
-  not be confirmed as the review stack. A `UX_TEST_UI_ENV` holding another stack's
-  whole output rarely gets that far: unless that stack's name starts with
-  `idp-ux-nightly-`, its buckets fail the egress rules in the precheck, and no
-  session runs at all. The page is the MR's own code, so its
+  default `--stack`, by `review_stack_problem` in `scripts/ux_runner/session.py`,
+  the one check the first-time-user stories call too. It checks three statements of
+  which stack the run is using, and all three must name `idp-ux-nightly`: `--stack`;
+  the settings parameter `UX_TEST_UI_ENV` names, which must be exactly
+  `idp-ux-nightly-Settings`, as `template.yaml` names it, so a lookalike stack whose
+  buckets pass the egress rules' name-prefix check still fails; and the stack name
+  the signed-in sidebar shows, which the UI reads from that parameter with the
+  persona's own Cognito credentials, whose role can read no other stack's, so a
+  `UX_TEST_UI_ENV` that pairs the review stack's parameter with another stack's
+  pools leaves the page with no stack name to show. It is decided once the persona
+  is signed in, before the recorder starts, and `_Run._video` applies it before
+  anything is rendered. Against any other stack the findings are posted with a line
+  saying the video was withheld, no mp4 is rendered, so none is uploaded or kept in
+  the job's artifacts, and `summary.json` records `stack.review_stack` and
+  `recording.video_withheld`. The review stack's own page fails the third check when
+  it does not show the stack's name, as when an MR changes the sidebar's stack item
+  or the settings arrive after the page is read; that run loses its video too, and
+  its line says the stack could not be confirmed as the review stack. A
+  `UX_TEST_UI_ENV` holding another stack's whole output rarely gets that far: unless
+  that stack's name starts with `idp-ux-nightly-`, its buckets fail the egress rules
+  in the precheck, and no session runs at all. The page is the MR's own code, so its
   answer can only withhold a video; and the stack is known by its name rather than
   its account or its region: nothing in `UX_TEST_UI_ENV` names an account, and
   nothing records which region the review stack is in, so a stack called
@@ -712,12 +717,15 @@ it by hand. The section's marker records `upload=<id>` for a later, separately
 authorised deletion change.
 
 **CI variables.** All four are masked and **not** protected, because a protected
-variable is absent from MR pipelines. Each variable only the UX test reads is scoped
-to the environments of the jobs that read it, so the persona's password reaches
-`ai_ux_test` alone, and `ux_test_build`, which runs the MR's `npm ci`, holds only the
-UI environment. Each of the two jobs declares an environment of its own with
-`action: prepare`: `ai_ux_test` declares `ux-review`, `ux_test_build` declares
-`ux-review-build`, and no other job declares either. GitLab gives a job
+variable is absent from MR pipelines. Each variable only the UX jobs read is scoped
+to the environments of the jobs that read it, so the persona's password reaches only
+the jobs that drive the browser, `ai_ux_test` and the first-time-user story jobs⁴,
+and `ux_test_build`, which runs the MR's `npm ci`, holds only the UI environment.
+Each of the two jobs declares an environment of its own with `action: prepare`:
+`ai_ux_test` declares `ux-review`, `ux_test_build` declares `ux-review-build`. The
+story jobs that drive the browser, `ai_ux_test_stories` and
+`ai_ux_test_stories_nightly`, read what `ai_ux_test` reads and declare `ux-review`
+too, and no other job declares either. GitLab gives a job
 the variables whose scope matches its environment, creates the environment by name
 the first time a pipeline holds such a job, and creates no deployment for a
 `prepare` job. Without the variables both jobs print `SKIPPED:` and exit 0.
@@ -772,8 +780,9 @@ evaluates `rules` at pipeline creation.
    `ai_ux_test`'s precheck names no unset `UX_TEST_*` variable, and **Operate →
    Environments** shows no deployment to either environment.
 
-⚠️ **The residual.** The scopes keep the persona's password in `ai_ux_test` alone,
-and so out of `ux_test_build`, the UX job that runs the MR's code. They do nothing
+⚠️ **The residual.** The scopes keep the persona's password in the jobs that drive
+the browser, and so out of `ux_test_build`, the UX job that runs the MR's code. They
+do nothing
 for what reaches every job: `GITLAB_REVIEW_TOKEN`, at the default scope, and the
 job's AWS role session, which the runner fleet's credential vendor mints for a job
 before it starts, with nothing in `.gitlab-ci.yml` asking for it, so that nothing
@@ -836,6 +845,97 @@ run, and `make ai-ux-browser` starts only the confined browser, with DevTools on
 the section and no video, unless you add `EXTRA_ARGS=--dev-video-any-stack`, whose
 video shows that stack's screens unredacted under the gitignored `scratch/`; see
 [docs/testing.md](../../../docs/testing.md#the-ux-review-and-recording-it).
+
+⁴ **`ai_ux_test_stories`, `ai_ux_test_stories_nightly` and
+`ai_ux_test_stories_digest` are advisory and are not gates.** They run the
+first-time-user stories of `scripts/ux_stories.toml`: a model that knows the product
+only through its published documentation attempts one intent-only story as one
+persona, in the same confined headless browser, egress proxy and socket audit as
+`ai_ux_test`, and the verdict is computed from the journal of its tool calls against
+the persona's expectation, never from its prose. All three are `allow_failure: true`
+and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
+`scripts/sdlc/ai_ux_test_stories.py`, the unattended contract is
+`.claude/skills/ux-test-stories-ci.md`, the operator procedure is
+`.claude/skills/ux-test-stories.md`, and
+`scripts/tests/test_ux_test_stories_ci_jobs.py` pins the jobs' shape.
+
+- **On a merge request.** `ai_ux_test_stories` runs in `ux_review` on a non-Draft MR
+  to `develop` that changes `CHANGELOG.md`. Its precheck, on a bare `python3` before
+  any install, scores every story against the CHANGELOG entries the MR adds, and stops
+  when none is selected or nothing user-visible changed, which is where most such MRs
+  end. Otherwise it runs at most `mr_stories` stories and `mr_flows` flows (`[runs]`
+  in the catalogue), against the MR's UI build from `ux_test_build` when the MR
+  changes `src/ui`, or else against the deployed UI with the MR head's docs, read from
+  git objects. It replies once in the `ai_mr_review` note's thread and never edits that
+  note, so it needs no `resource_group` and runs alongside `ai_ux_test`. An MR gets at
+  most `mr_runs` story runs, then one reply saying so. A run counts once its precheck
+  goes ahead, posted or not: the precheck reads the start of each earlier story job's
+  log on the MR, which is kept when a newer push cancels a job or it times out.
+- **At night.** `ux_nightly` comes after `notify`, so it neither delays
+  `nightly_notification` nor feeds it. `ai_ux_test_stories_nightly` runs the nightly
+  set in parallel shards, each with a dollar cap of its own and a time gate that starts
+  a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
+  and writes `digest.md` and `digest.json`. In the scheduled pipeline it also compares
+  the night with earlier scheduled nights, read with `GITLAB_REVIEW_TOKEN` by GET
+  requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts a one-line
+  summary to Slack; a manual run compares nothing and says so. It runs no model and
+  no browser. A night is compared only when the review stack's row in
+  `deployment_summary.txt` says it was updated or already up to date and every socket
+  audit was clean. A bad result is a regression once a second attempt confirms it;
+  when that confirming re-run did not fit in a shard's budget or time, the result is
+  still listed, marked unconfirmed in `digest.md` and on Slack.
+- **Artifacts.** The MR job keeps `ux-test-stories/`, each nightly shard
+  `ux-test-stories/shard-<i>/` and the digest `ux-test-stories-digest/`. Each holds
+  `report.html`, the run as one page to open in a browser once downloaded: every
+  value escaped, no script and no network request. The digest's covers every
+  shard's flows; their screens and videos stay in each shard's artifacts, beside
+  that shard's own `report.html`.
+- **Switches.** `UX_TEST_STORIES` set to `mr` keeps only the MR job and `nightly`
+  keeps only the nightly pair; `off`, or any other value, stops all three, so a
+  mistyped `off` still stops them. A manual pipeline on `develop` with
+  `UX_TEST_STORIES_RUN=all` runs the nightly pair. A push to `develop` offers the
+  nightly pair as a manual button.
+
+**What the story jobs add to `ai_ux_test`'s security design**, which the MR job and
+the nightly shards share through the `&ux_confined_setup` anchor:
+- the story server, `scripts/ux_story_mcp.py`, is the only MCP server the model sees:
+  it starts the pinned `chrome-devtools-mcp` itself, serves only the browser tools the
+  STORY profile grants, strips every file-writing argument, reports no roots to it,
+  and counts actions against a step budget;
+- no MR-authored text reaches the prompt: the CHANGELOG delta only selects stories,
+  and the stories come from the catalogue in the pinned harness;
+- the precheck refuses to run when the job's `UX_HARNESS` or `UX_ENTRY` differs from
+  the entry's own `HARNESS_PATHS` and path, so a project or pipeline variable cannot
+  change what the harness pins;
+- the digest, which runs no model and no browser and installs nothing, takes that
+  anchor's umask, harness extraction and fresh output directory word for word, and
+  before `--digest` runs the entry's own `paths.harness_pin_problem` from the
+  extracted harness, so its pin fails closed as the precheck's does;
+- verdicts come only from the journal, whose structure the harness writes and whose
+  strings are bounded and untrusted, and every reply is composed from structured
+  fields.
+
+**CI variables.** The story jobs read `ai_ux_test`'s four and three of their own. The
+MR job and the shards declare `ai_ux_test`'s environment, `ux-review`, with
+`action: prepare`, which is what hands them the copies of `UX_TEST_UI_ENV`,
+`UX_TEST_PERSONAS` and `UX_TEST_AWS_ACCOUNT_ID` stored at that scope³; the digest
+declares only `ux-stories-digest`, so it holds none of the three. A run job without
+one it needs stops at its precheck with `SKIPPED:` and exits 0, and the digest
+without `GITLAB_REVIEW_TOKEN` still writes the night's digest and compares nothing.
+
+| Variable | Read by | What it holds |
+|---|---|---|
+| `UX_TEST_STORIES` | the three jobs' rules | unset or empty runs all three; `mr` only the MR job; `nightly` only the nightly pair; any other value, `off` among them, none. Keep it at environment scope All (`*`): GitLab can leave an environment-scoped variable undefined while it evaluates `rules`, so a scoped `off` can read as unset and stop nothing |
+| `UX_TEST_STORIES_RUN` | the nightly pair's rules | `all`, on a pipeline run by hand for `develop`, runs the nightly pair. At All (`*`) scope, for the same reason |
+| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook for the night's one-line summary, which is a bearer credential. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch |
+| `UX_TEST_UI_ENV` | the MR job and the shards | `ai_ux_test`'s, plus a `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line, which every run against the deployed UI needs (an MR that changes the docs but not `src/ui`, and every nightly flow), because nothing else in the variable names the web host |
+| `UX_TEST_PERSONAS` | the MR job and the shards | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as; a flow whose group has none is not run |
+| `UX_TEST_AWS_ACCOUNT_ID` | the MR job and the shards | `ai_ux_test`'s |
+| `GITLAB_REVIEW_TOKEN` | the MR job and the digest | `ai_ux_test`'s: the MR job reads the MR and its notes and replies; the scheduled digest only reads `develop`'s earlier scheduled pipelines and each one's `digest.json` |
+
+**Local runs.** `make ai-ux-test-stories-local MR=<iid>` runs what the MR job would
+run, in Docker, as a dry run; see
+[docs/testing.md](../../../docs/testing.md#first-time-user-stories).
 
 Notes:
 - **Every push runs fast_checks** (all seven jobs), so lint/typecheck/unit and

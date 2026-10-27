@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,6 +93,13 @@ POLICY_INSTALL_DIRS: tuple[Path, ...] = (
     Path("/etc/opt/chrome/policies/managed"),
 )
 POLICY_INSTALL_NAME = "ux-runner.json"
+
+#: The CI job variable listing every path the job extracts from the target branch.
+HARNESS_ENV = "UX_HARNESS"
+#: The CI job variable naming the harness file the job runs, relative to the tree.
+ENTRY_ENV = "UX_ENTRY"
+#: The longest variable value a harness pin problem quotes.
+_PIN_QUOTE_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -193,3 +200,82 @@ def toolchain(
     source = os.environ if environ is None else environ
     configured = source.get(PREFIX_ENV, "")
     return Toolchain(Path(configured) if configured else DEFAULT_PREFIX)
+
+
+def _quoted(value: str) -> str:
+    """``value`` as a pin problem shows it: quoted when short, else by its length."""
+    if len(value) > _PIN_QUOTE_CHARS:
+        return f"a value of {len(value)} characters"
+    return repr(value)
+
+
+def _harness_difference(named: Sequence[str], expected: Sequence[str]) -> str:
+    """How ``named`` differs from ``expected``, by the first difference found."""
+    missing = [path for path in expected if path not in named]
+    if missing:
+        return f"lacks {len(missing)} of them, the first {_quoted(missing[0])}"
+    extra = [path for path in named if path not in expected]
+    if extra:
+        return f"also names {len(extra)} more, the first {_quoted(extra[0])}"
+    return "names the same paths in another order or more than once"
+
+
+#: What a harness list that names other paths adds: the usual cause is an MR branch
+#: whose own ``.gitlab-ci.yml`` predates the harness its job extracts from the
+#: target branch.
+STALE_JOB_HINT = (
+    "; on a merge request whose .gitlab-ci.yml is older than its target branch's "
+    "harness, merging the target branch into it fixes this"
+)
+
+
+def harness_pin_problem(
+    environ: Mapping[str, str],
+    *,
+    harness_paths: Sequence[str],
+    entry: str,
+    script_named: bool = False,
+) -> str:
+    """Why ``UX_HARNESS`` and ``UX_ENTRY`` do not name ``entry``'s harness, or ``""``.
+
+    The CI job extracts what ``UX_HARNESS`` lists from the target branch and runs
+    ``UX_ENTRY`` from that tree, and a project or pipeline variable of the same
+    name overrides the job's own. So the entry checks both against its own
+    ``HARNESS_PATHS`` (``harness_paths``, in order) and its own path (``entry``)
+    before its precheck does anything else, which keeps the pin failing closed
+    whatever the variables say. The answer is one sentence naming the variable
+    that is wrong, and it quotes no value longer than 200 characters.
+
+    ``script_named`` is for an entry whose job once named its harness and its
+    entry in its own script, where no variable can change them: a merge request
+    whose ``.gitlab-ci.yml`` predates the variables runs that job still, and it
+    exports neither. When both are absent from ``environ``, not merely empty,
+    such an entry has nothing to check.
+    """
+    if script_named and HARNESS_ENV not in environ and ENTRY_ENV not in environ:
+        return ""
+    listed = environ.get(HARNESS_ENV, "")
+    if not listed.strip():
+        return (
+            f"{HARNESS_ENV} is not set, so the harness this job extracted cannot be "
+            f"checked against the HARNESS_PATHS of {entry}"
+        )
+    wanted = list(harness_paths)
+    if listed.split() != wanted:
+        difference = _harness_difference(listed.split(), wanted)
+        return (
+            f"{HARNESS_ENV} is not the HARNESS_PATHS of {entry}, in order: it "
+            f"{difference}{STALE_JOB_HINT}"
+        )
+    chosen = environ.get(ENTRY_ENV, "").strip()
+    if not chosen:
+        return (
+            f"{ENTRY_ENV} is not set, so the job cannot be shown to run {entry}, the "
+            "harness file this precheck belongs to"
+        )
+    if chosen != entry:
+        return (
+            f"{ENTRY_ENV} is {_quoted(chosen)}, not {entry}, the harness file this "
+            "precheck belongs to"
+        )
+    return ""

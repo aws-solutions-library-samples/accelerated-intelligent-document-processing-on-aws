@@ -80,6 +80,7 @@ from ux_runner import (  # noqa: E402
     prompt,
     recording,
     section,
+    session,
     signin,
     tool_profiles,
 )
@@ -155,6 +156,7 @@ def _personas() -> str:
 
 
 def _environ(**changes: str | None) -> dict[str, str]:
+    """The job's environment, with the two variables its ``variables:`` block sets."""
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "GITLAB_REVIEW_TOKEN": CREDENTIAL,
@@ -164,6 +166,8 @@ def _environ(**changes: str | None) -> dict[str, str]:
         "AWS_ACCESS_KEY_ID": AWS_KEY_ID,
         "AWS_SECRET_ACCESS_KEY": AWS_KEY_TEXT,
         "AWS_SESSION_TOKEN": AWS_SESSION_TEXT,
+        "UX_HARNESS": " ".join(ai_ux_test.HARNESS_PATHS),
+        "UX_ENTRY": ai_ux_test.ENTRY,
     }
     for name, value in changes.items():
         if value is None:
@@ -1071,6 +1075,191 @@ def test_too_little_time_left_in_the_job_is_skipped(harness: Harness) -> None:
     assert harness.summary()["detail"].startswith("not enough time left in the job")
     assert "launch_proxy" not in harness.calls
     assert harness.run_dir is None
+
+
+# --- the harness pin --------------------------------------------------------------
+
+_HARNESS = list(ai_ux_test.HARNESS_PATHS)
+_OWN = "scripts/sdlc/ai_ux_test.py"
+_WRONG_HARNESS = f"UX_HARNESS is not the HARNESS_PATHS of {_OWN}, in order: it "
+_NOT_THIS_ENTRY = f"not {_OWN}, the harness file this precheck belongs to"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "line"),
+    [
+        (
+            {"UX_HARNESS": None},
+            "UX_HARNESS is not set, so the harness this job extracted cannot be "
+            f"checked against the HARNESS_PATHS of {_OWN}",
+        ),
+        (
+            {"UX_HARNESS": " \n "},
+            "UX_HARNESS is not set, so the harness this job extracted cannot be "
+            f"checked against the HARNESS_PATHS of {_OWN}",
+        ),
+        (
+            {"UX_HARNESS": " ".join(_HARNESS[:-1])},
+            f"{_WRONG_HARNESS}lacks 1 of them, the first {_HARNESS[-1]!r}"
+            f"{paths.STALE_JOB_HINT}",
+        ),
+        (
+            {"UX_HARNESS": " ".join([*_HARNESS, "scripts/sdlc/json.py"])},
+            f"{_WRONG_HARNESS}also names 1 more, the first 'scripts/sdlc/json.py'"
+            f"{paths.STALE_JOB_HINT}",
+        ),
+        (
+            {"UX_HARNESS": " ".join(reversed(_HARNESS))},
+            f"{_WRONG_HARNESS}names the same paths in another order or more than once"
+            f"{paths.STALE_JOB_HINT}",
+        ),
+        (
+            {"UX_HARNESS": " ".join([*_HARNESS, _HARNESS[0]])},
+            f"{_WRONG_HARNESS}names the same paths in another order or more than once"
+            f"{paths.STALE_JOB_HINT}",
+        ),
+        (
+            {"UX_ENTRY": None},
+            f"UX_ENTRY is not set, so the job cannot be shown to run {_OWN}, the "
+            "harness file this precheck belongs to",
+        ),
+        (
+            {"UX_ENTRY": "scripts/ux_recorder.py"},
+            f"UX_ENTRY is 'scripts/ux_recorder.py', {_NOT_THIS_ENTRY}",
+        ),
+    ],
+    ids=[
+        "harness-unset",
+        "harness-blank",
+        "harness-short",
+        "harness-longer",
+        "harness-reordered",
+        "harness-repeated",
+        "entry-unset",
+        "entry-another-file",
+    ],
+)
+def test_the_precheck_refuses_job_variables_that_name_another_harness(
+    harness: Harness,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str | None],
+    line: str,
+) -> None:
+    """The job extracts what ``UX_HARNESS`` lists and runs ``UX_ENTRY``, and a
+    project or pipeline variable overrides a job variable, so the precheck checks
+    both against this module first: one line naming the wrong variable, exit 1,
+    nothing asked of git or GitLab, and the artifact directory never made."""
+    for name, value in changes.items():
+        if value is None:
+            harness.environ.pop(name)
+        else:
+            harness.environ[name] = value
+    assert harness.main("--precheck") == 1
+    assert capsys.readouterr().out.splitlines() == [f"FAILED: {line}"]
+    assert harness.calls == []
+    assert harness.forge.requests == []
+    assert not harness.artifacts.exists()
+
+
+@pytest.mark.unit
+def test_the_precheck_runs_under_a_job_that_names_its_harness_in_its_own_script(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A merge request whose ``.gitlab-ci.yml`` predates the shared setup runs this
+    entry from a job that spells its harness list and the entry's path in its own
+    script, where no variable can change them, and exports neither variable."""
+    harness.environ.pop("UX_HARNESS")
+    harness.environ.pop("UX_ENTRY")
+    assert harness.main("--precheck") == 0
+    assert _first_line(capsys).startswith("PROCEED: ")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("environ", "script_named", "refused"),
+    [
+        ({}, True, False),
+        ({}, False, True),
+        ({"UX_HARNESS": "", "UX_ENTRY": ""}, True, True),
+        ({"UX_ENTRY": _OWN}, True, True),
+        ({"UX_HARNESS": " ".join(_HARNESS)}, True, True),
+        ({"UX_HARNESS": "scripts", "UX_ENTRY": _OWN}, True, True),
+    ],
+)
+def test_only_an_entry_whose_job_named_its_harness_accepts_neither_variable(
+    environ: dict[str, str], script_named: bool, refused: bool
+) -> None:
+    problem = paths.harness_pin_problem(
+        environ, harness_paths=_HARNESS, entry=_OWN, script_named=script_named
+    )
+    assert bool(problem) is refused, problem
+
+
+@pytest.mark.unit
+def test_the_precheck_accepts_the_jobs_own_variables_however_they_are_spaced(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness.environ["UX_HARNESS"] = "\n  ".join(_HARNESS) + "\n"
+    harness.environ["UX_ENTRY"] = f"  {_OWN}\n"
+    assert harness.main("--precheck") == 0
+    assert _first_line(capsys).startswith("PROCEED: ")
+
+
+@pytest.mark.unit
+def test_a_pin_problem_quotes_no_value_longer_than_200_characters() -> None:
+    """A variable's value reaches the job log only short and quoted, so neither a
+    flood nor a terminal escape sequence in it is printed as written."""
+    pinned = " ".join(_HARNESS)
+    long = "x" * 201
+
+    def problem(listed: str, entry: str) -> str:
+        environ = {"UX_HARNESS": listed, "UX_ENTRY": entry}
+        return paths.harness_pin_problem(environ, harness_paths=_HARNESS, entry=_OWN)
+
+    for shown in (problem(f"{pinned} {long}", _OWN), problem(pinned, long)):
+        assert long not in shown and "a value of 201 characters" in shown, shown
+    assert repr("y" * 200) in problem(pinned, "y" * 200)
+    escaped = problem(pinned, "a\x1b[31mb")
+    assert "\x1b" not in escaped and "'a\\x1b[31mb'" in escaped
+    assert problem(pinned, _OWN) == ""
+
+
+@pytest.mark.unit
+def test_the_entry_is_this_file_and_the_first_harness_path() -> None:
+    assert SCRIPT.relative_to(REPO_ROOT).as_posix() == ai_ux_test.ENTRY == _OWN
+    assert ai_ux_test.HARNESS_PATHS[0] == ai_ux_test.ENTRY
+
+
+@pytest.mark.unit
+def test_the_precheck_run_as_the_job_runs_it_refuses_an_unpinned_entry(
+    tmp_path: Path,
+) -> None:
+    """On a bare python3 with ``-B``, from an environment holding only the job's
+    two harness variables, as the job's before_script runs it."""
+    out = tmp_path / "ux-tests"
+    environ = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "UX_HARNESS": " ".join(_HARNESS),
+        "UX_ENTRY": "scripts/sdlc/ai_mr_review.py",
+    }
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-B", str(SCRIPT), "--mr", "1", "--precheck"]
+        + ["--artifact-dir", str(out)],
+        cwd=tmp_path,
+        env=environ,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 1, completed.stderr[-400:]
+    assert completed.stdout.splitlines() == [
+        f"FAILED: UX_ENTRY is 'scripts/sdlc/ai_mr_review.py', {_NOT_THIS_ENTRY}"
+    ]
+    assert not out.exists()
 
 
 # --- the artifact directory -------------------------------------------------------
@@ -2021,6 +2210,82 @@ def test_a_cancel_during_the_session_runs_every_cleanup_and_exits_1(
 
 
 @pytest.mark.unit
+def test_a_cleanup_step_that_fails_is_named_and_every_later_step_still_runs(
+    harness: Harness,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The line names a step by its method's name, so the four browser steps keep
+    their names although ``session.ConfinedBrowser`` does their work."""
+
+    def refused(*args: Any, **kwargs: Any) -> None:
+        harness.calls.append("sign_in")
+        raise signin.SignInError("the sign-in was refused")
+
+    def fails(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("gone")
+
+    def no_proc(uid: int | None, group: int | None) -> tuple[str, ...]:
+        raise OSError("no /proc")
+
+    launch = harness._launch_proxy
+
+    def launched(**kwargs: Any) -> egress.ProxyRun:
+        run = launch(**kwargs)
+        monkeypatch.setattr(run.process, "terminate", fails)
+        return run
+
+    monkeypatch.setattr(harness, "_sign_in", refused)
+    monkeypatch.setattr(harness, "_kill_strays", no_proc)
+    monkeypatch.setattr(harness, "_launch_proxy", launched)
+    monkeypatch.setattr(harness.session, "close", fails)
+    monkeypatch.setattr(FakeWatch, "stop", fails)
+    harness.forge.add_note(_review_body(HEAD))
+    assert harness.main() == 1
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("cleanup: ")
+    ]
+    assert lines == [
+        "cleanup: close_session: RuntimeError",
+        "cleanup: stop_chrome: OSError",
+        "cleanup: stop_watch: RuntimeError",
+        "cleanup: stop_proxy: RuntimeError",
+    ]
+    assert harness.chrome_process.terminations == 1
+    assert harness.run_dir is not None and not harness.run_dir.exists()
+    assert (harness.artifacts / "refusals.jsonl").is_file()
+    summary = harness.summary()
+    assert (summary["status"], summary["detail"]) == (
+        "failed",
+        "the sign-in was refused",
+    )
+    assert harness.forge.writes() == []
+
+
+@pytest.mark.unit
+def test_a_socket_audit_that_never_started_fails_the_run_and_posts_nothing(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step of the browser's lifecycle that cannot be done is a step failure
+    with its own message, raised only after Chrome has been stopped."""
+    monkeypatch.setattr(FakeWatch, "start", lambda self: None)
+    harness.forge.add_note(_review_body(HEAD))
+    assert harness.main() == 1
+    summary = harness.summary()
+    assert (summary["status"], summary["detail"]) == (
+        "failed",
+        "the socket audit was never started",
+    )
+    assert issubclass(session.SessionError, ai_ux_test._STEP_FAILURES)
+    assert harness.chrome_process.terminations == 1
+    assert harness.proxy_process is not None
+    assert harness.proxy_process.terminations == 1
+    assert harness.forge.writes() == []
+
+
+@pytest.mark.unit
 def test_a_session_that_exits_without_a_result_fails_with_bounded_redacted_stderr(
     harness: Harness,
 ) -> None:
@@ -2670,6 +2935,15 @@ def test_every_statement_of_the_stack_must_name_the_review_stack(
 
 
 @pytest.mark.unit
+def test_the_check_and_the_stack_are_sessions_own_called_not_copied() -> None:
+    """The first-time-user stories hold their videos to the same check, so the MR
+    UX test takes the function and the stack from ``session.py`` rather than
+    keeping copies that could drift apart."""
+    assert ai_ux_test.review_stack_problem is session.review_stack_problem
+    assert ai_ux_test.REVIEW_STACK is session.REVIEW_STACK
+
+
+@pytest.mark.unit
 def test_the_review_stack_gets_its_video_rendered_attached_and_uploaded(
     harness: Harness,
 ) -> None:
@@ -3032,6 +3306,16 @@ def test_the_runtime_names_every_injectable_collaborator_in_order() -> None:
 
 
 @pytest.mark.unit
+def test_the_runtime_is_the_browser_runtime_the_confined_browser_is_handed() -> None:
+    """``session.ConfinedBrowser`` is handed this Runtime as it is, so each member of
+    ``session.BrowserRuntime`` is a Runtime field of the same name and annotation."""
+    fields = {f.name: f.type for f in dataclasses.fields(ai_ux_test.Runtime)}
+    members = dict(session.BrowserRuntime.__annotations__)
+    assert len(members) == 13
+    assert {name: fields.get(name) for name in members} == members
+
+
+@pytest.mark.unit
 def test_the_default_runtime_binds_the_real_collaborators() -> None:
     runtime = ai_ux_test.default_runtime()
     assert runtime.collect is mr_inputs.collect
@@ -3039,6 +3323,7 @@ def test_the_default_runtime_binds_the_real_collaborators() -> None:
     assert runtime.launch_chrome is chrome.launch
     assert runtime.verify_policy is chrome.verify_policy
     assert runtime.sign_in is signin.sign_in
+    assert runtime.page_facts is signin.page_facts
     assert runtime.verify_viewport is chrome.verify_viewport
     assert runtime.measure_viewport is chrome.measure_viewport
     assert runtime.socket_watch is chrome.SocketWatch

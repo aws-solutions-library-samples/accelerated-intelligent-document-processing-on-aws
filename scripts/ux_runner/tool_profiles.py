@@ -55,6 +55,8 @@ denied here by name either way.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 CHROME_DEVTOOLS_SERVER = "chrome-devtools"
 RECORDER_SERVER = "ux-recorder"
 
@@ -174,3 +176,145 @@ EXPERT_DISALLOWED_TOOLS: tuple[str, ...] = (
 def is_granted(tool: str) -> bool:
     """Whether the UX session may call ``tool``: granted and not denied."""
     return tool in EXPERT_ALLOWED_TOOLS and tool not in EXPERT_DISALLOWED_TOOLS
+
+
+@dataclass(frozen=True)
+class ToolProfile:
+    """One session's two tool lists, as ``agent.claude_argv`` passes them."""
+
+    name: str
+    allowed: tuple[str, ...]
+    disallowed: tuple[str, ...]
+
+
+#: The MR UX test's profile: the two EXPERT lists above, as they are.
+EXPERT = ToolProfile(
+    name="expert", allowed=EXPERT_ALLOWED_TOOLS, disallowed=EXPERT_DISALLOWED_TOOLS
+)
+
+
+STORY_SERVER = "ux-story"
+
+STORY_BROWSER_TOOLS: tuple[str, ...] = (
+    "navigate_page",
+    "wait_for",
+    "click",
+    "hover",
+    "fill",
+    "fill_form",
+    "type_text",
+    "press_key",
+    "drag",
+    "handle_dialog",
+    "take_snapshot",
+    "take_screenshot",
+)
+
+STORY_LOOK_TOOLS: tuple[str, ...] = ("take_snapshot", "take_screenshot", "wait_for")
+
+STORY_OWN_TOOLS: tuple[str, ...] = (
+    "search_documentation",
+    "read_documentation",
+    "note_confusion",
+    "note_dead_end",
+    "note_injection",
+    "report_done",
+    "report_blocked",
+)
+
+STORY_ALLOWED_TOOLS: tuple[str, ...] = (
+    "mcp__ux-story__navigate_page",
+    "mcp__ux-story__wait_for",
+    "mcp__ux-story__click",
+    "mcp__ux-story__hover",
+    "mcp__ux-story__fill",
+    "mcp__ux-story__fill_form",
+    "mcp__ux-story__type_text",
+    "mcp__ux-story__press_key",
+    "mcp__ux-story__drag",
+    "mcp__ux-story__handle_dialog",
+    "mcp__ux-story__take_snapshot",
+    "mcp__ux-story__take_screenshot",
+    "mcp__ux-story__search_documentation",
+    "mcp__ux-story__read_documentation",
+    "mcp__ux-story__note_confusion",
+    "mcp__ux-story__note_dead_end",
+    "mcp__ux-story__note_injection",
+    "mcp__ux-story__report_done",
+    "mcp__ux-story__report_blocked",
+)
+
+STORY_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "Task",
+    "Agent",
+    "TodoWrite",
+    "AskUserQuestion",
+    "Skill",
+    "mcp__chrome-devtools__click",
+    "mcp__chrome-devtools__close_page",
+    "mcp__chrome-devtools__drag",
+    "mcp__chrome-devtools__emulate",
+    "mcp__chrome-devtools__evaluate_script",
+    "mcp__chrome-devtools__fill",
+    "mcp__chrome-devtools__fill_form",
+    "mcp__chrome-devtools__get_console_message",
+    "mcp__chrome-devtools__get_css_styles",
+    "mcp__chrome-devtools__get_network_request",
+    "mcp__chrome-devtools__handle_dialog",
+    "mcp__chrome-devtools__hover",
+    "mcp__chrome-devtools__lighthouse_audit",
+    "mcp__chrome-devtools__list_console_messages",
+    "mcp__chrome-devtools__list_network_requests",
+    "mcp__chrome-devtools__list_pages",
+    "mcp__chrome-devtools__navigate_page",
+    "mcp__chrome-devtools__new_page",
+    "mcp__chrome-devtools__performance_analyze_insight",
+    "mcp__chrome-devtools__performance_start_trace",
+    "mcp__chrome-devtools__performance_stop_trace",
+    "mcp__chrome-devtools__press_key",
+    "mcp__chrome-devtools__resize_page",
+    "mcp__chrome-devtools__select_page",
+    "mcp__chrome-devtools__take_heapsnapshot",
+    "mcp__chrome-devtools__take_screenshot",
+    "mcp__chrome-devtools__take_snapshot",
+    "mcp__chrome-devtools__type_text",
+    "mcp__chrome-devtools__upload_file",
+    "mcp__chrome-devtools__wait_for",
+    "mcp__ux-story__close_page",
+    "mcp__ux-story__emulate",
+    "mcp__ux-story__evaluate_script",
+    "mcp__ux-story__get_console_message",
+    "mcp__ux-story__get_css_styles",
+    "mcp__ux-story__get_network_request",
+    "mcp__ux-story__lighthouse_audit",
+    "mcp__ux-story__list_console_messages",
+    "mcp__ux-story__list_network_requests",
+    "mcp__ux-story__list_pages",
+    "mcp__ux-story__new_page",
+    "mcp__ux-story__performance_analyze_insight",
+    "mcp__ux-story__performance_start_trace",
+    "mcp__ux-story__performance_stop_trace",
+    "mcp__ux-story__resize_page",
+    "mcp__ux-story__select_page",
+    "mcp__ux-story__take_heapsnapshot",
+    "mcp__ux-story__upload_file",
+    "mcp__ux-recorder__mark",
+    "mcp__ux-recorder__note",
+    "mcp__ux-recorder__pause",
+    "mcp__ux-recorder__resume",
+)
+
+
+STORY = ToolProfile(
+    name="story", allowed=STORY_ALLOWED_TOOLS, disallowed=STORY_DISALLOWED_TOOLS
+)

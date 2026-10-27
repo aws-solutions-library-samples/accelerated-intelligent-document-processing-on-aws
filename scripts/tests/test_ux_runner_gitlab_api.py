@@ -894,3 +894,496 @@ def test_the_review_footer_section_reads_from_is_the_one_ai_mr_review_writes() -
     found = gitlab_api.review_note_for([note], HEAD, 7)
     assert found is not None and found["id"] == 30
     assert gitlab_api.review_note_for([note], OTHER_HEAD, 7) is None
+
+
+# --- waiting for the code-review note ----------------------------------------------
+
+ME = 7
+STRANGER = 8
+REVIEW_BODY = f"<!-- ai-review: sha={HEAD} rev=1 -->\n## PR/MR Review: !812\n"
+
+
+class _WaitForge:
+    """The three calls the wait makes, answered in turn, each one recorded.
+
+    ``listings`` are the successive answers to ``notes``; the last one repeats.
+    """
+
+    def __init__(
+        self, listings: list[list[dict[str, Any]]], *, head: str = HEAD
+    ) -> None:
+        self.listings = listings
+        self.head = head
+        self.calls: list[str] = []
+
+    def merge_request(self, iid: int) -> Any:
+        self.calls.append(f"merge_request {iid}")
+        return review.MergeRequest(
+            iid=iid,
+            title="t",
+            author="a",
+            source_branch="s",
+            target_branch="develop",
+            web_url="",
+            head_sha=self.head,
+            draft=False,
+        )
+
+    def current_user(self) -> dict[str, Any]:
+        self.calls.append("current_user")
+        return {"id": ME, "username": "ux-review-bot"}
+
+    def notes(self, iid: int) -> list[dict[str, Any]]:
+        listed = sum(1 for call in self.calls if call.startswith("notes"))
+        self.calls.append(f"notes {iid}")
+        return self.listings[min(listed, len(self.listings) - 1)]
+
+
+class _Clock:
+    """Monotonic time that moves only when the wait sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _wait(
+    forge: _WaitForge,
+    clock: _Clock,
+    *,
+    poll_minutes: float = 10,
+    deadline: float = 1e9,
+    posted: Callable[[list[dict[str, Any]]], bool] = lambda mine: False,
+    **extra: Any,
+) -> gitlab_api.ReviewWait:
+    return gitlab_api.wait_for_review_note(
+        forge,
+        812,
+        HEAD,
+        already_posted=posted,
+        poll_minutes=poll_minutes,
+        deadline=deadline,
+        clock=clock.clock,
+        sleep=clock.sleep,
+        **extra,
+    )
+
+
+@pytest.mark.unit
+def test_the_wait_reports_what_it_ended_on_in_five_frozen_fields() -> None:
+    names = [f.name for f in dataclasses.fields(gitlab_api.ReviewWait)]
+    assert names == ["outcome", "review_note", "mine", "me", "moved_to"]
+    assert gitlab_api.POLL_SECONDS == 30.0
+    default = inspect.signature(gitlab_api.wait_for_review_note).parameters
+    assert default["poll_seconds"].default == gitlab_api.POLL_SECONDS
+
+
+@pytest.mark.unit
+def test_the_wait_finds_the_review_note_for_the_head_when_it_appears() -> None:
+    """The MR, then the token's user, then a listing every 30 s until it is there."""
+    review_note = _note(41, ME, REVIEW_BODY)
+    forge = _WaitForge([[], [], [_note(40, STRANGER, "hi"), review_note]])
+    clock = _Clock()
+    waited = _wait(forge, clock)
+    assert waited.outcome == "found"
+    assert waited.review_note == review_note
+    assert waited.mine == [review_note]
+    assert (waited.me, waited.moved_to) == (ME, None)
+    assert clock.sleeps == [30.0, 30.0]
+    assert forge.calls == [
+        "merge_request 812",
+        "current_user",
+        "notes 812",
+        "notes 812",
+        "notes 812",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("poll_minutes", "deadline", "sleeps"),
+    [(10, 1e9, 20), (1, 1e9, 2), (10, 1095.0, 4), (0, 1e9, 0)],
+    ids=["ten-minutes", "one-minute", "deadline-first", "no-wait"],
+)
+def test_the_wait_ends_at_the_earlier_of_its_minutes_and_the_deadline(
+    poll_minutes: float, deadline: float, sleeps: int
+) -> None:
+    """Ten minutes of 30 s sleeps is twenty, and the run's deadline cuts it short."""
+    forge = _WaitForge([[_note(50, STRANGER, REVIEW_BODY)]])
+    clock = _Clock()
+    waited = _wait(forge, clock, poll_minutes=poll_minutes, deadline=deadline)
+    assert waited.outcome == "timeout"
+    assert waited.review_note is None and waited.mine == []
+    assert clock.sleeps == [30.0] * sleeps
+    assert forge.calls.count("notes 812") == sleeps + 1
+
+
+@pytest.mark.unit
+def test_a_head_that_moved_returns_before_the_user_or_the_notes_are_read() -> None:
+    forge = _WaitForge([[_note(41, ME, REVIEW_BODY)]], head=OTHER_HEAD)
+    clock = _Clock()
+    waited = _wait(forge, clock)
+    assert waited == gitlab_api.ReviewWait("moved", None, [], None, OTHER_HEAD)
+    assert forge.calls == ["merge_request 812"]
+    assert clock.sleeps == []
+
+
+@pytest.mark.unit
+def test_a_merge_request_that_names_no_head_is_not_a_move() -> None:
+    forge = _WaitForge([[_note(41, ME, REVIEW_BODY)]], head="")
+    assert _wait(forge, _Clock()).outcome == "found"
+
+
+@pytest.mark.unit
+def test_my_own_post_for_the_head_ends_the_wait_before_the_review_is_looked_for() -> (
+    None
+):
+    """``already_posted`` is asked of the token's own notes alone, newest first, on
+    every listing, and is asked before the review note is: a section another run
+    posted for this head stops this one even with the review note right there."""
+    review_note = _note(41, ME, REVIEW_BODY)
+    posted = _note(42, ME, "<!-- ux-test: posted -->")
+    forge = _WaitForge([[_note(43, STRANGER, "x")], [review_note, posted]])
+    asked: list[list[int]] = []
+
+    def already(mine: list[dict[str, Any]]) -> bool:
+        asked.append([note["id"] for note in mine])
+        return any(note["id"] == 42 for note in mine)
+
+    clock = _Clock()
+    waited = _wait(forge, clock, posted=already)
+    assert waited.outcome == "posted"
+    assert waited.review_note is None
+    assert [note["id"] for note in waited.mine] == [42, 41]
+    assert asked == [[], [42, 41]]
+    assert clock.sleeps == [30.0]
+
+
+@pytest.mark.unit
+def test_a_review_note_another_author_posted_is_never_the_one_found() -> None:
+    forge = _WaitForge([[_note(41, STRANGER, REVIEW_BODY)]])
+    waited = _wait(forge, _Clock(), poll_minutes=1)
+    assert waited.outcome == "timeout"
+    assert waited.mine == []
+
+
+@pytest.mark.unit
+def test_the_wait_sleeps_poll_seconds_between_listings() -> None:
+    forge = _WaitForge([[]])
+    clock = _Clock()
+    _wait(forge, clock, poll_minutes=1, poll_seconds=20.0)
+    assert clock.sleeps == [20.0, 20.0, 20.0]
+
+
+@pytest.mark.unit
+def test_the_wait_drives_the_real_client_over_the_wire(gitlab: _FakeGitlab) -> None:
+    """The three requests the real client sends, in order, and nothing written."""
+    notes = f"{PROJECT_PATH}/merge_requests/812/notes?sort=asc&order_by=created_at"
+    gitlab.answer(
+        "GET",
+        f"{PROJECT_PATH}/merge_requests/812",
+        {"iid": 812, "title": "t", "draft": False, "sha": HEAD},
+    )
+    gitlab.answer("GET", "/api/v4/user", {"id": ME, "username": "ux-review-bot"})
+    gitlab.answer("GET", f"{notes}&per_page=100&page=1", [_note(41, ME, REVIEW_BODY)])
+    clock = _Clock()
+    waited = gitlab_api.wait_for_review_note(
+        _forge(gitlab),
+        812,
+        HEAD,
+        already_posted=lambda mine: False,
+        poll_minutes=10,
+        deadline=1e9,
+        clock=clock.clock,
+        sleep=clock.sleep,
+    )
+    assert waited.outcome == "found" and waited.review_note is not None
+    assert waited.review_note["id"] == 41
+    assert [(r["method"], r["path"]) for r in gitlab.requests] == [
+        ("GET", f"{PROJECT_PATH}/merge_requests/812"),
+        ("GET", "/api/v4/user"),
+        ("GET", f"{notes}&per_page=100&page=1"),
+    ]
+
+
+# --- earlier pipelines: what the nightly digest compares with ---------------------
+
+DIGEST_JOB = "ai_ux_test_stories_digest"
+DIGEST_FILE = "ux-test-stories-digest/digest.json"
+PIPELINES = (
+    f"{PROJECT_PATH}/pipelines?ref=develop&source=schedule&order_by=id&sort=desc"
+    "&per_page=20"
+)
+
+
+def _jobs(pipeline: int) -> str:
+    return f"{PROJECT_PATH}/pipelines/{pipeline}/jobs?per_page=100&page=1"
+
+
+def _artifact(job: int) -> str:
+    return f"{PROJECT_PATH}/jobs/{job}/artifacts/{DIGEST_FILE}"
+
+
+def _pipeline(ident: object, **extra: Any) -> dict[str, Any]:
+    return {"id": ident, "ref": "develop", "source": "schedule", **extra}
+
+
+def _job(ident: object, name: str = DIGEST_JOB, status: str = "success") -> object:
+    return {"id": ident, "name": name, "status": status}
+
+
+def _digests(server: _FakeGitlab, **overrides: Any) -> list[tuple[int, bytes | None]]:
+    values: dict[str, Any] = {
+        "ref": "develop",
+        "job": DIGEST_JOB,
+        "artifact": DIGEST_FILE,
+        "max_bytes": 1024,
+        "deadline": 1e9,
+        **overrides,
+    }
+    return gitlab_api.scheduled_digests(_forge(server), **values)
+
+
+@pytest.mark.unit
+def test_the_history_reads_each_scheduled_nights_digest_by_job_id(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer(
+        "GET", PIPELINES, [_pipeline(30), _pipeline(29), _pipeline(28), _pipeline(27)]
+    )
+    gitlab.answer(
+        "GET",
+        _jobs(29),
+        [
+            _job(2904, name="ai_ux_test_stories_nightly"),
+            _job(2902),
+            _job(2903, status="failed"),
+            _job(2905, status="running"),
+            _job(True),
+        ],
+    )
+    gitlab.answer(
+        "GET",
+        _artifact(2903),
+        headers={"Content-Type": "application/octet-stream"},
+        raw=b'{"night": 29}',
+    )
+    gitlab.answer("GET", _jobs(28), [_job(2801, status="manual"), "not a job"])
+    gitlab.answer("GET", _jobs(27), [_job(2701)])
+    found = _digests(gitlab, own_pipeline=30)
+    assert found == [(29, b'{"night": 29}'), (28, None), (27, None)]
+    assert [(r["method"], r["path"]) for r in gitlab.requests] == [
+        ("GET", PIPELINES),
+        ("GET", _jobs(29)),
+        ("GET", _artifact(2903)),
+        ("GET", _jobs(28)),
+        ("GET", _jobs(27)),
+        ("GET", _artifact(2701)),
+    ]
+    assert all(r["headers"]["private-token"] == CREDENTIAL for r in gitlab.requests)
+
+
+@pytest.mark.unit
+def test_a_night_that_cannot_be_read_is_a_gap_and_the_history_goes_on(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, [_pipeline(29), _pipeline(28), _pipeline(27)])
+    gitlab.answer("GET", _jobs(29), {"message": "boom"}, status=500)
+    gitlab.answer("GET", _jobs(28), [_job(2801)])
+    gitlab.answer("GET", _artifact(2801), {"message": "too big"}, status=403)
+    gitlab.answer("GET", _jobs(27), [_job(2701)])
+    gitlab.answer("GET", _artifact(2701), raw=b"{}")
+    assert _digests(gitlab) == [(29, None), (28, None), (27, b"{}")]
+
+
+@pytest.mark.unit
+def test_a_digest_past_its_bound_is_a_gap_and_is_read_no_further(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, [_pipeline(29)])
+    gitlab.answer("GET", _jobs(29), [_job(2901)])
+    gitlab.answer("GET", _artifact(2901), raw=b" " * 1025)
+    assert _digests(gitlab) == [(29, None)]
+    with pytest.raises(review.Failure, match="is 1025 bytes, more than the 1024"):
+        _forge(gitlab).job_artifact(2901, DIGEST_FILE, limit=1024)
+    unmeasured = JSON_HEAD + b"Connection: close\r\n\r\n" + b" " * 4096
+    with _raw_server(_sender(unmeasured)) as api_url:
+        forge = gitlab_api.UxGitlab(api_url, "group/proj", CREDENTIAL)
+        with pytest.raises(review.Failure, match="runs past the 1024 bytes"):
+            forge.job_artifact(2901, DIGEST_FILE, limit=1024)
+
+
+@pytest.mark.unit
+def test_nights_not_reached_by_the_deadline_are_gaps_and_are_not_asked_for(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, [_pipeline(29), _pipeline(28), _pipeline(27)])
+    gitlab.answer("GET", _jobs(29), [_job(2901)])
+    gitlab.answer("GET", _artifact(2901), raw=b"{}")
+    times = iter([0.0, 10.0, 11.0])
+    found = _digests(gitlab, deadline=10.0, clock=lambda: next(times))
+    assert found == [(29, b"{}"), (28, None), (27, None)]
+    assert not [r for r in gitlab.requests if r["path"] in (_jobs(28), _jobs(27))]
+
+
+@pytest.mark.unit
+def test_a_listing_that_cannot_be_read_raises_as_any_request_does(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, {"message": "403 Forbidden"}, status=403)
+    with pytest.raises(review.Skip, match="403"):
+        _digests(gitlab)
+    gitlab.answer("GET", PIPELINES, {"pipelines": []})
+    with pytest.raises(review.Failure, match="no list"):
+        _digests(gitlab)
+
+
+@pytest.mark.unit
+def test_the_listing_returns_only_this_refs_scheduled_pipelines(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer(
+        "GET",
+        PIPELINES,
+        [
+            _pipeline(33, ref="feature/x"),
+            _pipeline(32, source="push"),
+            _pipeline(True),
+            _pipeline(0),
+            _pipeline("31"),
+            "not a pipeline",
+            {"id": 29},
+            _pipeline(29),
+            _pipeline(30),
+        ],
+    )
+    assert _forge(gitlab).scheduled_pipelines("develop") == [30, 29]
+
+
+@pytest.mark.unit
+def test_the_listing_is_one_page_of_at_most_a_hundred(gitlab: _FakeGitlab) -> None:
+    listing = PIPELINES.replace("per_page=20", "per_page=2")
+    gitlab.answer("GET", listing, [_pipeline(n) for n in (30, 29, 28)])
+    assert _forge(gitlab).scheduled_pipelines("develop", limit=2) == [30, 29]
+    for limit in (0, 101):
+        with pytest.raises(ValueError, match="1 to 100"):
+            _forge(gitlab).scheduled_pipelines("develop", limit=limit)
+    assert [r["path"] for r in gitlab.requests] == [listing]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "kind", ["application/json", "application/octet-stream", "text/html"]
+)
+def test_an_artifact_is_returned_as_stored_whatever_type_gitlab_names(
+    gitlab: _FakeGitlab, kind: str
+) -> None:
+    gitlab.answer("GET", _artifact(7), headers={"Content-Type": kind}, raw=b"[not json")
+    assert _forge(gitlab).job_artifact(7, DIGEST_FILE, limit=64) == b"[not json"
+    gitlab.answer("GET", _artifact(8), raw=b"")
+    assert _forge(gitlab).job_artifact(8, DIGEST_FILE, limit=64) == b""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    ["", "../digest.json", "/etc/passwd", "a//b", "a/./b", "a/../b", "a b", "x" * 129],
+)
+def test_an_artifact_path_is_a_path_inside_the_artifacts(
+    gitlab: _FakeGitlab, path: str
+) -> None:
+    with pytest.raises(ValueError, match="not an artifact path"):
+        _forge(gitlab).job_artifact(7, path, limit=64)
+    assert gitlab.requests == []
+
+
+@pytest.mark.unit
+def test_a_bound_a_request_names_never_raises_the_clients_own(
+    gitlab: _FakeGitlab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gitlab_api, "MAX_ANSWER_BYTES", 1024)
+    gitlab.answer("GET", _artifact(7), raw=b" " * 2048)
+    with pytest.raises(review.Failure, match="is 2048 bytes, more than the 1024"):
+        _forge(gitlab).job_artifact(7, DIGEST_FILE, limit=4096)
+
+
+MR_PIPELINES = f"{PROJECT_PATH}/merge_requests/812/pipelines?per_page=100"
+MR = "ai_ux_test_stories"
+PROCEEDED = re.compile(rb"PROCEED: [0-9]+ flow")
+
+
+def _trace(job: int) -> str:
+    return f"{PROJECT_PATH}/jobs/{job}/trace"
+
+
+@pytest.mark.unit
+def test_a_jobs_log_is_read_only_as_far_as_its_head(gitlab: _FakeGitlab) -> None:
+    gitlab.answer(
+        "GET",
+        _trace(7),
+        headers={"Content-Type": "text/plain"},
+        raw=b"PROCEED: 3 flow(s)" + b" " * 4096,
+    )
+    head = _forge(gitlab).job_trace_head(7, limit=64)
+    assert head == (b"PROCEED: 3 flow(s)" + b" " * 4096)[:64]
+    unmeasured = JSON_HEAD + b"Connection: close\r\n\r\n" + b"x" * 4096
+    with _raw_server(_sender(unmeasured)) as api_url:
+        forge = gitlab_api.UxGitlab(api_url, "group/proj", CREDENTIAL)
+        assert forge.job_trace_head(7, limit=100) == b"x" * 100
+
+
+@pytest.mark.unit
+def test_runs_started_counts_the_mrs_story_jobs_whose_log_says_they_went_ahead(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", MR_PIPELINES, [{"id": n} for n in (40, 39, 38, 37, 36)])
+    gitlab.answer("GET", _jobs(39), [_job(391, MR, "canceled"), _job(392, "lint")])
+    gitlab.answer("GET", _jobs(38), [_job(381, MR, "skipped"), _job(382, MR, "failed")])
+    gitlab.answer("GET", _jobs(37), {"message": "boom"}, status=500)
+    gitlab.answer("GET", _jobs(36), [_job(361, MR, "success")])
+    for job, text in ((391, b"PROCEED: 2 flow(s)"), (382, b"SKIPPED: a draft")):
+        gitlab.answer("GET", _trace(job), raw=text)
+    gitlab.answer("GET", _trace(361), {"message": "gone"}, status=404)
+    counted = gitlab_api.runs_started(
+        _forge(gitlab),
+        812,
+        job=MR,
+        marker=PROCEEDED,
+        own_pipeline=40,
+        enough=4,
+        deadline=1e9,
+    )
+    assert counted == 1
+    asked = [r["path"] for r in gitlab.requests]
+    assert _jobs(40) not in asked and _trace(381) not in asked
+    assert _trace(392) not in asked
+
+
+@pytest.mark.unit
+def test_runs_started_stops_at_enough_and_at_the_deadline(gitlab: _FakeGitlab) -> None:
+    gitlab.answer("GET", MR_PIPELINES, [{"id": n} for n in (3, 2, 1)])
+    for pipeline in (3, 2, 1):
+        gitlab.answer("GET", _jobs(pipeline), [_job(pipeline * 10, MR, "success")])
+        gitlab.answer("GET", _trace(pipeline * 10), raw=b"PROCEED: 1 flow(s)")
+    values: dict[str, Any] = {
+        "job": MR,
+        "marker": PROCEEDED,
+        "own_pipeline": None,
+        "deadline": 1e9,
+    }
+    assert gitlab_api.runs_started(_forge(gitlab), 812, enough=2, **values) == 2
+    assert _jobs(1) not in [r["path"] for r in gitlab.requests]
+    gitlab.requests.clear()
+    times = iter([0.0, 10.0])
+    late = {**values, "deadline": 10.0, "clock": lambda: next(times)}
+    assert gitlab_api.runs_started(_forge(gitlab), 812, enough=4, **late) == 1
+    gitlab.answer("GET", MR_PIPELINES, {"message": "403 Forbidden"}, status=403)
+    with pytest.raises(review.Skip, match="403"):
+        gitlab_api.runs_started(_forge(gitlab), 812, enough=4, **values)

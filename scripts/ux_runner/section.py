@@ -84,7 +84,9 @@ The orchestrator redacts the composed section once more before it is posted, and
 a redaction writes a placeholder such as ``[token]``: brackets, which a link needs.
 So whatever is redacted after :func:`sanitize` goes through :func:`inert_markup`,
 which breaks the brackets a placeholder brings in exactly as :func:`sanitize`
-breaks the model's own. And the shape rules a redactor applies before sanitising
+breaks the model's own, and the uppercase issue key or ``www.`` that a
+placeholder's closing ``]`` can leave with no letter or digit before it. And the
+shape rules a redactor applies before sanitising
 read :func:`flatten`'s output, the text with its control and bidi characters
 already turned into spaces, so that a ``Bearer`` token sanitising would separate
 from its keyword is caught before the field is cut rather than after.
@@ -306,19 +308,29 @@ def _spaced(match: re.Match[str]) -> str:
     return match.group(1) + ZERO_WIDTH_SPACE
 
 
-def inert_markup(text: str) -> str:
-    """``text`` with every ``[``, every ``!`` before one and every ``]`` before
-    ``(``, ``[`` or ``:`` followed by a zero-width space, and nothing else changed.
-
-    These are :func:`sanitize`'s bracket rules alone, for text a redactor changed
-    after it was sanitised: a placeholder such as ``[token]`` brings brackets in,
-    and the text around it may hold the ``(`` that would make them a link. Every
-    other construct :func:`sanitize` breaks stays broken, because a redaction only
-    removes text and puts a placeholder in its place. Idempotent.
-    """
+def _inert_brackets(text: str) -> str:
     text = _OPENING_BRACKET_RE.sub("[" + ZERO_WIDTH_SPACE, text)
     text = _IMAGE_BANG_RE.sub("!" + ZERO_WIDTH_SPACE, text)
     return _CLOSING_BRACKET_RE.sub("]" + ZERO_WIDTH_SPACE, text)
+
+
+def inert_markup(text: str) -> str:
+    """``text`` with every ``[``, every ``!`` before one and every ``]`` before
+    ``(``, ``[`` or ``:`` followed by a zero-width space, and the issue-key and
+    ``www.`` rules of :func:`sanitize` applied once more; nothing else changed.
+
+    For text a redactor changed after it was sanitised. A placeholder such as
+    ``[token]`` brings brackets in, and the text around it may hold the ``(`` that
+    would make them a link. It also ends in ``]``, which is not a letter or a digit,
+    so an uppercase issue key or a ``www.`` right after it, which :func:`sanitize`
+    left alone because a letter or digit came before it, would become one. Those
+    two are the only rules that refuse a letter or digit before what they match.
+    Every other construct :func:`sanitize` breaks stays broken, because a redaction
+    only removes text and puts a placeholder in its place. Idempotent.
+    """
+    text = _inert_brackets(text)
+    text = _ISSUE_KEY_RE.sub(_spaced, text)
+    return _WWW_RE.sub(_spaced, text)
 
 
 def flatten(text: str) -> str:
@@ -332,7 +344,7 @@ def _neutralised(flat: str) -> str:
     """``flat`` with every construct GitLab acts on broken; see the module docstring."""
     flat = _AMPERSAND_RE.sub("&" + ZERO_WIDTH_SPACE, flat)
     flat = flat.replace("<", "&lt;")
-    flat = inert_markup(flat)
+    flat = _inert_brackets(flat)
     flat = _MENTION_RE.sub("@" + ZERO_WIDTH_SPACE, flat)
     flat = _REFERENCE_RE.sub(_spaced, flat)
     flat = _PREFIX_REFERENCE_RE.sub(_spaced, flat)
@@ -475,11 +487,13 @@ def _code(text: object, limit: int) -> str:
     return sanitize(text, limit).replace("`", "'")
 
 
-def _backend(stack: StackFacts) -> str:
-    """The backend the MR's UI ran against: the stack, its version and its build.
+def backend_caveat(stack: StackFacts) -> str:
+    """The backend the UI ran against: the stack, its version and its build.
 
     Each of the two is shown only in the shape :class:`StackFacts` accepts, and
-    one the UI did not show that way is named as unread instead.
+    one the UI did not show that way is named as unread instead. The MR UX test's
+    note (:func:`caveats_for`) and the first-time-user stories' reply both start
+    their backend caveat with it.
     """
     text = f"backend: `{_code(stack.name, NAME_CHARS)}`"
     if stack.shown_version:
@@ -506,7 +520,7 @@ def caveats_for(change: ui_change.UiChange, stack: StackFacts) -> list[str]:
     is the review stack's own deployment and not the MR's, so it says when the MR
     changes backend files that the stack therefore does not run.
     """
-    first = _backend(stack)
+    first = backend_caveat(stack)
     if change.backend:
         first += "; this MR's own backend changes are not deployed there"
     caveats = [first]

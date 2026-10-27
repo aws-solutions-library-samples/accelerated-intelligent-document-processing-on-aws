@@ -867,11 +867,15 @@ def test_a_long_run_of_sigils_and_spaces_is_cut_in_one_pass() -> None:
 
 
 @pytest.mark.unit
-def test_inert_markup_breaks_only_the_brackets_a_placeholder_brings() -> None:
+def test_inert_markup_breaks_what_a_placeholder_can_make_markup() -> None:
     """A redaction after sanitising writes ``[token]``, and the text after it can
-    hold the ``(`` of a link; nothing else a redaction writes is markup."""
+    hold the ``(`` of a link, or an issue key or a ``www.`` that a letter or digit
+    before it had kept inert; nothing else a redaction writes is markup."""
     assert section.inert_markup("Bearer [token](//e.example/x)") == (
         "Bearer [\u200btoken]\u200b(//e.example/x)"
+    )
+    assert section.inert_markup("[account]ABC-12 [account]www.e.example") == (
+        "[\u200baccount]ABC-\u200b12 [\u200baccount]www\u200b.e.example"
     )
     assert section.inert_markup("![redacted][x] [account]: y") == (
         "!\u200b[\u200bredacted]\u200b[\u200bx] [\u200baccount]\u200b: y"

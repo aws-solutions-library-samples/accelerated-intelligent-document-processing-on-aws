@@ -2819,7 +2819,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Live tiers that drive real stacks. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
+      "reason": "Each row carries its own reason. The live tiers drive real stacks; ux-test-stories.md is Claude Code only, because its pair mode starts a claude --mcp-config session and its unattended runs go through run_in_background. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_repo_quality_review_skill.py"
     },
@@ -3081,6 +3081,17 @@
         "983"
       ]
     },
+    "scripts/tests/test_ux_story_relay.py::MUTATIONS_WITHOUT_A_GUARDED_CONTROL": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that the story relay's commit guard refuses the shipped control that sends the mutation, for a GraphQL mutation src/ui declares and no component or hook sends",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
+      "reason": "The suite derives every mutation src/ui/src declares and fails on one that is in neither MUTATION_CONTROLS, which names the shipped controls that send it and checks that each is still in its file and refused by the guard, nor this list, so a mutation the UI gains reaches the relay's owners as an unaccounted one. Three members, RejectReviewItem, RenewReviewLease and UpdateChatSessionTitle, each of which the UI declares among its operations and sends from no component or hook; the same suite checks per member that no file outside src/ui/src/graphql calls it, so a caller added later fails there and the mutation has to move to MUTATION_CONTROLS with its control.",
+      "memberKind": "GraphQL mutation name"
+    },
     "scripts/ux_runner/agent.py::CHILD_ENV_ALLOWLIST": {
       "kind": "capability",
       "turnsOff": "nothing in any gate; it names the only variables copied from the job's environment into the UX session's claude process, which otherwise receives the harness's fixed settings and a Bedrock-scoped AWS session",
@@ -3119,6 +3130,17 @@
       "crossReferences": [
         "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS"
       ]
+    },
+    "scripts/ux_runner/tool_profiles.py::STORY_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox a first-time-user story flow's Claude Code session runs inside, granting the twelve browser tools the ux-story server relays from the pinned chrome-devtools-mcp and the seven tools of the ux-story server itself, all under mcp__ux-story__",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
+      "reason": "A capability grant, not a gate exemption: it is what a story session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, which the suite also checks against the server's own recorded tools/list under default flags: every one of those tools is either granted under mcp__ux-story__ or denied there by name in STORY_DISALLOWED_TOOLS, and every mcp__chrome-devtools__ name is denied because that server is never registered in a story flow, so a tool added by a version bump fails the closure until somebody decides which. The relay serves only STORY_BROWSER_TOOLS whatever the lists say, a second layer the same suite pins against the recorded server. Same shape as EXPERT_ALLOWED_TOOLS.",
+      "memberKind": "tool name"
     },
     "scripts/ux_test_proxy.py::EGRESS_ALLOWED_STATIC_HOSTS": {
       "kind": "capability",
