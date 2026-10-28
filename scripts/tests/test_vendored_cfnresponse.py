@@ -14,10 +14,14 @@ canonical copy, and the tests of what ``send`` puts on the wire, are in
 file holds the repository-wide half, over every tracked or untracked-but-not-ignored
 file, so a Lambda added anywhere is covered without being listed:
 
-- every directory whose code imports ``cfnresponse`` has ``cfnresponse.py`` in
-  it, and, when a template packages that directory, it is the root of the
+- every directory whose handler code imports ``cfnresponse`` has
+  ``cfnresponse.py`` in it, and, when a template packages that directory, it is the root of the
   ``CodeUri`` that does so (the root is what Lambda puts on ``sys.path``), and a
   ``BuildMethod: makefile`` recipe there copies the module into the artifact;
+- test code that imports it (``conftest.py``, ``test_*.py``, ``*_test.py``, or
+  anything under a ``tests``/``test`` directory) does so to exercise a vendored
+  copy, so it must sit in or below a directory that carries one; test code
+  never runs in Lambda, so it is not held to the ``CodeUri`` rules;
 - every ``cfnresponse.py`` is byte-identical to the canonical one, so a fix to one
   copy cannot silently miss another;
 - no dependency manifest names it outside a comment, in any spelling pip would
@@ -125,7 +129,17 @@ def _importing_files() -> list[Path]:
     return found
 
 
-IMPORTERS = _importing_files()
+def _is_test_code(path: Path) -> bool:
+    """Whether pytest, not Lambda, is what runs this file."""
+    name = path.name
+    if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
+        return True
+    return bool({"tests", "test"} & set(path.relative_to(REPO).parts[:-1]))
+
+
+ALL_IMPORTERS = _importing_files()
+IMPORTERS = [p for p in ALL_IMPORTERS if not _is_test_code(p)]
+TEST_IMPORTERS = [p for p in ALL_IMPORTERS if _is_test_code(p)]
 COPIES = [p for p in FILES if p.name == f"{MODULE}.py"]
 
 
@@ -207,6 +221,22 @@ def test_every_packaged_importer_is_at_the_root_of_its_code_uri():
 
 
 MAKEFILE_COPIES = re.compile(r"\bcp\b[^\n]*(\*\.py|cfnresponse\.py)")
+
+
+def test_test_code_imports_only_a_vendored_copy():
+    """A test that imports ``cfnresponse`` is exercising a vendored copy, so one
+    must sit in its directory or an ancestor; otherwise the import can only be
+    satisfied by an installed distribution."""
+    unvendored = []
+    for path in TEST_IMPORTERS:
+        chain = [path.parent, *path.parent.parents]
+        chain = chain[: chain.index(REPO) + 1] if REPO in chain else chain
+        if not any((d / f"{MODULE}.py").is_file() for d in chain):
+            unvendored.append(_rel(path))
+    assert not unvendored, (
+        f"these test files import {MODULE} with no vendored copy in or above "
+        f"their directory: {unvendored}"
+    )
 
 
 def test_every_vendored_copy_is_byte_identical_to_the_canonical_one():
