@@ -214,13 +214,22 @@ def test_every_packaged_importer_is_at_the_root_of_its_code_uri():
             wrong.append(f"{_rel(path)} (CodeUri {_rel(nearest)})")
             continue
         makefile = nearest / "Makefile"
-        if makefile.is_file() and not MAKEFILE_COPIES.search(makefile.read_text()):
+        if makefile.is_file() and not _makefile_copies(makefile.read_text()):
             wrong.append(f"{_rel(makefile)} does not copy {MODULE}.py")
     assert packaged >= 2, "no importer is packaged by any template; check discovery"
     assert not wrong, wrong
 
 
 MAKEFILE_COPIES = re.compile(r"\bcp\b[^\n]*(\*\.py|cfnresponse\.py)")
+
+
+def _makefile_copies(text: str) -> bool:
+    """Whether a recipe line, not a comment, copies the module."""
+    return any(
+        MAKEFILE_COPIES.search(line)
+        for line in text.splitlines()
+        if not line.lstrip().lstrip("@").startswith("#")
+    )
 
 
 def test_test_code_imports_only_a_vendored_copy():
