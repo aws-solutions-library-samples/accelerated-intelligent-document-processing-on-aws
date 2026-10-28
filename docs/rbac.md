@@ -49,7 +49,8 @@ nothing at all.
 | `getTestSetDocuments` | The documents and label state of an assigned set |
 | `estimateReviewEffort` | The "what your review is buying" panel in the workspace |
 | `reextractTestSetDocument` | Re-run extraction after correcting a document's class |
-| `claimReview` / `releaseReview` / `completeSectionReview` | Claim a document and save corrected labels |
+| `claimReview` / `releaseReview` / `completeSectionReview` | Claim a document and apply corrected labels |
+| `saveTestSetDocumentSection` / `saveTestSetDocumentSectionDraft` | Apply labels to authored ground truth; save a section's changes as a draft, which is not reviewed and starts nothing |
 | `listInboxMessages` and the other Inbox operations | Their own Inbox messages and mute settings (every role has an Inbox) |
 
 Everything else in Test Studio — creating sets, publishing versions, generating
@@ -102,9 +103,12 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     item the caller doesn't hold; saving and the dispositions need the claim.
   - `listMyTestSetTasks` and the Test Studio annotation operations for the test sets
     in its `allowedTestSets`. A test-set save, made with `updateTestSetDocumentSections`,
-    `completeSectionReview` or `saveTestSetDocumentSection` (documents with no review
-    copy, such as authored ground truth), and a `skipTestSetDocument`, are accepted
-    only from the document's assignee; Admins and Authors are exempt.
+    `completeSectionReview`, `saveTestSetDocumentSection` (documents with no review
+    copy, such as authored ground truth) or `saveTestSetDocumentSectionDraft` (a draft,
+    which is not reviewed and starts nothing), and a `skipTestSetDocument`, are
+    accepted only from the document's assignee; Admins and Authors are exempt. An
+    Author is refused a draft of a document with a review copy, whose completion
+    (`completeSectionReview`) excludes Authors.
   - The `ANY_GROUP` operations every role gets: its own profile, the Inbox and
     document reads.
 - **What is Admin-only.**
@@ -134,14 +138,18 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   navigation, with their **Inbox**, and the notifications bell; the Inbox operations
   are `ANY_GROUP`, scoped to the caller's own messages. A user in `Annotator` also
   has **Tasks** and **Queues** under Home, and a user whose only app group is
-  `Annotator` sees exactly that: Home (Inbox, Tasks and Queues). **HITL ›
-  Queue Management** is Admin-only.
+  `Annotator` sees exactly that: Home (Inbox, Tasks and Queues), plus a document's
+  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to;
+  the rest of the documents app isn't routed for them. **HITL › Queue Management** is
+  Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
   `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
   Annotators.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
-  are in a production review queue (`QUEUE_MANAGED`).
+  are in a production review queue (`QUEUE_MANAGED`), and `uploadDocument` refuses a
+  section result of such a document (`<document>/sections/<id>/result.json` in the
+  Output bucket).
 - **Residual access.** Like every role, an Annotator can call `getDocument` and
   read document objects through the identity pool's S3 grants, for keys it knows.
   The review pages are a convenience, not the security boundary.
@@ -533,7 +541,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 126 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 127 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -799,14 +807,16 @@ enforcement itself is Layer 2.
 | `updatePricing`, `restoreDefaultPricing` | Admin |
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
 | `deleteDocument`, `updateConfiguration`, `setActiveVersion` | Admin, Author |
-| `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author |
+| `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author. `uploadDocument` refuses a section result of a document in a review queue (`QUEUE_MANAGED`) |
 | `addTestSet`, `addDocumentsToTestSet`, `listBucketFiles` (import by file pattern searches a whole bucket, so it is not offered to Authors) | Admin |
 | `startTestRun`, `addTestSetFromUpload`, `createEmptyTestSet`, `deleteTests`, `deleteTestSets` | Admin, Author |
 | `addDocumentsToTestSetFromUpload`, `addDocumentsToTestSetByKey` (exact document keys, each checked against the caller's configuration-profile scope before anything is copied; not a bucket search), `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
 | `syncBdaIdp`, `uploadDiscoveryDocument`, `deleteDiscoveryJob`, `autoDetectSections` | Admin, Author |
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
-| `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
+| `processChanges`, `skipAllSectionsReview` | Admin, Reviewer |
+| `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a test-set document assigned to them) |
+| `saveTestSetDocumentSection`, `saveTestSetDocumentSectionDraft`, `skipTestSetDocument`, `updateTestSetDocumentSections` | Admin, Author, Annotator (an Annotator only for a document assigned to them; an Author drafts authored ground truth only) |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |

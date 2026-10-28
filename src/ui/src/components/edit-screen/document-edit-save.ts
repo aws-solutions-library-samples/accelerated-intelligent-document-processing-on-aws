@@ -7,12 +7,18 @@
 // entry. A reviewer-only caller (no Admin or Author role) saves the prediction through
 // saveSectionReviewEdits, which a Reviewer holding the document's review may call, and
 // doesn't save the baseline. Nothing is reprocessed.
-//
-// The Visual Document Editor modal keeps its own copy of this logic until it is retired.
 import { generateClient } from '../../api/client-shim';
 import { saveSectionReviewEdits, uploadDocument } from '../../graphql/generated';
+import { reviewErrorCode } from '../review-queues/review-api';
 
 const client = generateClient();
+
+/**
+ * What a direct save shows when the server refuses it because the document went into a
+ * review queue after the page opened (`QUEUE_MANAGED`).
+ */
+export const IN_REVIEW_SAVE_REFUSED =
+  "This document is now in a review queue, so it can't be edited here. Reload the page to work on it in its queue.";
 
 export interface FieldChange {
   original: unknown;
@@ -170,14 +176,20 @@ export const saveDirectSectionEdits = async ({
   let savedPrediction = prediction;
   if (predictionChanges.size > 0) {
     savedPrediction = withEntry(prediction, entry);
-    if (reviewerOnly) {
-      const response = await client.graphql({
-        query: saveSectionReviewEdits,
-        variables: { objectKey, sectionId, editedData: JSON.stringify(savedPrediction) },
-      });
-      if (!response?.data?.saveSectionReviewEdits) throw new Error('saveSectionReviewEdits returned no data');
-    } else {
-      await uploadJson(bucket, key, savedPrediction);
+    try {
+      if (reviewerOnly) {
+        const response = await client.graphql({
+          query: saveSectionReviewEdits,
+          variables: { objectKey, sectionId, editedData: JSON.stringify(savedPrediction) },
+        });
+        if (!response?.data?.saveSectionReviewEdits) throw new Error('saveSectionReviewEdits returned no data');
+      } else {
+        await uploadJson(bucket, key, savedPrediction);
+      }
+    } catch (err) {
+      // The baseline is not written after a refusal: the save stops here.
+      if (reviewErrorCode(err) === 'QUEUE_MANAGED') throw new Error(IN_REVIEW_SAVE_REFUSED);
+      throw err;
     }
   }
 

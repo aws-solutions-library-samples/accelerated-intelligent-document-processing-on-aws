@@ -10525,3 +10525,339 @@ class TestTestSetQueueClaims:
             time_limit=5,
             only_if_unassigned=True,
         )
+
+
+# ---------------------------------------------------------------- section drafts
+
+
+@pytest.fixture
+def drafts_env(labeling_env):
+    """An authored-ground-truth document of set ``ts1``, assigned to an Annotator.
+
+    Real (moto) S3, tracking table and HITLTable, so what a draft touches is read
+    back from what was stored. The resolver's lazy clients are reset so they bind to
+    this fixture's moto backend.
+    """
+    from idp_common import testset_scope
+
+    table, s3 = labeling_env
+    test_set_index._test_set_labels = None
+    test_set_index._tracking_table = None
+    testset_scope.clear_scope_cache()
+    _seed_test_set(table, "ts1", QueueEligibleAnnotators=["ann@example.com"])
+    store = DocStore(
+        boto3.resource("dynamodb", region_name="us-east-1").Table("hitl-table")
+    )
+    label = {
+        "inference_result": {"total": "1"},
+        "labelSource": "uploaded",
+        "explainability_info": {"total": {"confidence": 0.9}},
+    }
+    s3.put_object(
+        Bucket="test-set-bucket",
+        Key="ts1/baseline/a.pdf/sections/1/result.json",
+        Body=json.dumps(label).encode(),
+    )
+    s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"%PDF-1.4")
+    store.upsert_summary(
+        "ts1",
+        {
+            "objectKey": "a.pdf",
+            "inputKey": "ts1/input/a.pdf",
+            "labelSource": "uploaded",
+        },
+    )
+    store.assign("ts1", "a.pdf", "ann@example.com", assigned_by="admin", time_limit=5)
+    with patch.object(testset_scope, "get_allowed_test_sets", return_value=["ts1"]):
+        yield table, s3, store, label
+    test_set_index._test_set_labels = None
+    test_set_index._tracking_table = None
+    testset_scope.clear_scope_cache()
+
+
+def _draft_event(groups, email="ann@example.com", **args):
+    arguments = {
+        "testSetId": "ts1",
+        "objectKey": "a.pdf",
+        "sectionId": "1",
+        "data": json.dumps({"inference_result": {"total": "2"}}),
+        "baseRevision": 0,
+    }
+    arguments.update(args)
+    return {
+        "info": {"fieldName": "saveTestSetDocumentSectionDraft"},
+        "arguments": arguments,
+        "identity": {"claims": {"cognito:groups": list(groups), "email": email}},
+    }
+
+
+def _stored_label(s3):
+    body = s3.get_object(
+        Bucket="test-set-bucket", Key="ts1/baseline/a.pdf/sections/1/result.json"
+    )["Body"].read()
+    return json.loads(body)
+
+
+def _draft_keys(s3, prefix="ts1/drafts/"):
+    listed = s3.list_objects_v2(Bucket="test-set-bucket", Prefix=prefix)
+    return sorted(o["Key"] for o in listed.get("Contents", []))
+
+
+@pytest.mark.unit
+class TestSectionDrafts:
+    """saveTestSetDocumentSectionDraft, and drafts through the rest of a set's life."""
+
+    def test_an_admin_saves_a_draft_of_authored_ground_truth_and_nothing_else_moves(
+        self, drafts_env
+    ):
+        table, s3, store, label = drafts_env
+        before = store.get("ts1", "a.pdf")
+        result = test_set_index.handler(
+            _draft_event(["Admin"], "admin@example.com"), None
+        )
+        assert result["revision"] == 1
+        assert result["draftUri"].startswith(
+            "s3://test-set-bucket/ts1/drafts/a.pdf/sections/1/"
+        )
+        assert result["updatedBy"] == "admin@example.com"
+        # FR-21: the label, its provenance and the summary are untouched; no curve.
+        assert _stored_label(s3) == label
+        after = store.get("ts1", "a.pdf")
+        for field in ("reviewed", "labelSource", "reviewedSections", "updatedAt"):
+            assert after.get(field) == before.get(field), field
+        curve_rows = [
+            i for i in table.scan()["Items"] if str(i["PK"]).startswith("curve")
+        ]
+        assert curve_rows == []
+
+    def test_an_admin_saves_a_draft_of_a_review_copy_without_touching_the_review(
+        self, drafts_env
+    ):
+        table, s3, _store, _label = drafts_env
+        table.put_item(
+            Item={
+                "PK": "doc#run-1/a.pdf",
+                "SK": "none",
+                "HITLStatus": "Review In Progress",
+                "HITLSectionsPending": ["1"],
+            }
+        )
+        with (
+            patch.object(test_set_index, "_has_review_copy", return_value=True),
+            patch.object(test_set_index, "sqs_client", create=True) as sqs,
+        ):
+            test_set_index.handler(_draft_event(["Admin"], "admin@example.com"), None)
+        row = table.get_item(Key={"PK": "doc#run-1/a.pdf", "SK": "none"})["Item"]
+        assert row["HITLStatus"] == "Review In Progress"
+        assert row["HITLSectionsPending"] == ["1"]
+        sqs.send_message.assert_not_called()
+
+    def test_the_assigned_annotator_saves_a_draft(self, drafts_env):
+        result = test_set_index.handler(_draft_event(["Annotator"]), None)
+        assert result["revision"] == 1
+
+    def test_an_annotator_who_is_not_the_assignee_is_refused(self, drafts_env):
+        # The assignee check: the document is someone else's.
+        with pytest.raises(ValueError, match="assigned to ann@example.com"):
+            test_set_index.handler(
+                _draft_event(["Annotator"], "other@example.com"), None
+            )
+
+    def test_an_annotator_outside_the_set_is_refused(self, drafts_env):
+        from idp_common import testset_scope
+
+        testset_scope.clear_scope_cache()
+        with patch.object(testset_scope, "get_allowed_test_sets", return_value=["ts2"]):
+            with pytest.raises(testset_scope.TestSetAccessDenied, match="Unauthorized"):
+                test_set_index.handler(_draft_event(["Annotator"]), None)
+
+    def test_an_author_saves_a_draft_of_authored_ground_truth(self, drafts_env):
+        result = test_set_index.handler(
+            _draft_event(["Author"], "au@example.com"), None
+        )
+        assert result["revision"] == 1
+
+    def test_an_author_is_refused_a_document_with_a_review_copy(
+        self, drafts_env, caplog
+    ):
+        _table, s3, _store, _label = drafts_env
+        with (
+            patch.object(test_set_index, "_has_review_copy", return_value=True),
+            caplog.at_level("WARNING"),
+        ):
+            with pytest.raises(test_set_index.ResourceAccessDenied):
+                test_set_index.handler(_draft_event(["Author"], "au@example.com"), None)
+        assert "Denied" in caplog.text
+        assert _draft_keys(s3) == []
+
+    @pytest.mark.parametrize("group", ["Reviewer", "Viewer"])
+    def test_other_roles_are_refused_by_group(self, drafts_env, group):
+        with pytest.raises(Exception, match="Unauthorized"):
+            test_set_index.handler(_draft_event([group], "x@example.com"), None)
+
+    def test_a_stale_base_revision_is_refused(self, drafts_env):
+        test_set_index.handler(_draft_event(["Annotator"]), None)
+        with pytest.raises(ValueError, match="STALE_DRAFT"):
+            test_set_index.handler(_draft_event(["Annotator"], baseRevision=0), None)
+
+    @pytest.mark.parametrize(
+        "args, error",
+        [
+            ({"data": "x" * 2_000_001}, ValueError),
+            ({"data": json.dumps(["not", "an", "object"])}, ValueError),
+            ({"sectionId": "../1"}, ValueError),
+            ({"sectionId": "2"}, test_set_index.ResourceNotFound),
+        ],
+        ids=["oversize", "not-an-object", "bad-id", "no-label"],
+    )
+    def test_bad_drafts_are_refused_with_the_right_error(self, drafts_env, args, error):
+        with pytest.raises(error):
+            test_set_index.handler(
+                _draft_event(["Admin"], "admin@example.com", **args), None
+            )
+
+    def test_the_annotation_queue_returns_the_drafts(self, drafts_env):
+        test_set_index.handler(_draft_event(["Annotator"]), None)
+        queue = test_set_index.get_annotation_queue(
+            {"testSetId": "ts1"}, _caller("ann@example.com", "Annotator")
+        )
+        entry = next(d for d in queue["documents"] if d["objectKey"] == "a.pdf")
+        assert [d["sectionId"] for d in entry["draftSections"]] == ["1"]
+        assert entry["draftSections"][0]["revision"] == 1
+        one = test_set_index.get_annotation_queue(
+            {"testSetId": "ts1", "objectKey": "a.pdf"},
+            _caller("ann@example.com", "Annotator"),
+        )
+        assert one["documents"][0]["draftSections"][0]["draftUri"].startswith(
+            "s3://test-set-bucket/ts1/drafts/"
+        )
+
+    def test_saving_the_section_applies_and_deletes_its_draft(self, drafts_env):
+        _table, s3, store, _label = drafts_env
+        test_set_index.handler(_draft_event(["Annotator"]), None)
+        result = test_set_index.save_test_set_document_section(
+            {
+                "testSetId": "ts1",
+                "objectKey": "a.pdf",
+                "sectionId": "1",
+                "data": json.dumps({"inference_result": {"total": "2"}}),
+            },
+            _caller("ann@example.com", "Annotator"),
+        )
+        assert result["reviewed"] is True
+        assert _draft_keys(s3) == []
+        assert store.get("ts1", "a.pdf")["sectionDrafts"] == []
+        # D24: the authored path now records field diffs.
+        entry = _stored_label(s3)["_editHistory"][-1]
+        assert entry["source"] == "test-set-annotation"
+        assert entry["baselineEdits"]["diffs"]["total"] == {
+            "originalValue": "1",
+            "newValue": "2",
+        }
+
+    def test_skip_keeps_the_drafts(self, drafts_env):
+        _table, s3, store, _label = drafts_env
+        test_set_index.handler(_draft_event(["Annotator"]), None)
+        test_set_index.skip_test_set_document(
+            {"testSetId": "ts1", "objectKey": "a.pdf", "reason": "Out of time"},
+            _caller("ann@example.com", "Annotator"),
+        )
+        assert len(_draft_keys(s3)) == 1
+        assert [
+            d["section_id"] for d in store.get("ts1", "a.pdf")["sectionDrafts"]
+        ] == ["1"]
+
+    def test_a_regroup_moves_drafts_and_drops_a_removed_sections(self, drafts_env):
+        _table, s3, store, _label = drafts_env
+        for sid, (cls, pages) in {"1": ("W2", [0]), "2": ("Paystub", [1])}.items():
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/a.pdf/sections/{sid}/result.json",
+                Body=json.dumps(
+                    {
+                        "inference_result": {"n": sid},
+                        "document_class": {"type": cls},
+                        "split_document": {"page_indices": pages},
+                    }
+                ).encode(),
+            )
+        for sid in ("1", "2"):
+            test_set_index.handler(
+                _draft_event(
+                    ["Admin"],
+                    "admin@example.com",
+                    sectionId=sid,
+                    data=json.dumps({"inference_result": {"n": f"draft-{sid}"}}),
+                ),
+                None,
+            )
+        # Section 2's pages now come first (it becomes section 1); section 1 is merged away.
+        test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "a.pdf",
+                    "sections": [
+                        {
+                            "sectionId": "2",
+                            "documentClass": "Invoice",
+                            "pageIndices": [0, 1],
+                        }
+                    ],
+                }
+            }
+        )
+        drafts = store.get("ts1", "a.pdf")["sectionDrafts"]
+        assert [d["section_id"] for d in drafts] == ["1"]
+        moved = json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=drafts[0]["s3_key"])[
+                "Body"
+            ].read()
+        )
+        assert moved["inference_result"] == {"n": "draft-2"}
+        assert moved["split_document"]["page_indices"] == [0, 1]
+        assert moved["document_class"]["type"] == "Invoice"
+        assert _draft_keys(s3) == [drafts[0]["s3_key"]]
+
+    def test_removing_the_document_deletes_its_drafts(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        test_set_index.handler(_draft_event(["Annotator"]), None)
+        with patch.object(
+            test_set_index,
+            "_validate_test_set_files",
+            return_value={"input_files": [], "baseline_files": []},
+        ):
+            try:
+                test_set_index.remove_documents_from_test_set(
+                    {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+                )
+            except Exception:  # noqa: BLE001 — only the drafts are asserted here
+                pass
+        assert _draft_keys(s3) == []
+
+    def test_the_label_lifecycle_paths_read_baseline_only(self):
+        """Publish, the snapshot, Re-extract, Clear draft labels and Reset labels
+        address ``baseline/``; none of them names the drafts prefix, so drafts are
+        neither versioned nor deleted by them (D23)."""
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        for name in (
+            "_snapshot_baselines",
+            "publish_test_set_version",
+            "reextract_test_set_document",
+            "clear_draft_labels",
+            "reset_test_set_labels",
+        ):
+            at = source.index(f"def {name}(")
+            end = source.find("\ndef ", at + 1)
+            body = source[at:end]
+            assert "/drafts/" not in body and "drafts/" not in body, name
+            assert "baseline" in body, name
+
+    def test_summaries_ignore_drafts(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        from idp_common.review_queues.testset_summaries import summarize_document
+
+        before = summarize_document(s3, "test-set-bucket", "ts1", "a.pdf")
+        test_set_index.handler(_draft_event(["Annotator"]), None)
+        after = summarize_document(s3, "test-set-bucket", "ts1", "a.pdf")
+        assert after == before

@@ -17,9 +17,10 @@ import mapDocumentsAttributes from '../common/map-document-attributes';
 import { submitProcessChanges } from '../common/process-changes';
 import { isInReviewQueue } from '../common/review-status';
 import { saveDirectSectionEdits } from './document-edit-save';
-import { fetchSectionResult } from './production-item-edit-adapter';
+import { fetchSectionResult } from './section-result';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { SectionEvaluation } from './use-section-evaluation';
+import type { RawDocument } from './use-edit-mode';
 
 const client = generateClient();
 const logger = new ConsoleLogger('DocumentEditAdapter');
@@ -58,12 +59,20 @@ export interface DocumentEditModel {
   reviewerOnly: boolean;
 }
 
-export const useDocumentEdit = (objectKey: string): DocumentEditModel => {
+const mapDocument = (raw: RawDocument): DirectEditDocument =>
+  mapDocumentsAttributes([raw as unknown as { ObjectKey: string }])[0] as unknown as DirectEditDocument;
+
+/**
+ * `seed`: the document as the edit page has just read it (to choose the mode), so the
+ * first read is not repeated.
+ */
+export const useDocumentEdit = (objectKey: string, seed?: { document: RawDocument }): DocumentEditModel => {
   const { user } = useAppContext();
   const { settings } = useSettingsContext();
   const { isReviewerOnly, canReview, canWrite } = useUserRole();
-  const [document, setDocument] = useState<DirectEditDocument | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [document, setDocument] = useState<DirectEditDocument | null>(() => (seed ? mapDocument(seed.document) : null));
+  const [loading, setLoading] = useState(!seed);
+  const seeded = useRef(!!seed);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Each section's result as loaded or last saved: what an edit is compared with.
   const originals = useRef<Record<string, Record<string, unknown>>>({});
@@ -79,8 +88,7 @@ export const useDocumentEdit = (objectKey: string): DocumentEditModel => {
         setLoadError('NOT_FOUND');
         return;
       }
-      const [mapped] = mapDocumentsAttributes([raw as unknown as { ObjectKey: string }]);
-      setDocument(mapped as unknown as DirectEditDocument);
+      setDocument(mapDocument(raw));
       setLoadError(null);
     } catch (err) {
       logger.error('getDocument failed', err);
@@ -92,6 +100,11 @@ export const useDocumentEdit = (objectKey: string): DocumentEditModel => {
 
   useEffect(() => {
     originals.current = {};
+    // A seeded document is already read.
+    if (seeded.current) {
+      seeded.current = false;
+      return;
+    }
     void reload();
   }, [reload]);
 

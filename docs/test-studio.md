@@ -653,9 +653,11 @@ Click a COMPLETED test set's name in the table (or select it and click
 input documents with a first-page thumbnail preview, size, last-modified
 time, and ground-truth section count. Thumbnails are rendered lazily in the
 browser as rows scroll into view (for PDFs only the byte ranges needed for
-page 1 are fetched, so large packets stay cheap). Each document name links
-to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
-mirroring the app's Document List → Document Details structure.
+page 1 are fetched, so large packets stay cheap). Each document name opens the
+document's Test Studio item (`#/review-queues/test-sets/<id>/items/<document>`), the
+edit page where its ground truth is read and edited. An older document link,
+`#/test-studio/sets/<id>/doc/<document>`, opens the same item (with `?view=source`
+kept).
 
 The search box above the table searches the **whole set**, not the page on screen,
 so a document several pages along is found from page 1. Pagination then runs over
@@ -672,22 +674,24 @@ acts on the set as a whole, while **Add documents**, **Generate draft labels**,
 **Edit ground truth**, **Clear draft labels** and **Remove** sit above the document list and
 act on its documents. See [Publishing a version](#publishing-a-version).
 
-The document detail page offers two views:
+A document's Test Studio item is the same edit page as a production review item:
 
-- **View Source Document** — the original PDF or image rendered inline.
-- **Edit Ground Truth** (read-only for non-Admin/Author roles) — a visual
-  editor with the document's page images on the left and an editable form
-  over the baseline's `inference_result` on the right, plus a raw JSON tab.
-  Multi-section baselines get a section selector that also scopes the page
-  images to that section's `split_document.page_indices`; when a baseline
-  carries `explainability_info` geometry (created via **Copy to Baseline**),
-  focusing a field highlights its bounding box on the page image. The page
-  images carry **Zoom**, **Pan** and **Rotate** controls — rotate turns the
-  page in 90° steps for a sideways or upside-down scan, re-fitting it to the
-  panel and carrying any bounding-box highlight around with it. Rotation
-  applies to every page you then navigate to, and **Reset View** clears it
-  along with zoom and pan. Saves write back to the section's
-  `baseline/.../result.json` and append an `_editHistory` provenance entry.
+- **Edit | View** switches between the ground-truth editor and the original PDF or
+  image.
+- The editor shows the document's page images on the left and an editable form over
+  the baseline's `inference_result` on the right, plus a raw JSON tab. A
+  multi-section baseline has a **Section** dropdown that also scopes the page images
+  to that section's `split_document.page_indices`; when a baseline carries
+  `explainability_info` geometry (created via **Copy to Baseline**), focusing a field
+  highlights its bounding box on the page image. The page images carry **Zoom**,
+  **Pan** and **Rotate** controls — rotate turns the page in 90° steps for a
+  sideways or upside-down scan, re-fitting it to the panel and carrying any
+  bounding-box highlight around with it. Rotation applies to every page you then
+  navigate to, and **Reset View** clears it along with zoom and pan.
+- Every save goes through the server, which records an `_editHistory` provenance
+  entry (who, when, which fields changed). An Author edits a document whose labels
+  are authored ground truth; a document with a review copy (draft labels from the
+  pipeline) is reviewed by Admins and Annotators, and is view-only for an Author.
 
 Note: page images are rendered in the browser from the source document
 (test set documents are unprocessed, so no pipeline page images exist).
@@ -969,8 +973,15 @@ rest of the set does not. Search is not page-scoped — it runs over the whole
 set — and the table says which of the two is which whenever the page is not the
 whole set.
 
-Reviewing a draft label is the same **Edit Ground Truth** flow described above;
-saving flips the label to *Reviewed*. Once enough of the set is
+Reviewing a draft label happens on the document's Test Studio item, described
+above; **Process Changes** flips the label to *Reviewed*.
+
+**Saved changes are drafts until Process Changes.** A draft is stored under
+`<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
+published version or a test run, and the label, the queue's progress and the
+confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
+**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
+Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
@@ -1139,7 +1150,8 @@ documents.
 
 Create one from **User Management**: set the persona to `Annotator` and assign the
 test set(s), then share the queue link
-(`#/test-studio/sets/<test-set-id>/annotate`). You can copy that link from the
+(`#/review-queues/test-sets/<test-set-id>`; an older
+`#/test-studio/sets/<test-set-id>/annotate` link opens it too). You can copy that link from the
 **Copy queue link** button on the queue itself, or open the queue for any set via
 **Actions → Edit ground truth**.
 
@@ -1165,25 +1177,17 @@ The queue page shows:
   missed by 2 points or 40 — and it reflects the actual effort in a document,
   which a single lowest score does not. Each card also shows the label source. A
   document claimed by someone else is greyed out and names who has it.
-- **The ground-truth editor** — the same editor used everywhere else in Test
-  Studio, with the page images, per-field confidence, the JSON tab, and the
-  revision history.
-- **Save & next in queue** — saves the correction and moves straight to the next
-  available document, without waiting for the queue to be re-read.
-- **Multi-section documents take more than one save.** A document is marked
-  reviewed once **every** one of its sections carries a human verdict, so a save
-  records the section you were working on and then moves to the next *document* —
-  it does not walk the remaining sections of the one you were in. The
-  confirmation says how many sections the document has, and the document stays in
-  the queue until they are all done; reopen it from the queue rail to work the
-  rest, using the section tabs above the editor. (The set's own document table
-  shows the same thing as **Awaiting review** in its Review state column.)
-- **Labels are correct — mark reviewed** covers a whole document at once: it
-  submits every section unchanged. ⚠️ That is a verdict on *all* of them — each
-  one is tagged human-reviewed, becomes ground truth protected from re-labeling,
-  and is fed to the calibration curve as a correct-at-this-confidence signal — so
-  use it when you have actually looked at every section, not as a shortcut past
-  the ones you have not opened.
+- **Each document opens on its Test Studio item** — the edit page, with the page
+  images, per-field confidence, the JSON tab and the history.
+- **A document is reviewed once every one of its sections is.** **Process
+  Changes** applies every section — your saved changes where you made some, the
+  labels as they are otherwise — and leaves only when the server counts the
+  document reviewed; if it does not yet, the page stays and says so. (The set's own
+  document table shows a part-reviewed document as **Awaiting review** in its Review
+  state column.) ⚠️ That is a verdict on *all* the sections — each one is tagged
+  human-reviewed, becomes ground truth protected from re-labeling, and is fed to the
+  calibration curve as a correct-at-this-confidence signal — so choose it when you
+  have actually looked at every section.
 - **Show reviewed documents** — the **Assigned** and **Not assigned** filters leave
   out reviewed work, so this switches back to **All documents**: the way back to a
   document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
@@ -1194,11 +1198,12 @@ production review items), so finishing a long document does not mean scrolling p
 every field to reach them: **Edit | View**, **Reports** (**History**, **Processing
 Report**), **More Actions** (**Edit Page Class**), **Skip**, **Cancel**, **Save** and
 **Process Changes**, or the view switch, **Reports** and **Claim** for an Annotator
-viewing an unassigned document. **Save** saves the open
-section, which marks it reviewed (switching sections saves it too), and **Process
-Changes** saves the open section, confirms the rest and re-runs evaluation and
-summarization on the document's review copy (OCR, classification and extraction are
-not repeated). Authored ground truth has no review copy, so for it **Process Changes**
+viewing an unassigned document. **Save** keeps the open section's changes as a
+draft, which is not reviewed: you, a later session or the next assignee after a
+**Skip** open the document with it, and switching sections with unsaved changes asks
+first. **Process Changes** saves the open section's changes, applies every section's
+draft (the rest as they are) and re-runs evaluation and summarization on the
+document's review copy (OCR, classification and extraction are not repeated). Authored ground truth has no review copy, so for it **Process Changes**
 only marks the labels reviewed. The title is the document's name with its status (**To review**,
 **Reviewed** or **Skipped**), and the **Document Editor** panel has a **Section**
 dropdown at its top left. The notices share one alert.
@@ -1581,8 +1586,9 @@ The abort then waits for the run's documents to reach a final status. A document
 **Diagnosing a low-scoring document.** Opening a document from *Documents with
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
-next to its Class/Type value — hover it for the expected class. The Visual
-Editor ("View Data") shows the section's class comparison as soon as it opens,
+next to its Class/Type value — hover it for the expected class. The edit page
+(**Edit Data**, or **View Data** for a read-only role) shows the section's class
+comparison in its **Visual Editor** tab as soon as it opens,
 without needing the **Show Evaluation** toggle, which adds the per-field
 comparison. Check the class before reading the extraction scores: a misclassified
 page was extracted against the wrong schema, so its low score is a symptom

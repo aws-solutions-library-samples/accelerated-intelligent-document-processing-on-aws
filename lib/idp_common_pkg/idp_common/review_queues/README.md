@@ -40,6 +40,8 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `finalize.py` | The finalize token, `FinalizeSender` and `apply_corrections` |
 | `status_object.py` | Writing and deleting `<document>/review/status.json` |
 | `notify.py` | Inbox messages (`review.*` notification types); never raises |
+| `testset_labels.py` | `TestSetLabels`: the one writer of a reviewed Test Studio label (`write_reviewed`: `labelSource = reviewed-human`, the `_editHistory` entry with field diffs, capped at `MAX_EDIT_HISTORY_ENTRIES`, the confidence-curve observations, the section's draft deleted), and section drafts (save, list, delete, move). Used by `test_set_resolver` and `complete_section_review` |
+| `section_writes.py` | `assert_section_result_writable`: refuses (`QUEUE_MANAGED`) a direct write of `<document>/sections/<id>/result.json` to the Output bucket while the document is in review, reading its tracking row. Used by `uploadDocument` (`upload_resolver`) |
 | `sweeper.py` | `ReviewSweeper`: assignment reminders and self-healing, run every 5 minutes |
 | `api_models.py` | The camelCase API views and argument models |
 | `testset_summaries.py` | Computing a Test Studio document's summary from its labels in S3 (label source, alert and field counts, the weakest confidence and its threshold, classes, sections) for one document, one page, or a whole set (`summarize_test_set`, which lists `input/` and `baseline/` once each). Used by the test-set resolver and, for whole sets, by `TestSetFileCopierFunction` |
@@ -214,6 +216,41 @@ bytes) and records it as `DRAFT#<cycle>#<section>` with the changed field paths.
 unassignment, reassignment, take-over and move. The `review/` segment is
 not part of any run manifest and is deleted by Reprocess.
 
+## Test Studio labels and drafts
+
+`testset_labels.TestSetLabels` writes a Test Studio document's labels. Both
+`saveTestSetDocumentSection` (authored ground truth) and `completeSectionReview` (a
+document with a review copy) call `write_reviewed`, so a reviewed label always carries
+the same provenance: `labelSource = reviewed-human`, an `_editHistory` entry naming the
+editor, the source and the changed fields (`field_diffs`, the flattening the curve
+uses; the trail keeps the newest `MAX_EDIT_HISTORY_ENTRIES`), and the curve
+observations (`record_curve_observations`, only when the replaced label carries
+confidences). The handlers keep the summary, count and HITL bookkeeping;
+`saveTestSetDocumentSection` also ends the assignment once every section is reviewed.
+
+A **section draft** is a section's saved edits that are not reviewed and start nothing
+(`saveTestSetDocumentSectionDraft`):
+
+- **Where:** `<testSetId>/drafts/<objectKey>/sections/<sectionId>/<revision:06d>-<suffix>.json`
+  in the TestSetBucket (each write has its own object), indexed by a top-level
+  `Draft#<sectionId>` map on the document's `TSDOC` item (`Revision`, `S3Key`,
+  `UpdatedAt`, `UpdatedBy`; `keys.tsdoc_draft_attr`). `TestSetDocStore.view` lists them
+  as `sectionDrafts`, and `getAnnotationQueue` returns them as `draftSections`.
+- **Writes:** `save_draft` writes the object, then a conditional `UpdateItem` on the
+  revision the editor last loaded (`baseRevision`); a stale write fails `STALE_DRAFT`
+  and its object is deleted, and a successful one deletes the previous revision's.
+  It refuses `BAD_ARGUMENT`, `DRAFT_TOO_LARGE` (over `MAX_SECTION_LABEL_BYTES`),
+  `NOT_IN_SET` and `NO_LABEL`. The label, the summary fields (`Reviewed`,
+  `LabelSource`, `ReviewedSections`, `UpdatedAt`), the queue counts and the curve are
+  untouched.
+- **Lifecycle:** `write_reviewed` deletes the section's draft; `move_drafts` makes
+  drafts follow their sections through a regroup, rewriting each draft's
+  `split_document.page_indices` and `document_class.type`, and drops a removed
+  section's; `delete_document_drafts` runs when a document is removed from the set.
+  Skip, Re-extract, Clear draft labels and Reset labels keep drafts. Publishing, the
+  version snapshot, test runs, the content signature and the summaries read
+  `baseline/` only.
+
 ## Dispositions and durable finalize
 
 | Operation | Who | Effect |
@@ -258,8 +295,10 @@ this release: arrivals in a queue are announced to nobody (`QueueDirectory.membe
 returns no recipients) and assignments do not expire. Admins see waiting work in
 Queue Management, whose counts (pending, assigned, in progress, annotators) come from
 `getReviewQueuesOverview` for production queues and from the test sets' metadata
-(`store_assigned_count`) for Test Studio queues. Links point at
-`#/review-queues/items/<encoded key>` (`review_item_link`).
+(`store_assigned_count`) for Test Studio queues. Links point at the document's edit
+page, `/documents/<encoded key>/edit` (`idp_common.notifications.links.document_edit_link`),
+which opens the item while the document is in review. The UI redirects an older
+`/review-queues/items/<encoded key>` link there, keeping its query.
 
 ## Review status contract
 

@@ -859,3 +859,109 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         # Still names neither the refused profile nor the caller's scope.
         assert "default" not in message
         assert "teamA" not in message
+
+
+TRACKING = "tracking-table"
+OUTPUT = "output-bucket"
+SECTION = {"fileName": "result.json", "prefix": "in/a b.pdf/sections/1", "bucket": OUTPUT}
+
+
+@pytest.fixture
+def guarded(resolver, monkeypatch):
+    """The resolver with an Output bucket and a tracking table, for section results."""
+    _, s3 = resolver
+    monkeypatch.setenv("OUTPUT_BUCKET", OUTPUT)
+    monkeypatch.setenv("TRACKING_TABLE", TRACKING)
+    s3.create_bucket(Bucket=OUTPUT)
+    table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName=TRACKING,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    import index
+
+    importlib.reload(index)
+    yield index, table
+
+
+def _tracking_row(table, status):
+    # The key shape complete_section_review reads. The resolver replaces spaces in the
+    # file name only, so the document is the prefix as given.
+    table.put_item(Item={"PK": "doc#in/a b.pdf", "SK": "none", "HITLStatus": status})
+
+
+@pytest.mark.unit
+class TestASectionResultUnderReviewIsRefused:
+    def test_an_in_review_document_is_refused_and_no_url_is_minted(
+        self, guarded, monkeypatch
+    ):
+        index, table = guarded
+        _tracking_row(table, "in_review")
+        minted = []
+        monkeypatch.setattr(
+            index.s3_presign_client,
+            "generate_presigned_post",
+            lambda **kw: minted.append(kw) or {},
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            index.handler(_event("uploadDocument", SECTION))
+
+        assert str(excinfo.value).startswith("QUEUE_MANAGED:")
+        assert minted == []
+
+    @pytest.mark.parametrize("status", ["complete", "rejected", "REVIEW_COMPLETED"])
+    def test_a_finished_or_legacy_review_gets_its_url(self, guarded, status):
+        index, table = guarded
+        _tracking_row(table, status)
+
+        result = index.handler(_event("uploadDocument", SECTION))
+
+        assert result["objectKey"] == "in/a b.pdf/sections/1/result.json"
+
+    def test_a_document_with_no_tracking_row_gets_its_url(self, guarded):
+        index, _ = guarded
+
+        assert index.handler(_event("uploadDocument", SECTION))["presignedUrl"]
+
+    def test_an_unset_tracking_table_refuses_section_results(
+        self, guarded, monkeypatch
+    ):
+        index, _ = guarded
+        monkeypatch.delenv("TRACKING_TABLE")
+        importlib.reload(index)
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(_event("uploadDocument", SECTION))
+
+        assert str(excinfo.value).startswith("Unauthorized")
+
+    def test_a_tracking_read_failure_raises(self, guarded, monkeypatch):
+        from botocore.exceptions import ClientError
+
+        index, _ = guarded
+
+        def fail(**_kw):
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceeded"}}, "GetItem")
+
+        monkeypatch.setattr(index._tracking_table, "get_item", fail)
+
+        with pytest.raises(ClientError):
+            index.handler(_event("uploadDocument", SECTION))
+
+    def test_other_keys_and_buckets_are_unaffected(self, guarded):
+        index, table = guarded
+        _tracking_row(table, "in_review")
+
+        # A page of the same in-review document, in the Output bucket.
+        page = {"fileName": "result.json", "prefix": "in/a b.pdf/pages/1", "bucket": OUTPUT}
+        assert index.handler(_event("uploadDocument", page))["presignedUrl"]
+        # A document upload to the Input bucket.
+        assert index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))["presignedUrl"]

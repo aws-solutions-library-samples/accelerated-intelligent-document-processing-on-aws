@@ -14,7 +14,7 @@ import logging
 from typing import Any, Optional, Sequence
 
 from idp_common.notifications import notify
-from idp_common.notifications.links import encode_uri_component
+from idp_common.notifications.links import document_edit_link
 from idp_common.notifications.models import MAX_GROUPS, MAX_USERS
 
 from .models import QueueRef, ReviewItemRecord
@@ -22,11 +22,6 @@ from .models import QueueRef, ReviewItemRecord
 logger = logging.getLogger(__name__)
 
 SOURCE = "review-queues"
-
-
-def review_item_link(object_key: str) -> str:
-    """Byte parity with the UI's ``reviewItemHref``."""
-    return "/review-queues/items/" + encode_uri_component(object_key)
 
 
 def _basename(doc_key: str) -> str:
@@ -119,7 +114,7 @@ def item_reassigned(item: ReviewItemRecord, owner_email: str) -> None:
         type_id="review.item_reassigned",
         title=_basename(item.doc_key),
         body=f"An Admin assigned **{_basename(item.doc_key)}** in queue **{item.queue}** to you.",
-        link=review_item_link(item.doc_key),
+        link=document_edit_link(item.doc_key),
         users=[owner_email],
         idempotency_key=f"review-reassign:{item.cycle_id}#{item.version}",
     )
@@ -149,7 +144,7 @@ def claim_released(
         type_id="review.claim_released",
         title=f"{_basename(item.doc_key)}: claim released",
         body=body,
-        link=review_item_link(item.doc_key),
+        link=document_edit_link(item.doc_key),
         users=[former_owner_email],
         idempotency_key=f"review-release:{item.cycle_id}#{item.version}",
     )
@@ -162,7 +157,7 @@ def claim_expiring(item: ReviewItemRecord) -> None:
         type_id="review.claim_expiring",
         title=f"{_basename(item.doc_key)}: claim expiring",
         body="Your claim expires soon. Keep working on the item to renew it.",
-        link=review_item_link(item.doc_key),
+        link=document_edit_link(item.doc_key),
         users=[item.owner_email],
         dedupe_key=f"review-lease:{item.cycle_id}:{item.owner_key}",
         idempotency_key=f"review-lease-warn:{item.cycle_id}:{item.lease_expires_at_ms}",
@@ -176,7 +171,7 @@ def claim_expired(item: ReviewItemRecord) -> None:
         type_id="review.claim_expired",
         title=f"{_basename(item.doc_key)}: claim expired",
         body="Your claim expired and the item is back in its queue. Your draft is kept.",
-        link=review_item_link(item.doc_key),
+        link=document_edit_link(item.doc_key),
         users=[item.owner_email],
         dedupe_key=f"review-lease:{item.cycle_id}:{item.owner_key}",
         idempotency_key=f"review-lease-expired:{item.cycle_id}:{item.lease_expires_at_ms}",
@@ -194,7 +189,7 @@ def task_reminder(item: ReviewItemRecord) -> None:
             f"**{_basename(item.doc_key)}** in queue **{item.queue}** was assigned to "
             "you and is still open. Annotate and complete it from My Work › Tasks."
         ),
-        link=review_item_link(item.doc_key),
+        link=document_edit_link(item.doc_key),
         users=[item.owner_email],
         dedupe_key=f"review-task:{item.cycle_id}:{item.owner_key}",
         idempotency_key=f"review-task-reminder:{item.cycle_id}:{item.claimed_at_ms}",

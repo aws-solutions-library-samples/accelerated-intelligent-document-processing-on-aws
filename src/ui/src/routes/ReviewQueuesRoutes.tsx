@@ -1,30 +1,27 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// /review-queues: the edit screen for one item (Admin and Annotator; Inbox
-// notification links point here), each queue's page (Admin, and the Annotators listed
-// on it, who reach it from Home › Queues) and HITL › Queue Management (Admin only).
+// /review-queues: the edit page for one Test Studio document and a test set's queue
+// page (Admin, Annotator, and Author, who edits authored ground truth there), each
+// Production queue's page (Admin, and the Annotators listed on it, who reach it from Home › Queues)
+// and HITL › Queue Management (Admin only). A Production item's former route,
+// items/:objectKey, redirects to the document's edit page (/documents/:objectKey/edit),
+// which opens the item while the document is in review.
 import React, { useCallback, useState } from 'react';
-import { Navigate, Route, Routes, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
 
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
 import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
 import QueuesPage from '../components/review-queues/QueuesPage';
 import ReviewQueuePage from '../components/review-queues/ReviewQueuePage';
-import { documentName } from '../components/review-queues/review-api';
-import ProductionItemEdit from '../components/edit-screen/ProductionItemEdit';
-import type { ItemQueue } from '../components/edit-screen/ProductionItemEdit';
 import TestSetItemEdit from '../components/edit-screen/TestSetItemEdit';
-import type { ItemTestSet } from '../components/edit-screen/TestSetItemEdit';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
-import EditScreenToolsPanel from '../components/edit-screen/tools-panel';
 import { QueueManagementToolsPanel, QueueToolsPanel } from '../components/review-queues/tools-panel';
 import useUserRole from '../hooks/use-user-role';
 import RequireRole from './RequireRole';
-import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, productionQueuePath, testSetQueuePath } from './constants';
+import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditPath, productionQueuePath } from './constants';
 
-const MY_TASKS_CRUMB: BreadcrumbGroupProps.Item = { text: 'Tasks', href: `#${MY_TASKS_PATH}` };
 const MY_QUEUES_CRUMB: BreadcrumbGroupProps.Item = { text: 'Queues', href: `#${MY_QUEUES_PATH}` };
 
 /** A queue's page: Queue Management › <queue> for an Admin, Queues › <queue> for an Annotator (both under Home). */
@@ -35,50 +32,22 @@ const useQueueCrumbs = (queueCrumb: BreadcrumbGroupProps.Item) => {
 };
 
 /**
- * An item's breadcrumb has the same shape for every role: Home › <queue or test set> ›
- * <document>, the queue crumb linking to that queue's page. Until the queue is known (a
- * production item's loads with it) the item sits under Queue Management for an Admin
- * and under Tasks for an Annotator.
+ * A Production item's former route, which Inbox messages (kept up to a year) and copied
+ * field links still point to: permanently the document's edit page, with the whole query
+ * (`?field=`, `?view=`, `?section=`). The key is decoded once by the router and encoded
+ * once here. No role gate: the edit page decides what the caller sees.
  */
-const useItemCrumbs = (queueCrumb: BreadcrumbGroupProps.Item | null, objectKey: string) => {
-  const { isAdmin } = useUserRole();
-  const item = { text: documentName(decodeURIComponent(objectKey)), href: '#' };
-  return { root: queueCrumb ?? (isAdmin ? undefined : MY_TASKS_CRUMB), crumbs: [item] };
-};
-
-export const ProductionItemPage = (): React.JSX.Element => {
+export const ReviewItemRedirect = (): React.JSX.Element => {
   const { objectKey = '' } = useParams();
-  // Keyed on the item, so moving to another item never shows the previous one's queue.
-  const [loaded, setLoaded] = useState<{ objectKey: string; queue: ItemQueue } | null>(null);
-  const onItemQueue = useCallback((queue: ItemQueue) => setLoaded({ objectKey, queue }), [objectKey]);
-  const queue = loaded?.objectKey === objectKey ? loaded.queue : null;
-  const { root, crumbs } = useItemCrumbs(queue && { text: queue.name, href: `#${productionQueuePath(queue.id)}` }, objectKey);
-  return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<EditScreenToolsPanel />}>
-      {/* Keyed on the item, so per-item state (the sections saved so far) never carries over. */}
-      <ProductionItemEdit key={objectKey} objectKey={decodeURIComponent(objectKey)} onItemQueue={onItemQueue} />
-    </ReviewQueuesLayout>
-  );
+  const { search } = useLocation();
+  return <Navigate replace to={`${documentEditPath(objectKey)}${search}`} />;
 };
 
 export const TestSetItemPage = (): React.JSX.Element => {
+  // The router has already decoded the params once.
   const { testSetId = '', objectKey = '' } = useParams();
-  // The set's name arrives with its queue; its id stands in until then.
-  const [loaded, setLoaded] = useState<ItemTestSet | null>(null);
-  const onTestSet = useCallback((testSet: ItemTestSet) => setLoaded(testSet), []);
-  const name = loaded?.id === testSetId ? loaded.name : null;
-  const { root, crumbs } = useItemCrumbs({ text: name ?? testSetId, href: `#${testSetQueuePath(testSetId)}` }, objectKey);
-  return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<EditScreenToolsPanel />}>
-      {/* Keyed on the item, so per-item state (the opened version transition) never carries over. */}
-      <TestSetItemEdit
-        key={`${testSetId}/${objectKey}`}
-        testSetId={testSetId}
-        objectKey={decodeURIComponent(objectKey)}
-        onTestSet={onTestSet}
-      />
-    </ReviewQueuesLayout>
-  );
+  // Keyed on the item, so per-item state (the opened version transition) never carries over.
+  return <TestSetItemEdit key={`${testSetId}/${objectKey}`} testSetId={testSetId} objectKey={objectKey} />;
 };
 
 /**
@@ -105,7 +74,7 @@ const ProductionQueuePage = (): React.JSX.Element => {
   // The queue's name, as loaded or as just saved, keyed on the queue; its id stands in until then.
   const [loaded, setLoaded] = useState<{ id: string; name: string } | null>(null);
   const onName = useCallback((name: string) => setLoaded({ id: queue, name }), [queue]);
-  const name = loaded?.id === queue ? loaded.name : decodeURIComponent(queue);
+  const name = loaded?.id === queue ? loaded.name : queue;
   const { root, crumbs } = useQueueCrumbs({ text: name, href: '#' });
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<QueueToolsPanel />}>
@@ -117,7 +86,7 @@ const ProductionQueuePage = (): React.JSX.Element => {
 /** The two-segment queues/:profile/:queue link: queues are system-wide, so the profile is dropped. */
 const LegacyProductionQueueRedirect = (): React.JSX.Element => {
   const { queue = '' } = useParams();
-  return <Navigate to={productionQueuePath(decodeURIComponent(queue))} replace />;
+  return <Navigate to={productionQueuePath(queue)} replace />;
 };
 
 /** Queue Management is Admin-only; an Annotator who lands here goes to their Tasks. */
@@ -150,18 +119,11 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
     <GenAIIDPTopNavigation />
     <Routes>
       {/* Inbox notification links open these, so both paths must keep working. */}
-      <Route
-        path="items/:objectKey"
-        element={
-          <RequireRole roles={['Admin', 'Annotator']}>
-            <ProductionItemPage />
-          </RequireRole>
-        }
-      />
+      <Route path="items/:objectKey" element={<ReviewItemRedirect />} />
       <Route
         path="test-sets/:testSetId/items/:objectKey"
         element={
-          <RequireRole roles={['Admin', 'Annotator']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
             <TestSetItemPage />
           </RequireRole>
         }
@@ -186,7 +148,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId"
         element={
-          <RequireRole roles={['Admin', 'Annotator']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
             <TestSetQueuePage />
           </RequireRole>
         }

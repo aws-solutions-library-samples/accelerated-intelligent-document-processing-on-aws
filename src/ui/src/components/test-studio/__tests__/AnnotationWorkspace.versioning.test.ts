@@ -18,7 +18,7 @@
  * The decisions are pure helpers in `annotation-edit-flags.ts`. The rest is checked
  * against the component source: the queue page (AnnotationWorkspace) carries the link
  * and its stale-version warning, and the edit screen
- * (TestSetItemEdit, over the test-set adapter) carries the Start editing prompt
+ * (TestSetItemEdit, whose model is over the test-set adapter) carries the Start editing prompt
  * and the primary action (Reprocess or Complete).
  */
 
@@ -41,7 +41,7 @@ const UNCLAIMED = { reviewObjectKey: 'ts1/x.pdf', claimedByMe: false, reviewed: 
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
-const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-model.tsx'), 'utf-8');
 const ADAPTER = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-adapter.ts'), 'utf-8');
 const QUERY = readFileSync(join(HERE, '..', '..', 'graphql', 'operations', 'queries', 'GetAnnotationQueue.graphql'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
@@ -139,11 +139,9 @@ describe('AnnotationWorkspace version transition', () => {
     // HITL review queues (IDP-0002 R2-N): the primary action needs no edit and no Start
     // editing first. Choosing it is the explicit act that opens the version transition, so
     // the commitment is still never made on arrival - only from the primary action's
-    // handler, and only when no transition is open yet, before the sections are confirmed.
-    const handler = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
-    expect(handler).toMatch(
-      /if \(!draft\) await adapter\.openDraft\(\);\s*const remaining = [^;]*;\s*if \(remaining\.length > 0\) await adapter\.confirmSections\(remaining\);/,
-    );
+    // handler, and only when no transition is open yet, before the sections are applied.
+    const handler = SCREEN.slice(SCREEN.indexOf('      process: {'), SCREEN.indexOf('      cancelTo:'));
+    expect(handler).toMatch(/if \(!draft\) await adapter\.openDraft\(\);\s*const \{ reviewed \} = await adapter\.applyAndComplete\(\);/);
     // Only the role half of the editor's read-only state disables the primary action.
     expect(SCREEN).not.toMatch(/completeReason = [^;]*Start editing/);
     expect(SCREEN).toMatch(/primaryDisabledReason: completeReason/);

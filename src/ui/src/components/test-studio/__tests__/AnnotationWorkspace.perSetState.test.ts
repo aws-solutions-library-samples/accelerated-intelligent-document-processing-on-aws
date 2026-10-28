@@ -32,7 +32,7 @@ import { draftBadgeHover, draftOpenedMessage, groundTruthAlertSuffix } from '../
 const HERE = join(__dirname, '..');
 const ROUTES = readFileSync(join(HERE, '..', '..', 'routes', 'ReviewQueuesRoutes.tsx'), 'utf-8');
 const TEST_STUDIO_ROUTES = readFileSync(join(HERE, '..', '..', 'routes', 'TestStudioRoutes.tsx'), 'utf-8');
-const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-model.tsx'), 'utf-8');
 const ADAPTER = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-adapter.ts'), 'utf-8');
 
 /** The body of one `const Name = (...) => { ... };` page component in the routes file. */
@@ -47,7 +47,7 @@ describe('one workspace instance per test set', () => {
   it('remounts the queue page and the edit screen when the set in the URL changes', () => {
     expect(pageBody('TestSetQueuePage')).toMatch(/<AnnotationWorkspace key=\{testSetId\} onName=\{onName\} \/>/);
     expect(pageBody('TestSetItemPage')).toMatch(
-      /<TestSetItemEdit\s+key=\{`\$\{testSetId\}\/\$\{objectKey\}`\}\s+testSetId=\{testSetId\}\s+objectKey=\{decodeURIComponent\(objectKey\)\}\s+onTestSet=\{onTestSet\}\s+\/>/,
+      /<TestSetItemEdit\s+key=\{`\$\{testSetId\}\/\$\{objectKey\}`\}\s+testSetId=\{testSetId\}\s+objectKey=\{objectKey\}\s+\/>/,
     );
     // And the screen's own opened transition is dropped on a change of set or document.
     expect(ADAPTER).toMatch(/useEffect\(\(\) => \{\s*setQueue\(null\);\s*setOpenedDraft\(null\);/);
@@ -94,7 +94,7 @@ describe('the authored-ground-truth alert agrees with the rest of the screen', (
   it('does not promise editing before a transition is open', () => {
     // The editor is read-only until then, and this alert stacked directly under the
     // one saying so.
-    expect(groundTruthAlertSuffix(true, { baseVersion: 1, draftVersion: 2 })).toMatch(/^ Saving a section, or Complete, writes/);
+    expect(groundTruthAlertSuffix(true, { baseVersion: 1, draftVersion: 2 })).toMatch(/^ Save keeps your changes; Process Changes writes/);
     expect(groundTruthAlertSuffix(true, null)).toBe(' Use Start annotating, above, to correct it.');
     expect(SCREEN).toMatch(/groundTruthAlertSuffix\(editFlags\.canSaveDirectToBaseline, draft\)/);
   });

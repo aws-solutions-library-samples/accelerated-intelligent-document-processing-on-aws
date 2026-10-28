@@ -50,11 +50,10 @@ import type { PricingData } from './MeteringTable';
 import type { PricingLookup } from './pricing';
 import { isProfileReadable } from '../../utils/readable-profile';
 import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
-import { documentEditHref, reviewItemHref } from '../../routes/constants';
+import { documentEditHref } from '../../routes/constants';
 import { PROCESSING_REASON, isEditableStatus } from '../edit-screen/document-edit-status';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
-// import { debugDocumentStructure } from '../common/debug-utils';
 
 interface MappedDocument {
   objectKey: string;
@@ -739,7 +738,7 @@ export const DocumentPanel = ({
                     <Button
                       iconName="edit"
                       variant="primary"
-                      href={reviewItemHref(localItem.objectKey)}
+                      href={documentEditHref(localItem.objectKey)}
                       ariaLabel="Edit this document in its review queue"
                     >
                       Edit

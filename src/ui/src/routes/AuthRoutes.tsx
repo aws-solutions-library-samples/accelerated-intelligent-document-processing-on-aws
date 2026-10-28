@@ -14,6 +14,7 @@ import useParameterStore from '../hooks/use-parameter-store';
 import useAppContext from '../contexts/app';
 import useUserRole from '../hooks/use-user-role';
 
+import DocumentEditRoute from './DocumentEditRoute';
 import DocumentsRoutes from './DocumentsRoutes';
 import DocumentsQueryRoutes from './DocumentsQueryRoutes';
 import DocumentsAnalyticsRoutes from './DocumentsAnalyticsRoutes';
@@ -143,10 +144,13 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   );
   const logoutRoute = <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />;
 
-  // An Annotator-only user's shell: Home (Inbox, Tasks, Queues) and the edit screens (under
-  // /review-queues, where Inbox notification links point). Nothing else is routed.
+  // An Annotator-only user's shell: Home (Inbox, Tasks, Queues), the queue pages and
+  // Test Studio items (under /review-queues), and a document's edit page (where Inbox
+  // notification links and Tasks point). Nothing else is routed, so the rest of
+  // /documents is not theirs.
   const routes = isAnnotatorOnly ? (
     <Routes>
+      <Route path={`${DOCUMENTS_PATH}/:objectKey/edit`} element={<DocumentEditRoute />} />
       <Route path={`${MY_WORK_PATH}/*`} element={<MyWorkRoutes />} />
       <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />
       <Route path={`${REVIEW_QUEUES_PATH}/*`} element={<ReviewQueuesRoutes />} />

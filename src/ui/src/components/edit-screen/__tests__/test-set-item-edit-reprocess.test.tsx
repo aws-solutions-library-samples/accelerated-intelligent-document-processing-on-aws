@@ -4,11 +4,12 @@
 /**
  * The primary action on a Test Studio document. What has to hold: the bar is Reports
  * (History, Processing Report), More Actions (Edit Page Class), Skip, Cancel, Save and
- * Process Changes, for a document with a review copy and for authored ground truth alike; there is no
- * Save as Draft (no test-set save leaves labels unreviewed); the primary action saves
- * the open section's edits first, then confirms only the sections not saved, and exits
- * once; the Edit | View switch is first in the bar and shows the source
- * in the Document Editor's place; and the screen tells the breadcrumbs the set's name.
+ * Process Changes, for a document with a review copy and for authored ground truth alike;
+ * Save keeps a draft (the adapter's draft save) and never leaves the page; the primary
+ * action saves the open section's unsaved edits first, then applies every section and
+ * leaves only when the server says the document is reviewed, staying with the reason
+ * otherwise; switching sections asks before discarding; the Edit | View switch is first in the bar and shows the source
+ * in the Document Editor's place; and the page gives the breadcrumbs the set's name.
  */
 
 import React from 'react';
@@ -17,10 +18,14 @@ import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const confirmSections = vi.fn();
+const applyAndComplete = vi.fn();
+const saveDraft = vi.fn();
 const exit = vi.fn();
+const setErrorMessage = vi.fn();
+const setSuccessMessage = vi.fn();
 const controller = { save: vi.fn(), discard: vi.fn(), isDirty: vi.fn() };
 let editorProps: Record<string, unknown> | null = null;
+let boardProps: Record<string, unknown> | null = null;
 /** Overrides of the document the adapter returns (authored ground truth has no review copy). */
 const docOver: Record<string, unknown> = {};
 
@@ -48,16 +53,49 @@ vi.mock('../test-set-item-edit-adapter', () => ({
     loadError: null,
     reload: vi.fn(),
     openDraft: vi.fn(),
-    saveSection: vi.fn(),
-    confirmSections: (...a: unknown[]) => confirmSections(...a),
+    saveDraft: (...a: unknown[]) => saveDraft(...a),
+    loadSection: vi.fn(),
+    reloadToken: 0,
+    applyAndComplete: (...a: unknown[]) => applyAndComplete(...a),
     skip: vi.fn(),
   }),
 }));
-vi.mock('../../test-studio/GroundTruthSectionEditor', () => ({
+// Mocked at stable seams (the shared editor and the board), so the suite holds whichever
+// component wires the test-set editor between them.
+vi.mock('../SectionEditor', () => ({
   default: (props: Record<string, unknown>) => {
     editorProps = props;
     (props.controllerRef as { current: unknown }).current = controller;
-    return <div data-testid="editor" />;
+    const ctx = { data: null, setData: vi.fn(), selectedSectionId: '1', hasChanges: false };
+    return <div data-testid="editor">{(props.headerExtras as ((c: unknown) => React.ReactNode) | undefined)?.(ctx)}</div>;
+  },
+}));
+vi.mock('../../common/PageGroupingEditor', () => ({
+  default: (props: Record<string, unknown>) => {
+    boardProps = props;
+    return <div data-testid="board" />;
+  },
+}));
+vi.mock('../../../hooks/use-test-doc-pages', () => ({
+  default: () => ({
+    pages: [
+      { Id: '1', ImageUri: 'blob:1' },
+      { Id: '2', ImageUri: 'blob:2' },
+    ],
+    isLoading: false,
+    error: null,
+    previewUnavailable: false,
+  }),
+}));
+vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: null }) }));
+vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => ({ versions: [] }) }));
+vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
+/** The breadcrumb root the page gives its layout. */
+let layoutRoot: unknown = null;
+vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
+  default: ({ children, root }: { children: React.ReactNode; root?: unknown }) => {
+    layoutRoot = root;
+    return <>{children}</>;
   },
 }));
 vi.mock('../../test-studio/annotation-edit-flags', async (importOriginal) => ({
@@ -71,23 +109,29 @@ vi.mock('../../test-studio/annotation-edit-flags', async (importOriginal) => ({
   }),
 }));
 vi.mock('../use-edit-exit', () => ({ default: () => exit, useLeavePath: () => (queuePath: string) => queuePath }));
-vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage: vi.fn(), setSuccessMessage: vi.fn() }) }));
+vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage, setSuccessMessage }) }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: { TestSetBucket: 'test-set-bucket' } }) }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
 vi.mock('../../../hooks/use-user-role', () => ({
-  default: () => ({ isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false }),
+  default: () => ({
+    isAdmin: false,
+    isAuthor: false,
+    isReviewer: false,
+    isAnnotator: true,
+    canAnnotate: true,
+    loading: false,
+    allowedConfigVersions: null,
+  }),
 }));
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
 import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 
-const onTestSet = vi.fn();
-
 const renderScreen = () =>
   render(
     <MemoryRouter>
-      <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" onTestSet={onTestSet} />
+      <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
     </MemoryRouter>,
   );
 
@@ -101,16 +145,16 @@ const button = (text: string) =>
 beforeEach(() => {
   document.body.innerHTML = '';
   editorProps = null;
+  boardProps = null;
   for (const k of Object.keys(docOver)) delete docOver[k];
-  confirmSections.mockReset().mockResolvedValue(undefined);
+  applyAndComplete.mockReset().mockResolvedValue({ reviewed: true });
+  saveDraft.mockReset().mockResolvedValue(undefined);
   exit.mockReset();
-  onTestSet.mockReset();
+  setErrorMessage.mockReset();
+  setSuccessMessage.mockReset();
+  layoutRoot = null;
   controller.isDirty.mockReset().mockReturnValue(true);
-  // Saving the open section reports it saved, as the editor does.
-  controller.save.mockReset().mockImplementation(async () => {
-    (editorProps!.onSaved as (key: string) => void)('b1');
-    return true;
-  });
+  controller.save.mockReset().mockResolvedValue(true);
 });
 
 describe('the primary action on a Test Studio document', () => {
@@ -130,21 +174,26 @@ describe('the primary action on a Test Studio document', () => {
     expect(button('Process Changes').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
   });
 
-  it('saves the open section, then confirms the rest, and exits once', async () => {
+  it('saves a draft first, then applies every section and exits only on the server’s reviewed result', async () => {
     renderScreen();
     button('Process Changes').click();
     await waitFor(() => expect(exit).toHaveBeenCalledTimes(1));
     expect(controller.save).toHaveBeenCalledTimes(1);
-    expect(confirmSections).toHaveBeenCalledWith(['2']);
-    expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(confirmSections.mock.invocationCallOrder[0]);
+    expect(applyAndComplete).toHaveBeenCalledTimes(1);
+    expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(applyAndComplete.mock.invocationCallOrder[0]);
+    expect(exit.mock.calls[0][0].message).toContain('Its labels are marked reviewed.');
   });
 
-  it('saves the open section from Save, without completing', async () => {
+  it('stays and shows the reason when the server says the document is not reviewed yet', async () => {
+    applyAndComplete.mockResolvedValue({ reviewed: false });
     renderScreen();
-    await act(async () => (editorProps!.onDirtyChange as (d: boolean) => void)(true));
-    button('Save').click();
-    await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
-    expect(confirmSections).not.toHaveBeenCalled();
+    button('Process Changes').click();
+    await waitFor(() =>
+      expect(setErrorMessage).toHaveBeenCalledWith(
+        'Not every section of a.pdf is marked reviewed yet. Check its sections and choose Process Changes again.',
+      ),
+    );
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it('stops when the save fails', async () => {
@@ -152,20 +201,50 @@ describe('the primary action on a Test Studio document', () => {
     renderScreen();
     button('Process Changes').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalled());
-    expect(confirmSections).not.toHaveBeenCalled();
+    expect(applyAndComplete).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('saves a draft from Save, which reviews nothing and never leaves, even for every section', async () => {
+    renderScreen();
+    await act(async () => (editorProps!.onDirtyChange as (d: boolean) => void)(true));
+    button('Save').click();
+    await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(setSuccessMessage).toHaveBeenCalledWith(
+        'Saved your changes to a.pdf. They count as reviewed once you choose Process Changes.',
+      ),
+    );
+    // The editor saves through the adapter's draft save, for each section in turn.
+    const save = editorProps!.onSave as (id: string, d: Record<string, unknown>) => Promise<unknown>;
+    await act(async () => {
+      await save('1', { inference_result: {} });
+      await save('2', { inference_result: {} });
+    });
+    expect(saveDraft.mock.calls.map((c) => c[0])).toEqual(['1', '2']);
+    expect(applyAndComplete).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('asks before switching sections with unsaved edits, rather than saving them', () => {
+    renderScreen();
+    expect(editorProps!.saveOnSectionSwitch).toBeUndefined();
+    // The editor's default: ask to stay or discard.
+    expect(editorProps!.confirmSectionSwitch).toBeUndefined();
   });
 
   it('places save, discard and page grouping in the top bar', () => {
     renderScreen();
-    expect(editorProps).toMatchObject({ actionsPlacement: 'external', saveOnSectionSwitch: true, regroupPlacement: 'external' });
+    // The editor shows no Save of its own: Save is the bar's.
+    expect(barButtonLabels()).toContain('Save');
+    expect(boardProps).toBeNull();
     chooseMenuItem('More Actions', 'Edit Page Class');
-    expect(editorProps!.regroupOpen).toBe(true);
+    // The board opens as a dialog from the bar, not inline in the editor.
+    expect(boardProps).toMatchObject({ presentation: 'modal', title: 'Edit Page Class' });
   });
 
   it('puts the Edit | View switch in the bar, opening on Edit', async () => {
     renderScreen();
-    expect(editorProps!.variant).toBe('widget');
     expect(editorProps!.body).toBeUndefined();
     const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
     expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View']);
@@ -184,7 +263,16 @@ describe('the primary action on a Test Studio document', () => {
     expect(document.body.textContent).not.toContain('Test Studio');
     // No version-transition badge, and the editor hides its own title and provenance badges.
     expect(document.body.textContent).not.toMatch(/v1\s*→\s*v2/);
-    expect(editorProps).toMatchObject({ variant: 'widget', hideBadges: true });
+    // No provenance badges: a machine draft's label source and the class source stay off the editor.
+    const extras = (editorProps!.headerExtras as (c: unknown) => React.ReactNode)({
+      data: { labelSource: 'draft-machine' },
+      setData: vi.fn(),
+      selectedSectionId: '1',
+      hasChanges: false,
+    });
+    const { container: badges } = render(<>{extras}</>);
+    expect(badges.textContent).not.toContain('Classes from:');
+    expect(badges.textContent).not.toContain('Draft (machine)');
   });
 
   it('shows no notice when there is nothing to act on, and no assignment note', () => {
@@ -195,6 +283,25 @@ describe('the primary action on a Test Studio document', () => {
 
   it('tells the breadcrumbs the set name', () => {
     renderScreen();
-    expect(onTestSet).toHaveBeenCalledWith({ id: 'ts-1', name: 'Invoices' });
+    expect(layoutRoot).toEqual({ text: 'Invoices', href: '#/review-queues/test-sets/ts-1' });
+  });
+
+  it('disables Edit Page Class for someone who cannot change the class, saying why', () => {
+    // Not assigned to this Annotator, so they can't work it, and its class is theirs to leave.
+    docOver.claimedByMe = false;
+    docOver.assignedTo = 'other@example.com';
+    renderScreen();
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+      disabled: true,
+      disabledReason: 'Your role cannot change this document’s page grouping',
+    });
+  });
+
+  it('offers Edit Page Class on a single-section document too: splitting one section is a fix', () => {
+    docOver.sections = [{ sectionId: '1', baselineKey: 'b1', documentClass: 'Invoice', pageIndices: [0, 1] }];
+    renderScreen();
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({ disabled: false });
+    chooseMenuItem('More Actions', 'Edit Page Class');
+    expect(boardProps).toMatchObject({ presentation: 'modal' });
   });
 });

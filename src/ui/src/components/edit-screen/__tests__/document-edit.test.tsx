@@ -7,9 +7,11 @@
  * status over the object key; the editor is the Edit Document widget; Save saves through
  * the editor; Cancel leaves for the document page, asking first when there are unsaved
  * edits; Reprocess confirms, then calls processChanges with no section changes; an Author can save but not process; a
- * document in a review queue, or still processing, is read-only, and an in-review one
- * offers "Review in queue" to an Annotator; and the evaluation baseline reaches the
- * editor.
+ * document in a review queue, or still processing, is read-only (with no way to the
+ * queue from here: the edit page itself opens the queue for those who work it); the
+ * `?field=` field opens and links to the edit page; a finished queue review's activity
+ * is in History; an Annotator-only user gets no link into the documents app; and the
+ * evaluation baseline reaches the editor.
  */
 
 import React from 'react';
@@ -32,6 +34,7 @@ const role = {
   canWrite: true,
   canReview: true,
   canWorkReviewQueues: true,
+  isAnnotatorOnly: false,
 };
 let editorProps: Record<string, unknown> | null = null;
 const server: { doc: Record<string, unknown> } = { doc: {} };
@@ -48,6 +51,14 @@ vi.mock('../use-section-evaluation', () => ({ default: () => evaluation }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
   MarkdownReport: ({ reportUri }: { reportUri: string }) => <div data-testid="summary-report">{reportUri}</div>,
 }));
+/** The breadcrumbs the page gives its layout. */
+let layout: { root?: { href?: string } | null; crumbs?: { href?: string }[] } = {};
+vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
+  default: ({ children, ...props }: { children: React.ReactNode }) => {
+    layout = props;
+    return <>{children}</>;
+  },
+}));
 vi.mock('../SectionEditor', () => ({
   default: (props: Record<string, unknown>) => {
     editorProps = props;
@@ -57,6 +68,9 @@ vi.mock('../SectionEditor', () => ({
 }));
 
 import DocumentEdit from '../DocumentEdit';
+import { MIRROR_LAG_REASON, REGROUP_ROLE_REASON } from '../direct-edit-model';
+import type { DirectEditOptions } from '../direct-edit-model';
+import { inReviewQueueEditReason } from '../../common/review-status';
 
 /** Where the screen has navigated to. */
 const LocationProbe = (): React.JSX.Element => <div data-testid="location">{useLocation().pathname}</div>;
@@ -80,10 +94,10 @@ const rawDoc = (over: Record<string, unknown> = {}) => ({
 const queryOf = (call: unknown[]) => String((call[0] as { query: string }).query);
 const processCalls = () => graphql.mock.calls.filter((c) => queryOf(c).includes('processChanges'));
 
-const renderEditor = async () => {
+const renderEditor = async (seed?: DirectEditOptions['seed'], path = '/documents/in%2Fdoc.pdf/edit') => {
   render(
-    <MemoryRouter initialEntries={['/documents/in%2Fdoc.pdf/edit']}>
-      <DocumentEdit objectKey="in/doc.pdf" />
+    <MemoryRouter initialEntries={[path]}>
+      <DocumentEdit objectKey="in/doc.pdf" seed={seed} />
       <LocationProbe />
     </MemoryRouter>,
   );
@@ -117,6 +131,7 @@ beforeEach(() => {
     canWrite: true,
     canReview: true,
     canWorkReviewQueues: true,
+    isAnnotatorOnly: false,
   });
   graphql.mockReset().mockImplementation(async (req: { query: string }) => {
     if (req.query.includes('processChanges')) return { data: { processChanges: { success: true } } };
@@ -136,10 +151,7 @@ describe('the direct edit', () => {
     expect(barButtonLabels()).toEqual(['Cancel', 'Save', 'Process Changes']);
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
     expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class', 'Use As Evaluation Baseline']);
-    expect(editorProps!.variant).toBe('widget');
-    expect(editorProps!.title).toBeUndefined();
     expect(editorProps!.isReadOnly).toBe(false);
-    expect(editorProps!.actionsPlacement).toBe('external');
   });
 
   it('saves a draft through the editor', async () => {
@@ -177,22 +189,78 @@ describe('the direct edit', () => {
     expect(disabledReason('Process Changes')).toBe('Process Changes needs the Admin or Reviewer role.');
   });
 
-  it('opens a document in a review queue read-only, with Review in queue for an Annotator', async () => {
-    Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false, canReview: false, canWorkReviewQueues: true });
+  it('shows an Author Edit Page Class disabled, saying why', async () => {
+    Object.assign(role, { isAdmin: false, isAuthor: true, canWrite: true, canReview: false, canWorkReviewQueues: false });
+    await renderEditor();
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+      disabled: true,
+      disabledReason: REGROUP_ROLE_REASON,
+    });
+  });
+
+  it('opens a document in a review queue read-only for an Author, with no Review in queue', async () => {
+    Object.assign(role, { isAdmin: false, isAuthor: true, canWrite: true, canReview: false, canWorkReviewQueues: false });
     server.doc = rawDoc({ HITLStatus: 'in_review', ObjectStatus: 'HITL_IN_PROGRESS' });
     await renderEditor();
     expect(editorProps!.isReadOnly).toBe(true);
     expect(document.body.textContent).toContain('This document is in a review queue. Edits are made in the queue.');
-    const review = createWrapper(document.body)
-      .findAllButtons()
-      .find((b) => barLabel(b) === 'Review in queue');
-    expect(review?.getElement().getAttribute('href')).toBe('#/review-queues/items/in%2Fdoc.pdf');
-    expect(disabledReason('Save')).toBe('This document is in a review queue. Choose Review to work on it there.');
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
-      disabled: true,
-      disabledReason: 'This document is in a review queue. Choose Review to work on it there.',
+    expect(
+      createWrapper(document.body)
+        .findAllButtons()
+        .find((b) => barLabel(b) === 'Review in queue'),
+    ).toBeUndefined();
+    const reason = inReviewQueueEditReason(false);
+    expect(disabledReason('Save')).toBe(reason);
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({ disabled: true, disabledReason: reason });
+    expect(disabledReason('Process Changes')).toBe(reason);
+  });
+
+  it('opens read-only, saying the review is being updated, while the queue mirror lags', async () => {
+    server.doc = rawDoc({ HITLStatus: 'in_review', ObjectStatus: 'HITL_IN_PROGRESS' });
+    await renderEditor({ document: server.doc as never, lock: 'mirror-lag' });
+    expect(editorProps!.isReadOnly).toBe(true);
+    expect(document.body.textContent).toContain(
+      'View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.',
+    );
+    expect(disabledReason('Save')).toBe(MIRROR_LAG_REASON);
+    // The seeded document is not read again.
+    expect(graphql.mock.calls.filter((c) => queryOf(c).includes('getDocument'))).toHaveLength(0);
+  });
+
+  it('opens on the ?field= field and copies a link to it on the edit page', async () => {
+    await renderEditor(undefined, '/documents/in%2Fdoc.pdf/edit?field=LineItems%5B0%5D.Rate');
+    expect(editorProps!.focusFieldPath).toBe('LineItems[0].Rate');
+    const link = (editorProps!.buildFieldLink as (f: string) => string)('LineItems[0].Rate');
+    expect(link).toBe(`${window.location.origin}/#/documents/in%2Fdoc.pdf/edit?field=LineItems%5B0%5D.Rate`);
+  });
+
+  it('lists a finished queue review’s activity under History, then the document’s own', async () => {
+    server.doc = rawDoc({
+      HITLStatus: 'complete',
+      HITLReviewHistory: JSON.stringify([{ action: 'skipped', timestamp: '2026-10-20T09:00:00Z', user: 'rev@example.com' }]),
     });
-    expect(disabledReason('Process Changes')).toBe('This document is in a review queue. Choose Review to work on it there.');
+    await renderEditor({
+      document: server.doc as never,
+      reviewActivity: [{ at: '2026-10-21T09:00:00Z', event: 'completed', actor: 'ann@example.com', details: null }],
+    });
+    chooseMenuItem('Reports', 'History');
+    createWrapper(document.body).findTabs()!.findTabLinkByIndex(2)!.click();
+    const content = createWrapper(document.body)
+      .findAllModals()
+      .find((m) => m.findHeader().getElement().textContent === 'History')!
+      .findContent()
+      .getElement().textContent;
+    expect(content).toContain('ann@example.com');
+    expect(content).toContain('rev@example.com');
+  });
+
+  it('gives an Annotator-only user no link into the documents app', async () => {
+    Object.assign(role, { isAdmin: false, isAnnotator: true, isAnnotatorOnly: true, canWrite: false, canReview: false });
+    await renderEditor();
+    expect(document.querySelector('a[href^="#/documents"]')).toBeNull();
+    const hrefs = [layout.root?.href, ...(layout.crumbs ?? []).map((c) => c.href)];
+    expect(hrefs[0]).toBe('#/my-work/tasks');
+    expect(hrefs.filter((h) => h?.startsWith('#/documents'))).toEqual([]);
   });
 
   it('is read-only while the document is still processing', async () => {
@@ -202,11 +270,10 @@ describe('the direct edit', () => {
     expect(disabledReason('Process Changes')).toBe('Available when processing finishes');
   });
 
-  it('titles the document with its status over the object key, with no Edit history tab in the editor', async () => {
+  it('titles the document with its status over the object key', async () => {
     await renderEditor();
     expect(header().findHeadingText().getElement().textContent).toBe('doc.pdf (COMPLETED)');
     expect(header().findDescription()?.getElement().textContent).toBe('in/doc.pdf');
-    expect(editorProps!.showHistoryTab).toBe(false);
   });
 
   it('lists the document review history under History › Review Activity', async () => {
@@ -337,5 +404,29 @@ describe('the direct edit', () => {
     await waitFor(() => expect(discardDialog()).toBeUndefined());
     expect(location()).toBe('/documents/in%2Fdoc.pdf/edit');
     expect(controller.discard).not.toHaveBeenCalled();
+  });
+
+  it('saves a Reviewer-only caller’s edits through saveSectionReviewEdits, never uploadDocument', async () => {
+    Object.assign(role, {
+      isAdmin: false,
+      isReviewer: true,
+      isReviewerOnly: true,
+      canWrite: false,
+      canReview: true,
+      canWorkReviewQueues: false,
+    });
+    server.doc = rawDoc({ HITLReviewOwner: 'alice' });
+    graphql.mockImplementation(async (req: { query: string }) => {
+      if (req.query.includes('saveSectionReviewEdits')) return { data: { saveSectionReviewEdits: { success: true } } };
+      return { data: { getDocument: server.doc } };
+    });
+    await renderEditor();
+    await act(async () => {
+      await (editorProps!.onSave as (id: string, d: Record<string, unknown>) => Promise<unknown>)('1', { inference_result: { Name: 'B' } });
+    });
+    const sent = graphql.mock.calls.map(queryOf);
+    expect(sent.filter((q) => q.includes('saveSectionReviewEdits'))).toHaveLength(1);
+    expect(sent.some((q) => q.includes('uploadDocument'))).toBe(false);
+    expect(sent.some((q) => q.includes('completeSectionReview'))).toBe(false);
   });
 });

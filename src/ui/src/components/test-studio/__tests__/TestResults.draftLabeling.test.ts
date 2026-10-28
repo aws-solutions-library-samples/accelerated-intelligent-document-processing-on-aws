@@ -11,7 +11,7 @@
  * metrics. A hard zero is a stronger and more wrong claim than N/A — it asserts
  * total failure where the honest answer is "not applicable".
  *
- * Same approach as VisualEditorModal.classGating: this is pure JSX gating inside a
+ * This is pure JSX gating inside a
  * component whose render needs the GraphQL client, settings and several parsed
  * AWSJSON blobs. Reading the source is blunt but it pins the decision.
  */

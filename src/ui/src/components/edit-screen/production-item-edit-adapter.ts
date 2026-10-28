@@ -11,30 +11,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { generateClient } from '../../api/client-shim';
-import { getDocument as getDocumentQuery, getFilePresignedUrl } from '../../graphql/generated';
+import { getDocument as getDocumentQuery } from '../../graphql/generated';
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import useAppContext from '../../contexts/app';
 import usePolling from '../../hooks/use-polling';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { completeItem, fetchReviewItem, reviewErrorCode, saveDraft } from '../review-queues/review-api';
+import { fetchSectionResult } from './section-result';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
+import type { RawDocument } from './use-edit-mode';
 
 const client = generateClient();
 const logger = new ConsoleLogger('ProductionItemEditAdapter');
 
 export const REVIEW_ITEM_POLL_INTERVAL_MS = 20_000;
 export const AUTOSAVE_MS = 2000;
-
-/** Read a section result (or its draft) through a server-issued presigned URL. */
-export const fetchSectionResult = async (s3Uri: string): Promise<LoadedSection> => {
-  const response = await client.graphql({ query: getFilePresignedUrl, variables: { s3Uri } });
-  const presignedUrl = response.data?.getFilePresignedUrl?.presignedUrl;
-  if (!presignedUrl) throw new Error('No presigned URL returned by server');
-  const s3Response = await fetch(presignedUrl);
-  if (!s3Response.ok) throw new Error(`S3 fetch failed: ${s3Response.status}`);
-  const text = await s3Response.text();
-  return { data: JSON.parse(text) as Record<string, unknown>, raw: text };
-};
 
 export interface ProductionItemEditModel {
   detail: ReviewItemDetail | null;
@@ -60,18 +51,51 @@ export interface ProductionItemEditModel {
   complete: (checklist?: boolean[]) => Promise<void>;
 }
 
-export const useProductionItemEdit = (objectKey: string): ProductionItemEditModel => {
+/** The page images of a document read. */
+const pagesOf = (doc: RawDocument | null | undefined): ReviewPage[] =>
+  (doc?.Pages ?? [])
+    .filter((p): p is NonNullable<typeof p> => !!p && p.Id != null && !!p.ImageUri)
+    .map((p) => ({ Id: String(p.Id), ImageUri: p.ImageUri as string }));
+
+/** Every section of a document read. */
+const sectionsOf = (doc: RawDocument | null | undefined): ReviewSectionRef[] =>
+  (doc?.Sections ?? [])
+    .filter((s): s is NonNullable<typeof s> => !!s && s.Id != null)
+    .map((s) => ({
+      sectionId: String(s.Id),
+      documentClass: s.Class ?? null,
+      resultUri: s.OutputJSONUri ?? '',
+      pageIds: (s.PageIds ?? []).map(String),
+    }));
+
+/** The latest draft revision per section of an item read. */
+const revisionsOf = (detail: ReviewItemDetail | null | undefined, known: Record<string, number> = {}): Record<string, number> => {
+  const revisions = { ...known };
+  for (const s of detail?.sections ?? []) revisions[s.sectionId] = Math.max(revisions[s.sectionId] ?? 0, s.draftRevision ?? 0);
+  return revisions;
+};
+
+/**
+ * `seed`: the item and the document as the edit page has just read them (to choose the
+ * mode), so neither first read is repeated; the item poll then starts on its interval.
+ */
+export const useProductionItemEdit = (
+  objectKey: string,
+  seed?: { detail: ReviewItemDetail; document: RawDocument },
+): ProductionItemEditModel => {
   const { setErrorMessage } = useAppContext();
-  const [detail, setDetail] = useState<ReviewItemDetail | null>(null);
+  const [detail, setDetail] = useState<ReviewItemDetail | null>(seed?.detail ?? null);
   const [loadError, setLoadError] = useState<unknown>(null);
-  const [pages, setPages] = useState<ReviewPage[]>([]);
-  const [pagesLoading, setPagesLoading] = useState(true);
-  const [documentSections, setDocumentSections] = useState<ReviewSectionRef[]>([]);
-  const [summaryReportUri, setSummaryReportUri] = useState<string | null>(null);
-  const [evaluationStatus, setEvaluationStatus] = useState<string | null>(null);
+  const [pages, setPages] = useState<ReviewPage[]>(() => pagesOf(seed?.document));
+  const [pagesLoading, setPagesLoading] = useState(!seed);
+  const [documentSections, setDocumentSections] = useState<ReviewSectionRef[]>(() => sectionsOf(seed?.document));
+  const [summaryReportUri, setSummaryReportUri] = useState<string | null>(seed?.document.SummaryReportUri || null);
+  const [evaluationStatus, setEvaluationStatus] = useState<string | null>(seed?.document.EvaluationStatus || null);
   const [reloadToken, setReloadToken] = useState(0);
   // The latest draft revision per section, so a save names the revision it edits.
-  const revisionsRef = useRef<Record<string, number>>({});
+  const revisionsRef = useRef<Record<string, number>>(revisionsOf(seed?.detail));
+  // The first item and document reads are the seed's; the key they belong to is the first one.
+  const seededKey = useRef<string | null>(seed ? objectKey : null);
 
   const reload = useCallback(async (): Promise<ReviewItemDetail | null> => {
     if (!objectKey) return null;
@@ -79,10 +103,7 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
       const result = await fetchReviewItem(objectKey);
       setDetail(result);
       setLoadError(null);
-      for (const s of result.sections) {
-        const known = revisionsRef.current[s.sectionId] ?? 0;
-        revisionsRef.current[s.sectionId] = Math.max(known, s.draftRevision ?? 0);
-      }
+      revisionsRef.current = revisionsOf(result, revisionsRef.current);
       return result;
     } catch (err) {
       logger.error('getReviewItem failed', err);
@@ -92,6 +113,7 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
   }, [objectKey]);
 
   useEffect(() => {
+    if (seededKey.current === objectKey) return;
     setDetail(null);
     setLoadError(null);
     revisionsRef.current = {};
@@ -101,7 +123,7 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
     await reload();
   }, [reload]);
 
-  usePolling(poll, { enabled: !!objectKey, intervalMs: REVIEW_ITEM_POLL_INTERVAL_MS, immediate: true });
+  usePolling(poll, { enabled: !!objectKey, intervalMs: REVIEW_ITEM_POLL_INTERVAL_MS, immediate: !seed });
 
   // The latest document read wins: a refresh after a regroup supersedes the first load.
   const documentRead = useRef(0);
@@ -113,21 +135,8 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
       const doc = result.data?.getDocument;
       setSummaryReportUri(doc?.SummaryReportUri || null);
       setEvaluationStatus(doc?.EvaluationStatus || null);
-      setPages(
-        (doc?.Pages ?? [])
-          .filter((p): p is NonNullable<typeof p> => !!p && p.Id != null && !!p.ImageUri)
-          .map((p) => ({ Id: String(p.Id), ImageUri: p.ImageUri as string })),
-      );
-      setDocumentSections(
-        (doc?.Sections ?? [])
-          .filter((s): s is NonNullable<typeof s> => !!s && s.Id != null)
-          .map((s) => ({
-            sectionId: String(s.Id),
-            documentClass: s.Class ?? null,
-            resultUri: s.OutputJSONUri ?? '',
-            pageIds: (s.PageIds ?? []).map(String),
-          })),
-      );
+      setPages(pagesOf(doc));
+      setDocumentSections(sectionsOf(doc));
     } catch (err) {
       logger.error('getDocument failed', err);
     } finally {
@@ -136,6 +145,11 @@ export const useProductionItemEdit = (objectKey: string): ProductionItemEditMode
   }, [objectKey]);
 
   useEffect(() => {
+    // A seeded document is already read; a later key reads its own.
+    if (seededKey.current === objectKey) {
+      seededKey.current = null;
+      return undefined;
+    }
     setPagesLoading(true);
     setPages([]);
     setDocumentSections([]);

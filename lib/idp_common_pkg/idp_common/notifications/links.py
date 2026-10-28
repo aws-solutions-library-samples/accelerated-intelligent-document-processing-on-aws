@@ -55,3 +55,11 @@ def document_detail_link(object_key: str) -> str:
     Byte-identical to the UI's ``encodeURIComponent`` encoding of the key.
     """
     return "/documents/" + encode_uri_component(object_key)
+
+
+def document_edit_link(object_key: str) -> str:
+    """Route to a document's edit page: its direct edit, or its review item in review.
+
+    Byte-identical to the UI's ``documentEditPath``.
+    """
+    return document_detail_link(object_key) + "/edit"

@@ -1774,21 +1774,22 @@ class Shipped:
 
 
 _AGENT_CHAT = "components/agent-chat/AgentChatLayout.tsx"
+_BOARD = "components/edit-screen/use-page-class-board.tsx"
 _ANNOTATE = "components/test-studio/AnnotationWorkspace.tsx"
 _ASSIGN = "components/review-queues/AssignModal.tsx"
 _BREAKER = "components/common/CircuitBreakerPanel.tsx"
 _CONFIG = "components/configuration-layout/ConfigurationLayout.tsx"
-_EDITOR = "components/edit-screen/SectionEditor.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
-_PRODUCTION = "components/edit-screen/ProductionItemEdit.tsx"
+_PRODUCTION_MODEL = "components/edit-screen/production-item-edit-model.tsx"
 _QUEUE = "components/review-queues/ReviewQueuePage.tsx"
 _QUEUE_SETTINGS = "components/review-queues/QueueDefinitionModal.tsx"
 _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
+_SLOTS = "components/edit-screen/test-set-editor-slots.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
 _TABLE = "components/document-list/documents-table-config.tsx"
-_TEST_SET_ITEM = "components/edit-screen/TestSetItemEdit.tsx"
+_TEST_SET_MODEL = "components/edit-screen/test-set-item-edit-model.tsx"
 _UPLOAD = "components/upload-document/UploadDocumentPanel.tsx"
 _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
 
@@ -1845,9 +1846,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_FRAME, "Process Changes"),
         Shipped(_FRAME, "Save"),
         Shipped(
-            _PRODUCTION,
+            _PRODUCTION_MODEL,
             "Cancel and discard changes",
-            source="autosaveMs={canEdit",
+            source="autosaveMs: canEdit",
             kind="autosave",
         ),
     ),
@@ -1861,11 +1862,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "ClearReadInboxMessages": (Shipped(_INBOX, "Clear read", inside_dialog=True),),
     "CompleteReviewItem": (Shipped(_FRAME, "Process Changes"),),
-    "CompleteSectionReview": (
-        Shipped("components/document-viewer/VisualEditorModal.tsx", "Save All Changes"),
-        Shipped(_FRAME, "Process Changes"),
-        Shipped(_FRAME, "Save"),
-    ),
+    "CompleteSectionReview": (Shipped(_FRAME, "Process Changes"),),
     "CopyToBaseline": (
         Shipped(
             "components/document-viewers/DocumentViewers.tsx",
@@ -1988,7 +1985,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_SUPERVISOR, "Move", source='label="Move"', inside_dialog=True),
     ),
     "OpenTestSetAnnotationDraft": (
-        Shipped(_TEST_SET_ITEM, "Start editing"),
+        Shipped(_TEST_SET_MODEL, "Start editing"),
         Shipped(_FRAME, "Process Changes"),
     ),
     "PauseCircuitBreaker": (
@@ -2012,13 +2009,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "PutConfigPrefixMapping": (Shipped(_MAPPINGS, "Save"),),
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
-    "ReextractTestSetDocument": (
-        Shipped(
-            "components/test-studio/GroundTruthSectionEditor.tsx",
-            "Re-extract",
-            source="'Re-extract'",
-        ),
-    ),
+    "ReextractTestSetDocument": (Shipped(_SLOTS, "Re-extract", source="'Re-extract'"),),
     "ReleaseReview": (Shipped(_TABLE, "Release Review"),),
     "ReleaseReviewItem": (Shipped(_FRAME, "Skip"),),
     "RemoveDocumentsFromTestSet": (
@@ -2058,18 +2049,17 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "SaveReviewDraft": (
         Shipped(_FRAME, "Save"),
         Shipped(
-            _PRODUCTION,
+            _PRODUCTION_MODEL,
             "Cancel and discard changes",
-            source="autosaveMs={canEdit",
+            source="autosaveMs: canEdit",
             kind="autosave",
         ),
     ),
-    "SaveSectionReviewEdits": (
-        Shipped("components/document-viewer/VisualEditorModal.tsx", "Save All Changes"),
-    ),
-    "SaveTestSetDocumentSection": (
-        Shipped(_FRAME, "Process Changes"),
+    "SaveSectionReviewEdits": (Shipped(_FRAME, "Save"),),
+    "SaveTestSetDocumentSection": (Shipped(_FRAME, "Process Changes"),),
+    "SaveTestSetDocumentSectionDraft": (
         Shipped(_FRAME, "Save"),
+        Shipped(_FRAME, "Process Changes"),
     ),
     "SendAgentChatMessage": (
         Shipped(
@@ -2117,7 +2107,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_CONFIG, "Sync from BDA"),
         Shipped(_CONFIG, "Confirm Sync"),
     ),
-    "TakeOverReviewItem": (Shipped(_PRODUCTION, "Take over"),),
+    "TakeOverReviewItem": (Shipped(_PRODUCTION_MODEL, "Take over"),),
     "UnassignTestSetDocuments": (
         Shipped(
             _ANNOTATE, "Unassign (2)", source="`Unassign (${unassignable.length})`"
@@ -2143,6 +2133,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "UpdateDocumentSections": (
         Shipped("components/sections-panel/SectionsPanel.tsx", "Save page grouping"),
+        Shipped(_BOARD, "Save page grouping"),
     ),
     "UpdateInboxPreferences": (
         Shipped("components/inbox/InboxPreferences.tsx", "Save", inside_dialog=True),
@@ -2160,11 +2151,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_QUEUE_SETTINGS, "Save", source="'Save'", inside_dialog=True),
     ),
     "UpdateTestSet": (Shipped("components/test-studio/TestSets.tsx", "Save"),),
-    "UpdateTestSetDocumentSections": (
-        Shipped(
-            "components/test-studio/GroundTruthSectionEditor.tsx", "Save page grouping"
-        ),
-    ),
+    "UpdateTestSetDocumentSections": (Shipped(_BOARD, "Save page grouping"),),
     "UpdateTestSetQueue": (
         Shipped(_QUEUE_SETTINGS, "Save", source="'Save'", inside_dialog=True),
     ),
@@ -2177,9 +2164,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "UploadDocument": (
         Shipped(_UPLOAD, "Upload (1 files)", source="`Upload ${"),
         Shipped("components/pages-panel/PageTextEditorModal.tsx", "Save"),
-        Shipped("components/document-viewer/MarkdownJsonViewer.tsx", "Save Changes"),
-        Shipped("components/document-viewer/VisualEditorModal.tsx", "Save All Changes"),
-        Shipped(_EDITOR, "Save changes", source="'Save changes'"),
+        Shipped(_FRAME, "Save"),
     ),
     "UploadMultiDocDiscoveryZip": (
         Shipped(
@@ -2221,6 +2206,8 @@ LAYOUT_LABELS_SOURCE = "components/common/labels.ts"
 SIDE_NAVIGATION_HANDLERS: tuple[str, ...] = (
     "onFollowHandler?: (ev: CustomEvent<SideNavigationProps.FollowDetail>) => void;",
     "onFollowHandler = defaultOnFollowHandler }",
+    # The same default handler, before the page's highlighted entry (`activeHref`).
+    "onFollowHandler = defaultOnFollowHandler,",
     "onFollow={onFollowHandler}",
     "onClick={() => window.dispatchEvent(new CustomEvent('openQuickStart'))}",
 )
@@ -2473,7 +2460,10 @@ def test_the_side_navigation_is_the_one_landmark_the_web_ui_names_so() -> None:
         if not given:
             continue
         assert text.count("ariaLabels={appLayoutLabels}") == given, path
-        mounted = text.count("navigation={<Navigation />}")
+        # The shared navigation, optionally told which entry to highlight (the edit page).
+        mounted = len(
+            re.findall(r"navigation=\{<Navigation(?: activeHref=\{\w+\})? />\}", text)
+        )
         assert len(re.findall(r"\bnavigation=\{", text)) == mounted >= given, path
         source = re.search(
             r"^import Navigation from '([^']+)';$",
@@ -2526,7 +2516,10 @@ def test_a_click_on_a_side_navigation_link_runs_only_its_follow_handler() -> Non
     navigation = _without_comments(
         (UI_SOURCE / NAVIGATION_SOURCE).read_text(encoding="utf-8")
     )
-    assert navigation.count("onFollowHandler = defaultOnFollowHandler }") == 2
+    # Both navigations default to the module's own handler.
+    assert (
+        len(re.findall(r"onFollowHandler = defaultOnFollowHandler\b", navigation)) == 2
+    )
     handler = re.search(
         r"^const defaultOnFollowHandler = \(ev: CustomEvent<SideNavigationProps"
         r"\.FollowDetail>\): void => \{\n(?P<body>.*?)\n\};$",

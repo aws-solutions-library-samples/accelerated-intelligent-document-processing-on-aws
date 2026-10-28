@@ -304,7 +304,7 @@ const SectionDataLink = ({ item, documentItem }: { item: SectionItem; documentIt
   const objectKey = (documentItem?.objectKey || documentItem?.ObjectKey || '') as string;
   return (
     <Button
-      href={documentEditHref(objectKey, String(item.Id))}
+      href={documentEditHref(objectKey, { section: String(item.Id) })}
       variant="inline-link"
       iconName={canEdit ? 'edit' : undefined}
       disabled={!objectKey || !item.OutputJSONUri}

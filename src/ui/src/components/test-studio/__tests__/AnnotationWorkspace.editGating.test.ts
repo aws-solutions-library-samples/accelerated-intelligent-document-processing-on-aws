@@ -33,7 +33,10 @@
  * and the copies would otherwise drift silently.
  *
  * The decisions are pure functions in `annotation-edit-flags.ts`, asserted directly; the
- * page-access guard is still checked against the component source.
+ * page-access guard is still checked against the AnnotationWorkspace source. The edit
+ * screen's role gate and save path are not read as source text here: the behaviour moved
+ * into the test-set item and adapter suites (`test-set-item-edit-skip.test.tsx`,
+ * `test-set-item-edit-adapter.test.ts`).
  */
 
 import { readFileSync } from 'node:fs';
@@ -56,8 +59,6 @@ import type { AnnotationRoles } from '../annotation-edit-flags';
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
-const ADAPTER = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-adapter.ts'), 'utf-8');
-const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
 /** The cognito_groups declared on a mutation in schema.graphql. */
@@ -92,8 +93,9 @@ const AUTHORED = { reviewObjectKey: null };
 
 describe('AnnotationWorkspace edit gating', () => {
   it('picks the read-only decision from the document own save path', () => {
-    // A document with a review record: the review path's roles may edit.
-    expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Reviewer']);
+    // A document with a review record: edited (as a draft, then completed) by an Admin or
+    // an Annotator. The draft operation has no Reviewer and completion has no Author.
+    expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator']);
     // Authored ground truth: the direct path's roles may edit (saveTestSetDocumentSection,
     // which accepts an Annotator for a document assigned to them). The regression made this
     // read-only for everyone — a queue-state condition presented as a permission problem.
@@ -127,14 +129,13 @@ describe('AnnotationWorkspace edit gating', () => {
     // Whether you may open this queue, or one of its documents, at all is still
     // Admin | Author | Annotator.
     expect(SOURCE).toMatch(/if \(!roleLoading && !canAnnotate\)/);
-    expect(SCREEN).toMatch(/if \(!roleLoading && !canAnnotate\)/);
   });
 
   it('only promises editing to someone who can actually save it', () => {
     // The edit screen's alert already says "correct them if needed, then
     // Complete"; the suffix tells a saver what saving does, and anyone else who can.
     expect(groundTruthAlertSuffix(true, DRAFT)).toBe(
-      ' Saving a section, or Complete, writes the ground truth and counts the document as reviewed.',
+      ' Save keeps your changes; Process Changes writes the ground truth and counts the document as reviewed.',
     );
     const refused = groundTruthAlertSuffix(false, DRAFT);
     expect(refused).toMatch(/an Admin or an Author can change it/);
@@ -175,15 +176,25 @@ describe('AnnotationWorkspace edit gating', () => {
     expect(groupsWhere((r) => saveCapabilities(r).canSaveDirectToBaseline)).toEqual(direct.sort());
   });
 
+  it('matches the draft operation’s groups, so the review-copy rule cannot drift', () => {
+    // saveTestSetDocumentSectionDraft is Admin, Author, Annotator; an Author is refused a
+    // review copy server-side, which is why a review copy is editable only by the
+    // intersection with completeSectionReview's groups.
+    const draft = groupsFor('saveTestSetDocumentSectionDraft').sort();
+    expect(draft).toEqual(['Admin', 'Annotator', 'Author']);
+    expect(groupsWhere((r) => saveCapabilities(r).canDraft)).toEqual(draft);
+    const review = groupsFor('completeSectionReview');
+    expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(
+      draft.filter((g) => review.includes(g)).sort(),
+    );
+  });
+
   it('saves the direct path through the mutation those groups describe', () => {
     // canSaveDirectToBaseline mirrors saveTestSetDocumentSection only because the
     // edit screen always hands the editor its own save. If it stopped passing
     // onSave, the editor would fall back to uploadDocument (Admin, Author) and an
     // Annotator would lose the edit to an authorization error.
     expect(groupsFor('uploadDocument').sort()).toEqual(['Admin', 'Author']);
-    expect(SCREEN).toMatch(/onSave=\{adapter\.saveSection\}/);
-    expect(ADAPTER).toMatch(/query: saveTestSetDocumentSection/);
-    expect(ADAPTER).not.toMatch(/uploadDocument/);
   });
 });
 
@@ -193,16 +204,13 @@ describe('AnnotationWorkspace edit gating', () => {
  * the original class-correction bug, where the UI reported success and threw the change
  * away.
  */
-describe('GroundTruthSectionEditor class gating', () => {
+describe('the Test Studio class gating', () => {
   it('gates the class control on the class capability, not on field read-only', () => {
     expect(mayChangeClassFor(true, true)).toBe(true);
     expect(mayChangeClassFor(false, false)).toBe(false);
   });
 
   it('defaults to the old behaviour for callers that do not distinguish the two', () => {
-    // TestSetDocumentDetail passes no canChangeClass, so it must be unaffected.
-    const docView = readFileSync(join(HERE, 'TestSetDocumentDetail.tsx'), 'utf-8');
-    expect(docView).not.toMatch(/canChangeClass/);
     expect(mayChangeClassFor(undefined, true)).toBe(false);
     expect(mayChangeClassFor(undefined, false)).toBe(true);
   });
@@ -213,7 +221,7 @@ describe('GroundTruthSectionEditor class gating', () => {
  * fetch must not fall through to free text: a typed class no config defines produces a
  * section with no schema, which extracts nothing.
  */
-describe('GroundTruthSectionEditor class list unavailable', () => {
+describe('the Test Studio class list unavailable', () => {
   it('distinguishes "could not read the classes" from "there are none"', () => {
     expect(isClassListUnavailable(0, new Error('denied'), false)).toBe(true);
     expect(isClassListUnavailable(0, null, true)).toBe(true);

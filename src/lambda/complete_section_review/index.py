@@ -500,64 +500,75 @@ def save_edited_data_to_s3(s3_uri, edited_data):
         raise
 
 
+_test_set_labels = None
+
+
+def _labels():
+    """The one Test Studio label writer, built once per container."""
+    global _test_set_labels
+    if _test_set_labels is None:
+        from idp_common.review_queues.testset_labels import TestSetLabels
+
+        _test_set_labels = TestSetLabels(
+            s3_client,
+            TEST_SET_BUCKET,
+            doc_table=dynamodb.Table(HITL_TABLE_NAME) if HITL_TABLE_NAME else None,
+            curve_table=dynamodb.Table(TRACKING_TABLE_NAME),
+        )
+    return _test_set_labels
+
+
+def _test_set_document(object_key):
+    """``(table, tracking row, test set id, filename)`` for a test-set review document,
+    or None for any other document.
+
+    A test-set review document is keyed ``{test_run_id}/{filename}`` and carries
+    ``TestSetId``; its labels are the set's baseline for ``filename``.
+    """
+    table = dynamodb.Table(TRACKING_TABLE_NAME)
+    doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item", {})
+    test_set_id = doc.get("TestSetId")
+    if not test_set_id:
+        return None
+    filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
+    return table, doc, test_set_id, filename
+
+
 def write_correction_to_test_set_baseline(
     object_key, section_id, edited_data, username="", user_email=""
 ):
     """Persist a HITL correction to the owning test set's baseline (ground truth).
 
-    A test-set review document is keyed ``{test_run_id}/{filename}`` and carries
-    ``TestSetId``; the baseline it maps to is
-    ``{test_set_id}/baseline/{filename}/sections/{section_id}/result.json``. Writing
-    there, and not only to the document's own output, is what makes a review
-    reusable as versionable ground truth. Best-effort: a document outside a test
-    set, or a failed write, must not fail the review.
+    Writing to the set's baseline, and not only to the document's own output, is what
+    makes a review reusable as versionable ground truth. The label is written by
+    ``idp_common.review_queues.testset_labels`` (reviewed provenance, the edit
+    history, the curve observations, the section's draft deleted). Best-effort: a
+    document outside a test set, or a failed write, must not fail the review.
     """
     if not TEST_SET_BUCKET:
         return
     try:
-        table = dynamodb.Table(TRACKING_TABLE_NAME)
-        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get(
-            "Item", {}
-        )
-        test_set_id = doc.get("TestSetId")
-        if not test_set_id:
+        found = _test_set_document(object_key)
+        if not found:
             return  # Not a test-set review document — nothing to do.
-
-        # object_key is "{test_run_id}/{filename}"; the baseline is keyed by filename.
-        filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
-        baseline_key = (
-            f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
-        )
+        table, doc, test_set_id, filename = found
         data = json.loads(edited_data) if isinstance(edited_data, str) else edited_data
+        if not isinstance(data, dict):
+            logger.warning(f"Ignoring a non-object correction for {object_key}")
+            return
+        from idp_common.review_queues.testset_labels import LabelEditor
 
-        # Read the label being replaced before overwriting it: the diff against
-        # what the reviewer saved is the only evidence of whether the model was
-        # right, and the write destroys it.
-        previous = _read_json(TEST_SET_BUCKET, baseline_key)
-
-        # Marks the label human-reviewed so draft labeling leaves it alone; the
-        # harvester only replaces labels tagged draft-machine.
-        if isinstance(data, dict):
-            data["labelSource"] = "reviewed-human"
-            append_edit_history(previous, data, username, user_email)
-
-        s3_client.put_object(
-            Bucket=TEST_SET_BUCKET,
-            Key=baseline_key,
-            Body=json.dumps(data, indent=2),
-            ContentType="application/json",
+        written = _labels().write_reviewed(
+            test_set_id,
+            filename,
+            section_id,
+            data,
+            editor=LabelEditor(name=username or "unknown", email=user_email or ""),
+            source="annotation-review",
+            require_existing=False,
+            skip_if_reviewed=False,
         )
-        logger.info(
-            f"Wrote HITL correction to test-set baseline "
-            f"s3://{TEST_SET_BUCKET}/{baseline_key}"
-        )
-
-        record_curve_observations(test_set_id, previous, data)
-        was_reviewed = (
-            isinstance(previous, dict)
-            and previous.get("labelSource") == "reviewed-human"
-        )
-        if not was_reviewed:
+        if written and not written.was_reviewed:
             count_document_if_fully_reviewed(
                 table, test_set_id, filename, section_id, doc.get("Sections") or []
             )
@@ -610,109 +621,38 @@ def confirm_test_set_baseline_reviewed(
 ):
     """Tag a baseline human-reviewed when the reviewer changed nothing.
 
-    "The labels are correct" is a verdict, not the absence of one: every field
-    keeps its predicted value, and a human has asserted those values are right.
-    The baseline is rewritten in place so it carries ``reviewed-human``, gains a
-    revision entry, and feeds the curve observations that all say "the model was
-    correct" — the high-confidence evidence review otherwise never produces.
+    "The labels are correct" is a verdict, not the absence of one: every field keeps
+    its predicted value, and a human has asserted those values are right. The label
+    is rewritten as reviewed, with a revision entry and the curve observations that
+    all say "the model was correct". An already reviewed label is left alone.
 
     Best-effort, and a no-op outside a test set or when no baseline exists yet.
     """
     if not TEST_SET_BUCKET:
         return
     try:
-        table = dynamodb.Table(TRACKING_TABLE_NAME)
-        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get(
-            "Item", {}
-        )
-        test_set_id = doc.get("TestSetId")
-        if not test_set_id:
+        found = _test_set_document(object_key)
+        if not found:
             return
+        table, doc, test_set_id, filename = found
+        from idp_common.review_queues.testset_labels import LabelEditor
 
-        filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
-        baseline_key = (
-            f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
+        written = _labels().write_reviewed(
+            test_set_id,
+            filename,
+            section_id,
+            None,
+            editor=LabelEditor(name=username or "unknown", email=user_email or ""),
+            source="annotation-review",
+            require_existing=False,
+            skip_if_reviewed=True,
         )
-        existing = _read_json(TEST_SET_BUCKET, baseline_key)
-        if not isinstance(existing, dict):
-            logger.info(
-                f"No baseline to confirm at s3://{TEST_SET_BUCKET}/{baseline_key}"
+        if written and not written.was_reviewed:
+            count_document_if_fully_reviewed(
+                table, test_set_id, filename, section_id, doc.get("Sections") or []
             )
-            return
-        if existing.get("labelSource") == "reviewed-human":
-            return  # Already confirmed; nothing to record.
-
-        # Reuse the correction path with the values unchanged: confirming asserts
-        # the current values ARE the ground truth, so the same provenance stamp,
-        # revision entry and curve observations apply.
-        write_correction_to_test_set_baseline(
-            object_key, section_id, existing, username, user_email
-        )
     except Exception as e:  # noqa: BLE001 — must not break the review
         logger.error(f"Failed to confirm test-set baseline for {object_key}: {e}")
-
-
-# Caps the trail on a repeatedly reviewed label; the newest entries are kept.
-MAX_EDIT_HISTORY_ENTRIES = 50
-
-
-def append_edit_history(previous, saved, username, user_email):
-    """Record who changed what, in the label itself.
-
-    The ground-truth viewer reads provenance from ``_editHistory`` inside the
-    label JSON, so a review recorded only in DynamoDB (HITLReviewHistory) is
-    invisible to it. The field-level diff is taken against the label being
-    replaced, which is already in hand for the curve observation.
-    """
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "editedBy": username or "unknown",
-        "editedByEmail": user_email or "",
-        "source": "annotation-review",
-    }
-    diffs = _field_diffs(previous, saved)
-    if diffs:
-        entry["baselineEdits"] = {
-            "changedFields": list(diffs.keys()),
-            "changeCount": len(diffs),
-            "diffs": diffs,
-        }
-
-    # The trail is server-owned: seed it from the stored label, since a client that
-    # does not round-trip _editHistory would otherwise erase every prior entry.
-    # Taking the longer of the two also stops a client from truncating it.
-    stored = (previous or {}).get("_editHistory")
-    incoming = saved.get("_editHistory")
-    history = stored if isinstance(stored, list) else []
-    if isinstance(incoming, list) and len(incoming) > len(history):
-        history = incoming
-    saved["_editHistory"] = [*history, entry][-MAX_EDIT_HISTORY_ENTRIES:]
-
-
-def _field_diffs(previous, saved):
-    """Field path → {originalValue, newValue} for every value the review changed.
-
-    Uses the same flattening as the curve, so "changed" means the same thing to
-    the audit trail and to the calibration signal.
-    """
-    if not previous:
-        return {}
-    try:
-        from idp_common.evaluation.curve_store import flatten_values
-
-        before = flatten_values(previous.get("inference_result") or {})
-        after = flatten_values(saved.get("inference_result") or {})
-    except Exception as e:  # noqa: BLE001 — provenance must not fail the save
-        logger.warning(f"Could not diff review changes: {e}")
-        return {}
-
-    diffs = {}
-    for path in set(before) | set(after):
-        original = before.get(path)
-        new = after.get(path)
-        if original != new:
-            diffs[path] = {"originalValue": original, "newValue": new}
-    return diffs
 
 
 def _read_json(bucket, key):
@@ -722,54 +662,6 @@ def _read_json(bucket, key):
         return json.loads(body)
     except Exception:  # noqa: BLE001 — absence is normal (first review of a doc)
         return None
-
-
-def record_curve_observations(test_set_id, previous, saved):
-    """Record confidence→accuracy observations from this review.
-
-    A field the reviewer left alone was predicted correctly; a changed one was not.
-    Paired with the model's claimed confidence, that is the ``(confidence, correct)``
-    observation the review-effort estimator's curve is built from. Best-effort: the
-    curve is an optimization and must never fail a reviewer's save.
-    """
-    if not previous:
-        return  # No prior prediction, so there is no verdict to record.
-    try:
-        from idp_common.evaluation.curve_store import (
-            CurveStore,
-            observations_from_baseline_review,
-        )
-
-        observations = observations_from_baseline_review(previous, saved)
-        if not observations:
-            return
-
-        table = dynamodb.Table(TRACKING_TABLE_NAME)
-        # Key the curve by the config that produced these labels; a later config
-        # change must not inherit a curve measured under different confidence
-        # semantics.
-        label_meta = previous.get("metadata") or {}
-        config_version = label_meta.get("config_version")
-        # ...and by the revision family that drafted them (#698): the harvest
-        # copies the run's confidence fingerprint onto the label beside the
-        # config version, so a later model swap on the same profile starts a new
-        # curve instead of inheriting this one.
-        fingerprint = label_meta.get("confidence_fingerprint") or None
-        accepted = CurveStore(table).add_observations(
-            test_set_id,
-            observations,
-            config_version=config_version,
-            source="review",
-            fingerprint=fingerprint,
-        )
-        logger.info(
-            f"Recorded {accepted} confidence-curve observation(s) for test set "
-            f"{test_set_id} from review"
-        )
-    except Exception as e:  # noqa: BLE001 — never break a review over the curve
-        logger.warning(
-            f"Could not record confidence-curve observations for {test_set_id}: {e}"
-        )
 
 
 def trigger_reprocessing(object_key):

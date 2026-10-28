@@ -181,17 +181,17 @@ HITL review is automatically triggered when:
 3. **Review Sections**:
    - In the document detail view, locate the **Sections** panel
    - Click **Edit Data** on a section (or **Edit** at the top of the document page)
-     to open the edit screen at `#/documents/<document>/edit`
+     to open the edit page at `#/documents/<document>/edit`
    - Review and correct extracted key-value pairs
    - Click **Save** to save your corrections. Saving does not finish the
      review: the document stays **Review In Progress** and you stay its review owner,
      so you can come back and keep editing
 
 4. **Complete the Review**:
-   - Click **Process Changes** on the edit screen (or in the Sections panel's Edit
+   - Click **Process Changes** on the edit page (or in the Sections panel's Edit
      Mode) to finish the review and process the changes: evaluation and summarization
      re-run, and OCR, classification and extraction are not repeated. The
-     edit screen saves your latest edits first and asks you to confirm
+     edit page saves your latest edits first and asks you to confirm
    - Document status changes to **Review Completed**, and **Review Completed By**
      records you
 
@@ -214,13 +214,13 @@ Admins have additional capabilities:
 
 ### 3. Result Integration
 
-When the review is completed with **Process Changes** (on the edit screen or in the Sections panel), or every section is completed or skipped:
+When the review is completed with **Process Changes** (on the edit page or in the Sections panel), or every section is completed or skipped:
 - Document status changes to **Review Completed** or **Review Skipped**
 - Corrected data is saved to S3
 - **Review Completed By** field records who completed/skipped the review
 - Review history is recorded with reviewer information and timestamps
 
-**Note:** Finalizing reviews — **Process Changes** (on the edit screen or in the Sections panel), completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
+**Note:** Finalizing reviews — **Process Changes** (on the edit page or in the Sections panel), completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
 
 ## Configuration
 
@@ -286,9 +286,8 @@ Document statuses displayed:
 The section review interface provides:
 
 - **Section List**: All document sections with review status
-- **Edit Data** (or **View Data** for a read-only role): opens the section in the edit screen
+- **Edit Data** (or **View Data** for a read-only role): opens the section in the edit page
 - **Download Data**: Export extraction results as JSON
-- **Mark Review Complete**: Complete the review for a section
 
 ### Review Actions
 
@@ -297,17 +296,17 @@ The section review interface provides:
 | **Start Review** | Reviewers, Admins | Claim a pending document for review |
 | **Release Review** | Owner, Admins | Release document back to pending status |
 | **Skip All Reviews** | Admins only | Skip all remaining sections |
-| **Mark Review Complete** | Owner, Admins | Complete review for a section |
+| **Process Changes** (edit page) | Owner, Admins | Complete the review and process the changes |
 
 ### Document Editor
 
-**Edit Data** and the document page's **Edit** open the edit screen, the same
-screen that review queue items use, at `#/documents/<document>/edit` (with
-`?section=<id>` for one section). Its breadcrumb is **Home › Documents ›
-{document}**. It opens for any processed document, whether or not HITL is enabled.
-A document that is still processing, or that is in a review queue, opens read-only;
-an in-review one links to its queue item with **Review in queue** for Admins and
-Annotators.
+**Edit Data** and the document page's **Edit** open the document's edit page, the
+same page that review queue items use, at `#/documents/<document>/edit`
+(`?section=<id>` opens one section, `?field=<path>` one field). It opens for any
+processed document, whether or not HITL is enabled. A document in a review queue
+opens its queue item for Admins and Annotators, and read-only for every other role,
+saying it is edited in its queue. A document that is still processing opens
+read-only. Its breadcrumb is **Home › Documents › {document}** for a direct edit.
 
 The title is the document's name with its status in parentheses, with the full
 object key under it. The actions are in one bar at the top: **Edit | View**, the
@@ -320,7 +319,7 @@ hover.
 | Reports | **History** | The open section's field edits (prediction and baseline) and the document's review activity | everyone |
 | Reports | **Summary** | The document's summary, on a processed document that has one | everyone |
 | Reports | **Processing Report** | How the open section was extracted | everyone |
-| More Actions | **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | editors |
+| More Actions | **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | Admin, Reviewer (disabled for other roles, with the reason) |
 | More Actions | **Use As Evaluation Baseline** | Copies the processed document's results into the evaluation baseline, as on the document page | Admin, Author |
 | Button | **Cancel** | Leaves for the document page; asks first when there are unsaved edits, and discards them | editors |
 | Button | **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
@@ -365,7 +364,7 @@ API and a Reviewer doesn't save baseline edits.
 - Edit extracted field values directly in the visual editor
 - Change tracking with visual indicators (blue left border on modified fields)
 - **Save** writes the changes to S3
-- **Cancel** discards all unsaved edits, after asking, and leaves the edit screen
+- **Cancel** discards all unsaved edits, after asking, and leaves the edit page
 
 **Evaluation Baseline Editing** (when evaluation is enabled)
 - Edit baseline (expected) values alongside predictions
@@ -377,7 +376,7 @@ API and a Reviewer doesn't save baseline edits.
 
 After making edits to predictions or baselines, you can trigger reprocessing to re-run downstream steps with the updated data:
 
-1. **Save and process the changes**: Click **Process Changes** on the edit screen. It saves your prediction and baseline edits, asks you to confirm, then processes the changes. (**Save** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
+1. **Save and process the changes**: Click **Process Changes** on the edit page. It saves your prediction and baseline edits, asks you to confirm, then processes the changes. (**Save** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
 2. **Confirm**: The confirmation says which steps re-run
 3. **Automatic Pipeline Execution**: The document automatically transitions through processing stages:
    - `SUMMARIZING` → Re-generates document summary using updated extraction data

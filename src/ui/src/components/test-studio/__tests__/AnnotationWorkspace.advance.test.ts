@@ -34,48 +34,48 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SOURCE = readFileSync(join(__dirname, '..', 'AnnotationWorkspace.tsx'), 'utf-8');
-// The per-document screen this page opens. Saving, completing and skipping happen
+// The per-document screen this page opens (its Test Studio model). Saving, completing and skipping happen
 // there, not in an in-page rail, so that is where the #1321 behaviour lives now.
-const SCREEN = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'TestSetItemEdit.tsx'), 'utf-8');
+const SCREEN = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'test-set-item-edit-model.tsx'), 'utf-8');
 
 /*
  * Develop's `nextAvailableAfter` / `applyReviewedToQueue` unit tests are not carried
  * here. They pinned the in-page "Save & next in queue" rail, which this page no longer
  * has: it is a queue table, and each row opens the per-document edit screen
- * (edit-screen/TestSetItemEdit.tsx), which returns to the queue (or Home › Tasks)
+ * (edit-screen/TestSetItemEdit.tsx, whose model is test-set-item-edit-model.tsx), which returns to the queue (or Home › Tasks)
  * after Complete, Skip or the last section's save. There is no in-page advance, no
  * local next-document choice and no local retirement of a row left to test. The
  * intent of those tests — leave the saved document at once, and never claim a
  * part-reviewed packet as reviewed — is pinned below against the screen that owns it.
  */
 describe('leaving a document does not wait for the queue reload', () => {
-  const handleAction = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
-  const handleSaved = SCREEN.slice(SCREEN.indexOf('const handleSaved ='), SCREEN.indexOf('const notices ='));
+  // The model's Skip and Process Changes handlers.
+  const handleAction = SCREEN.slice(SCREEN.indexOf('      skip: {'), SCREEN.indexOf('      cancelTo:'));
+  const processChanges = handleAction.slice(handleAction.indexOf('      process: {'));
 
   it('is positioned in the source where this test expects to find it', () => {
     // Guards the assertions below from silently passing on an empty slice.
     expect(handleAction).toContain('await adapter.skip(reason, note)');
-    expect(handleSaved).toContain('savedSections.current.add(sectionId)');
+    expect(processChanges).toContain('await adapter.applyAndComplete()');
   });
 
   it('exits as soon as the mutation lands, without awaiting a queue reload', () => {
     // The #1321 regression was the editor sitting on the document it had just saved
     // while a ~9s getAnnotationQueue reply came back. The exit navigates straight
     // away; the queue page reads the queue itself on arrival.
-    const success = handleAction.slice(0, handleAction.indexOf('} catch'));
-    expect(success).toMatch(/exit\(\s*queuePath,/);
-    expect(success).not.toContain('await reload');
-    expect(handleSaved).not.toContain('await reload');
+    expect(handleAction).toMatch(/return \{\s*to: leavePath\(queuePath\),/);
+    expect(handleAction).not.toContain('await reload');
   });
 
-  it('claims a document as reviewed only where every section of it is', () => {
+  it('claims a document as reviewed only on the server’s word', () => {
     // The server marks a document reviewed only once every section carries a human
-    // verdict, so one section's save on a packet must not announce the document
-    // reviewed — the claim the test set's own Review state column contradicted.
-    const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
-    expect(everyAt).toBeGreaterThan(-1);
-    expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
-    expect(handleSaved).toContain('Check the other sections, then choose Process Changes.');
+    // verdict, so the page leaves, saying "reviewed", only when the server says so —
+    // never on what this session saved, the claim the test set's own Review state
+    // column once contradicted.
+    const verdictAt = processChanges.indexOf('if (!reviewed) throw new NotReviewedYet(notReviewedMessage(name));');
+    expect(verdictAt).toBeGreaterThan(-1);
+    expect(processChanges.indexOf('labels are marked reviewed')).toBeGreaterThan(verdictAt);
+    expect(SCREEN).toContain('Check its sections and choose Process Changes again.');
   });
 
   it('does not report a skipped document as reviewed', () => {

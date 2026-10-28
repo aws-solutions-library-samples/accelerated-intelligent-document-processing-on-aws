@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The edit screen's Document Editor panel (SectionEditor's `widget` variant). What has
+ * The edit page's Document Editor panel (SectionEditor). What has
  * to hold: the panel is titled Document Editor; with more than one section, a Section
  * dropdown at its top left lists every section as "Section <id> (<class>)" and opening
- * one loads it; with one section there is no dropdown; the structure slot sits on the
- * same row; and `body` (the source document) replaces the panes and hides the section
+ * one loads it; with one section there is no dropdown; the panel has no Save, Discard or
+ * Edit history of its own; and `body` (the source document) replaces the panes and hides the section
  * controls while the editor stays mounted.
+ *
+ * The field pane's height is not pinned here: it is tracked in the separate edit-page
+ * defects item, and the edit page uses the fixed `WIDGET_PANE_HEIGHT`
+ * (`SectionEditor.tsx`). The retired Visual Editor dialog's field-pane height test went
+ * with that dialog.
  */
 
 import React from 'react';
@@ -44,9 +49,6 @@ const renderWidget = async (props: Partial<React.ComponentProps<typeof SectionEd
       isReadOnly={false}
       loadSection={loadSection}
       onSave={async () => undefined}
-      actionsPlacement="external"
-      showHistoryTab={false}
-      variant="widget"
       {...props}
     />,
   );
@@ -81,11 +83,12 @@ describe('the Document Editor panel', () => {
     await waitFor(() => expect(loadSection).toHaveBeenLastCalledWith('2'));
   });
 
-  it('puts the dropdown before the structure slot, on one row', async () => {
-    await renderWidget({ structureSlot: () => <button type="button">Structure</button> });
-    const select = sectionSelect()!.getElement();
-    const structure = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Structure')!;
-    expect(select.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  it('has no Save, Discard or Edit history tab of its own: those are the page’s', async () => {
+    await renderWidget();
+    const labels = [...document.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).not.toContain('Save changes');
+    expect(labels).not.toContain('Discard changes');
+    expect(document.body.textContent).not.toContain('Edit history');
   });
 
   it('has no dropdown for a single section', async () => {

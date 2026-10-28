@@ -9,6 +9,7 @@ import os
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from idp_common import s3_targets
 from idp_common.config.configuration_manager import ConfigurationManager
@@ -22,6 +23,10 @@ from idp_common.config_scope import (
     caller_email_from_claims,
     caller_sub_from_claims,
     resolve_allowed_config_versions,
+)
+from idp_common.review_queues.section_writes import (
+    assert_section_result_writable,
+    section_result_document,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -104,7 +109,43 @@ def _caller_in_groups(event, allowed):
 
 _dynamodb = boto3.resource("dynamodb")
 _cloudwatch = boto3.client("cloudwatch")
+# The tracking table, for the in-review check on section-result uploads. Optional:
+# without it, section results are refused (see _assert_section_result_writable).
+TRACKING_TABLE = os.environ.get("TRACKING_TABLE")
+_tracking_table = _dynamodb.Table(TRACKING_TABLE) if TRACKING_TABLE else None
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+
+
+def _assert_section_result_writable(bucket_name, object_key):
+    """Refuse an upload of a section result for a document in a review queue.
+
+    Applies to ``<document>/sections/<id>/result.json`` in the Output bucket only.
+    Fails closed: with no tracking table configured such an upload is refused, and a
+    tracking read error propagates, so no URL is minted on an unknown state.
+    """
+    output_bucket = os.environ.get("OUTPUT_BUCKET")
+    if bucket_name != output_bucket or section_result_document(object_key) is None:
+        return
+    if _tracking_table is None:
+        logger.warning(
+            "Rejecting a section-result upload: TRACKING_TABLE is not configured"
+        )
+        raise PermissionError(
+            "Unauthorized: section results can't be uploaded on this deployment"
+        )
+    try:
+        assert_section_result_writable(
+            _tracking_table,
+            bucket=bucket_name,
+            key=object_key,
+            output_bucket=output_bucket,
+        )
+    except ClientError:
+        logger.error(
+            "Could not read the tracking row for a section-result upload",
+            exc_info=True,
+        )
+        raise
 
 
 def _emit(metric_name):
@@ -456,6 +497,10 @@ def _handle_upload_document(event):
         s3_targets.assert_write_target_allowed(
             bucket_name, object_key, ALLOWED_BUCKETS, logger=logger
         )
+
+        # A document in a review queue is edited only through its queue item, whose
+        # finalize run writes over its section results. Raises ValueError -> 400.
+        _assert_section_result_writable(bucket_name, object_key)
 
         # Which CONFIGURATION this destination implies, and whether this caller may
         # put a document into it. Covers the `version` argument and the destination

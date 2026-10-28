@@ -252,8 +252,9 @@ FIELD_FUNCTION_MAP: Dict[str, str] = _load_field_function_map()
 FIELD_ALIASES: Dict[str, str] = {
     "getFilePresignedUrl": "getFileContents",
     # Both presign fields alias the same resolver, which dispatches on fieldName.
-    # An alias rather than a FIELD_FUNCTION_MAP entry for the reason stated below:
-    # HttpApiFieldFunctionMap is already at its 8 KB Advanced-tier ceiling.
+    # An alias rather than a FIELD_FUNCTION_MAP entry, which would grow the SSM
+    # parameter towards its 8 KB Advanced-tier limit; measure the headroom with
+    # scripts/tests/test_http_api_field_map_size.py.
     "getFilePresignedUrls": "getFileContents",
     "listSampleDocuments": "uploadDocument",
     "uploadSampleDocument": "uploadDocument",
@@ -272,6 +273,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "listMyTestSetTasks": "addDocumentsToTestSet",
     "listTestSetQueues": "addDocumentsToTestSet",
     "saveTestSetDocumentSection": "addDocumentsToTestSet",
+    "saveTestSetDocumentSectionDraft": "addDocumentsToTestSet",
     "skipTestSetDocument": "addDocumentsToTestSet",
     "claimTestSetDocument": "addDocumentsToTestSet",
     "updateTestSetQueue": "addDocumentsToTestSet",

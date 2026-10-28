@@ -35,7 +35,6 @@ const setup = async (record?: { editedBy: string; source: string }) => {
       loadSection={async () => ({ data: JSON.parse(JSON.stringify(ORIGINAL)), raw: JSON.stringify(ORIGINAL) })}
       onSave={onSave}
       controllerRef={controller}
-      actionsPlacement="external"
       recordEditHistory={record}
       headerExtras={(c) => {
         ctx = c;
