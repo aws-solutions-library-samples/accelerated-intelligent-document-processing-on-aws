@@ -68,7 +68,7 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
    and the assignee finishes it.
-   - **Process Changes** applies the corrections in the finalize run, and the document ends `COMPLETED`. Like the Sections panel's **Process Changes**, that run reuses the document's OCR, classification and extraction, and re-runs summarization, evaluation and the hooks on the corrected data.
+   - **Process Changes** applies the corrections in the finalize run, and the document ends `COMPLETED`. That run reuses the document's OCR, classification and extraction, and re-runs summarization, evaluation and the hooks on the corrected data.
    - **Skip** gives it back to its queue, unassigned and not finished, with a reason
      from the queue's skip list.
    - An Admin can instead **Remove** it from the queue: it ends `COMPLETED` with the
@@ -340,21 +340,24 @@ its queue item:
   the item is claimed, assigned, reassigned or taken over, cleared when it goes back to
   the queue, and kept once the review finishes. **Review Completed By** is whoever
   finished it, filled in once its corrections have been applied.
-- The document page's **Edit** and a section's **Edit Data** open the document's
+- The document page's **Edit** and **Edit Data** in a section row's **⋮** menu open the document's
   edit page, which shows the queue item for Admins and Annotators, the roles that can
   open queue items. For other roles it opens the direct edit, read-only, saying the
   document is edited in its queue.
-- **Edit Mode** and the Sections panel's **Edit Page Grouping** stay enabled, but the
-  server refuses what it can't take: **Process Changes** (Edit Mode) on a document in review, and
-  a regroup by anyone but the queue item's holder. Regroup from the queue item.
-  **Skip All Reviews** and **Start Review** aren't offered. A direct upload of the
+- The document page's change actions (**More Actions** › **Edit Page Class**,
+  **Re-extract Sections**, **Edit Page Text**, **Reset Page Class**, **Use As Evaluation
+  Baseline**) are disabled, with the reason that the document is in a review queue;
+  correct and regroup the document from its queue item. The server refuses the same
+  changes too: a regroup by anyone but the queue item's holder, and processing changes
+  on a document in review. **Skip All Reviews** and **Start Review** aren't offered.
+  A direct upload of the
   document's section results (`uploadDocument`) is refused as well, with
   `QUEUE_MANAGED`.
 - In the document list, the **In Review** status links to the document's edit page
   for Admins and Annotators.
 
-Once the review finishes, the document page can be edited as usual. **Process Changes**
-on a finished review doesn't mark it completed again or replace the reviewer the queue
+Once the review finishes, the document page can be edited as usual. The edit page's
+**Process Changes** on a finished review doesn't mark it completed again or replace the reviewer the queue
 recorded.
 
 ## Turning review queues on

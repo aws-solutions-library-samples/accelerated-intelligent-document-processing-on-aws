@@ -47,6 +47,9 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
           <b>Edit | View</b> switches between the Document Editor and the original file. Unsaved edits are kept while the file is shown.
         </li>
         <li>
+          <b>Refresh</b> reloads the document; with unsaved edits it asks first.
+        </li>
+        <li>
           <b>Skip</b> (queue items) gives the item back to its queue with a reason. It is not finished, and saved work is kept.
         </li>
         <li>

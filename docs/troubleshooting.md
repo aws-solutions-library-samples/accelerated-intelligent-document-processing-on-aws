@@ -15,7 +15,7 @@ For automated troubleshooting, use the **Error Analyzer** tool:
 
 - **What it is**: AI-powered agent that automatically diagnoses document processing failures
 - **When to use**: Document-specific failures, system-wide error patterns, performance issues
-- **How to access**: Web UI → Failed document → Troubleshoot button
+- **How to access**: Web UI → open the failed document → **Troubleshoot** in the document page's action bar (Admin, Author and Viewer roles); reopening it on the same document shows the last result, and **Run again** starts a new analysis
 - **Documentation**: See [Error Analyzer](error-analyzer.md) for complete guide
 
 **Quick Start**:

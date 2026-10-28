@@ -145,10 +145,25 @@ beforeEach(() => {
 });
 
 describe('the direct edit', () => {
-  it('offers Reports, More Actions, Cancel, Save and Process Changes, with no Skip', async () => {
+  it('Refresh reads the document once more, and says so when the read fails', async () => {
+    await renderEditor();
+    const reads = () => graphql.mock.calls.filter((c) => queryOf(c).includes('getDocument')).length;
+    const before = reads();
+    button('Refresh').click();
+    await waitFor(() => expect(reads()).toBe(before + 1));
+    graphql.mockRejectedValueOnce(new Error('offline'));
+    button('Refresh').click();
+    await waitFor(() => expect(document.body.textContent).toContain('Could not reload doc.pdf: offline'));
+    expect(reads()).toBe(before + 2);
+    // The page stays on the document: a failed Refresh is not a failed open.
+    expect(editorProps).not.toBeNull();
+    expect(document.body.textContent).not.toContain("Couldn't open this document");
+  });
+
+  it('offers Reports, More Actions, Refresh, Cancel, Save and Process Changes, with no Skip', async () => {
     await renderEditor();
     expect(menuNames()).toEqual(['Reports', 'More Actions']);
-    expect(barButtonLabels()).toEqual(['Cancel', 'Save', 'Process Changes']);
+    expect(barButtonLabels()).toEqual(['Refresh', 'Cancel', 'Save', 'Process Changes']);
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
     expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class', 'Use As Evaluation Baseline']);
     expect(editorProps!.isReadOnly).toBe(false);

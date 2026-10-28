@@ -158,10 +158,10 @@ beforeEach(() => {
 });
 
 describe('the primary action on a Test Studio document', () => {
-  it('offers Skip, Cancel, Save and Process Changes for a document with a review copy, with no Summary or baseline', () => {
+  it('offers Refresh, Skip, Cancel, Save and Process Changes for a document with a review copy, with no Summary or baseline', () => {
     renderScreen();
     expect(menuNames()).toEqual(['Reports', 'More Actions']);
-    expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
+    expect(barButtonLabels()).toEqual(['Refresh', 'Skip', 'Cancel', 'Save', 'Process Changes']);
     // Test Studio has no summary, and its labels already are the baseline.
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Processing Report']);
     expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class']);
@@ -170,7 +170,7 @@ describe('the primary action on a Test Studio document', () => {
   it('offers Reprocess for authored ground truth too, saying nothing is reprocessed', () => {
     docOver.reviewObjectKey = null;
     renderScreen();
-    expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
+    expect(barButtonLabels()).toEqual(['Refresh', 'Skip', 'Cancel', 'Save', 'Process Changes']);
     expect(button('Process Changes').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
   });
 

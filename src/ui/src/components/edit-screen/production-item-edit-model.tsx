@@ -21,7 +21,7 @@ import { describeApiError } from '../../hooks/utils/graphql-error';
 import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditHref, productionQueuePath } from '../../routes/constants';
 import type { ReviewItem, ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
-import { saveDocumentGrouping } from '../common/document-grouping';
+import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
@@ -53,6 +53,7 @@ const FAILED_ACTION: Record<EditAction, string> = {
   process: 'process the changes',
   save: 'save your draft',
   cancel: 'leave the item',
+  refresh: 'reload the item',
 };
 
 /** An Annotator was assigned the item between the Admin opening it and editing it. */
@@ -276,6 +277,8 @@ export const useProductionItemEditModel = (
         cancelDisabledReason: saving ? 'Saving your latest edits…' : undefined,
         showSave: canEdit,
         saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your latest edits…' : undefined,
+        showRefresh: true,
+        refreshDisabledReason: saving ? 'Saving your latest edits…' : undefined,
         showRegroup: true,
         regroupDisabledReason:
           lockedReason ??
@@ -328,15 +331,9 @@ export const useProductionItemEditModel = (
           return true;
         },
         save: async (next) => {
-          let result;
-          try {
-            result = await saveDocumentGrouping(objectKey, next);
-          } catch (err) {
-            throw new Error(describeApiError(err, 'save the page grouping'));
-          }
-          if (!result.success) throw new Error(result.message ?? 'The page grouping could not be saved.');
+          const message = await saveDocumentGroupingOrThrow(objectKey, next, (err) => describeApiError(err, 'save the page grouping'));
           await Promise.all([reload(), adapter.refreshDocument()]);
-          return result.message ?? null;
+          return message;
         },
       },
       history: { reviewActivity: detail.history },
@@ -378,6 +375,7 @@ export const useProductionItemEditModel = (
         void adapter.refreshDocument();
         return `Copying ${name} to the evaluation baseline.`;
       },
+      refresh: adapter.refresh,
       cancelTo: leavePath(queuePath),
       failures: {
         surface: 'flash',

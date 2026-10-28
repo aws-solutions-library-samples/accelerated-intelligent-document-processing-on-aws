@@ -51,7 +51,7 @@ const ALLOWED: Record<string, { operations: SectionWriter[]; reason: string }> =
   },
   [join('components', 'pages-panel', 'PageTextEditorModal.tsx')]: {
     operations: ['uploadDocument'],
-    reason: 'a page’s text, from the document page’s Pages panel (a non-goal of IDP-0004)',
+    reason: 'a page’s text, from the document page’s Edit Page Text dialog, which then reprocesses it',
   },
   [join('components', 'upload-document', 'UploadDocumentPanel.tsx')]: {
     operations: ['uploadDocument'],

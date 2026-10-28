@@ -71,7 +71,7 @@ describe('PageGroupingEditor', () => {
     const { onCancel } = renderEditor({ presentation: 'modal' });
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Edit Page Grouping')).toBeInTheDocument();
+    expect(within(dialog).getByText('Edit Page Class')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Expand' })).not.toBeInTheDocument();
     createWrapper(document.body).findModal()!.findDismissButton().click();
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -365,7 +365,7 @@ describe('PageGroupingEditor expand', () => {
 
     // The in-progress grouping survives the switch — it would be lost if expanding
     // remounted the board.
-    expect(screen.getByRole('heading', { name: /Edit Page Grouping/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Edit Page Class/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Save grouping/i })).toBeEnabled();
   });
 
@@ -678,5 +678,54 @@ describe('PageGroupingEditor page preview', () => {
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent(/has not finished rendering/i);
     expect(within(dialog).queryByAltText('Page 1')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The second save (the document page's Save and Re-extract): beside the primary one, and
+ * gated the same way, plus its own reason for the draft.
+ */
+describe('PageGroupingEditor second save', () => {
+  const secondaryButton = () => screen.getByRole('button', { name: /^Save and Re-extract/ });
+  const isOff = (b: HTMLElement) => b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true';
+
+  it('sits between Cancel and the primary save, and is off while nothing changed', () => {
+    renderEditor({ secondarySave: { label: 'Save and Re-extract', onSave: vi.fn() } });
+    const labels = createWrapper(document.body)
+      .findAllButtons()
+      .map((b) => b.getElement().textContent)
+      .filter((t) => ['Cancel', 'Save and Re-extract', 'Save grouping'].includes(t ?? ''));
+    expect(labels).toEqual(['Cancel', 'Save and Re-extract', 'Save grouping']);
+    expect(isOff(secondaryButton())).toBe(true);
+  });
+
+  it('saves the draft in document order through its own handler', async () => {
+    const onSecondary = vi.fn();
+    const { onSave } = renderEditor({ secondarySave: { label: 'Save and Re-extract', onSave: onSecondary } });
+    await movePageTo(3, '1');
+    expect(isOff(secondaryButton())).toBe(false);
+    fireEvent.click(secondaryButton());
+    expect(onSecondary).toHaveBeenCalledWith([
+      { sectionId: '1', documentClass: 'FieldTicket', pageIds: [1, 2, 3] },
+      { sectionId: '2', documentClass: 'Invoice', pageIds: [4] },
+    ]);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('is disabled with the reason its check gives for the draft', async () => {
+    const disabledReason = vi.fn(() => 'Not for this draft');
+    renderEditor({ secondarySave: { label: 'Save and Re-extract', disabledReason, onSave: vi.fn() } });
+    await movePageTo(3, '1');
+    expect(isOff(secondaryButton())).toBe(true);
+    expect(screen.getByRole('button', { name: /Save grouping/i })).toBeEnabled();
+    expect(disabledReason).toHaveBeenLastCalledWith([
+      { sectionId: '1', documentClass: 'FieldTicket', pageIds: [1, 2, 3] },
+      { sectionId: '2', documentClass: 'Invoice', pageIds: [4] },
+    ]);
+    const wrapper = createWrapper(document.body)
+      .findAllButtons()
+      .find((b) => b.getElement() === secondaryButton())!;
+    wrapper.focus();
+    expect(wrapper.findDisabledReason()?.getElement().textContent).toBe('Not for this draft');
   });
 });

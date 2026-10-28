@@ -5,13 +5,14 @@
 // loading, a missing or unreadable document, an unreadable review item, and an
 // Annotator-only user who is not a member of the item's queue. They show Home only in
 // the breadcrumbs and highlight no navigation entry, since no mode has been chosen.
+// The document page shows the same document states (through LoadState).
 import React from 'react';
 import { Link } from '@cloudscape-design/components';
 
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { DOCUMENTS_PATH, MY_QUEUES_PATH, MY_TASKS_PATH } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
-import type { EditModel, EditNavigation } from './edit-model';
+import type { EditFailure, EditLoading, EditModel, EditNavigation } from './edit-model';
 
 const NO_MODE: EditNavigation = { root: null, crumbs: [], activeHref: null };
 
@@ -19,9 +20,12 @@ const NO_MODE: EditNavigation = { root: null, crumbs: [], activeHref: null };
 const backLink = (annotatorOnly: boolean): React.ReactNode =>
   annotatorOnly ? <Link href={`#${MY_TASKS_PATH}`}>Back to Tasks</Link> : <Link href={`#${DOCUMENTS_PATH}`}>Back to Documents</Link>;
 
-export const loadingDocumentModel = (): EditModel => ({ navigation: NO_MODE, state: { kind: 'loading', text: 'Loading document…' } });
+export const loadingDocumentModel = (): EditModel & { state: EditLoading } => ({
+  navigation: NO_MODE,
+  state: { kind: 'loading', text: 'Loading document…' },
+});
 
-export const documentMissingModel = (annotatorOnly: boolean): EditModel => ({
+export const documentMissingModel = (annotatorOnly: boolean): EditModel & { state: EditFailure } => ({
   navigation: NO_MODE,
   state: {
     kind: 'failure',
@@ -31,7 +35,7 @@ export const documentMissingModel = (annotatorOnly: boolean): EditModel => ({
   },
 });
 
-export const documentFailedModel = (error: unknown, retry: () => void, annotatorOnly: boolean): EditModel => ({
+export const documentFailedModel = (error: unknown, retry: () => void, annotatorOnly: boolean): EditModel & { state: EditFailure } => ({
   navigation: NO_MODE,
   state: {
     kind: 'failure',

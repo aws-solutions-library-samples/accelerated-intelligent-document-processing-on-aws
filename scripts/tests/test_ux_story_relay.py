@@ -1779,12 +1779,16 @@ _ANNOTATE = "components/test-studio/AnnotationWorkspace.tsx"
 _ASSIGN = "components/review-queues/AssignModal.tsx"
 _BREAKER = "components/common/CircuitBreakerPanel.tsx"
 _CONFIG = "components/configuration-layout/ConfigurationLayout.tsx"
+_DETAIL_ACTIONS = "components/document-actions/use-document-actions.tsx"
+_EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
 _PRODUCTION_MODEL = "components/edit-screen/production-item-edit-model.tsx"
 _QUEUE = "components/review-queues/ReviewQueuePage.tsx"
 _QUEUE_SETTINGS = "components/review-queues/QueueDefinitionModal.tsx"
+_REEXTRACT = "components/document-actions/ReextractSectionsDialog.tsx"
+_RESET = "components/document-actions/ResetPageClassDialog.tsx"
 _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
 _SLOTS = "components/edit-screen/test-set-editor-slots.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
@@ -1837,7 +1841,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "ClaimNextReviewItem": (Shipped(_QUEUE, "Next item"),),
     "ClaimReview": (
         Shipped(_TABLE, "Start Review"),
-        Shipped("components/document-panel/DocumentPanel.tsx", "Start Review"),
+        Shipped(_DETAIL_ACTIONS, "Start Review"),
     ),
     "ClaimReviewItem": (
         Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
@@ -1864,10 +1868,8 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "CompleteReviewItem": (Shipped(_FRAME, "Process Changes"),),
     "CompleteSectionReview": (Shipped(_FRAME, "Process Changes"),),
     "CopyToBaseline": (
-        Shipped(
-            "components/document-viewers/DocumentViewers.tsx",
-            "Use as Evaluation Baseline",
-        ),
+        Shipped(_DETAIL_ACTIONS, "Use As Evaluation Baseline"),
+        Shipped(_FRAME, "Use As Evaluation Baseline"),
     ),
     "CreateEmptyTestSet": (
         Shipped(_WIZARD, "Create", source="'Create'", inside_dialog=True),
@@ -2002,7 +2004,11 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
             "Confirm & Process",
             inside_dialog=True,
         ),
-        Shipped("components/pages-panel/PagesPanel.tsx", "Confirm & Process"),
+        Shipped(_BOARD, "Save and Re-extract", inside_dialog=True),
+        Shipped(_BOARD, "Re-extract again", inside_dialog=True),
+        Shipped(_REEXTRACT, "Re-extract", inside_dialog=True),
+        Shipped(_RESET, "Reset Page Class", inside_dialog=True),
+        Shipped(_EDIT_TEXT, "Save and Reprocess", inside_dialog=True),
     ),
     "PublishTestSetVersion": (
         Shipped("components/test-studio/PublishVersionModal.tsx", "Publish version"),
@@ -2087,7 +2093,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_CONFIG, "Confirm Activate"),
     ),
     "SkipAllSectionsReview": (
-        Shipped("components/sections-panel/SectionsPanel.tsx", "Skip All Reviews"),
+        Shipped(_DETAIL_ACTIONS, "Skip All Reviews", inside_dialog=True),
     ),
     "SkipTestSetDocument": (Shipped(_FRAME, "Skip"),),
     "StartMultiDocDiscovery": (
@@ -2132,8 +2138,8 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "UpdateDocumentSections": (
-        Shipped("components/sections-panel/SectionsPanel.tsx", "Save page grouping"),
         Shipped(_BOARD, "Save page grouping"),
+        Shipped(_BOARD, "Save and Re-extract", inside_dialog=True),
     ),
     "UpdateInboxPreferences": (
         Shipped("components/inbox/InboxPreferences.tsx", "Save", inside_dialog=True),
@@ -2163,7 +2169,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     ),
     "UploadDocument": (
         Shipped(_UPLOAD, "Upload (1 files)", source="`Upload ${"),
-        Shipped("components/pages-panel/PageTextEditorModal.tsx", "Save"),
+        Shipped(_EDIT_TEXT, "Save and Reprocess", inside_dialog=True),
+        Shipped(
+            "components/pages-panel/PageTextEditorModal.tsx",
+            "Restore original text",
+            inside_dialog=True,
+        ),
         Shipped(_FRAME, "Save"),
     ),
     "UploadMultiDocDiscoveryZip": (

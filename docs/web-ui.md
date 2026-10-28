@@ -20,7 +20,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - Secure authentication using Amazon Cognito
 - Searchable document history
 - Detailed document processing metrics and status information
-- Inspection of processing outputs for section classification and information extraction
+- Inspection of processing outputs for section classification and information extraction, with every action on a document in one bar (see [Document Details](#document-details))
 - Accuracy evaluation reports when baseline data is provided
 - View and edit pattern configuration, including document classes, prompt engineering, and model settings
 - Manage multiple configuration profiles — create, compare, activate, and delete profiles, and view/compare/restore each profile's revision history (see [configuration-profiles.md](configuration-profiles.md))
@@ -119,10 +119,71 @@ Many bundled samples are tuned for a specific configuration preset in the [Confi
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 
+## Document Details
+
+Opening a document from the Document List shows its Document Details page
+(`#/documents/<document>`). The page title is the document's name with its status in
+parentheses, over the full object key, and every action on the page is in one bar
+beside it, left to right:
+
+- **Details | Source** — Source shows the original file in place of the page's panels;
+  Details brings them back, as you left them.
+- **Reports** — read-only views, each in a dialog: **Summary**, **Evaluation Report**
+  (see [Evaluation report](#evaluation-report)), **Rule Validation Summary** and
+  **Processing Flow** (see
+  [Document Process Flow Visualization](#document-process-flow-visualization)).
+- **More Actions** — the changes:
+  - **Edit Page Class** — move pages between sections and change a section's class
+    (see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages)).
+  - **Re-extract Sections** — extract chosen sections again (see
+    [Re-extract Sections](#re-extract-sections)).
+  - **Edit Page Text** and **Reset Page Class** (see [Edit Pages](#edit-pages)).
+  - **Use As Evaluation Baseline** — copy the document's results into the evaluation
+    baseline. The **Evaluation** field shows the copy while it runs and when it is done
+    or has failed, and a failed copy is reported.
+  - **Skip All Reviews** — finish a pending review without checking it, with a reason
+    (see [Human review](human-review.md)).
+  - **Reprocess**, **Abort** and **Delete**, in their own group.
+- **Download** — the document's outputs as a ZIP (see
+  [Download Document Data](#download-document-data)).
+- **Troubleshoot** — an AI analysis of what went wrong with the document. Reopened on
+  the same document it shows the last result; **Run again** starts a new analysis.
+- **Refresh** — read the document again.
+- **Start Review** — claim a pending review, where a document has one nobody holds yet.
+- **Edit** — the primary action: the document's edit page (see [HITL](#hitl)), or its
+  queue item while it is in a review queue and you work queues.
+
+An action your role can never perform is not shown. One your role may perform but that
+doesn't apply now is shown disabled, and hovering it says why: you are viewing a past
+version, the document is in a review queue or still processing, its configuration is
+still loading, it ran in BDA mode, or there is no report to show. Who may do what:
+
+| Action | Roles |
+|---|---|
+| Reports, Download, Refresh, Details \| Source | every role |
+| Edit Page Class, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
+| Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
+| Troubleshoot | Admin, Author, Viewer |
+| Edit | Admin, Author, Reviewer; and Admins and Annotators on a document in a review queue |
+
+The server enforces the same rules; see [RBAC](rbac.md).
+
+Below the bar, **Document Details** lists the document's fields in six aligned columns,
+fewer on a narrow screen, and **Estimated Cost** is in its own panel beneath it. Then come
+**Document Sections** and **Document Pages**, each row with a **⋮** menu for that row:
+a section's **Edit Data** (**View Data** for a role that can't edit), **Download Data**
+and **Download Baseline**; a page's **View Page Text** and, for Admins, **Edit Page
+Text**. **Version History** and **Chat with Document** follow.
+
+A document that no longer exists shows "Document not found"; one that can't be read shows
+the reason with **Retry**.
+
 ## Evaluation report
 
-On a document that was evaluated against a baseline, **View Evaluation Report**
-opens a summary that leads with the figures the report exists to answer:
+On a document that was evaluated against a baseline, **Reports › Evaluation Report** on
+the document page opens a summary that leads with the figures the report exists to
+answer:
 
 - **Extraction accuracy** — weighted by field importance when the configuration
   assigns weights, otherwise the plain proportion of fields that matched (the
@@ -182,8 +243,8 @@ markdown automatically.
 
 ## Comparing a document against its baseline
 
-On a document that has an evaluation baseline, **Edit Data** (or **View Data**)
-opens the edit screen, which shows the **document class** comparison straight away — predicted, expected, and a verdict
+On a document that has an evaluation baseline, **Edit Data** (or **View Data**) in a
+section row's ⋮ menu opens the edit screen, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -210,12 +271,14 @@ set, see
 
 ## Re-grouping a processed document's pages
 
-**Document Sections → Edit Page Grouping**, or **Edit Page Grouping** in the document
-editor (**Edit** on the document page), opens a board with every section side by
-side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
-to section** menu — the keyboard and screen-reader route to the same operation.
+**More Actions › Edit Page Class** on the document page, or **More Actions › Edit Page
+Class** on the edit page (**Edit** on the document page), opens a board with every section
+side by side and each page as a thumbnail. Drag pages between sections, or use a page's
+**Move to section** menu — the keyboard and screen-reader route to the same operation.
 Shift-click selects a run of pages so they move together, which is usually what a wrong
-split needs.
+split needs. A section's class can be changed from its column, except that a user who is
+only a Reviewer can't change it once the document's review has finished, while the
+document is processing, or before they hold its review.
 
 Pages within a section can also be **reordered**: drop a page onto another to place it
 immediately before that one, or use **Order within this section → Move earlier / Move
@@ -230,33 +293,32 @@ One caveat specific to this surface: extraction sorts a section's pages before r
 them, so reordering here does not change what the pipeline extracts. It is stored and it
 matters if the document is used as the prediction side of an evaluation.
 
-**The extracted values are kept and the document is not reprocessed.** Saving writes
-the page grouping and the section classes and nothing else, so extracted fields and any
-a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use the Sections panel's **Edit Mode → Process Changes**
-afterwards if you would rather the pipeline redo them. (The edit screen's **Process
-Changes** re-runs evaluation and summarization only, so it keeps them.)
+The board has two saves:
 
-That is the difference between the two routes, and it is the reason both exist:
-
-| | Edit Page Grouping | Edit Mode → Process Changes |
+| | Save page grouping | Save and Re-extract (document page only) |
 |---|---|---|
-| Page assignments | drag and drop | comma-separated text |
-| Page order within a section | drag, or Move earlier / later | order of the ids you type |
-| Section ids | not editable | editable |
-| Extracted values | **kept** | cleared and regenerated |
-| Reprocessing | none | the document is requeued |
-| Roles | Admin, Reviewer, Annotator | Admin, Reviewer |
+| Page assignments and classes | saved | saved |
+| Extracted values | **kept**, including any a reviewer corrected | **replaced** for the sections whose class or pages changed |
+| Reprocessing | none | the changed sections are extracted again; OCR and classification are not repeated |
+| A pending review | unchanged | marked as completed |
+| Rule validation results | unchanged | cleared |
+| Roles | Admin, Reviewer | Admin, Reviewer |
 
-**Refused while the document is processing.** `Edit Mode → Process Changes` is safe to
-use mid-run because it never writes the document itself — it hands it to the pipeline,
-which saves it. A grouping-only save writes directly, so it would race a run in
-progress; if the document is queued or running the save is refused with a message, and
-the arrangement you made is left on screen rather than discarded.
+**Save page grouping** writes the page grouping and the section classes and nothing else.
+The extracted values were extracted from a different set of pages, so they may no longer
+match. **Save and Re-extract** first lists the sections it will extract again and asks
+you to confirm, then saves the grouping and re-extracts those sections; their classes are
+recorded as confirmed. If the grouping is saved but the re-extract fails, a dialog says
+so, with **Re-extract again**. It is unavailable when only the page order changed (there
+is nothing to re-extract), while a changed section has no class, and in BDA mode, where
+the pipeline's extraction does not run. The edit page's own **Process Changes** re-runs
+evaluation and summarization only, so it keeps the values too.
 
-Available in every deployment. The board rearranges the section records already in the
-document's output, so whether BDA or the Textract-plus-Bedrock pipeline produced them
-makes no difference to what it can edit.
+**Refused while the document is processing, in a review queue, or under a review in
+progress.** A grouping save writes the document directly, so it would race a run in
+progress; on the document page Edit Page Class is disabled with the reason, and if the
+server refuses a save anyway, the arrangement you made stays on the board with the
+message.
 
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
@@ -268,163 +330,83 @@ truth; see
 [test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
 being preserved matters most because they are the annotations being built.
 
-## Edit Sections
+## Re-extract Sections
 
-The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization.
+**More Actions › Re-extract Sections** on the document page extracts chosen sections
+again, each with its current class and pages, without regrouping anything — for values
+that look wrong while the grouping is right. Choose the sections in the dialog; a section
+with no class, and one its configuration skips, can't be chosen. Before you commit, the
+dialog says what re-extracting does: the sections' extracted values, including any
+corrected by hand, are replaced, and their classes are recorded as confirmed; a pending
+review is marked as completed and rule validation results are cleared; the other
+sections keep their values, and OCR and classification are not repeated.
 
 ![Document Details page for a six-page lending package, showing the Document Sections panel with each section's class, pages, low-confidence field count and status](../images/webui-document-sections.png)
 
-### Key Capabilities
-
-- **Section Management**: Create, update, and delete document sections with validation
-- **Classification Updates**: Change section classes with real-time validation
-- **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
-- **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
-- **Immediate Feedback**: Status updates appear instantly in the UI
-- **Available in every deployment**: the editor works on the section records in the document's output, so it is offered whichever processing mode produced them
-
-### How to Use
-
-1. Navigate to a completed document's detail page
-2. In the "Document Sections" panel, click the "Edit Sections" button
-3. Enter edit mode, with inline editing of each section's class and page assignments
-
-#### Section editing workflow
-
-1. **Edit Section Classifications**: Use dropdowns to change section classes
-2. **Modify Page Assignments**: Edit comma-separated page IDs (e.g., "1, 2, 3")
-3. **Add New Sections**: Click "Add Section" for new section boundaries
-4. **Delete Sections**: Use remove buttons to delete unnecessary sections
-5. **Validation**: Real-time validation prevents overlapping pages and invalid configurations
-6. **Submit Changes**: Click "Save & Process Changes" to trigger selective reprocessing
-
-### Processing Optimization
-
-The Edit Sections feature uses **2-phase schema knowledge optimization**:
-
-#### Phase 1: Frontend
-
-- **Selective Payload**: Only sends sections that actually changed
-- **Validation Engine**: Prevents invalid configurations before submission
-
-#### Phase 2: Backend
-
-- **Pipeline**: Processing functions automatically skip redundant operations
-  - **OCR**: Skips if pages already have OCR data
-  - **Classification**: Skips if pages already classified
-  - **Extraction**: Skips if sections have extraction data
-  - **Assessment**: Skips if extraction results contain assessment data
-- **Selective Reprocessing**: Only modified sections lose their data and get reprocessed
-
-### What section editing gives you, and what it costs
-
-- **Full Functionality**: Complete edit capabilities with intelligent reprocessing
-- **Performance Optimization**: Automatic selective processing for efficiency
-- **Data Preservation**: Unmodified sections retain all processing results
-
-Editing the structure is offered in every deployment, whichever processing mode the
-document ran through. Section records look the same in the output either way, so the
-editor does not distinguish them, and there is no data-only variant of it.
-
-⚠️ **In BDA mode, a structural edit loses the edited section's values.** Bedrock Data
-Automation decided the section boundaries and the extracted values in the first place,
-and a changed or added section's values are cleared before the document is requeued.
-The workflow then skips Bedrock Data Automation for any document that still has at least
-one section, whatever state that section's extraction data is in, and nothing else in
-the BDA branch extracts values. So the section you edited comes back with its values gone
-and nothing to replace them, on a single-section document as much as on a multi-section
-one. Edit the structure of a BDA-mode document only when you are prepared for that, and prefer
-**Edit Data** on the section row when what you want is to correct a value rather than a
-boundary: that opens the edit screen on the section and writes the value without
-touching the structure or requeueing anything.
+Admins and Reviewers can re-extract. It is disabled with the reason for a past version,
+for a document in a review queue or still processing, and in BDA mode: there, Bedrock
+Data Automation produced the values, and the workflow skips it for any document that
+still has sections, so a re-extracted section would come back with no values. To correct
+a value in any mode, use **Edit Data** in the section row's ⋮ menu: it opens the edit
+screen on the section and writes the value without reprocessing anything.
 
 ## Edit Pages
 
-The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing.
+Each row of **Document Pages** has a ⋮ menu with **View Page Text**, and the document
+page's **More Actions** has **Edit Page Text** and **Reset Page Class**.
 
 ![Document Pages panel listing each page with its class, classification confidence and thumbnail](../images/webui-document-pages.png)
 
-### Key Capabilities
+### View Page Text
 
-- **View Page Text**: Access clean, readable page text without JSON formatting in a modal editor
-- **Visual Editor**: The page image is shown on the left (when available) alongside a right-pane toggle between **OCR Lines** and **Markdown**. In OCR Lines, click a line to highlight its bounding box on the image (when the OCR backend provides geometry). Supports mouse-wheel zoom, click-drag pan, and Next/Previous page navigation across the document
-- **Markdown view**: Read the page's extracted markdown with a Rendered ↔ Raw toggle; the Raw view is the editable surface in edit mode
-- **Classification Reset**: Reset page classifications to force reclassification during reprocessing
-- **Text Editing**: Modify page OCR text (via the Raw markdown editor) with immediate S3 saves to prevent data loss
-- **Intelligent Reprocessing**: Only affected sections are reprocessed based on modification type
-- **Available in every deployment**: the editor works on the page records in the document's output, so it is offered whichever processing mode produced them
+**View Page Text** opens the page's text read-only. The page image is shown on the left
+(when available), with a right-pane toggle. **OCR Lines** (the default) lists the OCR
+text lines with per-line confidence; click a line to draw its bounding box on the image;
+zoom with the mouse wheel, pan by dragging, and move between pages with **Previous Page**
+and **Next Page**. (Bounding boxes require an OCR backend that provides geometry, e.g.
+Textract or the Mistral hook — the Cohere Parse hook boxes tables and figures only;
+otherwise the lines are shown without overlays.) **Markdown** shows the page's extracted
+markdown, with a Rendered ↔ Raw toggle.
 
-### How to Use
+The text is stored as `{"text": "..."}`; the editor shows and edits the plain text.
 
-1. Navigate to a completed document's detail page
-2. In the "Document Pages" panel, click the "Edit Pages" button
-3. Enter edit mode, with page-level editing of classifications and page text
+### Edit Page Text
 
-#### Page editing workflow
+**Edit Page Text** (More Actions, or a page row's ⋮ menu) opens the same viewer for
+editing, at the first page with text or at the row's page. Switch the right pane to
+**Markdown** and choose **Raw (editable)** to edit the text, then **Save and Reprocess**:
+it saves the page's text, then extracts again the sections that hold the page, replacing
+their values, including any corrected by hand. A pending review is marked as completed
+and rule validation results are cleared. Moving to another page with unsaved edits is
+disabled until you save or discard them.
 
-##### View Mode (Default)
-- Click "View Page Text" button to view page content in read-only mode
-- The page image is shown on the left, with a right-pane toggle. **OCR Lines** (the default) lists the OCR text lines with per-line confidence; click a text line to draw its bounding box on the image; zoom with the mouse wheel, pan by dragging, and move between pages with the Next/Previous arrows. (Bounding boxes require an OCR backend that provides geometry, e.g. Textract or the Mistral hook — the Cohere Parse hook boxes tables and figures only; otherwise the lines are shown without overlays.)
-- Switch the right pane to **Markdown** to read the page's extracted markdown, with a Rendered ↔ Raw toggle
+If the text is saved but the reprocess fails, the dialog says so and offers **Retry
+reprocess** (reprocess again, without saving the text again) and **Restore original
+text** (put back the text as you opened it; nothing is reprocessed). Closing it then
+leaves a notice on the page with **Retry reprocess**, so the text is never left changed
+without saying so.
 
-##### Edit Mode
-1. **Click "Edit Pages"**: Activates edit mode for all pages
-2. **Reset Page Classification** (optional):
-   - Click the  button next to page Class/Type
-   - Page becomes "Unclassified" and will be reclassified during reprocessing
-3. **Edit Page Text**:
-   - Click "Edit Page Text" button to open modal editor
-   - Switch the right pane to **Markdown** and choose **Raw (editable)** to edit the page text; use **Rendered** to preview
-   - Click "Save" to write changes to S3 immediately
-   - Unsaved changes warning prevents data loss
-4. **Submit Changes**: Click "Save & Process Changes" to trigger reprocessing
-5. **Review Impact**: Confirmation modal shows how many pages will trigger reclassification vs re-extraction
-6. **Confirm**: Click "Confirm & Process" to submit document for selective reprocessing
+Only Admins can edit page text: it saves the text and reprocesses the document, and
+Admin is the only role allowed both.
 
-### Processing Optimization
+### Reset Page Class
 
-The Edit Pages feature uses intelligent selective reprocessing:
+**Reset Page Class** clears the class of the pages you choose and reprocesses the
+document. ⚠️ **It classifies the whole document again**, not only those pages: every page
+is classified again, so pages can move to other sections and sections can be added or
+removed, and every section is rebuilt and extracted again, so values corrected by hand
+in any section are replaced. A pending review is marked as completed and rule validation
+results are cleared. The dialog says so before anything is sent. Admins and Reviewers can
+reset; a user who is only a Reviewer can't once the review has finished, or before they
+hold it.
 
-#### Page Classification Reset
-- **Impact**: Removes all sections containing the page
-- **Triggers**: Full reclassification and re-extraction
-- **Use Case**: When page was incorrectly classified
+### When they are unavailable
 
-#### Page Text Modification
-- **Impact**: Clears extraction results for sections containing the page
-- **Preserves**: Sections and classifications remain intact
-- **Triggers**: Re-extraction only (skips OCR and classification)
-- **Use Case**: Correcting OCR errors to improve extraction accuracy
-
-#### Backend Processing
-- **OCR**: Automatically skipped (page text already updated)
-- **Classification**: Skipped for text-only modifications, runs for class resets
-- **Extraction**: Runs for all affected sections
-- **Assessment**: Runs if extraction completes
-
-### Text Format Handling
-
-- **Display**: Plain text extracted from JSON wrapper - no raw JSON visible to users
-- **Editing**: User edits plain text in a clean Monaco editor
-- **Storage**: Text wrapped back in `{"text": "..."}` format for backward compatibility
-- **Confidence**: Markdown table format for readability (Text | Confidence columns)
-
-### What page editing gives you, and what it costs
-
-- **Full Functionality**: Complete page editing capabilities with intelligent reprocessing
-- **Performance Optimization**: Automatic selective processing based on modification type
-- **Data Preservation**: Unmodified pages and sections retain all processing results
-
-Page editing is offered in every deployment, whichever processing mode the document ran
-through, and the editor does not distinguish between them.
-
-⚠️ **In BDA mode, both page edits clear data that the reprocess does not replace.**
-Resetting a page's classification removes every section containing that page, and
-editing a page's text clears the extraction results of the sections containing it.
-Bedrock Data Automation produced those values, and the workflow skips it for any
-document that still has at least one section — so a section whose page text you edited
-comes back empty. If you only want to read a page as BDA saw it, use **View Page Text**,
-which changes nothing.
+Edit Page Text and Reset Page Class are disabled with the reason for a past version, for
+a document in a review queue or still processing, and in BDA mode: Bedrock Data
+Automation produced the values, and the workflow skips it for any document that still
+has sections, so the affected sections would come back empty. **View Page Text** is
+always available and changes nothing.
 
 ## Document Schema Builder
 
@@ -534,7 +516,7 @@ _The Document Process Flow visualization showing the execution steps, status, an
 ### How to Use
 
 1. Navigate to a document's detail page
-2. Click the "View Processing Flow" button in the document details header
+2. Choose **Reports › Processing Flow** in the page's action bar
 3. The flow diagram will display all steps in the document's processing workflow
 4. Click on any step to view its detailed information including:
    - Input/output data
@@ -579,7 +561,7 @@ A self-describing `manifest.json` is written at the ZIP root capturing the expor
 
 ### Fetching mechanics
 
-Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. **Every URL is signed by the backend**, through the `getFilePresignedUrl` resolver, whichever bucket the file is in — the **OutputBucket** and **InputBucket** included. Your browser's Cognito credentials grant **nothing** on the document buckets, so a URL signed in the browser would fail with HTTP 403 at fetch time; routing the signature through the resolver is also what puts a group check and the caller's configuration-profile scope in front of the bytes. Up to 5 files are fetched in parallel. The surfaces that show many pages at once — the page-image viewer and the page thumbnails — use the batch form, `getFilePresignedUrls`, so opening a document asks for its page URLs in a single call — or, for a document of more than 250 pages, in one call per 250 — rather than one call per page. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
+Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. **Every URL is signed by the backend**, through the `getFilePresignedUrl` resolver, whichever bucket the file is in — the **OutputBucket** and **InputBucket** included. Your browser's Cognito credentials grant **nothing** on the document buckets, so a URL signed in the browser would fail with HTTP 403 at fetch time; routing the signature through the resolver is also what puts a group check and the caller's configuration-profile scope in front of the bytes. Up to 5 files are fetched in parallel. The surfaces that show many pages at once — the page-image viewer and the page thumbnails — use the batch form, `getFilePresignedUrls`, so opening a document asks for its page URLs in a single call — or, for a document of more than 250 pages, in one call per 250 — rather than one call per page. A progress modal reports status during the download and offers a **Cancel** button for large documents. A section row's ⋮ menu has **Download Data** and **Download Baseline** for single-file downloads.
 
 ### Bulk download from the document list
 
@@ -605,7 +587,7 @@ The Document Details page includes a **Version History** panel listing every ret
 
 From the panel you can:
 
-- **View** any past version's outputs read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. Editing is disabled while viewing history; a banner offers **Return to current version**.
+- **View** any past version's outputs read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. While you view a past version, every action that changes the document is disabled with the reason, as are **Refresh** and **Edit**, and **Rule Validation Summary** is unavailable because rule validation isn't kept for past versions; a banner offers **Return to current version**.
 - **Compare** any two versions — a section-by-section, field-level diff of their extraction results.
 - **Delete** a version (Admin only) — permanently removes that run's pinned object versions; the current version cannot be deleted, and versions still referenced by another retained run are preserved.
 
@@ -696,7 +678,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
     Admin or an Annotator; for anyone else, and for a document that is not in review,
     it opens the direct edit. A document in review opens read-only in the direct
     edit, saying it is edited in its queue. **Edit** on the document page, **Edit
-    Data** on a section row, **In Review** in the Document List, Home › Tasks and
+    Data** in a section row's ⋮ menu, **In Review** in the Document List, Home › Tasks and
     Inbox messages all open it. Annotators whose only role is Annotator can open it
     too, although they have no Documents.
   - A Test Studio document's edit page is `#/review-queues/test-sets/<id>/items/<document>`.
@@ -716,10 +698,11 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   activity; **Summary**; **Processing Report**); **More Actions** (**Edit Page Class**,
   each section's pages and class, for the roles that may change them: an Admin or a
   Reviewer on a direct edit, an Admin on a queue item; **Use As Evaluation Baseline**,
-  for Admins and Authors); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
+  for Admins and Authors); **Refresh** (read the document again, asking first when there
+  are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
   (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
   menu item that doesn't apply yet, such as Summary before a document is finished, is
-  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes works like the Sections panel's: it re-runs
+  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes re-runs
   evaluation and summarization on the corrected document, and OCR, classification and
   extraction are not repeated. It finishes a queue item, and on a direct edit saves
   the edits and confirms first. For a Test Studio document with authored ground truth,

@@ -1380,8 +1380,8 @@ Non-contiguous sections are supported, because the pipeline can produce them.
 Annotators can do this within their assigned sets, scope-checked per test set like
 every other annotation operation.
 
-The same board is available on a processed document, from **Document Sections** in
-the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+The same board is available on a processed document, from **More Actions › Edit Page
+Class** on the document page — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
 ### A section with no field values
@@ -1587,7 +1587,7 @@ The abort then waits for the run's documents to reach a final status. A document
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
 next to its Class/Type value — hover it for the expected class. The edit page
-(**Edit Data**, or **View Data** for a read-only role) shows the section's class
+(**Edit Data** in a section row's **⋮** menu, or **View Data** for a read-only role) shows the section's class
 comparison in its **Visual Editor** tab as soon as it opens,
 without needing the **Show Evaluation** toggle, which adds the per-field
 comparison. Check the class before reading the extraction scores: a misclassified

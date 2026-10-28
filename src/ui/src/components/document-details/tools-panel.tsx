@@ -44,16 +44,34 @@ const ToolsPanel = (): React.JSX.Element => (
     }
   >
     <div>
-      <p>Inspect individual document processing results in detail.</p>
-      <h3>Features</h3>
+      <p>Inspect a document&apos;s processing results, and act on it from one bar at the top of the page.</p>
+      <h3>The action bar</h3>
       <ul>
-        <li>View document classification results and confidence scores</li>
-        <li>Inspect extracted fields, values, and their assessment scores</li>
-        <li>Review bounding box annotations overlaid on document pages</li>
-        <li>Check human review status, reviewer notes, and correction history</li>
-        <li>View raw OCR transcriptions and page-level content</li>
-        <li>Examine rule validation and criteria validation results</li>
-        <li>Access processing metadata including timestamps and configuration used</li>
+        <li>
+          <b>Details | Source</b> switches between the page&apos;s panels and the original file.
+        </li>
+        <li>
+          <b>Reports</b>: the Summary, Evaluation Report, Rule Validation Summary and Processing Flow, each in a dialog.
+        </li>
+        <li>
+          <b>More Actions</b>: Edit Page Class, Re-extract Sections, Edit Page Text, Reset Page Class, Use As Evaluation Baseline, Skip All
+          Reviews, then Reprocess, Abort and Delete.
+        </li>
+        <li>
+          <b>Download</b> the document&apos;s outputs as a ZIP, <b>Troubleshoot</b> what went wrong, <b>Refresh</b> the page, and{' '}
+          <b>Edit</b> the document&apos;s extracted values.
+        </li>
+      </ul>
+      <p>
+        Actions your role can&apos;t perform are not shown. One that doesn&apos;t apply now, for example while you view a past version,
+        stays in place, disabled; hover it to see why.
+      </p>
+      <h3>On the page</h3>
+      <ul>
+        <li>The document&apos;s fields, status and estimated cost</li>
+        <li>Each section&apos;s class, pages and status; its ⋮ menu opens or downloads its data</li>
+        <li>Each page&apos;s class, confidence and thumbnail; its ⋮ menu opens the page text</li>
+        <li>Version History, to view or compare past processing runs, and Chat with the document</li>
       </ul>
     </div>
   </HelpPanel>
