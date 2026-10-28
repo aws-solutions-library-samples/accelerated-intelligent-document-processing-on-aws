@@ -47,5 +47,12 @@
     "severity": "HIGH",
     "reason": "Not reachable. The advisory is in the SDK's Agent2Agent (A2A) server (strands.multiagent.a2a), which shares conversation history across callers. This repo never starts an A2A server: nothing imports strands.multiagent.a2a or A2AServer, and the a2a extra is not installed anywhere; every agent here runs in-process inside a Lambda invocation for one caller. The fix (1.43.0) is 29 minor versions past the 1.14.0 pin across idp_common's agent, extraction and discovery extras and nested/multi-doc-discovery, which needs its own upgrade change. Re-check this entry if an A2A server is ever added.",
     "triagedOn": "2026-10-23"
+  },
+  {
+    "id": "GHSA-3w55-933p-8pv5",
+    "package": "strands-agents",
+    "severity": "HIGH",
+    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage under /tmp/strands/sessions follows a pre-placed symlink when it writes session files. The SDK creates no session manager on its own: Agent's session_manager argument defaults to None in 1.14.0, and FileSessionManager is instantiated only by the caller. Nothing in this repo imports strands.session, names FileSessionManager or any SessionManager, or passes session_manager to an Agent (git grep over every tracked file, including idp_common/agents, extraction/agentic_idp.py, the discovery code and nested/multi-doc-discovery); chat history is persisted to DynamoDB by src/lambda/agent_chat_processor, not through strands. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin and belongs with the same agent-framework upgrade as GHSA-4v6f-7vjh-6x4m. Re-check this entry if a strands session manager is ever configured.",
+    "triagedOn": "2026-10-28"
   }
 ]
