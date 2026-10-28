@@ -39,10 +39,10 @@ describe('isInReviewQueue', () => {
 describe('renderHitlStatus In Review link', () => {
   const queued = { hitlStatus: 'in_review', hitlTriggered: true };
 
-  it('links In Review to the queue item when given an href', () => {
-    render(renderHitlStatus(queued, '#/review-queues/items/doc.pdf'));
+  it('links In Review to the document’s edit page when given an href', () => {
+    render(renderHitlStatus(queued, '#/documents/doc.pdf/edit'));
     const link = screen.getByRole('link', { name: /In Review/ });
-    expect(link).toHaveAttribute('href', '#/review-queues/items/doc.pdf');
+    expect(link).toHaveAttribute('href', '#/documents/doc.pdf/edit');
   });
 
   it('is plain status text without one', () => {

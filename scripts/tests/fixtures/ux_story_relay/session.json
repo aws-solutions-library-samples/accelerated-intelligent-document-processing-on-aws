@@ -1,0 +1,808 @@
+{
+ "recorded": {
+  "versions": {
+   "chrome": "155.0.8059.84",
+   "chrome_platform": "linux-arm64",
+   "node": "v22.14.0",
+   "chrome_devtools_mcp": "1.10.1",
+   "claude_code": "2.1.281",
+   "ffmpeg": "ffmpeg version 5.1.9-0+deb12u1 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "browser": "Chrome/155.0.8059.84",
+  "chrome_flags": [
+   "--headless=new",
+   "--remote-debugging-port=9222",
+   "--user-data-dir=<work>/profile",
+   "--no-first-run",
+   "--no-default-browser-check",
+   "--proxy-server=http://127.0.0.1:3128",
+   "--proxy-bypass-list=<-loopback>",
+   "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
+   "--disable-quic",
+   "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+   "--disable-background-networking",
+   "--disable-component-update",
+   "--disable-default-apps",
+   "--disable-domain-reliability",
+   "--disable-sync",
+   "--disable-extensions",
+   "--disable-breakpad",
+   "--disable-client-side-phishing-detection",
+   "--disable-features=OptimizationHints,MediaRouter,DialMediaRouteProvider,Translate,AutofillServerCommunication,CertificateTransparencyComponentUpdater,NetworkTimeServiceQuerying",
+   "--metrics-recording-only",
+   "--no-pings",
+   "--password-store=basic",
+   "--mute-audio",
+   "--lang=en-US",
+   "--disable-dev-shm-usage",
+   "--window-size=1600,1143",
+   "--screen-info={1600x1143}",
+   "--force-device-scale-factor=1",
+   "--no-sandbox",
+   "about:blank"
+  ],
+  "devtools_argv": [
+   "/usr/bin/env",
+   "-i",
+   "PATH=/usr/local/bin:/usr/bin:/bin",
+   "HOME=<work>/home",
+   "LANG=C.UTF-8",
+   "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1",
+   "/opt/ux-runner/node_modules/.bin/chrome-devtools-mcp",
+   "--browserUrl",
+   "http://127.0.0.1:9222",
+   "--redactNetworkHeaders",
+   "--no-usage-statistics",
+   "--no-performance-crux",
+   "--no-source-maps",
+   "--categoryEmulation=false",
+   "--categoryPerformance=false",
+   "--categoryMemory=false",
+   "--javascriptEvaluation=false",
+   "--no-page-id-routing",
+   "--filesystemRoot=<work>/mcp-files"
+  ],
+  "pages": [
+   "account.html",
+   "dialogs.html",
+   "documents.html",
+   "index.html",
+   "long.html",
+   "signin.html"
+  ],
+  "image_data": "(a recorded JPEG, not kept)"
+ },
+ "initialize": {
+  "protocolVersion": "2025-06-18",
+  "capabilities": {
+   "logging": {},
+   "tools": {
+    "listChanged": true
+   }
+  },
+  "serverInfo": {
+   "name": "chrome_devtools",
+   "title": "Chrome DevTools MCP server",
+   "version": "1.10.1"
+  }
+ },
+ "calls": {
+  "navigate_documents": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "url",
+    "url": "http://localhost:3000/documents.html"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully navigated to http://localhost:3000/documents.html.\n## Pages\n1: Document List (http://localhost:3000/documents.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 3
+   }
+  },
+  "snapshot_documents": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=1_0 RootWebArea \"Document List\" url=\"http://localhost:3000/documents.html\"\n  uid=1_1 banner\n    uid=1_2 link \"AWS IDP Accelerator Console\" url=\"http://localhost:3000/documents.html\"\n      uid=1_3 StaticText \"AWS IDP Accelerator Console\"\n    uid=1_4 button \"new-analyst (Author)\" expandable haspopup=\"menu\"\n  uid=1_5 navigation \"Side navigation\"\n    uid=1_6 link \"Document List\" url=\"http://localhost:3000/documents.html\"\n      uid=1_7 StaticText \"Document List\"\n    uid=1_8 link \"Upload Document(s)\" url=\"http://localhost:3000/upload.html\"\n      uid=1_9 StaticText \"Upload Document(s)\"\n    uid=1_10 link \"Configuration Profiles\" url=\"http://localhost:3000/documents.html#profiles\"\n      uid=1_11 StaticText \"Configuration Profiles\"\n    uid=1_12 link \"Documentation\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list\"\n      uid=1_13 StaticText \"Documentation\"\n  uid=1_14 main\n    uid=1_15 heading \"Documents (2)\" level=\"1\"\n    uid=1_16 button \"Refresh\"\n    uid=1_17 button \"Reprocess\"\n    uid=1_18 button \"Delete\"\n    uid=1_19 button \"Download results\"\n    uid=1_20 button\n    uid=1_21 button \"Add prefix mapping\"\n    uid=1_22 button \"Create test set\"\n    uid=1_23 StaticText \"Find documents\"\n    uid=1_24 searchbox \"Find documents\"\n    uid=1_25 checkbox \"Show Test Studio runs\"\n    uid=1_26 StaticText \"Object name\"\n    uid=1_27 StaticText \"Status\"\n    uid=1_28 StaticText \"Configuration\"\n    uid=1_29 link \"lending_package.pdf\" url=\"http://localhost:3000/documents.html#doc-1\"\n      uid=1_30 StaticText \"lending_package.pdf\"\n    uid=1_31 StaticText \"COMPLETED\"\n    uid=1_32 StaticText \"lending-package-sample\"\n    uid=1_33 link \"rvl_cdip_package.pdf\" url=\"http://localhost:3000/documents.html#doc-2\"\n      uid=1_34 StaticText \"rvl_cdip_package.pdf\"\n    uid=1_35 StaticText \"COMPLETED\"\n    uid=1_36 StaticText \"rvl-cdip\"\n    uid=1_37 StaticText \"Read \"\n    uid=1_38 link \"Prefix mappings\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands\"\n      uid=1_39 StaticText \"Prefix mappings\"\n    uid=1_40 StaticText \" before you add one.\"\n    uid=1_41 StaticText \"Status\"\n    uid=1_42 StaticText \"Configuration\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 4
+   }
+  },
+  "snapshot_documents_verbose": {
+   "tool": "take_snapshot",
+   "arguments": {
+    "verbose": true
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=1_0 RootWebArea \"Document List\" url=\"http://localhost:3000/documents.html\"\n  uid=2_0 ignored\n    uid=2_1 ignored\n      uid=1_1 banner\n        uid=1_2 link \"AWS IDP Accelerator Console\" url=\"http://localhost:3000/documents.html\"\n          uid=1_3 StaticText \"AWS IDP Accelerator Console\"\n            uid=2_2 InlineTextBox \"AWS IDP Accelerator Console\"\n        uid=1_4 button \"new-analyst (Author)\" expandable haspopup=\"menu\"\n          uid=2_3 StaticText \"new-analyst (Author)\"\n            uid=2_2 InlineTextBox \"new-analyst (Author)\"\n        uid=2_4 ignored\n      uid=1_5 navigation \"Side navigation\"\n        uid=2_5 list\n          uid=2_6 listitem level=\"1\"\n            uid=2_7 ListMarker \"• \"\n              uid=2_2 ignored\n            uid=1_6 link \"Document List\" url=\"http://localhost:3000/documents.html\"\n              uid=1_7 StaticText \"Document List\"\n                uid=2_2 InlineTextBox \"Document List\"\n          uid=2_8 listitem level=\"1\"\n            uid=2_9 ListMarker \"• \"\n              uid=2_2 ignored\n            uid=1_8 link \"Upload Document(s)\" url=\"http://localhost:3000/upload.html\"\n              uid=1_9 StaticText \"Upload Document(s)\"\n                uid=2_2 InlineTextBox \"Upload Document(s)\"\n          uid=2_10 listitem level=\"1\"\n            uid=2_11 ListMarker \"• \"\n              uid=2_2 ignored\n            uid=1_10 link \"Configuration Profiles\" url=\"http://localhost:3000/documents.html#profiles\"\n              uid=1_11 StaticText \"Configuration Profiles\"\n                uid=2_2 InlineTextBox \"Configuration Profiles\"\n          uid=2_12 listitem level=\"1\"\n            uid=2_13 ListMarker \"• \"\n              uid=2_2 ignored\n            uid=1_12 link \"Documentation\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list\"\n              uid=1_13 StaticText \"Documentation\"\n                uid=2_2 InlineTextBox \"Documentation\"\n      uid=1_14 main\n        uid=1_15 heading \"Documents (2)\" level=\"1\"\n          uid=2_14 StaticText \"Documents (2)\"\n            uid=2_2 InlineTextBox \"Documents (2)\"\n        uid=2_15 toolbar \"Document actions\" orientation=\"horizontal\"\n          uid=1_16 button \"Refresh\"\n            uid=2_16 StaticText \"Refresh\"\n              uid=2_2 InlineTextBox \"Refresh\"\n          uid=1_17 button \"Reprocess\"\n            uid=2_17 StaticText \"Reprocess\"\n              uid=2_2 InlineTextBox \"Reprocess\"\n          uid=1_18 button \"Delete\"\n            uid=2_18 StaticText \"Delete\"\n              uid=2_2 InlineTextBox \"Delete\"\n          uid=1_19 button \"Download results\"\n          uid=1_20 button\n          uid=1_21 button \"Add prefix mapping\"\n            uid=2_19 StaticText \"Add prefix mapping\"\n              uid=2_2 InlineTextBox \"Add prefix mapping\"\n          uid=1_22 button \"Create test set\"\n            uid=2_20 StaticText \"Create test set\"\n              uid=2_2 InlineTextBox \"Create test set\"\n        uid=2_21 LabelText\n          uid=1_23 StaticText \"Find documents\"\n            uid=2_2 InlineTextBox \"Find documents\"\n        uid=1_24 searchbox \"Find documents\"\n          uid=2_22 ignored\n            uid=2_23 generic\n        uid=2_24 ignored\n          uid=1_25 checkbox \"Show Test Studio runs\"\n          uid=2_25 ignored\n        uid=2_26 table\n          uid=2_27 rowgroup\n            uid=2_28 row\n              uid=2_29 columnheader \"Object name\"\n                uid=1_26 StaticText \"Object name\"\n                  uid=2_2 InlineTextBox \"Object name\"\n              uid=2_30 columnheader \"Status\"\n                uid=1_27 StaticText \"Status\"\n                  uid=2_2 InlineTextBox \"Status\"\n              uid=2_31 columnheader \"Configuration\"\n                uid=1_28 StaticText \"Configuration\"\n                  uid=2_2 InlineTextBox \"Configuration\"\n          uid=2_32 ignored\n            uid=2_33 row\n              uid=2_34 cell \"lending_package.pdf\"\n                uid=1_29 link \"lending_package.pdf\" url=\"http://localhost:3000/documents.html#doc-1\"\n                  uid=1_30 StaticText \"lending_package.pdf\"\n                    uid=2_2 InlineTextBox \"lending_package.pdf\"\n              uid=2_35 cell \"COMPLETED\"\n                uid=1_31 StaticText \"COMPLETED\"\n                  uid=2_2 InlineTextBox \"COMPLETED\"\n              uid=2_36 cell \"lending-package-sample\"\n                uid=1_32 StaticText \"lending-package-sample\"\n                  uid=2_2 InlineTextBox \"lending-package-sample\"\n            uid=2_37 row\n              uid=2_38 cell \"rvl_cdip_package.pdf\"\n                uid=1_33 link \"rvl_cdip_package.pdf\" url=\"http://localhost:3000/documents.html#doc-2\"\n                  uid=1_34 StaticText \"rvl_cdip_package.pdf\"\n                    uid=2_2 InlineTextBox \"rvl_cdip_package.pdf\"\n              uid=2_39 cell \"COMPLETED\"\n                uid=1_35 StaticText \"COMPLETED\"\n                  uid=2_2 InlineTextBox \"COMPLETED\"\n              uid=2_40 cell \"rvl-cdip\"\n                uid=1_36 StaticText \"rvl-cdip\"\n                  uid=2_2 InlineTextBox \"rvl-cdip\"\n        uid=2_41 paragraph\n          uid=1_37 StaticText \"Read \"\n            uid=2_2 InlineTextBox \"Read \"\n          uid=1_38 link \"Prefix mappings\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands\"\n            uid=1_39 StaticText \"Prefix mappings\"\n              uid=2_2 InlineTextBox \"Prefix mappings\"\n          uid=1_40 StaticText \" before you add one.\"\n            uid=2_2 InlineTextBox \" before you add one.\"\n        uid=2_42 list \"Columns\"\n          uid=2_43 listitem level=\"1\"\n            uid=2_44 ListMarker \"• \"\n              uid=2_2 ignored\n            uid=1_41 StaticText \"Status\"\n              uid=2_2 InlineTextBox \"Status\"\n          uid=2_45 listitem level=\"1\"\n            uid=2_46 ListMarker \"• \"\n              uid=2_2 ignored\n            uid=1_42 StaticText \"Configuration\"\n              uid=2_2 InlineTextBox \"Configuration\"\n        uid=2_47 ignored\n          uid=2_48 ignored\n        uid=2_49 ignored\n          uid=2_50 ignored\n        uid=2_51 ignored\n        uid=2_52 ignored\n          uid=2_53 ignored\n        uid=2_54 ignored\n          uid=2_55 ignored\n          uid=2_56 ignored\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 5
+   }
+  },
+  "screenshot_jpeg": {
+   "tool": "take_screenshot",
+   "arguments": {
+    "format": "jpeg",
+    "quality": 70
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Took a screenshot of the current page's viewport."
+      },
+      {
+       "type": "image",
+       "data": "(a recorded JPEG, not kept)",
+       "mimeType": "image/jpeg"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 6
+   }
+  },
+  "click_refresh": {
+   "tool": "click",
+   "arguments": {
+    "uid": "1_16"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully clicked on the element"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 7
+   }
+  },
+  "click_refresh_with_snapshot": {
+   "tool": "click",
+   "arguments": {
+    "uid": "1_16",
+    "includeSnapshot": true
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully clicked on the element\n## Latest page snapshot\nuid=1_0 RootWebArea \"Document List\" url=\"http://localhost:3000/documents.html\"\n  uid=1_1 banner\n    uid=1_2 link \"AWS IDP Accelerator Console\" url=\"http://localhost:3000/documents.html\"\n      uid=1_3 StaticText \"AWS IDP Accelerator Console\"\n    uid=1_4 button \"new-analyst (Author)\" expandable haspopup=\"menu\"\n  uid=1_5 navigation \"Side navigation\"\n    uid=1_6 link \"Document List\" url=\"http://localhost:3000/documents.html\"\n      uid=1_7 StaticText \"Document List\"\n    uid=1_8 link \"Upload Document(s)\" url=\"http://localhost:3000/upload.html\"\n      uid=1_9 StaticText \"Upload Document(s)\"\n    uid=1_10 link \"Configuration Profiles\" url=\"http://localhost:3000/documents.html#profiles\"\n      uid=1_11 StaticText \"Configuration Profiles\"\n    uid=1_12 link \"Documentation\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list\"\n      uid=1_13 StaticText \"Documentation\"\n  uid=1_14 main\n    uid=1_15 heading \"Documents (2)\" level=\"1\"\n    uid=1_16 button \"Refresh\" focusable focused\n    uid=1_17 button \"Reprocess\"\n    uid=1_18 button \"Delete\"\n    uid=1_19 button \"Download results\"\n    uid=1_20 button\n    uid=1_21 button \"Add prefix mapping\"\n    uid=1_22 button \"Create test set\"\n    uid=1_23 StaticText \"Find documents\"\n    uid=1_24 searchbox \"Find documents\"\n    uid=1_25 checkbox \"Show Test Studio runs\"\n    uid=1_26 StaticText \"Object name\"\n    uid=1_27 StaticText \"Status\"\n    uid=1_28 StaticText \"Configuration\"\n    uid=1_29 link \"lending_package.pdf\" url=\"http://localhost:3000/documents.html#doc-1\"\n      uid=1_30 StaticText \"lending_package.pdf\"\n    uid=1_31 StaticText \"COMPLETED\"\n    uid=1_32 StaticText \"lending-package-sample\"\n    uid=1_33 link \"rvl_cdip_package.pdf\" url=\"http://localhost:3000/documents.html#doc-2\"\n      uid=1_34 StaticText \"rvl_cdip_package.pdf\"\n    uid=1_35 StaticText \"COMPLETED\"\n    uid=1_36 StaticText \"rvl-cdip\"\n    uid=1_37 StaticText \"Read \"\n    uid=1_38 link \"Prefix mappings\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands\"\n      uid=1_39 StaticText \"Prefix mappings\"\n    uid=1_40 StaticText \" before you add one.\"\n    uid=1_41 StaticText \"Status\"\n    uid=1_42 StaticText \"Configuration\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 8
+   }
+  },
+  "hover_reprocess": {
+   "tool": "hover",
+   "arguments": {
+    "uid": "1_17"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully hovered over the element"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 9
+   }
+  },
+  "fill_filter": {
+   "tool": "fill",
+   "arguments": {
+    "uid": "1_24",
+    "value": "lending"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully filled out the element"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 10
+   }
+  },
+  "type_text": {
+   "tool": "type_text",
+   "arguments": {
+    "text": " package"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Typed text \" package\""
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 11
+   }
+  },
+  "press_key": {
+   "tool": "press_key",
+   "arguments": {
+    "key": "Tab"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully pressed key: Tab"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 12
+   }
+  },
+  "fill_form": {
+   "tool": "fill_form",
+   "arguments": {
+    "elements": [
+     {
+      "uid": "1_24",
+      "value": "rvl"
+     },
+     {
+      "uid": "1_25",
+      "value": "true"
+     }
+    ]
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully filled out the form"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 13
+   }
+  },
+  "drag": {
+   "tool": "drag",
+   "arguments": {
+    "from_uid": "1_27",
+    "to_uid": "1_28"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully dragged an element"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 14
+   }
+  },
+  "wait_for": {
+   "tool": "wait_for",
+   "arguments": {
+    "text": [
+     "Refresh"
+    ]
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Element matching one of [\"Refresh\"] found.\n## Latest page snapshot\nuid=1_0 RootWebArea \"Document List\" url=\"http://localhost:3000/documents.html\"\n  uid=1_1 banner\n    uid=1_2 link \"AWS IDP Accelerator Console\" url=\"http://localhost:3000/documents.html\"\n      uid=1_3 StaticText \"AWS IDP Accelerator Console\"\n    uid=1_4 button \"new-analyst (Author)\" expandable haspopup=\"menu\"\n  uid=1_5 navigation \"Side navigation\"\n    uid=1_6 link \"Document List\" url=\"http://localhost:3000/documents.html\"\n      uid=1_7 StaticText \"Document List\"\n    uid=1_8 link \"Upload Document(s)\" url=\"http://localhost:3000/upload.html\"\n      uid=1_9 StaticText \"Upload Document(s)\"\n    uid=1_10 link \"Configuration Profiles\" url=\"http://localhost:3000/documents.html#profiles\"\n      uid=1_11 StaticText \"Configuration Profiles\"\n    uid=1_12 link \"Documentation\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list\"\n      uid=1_13 StaticText \"Documentation\"\n  uid=1_14 main\n    uid=1_15 heading \"Documents (2)\" level=\"1\"\n    uid=1_16 button \"Refresh\"\n    uid=1_17 button \"Reprocess\"\n    uid=1_18 button \"Delete\"\n    uid=1_19 button \"Download results\"\n    uid=1_20 button\n    uid=1_21 button \"Add prefix mapping\"\n    uid=1_22 button \"Create test set\"\n    uid=1_23 StaticText \"Find documents\"\n    uid=1_24 searchbox \"Find documents\" value=\"rvl\"\n    uid=1_25 checkbox \"Show Test Studio runs\" checked\n    uid=1_26 StaticText \"Object name\"\n    uid=1_27 StaticText \"Status\"\n    uid=1_28 StaticText \"Configuration\"\n    uid=1_29 link \"lending_package.pdf\" url=\"http://localhost:3000/documents.html#doc-1\"\n      uid=1_30 StaticText \"lending_package.pdf\"\n    uid=1_31 StaticText \"COMPLETED\"\n    uid=1_32 StaticText \"lending-package-sample\"\n    uid=1_33 link \"rvl_cdip_package.pdf\" url=\"http://localhost:3000/documents.html#doc-2\"\n      uid=1_34 StaticText \"rvl_cdip_package.pdf\"\n    uid=1_35 StaticText \"COMPLETED\"\n    uid=1_36 StaticText \"rvl-cdip\"\n    uid=1_37 StaticText \"Read \"\n    uid=1_38 link \"Prefix mappings\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands\"\n      uid=1_39 StaticText \"Prefix mappings\"\n    uid=1_40 StaticText \" before you add one.\"\n    uid=1_41 StaticText \"Status\"\n    uid=1_42 StaticText \"Configuration\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 15
+   }
+  },
+  "click_user_menu": {
+   "tool": "click",
+   "arguments": {
+    "uid": "1_4",
+    "includeSnapshot": true
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully clicked on the element\n## Latest page snapshot\nuid=1_0 RootWebArea \"Document List\" url=\"http://localhost:3000/documents.html\"\n  uid=1_1 banner\n    uid=1_2 link \"AWS IDP Accelerator Console\" url=\"http://localhost:3000/documents.html\"\n      uid=1_3 StaticText \"AWS IDP Accelerator Console\"\n    uid=1_4 button \"new-analyst (Author)\" expandable expanded focusable focused haspopup=\"menu\"\n    uid=5_0 menu \"User menu\" orientation=\"vertical\"\n      uid=5_1 menuitem \"Sign out\"\n  uid=1_5 navigation \"Side navigation\"\n    uid=1_6 link \"Document List\" url=\"http://localhost:3000/documents.html\"\n      uid=1_7 StaticText \"Document List\"\n    uid=1_8 link \"Upload Document(s)\" url=\"http://localhost:3000/upload.html\"\n      uid=1_9 StaticText \"Upload Document(s)\"\n    uid=1_10 link \"Configuration Profiles\" url=\"http://localhost:3000/documents.html#profiles\"\n      uid=1_11 StaticText \"Configuration Profiles\"\n    uid=1_12 link \"Documentation\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list\"\n      uid=1_13 StaticText \"Documentation\"\n  uid=1_14 main\n    uid=1_15 heading \"Documents (2)\" level=\"1\"\n    uid=1_16 button \"Refresh\"\n    uid=1_17 button \"Reprocess\"\n    uid=1_18 button \"Delete\"\n    uid=1_19 button \"Download results\"\n    uid=1_20 button\n    uid=1_21 button \"Add prefix mapping\"\n    uid=1_22 button \"Create test set\"\n    uid=1_23 StaticText \"Find documents\"\n    uid=1_24 searchbox \"Find documents\" value=\"rvl\"\n    uid=1_25 checkbox \"Show Test Studio runs\" checked\n    uid=1_26 StaticText \"Object name\"\n    uid=1_27 StaticText \"Status\"\n    uid=1_28 StaticText \"Configuration\"\n    uid=1_29 link \"lending_package.pdf\" url=\"http://localhost:3000/documents.html#doc-1\"\n      uid=1_30 StaticText \"lending_package.pdf\"\n    uid=1_31 StaticText \"COMPLETED\"\n    uid=1_32 StaticText \"lending-package-sample\"\n    uid=1_33 link \"rvl_cdip_package.pdf\" url=\"http://localhost:3000/documents.html#doc-2\"\n      uid=1_34 StaticText \"rvl_cdip_package.pdf\"\n    uid=1_35 StaticText \"COMPLETED\"\n    uid=1_36 StaticText \"rvl-cdip\"\n    uid=1_37 StaticText \"Read \"\n    uid=1_38 link \"Prefix mappings\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands\"\n      uid=1_39 StaticText \"Prefix mappings\"\n    uid=1_40 StaticText \" before you add one.\"\n    uid=1_41 StaticText \"Status\"\n    uid=1_42 StaticText \"Configuration\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 16
+   }
+  },
+  "click_add_mapping": {
+   "tool": "click",
+   "arguments": {
+    "uid": "1_21"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully clicked on the element"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 17
+   }
+  },
+  "snapshot_dialog_open": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=1_0 RootWebArea \"Document List\" url=\"http://localhost:3000/documents.html\"\n  uid=1_1 banner\n    uid=1_2 link \"AWS IDP Accelerator Console\" url=\"http://localhost:3000/documents.html\"\n      uid=1_3 StaticText \"AWS IDP Accelerator Console\"\n    uid=1_4 button \"new-analyst (Author)\" expandable expanded haspopup=\"menu\"\n    uid=5_0 menu \"User menu\" orientation=\"vertical\"\n      uid=5_1 menuitem \"Sign out\"\n  uid=1_5 navigation \"Side navigation\"\n    uid=1_6 link \"Document List\" url=\"http://localhost:3000/documents.html\"\n      uid=1_7 StaticText \"Document List\"\n    uid=1_8 link \"Upload Document(s)\" url=\"http://localhost:3000/upload.html\"\n      uid=1_9 StaticText \"Upload Document(s)\"\n    uid=1_10 link \"Configuration Profiles\" url=\"http://localhost:3000/documents.html#profiles\"\n      uid=1_11 StaticText \"Configuration Profiles\"\n    uid=1_12 link \"Documentation\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/web-ui/#document-list\"\n      uid=1_13 StaticText \"Documentation\"\n  uid=1_14 main\n    uid=1_15 heading \"Documents (2)\" level=\"1\"\n    uid=1_16 button \"Refresh\"\n    uid=1_17 button \"Reprocess\"\n    uid=1_18 button \"Delete\"\n    uid=1_19 button \"Download results\"\n    uid=1_20 button\n    uid=1_21 button \"Add prefix mapping\" focusable focused\n    uid=1_22 button \"Create test set\"\n    uid=1_23 StaticText \"Find documents\"\n    uid=1_24 searchbox \"Find documents\" value=\"rvl\"\n    uid=1_25 checkbox \"Show Test Studio runs\" checked\n    uid=1_26 StaticText \"Object name\"\n    uid=1_27 StaticText \"Status\"\n    uid=1_28 StaticText \"Configuration\"\n    uid=1_29 link \"lending_package.pdf\" url=\"http://localhost:3000/documents.html#doc-1\"\n      uid=1_30 StaticText \"lending_package.pdf\"\n    uid=1_31 StaticText \"COMPLETED\"\n    uid=1_32 StaticText \"lending-package-sample\"\n    uid=1_33 link \"rvl_cdip_package.pdf\" url=\"http://localhost:3000/documents.html#doc-2\"\n      uid=1_34 StaticText \"rvl_cdip_package.pdf\"\n    uid=1_35 StaticText \"COMPLETED\"\n    uid=1_36 StaticText \"rvl-cdip\"\n    uid=1_37 StaticText \"Read \"\n    uid=1_38 link \"Prefix mappings\" url=\"https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/configuration-profiles/#prefix-mappings-assigning-a-profile-by-where-a-document-lands\"\n      uid=1_39 StaticText \"Prefix mappings\"\n    uid=1_40 StaticText \" before you add one.\"\n    uid=1_41 StaticText \"Status\"\n    uid=1_42 StaticText \"Configuration\"\n    uid=6_0 dialog \"Add prefix mapping\" modal\n      uid=6_1 heading \"Add prefix mapping\" level=\"2\"\n      uid=6_2 StaticText \"S3 prefix\"\n      uid=6_3 textbox \"S3 prefix\"\n      uid=6_4 StaticText \"Configuration profile\"\n      uid=6_5 combobox \"Configuration profile\" expandable haspopup=\"menu\" value=\"lending-package-sample\"\n        uid=6_6 option \"lending-package-sample\" selectable selected value=\"lending-package-sample\"\n        uid=6_7 option \"bank-statement-sample\" selectable value=\"bank-statement-sample\"\n      uid=6_8 button \"Cancel\"\n      uid=6_9 button \"Add another prefix\"\n      uid=6_10 button \"Save\"\n      uid=6_11 link \"New profile\" url=\"http://localhost:3000/documents.html#new-profile\"\n        uid=6_12 StaticText \"New profile\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 18
+   }
+  },
+  "click_stale_uid": {
+   "tool": "click",
+   "arguments": {
+    "uid": "999_999"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Error: Element uid \"999_999\" not found on page 1."
+      }
+     ],
+     "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 19
+   }
+  },
+  "click_unknown_argument": {
+   "tool": "click",
+   "arguments": {
+    "uid": "1_16",
+    "bogus": 1
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Unknown argument for tool \"click\": \"bogus\". Expected arguments: \"uid\", \"dblClick\", \"includeSnapshot\". Remove it and retry."
+      }
+     ],
+     "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 20
+   }
+  },
+  "screenshot_file_path": {
+   "tool": "take_screenshot",
+   "arguments": {
+    "format": "jpeg",
+    "filePath": "shot.jpg"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Error: Access denied: path shot.jpg (canonical: /work/shot.jpg) is not within any of the configured workspace roots."
+      }
+     ],
+     "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 21
+   }
+  },
+  "navigate_file_url": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "url",
+    "url": "file:///etc/hostname"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Unable to navigate in the selected page: net::ERR_BLOCKED_BY_ADMINISTRATOR at file:///etc/hostname.\n## Pages\n1: file:///etc/hostname (chrome-error://chromewebdata/) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 22
+   }
+  },
+  "navigate_dialogs": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "url",
+    "url": "http://localhost:3000/dialogs.html"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully navigated to http://localhost:3000/dialogs.html.\n## Pages\n1: Document details (http://localhost:3000/dialogs.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 23
+   }
+  },
+  "snapshot_dialogs": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=7_0 RootWebArea \"Document details\" url=\"http://localhost:3000/dialogs.html\"\n  uid=7_1 main\n    uid=7_2 heading \"lending_package.pdf\" level=\"1\"\n    uid=7_3 StaticText \"Status: COMPLETED\"\n    uid=7_4 button \"Discard changes\"\n    uid=7_5 button \"Show processing summary\"\n    uid=7_6 button \"Rename\"\n    uid=7_7 status atomic live=\"polite\" relevant=\"additions text\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 24
+   }
+  },
+  "click_discard": {
+   "tool": "click",
+   "arguments": {
+    "uid": "7_4"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "The element was clicked and it opened a dialog.\n# Open dialog\nconfirm: Discard the changes you made to this document?.\nCall handle_dialog to handle it before continuing."
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 25
+   }
+  },
+  "snapshot_while_confirm_open": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "# Open dialog\nconfirm: Discard the changes you made to this document?.\nCall handle_dialog to handle it before continuing.\nError: A dialog is open (confirm: Discard the changes you made to this document?)."
+      }
+     ],
+     "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 26
+   }
+  },
+  "screenshot_while_confirm_open": {
+   "tool": "take_screenshot",
+   "arguments": {
+    "format": "jpeg",
+    "quality": 70
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "# Open dialog\nconfirm: Discard the changes you made to this document?.\nCall handle_dialog to handle it before continuing.\nError: A dialog is open (confirm: Discard the changes you made to this document?)."
+      }
+     ],
+     "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 27
+   }
+  },
+  "handle_confirm_dismiss": {
+   "tool": "handle_dialog",
+   "arguments": {
+    "action": "dismiss"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully dismissed the dialog\n## Pages\n1: Document details (http://localhost:3000/dialogs.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 28
+   }
+  },
+  "click_summary": {
+   "tool": "click",
+   "arguments": {
+    "uid": "7_5"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "The element was clicked and it opened a dialog.\n# Open dialog\nalert: Processing finished in 4 steps..\nCall handle_dialog to handle it before continuing."
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 29
+   }
+  },
+  "handle_alert_accept": {
+   "tool": "handle_dialog",
+   "arguments": {
+    "action": "accept"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully accepted the dialog\n## Pages\n1: Document details (http://localhost:3000/dialogs.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 30
+   }
+  },
+  "click_rename": {
+   "tool": "click",
+   "arguments": {
+    "uid": "7_6"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "The element was clicked and it opened a dialog.\n# Open dialog\nprompt: New name (default value: \"lending_package.pdf\").\nCall handle_dialog to handle it before continuing."
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 31
+   }
+  },
+  "handle_prompt_dismiss": {
+   "tool": "handle_dialog",
+   "arguments": {
+    "action": "dismiss"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully dismissed the dialog\n## Pages\n1: Document details (http://localhost:3000/dialogs.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 32
+   }
+  },
+  "handle_no_dialog": {
+   "tool": "handle_dialog",
+   "arguments": {
+    "action": "accept"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Error: No open dialog found"
+      }
+     ],
+     "isError": true
+    },
+    "jsonrpc": "2.0",
+    "id": 33
+   }
+  },
+  "navigate_signin": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "url",
+    "url": "http://localhost:3000/signin.html"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully navigated to http://localhost:3000/signin.html.\n## Pages\n1: Sign in (http://localhost:3000/signin.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 34
+   }
+  },
+  "snapshot_signin": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=8_0 RootWebArea \"Sign in\" url=\"http://localhost:3000/signin.html\"\n  uid=8_1 main\n    uid=8_2 heading \"Welcome to GenAI Intelligent Document Processing!\" level=\"1\"\n    uid=8_3 tab \"Sign In\" selectable selected\n    uid=8_4 tab \"Create Account\" selectable\n    uid=8_5 form\n      uid=8_6 StaticText \"Username\"\n      uid=8_7 textbox \"Username\"\n      uid=8_8 StaticText \"Password\"\n      uid=8_9 textbox \"Password\"\n      uid=8_10 button \"Show password\"\n      uid=8_11 button \"Sign in\"\n      uid=8_12 button \"Forgot your password?\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 35
+   }
+  },
+  "navigate_account": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "url",
+    "url": "http://localhost:3000/account.html"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully navigated to http://localhost:3000/account.html.\n## Pages\n1: Account (http://localhost:3000/account.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 36
+   }
+  },
+  "snapshot_account": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=9_0 RootWebArea \"Account\" url=\"http://localhost:3000/account.html\"\n  uid=9_1 main\n    uid=9_2 heading \"Your account\" level=\"1\"\n    uid=9_3 form\n      uid=9_4 StaticText \"Current password\"\n      uid=9_5 textbox \"Current password\"\n      uid=9_6 StaticText \"New password\"\n      uid=9_7 textbox \"New password\"\n      uid=9_8 button \"Change password\"\n    uid=9_9 link \"Sign in with another account\" url=\"http://localhost:3000/signin.html\"\n      uid=9_10 StaticText \"Sign in with another account\"\n    uid=9_11 button \"Sign in again later\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 37
+   }
+  },
+  "navigate_long": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "url",
+    "url": "http://localhost:3000/long.html"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully navigated to http://localhost:3000/long.html.\n## Pages\n1: Document List (http://localhost:3000/long.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 38
+   }
+  },
+  "snapshot_long": {
+   "tool": "take_snapshot",
+   "arguments": {},
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "## Latest page snapshot\nuid=10_0 RootWebArea \"Document List\" url=\"http://localhost:3000/long.html\"\n  uid=10_1 main\n    uid=10_2 heading \"Documents (150)\" level=\"1\"\n    uid=10_3 StaticText \"Object name\"\n    uid=10_4 StaticText \"Status\"\n    uid=10_5 StaticText \"Configuration\"\n    uid=10_6 link \"sample-001.pdf\" url=\"http://localhost:3000/long.html#doc-1\"\n      uid=10_7 StaticText \"sample-001.pdf\"\n    uid=10_8 StaticText \"COMPLETED\"\n    uid=10_9 StaticText \"lending-package-sample\"\n    uid=10_10 link \"sample-002.pdf\" url=\"http://localhost:3000/long.html#doc-2\"\n      uid=10_11 StaticText \"sample-002.pdf\"\n    uid=10_12 StaticText \"COMPLETED\"\n    uid=10_13 StaticText \"lending-package-sample\"\n    uid=10_14 link \"sample-003.pdf\" url=\"http://localhost:3000/long.html#doc-3\"\n      uid=10_15 StaticText \"sample-003.pdf\"\n    uid=10_16 StaticText \"COMPLETED\"\n    uid=10_17 StaticText \"lending-package-sample\"\n    uid=10_18 link \"sample-004.pdf\" url=\"http://localhost:3000/long.html#doc-4\"\n      uid=10_19 StaticText \"sample-004.pdf\"\n    uid=10_20 StaticText \"COMPLETED\"\n    uid=10_21 StaticText \"lending-package-sample\"\n    uid=10_22 link \"sample-005.pdf\" url=\"http://localhost:3000/long.html#doc-5\"\n      uid=10_23 StaticText \"sample-005.pdf\"\n    uid=10_24 StaticText \"COMPLETED\"\n    uid=10_25 StaticText \"lending-package-sample\"\n    uid=10_26 link \"sample-006.pdf\" url=\"http://localhost:3000/long.html#doc-6\"\n      uid=10_27 StaticText \"sample-006.pdf\"\n    uid=10_28 StaticText \"COMPLETED\"\n    uid=10_29 StaticText \"lending-package-sample\"\n    uid=10_30 link \"sample-007.pdf\" url=\"http://localhost:3000/long.html#doc-7\"\n      uid=10_31 StaticText \"sample-007.pdf\"\n    uid=10_32 StaticText \"COMPLETED\"\n    uid=10_33 StaticText \"lending-package-sample\"\n    uid=10_34 link \"sample-008.pdf\" url=\"http://localhost:3000/long.html#doc-8\"\n      uid=10_35 StaticText \"sample-008.pdf\"\n    uid=10_36 StaticText \"COMPLETED\"\n    uid=10_37 StaticText \"lending-package-sample\"\n    uid=10_38 link \"sample-009.pdf\" url=\"http://localhost:3000/long.html#doc-9\"\n      uid=10_39 StaticText \"sample-009.pdf\"\n    uid=10_40 StaticText \"COMPLETED\"\n    uid=10_41 StaticText \"lending-package-sample\"\n    uid=10_42 link \"sample-010.pdf\" url=\"http://localhost:3000/long.html#doc-10\"\n      uid=10_43 StaticText \"sample-010.pdf\"\n    uid=10_44 StaticText \"COMPLETED\"\n    uid=10_45 StaticText \"lending-package-sample\"\n    uid=10_46 link \"sample-011.pdf\" url=\"http://localhost:3000/long.html#doc-11\"\n      uid=10_47 StaticText \"sample-011.pdf\"\n    uid=10_48 StaticText \"COMPLETED\"\n    uid=10_49 StaticText \"lending-package-sample\"\n    uid=10_50 link \"sample-012.pdf\" url=\"http://localhost:3000/long.html#doc-12\"\n      uid=10_51 StaticText \"sample-012.pdf\"\n    uid=10_52 StaticText \"COMPLETED\"\n    uid=10_53 StaticText \"lending-package-sample\"\n    uid=10_54 link \"sample-013.pdf\" url=\"http://localhost:3000/long.html#doc-13\"\n      uid=10_55 StaticText \"sample-013.pdf\"\n    uid=10_56 StaticText \"COMPLETED\"\n    uid=10_57 StaticText \"lending-package-sample\"\n    uid=10_58 link \"sample-014.pdf\" url=\"http://localhost:3000/long.html#doc-14\"\n      uid=10_59 StaticText \"sample-014.pdf\"\n    uid=10_60 StaticText \"COMPLETED\"\n    uid=10_61 StaticText \"lending-package-sample\"\n    uid=10_62 link \"sample-015.pdf\" url=\"http://localhost:3000/long.html#doc-15\"\n      uid=10_63 StaticText \"sample-015.pdf\"\n    uid=10_64 StaticText \"COMPLETED\"\n    uid=10_65 StaticText \"lending-package-sample\"\n    uid=10_66 link \"sample-016.pdf\" url=\"http://localhost:3000/long.html#doc-16\"\n      uid=10_67 StaticText \"sample-016.pdf\"\n    uid=10_68 StaticText \"COMPLETED\"\n    uid=10_69 StaticText \"lending-package-sample\"\n    uid=10_70 link \"sample-017.pdf\" url=\"http://localhost:3000/long.html#doc-17\"\n      uid=10_71 StaticText \"sample-017.pdf\"\n    uid=10_72 StaticText \"COMPLETED\"\n    uid=10_73 StaticText \"lending-package-sample\"\n    uid=10_74 link \"sample-018.pdf\" url=\"http://localhost:3000/long.html#doc-18\"\n      uid=10_75 StaticText \"sample-018.pdf\"\n    uid=10_76 StaticText \"COMPLETED\"\n    uid=10_77 StaticText \"lending-package-sample\"\n    uid=10_78 link \"sample-019.pdf\" url=\"http://localhost:3000/long.html#doc-19\"\n      uid=10_79 StaticText \"sample-019.pdf\"\n    uid=10_80 StaticText \"COMPLETED\"\n    uid=10_81 StaticText \"lending-package-sample\"\n    uid=10_82 link \"sample-020.pdf\" url=\"http://localhost:3000/long.html#doc-20\"\n      uid=10_83 StaticText \"sample-020.pdf\"\n    uid=10_84 StaticText \"COMPLETED\"\n    uid=10_85 StaticText \"lending-package-sample\"\n    uid=10_86 link \"sample-021.pdf\" url=\"http://localhost:3000/long.html#doc-21\"\n      uid=10_87 StaticText \"sample-021.pdf\"\n    uid=10_88 StaticText \"COMPLETED\"\n    uid=10_89 StaticText \"lending-package-sample\"\n    uid=10_90 link \"sample-022.pdf\" url=\"http://localhost:3000/long.html#doc-22\"\n      uid=10_91 StaticText \"sample-022.pdf\"\n    uid=10_92 StaticText \"COMPLETED\"\n    uid=10_93 StaticText \"lending-package-sample\"\n    uid=10_94 link \"sample-023.pdf\" url=\"http://localhost:3000/long.html#doc-23\"\n      uid=10_95 StaticText \"sample-023.pdf\"\n    uid=10_96 StaticText \"COMPLETED\"\n    uid=10_97 StaticText \"lending-package-sample\"\n    uid=10_98 link \"sample-024.pdf\" url=\"http://localhost:3000/long.html#doc-24\"\n      uid=10_99 StaticText \"sample-024.pdf\"\n    uid=10_100 StaticText \"COMPLETED\"\n    uid=10_101 StaticText \"lending-package-sample\"\n    uid=10_102 link \"sample-025.pdf\" url=\"http://localhost:3000/long.html#doc-25\"\n      uid=10_103 StaticText \"sample-025.pdf\"\n    uid=10_104 StaticText \"COMPLETED\"\n    uid=10_105 StaticText \"lending-package-sample\"\n    uid=10_106 link \"sample-026.pdf\" url=\"http://localhost:3000/long.html#doc-26\"\n      uid=10_107 StaticText \"sample-026.pdf\"\n    uid=10_108 StaticText \"COMPLETED\"\n    uid=10_109 StaticText \"lending-package-sample\"\n    uid=10_110 link \"sample-027.pdf\" url=\"http://localhost:3000/long.html#doc-27\"\n      uid=10_111 StaticText \"sample-027.pdf\"\n    uid=10_112 StaticText \"COMPLETED\"\n    uid=10_113 StaticText \"lending-package-sample\"\n    uid=10_114 link \"sample-028.pdf\" url=\"http://localhost:3000/long.html#doc-28\"\n      uid=10_115 StaticText \"sample-028.pdf\"\n    uid=10_116 StaticText \"COMPLETED\"\n    uid=10_117 StaticText \"lending-package-sample\"\n    uid=10_118 link \"sample-029.pdf\" url=\"http://localhost:3000/long.html#doc-29\"\n      uid=10_119 StaticText \"sample-029.pdf\"\n    uid=10_120 StaticText \"COMPLETED\"\n    uid=10_121 StaticText \"lending-package-sample\"\n    uid=10_122 link \"sample-030.pdf\" url=\"http://localhost:3000/long.html#doc-30\"\n      uid=10_123 StaticText \"sample-030.pdf\"\n    uid=10_124 StaticText \"COMPLETED\"\n    uid=10_125 StaticText \"lending-package-sample\"\n    uid=10_126 link \"sample-031.pdf\" url=\"http://localhost:3000/long.html#doc-31\"\n      uid=10_127 StaticText \"sample-031.pdf\"\n    uid=10_128 StaticText \"COMPLETED\"\n    uid=10_129 StaticText \"lending-package-sample\"\n    uid=10_130 link \"sample-032.pdf\" url=\"http://localhost:3000/long.html#doc-32\"\n      uid=10_131 StaticText \"sample-032.pdf\"\n    uid=10_132 StaticText \"COMPLETED\"\n    uid=10_133 StaticText \"lending-package-sample\"\n    uid=10_134 link \"sample-033.pdf\" url=\"http://localhost:3000/long.html#doc-33\"\n      uid=10_135 StaticText \"sample-033.pdf\"\n    uid=10_136 StaticText \"COMPLETED\"\n    uid=10_137 StaticText \"lending-package-sample\"\n    uid=10_138 link \"sample-034.pdf\" url=\"http://localhost:3000/long.html#doc-34\"\n      uid=10_139 StaticText \"sample-034.pdf\"\n    uid=10_140 StaticText \"COMPLETED\"\n    uid=10_141 StaticText \"lending-package-sample\"\n    uid=10_142 link \"sample-035.pdf\" url=\"http://localhost:3000/long.html#doc-35\"\n      uid=10_143 StaticText \"sample-035.pdf\"\n    uid=10_144 StaticText \"COMPLETED\"\n    uid=10_145 StaticText \"lending-package-sample\"\n    uid=10_146 link \"sample-036.pdf\" url=\"http://localhost:3000/long.html#doc-36\"\n      uid=10_147 StaticText \"sample-036.pdf\"\n    uid=10_148 StaticText \"COMPLETED\"\n    uid=10_149 StaticText \"lending-package-sample\"\n    uid=10_150 link \"sample-037.pdf\" url=\"http://localhost:3000/long.html#doc-37\"\n      uid=10_151 StaticText \"sample-037.pdf\"\n    uid=10_152 StaticText \"COMPLETED\"\n    uid=10_153 StaticText \"lending-package-sample\"\n    uid=10_154 link \"sample-038.pdf\" url=\"http://localhost:3000/long.html#doc-38\"\n      uid=10_155 StaticText \"sample-038.pdf\"\n    uid=10_156 StaticText \"COMPLETED\"\n    uid=10_157 StaticText \"lending-package-sample\"\n    uid=10_158 link \"sample-039.pdf\" url=\"http://localhost:3000/long.html#doc-39\"\n      uid=10_159 StaticText \"sample-039.pdf\"\n    uid=10_160 StaticText \"COMPLETED\"\n    uid=10_161 StaticText \"lending-package-sample\"\n    uid=10_162 link \"sample-040.pdf\" url=\"http://localhost:3000/long.html#doc-40\"\n      uid=10_163 StaticText \"sample-040.pdf\"\n    uid=10_164 StaticText \"COMPLETED\"\n    uid=10_165 StaticText \"lending-package-sample\"\n    uid=10_166 link \"sample-041.pdf\" url=\"http://localhost:3000/long.html#doc-41\"\n      uid=10_167 StaticText \"sample-041.pdf\"\n    uid=10_168 StaticText \"COMPLETED\"\n    uid=10_169 StaticText \"lending-package-sample\"\n    uid=10_170 link \"sample-042.pdf\" url=\"http://localhost:3000/long.html#doc-42\"\n      uid=10_171 StaticText \"sample-042.pdf\"\n    uid=10_172 StaticText \"COMPLETED\"\n    uid=10_173 StaticText \"lending-package-sample\"\n    uid=10_174 link \"sample-043.pdf\" url=\"http://localhost:3000/long.html#doc-43\"\n      uid=10_175 StaticText \"sample-043.pdf\"\n    uid=10_176 StaticText \"COMPLETED\"\n    uid=10_177 StaticText \"lending-package-sample\"\n    uid=10_178 link \"sample-044.pdf\" url=\"http://localhost:3000/long.html#doc-44\"\n      uid=10_179 StaticText \"sample-044.pdf\"\n    uid=10_180 StaticText \"COMPLETED\"\n    uid=10_181 StaticText \"lending-package-sample\"\n    uid=10_182 link \"sample-045.pdf\" url=\"http://localhost:3000/long.html#doc-45\"\n      uid=10_183 StaticText \"sample-045.pdf\"\n    uid=10_184 StaticText \"COMPLETED\"\n    uid=10_185 StaticText \"lending-package-sample\"\n    uid=10_186 link \"sample-046.pdf\" url=\"http://localhost:3000/long.html#doc-46\"\n      uid=10_187 StaticText \"sample-046.pdf\"\n    uid=10_188 StaticText \"COMPLETED\"\n    uid=10_189 StaticText \"lending-package-sample\"\n    uid=10_190 link \"sample-047.pdf\" url=\"http://localhost:3000/long.html#doc-47\"\n      uid=10_191 StaticText \"sample-047.pdf\"\n    uid=10_192 StaticText \"COMPLETED\"\n    uid=10_193 StaticText \"lending-package-sample\"\n    uid=10_194 link \"sample-048.pdf\" url=\"http://localhost:3000/long.html#doc-48\"\n      uid=10_195 StaticText \"sample-048.pdf\"\n    uid=10_196 StaticText \"COMPLETED\"\n    uid=10_197 StaticText \"lending-package-sample\"\n    uid=10_198 link \"sample-049.pdf\" url=\"http://localhost:3000/long.html#doc-49\"\n      uid=10_199 StaticText \"sample-049.pdf\"\n    uid=10_200 StaticText \"COMPLETED\"\n    uid=10_201 StaticText \"lending-package-sample\"\n    uid=10_202 link \"sample-050.pdf\" url=\"http://localhost:3000/long.html#doc-50\"\n      uid=10_203 StaticText \"sample-050.pdf\"\n    uid=10_204 StaticText \"COMPLETED\"\n    uid=10_205 StaticText \"lending-package-sample\"\n    uid=10_206 link \"sample-051.pdf\" url=\"http://localhost:3000/long.html#doc-51\"\n      uid=10_207 StaticText \"sample-051.pdf\"\n    uid=10_208 StaticText \"COMPLETED\"\n    uid=10_209 StaticText \"lending-package-sample\"\n    uid=10_210 link \"sample-052.pdf\" url=\"http://localhost:3000/long.html#doc-52\"\n      uid=10_211 StaticText \"sample-052.pdf\"\n    uid=10_212 StaticText \"COMPLETED\"\n    uid=10_213 StaticText \"lending-package-sample\"\n    uid=10_214 link \"sample-053.pdf\" url=\"http://localhost:3000/long.html#doc-53\"\n      uid=10_215 StaticText \"sample-053.pdf\"\n    uid=10_216 StaticText \"COMPLETED\"\n    uid=10_217 StaticText \"lending-package-sample\"\n    uid=10_218 link \"sample-054.pdf\" url=\"http://localhost:3000/long.html#doc-54\"\n      uid=10_219 StaticText \"sample-054.pdf\"\n    uid=10_220 StaticText \"COMPLETED\"\n    uid=10_221 StaticText \"lending-package-sample\"\n    uid=10_222 link \"sample-055.pdf\" url=\"http://localhost:3000/long.html#doc-55\"\n      uid=10_223 StaticText \"sample-055.pdf\"\n    uid=10_224 StaticText \"COMPLETED\"\n    uid=10_225 StaticText \"lending-package-sample\"\n    uid=10_226 link \"sample-056.pdf\" url=\"http://localhost:3000/long.html#doc-56\"\n      uid=10_227 StaticText \"sample-056.pdf\"\n    uid=10_228 StaticText \"COMPLETED\"\n    uid=10_229 StaticText \"lending-package-sample\"\n    uid=10_230 link \"sample-057.pdf\" url=\"http://localhost:3000/long.html#doc-57\"\n      uid=10_231 StaticText \"sample-057.pdf\"\n    uid=10_232 StaticText \"COMPLETED\"\n    uid=10_233 StaticText \"lending-package-sample\"\n    uid=10_234 link \"sample-058.pdf\" url=\"http://localhost:3000/long.html#doc-58\"\n      uid=10_235 StaticText \"sample-058.pdf\"\n    uid=10_236 StaticText \"COMPLETED\"\n    uid=10_237 StaticText \"lending-package-sample\"\n    uid=10_238 link \"sample-059.pdf\" url=\"http://localhost:3000/long.html#doc-59\"\n      uid=10_239 StaticText \"sample-059.pdf\"\n    uid=10_240 StaticText \"COMPLETED\"\n    uid=10_241 StaticText \"lending-package-sample\"\n    uid=10_242 link \"sample-060.pdf\" url=\"http://localhost:3000/long.html#doc-60\"\n      uid=10_243 StaticText \"sample-060.pdf\"\n    uid=10_244 StaticText \"COMPLETED\"\n    uid=10_245 StaticText \"lending-package-sample\"\n    uid=10_246 link \"sample-061.pdf\" url=\"http://localhost:3000/long.html#doc-61\"\n      uid=10_247 StaticText \"sample-061.pdf\"\n    uid=10_248 StaticText \"COMPLETED\"\n    uid=10_249 StaticText \"lending-package-sample\"\n    uid=10_250 link \"sample-062.pdf\" url=\"http://localhost:3000/long.html#doc-62\"\n      uid=10_251 StaticText \"sample-062.pdf\"\n    uid=10_252 StaticText \"COMPLETED\"\n    uid=10_253 StaticText \"lending-package-sample\"\n    uid=10_254 link \"sample-063.pdf\" url=\"http://localhost:3000/long.html#doc-63\"\n      uid=10_255 StaticText \"sample-063.pdf\"\n    uid=10_256 StaticText \"COMPLETED\"\n    uid=10_257 StaticText \"lending-package-sample\"\n    uid=10_258 link \"sample-064.pdf\" url=\"http://localhost:3000/long.html#doc-64\"\n      uid=10_259 StaticText \"sample-064.pdf\"\n    uid=10_260 StaticText \"COMPLETED\"\n    uid=10_261 StaticText \"lending-package-sample\"\n    uid=10_262 link \"sample-065.pdf\" url=\"http://localhost:3000/long.html#doc-65\"\n      uid=10_263 StaticText \"sample-065.pdf\"\n    uid=10_264 StaticText \"COMPLETED\"\n    uid=10_265 StaticText \"lending-package-sample\"\n    uid=10_266 link \"sample-066.pdf\" url=\"http://localhost:3000/long.html#doc-66\"\n      uid=10_267 StaticText \"sample-066.pdf\"\n    uid=10_268 StaticText \"COMPLETED\"\n    uid=10_269 StaticText \"lending-package-sample\"\n    uid=10_270 link \"sample-067.pdf\" url=\"http://localhost:3000/long.html#doc-67\"\n      uid=10_271 StaticText \"sample-067.pdf\"\n    uid=10_272 StaticText \"COMPLETED\"\n    uid=10_273 StaticText \"lending-package-sample\"\n    uid=10_274 link \"sample-068.pdf\" url=\"http://localhost:3000/long.html#doc-68\"\n      uid=10_275 StaticText \"sample-068.pdf\"\n    uid=10_276 StaticText \"COMPLETED\"\n    uid=10_277 StaticText \"lending-package-sample\"\n    uid=10_278 link \"sample-069.pdf\" url=\"http://localhost:3000/long.html#doc-69\"\n      uid=10_279 StaticText \"sample-069.pdf\"\n    uid=10_280 StaticText \"COMPLETED\"\n    uid=10_281 StaticText \"lending-package-sample\"\n    uid=10_282 link \"sample-070.pdf\" url=\"http://localhost:3000/long.html#doc-70\"\n      uid=10_283 StaticText \"sample-070.pdf\"\n    uid=10_284 StaticText \"COMPLETED\"\n    uid=10_285 StaticText \"lending-package-sample\"\n    uid=10_286 link \"sample-071.pdf\" url=\"http://localhost:3000/long.html#doc-71\"\n      uid=10_287 StaticText \"sample-071.pdf\"\n    uid=10_288 StaticText \"COMPLETED\"\n    uid=10_289 StaticText \"lending-package-sample\"\n    uid=10_290 link \"sample-072.pdf\" url=\"http://localhost:3000/long.html#doc-72\"\n      uid=10_291 StaticText \"sample-072.pdf\"\n    uid=10_292 StaticText \"COMPLETED\"\n    uid=10_293 StaticText \"lending-package-sample\"\n    uid=10_294 link \"sample-073.pdf\" url=\"http://localhost:3000/long.html#doc-73\"\n      uid=10_295 StaticText \"sample-073.pdf\"\n    uid=10_296 StaticText \"COMPLETED\"\n    uid=10_297 StaticText \"lending-package-sample\"\n    uid=10_298 link \"sample-074.pdf\" url=\"http://localhost:3000/long.html#doc-74\"\n      uid=10_299 StaticText \"sample-074.pdf\"\n    uid=10_300 StaticText \"COMPLETED\"\n    uid=10_301 StaticText \"lending-package-sample\"\n    uid=10_302 link \"sample-075.pdf\" url=\"http://localhost:3000/long.html#doc-75\"\n      uid=10_303 StaticText \"sample-075.pdf\"\n    uid=10_304 StaticText \"COMPLETED\"\n    uid=10_305 StaticText \"lending-package-sample\"\n    uid=10_306 link \"sample-076.pdf\" url=\"http://localhost:3000/long.html#doc-76\"\n      uid=10_307 StaticText \"sample-076.pdf\"\n    uid=10_308 StaticText \"COMPLETED\"\n    uid=10_309 StaticText \"lending-package-sample\"\n    uid=10_310 link \"sample-077.pdf\" url=\"http://localhost:3000/long.html#doc-77\"\n      uid=10_311 StaticText \"sample-077.pdf\"\n    uid=10_312 StaticText \"COMPLETED\"\n    uid=10_313 StaticText \"lending-package-sample\"\n    uid=10_314 link \"sample-078.pdf\" url=\"http://localhost:3000/long.html#doc-78\"\n      uid=10_315 StaticText \"sample-078.pdf\"\n    uid=10_316 StaticText \"COMPLETED\"\n    uid=10_317 StaticText \"lending-package-sample\"\n    uid=10_318 link \"sample-079.pdf\" url=\"http://localhost:3000/long.html#doc-79\"\n      uid=10_319 StaticText \"sample-079.pdf\"\n    uid=10_320 StaticText \"COMPLETED\"\n    uid=10_321 StaticText \"lending-package-sample\"\n    uid=10_322 link \"sample-080.pdf\" url=\"http://localhost:3000/long.html#doc-80\"\n      uid=10_323 StaticText \"sample-080.pdf\"\n    uid=10_324 StaticText \"COMPLETED\"\n    uid=10_325 StaticText \"lending-package-sample\"\n    uid=10_326 link \"sample-081.pdf\" url=\"http://localhost:3000/long.html#doc-81\"\n      uid=10_327 StaticText \"sample-081.pdf\"\n    uid=10_328 StaticText \"COMPLETED\"\n    uid=10_329 StaticText \"lending-package-sample\"\n    uid=10_330 link \"sample-082.pdf\" url=\"http://localhost:3000/long.html#doc-82\"\n      uid=10_331 StaticText \"sample-082.pdf\"\n    uid=10_332 StaticText \"COMPLETED\"\n    uid=10_333 StaticText \"lending-package-sample\"\n    uid=10_334 link \"sample-083.pdf\" url=\"http://localhost:3000/long.html#doc-83\"\n      uid=10_335 StaticText \"sample-083.pdf\"\n    uid=10_336 StaticText \"COMPLETED\"\n    uid=10_337 StaticText \"lending-package-sample\"\n    uid=10_338 link \"sample-084.pdf\" url=\"http://localhost:3000/long.html#doc-84\"\n      uid=10_339 StaticText \"sample-084.pdf\"\n    uid=10_340 StaticText \"COMPLETED\"\n    uid=10_341 StaticText \"lending-package-sample\"\n    uid=10_342 link \"sample-085.pdf\" url=\"http://localhost:3000/long.html#doc-85\"\n      uid=10_343 StaticText \"sample-085.pdf\"\n    uid=10_344 StaticText \"COMPLETED\"\n    uid=10_345 StaticText \"lending-package-sample\"\n    uid=10_346 link \"sample-086.pdf\" url=\"http://localhost:3000/long.html#doc-86\"\n      uid=10_347 StaticText \"sample-086.pdf\"\n    uid=10_348 StaticText \"COMPLETED\"\n    uid=10_349 StaticText \"lending-package-sample\"\n    uid=10_350 link \"sample-087.pdf\" url=\"http://localhost:3000/long.html#doc-87\"\n      uid=10_351 StaticText \"sample-087.pdf\"\n    uid=10_352 StaticText \"COMPLETED\"\n    uid=10_353 StaticText \"lending-package-sample\"\n    uid=10_354 link \"sample-088.pdf\" url=\"http://localhost:3000/long.html#doc-88\"\n      uid=10_355 StaticText \"sample-088.pdf\"\n    uid=10_356 StaticText \"COMPLETED\"\n    uid=10_357 StaticText \"lending-package-sample\"\n    uid=10_358 link \"sample-089.pdf\" url=\"http://localhost:3000/long.html#doc-89\"\n      uid=10_359 StaticText \"sample-089.pdf\"\n    uid=10_360 StaticText \"COMPLETED\"\n    uid=10_361 StaticText \"lending-package-sample\"\n    uid=10_362 link \"sample-090.pdf\" url=\"http://localhost:3000/long.html#doc-90\"\n      uid=10_363 StaticText \"sample-090.pdf\"\n    uid=10_364 StaticText \"COMPLETED\"\n    uid=10_365 StaticText \"lending-package-sample\"\n    uid=10_366 link \"sample-091.pdf\" url=\"http://localhost:3000/long.html#doc-91\"\n      uid=10_367 StaticText \"sample-091.pdf\"\n    uid=10_368 StaticText \"COMPLETED\"\n    uid=10_369 StaticText \"lending-package-sample\"\n    uid=10_370 link \"sample-092.pdf\" url=\"http://localhost:3000/long.html#doc-92\"\n      uid=10_371 StaticText \"sample-092.pdf\"\n    uid=10_372 StaticText \"COMPLETED\"\n    uid=10_373 StaticText \"lending-package-sample\"\n    uid=10_374 link \"sample-093.pdf\" url=\"http://localhost:3000/long.html#doc-93\"\n      uid=10_375 StaticText \"sample-093.pdf\"\n    uid=10_376 StaticText \"COMPLETED\"\n    uid=10_377 StaticText \"lending-package-sample\"\n    uid=10_378 link \"sample-094.pdf\" url=\"http://localhost:3000/long.html#doc-94\"\n      uid=10_379 StaticText \"sample-094.pdf\"\n    uid=10_380 StaticText \"COMPLETED\"\n    uid=10_381 StaticText \"lending-package-sample\"\n    uid=10_382 link \"sample-095.pdf\" url=\"http://localhost:3000/long.html#doc-95\"\n      uid=10_383 StaticText \"sample-095.pdf\"\n    uid=10_384 StaticText \"COMPLETED\"\n    uid=10_385 StaticText \"lending-package-sample\"\n    uid=10_386 link \"sample-096.pdf\" url=\"http://localhost:3000/long.html#doc-96\"\n      uid=10_387 StaticText \"sample-096.pdf\"\n    uid=10_388 StaticText \"COMPLETED\"\n    uid=10_389 StaticText \"lending-package-sample\"\n    uid=10_390 link \"sample-097.pdf\" url=\"http://localhost:3000/long.html#doc-97\"\n      uid=10_391 StaticText \"sample-097.pdf\"\n    uid=10_392 StaticText \"COMPLETED\"\n    uid=10_393 StaticText \"lending-package-sample\"\n    uid=10_394 link \"sample-098.pdf\" url=\"http://localhost:3000/long.html#doc-98\"\n      uid=10_395 StaticText \"sample-098.pdf\"\n    uid=10_396 StaticText \"COMPLETED\"\n    uid=10_397 StaticText \"lending-package-sample\"\n    uid=10_398 link \"sample-099.pdf\" url=\"http://localhost:3000/long.html#doc-99\"\n      uid=10_399 StaticText \"sample-099.pdf\"\n    uid=10_400 StaticText \"COMPLETED\"\n    uid=10_401 StaticText \"lending-package-sample\"\n    uid=10_402 link \"sample-100.pdf\" url=\"http://localhost:3000/long.html#doc-100\"\n      uid=10_403 StaticText \"sample-100.pdf\"\n    uid=10_404 StaticText \"COMPLETED\"\n    uid=10_405 StaticText \"lending-package-sample\"\n    uid=10_406 link \"sample-101.pdf\" url=\"http://localhost:3000/long.html#doc-101\"\n      uid=10_407 StaticText \"sample-101.pdf\"\n    uid=10_408 StaticText \"COMPLETED\"\n    uid=10_409 StaticText \"lending-package-sample\"\n    uid=10_410 link \"sample-102.pdf\" url=\"http://localhost:3000/long.html#doc-102\"\n      uid=10_411 StaticText \"sample-102.pdf\"\n    uid=10_412 StaticText \"COMPLETED\"\n    uid=10_413 StaticText \"lending-package-sample\"\n    uid=10_414 link \"sample-103.pdf\" url=\"http://localhost:3000/long.html#doc-103\"\n      uid=10_415 StaticText \"sample-103.pdf\"\n    uid=10_416 StaticText \"COMPLETED\"\n    uid=10_417 StaticText \"lending-package-sample\"\n    uid=10_418 link \"sample-104.pdf\" url=\"http://localhost:3000/long.html#doc-104\"\n      uid=10_419 StaticText \"sample-104.pdf\"\n    uid=10_420 StaticText \"COMPLETED\"\n    uid=10_421 StaticText \"lending-package-sample\"\n    uid=10_422 link \"sample-105.pdf\" url=\"http://localhost:3000/long.html#doc-105\"\n      uid=10_423 StaticText \"sample-105.pdf\"\n    uid=10_424 StaticText \"COMPLETED\"\n    uid=10_425 StaticText \"lending-package-sample\"\n    uid=10_426 link \"sample-106.pdf\" url=\"http://localhost:3000/long.html#doc-106\"\n      uid=10_427 StaticText \"sample-106.pdf\"\n    uid=10_428 StaticText \"COMPLETED\"\n    uid=10_429 StaticText \"lending-package-sample\"\n    uid=10_430 link \"sample-107.pdf\" url=\"http://localhost:3000/long.html#doc-107\"\n      uid=10_431 StaticText \"sample-107.pdf\"\n    uid=10_432 StaticText \"COMPLETED\"\n    uid=10_433 StaticText \"lending-package-sample\"\n    uid=10_434 link \"sample-108.pdf\" url=\"http://localhost:3000/long.html#doc-108\"\n      uid=10_435 StaticText \"sample-108.pdf\"\n    uid=10_436 StaticText \"COMPLETED\"\n    uid=10_437 StaticText \"lending-package-sample\"\n    uid=10_438 link \"sample-109.pdf\" url=\"http://localhost:3000/long.html#doc-109\"\n      uid=10_439 StaticText \"sample-109.pdf\"\n    uid=10_440 StaticText \"COMPLETED\"\n    uid=10_441 StaticText \"lending-package-sample\"\n    uid=10_442 link \"sample-110.pdf\" url=\"http://localhost:3000/long.html#doc-110\"\n      uid=10_443 StaticText \"sample-110.pdf\"\n    uid=10_444 StaticText \"COMPLETED\"\n    uid=10_445 StaticText \"lending-package-sample\"\n    uid=10_446 link \"sample-111.pdf\" url=\"http://localhost:3000/long.html#doc-111\"\n      uid=10_447 StaticText \"sample-111.pdf\"\n    uid=10_448 StaticText \"COMPLETED\"\n    uid=10_449 StaticText \"lending-package-sample\"\n    uid=10_450 link \"sample-112.pdf\" url=\"http://localhost:3000/long.html#doc-112\"\n      uid=10_451 StaticText \"sample-112.pdf\"\n    uid=10_452 StaticText \"COMPLETED\"\n    uid=10_453 StaticText \"lending-package-sample\"\n    uid=10_454 link \"sample-113.pdf\" url=\"http://localhost:3000/long.html#doc-113\"\n      uid=10_455 StaticText \"sample-113.pdf\"\n    uid=10_456 StaticText \"COMPLETED\"\n    uid=10_457 StaticText \"lending-package-sample\"\n    uid=10_458 link \"sample-114.pdf\" url=\"http://localhost:3000/long.html#doc-114\"\n      uid=10_459 StaticText \"sample-114.pdf\"\n    uid=10_460 StaticText \"COMPLETED\"\n    uid=10_461 StaticText \"lending-package-sample\"\n    uid=10_462 link \"sample-115.pdf\" url=\"http://localhost:3000/long.html#doc-115\"\n      uid=10_463 StaticText \"sample-115.pdf\"\n    uid=10_464 StaticText \"COMPLETED\"\n    uid=10_465 StaticText \"lending-package-sample\"\n    uid=10_466 link \"sample-116.pdf\" url=\"http://localhost:3000/long.html#doc-116\"\n      uid=10_467 StaticText \"sample-116.pdf\"\n    uid=10_468 StaticText \"COMPLETED\"\n    uid=10_469 StaticText \"lending-package-sample\"\n    uid=10_470 link \"sample-117.pdf\" url=\"http://localhost:3000/long.html#doc-117\"\n      uid=10_471 StaticText \"sample-117.pdf\"\n    uid=10_472 StaticText \"COMPLETED\"\n    uid=10_473 StaticText \"lending-package-sample\"\n    uid=10_474 link \"sample-118.pdf\" url=\"http://localhost:3000/long.html#doc-118\"\n      uid=10_475 StaticText \"sample-118.pdf\"\n    uid=10_476 StaticText \"COMPLETED\"\n    uid=10_477 StaticText \"lending-package-sample\"\n    uid=10_478 link \"sample-119.pdf\" url=\"http://localhost:3000/long.html#doc-119\"\n      uid=10_479 StaticText \"sample-119.pdf\"\n    uid=10_480 StaticText \"COMPLETED\"\n    uid=10_481 StaticText \"lending-package-sample\"\n    uid=10_482 link \"sample-120.pdf\" url=\"http://localhost:3000/long.html#doc-120\"\n      uid=10_483 StaticText \"sample-120.pdf\"\n    uid=10_484 StaticText \"COMPLETED\"\n    uid=10_485 StaticText \"lending-package-sample\"\n    uid=10_486 link \"sample-121.pdf\" url=\"http://localhost:3000/long.html#doc-121\"\n      uid=10_487 StaticText \"sample-121.pdf\"\n    uid=10_488 StaticText \"COMPLETED\"\n    uid=10_489 StaticText \"lending-package-sample\"\n    uid=10_490 link \"sample-122.pdf\" url=\"http://localhost:3000/long.html#doc-122\"\n      uid=10_491 StaticText \"sample-122.pdf\"\n    uid=10_492 StaticText \"COMPLETED\"\n    uid=10_493 StaticText \"lending-package-sample\"\n    uid=10_494 link \"sample-123.pdf\" url=\"http://localhost:3000/long.html#doc-123\"\n      uid=10_495 StaticText \"sample-123.pdf\"\n    uid=10_496 StaticText \"COMPLETED\"\n    uid=10_497 StaticText \"lending-package-sample\"\n    uid=10_498 link \"sample-124.pdf\" url=\"http://localhost:3000/long.html#doc-124\"\n      uid=10_499 StaticText \"sample-124.pdf\"\n    uid=10_500 StaticText \"COMPLETED\"\n    uid=10_501 StaticText \"lending-package-sample\"\n    uid=10_502 link \"sample-125.pdf\" url=\"http://localhost:3000/long.html#doc-125\"\n      uid=10_503 StaticText \"sample-125.pdf\"\n    uid=10_504 StaticText \"COMPLETED\"\n    uid=10_505 StaticText \"lending-package-sample\"\n    uid=10_506 link \"sample-126.pdf\" url=\"http://localhost:3000/long.html#doc-126\"\n      uid=10_507 StaticText \"sample-126.pdf\"\n    uid=10_508 StaticText \"COMPLETED\"\n    uid=10_509 StaticText \"lending-package-sample\"\n    uid=10_510 link \"sample-127.pdf\" url=\"http://localhost:3000/long.html#doc-127\"\n      uid=10_511 StaticText \"sample-127.pdf\"\n    uid=10_512 StaticText \"COMPLETED\"\n    uid=10_513 StaticText \"lending-package-sample\"\n    uid=10_514 link \"sample-128.pdf\" url=\"http://localhost:3000/long.html#doc-128\"\n      uid=10_515 StaticText \"sample-128.pdf\"\n    uid=10_516 StaticText \"COMPLETED\"\n    uid=10_517 StaticText \"lending-package-sample\"\n    uid=10_518 link \"sample-129.pdf\" url=\"http://localhost:3000/long.html#doc-129\"\n      uid=10_519 StaticText \"sample-129.pdf\"\n    uid=10_520 StaticText \"COMPLETED\"\n    uid=10_521 StaticText \"lending-package-sample\"\n    uid=10_522 link \"sample-130.pdf\" url=\"http://localhost:3000/long.html#doc-130\"\n      uid=10_523 StaticText \"sample-130.pdf\"\n    uid=10_524 StaticText \"COMPLETED\"\n    uid=10_525 StaticText \"lending-package-sample\"\n    uid=10_526 link \"sample-131.pdf\" url=\"http://localhost:3000/long.html#doc-131\"\n      uid=10_527 StaticText \"sample-131.pdf\"\n    uid=10_528 StaticText \"COMPLETED\"\n    uid=10_529 StaticText \"lending-package-sample\"\n    uid=10_530 link \"sample-132.pdf\" url=\"http://localhost:3000/long.html#doc-132\"\n      uid=10_531 StaticText \"sample-132.pdf\"\n    uid=10_532 StaticText \"COMPLETED\"\n    uid=10_533 StaticText \"lending-package-sample\"\n    uid=10_534 link \"sample-133.pdf\" url=\"http://localhost:3000/long.html#doc-133\"\n      uid=10_535 StaticText \"sample-133.pdf\"\n    uid=10_536 StaticText \"COMPLETED\"\n    uid=10_537 StaticText \"lending-package-sample\"\n    uid=10_538 link \"sample-134.pdf\" url=\"http://localhost:3000/long.html#doc-134\"\n      uid=10_539 StaticText \"sample-134.pdf\"\n    uid=10_540 StaticText \"COMPLETED\"\n    uid=10_541 StaticText \"lending-package-sample\"\n    uid=10_542 link \"sample-135.pdf\" url=\"http://localhost:3000/long.html#doc-135\"\n      uid=10_543 StaticText \"sample-135.pdf\"\n    uid=10_544 StaticText \"COMPLETED\"\n    uid=10_545 StaticText \"lending-package-sample\"\n    uid=10_546 link \"sample-136.pdf\" url=\"http://localhost:3000/long.html#doc-136\"\n      uid=10_547 StaticText \"sample-136.pdf\"\n    uid=10_548 StaticText \"COMPLETED\"\n    uid=10_549 StaticText \"lending-package-sample\"\n    uid=10_550 link \"sample-137.pdf\" url=\"http://localhost:3000/long.html#doc-137\"\n      uid=10_551 StaticText \"sample-137.pdf\"\n    uid=10_552 StaticText \"COMPLETED\"\n    uid=10_553 StaticText \"lending-package-sample\"\n    uid=10_554 link \"sample-138.pdf\" url=\"http://localhost:3000/long.html#doc-138\"\n      uid=10_555 StaticText \"sample-138.pdf\"\n    uid=10_556 StaticText \"COMPLETED\"\n    uid=10_557 StaticText \"lending-package-sample\"\n    uid=10_558 link \"sample-139.pdf\" url=\"http://localhost:3000/long.html#doc-139\"\n      uid=10_559 StaticText \"sample-139.pdf\"\n    uid=10_560 StaticText \"COMPLETED\"\n    uid=10_561 StaticText \"lending-package-sample\"\n    uid=10_562 link \"sample-140.pdf\" url=\"http://localhost:3000/long.html#doc-140\"\n      uid=10_563 StaticText \"sample-140.pdf\"\n    uid=10_564 StaticText \"COMPLETED\"\n    uid=10_565 StaticText \"lending-package-sample\"\n    uid=10_566 link \"sample-141.pdf\" url=\"http://localhost:3000/long.html#doc-141\"\n      uid=10_567 StaticText \"sample-141.pdf\"\n    uid=10_568 StaticText \"COMPLETED\"\n    uid=10_569 StaticText \"lending-package-sample\"\n    uid=10_570 link \"sample-142.pdf\" url=\"http://localhost:3000/long.html#doc-142\"\n      uid=10_571 StaticText \"sample-142.pdf\"\n    uid=10_572 StaticText \"COMPLETED\"\n    uid=10_573 StaticText \"lending-package-sample\"\n    uid=10_574 link \"sample-143.pdf\" url=\"http://localhost:3000/long.html#doc-143\"\n      uid=10_575 StaticText \"sample-143.pdf\"\n    uid=10_576 StaticText \"COMPLETED\"\n    uid=10_577 StaticText \"lending-package-sample\"\n    uid=10_578 link \"sample-144.pdf\" url=\"http://localhost:3000/long.html#doc-144\"\n      uid=10_579 StaticText \"sample-144.pdf\"\n    uid=10_580 StaticText \"COMPLETED\"\n    uid=10_581 StaticText \"lending-package-sample\"\n    uid=10_582 link \"sample-145.pdf\" url=\"http://localhost:3000/long.html#doc-145\"\n      uid=10_583 StaticText \"sample-145.pdf\"\n    uid=10_584 StaticText \"COMPLETED\"\n    uid=10_585 StaticText \"lending-package-sample\"\n    uid=10_586 link \"sample-146.pdf\" url=\"http://localhost:3000/long.html#doc-146\"\n      uid=10_587 StaticText \"sample-146.pdf\"\n    uid=10_588 StaticText \"COMPLETED\"\n    uid=10_589 StaticText \"lending-package-sample\"\n    uid=10_590 link \"sample-147.pdf\" url=\"http://localhost:3000/long.html#doc-147\"\n      uid=10_591 StaticText \"sample-147.pdf\"\n    uid=10_592 StaticText \"COMPLETED\"\n    uid=10_593 StaticText \"lending-package-sample\"\n    uid=10_594 link \"sample-148.pdf\" url=\"http://localhost:3000/long.html#doc-148\"\n      uid=10_595 StaticText \"sample-148.pdf\"\n    uid=10_596 StaticText \"COMPLETED\"\n    uid=10_597 StaticText \"lending-package-sample\"\n    uid=10_598 link \"sample-149.pdf\" url=\"http://localhost:3000/long.html#doc-149\"\n      uid=10_599 StaticText \"sample-149.pdf\"\n    uid=10_600 StaticText \"COMPLETED\"\n    uid=10_601 StaticText \"lending-package-sample\"\n    uid=10_602 link \"sample-150.pdf\" url=\"http://localhost:3000/long.html#doc-150\"\n      uid=10_603 StaticText \"sample-150.pdf\"\n    uid=10_604 StaticText \"COMPLETED\"\n    uid=10_605 StaticText \"lending-package-sample\"\n"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 39
+   }
+  },
+  "navigate_back": {
+   "tool": "navigate_page",
+   "arguments": {
+    "type": "back"
+   },
+   "answer": {
+    "result": {
+     "content": [
+      {
+       "type": "text",
+       "text": "Successfully navigated back to http://localhost:3000/account.html.\n## Pages\n1: Account (http://localhost:3000/account.html) [selected]"
+      }
+     ]
+    },
+    "jsonrpc": "2.0",
+    "id": 40
+   }
+  }
+ },
+ "observed": {
+  "cancelled_request_answered": false,
+  "ping_after_cancel": {},
+  "server_requests": [],
+  "server_notifications": [],
+  "exit_after_stdin_close": {
+   "returncode": 0,
+   "seconds": 0.02
+  },
+  "files_written_under_home_and_root": []
+ }
+}

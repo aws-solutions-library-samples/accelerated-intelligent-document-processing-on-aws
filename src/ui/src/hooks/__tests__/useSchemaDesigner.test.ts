@@ -496,10 +496,9 @@ describe('useSchemaDesigner $defs definitions that are not objects', () => {
  * Sanitization and reference discovery both walked `items` and `properties` and nothing
  * else, so a class a branch pointed at was never emitted into `$defs` and the pointer
  * resolved to nothing, and a designer-internal key written into a branch went out as
- * written. The reachable route is the `contains` builder, covered below;
- * `SchemaCompositionEditor` has no importers, so its `schemaId` cannot be in anyone's
- * configuration — the `oneOf` case is here because the walk should not depend on which
- * editors are wired up.
+ * written. The designer's route is the `contains` builder, covered below; the `oneOf`
+ * case is here because a saved schema can carry one, and the walk should not depend on
+ * which editors are wired up.
  */
 describe('useSchemaDesigner composition branches', () => {
   const schemaWithComposition = {

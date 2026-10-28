@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: MIT-0
 //
 // One row shape for every kind of HITL work: production review queue items and Test
-// Studio documents. Queue Management and My Work › Tasks list both; each row opens
-// the annotation screen for its item. An Admin assigns work, or an Annotator listed
+// Studio documents. Queue Management and Home › Tasks list both; each row opens
+// the edit screen for its item. An Admin assigns work, or an Annotator listed
 // on the queue claims it.
 import type { ReviewItem, TestSetTask } from '../../graphql/generated/operation-types';
-import { reviewItemHref, testSetAnnotateHref } from '../../routes/constants';
+import { documentEditHref, testSetAnnotateHref } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import type { StateView } from '../common/review-status';
 import { documentName, reasonText } from './review-api';
+import { productionWorkItemId, testSetWorkItemId } from './work-item-ids';
 
 export type WorkSource = 'production' | 'test-set';
 
@@ -46,7 +47,7 @@ export const SOURCE_LABELS: Record<WorkSource, string> = {
 const ASSIGNED: StateView = { label: 'Assigned', type: 'in-progress' };
 
 export const fromReviewItem = (item: ReviewItem): WorkItem => ({
-  id: `p:${item.objectKey}`,
+  id: productionWorkItemId(item.objectKey),
   source: 'production',
   objectKey: item.objectKey,
   name: documentName(item.objectKey),
@@ -59,13 +60,13 @@ export const fromReviewItem = (item: ReviewItem): WorkItem => ({
   state: item.state === QueueItemState.CLAIMED ? ASSIGNED : reviewItemStateView(item.state),
   assignedTo: item.isMine ? 'You' : (item.ownerEmail ?? null),
   assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
-  href: reviewItemHref(item.objectKey),
+  href: documentEditHref(item.objectKey),
   reviewItem: item,
 });
 
 /** One of the caller's assigned Test Studio documents (listMyTestSetTasks). */
 export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
-  id: `t:${task.testSetId}:${task.objectKey}`,
+  id: testSetWorkItemId(task.testSetId, task.objectKey),
   source: 'test-set',
   objectKey: task.objectKey,
   name: documentName(task.objectKey),

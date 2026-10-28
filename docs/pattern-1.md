@@ -222,9 +222,9 @@ A document processed in BDA mode (its configuration profile sets `use_bda`) gets
 
 ### Capabilities
 
-- **Edit Extraction Data**: Click "Edit Mode" then use "Edit Data" buttons on each section to open the Visual Editor
+- **Edit Extraction Data**: Use **Edit Data** on a section (or **Edit** on the document page) to open the document's edit page, whose **Visual Editor** tab edits the fields
 - **Modify Predictions**: Update predicted field values and review confidence scores
-- **Edit Ground Truth**: Modify baseline/ground truth data for evaluation comparison
+- **Edit the evaluation baseline**: With **Show Evaluation** on, edit the baseline values the document is evaluated against. A test set's ground truth is edited in Test Studio
 - **Reprocess**: "Save and Reprocess" triggers evaluation and summarization without BDA re-invocation
 
 ### Limitations
@@ -246,7 +246,7 @@ When you click "Save and Reprocess" with existing pages and sections data:
 4. Document status updates to COMPLETED when finished
 
 This is useful for:
-- Correcting extraction errors in the Visual Editor
+- Correcting extraction errors on the edit page
 - Adding baseline data for evaluation comparison
 - Re-running evaluation after data corrections
 - Updating document summaries after data modifications

@@ -30,7 +30,7 @@ There are two kinds of queue:
   set's documents whose labels need a human check before they become ground truth.
 
 An **Admin** assigns queue items to **Annotators**. An Annotator corrects the
-item and finishes it with **Complete**, or skips it to give it back to its
+item and finishes it with **Process Changes**, or skips it to give it back to its
 queue. An Admin can work
 a Production item too. For a Production
 document, the corrections are applied by a second (finalize) run, which produces
@@ -74,7 +74,7 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
    and the assignee finishes it.
-   - **Complete** applies the corrections, and the document ends `COMPLETED`.
+   - **Process Changes** applies the corrections in the finalize run, and the document ends `COMPLETED`. Like the Sections panel's **Process Changes**, that run reuses the document's OCR, classification and extraction, and re-runs summarization, evaluation and the hooks on the corrected data.
    - **Skip** gives it back to its queue, unassigned and not finished, with a reason
      from the queue's skip list.
    - An Admin can instead **Remove** it from the queue: it ends `COMPLETED` with the
@@ -86,9 +86,10 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 
 ## Annotator guide
 
-An Annotator sees only **My Work** (**Inbox**, **Tasks** and **Queues**) and the
-notifications bell. Only Annotators have My Work and an
-Inbox; other users have neither.
+An Annotator-only user sees only **Home** (**Inbox**, **Tasks** and **Queues**) and the
+notifications bell, and opens a document only through its edit page
+(`#/documents/<document>/edit`), from Tasks or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
+**Queues** are there only for Annotators.
 
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
   **Eligible Annotators**). Open one to see its items. You can open any item
@@ -101,35 +102,69 @@ Inbox; other users have neither.
   assigned it: Production review items and Test Studio documents, each with its
   document, source, queue and age. Its badge counts both. You get an Inbox message
   when an Admin assigns you work.
-- Select an item to open it in the **document editor**. Production items, Test
-  Studio items and direct edits of a document all use the same editor, whether you
-  open them from Tasks, an Inbox message or Queue Management. The document's page
-  images are shown beside its fields.
-  - The actions are at the top, each shown where it applies: **History**, **Skip**,
-    **Discard Changes**, **Save**, **Edit Page Grouping**, **Processing
-    Report** and **Complete**. A disabled action says why on hover.
-  - **History** has two tabs. **Field Edits** lists every saved change to the open
-    section's fields: who, when, and each field's old and new value (a Production
-    draft save records one too). **Review Activity** lists who claimed, was
-    assigned, skipped or completed the item, with any skip reason and note.
+- Select an item to open it in the **edit page**. Production items, Test
+  Studio items and direct edits of a document all use the same edit page, whether
+  you open them from Tasks, an Inbox message or Queue Management. A Production item
+  opens at its document's edit page, `#/documents/<document>/edit`, which shows the
+  item while the document is in review; a Test Studio item is at
+  `#/review-queues/test-sets/<id>/items/<document>`. `?section=`, `?field=` and
+  `?view=source` work on both, and an older `#/review-queues/items/<document>` link
+  opens the document's edit page with the same query.
+  - The actions are in one bar at the top, left to right: **Edit | View**, the
+    **Reports** menu (**History**, **Summary**, **Processing Report**), the **More
+    Actions** menu (**Edit Page Class**, **Use As Evaluation Baseline**), then **Skip**,
+    **Cancel**, **Save** and **Process Changes** last (or **Reports** and **Claim**, for
+    an Annotator viewing an unassigned item). A button that doesn't apply is left out.
+    A menu item that doesn't apply yet stays in its menu, disabled, with the reason on
+    hover: **Summary** and **Use As Evaluation Baseline** wait for a finished document (a
+    direct edit of a processed document, or a queue item whose review is complete), and
+    the baseline copy is listed only for Admins and Authors. Test Studio items have no
+    Summary or baseline, since their labels already are the baseline. The info icon opens a panel describing the
+    screen. **View** shows the original file in the editor's place; unsaved edits are
+    kept while it is shown.
+  - The title is the document's name followed by its status in parentheses, in the
+    subtitle's text style, for example `insurance_package-1.pdf (Claimed)`, and the
+    full object key is under it.
+  - The **Document Editor** panel holds the editor: the page images beside the
+    fields, with a **Section** dropdown at its top left (for a document with more
+    than one section) listing each section with its class, for example
+    **Section 1 (Letter)** and **Section 2 (Form)**.
+  - **History** has two tabs. **Field Edits** and **Review Activity** are tables
+    of the same shape, newest first. **Field Edits** has a row for every field a
+    save changed in the open section: **When**, **By**, **Field**, **From** and
+    **To**, plus **Applies to** (prediction or baseline) when a baseline was edited.
+    Every save that changes a field records it, including a Production draft
+    autosave and a Test Studio label save. **Review Activity** lists who claimed,
+    was assigned, skipped or completed the item, with any skip reason and note.
   - **Processing Report** shows how the open section was extracted.
-  - **Production item**: **Review Reason**, at the top, lists why it is in review,
+  - **Cancel** leaves the item without finishing it. If the open section has
+    unsaved edits, it asks before discarding them; anything already saved, such as
+    a Production draft, is kept.
+  - **Production item**: **Review Reason**, above the editor, lists why it is in review,
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
     lists the rest and **Show fewer** collapses them again. Hover a reason chip to
     see the field, the score and the threshold. Your edits are saved as a draft as
-    you type, or straight away with **Save**. **Complete** saves
-    your latest edits and applies your corrections. **Edit Page Grouping** corrects
+    you type, or straight away with **Save**. **Process Changes** saves
+    your latest edits and applies your corrections. The editor opens with **Fields
+    to show** set to **Confidence alerts only** when the item has review reasons. **Edit Page Class** corrects
     how the document is split into sections as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
-    (a section you remove takes its draft with it). Only the item's holder can
-    regroup it; an Admin's first regroup assigns an unassigned item to them.
-  - **Test Studio item**: correct the labels and choose **Complete**, which
-    saves the open section and confirms the rest. You can also choose it without
+    (a section you remove takes its draft with it). Only an Admin holding the item
+    can regroup it (for an Annotator it is disabled, with the reason); an Admin's
+    first regroup assigns an unassigned item to them.
+  - **Test Studio item**: correct the labels and choose **Process Changes**, which
+    saves the open section, applies every section and reprocesses the document's
+    review copy. Authored ground truth has no review copy, so for it **Process Changes** only
+    marks the labels reviewed. You can also choose it without
     changing anything, which confirms the labels as correct; it needs no **Start
-    annotating** first. **Save** saves the open section, which marks it reviewed,
-    and switching sections saves it too. **Annotate | View Source Document**, under
-    the title, switches between the ground-truth editor and the source document.
-    **Edit Page Grouping** opens the page-grouping board in a dialog. Versioning works exactly
+    editing** first. **Save** keeps the open section's changes as a draft, which
+    is not reviewed: any later session, and the next assignee after a **Skip**,
+    opens the document with it. **Process Changes** applies the drafts and marks the
+    sections reviewed, and leaves once the server counts the document reviewed.
+    Switching sections with unsaved changes asks first.
+    **Edit Page Class** opens the page-grouping board in a dialog, where each section's
+    pages and class are changed; there is no separate class dropdown. After a class
+    change, the section offers **Re-extract**, so its fields match the new class. Versioning works exactly
     as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
     Tasks and goes back to its queue unassigned, where another Annotator can claim
@@ -137,7 +172,9 @@ Inbox; other users have neither.
     from the queue's skip list and optionally add a note; both are recorded with the
     skip (in a Production item's review history).
   - The breadcrumbs read **Home**, then the item's queue or test set (linking to its
-    page), then the document, for every role.
+    page), then the document, for every role, and **Home** alone while the item is
+    loading. An item that can't be read shows an error with **Retry**; one whose
+    queue doesn't list you says so, with a link to **Home › Queues**.
 - When you complete an item, it leaves your Tasks and the queue's progress counts it
   as completed. The server takes a draft save or a skip only from the item's
   assignee, and a complete from the assignee or an Admin.
@@ -152,7 +189,8 @@ Regrouping pages is, from the queue item.
 **HITL › Queue Management** is visible to Admins only. It has two tables,
 **Production Queues** and **Test Studio Queues**, with the same columns: **Queue**,
 **Items**, **Pending**, **Assigned**, **Annotators** and an actions menu. A queue's
-other settings, such as its priority and Enabled switch, are in its **Settings**.
+other settings, such as its priority and Enabled switch, are in its **Settings**. The
+info icon opens a panel describing the page.
 
 ![Queue Management page with the Default production queue and one Test Studio queue per test set](../images/review-queues-queue-management.png)
 
@@ -162,7 +200,7 @@ joins it when User Management gives them the Annotator role, or when the externa
 identity provider maps them to it (`ExternalIdPAnnotatorGroupName`, see
 [external-idp.md](./external-idp.md)). A user may hold Annotator alongside another
 role, Admin for example. A queue's **Eligible Annotators** setting is who works it:
-only the Annotators listed there see the queue in My Work › Queues, can claim its
+only the Annotators listed there see the queue in Home › Queues, can claim its
 items, and can be assigned them. A queue with nobody listed has no Annotators until
 you add some. Listing an Annotator on a Test Studio queue also gives them access to
 that test set. A user added to the group in Cognito directly can be listed at once:
@@ -179,10 +217,12 @@ any other queue that already exists stays listed and usable. Each queue has:
 |---|---|---|
 | Id | Lowercase letters, digits, `_`, `.` and `-` (up to 64 characters). Links and the API refer to the queue by its id | — |
 | Name, description | What Admins and Annotators see; the name defaults from the id | — |
-| Priority | Higher-priority queues are listed first (0–100) | `50` |
-| Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080) | `60` |
+| Priority | Higher-priority queues are listed first, and **Next item** takes from them first (0–100). For information: kept for when there is more than one queue; with only the Default queue it changes nothing yet | `50` |
+| Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080). For information: one reminder is sent, and the item stays assigned | `60` |
 | Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Empty means none (only Admins) | empty |
 | Enabled | When off, no documents are added to the queue | on |
+
+A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Queue Management.
 | Skip reasons | The reasons an Annotator chooses from to give an item back unfinished, one per line (up to 20) | Needs expert review; Document unclear or incomplete; Conflict of interest; Out of time; Other (see note) |
 
 The **Default** queue is created automatically, enabled and with nobody listed, and
@@ -209,17 +249,20 @@ Both tables, **Production Queues** and **Test Studio Queues**, show for each que
 
 | Column | Meaning |
 |---|---|
-| Items | Everything in the queue (for a test set, its documents) |
+| Documents | Everything in the queue (for a test set, its documents) |
 | Pending | Not yet assigned |
 | Assigned | Assigned to an Annotator, whether or not they've started on it |
 | Annotators | How many Annotators are listed in the queue's Eligible Annotators (the names on hover). A change in Settings shows as soon as the dialog closes |
 
-The top of each queue's page, **Queue Progress**, shows **Pending**, **Assigned** (not
-started yet), **In Progress** (the Annotator has saved work), **Annotators** (how many
-are listed) and **Priority**. The **Annotators** table below it lists each listed
-Annotator, and anyone still holding the queue's items, with how many items each is
-assigned. The **Items** table shows each item's **Document**, **Source**, **Queue**,
-**Priority** and **State**, with its actions in the row menu.
+The top of each queue's page, **Queue Progress**, is a bar of the documents an
+Annotator is working on: assigned or in progress, of all the queue's documents (a
+finished document leaves the queue). **Key Metrics** below it shows **Pending**,
+**Assigned** (not started yet), **In Progress** (the Annotator has saved work),
+**Annotators** (how many are listed) and **Priority**. The **Annotators** table lists
+each listed Annotator, and anyone still holding the queue's documents, with how many
+documents each is assigned. The **Documents** table shows each item's **Document**, **Source**, **Queue**,
+**Priority**, **State** and **Annotator** (who it is assigned to; sortable), with its
+actions in the row menu. The info icon opens a panel describing the page.
 
 To work a queue, open its page, select items, and choose one of:
 
@@ -237,16 +280,18 @@ To work a queue, open its page, select items, and choose one of:
   history.
 
 **Test Studio queues** come from test sets: each test set is a queue, created and
-deleted with the set. Its page shows **Queue Progress**, a progress bar on its own,
-and **Key metrics**: **Status** (percent of documents completed), **Pending**,
+deleted with the set. Its page shows **Queue Progress**, a bar of the documents completed,
+and **Key Metrics**: **Status** (percent of documents completed), **Pending**,
 **Assigned** and **Annotators**, then the label-accuracy estimate (**Estimated label
-accuracy** and **Evidence**) once there is one. Below that are the
+accuracy** and **Evidence**) once there is one. For an Admin, the **Annotators** table
+follows, as on a Production queue's page. Below that are the
 draft-labeling status, the ground-truth version being annotated toward, and every
 document, worst first, with columns **Document**, **Labels**, **Confidence** and
-**Assigned** (Yes or No; the assignee shows on hover). The document list filters to
+**Annotator** (who it is assigned to). Sorting by **Annotator** groups each person's
+documents, worst first within each, with unassigned documents last. The document list filters to
 **All documents**, **Assigned** or **Not assigned**, and opens on **Not assigned**,
 which is exactly the documents that can still be claimed.
-Each row's menu offers **View** (the source document), **Annotate**, and for Admins
+Each row's menu offers **View** (the source document), **Edit**, and for Admins
 **Assign** and **Delete** (removes the document from the test set, after a
 confirmation). An Admin can also select several documents and choose **Assign to…** to
 give them all to one Annotator, or **Unassign** to take them back. Every document can be
@@ -283,31 +328,36 @@ and when a draft-labeling run writes its draft.
 Open an item from its queue's page. Its breadcrumbs read **Home**, then the queue's
 name, then the document, and the queue links back to its page.
 
-- **An unassigned item** says **Not assigned yet. Editing or completing assigns it to
-  you.** You can edit it straight away: your first saved edit, or **Complete**, assigns the item to you first. If an Annotator claimed it a moment earlier, the
+- **An unassigned item** says **Not assigned yet. Editing it, or choosing Process
+  Changes, assigns it to you.** You can edit it straight away: your first saved edit, or **Process Changes**, assigns the item to you first. If an Annotator claimed it a moment earlier, the
   screen says who and turns view-only.
 - **An item assigned to someone else** is view-only, with **Take over**. Taking over
   assigns the item to you, keeps its draft so you carry on from the Annotator's
   edits, and tells the former assignee in their Inbox. Then you can edit and
-  complete it.
-- **An item assigned to you** has **Complete** and **Skip**, as for an Annotator.
+  reprocess it.
+- **An item assigned to you** has **Process Changes** and **Skip**, as for an Annotator.
 
 ## Reviewing from the document page
 
 While a document is in a review queue (status **In Review**), it is reviewed from
 its queue item:
 
-- The document page's **Edit** opens the queue item in the document editor for
-  Admins and Annotators, the roles that can open queue items. For other roles it opens
-  the direct edit, read-only.
-- **Edit Data** opens the direct edit read-only, with **Review in queue** for Admins
-  and Annotators.
+- The document page's **Review Owner** is the queue item's assignee: it is filled in when
+  the item is claimed, assigned, reassigned or taken over, cleared when it goes back to
+  the queue, and kept once the review finishes. **Review Completed By** is whoever
+  finished it, filled in once its corrections have been applied.
+- The document page's **Edit** and a section's **Edit Data** open the document's
+  edit page, which shows the queue item for Admins and Annotators, the roles that can
+  open queue items. For other roles it opens the direct edit, read-only, saying the
+  document is edited in its queue.
 - **Edit Mode** and the Sections panel's **Edit Page Grouping** stay enabled, but the
   server refuses what it can't take: **Process Changes** (Edit Mode) on a document in review, and
   a regroup by anyone but the queue item's holder. Regroup from the queue item.
-  **Skip All Reviews** and **Start Review** aren't offered.
-- In the document list, the **In Review** status links to the queue item for Admins
-  and Annotators.
+  **Skip All Reviews** and **Start Review** aren't offered. A direct upload of the
+  document's section results (`uploadDocument`) is refused as well, with
+  `QUEUE_MANAGED`.
+- In the document list, the **In Review** status links to the document's edit page
+  for Admins and Annotators.
 
 Once the review finishes, the document page can be edited as usual. **Process Changes**
 on a finished review is refused to every caller who is not an Admin; for an Admin it

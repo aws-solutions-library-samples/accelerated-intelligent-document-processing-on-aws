@@ -126,7 +126,7 @@ the path the confidence-guided review and effort estimator are built around.
 ### Path B — process first, then register (more control)
 
 The original workflow: process documents *before* the test set exists, correct the
-predictions in the document editor, and register the corrected results as ground truth.
+predictions on the edit screen, and register the corrected results as ground truth.
 Choose this when you want Discovery to derive the schema from your samples, or want
 per-document control before anything is registered.
 
@@ -189,7 +189,7 @@ This is the most important step. You'll review each document's predictions, corr
 For each processed document:
 
 1. Open the document from the document list
-2. Click **Edit Data** on a section (or **Edit** at the top of the document page) to open the document editor
+2. Click **Edit Data** on a section (or **Edit** at the top of the document page) to open the edit screen
 3. Review each extracted field:
    - Click on a field to highlight it in the document viewer
    - Compare the extracted value against the source document
@@ -227,21 +227,23 @@ For details on test set management, see [Test Studio](./test-studio.md).
 Once a test set is `COMPLETED`, click its name in the **Test Sets** table (or
 select it and click **Browse Documents**) to open the test set browser at
 `/test-studio/sets/<test-set-id>` — a paginated document list with first-page
-thumbnails. Click a document's name to open its detail page, where you can:
+thumbnails. Click a document's name to open its Test Studio item (the edit page,
+at `#/review-queues/test-sets/<test-set-id>/items/<document>`), where you can:
 
-- **View Source Document** — render the original PDF or image inline.
-- **Edit Ground Truth** — a visual editor showing the document's page images
-  beside an editable form over the baseline's `inference_result` (with a raw
-  JSON editor tab). Multi-section baselines (e.g. packet-splitting sets) get a
-  section selector, and the image pane follows the selected section's
-  `split_document.page_indices`.
+- **View** the original PDF or image in the editor's place (**Edit | View**).
+- Edit the ground truth — the document's page images beside an editable form over
+  the baseline's `inference_result` (with a raw JSON editor tab). Multi-section
+  baselines (e.g. packet-splitting sets) get a **Section** dropdown, and the image
+  pane follows the selected section's `split_document.page_indices`.
 
 If the baseline was created via **Copy to Baseline** it carries
 `explainability_info` geometry, so focusing a field highlights its bounding
 box on the page image. Hand-built baselines without geometry still work —
-fields simply have no boxes. Saves write the section's `result.json` back to
-the test set's `baseline/` folder and append an `_editHistory` entry for
-provenance. Editing requires the Admin or Author role; other roles get a
+fields simply have no boxes. Every save goes through the server, which writes the
+section's `result.json` in the test set's `baseline/` folder and appends an
+`_editHistory` entry for provenance. An Admin, an Author or the document's
+Annotator edits authored ground truth; a document with a review copy (draft labels
+from the pipeline) is reviewed by Admins and Annotators. Other roles get a
 read-only view.
 
 ## Step 6: Run Test Executions and Compare

@@ -77,6 +77,7 @@ from moto import mock_aws  # noqa: E402
 # The real scope and curve modules, imported before any suite in this directory
 # installs a MagicMock stub for the `idp_common` package. See the module docstring.
 import idp_common.evaluation.curve_store as curve_store  # noqa: E402
+import idp_common.review_queues.testset_labels  # noqa: E402,F401 — the label writer the resolver calls
 import idp_common.testset_scope as testset_scope  # noqa: E402
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -271,11 +272,17 @@ class LogSpy:
 
 @contextmanager
 def log_spy(mod):
+    # The resolver's lines, and the shared label writer's (it now owns the label
+    # write, the curve observations and the draft cleanup).
+    labels_logger = idp_common.review_queues.testset_labels.logger
     spy = LogSpy()
     with (
         patch.object(mod.logger, "info", spy.record),
         patch.object(mod.logger, "warning", spy.record),
         patch.object(mod.logger, "error", spy.record),
+        patch.object(labels_logger, "info", spy.record),
+        patch.object(labels_logger, "warning", spy.record),
+        patch.object(labels_logger, "error", spy.record),
     ):
         yield spy
 
@@ -1019,6 +1026,31 @@ def test_saving_requires_edited_data(mod, table):
         )
 
 
+@pytest.mark.unit
+def test_saving_requires_a_section_id(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="objectKey and sectionId are required"):
+        mod.handler(
+            event(
+                "saveSectionReviewEdits",
+                ["Reviewer"],
+                arguments={"objectKey": OBJECT_KEY, "editedData": "{}"},
+            ),
+            None,
+        )
+
+
+@pytest.mark.unit
+def test_saving_edits_on_an_unknown_document_is_refused(mod, table):
+    service = FakeDocumentService(None)
+    with (
+        patch.object(mod, "create_document_service", return_value=service),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        mod.save_section_review_edits(OBJECT_KEY, "sec-1", "{}", "rev", False)
+    assert service.updated == []
+
+
 # --------------------------------------------------------------------------
 # Persisting the reviewer's edits
 # --------------------------------------------------------------------------
@@ -1144,6 +1176,26 @@ def test_an_object_key_with_no_run_prefix_uses_the_whole_key_as_the_filename(
 
 
 @pytest.mark.unit
+def test_a_correction_that_is_not_an_object_writes_no_baseline(mod, table, caplog):
+    """A list or a scalar is not a label; it is set aside, not tried and failed."""
+    put_doc(table, TestSetId="ts-1")
+    with caplog.at_level("WARNING"):
+        mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", "[1, 2]")
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
+    assert "Ignoring a non-object correction" in caplog.text
+    assert "Failed to write correction" not in caplog.text
+
+
+@pytest.mark.unit
+def test_an_absent_label_reads_as_none(mod):
+    """A sibling section with no label yet is not reviewed, rather than an error."""
+    assert (
+        mod._read_json(TEST_SET_BUCKET, "ts-1/baseline/x.pdf/sections/9/result.json")
+        is None
+    )
+
+
+@pytest.mark.unit
 def test_a_document_outside_a_test_set_writes_no_baseline(mod, table):
     put_doc(table)  # no TestSetId
     mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", {"x": 1})
@@ -1244,125 +1296,6 @@ def test_a_client_holding_more_history_than_the_server_is_preferred(mod, table):
     assert [e.get("editedBy") for e in history] == ["a", "b", "c"]
 
 
-@pytest.mark.unit
-def test_a_capped_edit_history_drops_the_oldest_entries_and_keeps_this_review(
-    mod, table
-):
-    """Keeping the head instead of the tail would silently stop recording reviews."""
-    put_doc(table, TestSetId="ts-1")
-    key = baseline_key("ts-1", "invoice.pdf", "sec-1")
-    stored = [{"editedBy": f"r{i}"} for i in range(mod.MAX_EDIT_HISTORY_ENTRIES)]
-    mod.s3_client.put_object(
-        Bucket=TEST_SET_BUCKET, Key=key, Body=json.dumps({"_editHistory": stored})
-    )
-    mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", {}, "newest")
-
-    history = s3_json(mod, TEST_SET_BUCKET, key)["_editHistory"]
-    assert len(history) == mod.MAX_EDIT_HISTORY_ENTRIES
-    assert history[-1]["editedBy"] == "newest"
-    assert history[0]["editedBy"] == "r1"  # r0 dropped
-
-
-@pytest.mark.unit
-def test_the_edit_history_entry_names_the_changed_field_paths_and_both_values(mod):
-    """The diff is what a later auditor reads to see whether the model was right.
-
-    Flattened with the same helper the confidence curve uses, so "changed" means
-    the same thing to the audit trail and to the calibration signal. Nested and
-    list-indexed paths are included because a corrected table row is the common
-    case.
-    """
-    previous = {
-        "inference_result": {
-            "total": "100.00",
-            "vendor": {"name": "ACME"},
-            "lines": [{"amount": "1.00"}, {"amount": "2.00"}],
-        }
-    }
-    saved = {
-        "inference_result": {
-            "total": "105.00",
-            "vendor": {"name": "ACME"},
-            "lines": [{"amount": "1.00"}, {"amount": "9.99"}],
-        }
-    }
-    mod.append_edit_history(previous, saved, "alice", "alice@example.com")
-
-    entry = saved["_editHistory"][-1]
-    assert entry["editedBy"] == "alice"
-    assert entry["editedByEmail"] == "alice@example.com"
-    assert entry["source"] == "annotation-review"
-    edits = entry["baselineEdits"]
-    assert sorted(edits["changedFields"]) == ["lines[1].amount", "total"]
-    assert edits["changeCount"] == 2
-    assert edits["diffs"]["total"] == {"originalValue": "100.00", "newValue": "105.00"}
-    assert edits["diffs"]["lines[1].amount"] == {
-        "originalValue": "2.00",
-        "newValue": "9.99",
-    }
-
-
-@pytest.mark.unit
-def test_a_review_that_changed_nothing_records_no_baseline_edits(mod):
-    """`baselineEdits` absent is how a confirmation is distinguished from a fix."""
-    label = {"inference_result": {"total": "1"}}
-    saved = {"inference_result": {"total": "1"}}
-    mod.append_edit_history(label, saved, "alice", "")
-    assert "baselineEdits" not in saved["_editHistory"][-1]
-
-
-@pytest.mark.unit
-def test_a_diff_that_cannot_be_computed_still_records_who_reviewed(mod):
-    """Provenance must not fail the save when the flattener cannot be used.
-
-    The diff is taken with a helper from the layer-delivered `idp_common`, so the
-    two can be at different versions in a partially-updated deployment. Losing the
-    field-level detail is acceptable; losing the reviewer's edit is not, so the
-    entry is still written without `baselineEdits`.
-
-    The warning is asserted here, which is the other half of the pair described in
-    `test_a_first_review_with_no_prior_label_records_no_diff`: this input is the one
-    that must produce the line, that one the one that must not.
-    """
-    saved = {"inference_result": {"total": "2"}}
-    with (
-        log_spy(mod) as log,
-        patch.object(
-            curve_store, "flatten_values", side_effect=TypeError("incompatible layer")
-        ),
-    ):
-        mod.append_edit_history(
-            {"inference_result": {"total": "1"}}, saved, "alice", ""
-        )
-    assert "Could not diff review changes" in log.text
-    assert "incompatible layer" in log.text
-    assert "baselineEdits" not in saved["_editHistory"][-1]
-    assert saved["_editHistory"][-1]["editedBy"] == "alice"
-
-
-@pytest.mark.unit
-def test_a_first_review_with_no_prior_label_records_no_diff(mod):
-    """Nothing to diff against, and that is recognised rather than crashed into.
-
-    An absent `baselineEdits` does not distinguish the guard from its removal:
-    without it, `previous.get(...)` on `None` raises `AttributeError` into the diff
-    helper's own `except`, which returns the same empty diff. Asserting that
-    `flatten_values` was not called does not distinguish them either — the attribute
-    access raises one expression *before* the call, so it is unmade in both cases.
-
-    What differs is the warning: the `except` logs "Could not diff review changes",
-    and the guard does not. The pair of tests holds that line in both directions —
-    absent here, present in `test_a_diff_that_cannot_be_computed_still_records_who
-    _reviewed` — so neither passes on a change that stops emitting it.
-    """
-    saved = {"inference_result": {"total": "1"}}
-    with log_spy(mod) as log:
-        mod.append_edit_history(None, saved, "alice", "")
-    assert "Could not diff review changes" not in log.text
-    assert "baselineEdits" not in saved["_editHistory"][-1]
-    assert len(saved["_editHistory"]) == 1
-
-
 # --------------------------------------------------------------------------
 # Confirming an unchanged review
 # --------------------------------------------------------------------------
@@ -1426,7 +1359,7 @@ def test_confirming_a_section_with_no_baseline_yet_writes_nothing(mod, table):
     put_doc(table, TestSetId="ts-1")
     with log_spy(mod) as log:
         mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
-    assert "No baseline to confirm" in log.text
+    assert "No label to confirm" in log.text
     assert "Failed to confirm" not in log.text
     assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
 
@@ -1495,87 +1428,6 @@ def curve_item(table, test_set_id, sk):
     return table.get_item(
         Key={"PK": curve_store.test_set_pk(test_set_id), "SK": sk}
     ).get("Item")
-
-
-@pytest.mark.unit
-def test_a_review_records_which_confidence_was_earned_and_which_was_not(mod, table):
-    """The calibration signal, asserted per bin rather than "the store was called".
-
-    A field the reviewer left alone was predicted correctly; one they changed was
-    not. Here `total` was claimed at 0.95 and kept (bin 9, correct) and `date` at
-    0.30 and changed (bin 2, incorrect). Inverting that sense would teach the
-    review-effort estimator to trust exactly the predictions a human rejected.
-    """
-    mod.record_curve_observations("ts-1", CURVE_PREVIOUS, CURVE_SAVED)
-
-    item = curve_item(table, "ts-1", "curve#_aggregate")
-    assert item is not None
-    assert item["total9"] == Decimal("1") and item["correct9"] == Decimal("1")
-    assert item["total2"] == Decimal("1") and item["correct2"] == Decimal("0")
-    assert item["reviewObservations"] == Decimal("2")
-    assert item["ItemType"] == "confidence_curve"
-
-
-@pytest.mark.unit
-def test_observations_are_keyed_by_the_config_and_fingerprint_that_drafted_the_label(
-    mod, table
-):
-    """Keyed from the *replaced* label's metadata, not the saved one.
-
-    A curve measured under one extraction model must not be inherited by another,
-    so the revision fingerprint on the drafted label decides the sort key. Reading
-    the config version from the reviewer's payload instead — which carries no
-    metadata — would pool every revision into one curve and make a model swap
-    invisible to the estimator.
-    """
-    mod.record_curve_observations("ts-1", CURVE_PREVIOUS, CURVE_SAVED)
-
-    assert curve_item(table, "ts-1", "curve#profileA@fp1") is not None
-    assert curve_item(table, "ts-1", "curve#profileA") is not None
-    assert curve_item(table, "ts-1", "curve#_aggregate") is not None
-    prior = table.get_item(
-        Key={"PK": curve_store.GLOBAL_PRIOR_PK, "SK": "curve#_aggregate"}
-    ).get("Item")
-    assert prior is not None, "a new test set should inherit the global prior"
-
-
-@pytest.mark.unit
-def test_a_label_without_a_fingerprint_writes_no_revision_scoped_curve(mod, table):
-    previous = dict(CURVE_PREVIOUS, metadata={"config_version": "profileA"})
-    mod.record_curve_observations("ts-1", previous, CURVE_SAVED)
-    assert curve_item(table, "ts-1", "curve#profileA") is not None
-    assert curve_item(table, "ts-1", "curve#profileA@fp1") is None
-
-
-@pytest.mark.unit
-def test_no_curve_is_recorded_when_there_was_no_prior_prediction(mod, table):
-    """With nothing predicted there is no verdict for the reviewer to deliver.
-
-    Asserted on the observation builder not being reached. Without the guard it is
-    called with `None`, raises into the blanket `except`, and leaves exactly the
-    same absent curve item.
-    """
-    with recorded(curve_store, "observations_from_baseline_review") as built:
-        mod.record_curve_observations("ts-1", None, CURVE_SAVED)
-    assert built == []
-    assert curve_item(table, "ts-1", "curve#_aggregate") is None
-
-
-@pytest.mark.unit
-def test_a_label_with_no_recorded_confidences_records_nothing(mod, table):
-    """No claimed confidence means no `(confidence, correct)` pair to learn from.
-
-    Asserted on the store not being written to. `add_observations` with an empty
-    list writes nothing either, so an absent curve item cannot tell the guard from
-    the call it prevents.
-    """
-    previous = {"inference_result": {"total": "1"}, "metadata": {}}
-    with recorded(curve_store.CurveStore, "add_observations") as added:
-        mod.record_curve_observations(
-            "ts-1", previous, {"inference_result": {"total": "2"}}
-        )
-    assert added == []
-    assert curve_item(table, "ts-1", "curve#_aggregate") is None
 
 
 @pytest.mark.unit
@@ -2457,3 +2309,68 @@ def test_a_document_with_an_unreviewed_section_is_not_counted(mod, table):
         )
     assert updates == []
     assert _reviewed_docs(table) == 2
+
+
+# --------------------------------------------------------------------------
+# Drafts: a correction applies the section's draft, which then goes
+# --------------------------------------------------------------------------
+
+
+def _draft(mod, test_set_id="ts-1", filename="invoice.pdf", section_id="sec-1"):
+    """A saved draft of the section, through the shared label writer."""
+    from idp_common.review_queues import testset_docs
+    from idp_common.review_queues.testset_labels import LabelEditor
+
+    hitl = mod.dynamodb.Table(HITL_TABLE)
+    testset_docs.TestSetDocStore(hitl).upsert_summary(
+        test_set_id, {"objectKey": filename, "labelSource": "draft-machine"}
+    )
+    mod._test_set_labels = None
+    return mod._labels().save_draft(
+        test_set_id,
+        filename,
+        section_id,
+        {"inference_result": {"total": "draft"}},
+        0,
+        editor=LabelEditor(name="alice"),
+    )
+
+
+@pytest.mark.unit
+def test_a_correction_deletes_the_sections_draft(mod, table, hitl_table):
+    put_doc(table, TestSetId="ts-1")
+    key = baseline_key("ts-1", "invoice.pdf", "sec-1")
+    mod.s3_client.put_object(
+        Bucket=TEST_SET_BUCKET, Key=key, Body=json.dumps({"inference_result": {}})
+    )
+    draft = _draft(mod)
+    mod.write_correction_to_test_set_baseline(
+        OBJECT_KEY, "sec-1", {"inference_result": {"total": "draft"}}, "alice"
+    )
+    assert s3_json(mod, TEST_SET_BUCKET, key)["labelSource"] == "reviewed-human"
+    assert mod._labels().drafts("ts-1", "invoice.pdf") == []
+    listed = mod.s3_client.list_objects_v2(
+        Bucket=TEST_SET_BUCKET, Prefix="ts-1/drafts/"
+    )
+    assert draft.s3_key not in [o["Key"] for o in listed.get("Contents", [])]
+
+
+@pytest.mark.unit
+def test_a_draft_delete_failure_does_not_fail_the_review(mod, table, hitl_table):
+    put_doc(table, TestSetId="ts-1")
+    key = baseline_key("ts-1", "invoice.pdf", "sec-1")
+    mod.s3_client.put_object(
+        Bucket=TEST_SET_BUCKET, Key=key, Body=json.dumps({"inference_result": {}})
+    )
+    _draft(mod)
+    with (
+        log_spy(mod) as log,
+        patch.object(
+            type(mod._labels()), "delete_draft", side_effect=RuntimeError("boom")
+        ),
+    ):
+        mod.write_correction_to_test_set_baseline(
+            OBJECT_KEY, "sec-1", {"inference_result": {"total": "1"}}, "alice"
+        )
+    assert s3_json(mod, TEST_SET_BUCKET, key)["labelSource"] == "reviewed-human"
+    assert "Failed to write correction" not in log.text

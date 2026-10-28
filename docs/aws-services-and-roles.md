@@ -261,6 +261,14 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
 
+* **Upload Resolver Role** (API resolver Lambda for `uploadDocument`, `listSampleDocuments` and `uploadSampleDocument`):
+  * SAM `S3WritePolicy` on the Input, Configuration, Output, Evaluation Baseline and Test Set buckets (the write targets an upload's presigned POST may name), and `S3ReadPolicy` on the Configuration bucket (the bundled samples)
+  * SAM `DynamoDBReadPolicy` on the Configuration table (the config prefix mappings)
+  * `dynamodb:GetItem` on the Tracking table: a document's `HITLStatus`, so a section-result upload for a document in a review queue is refused
+  * `dynamodb:Query`, `dynamodb:GetItem` on the Users table and its indexes (the caller's configuration scope)
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+  * `cloudwatch:PutMetricData`, limited to the stack's namespace
+
 * **Inbox producers** (none in this release). A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
   * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
   * read access to the Configuration table (for retention and the per-user cap)

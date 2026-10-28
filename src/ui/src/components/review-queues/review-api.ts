@@ -88,7 +88,7 @@ export const completeItem = async (item: ItemRef, checklist?: boolean[], note?: 
   return required(r.data?.completeReviewItem, 'completeReviewItem');
 };
 
-/** Claim an open item: it is assigned to the caller (no expiry) and shows in My Work › Tasks. */
+/** Claim an open item: it is assigned to the caller (no expiry) and shows in Home › Tasks. */
 export const claimItem = async (item: ItemRef): Promise<ReviewItem> => {
   const r = await client.graphql({ query: claimReviewItemMutation, variables: ref(item) });
   return required(r.data?.claimReviewItem, 'claimReviewItem');

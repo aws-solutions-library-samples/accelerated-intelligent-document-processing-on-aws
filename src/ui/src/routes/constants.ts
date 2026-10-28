@@ -25,16 +25,6 @@ export const CAPACITY_PLANNING_PATH = `${DOCUMENTS_PATH}/capacity-planning`;
 export const TEST_SET_DETAIL_PATH = `${TEST_STUDIO_PATH}/sets`;
 /** Hash-link helper: href for a test set's document browser. */
 export const testSetDetailHref = (testSetId: string): string => `#${TEST_SET_DETAIL_PATH}/${encodeURIComponent(testSetId)}`;
-/**
- * Hash-link helper: href for one test set document's detail page
- * (/test-studio/sets/:testSetId/doc/<objectKey>, objectKey may contain slashes).
- * Optional view preselects the source-document or ground-truth view.
- */
-export const testSetDocumentHref = (testSetId: string, objectKey: string, view?: 'source' | 'ground-truth'): string =>
-  `#${TEST_SET_DETAIL_PATH}/${encodeURIComponent(testSetId)}/doc/${objectKey
-    .split('/')
-    .map(encodeURIComponent)
-    .join('/')}${view ? `?view=${view}` : ''}`;
 /** HITL: one test set's queue page (route pattern base). */
 export const TEST_SET_QUEUE_PATH = '/review-queues/test-sets';
 /** Route path of a test set's queue page. */
@@ -44,7 +34,7 @@ export const testSetItemPath = (testSetId: string, objectKey: string): string =>
   `${testSetQueuePath(testSetId)}/items/${encodeURIComponent(objectKey)}`;
 /**
  * Hash-link helper: href for a test set's queue under HITL › Queue Management, or
- * straight to one document's annotation screen. This link only navigates; access is enforced
+ * straight to one document's edit screen. This link only navigates; access is enforced
  * server-side against the user's allowedTestSets, so it grants nothing on its own
  * and is safe to share with a scoped annotator.
  */
@@ -83,9 +73,25 @@ export const inboxHref = (tab?: 'messages' | 'preferences'): string => (tab ? `#
  * `idp_common.notifications.document_detail_link`.
  */
 export const documentDetailHref = (objectKey: string): string => `#${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
-/** The unified editor's direct edit of a document, optionally opened on one section. */
-export const documentEditHref = (objectKey: string, sectionId?: string): string =>
-  `#${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}/edit${sectionId ? `?section=${encodeURIComponent(sectionId)}` : ''}`;
+/**
+ * Route path of a document's edit page: the direct edit, or its review-queue item while it
+ * is in review. The whole object key is one encoded segment, byte-identical to the Python
+ * `idp_common.notifications.document_edit_link`.
+ */
+export const documentEditPath = (objectKey: string): string => `${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}/edit`;
+/** What the edit page opens on: a section (`?section=`), a field (`?field=`) or the source document (`?view=source`). */
+export interface DocumentEditQuery {
+  section?: string;
+  field?: string;
+  view?: 'source';
+}
+/** Hash-link helper: href for a document's edit page, with only the query keys given, in that order. */
+export const documentEditHref = (objectKey: string, query: DocumentEditQuery = {}): string => {
+  const params = (['section', 'field', 'view'] as const)
+    .filter((k) => query[k] !== undefined)
+    .map((k) => `${k}=${encodeURIComponent(query[k] as string)}`);
+  return `#${documentEditPath(objectKey)}${params.length ? `?${params.join('&')}` : ''}`;
+};
 
 const MAX_INTERNAL_ROUTE_LENGTH = 1024;
 
@@ -111,20 +117,16 @@ export const isInternalRoute = (link?: string | null): link is string =>
   !hasWhitespaceOrControl(link);
 /** HITL › Queue Management: production review queues and Test Studio queues (Admin). */
 export const REVIEW_QUEUES_PATH = '/review-queues';
-/** My Work (Annotators): the caller's own Inbox, Tasks (assigned items) and Queues. */
+/** Home: every user's Inbox, and an Annotator's Tasks (assigned items) and Queues. */
 export const MY_WORK_PATH = '/my-work';
 export const MY_TASKS_PATH = `${MY_WORK_PATH}/tasks`;
 /** The queues that list the caller as an Annotator (production and Test Studio). */
 export const MY_QUEUES_PATH = `${MY_WORK_PATH}/queues`;
 /** The former My Tasks location; redirects to MY_TASKS_PATH. */
 export const LEGACY_MY_TASKS_PATH = `${REVIEW_QUEUES_PATH}/my-tasks`;
-export const REVIEW_ITEM_PATH = `${REVIEW_QUEUES_PATH}/items`;
+/** The former Production review-item route; it redirects to the document's edit page, keeping the query. */
+export const LEGACY_REVIEW_ITEM_PATH = `${REVIEW_QUEUES_PATH}/items`;
 /** The former Queue health page, now part of Queue Management; redirects there. */
 export const REVIEW_SUPERVISOR_PATH = `${REVIEW_QUEUES_PATH}/supervise`;
-/**
- * Hash-link helper: href for one review item's workspace. The whole object key is
- * one encoded path segment, matching review_item_link in idp_common.review_queues.notify.
- */
-export const reviewItemHref = (objectKey: string): string => `#${REVIEW_ITEM_PATH}/${encodeURIComponent(objectKey)}`;
 /** Route path of one system-wide production review queue's page, by queue id. */
 export const productionQueuePath = (queue: string): string => `${REVIEW_QUEUES_PATH}/queues/${encodeURIComponent(queue)}`;

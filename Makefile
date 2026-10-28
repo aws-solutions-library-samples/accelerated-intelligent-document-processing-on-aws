@@ -1680,6 +1680,74 @@ ai-ux-browser: ## Start the confined headless Chrome + egress proxy + recorder i
 	@$(PYTHON) scripts/ux_runner/run_in_docker.py browser \
 		$(if $(STACK),--stack $(STACK)) $(EXTRA_ARGS)
 
+# First-time-user stories, authored in scripts/ux_stories.toml. Both targets run on
+# the host with no Docker, credentials or stack. JSON=1 prints the flows as one JSON
+# object and nothing after it. Q reaches the search recipe through the environment,
+# because GNU make exports a variable set on its command line, so a quote in the
+# query cannot break the shell line.
+.PHONY: ai-ux-test-stories-list ai-ux-test-stories-search
+
+ai-ux-test-stories-list: ## Validate scripts/ux_stories.toml, list its flows, then the [Unreleased] CHANGELOG leads no story covers (TIER=p0|p1|all; JSON=1 prints one JSON object)
+	@$(PYTHON) scripts/ux_runner/stories.py list \
+		$(if $(TIER),--tier $(TIER)) $(if $(filter 1 true yes y on,$(JSON)),--json) \
+		$(EXTRA_ARGS)
+	$(if $(filter 1 true yes y on,$(JSON)),,@echo "[Unreleased] CHANGELOG leads no story covers:")
+	$(if $(filter 1 true yes y on,$(JSON)),,@$(PYTHON) -B scripts/ux_runner/changelog_select.py nudge)
+
+ai-ux-test-stories-search: ## What a first-time user finds in the published docs (Q="prefix mapping" required)
+	@test -n "$$Q" || { echo 'usage: make ai-ux-test-stories-search Q="what a first-time user would type"'; exit 2; }
+	@$(PYTHON) scripts/ux_runner/docs_index.py search -- "$$Q"
+
+# First-time-user stories in the Docker runner (scripts/ux_runner/run_in_docker.py
+# stories). ai-ux-test-stories-local is a dry run unless POST=1, which posts an MR
+# run's reply against idp-ux-nightly only: STORY=<id> [AS=<persona>], MR=<iid> or
+# ALL=1 [JOBS=n]. INTERACTIVE=1 watches one flow live from a terminal of your own
+# (PORT= when 9222 is taken), and REPLAY=<dir> re-runs a run from its own harness
+# commit. ai-ux-test-stories-pair starts the confined browser and prints the command
+# for a Claude session you start; PAIR=full opts into your whole session and
+# PAIR=keychain keeps a keychain sign-in. ai-ux-test-stories-judge re-judges a run
+# on the host with no Docker, rewriting results.json, section.md and report.html:
+# CHECK=1 writes nothing, SUMMARY=1 prints the table. ai-ux-test-stories-report
+# writes report.html alone, for any run directory, a downloaded CI artifact
+# included, with the standard library only, and prints its path. RUN and REPLAY
+# reach their recipes through the environment, as Q does for the search target, so
+# a path holding a quote or a space arrives whole. AS is one of make's own variables
+# (the assembler, `as` by default), so it is read only when it is set on the
+# command line.
+.PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge ai-ux-test-stories-report
+
+ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run unless POST=1 (STORY=<id> [AS=] | MR=<iid> | ALL=1 [JOBS=n]; INTERACTIVE=1 [PORT=]; REPLAY=<dir>)
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories \
+		$(if $(STORY),--story $(STORY)) $(if $(filter command line,$(origin AS)),--as $(AS)) $(if $(MR),--mr $(MR)) \
+		$(if $(filter 1 true yes y on,$(ALL)),--all) $(if $(JOBS),--jobs $(JOBS)) \
+		$(if $(VIDEO),--video $(VIDEO)) $(if $(filter 1 true yes y on,$(POST)),--post) \
+		$(if $(filter 1 true yes y on,$(INTERACTIVE)),--interactive) \
+		$(if $(PORT),--port $(PORT)) $(if $(REPLAY),--replay "$$REPLAY") \
+		$(if $(STACK),--stack $(STACK)) $(if $(WEB_URL),--web-url $(WEB_URL)) \
+		$(if $(DOCS),--docs $(DOCS)) $(if $(RUN_USD),--run-usd $(RUN_USD)) \
+		$(if $(RERUNS),--reruns $(RERUNS)) \
+		$(if $(filter 1 true yes y on,$(NARRATE)),--narrate-with-own-credentials) $(EXTRA_ARGS)
+
+ai-ux-test-stories-pair: ## Start the confined browser for one flow and print the command for a Claude session you start (STORY=<id> [AS=] [STACK=] [WEB_URL=] [PAIR=full|keychain])
+	@$(if $(STORY),,$(error set STORY=<id>, e.g. make ai-ux-test-stories-pair STORY=route-folder-to-profile AS=platform-admin))
+	@$(if $(filter-out full keychain,$(PAIR)),$(error PAIR is full or keychain, or unset for the confined session))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories --pair --story $(STORY) \
+		$(if $(filter command line,$(origin AS)),--as $(AS)) $(if $(STACK),--stack $(STACK)) \
+		$(if $(WEB_URL),--web-url $(WEB_URL)) $(if $(PORT),--port $(PORT)) \
+		$(if $(filter full,$(PAIR)),--pair-full) \
+		$(if $(filter keychain,$(PAIR)),--pair-keychain) $(EXTRA_ARGS)
+
+ai-ux-test-stories-judge: ## Re-judge a story run on the host, rewriting results.json, section.md and report.html (RUN=<dir holding story-run.json> required; CHECK=1 writes nothing; SUMMARY=1 prints the table; REJUDGE=1 judges a run of another JUDGEMENT_REVISION under this one)
+	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-judge RUN=<dir holding story-run.json> [CHECK=1] [SUMMARY=1] [REJUDGE=1]'; exit 2; }
+	@$(PYTHON) -B scripts/sdlc/ai_ux_test_stories.py --judge "$$RUN" \
+		$(if $(filter 1 true yes y on,$(CHECK)),--check) \
+		$(if $(filter 1 true yes y on,$(SUMMARY)),--summary) \
+		$(if $(filter 1 true yes y on,$(REJUDGE)),--rejudge)
+
+ai-ux-test-stories-report: ## Write report.html, a story run as one page to open in a browser, and print its path (RUN=<dir holding story-run.json> required)
+	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-report RUN=<dir holding story-run.json>'; exit 2; }
+	@$(PYTHON) -B scripts/ux_runner/story_report.py "$$RUN"
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".

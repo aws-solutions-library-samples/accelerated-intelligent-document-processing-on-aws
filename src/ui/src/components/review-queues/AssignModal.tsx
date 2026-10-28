@@ -69,7 +69,7 @@ const AssignModal = ({
       }
     >
       <SpaceBetween size="m">
-        <Box>{`Assign ${what} to an Annotator. They find it in My Work › Tasks and are told in their Inbox.`}</Box>
+        <Box>{`Assign ${what} to an Annotator. They find it in Home › Tasks and are told in their Inbox.`}</Box>
         <FormField label="Annotator" errorText={submitted && !choice ? 'Choose an Annotator.' : undefined}>
           <Select
             selectedOption={choice}

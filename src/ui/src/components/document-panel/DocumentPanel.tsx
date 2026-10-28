@@ -48,13 +48,13 @@ import { calculateTotalCosts } from './metering-cost';
 import MeteringTable from './MeteringTable';
 import type { PricingData } from './MeteringTable';
 import type { PricingLookup } from './pricing';
+import { isProfileReadable } from '../../utils/readable-profile';
 import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
 import { getErrorMessage } from '../../utils/errorUtils';
-import { documentEditHref, reviewItemHref } from '../../routes/constants';
-import { PROCESSING_REASON, isEditableStatus } from '../review-workspace/direct-edit-status';
+import { documentEditHref } from '../../routes/constants';
+import { PROCESSING_REASON, isEditableStatus } from '../edit-screen/document-edit-status';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
-// import { debugDocumentStructure } from '../common/debug-utils';
 
 interface MappedDocument {
   objectKey: string;
@@ -536,17 +536,17 @@ export const DocumentPanel = ({
     wasTerminalRef.current = isTerminalStatus;
   }, [isTerminalStatus, objectKey, getDocumentDetailsFromIds]);
 
+  const { isReviewer, canWorkReviewQueues, canWrite, canReview, allowedConfigVersions, loading: roleLoading } = useUserRole();
   // Fetch active configuration for dynamic confidence threshold (used by sections panel, etc.)
-  const { mergedConfig } = useConfiguration();
+  const { mergedConfig } = useConfiguration(
+    isProfileReadable('default', versions, { allowedConfigVersions, loading: roleLoading }) ? 'default' : null,
+  );
   // Fetch the specific configuration profile that was used to process this document (for flow viewer).
-  // Optimization: skip the extra API call when the document version is 'default' or unset,
-  // since useConfiguration() above already fetches the default config.
   const docConfigVersion = localItem?.configVersion || 'default';
   const needsSeparateVersionFetch = docConfigVersion !== 'default';
-  const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : 'default');
+  const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : null);
   // Use the separate fetch result only when the version differs; otherwise reuse the default config
   const documentVersionConfig = needsSeparateVersionFetch ? separateVersionConfig : mergedConfig;
-  const { isReviewer, canWorkReviewQueues, canWrite, canReview } = useUserRole();
 
   // Check if document can be aborted
   const canAbort = ABORTABLE_STATUSES.includes(localItem?.objectStatus);
@@ -739,7 +739,7 @@ export const DocumentPanel = ({
                     <Button
                       iconName="edit"
                       variant="primary"
-                      href={reviewItemHref(localItem.objectKey)}
+                      href={documentEditHref(localItem.objectKey)}
                       ariaLabel="Edit this document in its review queue"
                     >
                       Edit

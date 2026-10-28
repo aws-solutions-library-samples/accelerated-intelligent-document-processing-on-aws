@@ -5,7 +5,7 @@
  * A queued document's page offers one action: Edit, which opens its queue item for
  * every role that can work queue items (there is no separate Review button).
  *
- * Asserted against the source, as VisualEditorModal.classGating.test.ts does: the
+ * Asserted against the source: the
  * decision is a condition and a label, and rendering DocumentPanel means mocking most
  * of the application.
  */
@@ -22,11 +22,12 @@ describe('DocumentPanel Edit button on a queued document', () => {
     expect(SOURCE).toMatch(/editInQueue = isInReviewQueue\(localItem\?\.hitlStatus\) && canWorkReviewQueues;/);
   });
 
-  it('labels it Edit and points it at the queue item', () => {
+  it('labels it Edit and points it at the document’s edit page, which opens the queue item', () => {
     const at = SOURCE.indexOf('{editInQueue ? (');
     expect(at).toBeGreaterThan(-1);
     const button = SOURCE.slice(at, SOURCE.indexOf('</Button>', at));
-    expect(button).toMatch(/href=\{reviewItemHref\(localItem\.objectKey\)\}/);
+    expect(button).toMatch(/href=\{documentEditHref\(localItem\.objectKey\)\}/);
+    expect(SOURCE).not.toMatch(/reviewItemHref|review-queues\/items/);
     expect(button).toMatch(/>\s*Edit\s*$/);
   });
 

@@ -419,7 +419,12 @@ operations:
       allowedConfigVersions. Before that this operation checked the caller's Cognito
       group and the target bucket and nothing else, so a scoped Author could put a
       document into any profile in the deployment -- i.e. into any scoped user's
-      document-visibility partition -- by naming it.
+      document-visibility partition -- by naming it. A section result
+      (`<document>/sections/<id>/result.json` in the Output bucket) of a document
+      that is in a review queue is refused with QUEUE_MANAGED (400), as
+      processChanges and saveSectionReviewEdits refuse it: the queue item's
+      finalize run owns those results, so a direct write would be lost or would
+      overwrite the review's input. The groups are unchanged.
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
@@ -782,6 +787,13 @@ operations:
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1" }
     note: >-
       Saves or confirms one section's labels of a test-set document without a review copy. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise); the label is stamped reviewed-human with the token's identity.
+  saveTestSetDocumentSectionDraft:
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1", data: "{}" }
+    note: >-
+      Saves one section's edits of a test-set document as a draft that is not reviewed and starts nothing (no HITL completion, no reprocessing); Process Changes applies it through completeSectionReview or saveTestSetDocumentSection. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise); an Author is refused a document with a review copy, whose completion excludes Authors.
   updateTestSetQueue:
     groups: [Admin]
     kind: mutation

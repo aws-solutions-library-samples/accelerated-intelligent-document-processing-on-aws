@@ -1576,7 +1576,7 @@ extraction:
 > apply to it; check the **Status** column of the Sections panel — that is where this
 > particular issue shows. It is written to the section record only, not into the
 > section's `result.json`, so unlike issues from a *successful* assessment run it
-> does **not** appear in the Visual Editor's Processing Report tab (which renders
+> does **not** appear in the edit page's **Reports › Processing Report** (which renders
 > `metadata.processing_issues` from that file). Re-batching the oversized
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
@@ -1678,8 +1678,8 @@ extraction:
 
 ![Document editor for a payslip: the Gross Pay value outlined on the page image, with each field's confidence and threshold in the Visual Editor](../images/extraction-document-editor-bounding-box.png)
 
-Wherever extracted fields are displayed — the document viewer, the human-review
-editor, Test Studio's ground-truth editor and the evaluation-correction table —
+Wherever extracted fields are displayed — the document viewer and the edit page
+(a direct edit, a review-queue item or a Test Studio item) —
 each field carries one of two controls, so you can tell before clicking whether
 that field can be located on the page image. Neither is about the value, which is
 displayed either way — they are about whether its *position* is known:
@@ -2095,8 +2095,8 @@ The UI renders confidence with color coding:
 
 Interface coverage includes the **Visual Editor** tab (split-pane document image
 + form editing, bounding-box overlays, recursive nested display, inline editing
-with change tracking), the **JSON Editor** tab, the **Edit history** tab
-(audit trail with field-level diffs), **smart filters** (low-confidence,
+with change tracking), the **JSON Editor** tab, **Reports › History** (the
+audit trail with field-level diffs), **smart filters** (low-confidence,
 evaluation mismatches, collapsible tree), and nested-data support:
 
 ```

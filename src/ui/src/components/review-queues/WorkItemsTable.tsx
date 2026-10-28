@@ -94,7 +94,7 @@ const BASE_COLUMNS: TableProps.ColumnDefinition<WorkItem>[] = [
   },
   {
     id: 'owner',
-    header: 'Assigned to',
+    header: 'Annotator',
     width: 210,
     cell: (item) => (item.assignedTo ? <TruncatedText maxChars={24}>{item.assignedTo}</TruncatedText> : '—'),
     sortingField: 'assignedTo',
@@ -119,7 +119,7 @@ interface WorkItemsTableProps {
   footer?: React.ReactNode;
   /** Offer the assignment filter (unassigned, assigned). */
   showStatusFilter?: boolean;
-  /** Adds the row "⋮" menu (Annotate, plus `extraRowActions`). */
+  /** Adds the row "⋮" menu (Edit, plus `extraRowActions`). */
   onRowAction?: (item: WorkItem, action: string) => void;
   /** More row menu entries, e.g. the Admin actions. */
   extraRowActions?: (item: WorkItem) => ButtonDropdownProps.ItemOrGroup[];

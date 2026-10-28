@@ -16,7 +16,7 @@ import type { TableProps } from '@cloudscape-design/components';
 import { isBaselineAvailable, type ExportScope } from '../document-panel/document-export';
 
 import { TableHeader } from '../common/table';
-import { DOCUMENTS_PATH, reviewItemHref, testRunResultsHref } from '../../routes/constants';
+import { DOCUMENTS_PATH, documentEditHref, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { isQueueManaged } from '../common/review-status';
@@ -274,7 +274,7 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'hitlStatus',
     header: 'Review Status',
-    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? reviewItemHref(item.objectKey) : undefined),
+    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? documentEditHref(item.objectKey) : undefined),
     sortingField: 'hitlStatus',
     width: 150,
   },

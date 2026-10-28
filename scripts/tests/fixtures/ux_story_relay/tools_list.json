@@ -1,0 +1,778 @@
+{
+ "tools": [
+  {
+   "name": "click",
+   "description": "Clicks on the provided element",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "uid": {
+      "type": "string",
+      "description": "The uid of an element on the page from the page content snapshot"
+     },
+     "dblClick": {
+      "description": "Set to true for double clicks. Default is false.",
+      "type": "boolean"
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "uid"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "close_page",
+   "description": "Closes the page by its index. The last open page cannot be closed.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "pageId": {
+      "type": "number",
+      "description": "The ID of the page to close. Call list_pages to list pages."
+     }
+    },
+    "required": [
+     "pageId"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "navigation",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "drag",
+   "description": "Drag an element onto another element",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "from_uid": {
+      "type": "string",
+      "description": "The uid of the element to drag"
+     },
+     "to_uid": {
+      "type": "string",
+      "description": "The uid of the element to drop into"
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "from_uid",
+     "to_uid"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "fill",
+   "description": "Type text into an input, text area or select an option from a <select> element.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "uid": {
+      "type": "string",
+      "description": "The uid of an element on the page from the page content snapshot"
+     },
+     "value": {
+      "type": "string",
+      "description": "The value to fill in. \"true\" or \"false\" for checkboxes and toggles, \"true\" for radio buttons."
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "uid",
+     "value"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "fill_form",
+   "description": "Fill out multiple form elements (inputs, selects, checkboxes, radios) at once. ALWAYS prefer this tool over multiple individual 'fill' or 'click' calls when interacting with forms. It is significantly faster, more reliable, and reduces turn count. Example: Fill username, password, and check \"Remember Me\" in one call.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "elements": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "uid": {
+         "type": "string",
+         "description": "The uid of the element to fill out"
+        },
+        "value": {
+         "type": "string",
+         "description": "Value for the element. \"true\" or \"false\" for checkboxes and toggles, \"true\" for radio buttons."
+        }
+       },
+       "required": [
+        "uid",
+        "value"
+       ],
+       "description": "An element to fill out"
+      },
+      "description": "Elements from snapshot to fill out."
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "elements"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "get_console_message",
+   "description": "Gets a console message by its ID. You can get all messages by calling list_console_messages.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "msgid": {
+      "type": "number",
+      "description": "The msgid of a console message on the page from the listed console messages"
+     }
+    },
+    "required": [
+     "msgid"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "debugging",
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "get_css_styles",
+   "description": "Retrieve matched CSS rules, inline styles, inherited styles, and cascade information for an element identified by its UID.\nUse this tool to debug why specific CSS properties are applied, overridden, or conflicting. Results are paginated and return 10 rules per page by default; use pageIdx to page through the remaining rules. Requires a UID from take_snapshot.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "uid": {
+      "type": "string",
+      "description": "The uid of the element on the page from the page content snapshot to inspect CSS styles for"
+     },
+     "pageSize": {
+      "default": 10,
+      "description": "Maximum number of CSS rules to return per page. Defaults to 10.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     "pageIdx": {
+      "default": 0,
+      "description": "Page number to return (0-based). Defaults to 0 (the first page).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "uid"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "debugging",
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "get_network_request",
+   "description": "Gets a network request by an optional reqid, if omitted returns the currently selected request in the DevTools Network panel. Useful for inspecting request headers (including 'Cookie') and response headers (including 'Set-Cookie' and directives).",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "reqid": {
+      "description": "The reqid of the network request. If omitted returns the currently selected request in the DevTools Network panel.",
+      "type": "number"
+     },
+     "requestFilePath": {
+      "description": "The absolute or relative path to a .network-request file to save the request body to. If omitted, the body is returned inline.",
+      "type": "string"
+     },
+     "responseFilePath": {
+      "description": "The absolute or relative path to a .network-response file to save the response body to. If omitted, the body is returned inline.",
+      "type": "string"
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "network",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "handle_dialog",
+   "description": "If a browser dialog was opened, use this command to handle it",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "accept",
+       "dismiss"
+      ],
+      "description": "Whether to dismiss or accept the dialog"
+     },
+     "promptText": {
+      "description": "Optional prompt text to enter into the dialog.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "hover",
+   "description": "Hover over the provided element",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "uid": {
+      "type": "string",
+      "description": "The uid of an element on the page from the page content snapshot"
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "uid"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "lighthouse_audit",
+   "description": "Get Lighthouse score and reports for accessibility, SEO, best practices, and agentic browsing. This excludes performance. For performance audits, run performance_start_trace",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "mode": {
+      "default": "navigation",
+      "description": "\"navigation\" reloads & audits. \"snapshot\" analyzes current state.",
+      "type": "string",
+      "enum": [
+       "navigation",
+       "snapshot"
+      ]
+     },
+     "device": {
+      "default": "desktop",
+      "description": "Device to emulate.",
+      "type": "string",
+      "enum": [
+       "desktop",
+       "mobile"
+      ]
+     },
+     "outputDirPath": {
+      "description": "Directory for reports. If omitted, uses temporary files.",
+      "type": "string"
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "debugging",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "list_console_messages",
+   "description": "List all console messages for the target page since the last navigation.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "pageSize": {
+      "description": "Maximum number of messages to return. When omitted, returns all messages.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     "pageIdx": {
+      "description": "Page number to return (0-based). When omitted, returns the first page.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "types": {
+      "description": "Filter messages to only return messages of the specified resource types. When omitted or empty, returns all messages.",
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "log",
+        "debug",
+        "info",
+        "error",
+        "warn",
+        "dir",
+        "dirxml",
+        "table",
+        "trace",
+        "clear",
+        "startGroup",
+        "startGroupCollapsed",
+        "endGroup",
+        "assert",
+        "profile",
+        "profileEnd",
+        "count",
+        "timeEnd",
+        "verbose",
+        "issue"
+       ]
+      }
+     },
+     "includePreservedMessages": {
+      "description": "Set to true to return the preserved messages over the last 3 navigations.",
+      "default": false,
+      "type": "boolean"
+     },
+     "includeStackTraces": {
+      "description": "Set to true to include the stack trace for each message when available. Increases the response size.",
+      "default": false,
+      "type": "boolean"
+     },
+     "serviceWorkerId": {
+      "description": "Filter messages to only return messages of the specified service worker.",
+      "type": "string"
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "debugging",
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "list_network_requests",
+   "description": "Lists the most recent requests for the target page since the last navigation.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "pageSize": {
+      "description": "Maximum number of requests to return. When omitted, returns all requests.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     "pageIdx": {
+      "description": "Page number to return (0-based). When omitted, returns the first page.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "resourceTypes": {
+      "description": "Filter requests to only return requests of the specified resource types. When omitted or empty, returns all requests.",
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "document",
+        "stylesheet",
+        "image",
+        "media",
+        "font",
+        "script",
+        "texttrack",
+        "xhr",
+        "fetch",
+        "prefetch",
+        "eventsource",
+        "websocket",
+        "manifest",
+        "signedexchange",
+        "ping",
+        "cspviolationreport",
+        "preflight",
+        "fedcm",
+        "other"
+       ]
+      }
+     },
+     "includePreservedRequests": {
+      "description": "Set to true to return the preserved requests over the last 3 navigations.",
+      "default": false,
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "network",
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "list_pages",
+   "description": "Get a list of pages open in the browser.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {},
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "navigation",
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "navigate_page",
+   "description": "Go to a URL, or back, forward, or reload. Use project URL if not specified otherwise.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "type": {
+      "description": "Navigate the page by URL, back or forward in history, or reload.",
+      "type": "string",
+      "enum": [
+       "url",
+       "back",
+       "forward",
+       "reload"
+      ]
+     },
+     "url": {
+      "description": "Target URL (only type=url)",
+      "type": "string"
+     },
+     "ignoreCache": {
+      "description": "Whether to ignore cache on reload.",
+      "type": "boolean"
+     },
+     "handleBeforeUnload": {
+      "description": "Whether to auto accept or beforeunload dialogs triggered by this navigation. Default is accept.",
+      "type": "string",
+      "enum": [
+       "accept",
+       "dismiss"
+      ]
+     },
+     "timeout": {
+      "description": "Maximum wait time in milliseconds. If set to 0, the default timeout will be used.",
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "navigation",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "new_page",
+   "description": "Open a new tab and load a URL. Use project URL if not specified otherwise.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "url": {
+      "type": "string",
+      "description": "URL to load in a new page."
+     },
+     "background": {
+      "description": "Whether to open the page in the background without bringing it to the front. Default is false (foreground).",
+      "type": "boolean"
+     },
+     "isolatedContext": {
+      "description": "If specified, the page is created in an isolated browser context with the given name. Pages in the same browser context share cookies and storage. Pages in different browser contexts are fully isolated (useful for clean-slate testing of cookies and authentication).",
+      "type": "string"
+     },
+     "timeout": {
+      "description": "Maximum wait time in milliseconds. If set to 0, the default timeout will be used.",
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "navigation",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "press_key",
+   "description": "Press a key or key combination. Use this when other input methods like fill() cannot be used (e.g., keyboard shortcuts, navigation keys, or special key combinations).",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "key": {
+      "type": "string",
+      "description": "A key or a combination (e.g., \"Enter\", \"Control+A\", \"Control++\", \"Control+Shift+R\"). Modifiers: Control, Shift, Alt, Meta"
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "key"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "select_page",
+   "description": "Select a page as a context for future tool calls.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "pageId": {
+      "type": "number",
+      "description": "The ID of the page to select. Call list_pages to get available pages."
+     },
+     "bringToFront": {
+      "description": "Whether to focus the page and bring it to the top.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "pageId"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "navigation",
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "take_screenshot",
+   "description": "Take a screenshot of the page or element.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "format": {
+      "default": "png",
+      "description": "Type of format to save the screenshot as. Default is \"png\"",
+      "type": "string",
+      "enum": [
+       "png",
+       "jpeg",
+       "webp"
+      ]
+     },
+     "quality": {
+      "description": "Compression quality for JPEG and WebP formats (0-100). Higher values mean better quality but larger file sizes. Ignored for PNG format.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+     },
+     "uid": {
+      "description": "The uid of an element on the page from the page content snapshot. If omitted, takes a page screenshot.",
+      "type": "string"
+     },
+     "fullPage": {
+      "description": "If set to true takes a screenshot of the full page instead of the currently visible viewport. Incompatible with uid.",
+      "type": "boolean"
+     },
+     "filePath": {
+      "description": "The absolute path, or a path relative to the current working directory, to save the screenshot to instead of attaching it to the response.",
+      "type": "string"
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "debugging",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "take_snapshot",
+   "description": "Take a text snapshot of the target page based on the a11y tree. The snapshot lists page elements along with a unique\nidentifier (uid). Always use the latest snapshot. Prefer taking a snapshot over taking a screenshot. The snapshot indicates the element selected\nin the DevTools Elements panel (if any).",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "verbose": {
+      "description": "Whether to include all possible information available in the full a11y tree. Default is false.",
+      "type": "boolean"
+     },
+     "filePath": {
+      "description": "The absolute path, or a path relative to the current working directory, to save the snapshot to instead of attaching it to the response.",
+      "type": "string"
+     }
+    },
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "debugging",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "type_text",
+   "description": "Type text using keyboard into a previously focused input",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "The text to type"
+     },
+     "submitKey": {
+      "description": "Optional key to press after typing. E.g., \"Enter\", \"Tab\", \"Escape\"",
+      "type": "string"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "upload_file",
+   "description": "Upload a file through a provided element.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "uid": {
+      "type": "string",
+      "description": "The uid of the file input element or an element that will open file chooser on the page from the page content snapshot"
+     },
+     "filePaths": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "One or more files paths to upload. File paths have to be local to the browser instance (not the MCP)."
+     },
+     "includeSnapshot": {
+      "description": "Whether to include a snapshot in the response. Default is false.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "uid",
+     "filePaths"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "input",
+    "readOnlyHint": false
+   }
+  },
+  {
+   "name": "wait_for",
+   "description": "Wait for the specified text to appear on the selected page.",
+   "inputSchema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "text": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Non-empty list of texts. Resolves when any value appears on the page."
+     },
+     "timeout": {
+      "description": "Maximum wait time in milliseconds. If set to 0, the default timeout will be used.",
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "additionalProperties": {}
+   },
+   "annotations": {
+    "category": "navigation",
+    "readOnlyHint": true
+   }
+  }
+ ]
+}

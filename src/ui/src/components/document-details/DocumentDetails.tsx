@@ -35,18 +35,10 @@ const DocumentDetails = (): React.JSX.Element => {
   const params = useParams();
   const navigate = useNavigate();
 
-  // Get the objectKey from the wildcard route parameter '*'
-  // This captures the full path including any embedded slashes (e.g., folder/filename.pdf)
-  let objectKey = params['*'] ?? '';
-
-  // Ensure we properly decode the objectKey from the URL parameter
-  // It may be already decoded or still encoded depending on browser behavior with refreshes
-  try {
-    objectKey = decodeURIComponent(objectKey);
-  } catch (e) {
-    // If it fails, it might be already decoded
-    logger.debug('Error decoding objectKey, using as is', e);
-  }
+  // The objectKey is the wildcard route parameter '*', the full path including any
+  // embedded slashes (e.g., folder/filename.pdf). The router has already decoded it once;
+  // decoding it again would break a key that contains `%`.
+  const objectKey = params['*'] ?? '';
 
   const { documents, getDocumentDetailsFromIds, setToolsOpen, deleteDocuments, reprocessDocuments, abortWorkflows } = useDocumentsContext();
   const { settings: _settings } = useSettingsContext();

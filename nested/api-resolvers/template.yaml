@@ -3168,6 +3168,10 @@ Resources:
           # value DENIES a caller rather than reading as unrestricted, because a
           # scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          # The in-review check on section-result uploads: a document in a review
+          # queue is edited only through its queue item, so an upload of one of its
+          # section results to the Output bucket is refused (QUEUE_MANAGED).
+          TRACKING_TABLE: !Ref TrackingTableName
           # Namespace for ``PrefixMappingLookupFailed``. This is the THIRD emitter
           # of that metric, and it is the one that matters most for authorization:
           # the mapping set is read twice for one document, here and again by
@@ -3212,6 +3216,13 @@ Resources:
         # the deployment's routing policy from the upload path.
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTableName
+        # One read on the tracking table: the document's HITLStatus, for the
+        # in-review check on section-result uploads (see TRACKING_TABLE above).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}"
         # Emit ``PrefixMappingLookupFailed`` when the mapping read fails here, so
         # the degraded-enforcement window described above is alarmed rather than
         # buried in an ERROR log. Namespace-scoped, so this Lambda cannot write

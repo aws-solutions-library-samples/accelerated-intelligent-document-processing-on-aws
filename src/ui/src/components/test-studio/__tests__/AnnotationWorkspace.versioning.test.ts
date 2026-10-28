@@ -17,9 +17,9 @@
  *
  * The decisions are pure helpers in `annotation-edit-flags.ts`. The rest is checked
  * against the component source: the queue page (AnnotationWorkspace) carries the link
- * and its stale-version warning, and the annotation screen (review-workspace's
- * TestSetAnnotation, over the test-set adapter) carries the Start annotating prompt
- * and the Complete action.
+ * and its stale-version warning, and the edit screen
+ * (TestSetItemEdit, whose model is over the test-set adapter) carries the Start editing prompt
+ * and the primary action (Reprocess or Complete).
  */
 
 import { readFileSync } from 'node:fs';
@@ -41,8 +41,8 @@ const UNCLAIMED = { reviewObjectKey: 'ts1/x.pdf', claimedByMe: false, reviewed: 
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
-const SCREEN = readFileSync(join(HERE, '..', 'review-workspace', 'TestSetAnnotation.tsx'), 'utf-8');
-const ADAPTER = readFileSync(join(HERE, '..', 'review-workspace', 'test-set-adapter.ts'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-model.tsx'), 'utf-8');
+const ADAPTER = readFileSync(join(HERE, '..', 'edit-screen', 'test-set-item-edit-adapter.ts'), 'utf-8');
 const QUERY = readFileSync(join(HERE, '..', '..', 'graphql', 'operations', 'queries', 'GetAnnotationQueue.graphql'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
@@ -51,14 +51,14 @@ describe('AnnotationWorkspace version transition', () => {
     // openTestSetAnnotationDraft snapshots the baselines, so calling it to *discover*
     // whether a draft exists would commit on arrival — the exact behaviour being fixed.
     // It may only be called from the explicit handler. The queue page does not call it at
-    // all; the adapter wraps it once, and the screen calls that only from Start annotating.
+    // all; the adapter wraps it once, and the screen calls that only from Start editing.
     expect(SOURCE).not.toMatch(/openTestSetAnnotationDraft|openDraft\(/);
     const calls = ADAPTER.split('openTestSetAnnotationDraft').length - 1;
     // The import, the mutation call, and reading it off the response.
     expect(calls).toBeLessThanOrEqual(3);
     expect(ADAPTER).not.toMatch(/useEffect\([^)]*openDraft/);
-    // Two explicit call sites on the screen: Start annotating, and Complete, which opens
-    // the transition itself when none is open (see the Complete test below).
+    // Two explicit call sites on the screen: Start editing, and the primary action, which
+    // opens the transition itself when none is open (see the primary action test below).
     const screenCalls = SCREEN.match(/\bopenDraft\(\)/g) ?? [];
     expect(screenCalls).toHaveLength(2);
     expect(SCREEN).toMatch(
@@ -87,14 +87,14 @@ describe('AnnotationWorkspace version transition', () => {
   });
 
   it('asks before committing, and says what the commitment preserves', () => {
-    expect(DRAFT_PROMPT_HEADER).toMatch(/Annotating this set creates a new version of it/);
+    expect(DRAFT_PROMPT_HEADER).toMatch(/Editing this set creates a new version of it/);
     // The reassurance is the load-bearing half: the reason it is safe to agree is that
     // the current labels survive as something scoreable.
     expect(DRAFT_PROMPT_BODY).toMatch(/current labels are preserved/);
-    // The annotation screen asks, with the prompt above, until a transition is open
+    // The edit screen asks, with the prompt above, until a transition is open
     // (one notice in the screen's consolidated alert).
     expect(SCREEN).toMatch(/!draft && \{\s*id: 'draft',[\s\S]*?<b>\{DRAFT_PROMPT_HEADER\}\.<\/b> \{DRAFT_PROMPT_BODY\}/);
-    expect(SCREEN).toMatch(/onClick=\{\(\) => void handleOpenDraft\(\)\}>\s*Start annotating/);
+    expect(SCREEN).toMatch(/onClick=\{\(\) => void handleOpenDraft\(\)\}>\s*Start editing/);
   });
 
   it('puts the transition in the queue link', () => {
@@ -135,18 +135,16 @@ describe('AnnotationWorkspace version transition', () => {
     expect(SCREEN).not.toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
 
-  it('lets Complete open the transition itself, only when none is open, and only on click', () => {
-    // HITL review queues (IDP-0002 R2-N): Complete needs no edit and no Start annotating
-    // first. Choosing it is the explicit act that opens the version transition, so the
-    // commitment is still never made on arrival - only from the Complete handler, and
-    // only when no transition is open yet, before the sections are confirmed.
-    const handler = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
-    expect(handler).toMatch(
-      /if \(!draft\) await adapter\.openDraft\(\);\s*const remaining = [^;]*;\s*if \(remaining\.length > 0\) await adapter\.confirmSections\(remaining\);/,
-    );
-    // Only the role half of the editor's read-only state disables Complete.
-    expect(SCREEN).not.toMatch(/completeReason = [^;]*Start annotating/);
-    expect(SCREEN).toMatch(/processDisabledReason: completeReason/);
+  it('lets the primary action open the transition itself, only when none is open, and only on click', () => {
+    // HITL review queues (IDP-0002 R2-N): the primary action needs no edit and no Start
+    // editing first. Choosing it is the explicit act that opens the version transition, so
+    // the commitment is still never made on arrival - only from the primary action's
+    // handler, and only when no transition is open yet, before the sections are applied.
+    const handler = SCREEN.slice(SCREEN.indexOf('      process: {'), SCREEN.indexOf('      cancelTo:'));
+    expect(handler).toMatch(/if \(!draft\) await adapter\.openDraft\(\);\s*const \{ reviewed \} = await adapter\.applyAndComplete\(\);/);
+    // Only the role half of the editor's read-only state disables the primary action.
+    expect(SCREEN).not.toMatch(/completeReason = [^;]*Start editing/);
+    expect(SCREEN).toMatch(/primaryDisabledReason: completeReason/);
   });
 
   it('gates confirming labels on the transition, not only editing them', () => {

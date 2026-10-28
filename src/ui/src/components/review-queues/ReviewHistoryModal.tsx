@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The review item's history for this cycle, opened from the annotation screen's
+// The review item's history for this cycle, opened from the edit screen's
 // History button: who claimed, skipped, completed or rejected it, and why. A skip or
 // reject reason and its note are shown with the event, so the next reviewer can see
 // why the item came back. Kept off the screen itself, which stays on the review.

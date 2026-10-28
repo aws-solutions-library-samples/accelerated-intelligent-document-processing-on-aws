@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues); Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one document editor (see [HITL](#hitl))
+- **Home** and **HITL** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit page (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -183,7 +183,7 @@ markdown automatically.
 ## Comparing a document against its baseline
 
 On a document that has an evaluation baseline, **Edit Data** (or **View Data**)
-opens the document editor, which shows the **document class** comparison straight away — predicted, expected, and a verdict
+opens the edit screen, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -233,9 +233,9 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes**, or **Complete**
-in the document editor, afterwards if you would rather the pipeline redo
-them.
+so they may no longer match; use the Sections panel's **Edit Mode → Process Changes**
+afterwards if you would rather the pipeline redo them. (The edit screen's **Process
+Changes** re-runs evaluation and summarization only, so it keeps them.)
 
 That is the difference between the two routes, and it is the reason both exist:
 
@@ -340,10 +340,10 @@ change its structure or text:
 - **Edit Pages**: Edit Mode explains that page edits are not available, instead of
   offering a page class reset or a text edit.
 - **Re-grouping pages**: the **Edit Page Grouping** board is not offered on the
-  document page, and is disabled in the document editor.
+  document page, and **Edit Page Class** is disabled on the edit screen.
 
-Field values stay editable everywhere: **Edit Data** on a section row, and the document
-editor's **Save** and **Complete**.
+Field values stay editable everywhere: **Edit Data** on a section row, and the edit
+screen's **Save** and **Process Changes**.
 
 The server applies the same rule. `processChanges` refuses any section or page change to
 a document whose profile routes it to BDA, for every role including Admin, with an error
@@ -362,10 +362,10 @@ section, whatever state that section's extraction data is in, and nothing else i
 BDA branch extracts values. So an edited section would come back with its values gone and
 nothing to replace them.
 
-⚠️ **The editor can only tell that a document is in BDA mode when it can read the
+⚠️ **The edit screen can only tell that a document is in BDA mode when it can read the
 document's configuration profile.** Users in none of the **Admin**, **Author** and
 **Viewer** groups — a **Reviewer**, for example, or a **Reviewer** who is also an
-**Annotator** — receive only a profile's class list, so for them the editor still offers
+**Annotator** — receive only a profile's class list, so for them the edit screen still offers
 these edits, and saving one
 is then refused by the server with the `BDA_MODE:` error; nothing is lost. A reviewer
 correcting a BDA-mode document should use **Edit Data** on the section row, which writes
@@ -693,9 +693,9 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 production documents held in review queues, and test sets that need ground truth.
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
-- **Navigation.** A user whose only role is Annotator sees exactly **My Work**
-  (**Inbox**, **Tasks**, **Queues**). Other users have no My Work and no Inbox.
-  They see the usual sections their roles
+- **Navigation.** A user whose only role is Annotator sees exactly **Home**
+  (**Inbox**, **Tasks**, **Queues**). Other users have **Home** with the **Inbox**
+  only, then the usual sections their roles
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
@@ -711,42 +711,62 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
   to another queue, or **Remove from queue** (the document completes with
   its machine output).
-- **My Work › Queues** lists the queues you're listed on. On a queue's page you can
+- **Home › Queues** lists the queues you're listed on. On a queue's page you can
   open any item read-only and **Claim** one nobody holds, which assigns it to you.
-- **My Work › Tasks** lists everything assigned to you, both Production review items
+- **Home › Tasks** lists everything assigned to you, both Production review items
   and Test Studio documents, with their document, source, queue and age. Selecting
   one opens it. The **Tasks** badge counts them; completing or skipping an item
   removes it from the list and the count straight away (**Skip** gives the item back
   to its queue, unassigned and not finished), and work assigned to you by an Admin
   appears within about 30 seconds.
-- **The document editor** is the same for every edit, whether you open a queue item
-  from Tasks, an Inbox message or Queue Management, or edit a document directly. It
-  has three routes:
-  - a Production item at `#/review-queues/items/<document>`
-  - a test-set document at `#/review-queues/test-sets/<id>/items/<document>`
-  - a direct edit of any document at `#/documents/<document>/edit` (optionally
-    `?section=<id>`), opened from **Edit Data** on a section row or **Edit** on the
-    document page
+- **The edit page** is the same for every edit, whether you open a queue item from
+  Tasks, an Inbox message or Queue Management, or edit a document directly.
+  - A document's edit page is `#/documents/<document>/edit`. It opens the
+    document's review-queue item while the document is in review and you are an
+    Admin or an Annotator; for anyone else, and for a document that is not in review,
+    it opens the direct edit. A document in review opens read-only in the direct
+    edit, saying it is edited in its queue. **Edit** on the document page, **Edit
+    Data** on a section row, **In Review** in the Document List, Home › Tasks and
+    Inbox messages all open it. Annotators whose only role is Annotator can open it
+    too, although they have no Documents.
+  - A Test Studio document's edit page is `#/review-queues/test-sets/<id>/items/<document>`.
+  - `?section=<id>` opens a section, `?field=<path>` selects a field and
+    `?view=source` opens the original file, on either page. An older Production item
+    link, `#/review-queues/items/<document>`, opens the document's edit page with the
+    same query, and an older Test Studio document link,
+    `#/test-studio/sets/<id>/doc/<document>`, opens its Test Studio item.
 
-  The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
-  role. The actions are at the top, each shown where it applies: **History** (field
-  edits, and a Production item's review activity), **Skip** (queue items, for the
-  assignee), **Discard Changes**, **Save** (Production items and direct
-  edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
-  Complete finishes a queue item, and on a direct edit saves the edits,
-  confirms, and reprocesses the document. A direct edit also shows the evaluation
+  The breadcrumb is **Home › {queue, test set, Documents or Tasks} › {document}**,
+  from the mode: the queue for a queue item, Documents for a direct edit (Tasks for
+  an Annotator-only user), and Home alone while the page is still loading. The title is the document's name with its status in parentheses, over the
+  full object key; a queue item's **Review Reason** follows, then the **Document
+  Editor** panel, which holds the editor with a **Section** dropdown at its top left.
+  The actions are in one bar at the top, left to right: **Edit | View** (the original
+  file in the editor's place); **Reports** (**History**, field edits and review
+  activity; **Summary**; **Processing Report**); **More Actions** (**Edit Page Class**,
+  each section's pages and class, for the roles that may change them: an Admin or a
+  Reviewer on a direct edit, an Admin on a queue item; **Use As Evaluation Baseline**,
+  for Admins and Authors); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
+  (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
+  menu item that doesn't apply yet, such as Summary before a document is finished, is
+  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes works like the Sections panel's: it re-runs
+  evaluation and summarization on the corrected document, and OCR, classification and
+  extraction are not repeated. It finishes a queue item, and on a direct edit saves
+  the edits and confirms first. For a Test Studio document with authored ground truth,
+  which has no review copy, it only marks the labels reviewed. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
-  item directly (the first saved edit, or Complete, assigns it to them) and
+  item directly (the first saved edit, or Process Changes, assigns it to them) and
   uses **Take over** on one assigned to someone else.
 - The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
-  **Review Status** as **In Review**, which for Admins and Annotators links to the queue
-  item. A queued document is reviewed only from that item; the legacy Reviewer flow
+  **Review Status** as **In Review**, which for Admins and Annotators links to the
+  document's edit page (its queue item). A queued document is reviewed only from that
+  item, and the server refuses a direct upload of its section results meanwhile; the legacy Reviewer flow
   (**Start Review**) applies to documents outside the queues.
 
 ## Inbox
 
-Annotators have an **Inbox**, in **My Work**: messages that platform components post to you,
+Every user has an **Inbox**, in **Home**: messages that platform components post to you,
 either by name or to a Cognito group you belong to. Messages are private to you;
 marking, deleting or muting them does not affect anyone else's copy. There are three
 entry points:
@@ -756,9 +776,8 @@ entry points:
   flagged. Choosing a message opens the page it links to (or the Inbox page when it has
   no link) and marks it read. The menu also offers **Mark all as read** and
   **View all in Inbox**.
-- **Inbox (left navigation).** **Inbox** is the first entry of **My Work**, with a badge
-  showing the unread count. Users who aren't Annotators have no Inbox: no navigation
-  entry, no bell and no Inbox page.
+- **Inbox (left navigation).** **Inbox** is the first entry of **Home**, with a badge
+  showing the unread count, for every user.
 - **Inbox page.** The Inbox page lists your messages with when they were received,
   their title (bold while unread; long titles are shortened, with the full title on
   hover), type and severity. Find messages by text, or filter by read

@@ -1231,6 +1231,53 @@ def test_a_stopped_background_host_is_not_passed_off_as_chromes(host: str) -> No
 
 
 @pytest.mark.unit
+def test_only_the_self_test_and_chromes_own_hosts_are_not_the_page() -> None:
+    """The test every refusal caveat is handed: a target is the page's unless it
+    is the self-test or a host Chrome still calls by itself, so a host Chrome no
+    longer calls, or one that merely ends like Chrome's, is the page's."""
+    assert chrome.not_the_page(f"http://{chrome.SELFTEST_HOST}/")
+    for host in sorted(chrome.BROWSER_BACKGROUND_HOSTS):
+        assert chrome.not_the_page(f"{host}:443"), host
+    for target in (
+        *(f"{host}:443" for host in _STOPPED_BACKGROUND_HOSTS),
+        "evil-accounts.google.com:443",
+        "cdn.update.googleapis.com:443",
+        "http://[x]/",
+        "",
+    ):
+        assert not chrome.not_the_page(target), target
+
+
+@pytest.mark.unit
+def test_refusals_are_counted_by_origin_with_each_origin_named() -> None:
+    records = [
+        {"method": "GET", "target": f"http://{chrome.SELFTEST_HOST}/"},
+        {"method": "CONNECT", "target": "accounts.google.com:443"},
+        {"method": "CONNECT", "target": "update.googleapis.com:443"},
+        {"method": "CONNECT", "target": "www.google.com:443"},
+    ]
+    assert chrome.refusals_by_origin(records) == {
+        "page": 1,
+        "browser": 2,
+        "selftest": 1,
+    }
+    assert chrome.refusals_by_origin([]) == {"page": 0, "browser": 0, "selftest": 0}
+
+
+@pytest.mark.unit
+def test_a_labelled_refusal_keeps_the_proxys_fields_beside_its_origin() -> None:
+    record = {
+        "method": "CONNECT",
+        "target": "accounts.google.com:443",
+        "reason": "host_not_allowed",
+    }
+    assert chrome.with_origin(record) == {**record, "origin": "browser"}
+    assert "origin" not in record
+    relabelled = {"target": "www.google.com:443", "origin": "browser"}
+    assert chrome.with_origin(relabelled)["origin"] == "page"
+
+
+@pytest.mark.unit
 def test_a_browser_that_saw_no_socket_at_all_is_unavailable_not_clean(
     tmp_path: Path,
 ) -> None:

@@ -24,6 +24,7 @@ runners: nothing here starts ``claude``, node or a browser.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import json
 import os
@@ -273,6 +274,71 @@ def test_the_argv_names_its_flags_in_place_and_carries_no_payload() -> None:
     assert "--model" not in argv, "the model travels in ANTHROPIC_MODEL"
     for part in argv:
         assert len(part) <= 4096 and "\n" not in part, part[:80]
+
+
+@pytest.mark.unit
+def test_the_expert_profile_is_the_two_expert_lists_themselves() -> None:
+    """The profile carries the audited lists by identity, so the pins above on
+    ``EXPERT_ALLOWED_TOOLS`` and ``EXPERT_DISALLOWED_TOOLS`` are pins on it."""
+    expert = tool_profiles.EXPERT
+    assert [f.name for f in dataclasses.fields(tool_profiles.ToolProfile)] == [
+        "name",
+        "allowed",
+        "disallowed",
+    ]
+    assert expert.name == "expert"
+    assert expert.allowed is tool_profiles.EXPERT_ALLOWED_TOOLS
+    assert expert.disallowed is tool_profiles.EXPERT_DISALLOWED_TOOLS
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        expert.allowed = ()
+
+
+@pytest.mark.unit
+def test_the_argv_takes_the_expert_profile_unless_told_otherwise() -> None:
+    """Every existing caller passes no profile and gets the pinned command line."""
+    claude = Path("/opt/ux-runner/node_modules/.bin/claude")
+    config = Path("/run/ux/agent/mcp.json")
+    parameter = inspect.signature(agent.claude_argv).parameters["profile"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is tool_profiles.EXPERT
+    assert agent.claude_argv(
+        claude, config, max_turns=150, max_budget_usd=10.0
+    ) == agent.claude_argv(
+        claude,
+        config,
+        max_turns=150,
+        max_budget_usd=10.0,
+        profile=tool_profiles.EXPERT,
+    )
+
+
+@pytest.mark.unit
+def test_another_profile_changes_the_two_tool_lists_and_nothing_else() -> None:
+    claude, config = Path("/opt/claude"), Path("/run/ux/agent/mcp.json")
+    probe = tool_profiles.ToolProfile(
+        name="probe", allowed=("mcp__probe__look",), disallowed=("Bash", "Read")
+    )
+
+    def parts(argv: list[str]) -> tuple[list[str], ...]:
+        granted = argv.index("--allowedTools") + 1
+        denied = argv.index("--disallowedTools")
+        tail = argv.index("--max-turns")
+        return (
+            argv[:granted],
+            argv[granted:denied],
+            argv[denied + 1 : tail],
+            argv[tail:],
+        )
+
+    expert = parts(agent.claude_argv(claude, config, max_turns=7, max_budget_usd=2.5))
+    other = parts(
+        agent.claude_argv(
+            claude, config, max_turns=7, max_budget_usd=2.5, profile=probe
+        )
+    )
+    assert (other[0], other[3]) == (expert[0], expert[3])
+    assert tuple(other[1]) == probe.allowed
+    assert tuple(other[2]) == probe.disallowed
 
 
 @pytest.mark.unit
@@ -782,3 +848,185 @@ def test_the_built_in_denials_are_the_reviews_and_seven_more_and_claim_no_more()
     comment = comment.rsplit("\n\n", 1)[-1]
     assert "allowlist" in comment, "the prose route that discovers this list"
     assert "--tools ''" in comment and "ai_mr_review" in comment
+
+
+@pytest.mark.unit
+def test_parse_output_keeps_the_four_priced_token_counts_of_usage() -> None:
+    """The cost cap counts the tokens at pinned rates as well as the CLI's own
+    figure, so the four priced counts are kept as whole numbers and nothing else
+    of ``usage`` is."""
+    usage = {
+        "input_tokens": 8123,
+        "output_tokens": 6810,
+        "cache_read_input_tokens": 1240000,
+        "cache_creation_input_tokens": 50210,
+        "server_tool_use": {"web_search_requests": 0},
+        "service_tier": "standard",
+    }
+    parsed = _parsed(subtype="success", result="r", usage=usage)
+    assert parsed.usage == {
+        "input_tokens": 8123,
+        "output_tokens": 6810,
+        "cache_read_input_tokens": 1240000,
+        "cache_creation_input_tokens": 50210,
+    }
+    assert list(agent.USAGE_KEYS) == list(parsed.usage)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage", "kept"),
+    [
+        (None, None),
+        ("8123", None),
+        ({}, None),
+        ({"input_tokens": "8"}, None),
+        ({"input_tokens": True, "output_tokens": 3}, {"output_tokens": 3}),
+        ({"input_tokens": -1, "output_tokens": 2.5}, None),
+        ({"cache_read_input_tokens": 0}, {"cache_read_input_tokens": 0}),
+    ],
+)
+def test_a_usage_count_that_is_not_a_whole_number_is_unknown_not_zero(
+    usage: object, kept: dict[str, int] | None
+) -> None:
+    assert agent.usage_from(usage) == kept
+    fields: dict[str, Any] = {"subtype": "success", "result": "r"}
+    if usage is not None:
+        fields["usage"] = usage
+    assert _parsed(**fields).usage == kept
+
+
+@pytest.mark.unit
+def test_an_answer_without_usage_parses_as_it_did_before() -> None:
+    result = _parsed(subtype="success", result="r", total_cost_usd=1.5)
+    assert result.usage is None
+    assert [f.name for f in dataclasses.fields(agent.AgentResult)][-1] == "usage"
+
+
+@pytest.mark.unit
+def test_an_effort_level_is_the_last_flag_and_adds_nothing_when_absent() -> None:
+    claude, config = Path("/opt/claude"), Path("/run/mcp.json")
+    plain = agent.claude_argv(claude, config, max_turns=50, max_budget_usd=4.0)
+    pinned = agent.claude_argv(
+        claude, config, max_turns=50, max_budget_usd=4.0, effort="high"
+    )
+    assert pinned == [*plain, "--effort", "high"]
+    parameter = inspect.signature(agent.claude_argv).parameters["effort"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is None
+    assert agent.EFFORT_LEVELS == ("low", "medium", "high", "xhigh", "max")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("effort", ["", "High", "extreme", "max "])
+def test_an_effort_the_pinned_cli_does_not_take_is_refused(effort: str) -> None:
+    with pytest.raises(agent.AgentError, match="--effort takes one of"):
+        agent.claude_argv(
+            Path("/opt/claude"),
+            Path("/run/mcp.json"),
+            max_turns=1,
+            max_budget_usd=1,
+            effort=effort,
+        )
+
+
+PROMPT_FILE = Path("/run/ux-story/agent/prompt.md")
+
+
+def _interactive(**changes: Any) -> list[str]:
+    options: dict[str, Any] = {
+        "prompt_file": PROMPT_FILE,
+        "profile": tool_profiles.STORY,
+        "effort": "high",
+    }
+    options.update(changes)
+    return agent.interactive_argv(
+        Path("/opt/ux-runner/node_modules/.bin/claude"),
+        Path("/run/ux-story/agent/mcp.json"),
+        **options,
+    )
+
+
+@pytest.mark.unit
+def test_the_interactive_argv_is_exactly_the_pinned_command_line() -> None:
+    assert _interactive() == [
+        "/opt/ux-runner/node_modules/.bin/claude",
+        "--bare",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "/run/ux-story/agent/mcp.json",
+        "--permission-mode",
+        "manual",
+        "--tools",
+        "",
+        "--allowedTools",
+        *tool_profiles.STORY_ALLOWED_TOOLS,
+        "--disallowedTools",
+        *tool_profiles.STORY_DISALLOWED_TOOLS,
+        "--effort",
+        "high",
+        "--append-system-prompt-file",
+        str(PROMPT_FILE),
+    ]
+
+
+@pytest.mark.unit
+def test_the_interactive_argv_drops_every_flag_only_print_mode_applies() -> None:
+    """2.1.281 applies these only with ``--print``, and ``--max-turns`` is not in
+    its help, so none of them is passed to the TUI as if it bounded anything."""
+    argv = _interactive()
+    for flag in (
+        "-p",
+        "--print",
+        "--output-format",
+        "--no-session-persistence",
+        "--max-budget-usd",
+        "--max-turns",
+    ):
+        assert flag not in argv, flag
+    unattended = agent.claude_argv(
+        Path("/opt/ux-runner/node_modules/.bin/claude"),
+        Path("/run/ux-story/agent/mcp.json"),
+        max_turns=50,
+        max_budget_usd=4.0,
+        profile=tool_profiles.STORY,
+        effort="high",
+    )
+    kept = [part for part in unattended if part in argv]
+    assert "--bare" in kept and "--strict-mcp-config" in kept
+    assert argv[argv.index("--tools") + 1] == ""
+    assert _interactive(effort=None)[-2:] == [
+        "--append-system-prompt-file",
+        str(PROMPT_FILE),
+    ]
+
+
+@pytest.mark.unit
+def test_no_message_is_given_on_the_command_line_and_the_prompt_is_a_file() -> None:
+    """At 2.1.281 a message given as the TUI's argument is answered before the
+    story server's tools are offered, as the recorded probe shows, so the prompt
+    is the appended system prompt and the person types the opening message."""
+    probe = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "ux_story_transcript"
+            / "probe.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert probe["positional_opening"]["first_turn_story_tools"] == []
+    assert probe["pair_command"]["system_has_marker"] is True
+    argv = _interactive()
+    assert "--" not in argv
+    assert argv.count("--append-system-prompt-file") == 1
+    assert agent.OPENING_MESSAGE.strip() == agent.OPENING_MESSAGE
+    assert agent.OPENING_MESSAGE not in argv
+    parameters = inspect.signature(agent.interactive_argv).parameters
+    assert "prompt" not in parameters
+    assert parameters["prompt_file"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.unit
+def test_a_relative_prompt_file_is_refused() -> None:
+    with pytest.raises(agent.AgentError, match="not an absolute path"):
+        _interactive(prompt_file=Path("prompt.md"))

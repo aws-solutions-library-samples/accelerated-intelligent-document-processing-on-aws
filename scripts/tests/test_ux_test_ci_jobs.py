@@ -24,9 +24,11 @@ one. Most of them are security properties rather than tidiness.
   job declares an environment of its own with ``action: prepare``, which hands a
   job the variables scoped to it and creates no deployment, so the persona's
   password, scoped to ``ai_ux_test``'s alone, never reaches the job that runs the
-  MR's ``npm ci``. No other job declares or inherits either environment, no rule
-  reads a scoped variable, and the docs tell the operator each variable's exact
-  scopes and name the other jobs a variable left at the default one reaches
+  MR's ``npm ci``. The only other jobs that declare either environment are the
+  two first-time-user story jobs that drive the browser, which read what
+  ``ai_ux_test`` reads and declare exactly its environment. No job inherits one,
+  no rule reads a scoped variable, and the docs tell the operator each variable's
+  exact scopes and name the other jobs a variable left at the default one reaches
   through ``npm ci``.
 * **No CI configuration passes the developer's video opt-in.** It renders another
   stack's unredacted screens into the artifact directory, and a pipeline's
@@ -63,6 +65,7 @@ GITLAB_CI = REPO_ROOT / ".gitlab-ci.yml"
 ORCHESTRATOR = REPO_ROOT / "scripts" / "sdlc" / "ai_ux_test.py"
 NIGHTLY = REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py"
 RUN_IN_DOCKER = REPO_ROOT / "scripts" / "ux_runner" / "run_in_docker.py"
+SESSION = REPO_ROOT / "scripts" / "ux_runner" / "session.py"
 GITHUB_WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 DEP_MANIFEST = REPO_ROOT / "scripts" / "generate-dep-manifest.sh"
 CI_COVERAGE_DOC = REPO_ROOT / "scripts" / "sdlc" / "docs" / "CI_TEST_COVERAGE.md"
@@ -70,6 +73,11 @@ UX_LOCKFILE = "scripts/ux_runner/package-lock.json"
 BUILD_JOB = "ux_test_build"
 TEST_JOB = "ai_ux_test"
 UX_JOBS = (BUILD_JOB, TEST_JOB)
+#: The first-time-user story jobs that drive the browser. They read the variables
+#: ``ai_ux_test`` reads, so they declare its environment, and nothing else.
+STORY_RUN_JOBS = ("ai_ux_test_stories", "ai_ux_test_stories_nightly")
+#: Every job that may declare an environment a UX variable is scoped to.
+UX_ENVIRONMENT_JOBS = (*UX_JOBS, *STORY_RUN_JOBS)
 WRAPPER_KEY = ".without_job_secrets"
 
 #: What each UX job declares: an environment of its own, whose scoped variables
@@ -83,9 +91,9 @@ UX_ENVIRONMENTS = {
 #: it to exactly those jobs' environments, so the job that runs the MR's ``npm ci``
 #: never holds the persona's password.
 SCOPED_VARIABLES = {
-    "UX_TEST_UI_ENV": UX_JOBS,
-    "UX_TEST_PERSONAS": (TEST_JOB,),
-    "UX_TEST_AWS_ACCOUNT_ID": (TEST_JOB,),
+    "UX_TEST_UI_ENV": (*UX_JOBS, *STORY_RUN_JOBS),
+    "UX_TEST_PERSONAS": (TEST_JOB, *STORY_RUN_JOBS),
+    "UX_TEST_AWS_ACCOUNT_ID": (TEST_JOB, *STORY_RUN_JOBS),
 }
 
 #: Every secret a UX job's environment can hold, each with a value a leak would show.
@@ -148,12 +156,45 @@ def _commands(job: dict[str, Any]) -> list[str]:
     return [str(line) for line in _flattened(job)]
 
 
+#: The variables of ``&ux_confined_setup`` that a command is read through.
+#: ``$UX_HARNESS_DIR`` stays as written, since every pinned path must start with
+#: it, and ``$UX_HARNESS`` is read from the job's ``variables`` directly.
+_SETUP_VARIABLES = ("UX_ENTRY", "UX_MODE_ARGS", "UX_ARTIFACTS")
+_REFERENCE_RE = re.compile(
+    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?P<first>%%/\*)?\}"
+    r"|\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def _resolved(job: dict[str, Any], command: str) -> str:
+    """``command`` with the setup's variables written out from the job's own.
+
+    ``${NAME%%/*}`` is the value's first path component, as the shell gives it.
+    """
+    variables = job["variables"]
+
+    def value(match: re.Match[str]) -> str:
+        name = match["braced"] or match["bare"]
+        if name not in _SETUP_VARIABLES:
+            return match[0]
+        text = str(variables[name])
+        return text.split("/", 1)[0] if match["first"] else text
+
+    return _REFERENCE_RE.sub(value, command)
+
+
+def _resolved_commands(job: dict[str, Any]) -> list[str]:
+    return [_resolved(job, command) for command in _commands(job)]
+
+
 def _module_constant(path: Path, name: str) -> Any:
     """The literal value of a module-level assignment, read without importing.
 
     No module is imported: ``codebuild_deployment`` is the CodeBuild harness, and
     ``ai_ux_test`` pulls in ``ai_mr_review``, which another suite re-executes under
-    its own module name.
+    its own module name. A value that is another module's constant, as
+    ``ai_ux_test.REVIEW_STACK = session.REVIEW_STACK`` is, is read from the module
+    the file imports under that name, in the same way.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in tree.body:
@@ -163,9 +204,28 @@ def _module_constant(path: Path, name: str) -> Any:
             targets, value = [node.target], node.value
         else:
             continue
-        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
-            return ast.literal_eval(value)
+        if not any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            continue
+        if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            return _module_constant(_imported_module(tree, value.value.id), value.attr)
+        return ast.literal_eval(value)
     raise AssertionError(f"{path.relative_to(REPO_ROOT)} assigns no {name}")
+
+
+def _imported_module(tree: ast.Module, name: str) -> Path:
+    """The file of the ``scripts/`` module ``tree`` imports as ``name``."""
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+            continue
+        for alias in node.names:
+            if (alias.asname or alias.name) != name:
+                continue
+            found = (REPO_ROOT / "scripts").joinpath(
+                *node.module.split("."), f"{alias.name}.py"
+            )
+            assert found.is_file(), found
+            return found
+    raise AssertionError(f"no module of scripts/ is imported as {name}")
 
 
 def _triggering(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -307,13 +367,43 @@ def test_the_extracted_harness_is_exactly_the_orchestrators_harness_paths(
 
     ``test_ai_ux_test.py`` closes ``HARNESS_PATHS`` over the imports of every module
     it names. That closure protects nothing unless the job extracts the same set: a
-    module the job leaves out is imported from wherever Python finds it.
+    module the job leaves out is imported from wherever Python finds it. The list
+    is the job's ``UX_HARNESS`` variable, which the setup extracts, and the
+    before_script spells no second one.
     """
     before = "\n".join(str(line) for line in ux_job["before_script"])
-    match = re.search(r'UX_HARNESS="([^"]*)"', before)
-    assert match, "ai_ux_test no longer declares its UX_HARNESS list"
-    harness = tuple(match.group(1).split())
+    assert not re.search(r"^\s*UX_HARNESS=", before, re.MULTILINE), (
+        "the before_script assigns UX_HARNESS itself"
+    )
+    assert "UX_HARNESS" in ux_job["variables"], "ai_ux_test no longer sets UX_HARNESS"
+    harness = tuple(str(ux_job["variables"]["UX_HARNESS"]).split())
     assert harness == _module_constant(ORCHESTRATOR, "HARNESS_PATHS")
+
+
+@pytest.mark.unit
+def test_the_job_runs_the_entry_it_names_and_that_entry_is_the_orchestrator(
+    ux_job,
+) -> None:
+    """The precheck refuses a ``UX_ENTRY`` other than its own ``ENTRY``, so the
+    job's variable, the module's constant and the module's path are one path."""
+    variables = ux_job["variables"]
+    entry = ORCHESTRATOR.relative_to(REPO_ROOT).as_posix()
+    assert variables["UX_ENTRY"] == _module_constant(ORCHESTRATOR, "ENTRY") == entry
+    assert variables["UX_MODE_ARGS"] == "--mr $CI_MERGE_REQUEST_IID"
+    assert variables["UX_ARTIFACTS"] == "ux-tests"
+
+
+@pytest.mark.unit
+def test_the_setup_is_one_anchor_defined_on_the_ux_test_job(
+    ci_text: str, ux_job
+) -> None:
+    """``&ux_confined_setup`` is defined once, on ``ai_ux_test``, so a job that
+    reuses it gets this setup in this order, driven by its own variables."""
+    start = ci_text.index(f"\n{TEST_JOB}:\n")
+    end = ci_text.index("\nnightly_notification:\n")
+    assert ci_text.count("before_script: &ux_confined_setup") == 1
+    assert start < ci_text.index("before_script: &ux_confined_setup") < end
+    assert ux_job["before_script"][0] == "umask 022"
 
 
 #: Interpreters: the first word after one that is not an option is what it runs.
@@ -375,12 +465,13 @@ def test_the_checkout_scan_catches_every_way_of_running_the_mrs_copy(
 
 @pytest.mark.unit
 def test_nothing_in_the_ux_test_job_runs_the_checkouts_own_copy(ux_job) -> None:
-    commands = _commands(ux_job)
+    """Read as written and through the job's variables, both of which must hold."""
+    commands = [*_commands(ux_job), *_resolved_commands(ux_job)]
     offending = {c: found for c in commands if (found := _checkout_runs(c))}
     assert not offending, f"these run something the harness does not pin: {offending}"
     executed = [
         word
-        for command in commands
+        for command in _resolved_commands(ux_job)
         for word in _words(command)
         if word.startswith("$UX_HARNESS_DIR/") and word.endswith((".py", ".sh"))
     ]
@@ -406,7 +497,7 @@ def test_both_orchestrator_runs_write_no_bytecode_into_the_pinned_harness(
     harness, and the harness is root's alone, so none can be planted there."""
     runs = [
         (words, at)
-        for command in _commands(ux_job)
+        for command in _resolved_commands(ux_job)
         for words in [_words(command)]
         for at, word in enumerate(words)
         if word.endswith("ai_ux_test.py")
@@ -424,14 +515,16 @@ def test_the_checkout_and_the_harness_are_made_root_only_before_any_python_runs(
     """The runner makes the checkout at its own umask, and once Chrome runs the
     browser's uid must not rename or replace ux-tests, src/ui/build or a harness
     module that root writes into, serves or imports."""
-    before = [str(line) for line in ux_job["before_script"]]
+    before = [_resolved(ux_job, str(line)) for line in ux_job["before_script"]]
     checkout = [
         i for i, c in enumerate(before) if c == 'chmod -R go-w "$CI_PROJECT_DIR"'
     ]
     extracted = [
         i for i, c in enumerate(before) if 'chmod -R go-w "$UX_HARNESS_DIR"' in c
     ]
-    fresh = [i for i, c in enumerate(before) if c.startswith("rm -rf ux-tests")]
+    fresh = [
+        i for i, c in enumerate(before) if _words(c)[:3] == ["rm", "-rf", "ux-tests"]
+    ]
     prechecks = [i for i, c in enumerate(before) if "--precheck" in c]
     assert checkout and extracted and fresh and prechecks
     assert extracted[0] < checkout[0] < fresh[0] < prechecks[0]
@@ -440,7 +533,7 @@ def test_the_checkout_and_the_harness_are_made_root_only_before_any_python_runs(
 @pytest.mark.unit
 def test_the_precheck_runs_before_the_toolchain_install(ux_job) -> None:
     """A no-op head should cost about a minute, not a toolchain install."""
-    before = [str(line) for line in ux_job["before_script"]]
+    before = [_resolved(ux_job, str(line)) for line in ux_job["before_script"]]
     prechecks = [i for i, c in enumerate(before) if "--precheck" in c]
     installs = [i for i, c in enumerate(before) if "install.sh" in c]
     assert prechecks and installs, "the precheck or the install step is gone"
@@ -822,7 +915,7 @@ def _ux_scope_prefix() -> str:
 
 
 def _jobs_reaching_a_ux_environment(
-    config: dict[str, Any], exempt: tuple[str, ...] = UX_JOBS
+    config: dict[str, Any], exempt: tuple[str, ...] = UX_ENVIRONMENT_JOBS
 ) -> dict[str, list[str]]:
     """``{job: environments}`` for each job outside ``exempt`` that declares or
     inherits an environment a UX scope could match: a name beginning as the UX
@@ -887,12 +980,14 @@ def test_the_build_jobs_skip_line_names_the_scope_its_copy_belongs_at(
 @pytest.mark.unit
 def test_no_other_job_declares_or_inherits_a_ux_environment(ci_config) -> None:
     """Declaring an environment is what hands a job the variables scoped to it, the
-    persona's password among them, so no job but the UX jobs reaches one a UX
-    scope could match: either UX environment, another name beginning as both do,
-    which a wildcard scope would also match, or a name built from a variable. A job
-    reaches one through ``extends`` as well as by declaring it, and a hidden
-    template counts, since another job can extend it. Read over this one file,
-    which therefore includes no other and starts no child pipeline."""
+    persona's password among them, so no job but the four in
+    :data:`UX_ENVIRONMENT_JOBS` reaches one a UX scope could match: either UX
+    environment, another name beginning as both do, which a wildcard scope would
+    also match, or a name built from a variable. Each of the two story jobs among
+    them reaches exactly ``ai_ux_test``'s, by declaring it. A job reaches one
+    through ``extends`` as well as by declaring it, and a hidden template counts,
+    since another job can extend it. Read over this one file, which therefore
+    includes no other and starts no child pipeline."""
     assert "include" not in ci_config, (
         ".gitlab-ci.yml now includes other files, whose jobs this test cannot see"
     )
@@ -903,6 +998,14 @@ def test_no_other_job_declares_or_inherits_a_ux_environment(ci_config) -> None:
     )
     for job in ("static_checks", "unit_tests", "package_tests", "ui_tests"):
         assert job in jobs, f"{job} is gone, so this test may be reading nothing"
+    for job in STORY_RUN_JOBS:
+        assert job in jobs, f"{job} is gone; take it out of STORY_RUN_JOBS"
+        assert not _parents(jobs[job]), f"{job} extends {_parents(jobs[job])}"
+        assert jobs[job].get("environment") == UX_ENVIRONMENTS[TEST_JOB], (
+            f"{job} declares {jobs[job].get('environment')!r}, not "
+            f"{TEST_JOB}'s {UX_ENVIRONMENTS[TEST_JOB]}, the one environment it is "
+            "exempt here for"
+        )
     reaching = _jobs_reaching_a_ux_environment(ci_config)
     assert not reaching, (
         f"{reaching} reach an environment a UX variable's scope could match, which "
@@ -919,6 +1022,7 @@ _PROBE = {"script": ["echo probe"]}
     [
         ({"probe": {**_PROBE, "extends": BUILD_JOB}}, {"probe"}),
         ({"probe": {**_PROBE, "extends": [".base", TEST_JOB]}, ".base": {}}, {"probe"}),
+        ({"probe": {**_PROBE, "extends": STORY_RUN_JOBS[1]}}, {"probe"}),
         (
             {
                 ".base": {"extends": TEST_JOB},
@@ -1197,15 +1301,73 @@ def test_the_toolchain_install_starts_in_the_harness_not_the_checkout(ux_job) ->
 def test_the_artifact_directory_is_recreated_before_the_harness_writes_into_it(
     ux_job,
 ) -> None:
-    """``mkdir -p`` would accept a ``ux-tests`` symlink the MR committed; ``rm -rf``
-    removes the symlink itself, and the harness refuses one as well."""
-    before = [str(line) for line in ux_job["before_script"]]
+    """``mkdir -p`` alone would accept a ``ux-tests`` symlink the MR committed;
+    ``rm -rf`` of the path's first component removes the symlink itself, so the
+    ``mkdir -p`` after it makes every level afresh, and the harness refuses one as
+    well. No other command makes the directory."""
+    written = [str(line) for line in ux_job["before_script"]]
+    before = [_resolved(ux_job, line) for line in written]
     fresh = [
-        i for i, c in enumerate(before) if c == "rm -rf ux-tests && mkdir ux-tests"
+        i
+        for i, c in enumerate(written)
+        if c == 'rm -rf "${UX_ARTIFACTS%%/*}" && mkdir -p "$UX_ARTIFACTS"'
     ]
     prechecks = [i for i, c in enumerate(before) if "--precheck" in c]
     assert fresh and prechecks and fresh[0] < prechecks[0]
-    assert not [c for c in before if "mkdir -p ux-tests" in c]
+    assert before[fresh[0]] == 'rm -rf "ux-tests" && mkdir -p "ux-tests"'
+    made = [i for i, c in enumerate(before) if "mkdir" in c and "ux-tests" in c]
+    assert made == fresh[:1], [before[i] for i in made]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("artifacts", "planted"),
+    [
+        ("ux-tests", "ux-tests"),
+        ("ux-test-stories/shard-1", "ux-test-stories"),
+        ("ux-test-stories/shard-1", "ux-test-stories/shard-1"),
+    ],
+    ids=["top-level", "nested-under-a-link", "nested-link"],
+)
+def test_the_fresh_artifact_directory_never_follows_a_link_the_checkout_holds(
+    ux_job, tmp_path: Path, artifacts: str, planted: str
+) -> None:
+    """Run under bash as the job runs it, with a symlink planted where the MR's
+    checkout could commit one: the directory is made fresh and the link's target
+    is left as it was."""
+    bash = shutil.which("bash")
+    assert bash, "bash runs the job's script and is on every Linux and macOS runner"
+    (line,) = [
+        str(c)
+        for c in ux_job["before_script"]
+        if str(c).startswith('rm -rf "${UX_ARTIFACTS')
+    ]
+    checkout = tmp_path / "checkout"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "kept").write_text("kept", encoding="utf-8")
+    link = checkout / planted
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside, target_is_directory=True)
+    shown = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [bash, "-c", line],
+        cwd=checkout,
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "UX_ARTIFACTS": artifacts,
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    assert shown.returncode == 0, shown.stderr[-400:]
+    made = checkout / artifacts
+    assert not made.is_symlink() and made.is_dir() and not any(made.iterdir())
+    assert not (checkout / artifacts.split("/", 1)[0]).is_symlink()
+    assert sorted(p.name for p in outside.iterdir()) == ["kept"]
 
 
 @pytest.mark.unit
@@ -1249,6 +1411,7 @@ def test_the_artifacts_are_the_build_and_the_ux_tests_directory(
     assert build_job["artifacts"]["paths"] == ["src/ui/build/", "ui-change.json"]
     assert build_job["artifacts"]["expire_in"] == "1 day"
     assert ux_job["artifacts"]["paths"] == ["ux-tests/"]
+    assert ux_job["artifacts"]["paths"] == [f"{ux_job['variables']['UX_ARTIFACTS']}/"]
     assert ux_job["artifacts"]["when"] == "always"
     assert ux_job["artifacts"]["expire_in"] == "1 week"
     for job in (build_job, ux_job):
@@ -1341,7 +1504,16 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
 
     sections = _makefile_sections()
     targets = sorted(t for t in sections if t.startswith("ai-ux-"))
-    assert targets == ["ai-ux-browser", "ai-ux-test-local"], targets
+    assert targets == [
+        "ai-ux-browser",
+        "ai-ux-test-local",
+        "ai-ux-test-stories-judge",
+        "ai-ux-test-stories-list",
+        "ai-ux-test-stories-local",
+        "ai-ux-test-stories-pair",
+        "ai-ux-test-stories-report",
+        "ai-ux-test-stories-search",
+    ], targets
     for target in targets:
         assert not sections[target].startswith(GATE_SECTION_PREFIXES), (
             f"`{target}` is declared under the gate section {sections[target]!r}"
@@ -1394,6 +1566,221 @@ def test_ai_ux_test_local_posts_only_for_an_affirmative_post(
     assert ("--post" in shown.stdout.split()) is posts
 
 
+_STORY_MAKE_VARIABLES = (
+    "STORY",
+    "AS",
+    "MR",
+    "ALL",
+    "JOBS",
+    "VIDEO",
+    "POST",
+    "INTERACTIVE",
+    "PORT",
+    "REPLAY",
+    "STACK",
+    "WEB_URL",
+    "DOCS",
+    "RUN_USD",
+    "RERUNS",
+    "NARRATE",
+    "PAIR",
+    "RUN",
+    "CHECK",
+    "SUMMARY",
+    "REJUDGE",
+    "Q",
+    "EXTRA_ARGS",
+)
+
+
+def _recipe(
+    target: str, *assignments: str, environ: dict[str, str] | None = None
+) -> tuple[int, list[str], str]:
+    """The arguments a target's recipe hands ``$(PYTHON)``, one a line.
+
+    ``PYTHON`` is replaced by ``printf``, so nothing but ``printf`` runs, and unlike
+    ``--dry-run`` what a recipe reads from the environment is expanded, which is
+    how a path holding a quote or a space reaches it.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _STORY_MAKE_VARIABLES}
+    env.update(environ or {})
+    done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["make", "--no-print-directory", target, "PYTHON=printf '%s\\n'", *assignments],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    return done.returncode, done.stdout.splitlines(), done.stderr
+
+
+@pytest.mark.unit
+def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() -> None:
+    """``make ai-ux-test-stories-local`` is the Windows form's options spelled as make
+    variables, so each variable the operator skill names reaches its option."""
+    path = '/tmp/a run\'s "dir" with spaces'  # nosec B108 - a string, never opened
+    code, argv, err = _recipe(
+        "ai-ux-test-stories-local",
+        "STORY=find-where-to-start",
+        "AS=new-analyst",
+        "JOBS=2",
+        "VIDEO=never",
+        "INTERACTIVE=1",
+        "PORT=9333",
+        f"REPLAY={path}",
+        "STACK=idp-dev-stack4",
+        "WEB_URL=https://ui.example/",
+        "DOCS=abc123",
+        "RUN_USD=5",
+        "RERUNS=0",
+        "NARRATE=1",
+    )
+    assert code == 0, err[-400:]
+    assert argv == [
+        "scripts/ux_runner/run_in_docker.py",
+        "stories",
+        "--story",
+        "find-where-to-start",
+        "--as",
+        "new-analyst",
+        "--jobs",
+        "2",
+        "--video",
+        "never",
+        "--interactive",
+        "--port",
+        "9333",
+        "--replay",
+        path,
+        "--stack",
+        "idp-dev-stack4",
+        "--web-url",
+        "https://ui.example/",
+        "--docs",
+        "abc123",
+        "--run-usd",
+        "5",
+        "--reruns",
+        "0",
+        "--narrate-with-own-credentials",
+    ]
+    code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812", "ALL=yes")
+    assert code == 0, err[-400:]
+    assert argv[2:] == ["--mr", "812", "--all"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "posts"),
+    [("", False), ("0", False), ("no", False), ("1", True), ("true", True)],
+)
+def test_the_stories_target_posts_only_for_an_affirmative_post(
+    value: str, posts: bool
+) -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812", f"POST={value}")
+    assert code == 0, err[-400:]
+    assert ("--post" in argv) is posts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "narrates"),
+    [("", False), ("0", False), ("no", False), ("1", True), ("yes", True)],
+)
+def test_the_stories_target_narrates_with_own_credentials_only_when_asked(
+    value: str, narrates: bool
+) -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-local", "STORY=x", f"NARRATE={value}")
+    assert code == 0, err[-400:]
+    assert ("--narrate-with-own-credentials" in argv) is narrates
+
+
+@pytest.mark.unit
+def test_as_reaches_the_story_targets_only_from_the_command_line() -> None:
+    """``AS`` is one of make's own variables (the assembler), so a value make
+    supplies or the environment carries must not become a persona."""
+    for target in ("ai-ux-test-stories-local", "ai-ux-test-stories-pair"):
+        code, argv, err = _recipe(target, "STORY=x")
+        assert code == 0, err[-400:]
+        assert "--as" not in argv, target
+        code, argv, _ = _recipe(target, "STORY=x", environ={"AS": "new-analyst"})
+        assert "--as" not in argv, target
+        code, argv, _ = _recipe(target, "STORY=x", "AS=new-analyst")
+        assert argv[argv.index("--as") + 1] == "new-analyst", target
+
+
+@pytest.mark.unit
+def test_the_pair_target_needs_a_story_and_takes_only_its_two_pair_modes() -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-pair")
+    assert code != 0 and "set STORY=<id>" in err and not argv
+    code, argv, err = _recipe("ai-ux-test-stories-pair", "STORY=x", "PAIR=open")
+    assert code != 0 and "PAIR is full or keychain" in err and not argv
+    code, argv, err = _recipe("ai-ux-test-stories-pair", "STORY=x")
+    assert code == 0, err[-400:]
+    assert argv == ["scripts/ux_runner/run_in_docker.py", "stories", "--pair"] + [
+        "--story",
+        "x",
+    ]
+    for mode, flag in (("full", "--pair-full"), ("keychain", "--pair-keychain")):
+        _, argv, _ = _recipe("ai-ux-test-stories-pair", "STORY=x", f"PAIR={mode}")
+        assert argv[-1] == flag, mode
+
+
+@pytest.mark.unit
+def test_the_judge_target_rejudges_through_the_orchestrator_with_the_run_whole() -> (
+    None
+):
+    """``--judge`` rewrites ``section.md`` as well as ``results.json``, which the
+    judge CLI alone does not, and the run directory arrives as one argument."""
+    path = '/tmp/a run\'s "dir"'  # nosec B108 - a string, never opened
+    code, argv, err = _recipe(
+        "ai-ux-test-stories-judge", f"RUN={path}", "CHECK=1", "SUMMARY=true"
+    )
+    assert code == 0, err[-400:]
+    assert argv == [
+        "-B",
+        "scripts/sdlc/ai_ux_test_stories.py",
+        "--judge",
+        path,
+        "--check",
+        "--summary",
+    ]
+    code, argv, _ = _recipe("ai-ux-test-stories-judge", f"RUN={path}", "CHECK=0")
+    assert "--check" not in argv and "--summary" not in argv
+    code, argv, _ = _recipe("ai-ux-test-stories-judge", f"RUN={path}", "REJUDGE=1")
+    assert argv[-1] == "--rejudge"
+    code, argv, _ = _recipe("ai-ux-test-stories-judge")
+    assert code != 0 and argv[0].startswith("usage: make ai-ux-test-stories-judge")
+
+
+@pytest.mark.unit
+def test_the_report_target_writes_a_runs_report_with_the_run_whole() -> None:
+    """``make ai-ux-test-stories-report`` runs the report's own CLI, standard library
+    only, on any run directory, which arrives as one argument."""
+    path = '/tmp/a run\'s "dir" with spaces'  # nosec B108 - a string, never opened
+    code, argv, err = _recipe("ai-ux-test-stories-report", f"RUN={path}")
+    assert code == 0, err[-400:]
+    assert argv == ["-B", "scripts/ux_runner/story_report.py", path]
+    code, argv, err = _recipe("ai-ux-test-stories-report")
+    assert code != 0 and argv[0].startswith("usage: make ai-ux-test-stories-report")
+    code, argv, _ = _recipe(
+        "ai-ux-test-stories-report", environ={"RUN": "/tmp/from the environment"}
+    )
+    assert code == 0 and argv[-1] == "/tmp/from the environment"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("query", ["-h", "--json", "prefix mapping"])
+def test_the_search_target_hands_the_query_over_as_a_query(query: str) -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-search", environ={"Q": query})
+    assert code == 0, err[-400:]
+    assert argv == ["scripts/ux_runner/docs_index.py", "search", "--", query]
+
+
 @pytest.mark.unit
 def test_the_unattended_skill_is_registered_in_claude_md() -> None:
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
@@ -1419,22 +1806,30 @@ def test_the_gitignore_keeps_the_jobs_output_and_the_run_options_out_of_the_tree
         line.strip()
         for line in (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     }
-    for entry in ("ux-tests/", "ui-change.json", "ci_run_options.json"):
+    for entry in (
+        "ux-tests/",
+        "ui-change.json",
+        "ci_run_options.json",
+        "ux-test-stories/",
+        "ux-test-stories-digest/",
+    ):
         assert entry in lines, f".gitignore does not list {entry}"
 
 
 @pytest.mark.unit
 def test_the_review_stack_is_the_one_the_nightly_build_updates() -> None:
-    """The one stack whose video the orchestrator renders, read as AST constants.
+    """The one stack whose video either orchestrator renders, read as AST constants.
 
-    The Docker runner's review mode is the CI-equivalent local run, so it tests the
+    It is ``session.py``'s, which both orchestrators take rather than restate, and
+    the Docker runner's review mode is the CI-equivalent local run, so it tests the
     same stack by default.
     """
-    review_stack = _module_constant(ORCHESTRATOR, "REVIEW_STACK")
+    review_stack = _module_constant(SESSION, "REVIEW_STACK")
     nightly_stack = _module_constant(NIGHTLY, "UX_NIGHTLY_STACK_NAME")
     docker_default = _module_constant(RUN_IN_DOCKER, "DEFAULT_STACK")
     assert isinstance(review_stack, str)
     assert review_stack == nightly_stack == docker_default
+    assert _module_constant(ORCHESTRATOR, "REVIEW_STACK") == review_stack
 
 
 def _declared_long_options(path: Path) -> set[str]:

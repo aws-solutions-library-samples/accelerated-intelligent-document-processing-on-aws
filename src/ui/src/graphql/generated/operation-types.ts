@@ -98,6 +98,7 @@ export type AnnotationQueueItem = {
   claimedByMe: Scalars['Boolean']['output'];
   confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   documentClasses?: Maybe<Array<Scalars['String']['output']>>;
+  draftSections?: Maybe<Array<TestSetSectionDraft>>;
   fieldCount?: Maybe<Scalars['Int']['output']>;
   inputKey: Scalars['String']['output'];
   labelSource?: Maybe<Scalars['String']['output']>;
@@ -989,6 +990,7 @@ export type Mutation = {
   saveReviewDraft?: Maybe<ReviewDraft>;
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
+  saveTestSetDocumentSectionDraft?: Maybe<TestSetSectionDraft>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
@@ -1455,6 +1457,15 @@ export type MutationSaveSectionReviewEditsArgs = {
 
 export type MutationSaveTestSetDocumentSectionArgs = {
   data?: InputMaybe<Scalars['AWSJSON']['input']>;
+  objectKey: Scalars['String']['input'];
+  sectionId: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationSaveTestSetDocumentSectionDraftArgs = {
+  baseRevision?: InputMaybe<Scalars['Int']['input']>;
+  data: Scalars['AWSJSON']['input'];
   objectKey: Scalars['String']['input'];
   sectionId: Scalars['String']['input'];
   testSetId: Scalars['String']['input'];
@@ -2780,6 +2791,14 @@ export type TestSetQueueSummary = {
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
 };
 
+export type TestSetSectionDraft = {
+  draftUri: Scalars['String']['output'];
+  revision: Scalars['Int']['output'];
+  sectionId: Scalars['String']['output'];
+  updatedAt: Scalars['AWSDateTime']['output'];
+  updatedBy?: Maybe<Scalars['String']['output']>;
+};
+
 export type TestSetSectionGrouping = {
   documentClass?: Maybe<Scalars['String']['output']>;
   pageIndices: Array<Scalars['Int']['output']>;
@@ -3502,6 +3521,17 @@ export type SaveTestSetDocumentSectionMutationVariables = Exact<{
 
 export type SaveTestSetDocumentSectionMutation = { saveTestSetDocumentSection?: { testSetId: string, objectKey: string, sectionId: string, reviewed: boolean } | null };
 
+export type SaveTestSetDocumentSectionDraftMutationVariables = Exact<{
+  testSetId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+  sectionId: Scalars['String']['input'];
+  data: Scalars['AWSJSON']['input'];
+  baseRevision?: InputMaybe<Scalars['Int']['input']>;
+}>;
+
+
+export type SaveTestSetDocumentSectionDraftMutation = { saveTestSetDocumentSectionDraft?: { sectionId: string, revision: number, draftUri: string, updatedAt: string, updatedBy?: string | null } | null };
+
 export type SendAgentChatMessageMutationVariables = Exact<{
   prompt: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -3785,7 +3815,7 @@ export type GetAnnotationQueueDocumentQueryVariables = Exact<{
 }>;
 
 
-export type GetAnnotationQueueDocumentQuery = { getAnnotationQueue?: { testSetId: string, name?: string | null, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
+export type GetAnnotationQueueDocumentQuery = { getAnnotationQueue?: { testSetId: string, name?: string | null, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null, draftSections?: Array<{ sectionId: string, revision: number, draftUri: string, updatedAt: string, updatedBy?: string | null }> | null }> } | null };
 
 export type GetChatMessagesQueryVariables = Exact<{
   sessionId: Scalars['ID']['input'];

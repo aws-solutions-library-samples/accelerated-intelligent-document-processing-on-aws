@@ -28,8 +28,9 @@ is complete when no password field remains on the page and such a key exists.
 An alert shown before that is a refusal, quoted in the error after its control
 characters are blanked and it is cut to 160 characters, since it is text the MR's
 page rendered. After sign-in the welcome page is dismissed the way the UI itself
-records it, and the page is reloaded once, which clears the blank page a cold
-sign-in can leave behind, and the session is confirmed to have survived it.
+records it, unless the caller keeps it for a story about a first visit, and the
+page is reloaded once, which clears the blank page a cold sign-in can leave
+behind, and the session is confirmed to have survived it.
 
 The selectors are inferred from Amplify UI v6's sign-in form, not measured
 against every version of it; a form they do not match fails here, by name,
@@ -254,6 +255,7 @@ def _sign_in(
     persona: Persona,
     *,
     base_url: str,
+    dismiss_welcome: bool,
     timeout: float,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
@@ -296,9 +298,11 @@ def _sign_in(
                 f"the signed-in state was not reached within {timeout:g} s"
             )
         sleep(_POLL_SECONDS)
-    chrome.evaluate(
-        session, f"localStorage.setItem({json.dumps(WELCOME_DISMISSED_KEY)}, 'true')"
-    )
+    if dismiss_welcome:
+        chrome.evaluate(
+            session,
+            f"localStorage.setItem({json.dumps(WELCOME_DISMISSED_KEY)}, 'true')",
+        )
     _navigate(session, "Page.reload", {"ignoreCache": True})
     _wait_until_loaded(
         session, prefix, deadline=deadline, timeout=timeout, sleep=sleep, clock=clock
@@ -312,6 +316,7 @@ def sign_in(
     persona: Persona,
     *,
     base_url: str = paths.UI_ORIGIN + "/",
+    dismiss_welcome: bool = True,
     timeout: float = 60.0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
@@ -319,13 +324,18 @@ def sign_in(
     """Sign ``persona`` in at ``base_url`` within ``timeout`` seconds, or raise.
 
     Every failure is a :class:`SignInError` whose text carries neither the
-    username nor the password, whatever the page or DevTools put in it.
+    username nor the password, whatever the page or DevTools put in it. With
+    ``dismiss_welcome`` false the welcome page is kept for a story about a first
+    visit: nothing records it as dismissed, and a fresh Chrome profile, which
+    every flow and every browser container starts with, never has, so the UI
+    lands on it. The reload after sign-in happens either way.
     """
     try:
         _sign_in(
             session,
             persona,
             base_url=base_url,
+            dismiss_welcome=dismiss_welcome,
             timeout=timeout,
             sleep=sleep,
             clock=clock,
