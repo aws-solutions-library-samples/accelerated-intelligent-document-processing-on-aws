@@ -1023,32 +1023,6 @@ answered no.
 
 See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
 
-## Scoring fields with no value
-
-The service sends null fields to the confidence model with the rest of the
-extraction results, and the stored alerts (`enrich_assessment_with_thresholds` in
-`batching.py`) treat their scores like any other: a numeric score below the field's
-threshold is an alert, and a null score is not. In `separate` mode no code path
-writes a score for a null value on the model's behalf.
-
-So what an absent field's score means is decided by the prompt. The shipped
-defaults — `extraction.confidence.task_prompt` in `base-confidence.yaml` and
-`extraction.task_prompt_extraction_with_confidence` in `base-extraction.yaml` —
-carry a *FIELDS WITH NO VALUE* block telling the model to score its confidence in
-the null result: high when the field is genuinely absent, low (with a reason) when
-the value appears to be on the page but extraction returned null, so a real miss
-still alerts. This holds for scalar and group fields only: `reconcile_assessment_to_data`
-resizes a list field's assessment to the extracted rows, so an empty list keeps no
-score and cannot alert. No `config_library` preset carries its own copy of either prompt; they
-inherit these defaults. The 1S-TopK prompt is not changed.
-
-`tests/unit/assessment/test_absent_field_confidence_guidance.py` pins both halves of
-that block in the effective prompt of the system defaults and of every shipped
-preset, and checks that the prompt still renders with its placeholders and with the
-bounding-box block spliced in. See
-[Fields with no value](../../../../docs/extraction-and-confidence.md#fields-with-no-value)
-for the user-facing description.
-
 ## Prompt Template Placeholders
 
 The assessment service supports the following placeholders in prompt templates:

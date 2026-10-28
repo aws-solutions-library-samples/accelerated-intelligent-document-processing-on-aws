@@ -595,8 +595,7 @@ def create_dynamic_extraction_tool_and_patch_tool(model_class: type[TargetModel]
           for each scalar/group field: {"confidence": 0.0-1.0, "confidence_reason": "..."};
           for each list field: a LIST with ONE object per extracted row, in the SAME
           ORDER as the rows (one entry for EVERY row — do not summarize or skip).
-        confidence is your calibrated certainty the value matches the source document;
-        for a null value, your confidence that the field is truly absent.
+        confidence is your calibrated certainty the value matches the source document.
         This overwrites any previous extraction and assessment.
         """
         error = _record_extraction(extraction, agent)
@@ -807,8 +806,7 @@ def provide_field_assessment(assessment: dict[str, Any], agent: Agent) -> str:
         "bbox": [x1,y1,x2,y2], "page": N}   (bbox/page optional)
       - List field        -> a LIST with one assessment object per extracted row,
         IN THE SAME ORDER as the extracted rows.
-    confidence is your calibrated certainty the value is correct given the source;
-    for a null value, your confidence that the field is truly absent.
+    confidence is your calibrated certainty the value is correct given the source.
     This overwrites any previous assessment.
     """
     agent.state.set("field_assessment", assessment)

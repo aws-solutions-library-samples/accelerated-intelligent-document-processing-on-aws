@@ -78,15 +78,6 @@ extraction:
         a high-confidence value does not need one.
       Base assessments on actual document content and OCR quality; account for OCR
       confidence scores when provided; be objective and specific.
-      FIELDS WITH NO VALUE (null or empty): the confidence is your confidence in that
-      result, i.e. that the information really is absent from this document. Do not
-      score 0.0 just because there is no value.
-      - HIGH (>= 0.9) when you checked the document and the field is genuinely not
-        there: no label, no value and no other evidence of it on these pages.
-      - LOW (< 0.5) when the document appears to contain the value (for example its
-        label is present with a value beside it) but the extraction returned null; give
-        a confidence_reason saying what appears to have been missed.
-      - In between when the place the value would be is ambiguous or illegible.
       </assessment-guidelines>
       <final-instructions>
       Return a JSON object mirroring the extracted data structure:
