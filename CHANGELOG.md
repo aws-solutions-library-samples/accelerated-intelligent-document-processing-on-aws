@@ -71,6 +71,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Athena query results in the reporting bucket now expire after 30 days instead of sharing the bucket's data retention.** Every `SELECT` any consumer runs leaves a `.csv` and a `.csv.metadata` object under `athena-results/`, and the only lifecycle rule covering them was the bucket-wide `DataRetentionInDays` one — so query scratch was kept as long as reporting data, measured at over 147,000 objects on a development stack from dashboard refreshes alone. A prefix-scoped rule now expires that prefix at 30 days. S3 honours the shorter of two overlapping expirations, so the bucket-wide rule still governs everything else. 30 days rather than something shorter because deleting a result object silently disables Athena's result reuse for that query, and Athena caps a reuse age at 7 days — this leaves four times that margin. **Action:** none.
+
 - **A direct section-result upload can no longer overwrite a document under review.** `uploadDocument` refuses a document's section results while it is in a review queue (`QUEUE_MANAGED`), as Process Changes and saving review edits already did, and the edit page says so. See [RBAC](docs/rbac.md). **Action:** API callers writing section results for an in-review document get the refusal.
 
 - **A document whose name contains `%` opens on its document and edit pages.** The key was decoded twice, which failed or changed it. **Action:** none.

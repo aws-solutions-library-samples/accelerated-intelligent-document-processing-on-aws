@@ -4680,6 +4680,29 @@ Resources:
         LogFilePrefix: reporting-bucket-logs/
       LifecycleConfiguration:
         Rules:
+          # Athena query output is scratch, not reporting data, and it is the
+          # highest-cardinality thing in this bucket: every SELECT any consumer
+          # runs leaves a .csv plus a .csv.metadata object here forever. Under
+          # the bucket-wide rule below that is the retention period — measured
+          # at 147,755 objects on a development stack, from dashboard refreshes
+          # alone. Expiring it separately keeps the prefix small, and the
+          # prefix matters beyond storage: S3 throttles per prefix, and
+          # `GetQueryResults` has returned 503 "reduce your request rate"
+          # against this one under dashboard fan-out.
+          #
+          # 30 days rather than something shorter because deleting a result
+          # object silently disables Athena's result reuse for that query —
+          # a subsequent identical query re-scans instead of being served from
+          # cache. The reuse age is capped by Athena at 7 days, so 30 leaves
+          # four times that margin and cannot undercut a live cache entry.
+          - Id: DeleteAthenaQueryResults
+            Status: Enabled
+            Prefix: athena-results/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
           - Id: DeleteAfterNDays
             Status: Enabled
             ExpirationInDays: !Ref DataRetentionInDays
