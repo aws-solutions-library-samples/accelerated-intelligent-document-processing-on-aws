@@ -99,7 +99,8 @@ def test_only_the_shared_writer_marks_a_label_reviewed():
 @pytest.mark.unit
 def test_every_allowed_file_still_matches():
     writers = _writers(_scanned_files())
-    assert set(writers) >= set(ALLOWED), sorted(set(ALLOWED) - set(writers))
+    stale = sorted(set(ALLOWED) - set(writers))
+    assert not stale, f"stale ALLOWED entries, which no longer match: {stale}"
 
 
 @pytest.mark.unit
