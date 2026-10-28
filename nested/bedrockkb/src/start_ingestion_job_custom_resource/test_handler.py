@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Stub out cfnresponse before importing the handler — it's a Lambda runtime
-# module not available in the test environment.
+# Stub out cfnresponse before importing the handler: the vendored
+# cfnresponse.py beside it would PUT to a real URL.
 sys.modules.setdefault("cfnresponse", MagicMock(SUCCESS="SUCCESS", FAILED="FAILED"))
 
 sys.path.insert(0, str(Path(__file__).parent))

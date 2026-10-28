@@ -12,22 +12,23 @@
 // queues, or while the queue's mirror lags): it is edited from its queue item, and
 // finalizing that item would overwrite edits made here. So does a document still
 // processing. Save needs the Admin or Author role, or a Reviewer holding the document's
-// legacy review; Process Changes needs the Admin or Reviewer role. The server enforces
-// both.
+// legacy review; Process Changes needs an Admin, or the Reviewer who holds the document's
+// open review. A document processed in BDA mode keeps its page grouping. The server
+// enforces all of these.
 import React, { useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
-import useSettingsContext from '../../contexts/settings';
 import useConfiguration from '../../hooks/use-configuration';
 import useUserRole from '../../hooks/use-user-role';
 import { DOCUMENTS_PATH, MY_TASKS_PATH, documentDetailHref, documentEditHref } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGrouping } from '../common/document-grouping';
-import { inReviewQueueEditReason, isInReviewQueue } from '../common/review-status';
+import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
 import { documentName } from '../review-queues/review-api';
 import { useDocumentEdit } from './document-edit-adapter';
@@ -40,6 +41,14 @@ import type { EditorSession } from './use-editor-session';
 import useSectionEvaluation from './use-section-evaluation';
 
 export const PROCESS_ROLE_REASON = 'Process Changes needs the Admin or Reviewer role.';
+export const PROCESS_OWNER_REASON =
+  "Process Changes needs an Admin, or the reviewer who holds this document's open review. Start the review first.";
+/**
+ * Why Edit Page Class is not offered in BDA mode. A BDA reprocess keeps the sections a
+ * document already has, so a structural change is not carried through it.
+ */
+export const BDA_REGROUP_REASON =
+  'Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.';
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 /** updateDocumentSections is Admin, Reviewer and Annotator; an Annotator regroups only test-set documents. */
 export const REGROUP_ROLE_REASON = 'Edit Page Class needs the Admin or Reviewer role.';
@@ -82,7 +91,6 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   const adapter = useDocumentEdit(objectKey, seed);
   const { document: doc, loading, loadError, reload } = adapter;
   const { user } = useAppContext();
-  const { settings } = useSettingsContext();
   const { isAdmin, isReviewer, canWrite, isAnnotatorOnly } = useUserRole();
   const [searchParams] = useSearchParams();
   const focusField = searchParams.get('field');
@@ -174,11 +182,17 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
 
   let processReason: string | undefined = readOnlyReason;
   if (!processReason && !(isAdmin || isReviewer)) processReason = PROCESS_ROLE_REASON;
+  // The server's rule for processChanges: a caller who is not an Admin must hold the
+  // document's OPEN review (pending or in progress). Holding a finished one is not
+  // enough, and neither is the Author role a Reviewer may also have.
+  const reviewOpen = ['pending', 'in_progress'].includes(normalizeHitlStatus(doc.hitlStatus).kind);
+  if (!processReason && !isAdmin && !(holdsReview && reviewOpen)) processReason = PROCESS_OWNER_REASON;
   if (!processReason && saving) processReason = 'Saving your changes…';
 
-  const bdaMode = String((settings as Record<string, unknown>)?.IDPPattern ?? '')
-    .toLowerCase()
-    .includes('pattern1');
+  // From the document's own configuration, not the stack's `IDPPattern` (which names
+  // the one unified pattern for every document). In BDA mode the page grouping is not
+  // offered: a BDA reprocess keeps the sections a document already has.
+  const bdaMode = isBdaModeConfig(mergedConfig);
 
   const boardSections: GroupedSection[] = (doc.sections ?? []).map((s) => ({
     sectionId: String(s.Id),
@@ -226,6 +240,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         regroupDisabledReason:
           readOnlyReason ??
           (!(isAdmin || isReviewer) ? REGROUP_ROLE_REASON : undefined) ??
+          (bdaMode ? BDA_REGROUP_REASON : undefined) ??
           (boardSections.length === 0 ? 'This document has no sections' : undefined),
         // copyToBaseline is Admin and Author (canWrite), as on the document page.
         showBaseline: canWrite,

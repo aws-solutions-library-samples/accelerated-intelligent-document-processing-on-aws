@@ -110,6 +110,19 @@ vectors are kept. The S3 Vectors index is rebuilt, which discards its vectors, o
 an update changes its dimension, distance metric or metadata configuration, and the
 template sets all three to fixed values, so a stack parameter change does not rebuild it.
 
+Deleting the stack deletes the S3 Vectors bucket and every index in it, including an
+index left under an earlier index name. S3 Vectors will not delete a bucket that still
+holds an index, so the custom resource lists the bucket's indexes and deletes each one
+first. This applies to the bucket the stack names for itself. When the nested stack's
+`pS3VectorBucketName` parameter names the bucket, which may be one that existed before
+the stack, only the stack's own index is deleted, and a bucket that still holds other
+indexes is left in place. In either case, if the bucket cannot be deleted, the stack
+delete fails with a message naming the bucket rather than reporting success. An update
+that changes only the index name creates the new index and keeps the old one. For the
+bucket the stack names for itself, the stack delete then removes the old index; for a
+bucket named by `pS3VectorBucketName`, the old index stays and the stack delete fails
+until it is deleted.
+
 Grant model access for the model you choose in Amazon Bedrock, in the deployment region,
 before deploying with this feature enabled — without it, ingestion fails. When GovCloud
 model availability was checked on 2026-07-17, `amazon.titan-embed-text-v2:0` was the only

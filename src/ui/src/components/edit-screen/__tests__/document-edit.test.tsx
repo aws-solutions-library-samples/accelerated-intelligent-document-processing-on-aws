@@ -38,6 +38,7 @@ const role = {
 };
 let editorProps: Record<string, unknown> | null = null;
 const server: { doc: Record<string, unknown> } = { doc: {} };
+const configured: { config: Record<string, unknown> } = { config: { classes: [] } };
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => graphql(...a) }) }));
 vi.mock('../../../contexts/app', () => ({
@@ -45,7 +46,7 @@ vi.mock('../../../contexts/app', () => ({
 }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: { EvaluationBaselineBucket: 'baseline-bucket' } }) }));
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
-vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: { classes: [] } }) }));
+vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: configured.config }) }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({ default: () => ({ urls: {}, failure: null }) }));
 vi.mock('../use-section-evaluation', () => ({ default: () => evaluation }));
 vi.mock('../../document-viewer/MarkdownViewer', () => ({
@@ -68,7 +69,7 @@ vi.mock('../SectionEditor', () => ({
 }));
 
 import DocumentEdit from '../DocumentEdit';
-import { MIRROR_LAG_REASON, REGROUP_ROLE_REASON } from '../direct-edit-model';
+import { BDA_REGROUP_REASON, EDIT_ROLE_REASON, MIRROR_LAG_REASON, PROCESS_OWNER_REASON, REGROUP_ROLE_REASON } from '../direct-edit-model';
 import type { DirectEditOptions } from '../direct-edit-model';
 import { inReviewQueueEditReason } from '../../common/review-status';
 
@@ -122,6 +123,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
   editorProps = null;
   server.doc = rawDoc();
+  configured.config = { classes: [] };
   Object.assign(role, {
     isAdmin: true,
     isAuthor: false,
@@ -152,6 +154,62 @@ describe('the direct edit', () => {
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
     expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class', 'Use As Evaluation Baseline']);
     expect(editorProps!.isReadOnly).toBe(false);
+  });
+
+  it('offers no page grouping for a BDA-mode document, and keeps Save and Process Changes', async () => {
+    // From the document's configuration; the stack settings mocked above carry no
+    // IDPPattern at all, so nothing else could be deciding.
+    configured.config = { classes: [], use_bda: true };
+    await renderEditor();
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+      disabled: true,
+      disabledReason: BDA_REGROUP_REASON,
+    });
+    expect(button('Process Changes').isDisabled()).toBe(false);
+    expect(editorProps!.isReadOnly).toBe(false);
+    // Save is offered as soon as there is something to save.
+    await act(async () => (editorProps!.onDirtyChange as (d: boolean) => void)(true));
+    expect(button('Save').isDisabled()).toBe(false);
+  });
+
+  it('offers page grouping when the configuration says use_bda is "false"', async () => {
+    configured.config = { classes: [], use_bda: 'false' };
+    await renderEditor();
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({ disabled: false });
+  });
+
+  describe('Process Changes for a caller who is not an Admin', () => {
+    // The server's processChanges rule: hold the document's OPEN review.
+    const asReviewer = (extra: Partial<typeof role> = {}) =>
+      Object.assign(role, { isAdmin: false, isReviewer: true, isReviewerOnly: true, canWrite: false, ...extra });
+
+    it('is offered to the reviewer holding the open review', async () => {
+      asReviewer();
+      server.doc = rawDoc({ HITLStatus: 'InProgress', HITLReviewOwner: 'alice' });
+      await renderEditor();
+      expect(button('Process Changes').isDisabled()).toBe(false);
+    });
+
+    // A Reviewer who holds no review is read-only altogether, so that reason comes first.
+    it.each([
+      ['a finished review the caller holds', { HITLStatus: 'Review Completed', HITLReviewOwner: 'alice' }, PROCESS_OWNER_REASON],
+      ['an open review someone else holds', { HITLStatus: 'InProgress', HITLReviewOwner: 'bob' }, EDIT_ROLE_REASON],
+      ['a document with no review', {}, EDIT_ROLE_REASON],
+    ])('is not offered to a Reviewer on %s', async (_label, over, reason) => {
+      asReviewer();
+      server.doc = rawDoc(over);
+      await renderEditor();
+      expect(button('Process Changes').isDisabled()).toBe(true);
+      expect(disabledReason('Process Changes')).toBe(reason);
+    });
+
+    it('is not offered to a Reviewer who is also an Author, on a review they do not hold', async () => {
+      asReviewer({ isAuthor: true, isReviewerOnly: false, canWrite: true });
+      server.doc = rawDoc({ HITLStatus: 'InProgress', HITLReviewOwner: 'bob' });
+      await renderEditor();
+      expect(button('Process Changes').isDisabled()).toBe(true);
+      expect(disabledReason('Process Changes')).toBe(PROCESS_OWNER_REASON);
+    });
   });
 
   it('saves a draft through the editor', async () => {

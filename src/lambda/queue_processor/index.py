@@ -68,6 +68,10 @@ CB_STATE_ERROR_TRANSIENT = "ERROR_TRANSIENT"
 #: gone, malformed request). Admission is ALLOWED — see check_circuit_breaker.
 CB_STATE_ERROR_TERMINAL = "ERROR_TERMINAL"
 DOCUMENT_QUEUE_URL = os.environ.get("DOCUMENT_QUEUE_URL", "")
+#: ``DynamoDBError.error_code`` for a refused condition. Spelled here rather than
+#: imported from ``idp_common.dynamodb.client`` so the hermetic tests, which stub
+#: ``idp_common``, compare against the real string.
+CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailedException"
 RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("RECOVERY_TIMEOUT_SECONDS", "300"))
 # How many workflows HALF_OPEN admits per window, and how long that window is.
 # A half-open breaker is supposed to admit a BOUNDED number of probes and keep
@@ -192,6 +196,63 @@ def claim_start(object_key: str) -> bool:
         )
         return True
     return not (current is not None and current.status == Status.ABORTED)
+
+
+def aborted_now(object_key: str) -> bool:
+    """Whether a consistent read finds the document ABORTED; False if it cannot.
+
+    Used after a post-start write that failed for a reason other than its
+    condition, which therefore said nothing about an abort in the window.
+    """
+    try:
+        current = document_service.get_document(object_key, consistent_read=True)
+    except Exception as e:
+        logger.error(
+            f"Could not re-read {object_key} after its post-start write failed: "
+            f"{e}. If it was aborted while starting, its execution is not stopped.",
+            exc_info=True,
+        )
+        return False
+    return current is not None and current.status == Status.ABORTED
+
+
+def stop_aborted_start(object_key: str, execution_arn: Optional[str]) -> bool:
+    """Stop an execution whose document was aborted after its start claim.
+
+    Called when the post-start tracking write is refused because the document
+    is ABORTED. The execution exists and owns its concurrency slot, which the
+    workflow tracker releases on the ABORTED event this stop produces, so
+    nothing here touches the counter, and the document is left ABORTED.
+
+    Returns whether the stop request was accepted. A failure is logged at ERROR
+    and not retried: the message is already acked, and the document then reads
+    ABORTED while its execution runs, which is the state #1612 described.
+    """
+    if not execution_arn:
+        logger.error(
+            f"Document {object_key} was aborted after its start claim, but the "
+            f"execution ARN is unknown, so it could not be stopped."
+        )
+        return False
+    try:
+        sfn.stop_execution(
+            executionArn=execution_arn,
+            error="DocumentAborted",
+            cause="The document was aborted while its workflow was being started",
+        )
+    except Exception as e:
+        logger.error(
+            f"Document {object_key} was aborted after its start claim, and "
+            f"stopping its execution {execution_arn} failed: {e}. It reads "
+            f"ABORTED while that execution runs.",
+            exc_info=True,
+        )
+        return False
+    logger.info(
+        f"Document {object_key} was aborted while its start was in flight; "
+        f"stopped execution {execution_arn} and left it ABORTED"
+    )
+    return True
 
 
 def execution_arn_for(execution_name: str) -> str:
@@ -1270,6 +1331,42 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
+def routing_configuration(
+    manager: Any, config_version: str, config_revision: Optional[int]
+) -> Any:
+    """The configuration ``use_bda`` routing is read from.
+
+    The document's pinned revision when it has one, so that a save made while
+    the document was queued cannot send it down a branch its own configuration
+    does not select (#1619). With no pin, the profile head, as before revisions
+    existed.
+
+    A pinned read that fails falls back to the profile head, with a WARNING
+    naming the revision, rather than to pipeline mode. The head is what routed
+    every document before this read was pinned, so the fallback is never worse
+    than that; defaulting to pipeline would send every BDA document on the
+    stack down the wrong branch whenever the revision cannot be read, which is
+    what an unreadable bucket did when this read was first pinned. The steps
+    after routing load the pinned revision themselves and fail the document if
+    it is gone, so a revision that is really unavailable is still reported.
+    A head read that fails as well raises, into the handling every head-read
+    failure has always had.
+    """
+    if config_revision is None:
+        return manager.get_merged_configuration(config_version)
+    try:
+        return manager.get_merged_configuration(
+            config_version, revision=config_revision
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read revision r{config_revision} of configuration profile "
+            f"'{config_version}' for routing: {e}. Routing from the profile head.",
+            exc_info=True,
+        )
+        return manager.get_merged_configuration(config_version)
+
+
 def start_workflow(
     document: Document,
     execution_name: Optional[str] = None,
@@ -1388,8 +1485,12 @@ def start_workflow(
             config_version = getattr(document, "config_version", None) or "default"
             manager = ConfigurationManager(table_name=config_table_name)
 
-            # Read use_bda from the full config (properly decompresses gzip storage)
-            config = manager.get_merged_configuration(config_version)
+            # Read use_bda from the full config (properly decompresses gzip
+            # storage), at the revision the document is pinned to, so routing
+            # agrees with every later step (#1619).
+            config = routing_configuration(
+                manager, config_version, getattr(document, "config_revision", None)
+            )
             use_bda = getattr(config, "use_bda", False) if config else False
             compressed_document["use_bda"] = bool(use_bda)
 
@@ -1653,10 +1754,25 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             # message and a SECOND workflow was started for the same document.
             # Now it is logged and the message is acked, because the execution
             # that matters already exists.
+            #
+            # Conditional on the document not being ABORTED. The start claim in
+            # ``start_workflow`` closes the window up to the claim; an abort
+            # landing after it -- during StartExecution, or before this write --
+            # wrote ABORTED for a document it still read as QUEUED, with nothing
+            # to stop, and this write used to overwrite it with RUNNING (#1612).
+            # Refused here, the execution is stopped and ABORTED is left alone.
             try:
-                updated_doc = document_service.update_document(document)
+                updated_doc = document_service.update_document(
+                    document, unless_status=Status.ABORTED
+                )
                 logger.info(f"Document updated: {updated_doc}")
             except Exception as post_start_error:
+                if (
+                    getattr(post_start_error, "error_code", None)
+                    == CONDITIONAL_CHECK_FAILED
+                ):
+                    stop_aborted_start(object_key, document.workflow_execution_arn)
+                    return True, message_id
                 logger.error(
                     f"Workflow for {object_key} started as "
                     f"{execution.get('executionArn') if isinstance(execution, dict) else execution} "
@@ -1665,6 +1781,10 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     f"execution owns the slot and a retry would duplicate it.",
                     exc_info=True,
                 )
+                # The write did not say whether the document was aborted, so
+                # ask: an abort that landed in the window must still stop it.
+                if aborted_now(object_key):
+                    stop_aborted_start(object_key, document.workflow_execution_arn)
 
             return True, message_id
 

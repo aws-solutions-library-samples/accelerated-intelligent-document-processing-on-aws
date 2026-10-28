@@ -254,16 +254,11 @@ which saves it. A grouping-only save writes directly, so it would race a run in
 progress; if the document is queued or running the save is refused with a message, and
 the arrangement you made is left on screen rather than discarded.
 
-Available in every deployment. The board rearranges the section records already in the
-document's output, so whether BDA or the Textract-plus-Bedrock pipeline produced them
-makes no difference to what it can edit.
+The board is not offered for a document processed in BDA mode; see [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
 
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
-stays a deliberate act. ⚠️ **That applies in BDA mode too**, where the values were
-produced by Bedrock Data Automation rather than by the pipeline's extraction step:
-deleting the section still discards them, and there is no read-only variant of this
-board to fall back on. The same board and the same rules are used for test-set ground
+stays a deliberate act. The same board and the same rules are used for test-set ground
 truth; see
 [test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
 being preserved matters most because they are the annotations being built.
@@ -322,21 +317,61 @@ The Edit Sections feature uses **2-phase schema knowledge optimization**:
 - **Performance Optimization**: Automatic selective processing for efficiency
 - **Data Preservation**: Unmodified sections retain all processing results
 
-Editing the structure is offered in every deployment, whichever processing mode the
-document ran through. Section records look the same in the output either way, so the
-editor does not distinguish them, and there is no data-only variant of it.
+For a document processed in BDA mode, Edit Mode is data-only: section structure,
+classes and page assignments are not editable there. See [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
 
-⚠️ **In BDA mode, a structural edit loses the edited section's values.** Bedrock Data
-Automation decided the section boundaries and the extracted values in the first place,
-and a changed or added section's values are cleared before the document is requeued.
-The workflow then skips Bedrock Data Automation for any document that still has at least
-one section, whatever state that section's extraction data is in, and nothing else in
-the BDA branch extracts values. So the section you edited comes back with its values gone
-and nothing to replace them, on a single-section document as much as on a multi-section
-one. Edit the structure of a BDA-mode document only when you are prepared for that, and prefer
-**Edit Data** on the section row when what you want is to correct a value rather than a
-boundary: that opens the edit screen on the section and writes the value without
-touching the structure or requeueing anything.
+### BDA-mode documents offer data-only editing
+
+A document is in **BDA mode** when its configuration profile routes it to Bedrock Data
+Automation: the profile sets `use_bda` and a BDA project is linked to it. A profile that
+sets `use_bda` with no linked project processes in pipeline mode. The Web UI reads the
+profile's `use_bda` alone, so for such a profile it offers data-only editing although the
+server would accept the change. The Web UI reads the profile as it is now. The server
+reads `use_bda` from the configuration revision the document is pinned to, which is the
+revision the requeued run is routed by, and reads the profile as it is now only for a
+document with no pinned revision. So after a profile's `use_bda` changes, the Web UI can
+offer or withhold an edit that the server decides the other way for a document pinned to
+an earlier revision. For a BDA-mode document the Web UI does not offer the edits that
+change its structure or text:
+
+- **Edit Sections**: Edit Mode is data-only. **Add Section** is not shown, and a
+  section's class and page IDs are read-only. **Save and Reprocess** sends no section
+  changes, so it re-runs evaluation and summarization and keeps the extracted values.
+- **Edit Pages**: Edit Mode explains that page edits are not available, instead of
+  offering a page class reset or a text edit.
+- **Re-grouping pages**: the **Edit Page Grouping** board is not offered on the
+  document page, and **Edit Page Class** is disabled on the edit screen.
+
+Field values stay editable everywhere: **Edit Data** on a section row, and the edit
+screen's **Save** and **Process Changes**.
+
+The server applies the same rule. `processChanges` refuses any section or page change to
+a document whose profile routes it to BDA, for every role including Admin, with an error
+beginning `BDA_MODE:`, and nothing about the document is changed. A request with no
+section or page changes — field values already saved, reprocessed for evaluation and
+summarization — is accepted. The mode is the one the requeued run will take, so a
+document whose profile sets `use_bda` with no BDA project linked takes section and page
+changes. If the profile or the document's pinned revision cannot be read, a section or
+page change is refused rather than assumed to be safe.
+
+The reason is how a BDA-mode document is reprocessed. Bedrock Data Automation decided the
+section boundaries and the extracted values in the first place, and a structural or text
+edit clears the values of the sections it touches before the document is requeued. The
+workflow then skips Bedrock Data Automation for any document that still has at least one
+section, whatever state that section's extraction data is in, and nothing else in the
+BDA branch extracts values. So an edited section would come back with its values gone and
+nothing to replace them.
+
+⚠️ **The edit screen can only tell that a document is in BDA mode when it can read the
+document's configuration profile.** Users in none of the **Admin**, **Author** and
+**Viewer** groups — a **Reviewer**, for example, or a **Reviewer** who is also an
+**Annotator** — receive only a profile's class list, so for them the edit screen still offers
+these edits, and saving one
+is then refused by the server with the `BDA_MODE:` error; nothing is lost. A reviewer
+correcting a BDA-mode document should use **Edit Data** on the section row, which writes
+the value without touching the structure. The page-grouping board is a separate
+operation that keeps the extracted values and does not reprocess, and the server does
+not refuse it.
 
 ## Edit Pages
 
@@ -415,16 +450,11 @@ The Edit Pages feature uses intelligent selective reprocessing:
 - **Performance Optimization**: Automatic selective processing based on modification type
 - **Data Preservation**: Unmodified pages and sections retain all processing results
 
-Page editing is offered in every deployment, whichever processing mode the document ran
-through, and the editor does not distinguish between them.
-
-⚠️ **In BDA mode, both page edits clear data that the reprocess does not replace.**
+Page editing is not offered for a document processed in BDA mode; see [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
 Resetting a page's classification removes every section containing that page, and
-editing a page's text clears the extraction results of the sections containing it.
-Bedrock Data Automation produced those values, and the workflow skips it for any
-document that still has at least one section — so a section whose page text you edited
-comes back empty. If you only want to read a page as BDA saw it, use **View Page Text**,
-which changes nothing.
+editing a page's text clears the extraction results of the sections containing it, and
+a BDA reprocess does not replace either. To read a page as BDA saw it, use **View Page
+Text**, which changes nothing.
 
 ## Document Schema Builder
 

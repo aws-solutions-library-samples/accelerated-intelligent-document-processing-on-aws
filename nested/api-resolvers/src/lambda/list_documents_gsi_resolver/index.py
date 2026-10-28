@@ -10,7 +10,9 @@ Uses the TypeDateIndex GSI on TrackingTable for efficient queries:
 
 RBAC (Role-Based Access Control):
 - Admin/Author/Viewer: See all documents (scoped by allowedConfigVersions if set)
-- Reviewer: See only HITL-pending documents + their own completed reviews
+- Reviewer: See only documents a review is owed on that are unclaimed (pending, or
+  released back to the queue) or claimed by them, plus finished reviews they own on
+  rows carrying the legacy HITLTriggered flag — see `_reviewer_filter_expression`
 
 Both operations apply both filters, from the same two helpers
 (`_reviewer_filter_expression`, `_item_in_config_scope`), so the count cannot
@@ -53,8 +55,12 @@ from review_statuses import (  # noqa: E402
 )
 
 #: Legacy HITL statuses that make a document part of a Reviewer's working set.
+#: ``Review Pending`` is what ``releaseReview`` writes: a released review goes back
+#: to the queue for another Reviewer to claim. Matched exactly, in both document-list
+#: resolvers, so the two lists agree row for row.
 _REVIEWER_ACTIVE_STATUSES = (
     LegacyHitlStatus.PENDING_REVIEW.value,
+    LegacyHitlStatus.REVIEW_PENDING.value,
     LegacyHitlStatus.IN_PROGRESS.value,
     LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
 )
@@ -240,9 +246,11 @@ def _reviewer_filter_expression(caller):
     row still carrying the legacy `HITLTriggered` flag read as owed to every
     Reviewer.
 
-    HITL counts as active when `HITLTriggered` is true OR `HITLStatus` names a
-    pending/in-progress review — defence in depth for items where the boolean
-    was never written.
+    HITL counts as active when `HITLTriggered` is true OR `HITLStatus` is one of
+    `_REVIEWER_ACTIVE_STATUSES` (pending, released back to the queue, or in
+    progress) — current writers no longer set the boolean. A finished status is not
+    active, so on a row without `HITLTriggered` the "finished documents they own"
+    disjunct is reached only through `HITLCompleted` beside a status still active.
 
     The owner match tests `HITLReviewOwner` against the caller's username *and*
     their email, because claim_review stores `identity.username` (often the
@@ -263,11 +271,10 @@ def _reviewer_filter_expression(caller):
     owner_is_me = Attr("HITLReviewOwner").eq(owner_values[0])
     for value in owner_values[1:]:
         owner_is_me = owner_is_me | Attr("HITLReviewOwner").eq(value)
-    hitl_active = (
-        Attr("HITLTriggered").eq(True) |
-        Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[0]) |
-        Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[1]) |
-        Attr("HITLStatus").eq(_REVIEWER_ACTIVE_STATUSES[2])
+    # Built from the whole tuple rather than by index, so a status added to it
+    # reaches this filter as it reaches the date-range resolver's membership test.
+    hitl_active = Attr("HITLTriggered").eq(True) | Attr("HITLStatus").is_in(
+        list(_REVIEWER_ACTIVE_STATUSES)
     )
     review_finished = Attr("HITLCompleted").eq(True) | Attr("HITLStatus").is_in(
         list(_FINISHED_HITL_STATUSES)

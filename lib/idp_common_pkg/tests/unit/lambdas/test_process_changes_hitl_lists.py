@@ -24,6 +24,7 @@ from moto import mock_aws
 
 _REPO_ROOT = os.path.join(os.path.dirname(__file__), "../../../../..")
 TABLE = "process-changes-hitl-lists"
+USERS = "process-changes-hitl-lists-users"
 OBJECT_KEY = "packet.pdf"
 DOC_KEY = {"PK": f"doc#{OBJECT_KEY}", "SK": "none"}
 
@@ -34,6 +35,9 @@ _ENV = {
     "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - moto dummy credential
     "AWS_SESSION_TOKEN": "testing",  # nosec B105 - moto dummy credential
     "TRACKING_TABLE": TABLE,
+    # A reviewer's configuration scope is resolved from the users table, and an
+    # unresolvable scope refuses; an empty table means an unrestricted caller.
+    "USERS_TABLE_NAME": USERS,
     "INPUT_BUCKET": "input-bucket",
     "OUTPUT_BUCKET": "output-bucket",
 }
@@ -54,6 +58,26 @@ def env():
                 AttributeDefinitions=[
                     {"AttributeName": "PK", "AttributeType": "S"},
                     {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            boto3.resource("dynamodb").create_table(
+                TableName=USERS,
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                    {"AttributeName": "email", "AttributeType": "S"},
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        "IndexName": "EmailIndex",
+                        "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                        "Projection": {"ProjectionType": "ALL"},
+                    }
                 ],
                 BillingMode="PAY_PER_REQUEST",
             )
@@ -94,7 +118,13 @@ def _seed(table, **attributes):
     )
 
 
-def _process_changes(mod):
+def _process_changes(mod, groups=("Reviewer",)):
+    """Process Changes as ``rev``, the owner ``_seed`` records.
+
+    A finished review is closed to a Reviewer, as saving review edits is, so the
+    finished-review cases below call as an Admin: what they pin is what the resolver
+    writes to a finished review, and only an Admin still reaches that path.
+    """
     return mod.handler(
         {
             "info": {"fieldName": "processChanges"},
@@ -102,7 +132,7 @@ def _process_changes(mod):
                 "username": "rev",
                 "claims": {
                     "email": "rev@example.com",
-                    "cognito:groups": ["Reviewer"],
+                    "cognito:groups": list(groups),
                 },
             },
             "arguments": {"objectKey": OBJECT_KEY, "modifiedSections": []},
@@ -235,7 +265,7 @@ def test_a_finished_queue_review_keeps_its_status_and_reviewer(env, status, extr
     mod, table = env
     _seed_finished_queue_review(table, status, **extra)
 
-    assert _process_changes(mod)["success"] is True
+    assert _process_changes(mod, groups=("Admin",))["success"] is True
 
     item = _stored(table)
     assert item["HITLStatus"] == status
@@ -270,7 +300,7 @@ def test_a_finished_queue_review_keeps_its_status_when_the_status_write_fails(en
     with patch.object(
         mod, "create_document_service", side_effect=service_whose_status_write_fails
     ):
-        assert _process_changes(mod)["success"] is True
+        assert _process_changes(mod, groups=("Admin",))["success"] is True
 
     assert calls["n"] == 2
     item = _stored(table)
@@ -306,7 +336,7 @@ def test_a_finished_legacy_review_keeps_its_status_and_reviewer(env, status):
     # and skipAllReviews both remove it).
     table.update_item(Key=DOC_KEY, UpdateExpression="REMOVE HITLPendingReview")
 
-    assert _process_changes(mod)["success"] is True
+    assert _process_changes(mod, groups=("Admin",))["success"] is True
 
     item = _stored(table)
     assert item["HITLStatus"] == status
@@ -351,7 +381,7 @@ def test_a_finished_legacy_review_with_no_reviewer_records_the_caller(env, statu
         "HITLReviewOwnerEmail",
     )
 
-    assert _process_changes(mod)["success"] is True
+    assert _process_changes(mod, groups=("Admin",))["success"] is True
 
     item = _stored(table)
     assert item["HITLStatus"] == status
@@ -392,7 +422,7 @@ def test_a_failed_reviewer_fill_is_not_swallowed(env):
         return res
 
     with patch.object(mod.boto3, "resource", side_effect=resource):
-        result = _process_changes(mod)
+        result = _process_changes(mod, groups=("Admin",))
 
     assert result["success"] is False
     assert "ProvisionedThroughputExceeded" in result["message"]
@@ -421,7 +451,7 @@ def test_a_partly_recorded_reviewer_is_not_replaced(env, recorded):
             ExpressionAttributeValues={":v": value},
         )
 
-    assert _process_changes(mod)["success"] is True
+    assert _process_changes(mod, groups=("Admin",))["success"] is True
 
     item = _stored(table)
     assert item["HITLStatus"] == "complete"
