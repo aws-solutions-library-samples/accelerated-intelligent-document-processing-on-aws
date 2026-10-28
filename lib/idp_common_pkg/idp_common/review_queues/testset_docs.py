@@ -199,6 +199,8 @@ class TestSetDocStore:
             out[camel] = item.get(attr)
         out["documentClasses"] = out.get("documentClasses") or []
         out["sections"] = out.get("sections") or []
+        # Saved, unreviewed section drafts (testset_labels).
+        out["sectionDrafts"] = keys.tsdoc_draft_entries(item)
         return out
 
     # ---------------------------------------------------------------- writes

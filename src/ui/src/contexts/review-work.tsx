@@ -15,6 +15,7 @@ import usePolling from '../hooks/use-polling';
 import { listMyTestSetTasks } from '../components/review-queues/reviewer-assignment';
 import { fromTestSetTask } from '../components/review-queues/work-items';
 import type { WorkItem } from '../components/review-queues/work-items';
+import { productionWorkItemId } from '../components/review-queues/work-item-ids';
 
 const client = generateClient();
 const logger = new ConsoleLogger('ReviewWorkProvider');
@@ -61,7 +62,7 @@ interface State {
 
 const INITIAL: State = { myItems: [], testSetTasks: null, count: null, loaded: false, pollError: null };
 
-const productionId = (item: ReviewItem): string => `p:${item.objectKey}`;
+const productionId = (item: ReviewItem): string => productionWorkItemId(item.objectKey);
 
 /** The state with the settled items removed and the count recomputed. */
 const withoutSettled = (s: State, settled: ReadonlySet<string>): State => {

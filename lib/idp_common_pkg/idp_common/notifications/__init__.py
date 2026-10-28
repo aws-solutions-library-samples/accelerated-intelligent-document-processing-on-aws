@@ -35,6 +35,7 @@ from idp_common.notifications.keys import (
 )
 from idp_common.notifications.links import (
     document_detail_link,
+    document_edit_link,
     encode_uri_component,
     validate_link,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "recipient_key_from_cognito_user",
     "normalize_recipient_key",
     "document_detail_link",
+    "document_edit_link",
     "encode_uri_component",
     "validate_link",
     "NotificationError",

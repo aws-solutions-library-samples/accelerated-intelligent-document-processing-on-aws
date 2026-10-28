@@ -1046,8 +1046,9 @@ classes it spans ("Section spans more than one ground-truth class") instead of
 an unhelpful "no match". A section is flagged even when one of the classes it
 spans equals its own, because in that case the boundary is what is wrong.
 
-**Visual Editor ("View Data").** The class comparison appears above the field
-list on any document that has an evaluation baseline — the class this run
+**The edit page's Visual Editor tab** (opened with **Edit Data**, or **View Data**
+for a read-only role). The class comparison appears above the field list on any
+document that has an evaluation baseline — the class this run
 assigned, the class ground truth expects, and a match/mismatch verdict. Both
 values are shown whether or not they agree.
 
@@ -1066,7 +1067,7 @@ Why this matters when reading scores: a misclassified page was extracted against
 the **wrong schema**, so its low extraction score is a symptom, not the cause.
 Fixing the classification first avoids tuning extraction prompts against a
 document the pipeline was never reading as the right type. Both the hover and the
-Visual Editor say so inline.
+edit page's Visual Editor tab say so inline.
 
 Page numbers shown are 1-based, matching the page viewer. (Internally
 `page_indices` in `results.json` are 0-based — computed as

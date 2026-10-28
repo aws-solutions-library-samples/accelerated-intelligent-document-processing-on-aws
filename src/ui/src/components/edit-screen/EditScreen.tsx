@@ -12,7 +12,8 @@
 // Changes, the primary action, last (or Claim, for an Annotator viewing an unassigned
 // item, with the view switch and Reports only). A button that does not apply is left out;
 // a menu item the mode offers but that does not apply now is disabled, with the reason on
-// hover. The mode components decide which actions apply; the layout is decided here.
+// hover. The model decides which actions apply (see edit-model.ts and EditPage); the
+// layout is decided here.
 import React, { useState } from 'react';
 import { Box, Button, ButtonDropdown, Container, Header, Modal, SegmentedControl, SpaceBetween } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from idp_common.notifications.links import document_edit_link
 from idp_common.notifications.models import MAX_GROUPS, MAX_USERS
 from idp_common.review_queues import notify as review_notify
 from idp_common.review_queues.models import QueueRef, ReviewItemRecord
@@ -89,11 +90,9 @@ class TestPost:
 
 @pytest.mark.unit
 class TestNotices:
-    def test_item_links_match_the_ui_route(self):
-        assert (
-            review_notify.review_item_link("a/b c.pdf")
-            == "/review-queues/items/a%2Fb%20c.pdf"
-        )
+    def test_item_links_open_the_document_edit_page(self):
+        assert document_edit_link("a/b c.pdf") == "/documents/a%2Fb%20c.pdf/edit"
+        assert not hasattr(review_notify, "review_item_link")
 
     def test_queue_items_waiting_is_debounced_by_the_store(self):
         ref = QueueRef(profile="profile-a", queue="default")
@@ -158,9 +157,7 @@ class TestNotices:
         assert kwargs["type_id"] == type_id
         assert kwargs["idempotency_key"] == key
         assert kwargs["title"].startswith("invoice 7.pdf")
-        assert kwargs["link"] == review_notify.review_item_link(
-            "batch/2026/invoice 7.pdf"
-        )
+        assert kwargs["link"] == document_edit_link("batch/2026/invoice 7.pdf")
 
     def test_owner_notices_need_an_owner(self):
         with patch(NOTIFY) as sent:

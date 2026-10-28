@@ -576,6 +576,11 @@
       "Annotator",
       "Author"
     ],
+    "saveTestSetDocumentSectionDraft": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
     "sendAgentChatMessage": [
       "Admin",
       "Author",

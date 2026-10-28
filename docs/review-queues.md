@@ -81,7 +81,8 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 ## Annotator guide
 
 An Annotator-only user sees only **Home** (**Inbox**, **Tasks** and **Queues**) and the
-notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** and
+notifications bell, and opens a document only through its edit page
+(`#/documents/<document>/edit`), from Tasks or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
 **Queues** are there only for Annotators.
 
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
@@ -95,9 +96,14 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
   assigned it: Production review items and Test Studio documents, each with its
   document, source, queue and age. Its badge counts both. You get an Inbox message
   when an Admin assigns you work.
-- Select an item to open it in the **edit screen**. Production items, Test
-  Studio items and direct edits of a document all use the same edit screen, whether
-  you open them from Tasks, an Inbox message or Queue Management.
+- Select an item to open it in the **edit page**. Production items, Test
+  Studio items and direct edits of a document all use the same edit page, whether
+  you open them from Tasks, an Inbox message or Queue Management. A Production item
+  opens at its document's edit page, `#/documents/<document>/edit`, which shows the
+  item while the document is in review; a Test Studio item is at
+  `#/review-queues/test-sets/<id>/items/<document>`. `?section=`, `?field=` and
+  `?view=source` work on both, and an older `#/review-queues/items/<document>` link
+  opens the document's edit page with the same query.
   - The actions are in one bar at the top, left to right: **Edit | View**, the
     **Reports** menu (**History**, **Summary**, **Processing Report**), the **More
     Actions** menu (**Edit Page Class**, **Use As Evaluation Baseline**), then **Skip**,
@@ -137,15 +143,19 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
     to show** set to **Confidence alerts only** when the item has review reasons. **Edit Page Class** corrects
     how the document is split into sections as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
-    (a section you remove takes its draft with it). Only the item's holder can
-    regroup it; an Admin's first regroup assigns an unassigned item to them.
+    (a section you remove takes its draft with it). Only an Admin holding the item
+    can regroup it (for an Annotator it is disabled, with the reason); an Admin's
+    first regroup assigns an unassigned item to them.
   - **Test Studio item**: correct the labels and choose **Process Changes**, which
-    saves the open section, confirms the rest and reprocesses the document's review
-    copy. Authored ground truth has no review copy, so for it **Process Changes** only
+    saves the open section, applies every section and reprocesses the document's
+    review copy. Authored ground truth has no review copy, so for it **Process Changes** only
     marks the labels reviewed. You can also choose it without
     changing anything, which confirms the labels as correct; it needs no **Start
-    editing** first. **Save** saves the open section, which marks it reviewed,
-    and switching sections saves it too.
+    editing** first. **Save** keeps the open section's changes as a draft, which
+    is not reviewed: any later session, and the next assignee after a **Skip**,
+    opens the document with it. **Process Changes** applies the drafts and marks the
+    sections reviewed, and leaves once the server counts the document reviewed.
+    Switching sections with unsaved changes asks first.
     **Edit Page Class** opens the page-grouping board in a dialog, where each section's
     pages and class are changed; there is no separate class dropdown. After a class
     change, the section offers **Re-extract**, so its fields match the new class. Versioning works exactly
@@ -156,7 +166,9 @@ notifications bell. Every user has **Home › Inbox** and the bell; **Tasks** an
     from the queue's skip list and optionally add a note; both are recorded with the
     skip (in a Production item's review history).
   - The breadcrumbs read **Home**, then the item's queue or test set (linking to its
-    page), then the document, for every role.
+    page), then the document, for every role, and **Home** alone while the item is
+    loading. An item that can't be read shows an error with **Retry**; one whose
+    queue doesn't list you says so, with a link to **Home › Queues**.
 - When you complete an item, it leaves your Tasks and the queue's progress counts it
   as completed. The server takes a draft save or a skip only from the item's
   assignee, and a complete from the assignee or an Admin.
@@ -328,17 +340,18 @@ its queue item:
   the item is claimed, assigned, reassigned or taken over, cleared when it goes back to
   the queue, and kept once the review finishes. **Review Completed By** is whoever
   finished it, filled in once its corrections have been applied.
-- The document page's **Edit** opens the queue item on the edit screen for
-  Admins and Annotators, the roles that can open queue items. For other roles it opens
-  the direct edit, read-only.
-- **Edit Data** opens the direct edit read-only, with **Review in queue** for Admins
-  and Annotators.
+- The document page's **Edit** and a section's **Edit Data** open the document's
+  edit page, which shows the queue item for Admins and Annotators, the roles that can
+  open queue items. For other roles it opens the direct edit, read-only, saying the
+  document is edited in its queue.
 - **Edit Mode** and the Sections panel's **Edit Page Grouping** stay enabled, but the
   server refuses what it can't take: **Process Changes** (Edit Mode) on a document in review, and
   a regroup by anyone but the queue item's holder. Regroup from the queue item.
-  **Skip All Reviews** and **Start Review** aren't offered.
-- In the document list, the **In Review** status links to the queue item for Admins
-  and Annotators.
+  **Skip All Reviews** and **Start Review** aren't offered. A direct upload of the
+  document's section results (`uploadDocument`) is refused as well, with
+  `QUEUE_MANAGED`.
+- In the document list, the **In Review** status links to the document's edit page
+  for Admins and Annotators.
 
 Once the review finishes, the document page can be edited as usual. **Process Changes**
 on a finished review doesn't mark it completed again or replace the reviewer the queue

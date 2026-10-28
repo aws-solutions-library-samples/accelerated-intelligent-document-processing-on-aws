@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **HITL** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit screen (see [HITL](#hitl))
+- **Home** and **HITL** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit page (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -689,24 +689,34 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   removes it from the list and the count straight away (**Skip** gives the item back
   to its queue, unassigned and not finished), and work assigned to you by an Admin
   appears within about 30 seconds.
-- **The edit screen** is the same for every edit, whether you open a queue item
-  from Tasks, an Inbox message or Queue Management, or edit a document directly. It
-  has three routes:
-  - a Production item at `#/review-queues/items/<document>`
-  - a test-set document at `#/review-queues/test-sets/<id>/items/<document>`
-  - a direct edit of any document at `#/documents/<document>/edit` (optionally
-    `?section=<id>`), opened from **Edit Data** on a section row or **Edit** on the
-    document page
+- **The edit page** is the same for every edit, whether you open a queue item from
+  Tasks, an Inbox message or Queue Management, or edit a document directly.
+  - A document's edit page is `#/documents/<document>/edit`. It opens the
+    document's review-queue item while the document is in review and you are an
+    Admin or an Annotator; for anyone else, and for a document that is not in review,
+    it opens the direct edit. A document in review opens read-only in the direct
+    edit, saying it is edited in its queue. **Edit** on the document page, **Edit
+    Data** on a section row, **In Review** in the Document List, Home › Tasks and
+    Inbox messages all open it. Annotators whose only role is Annotator can open it
+    too, although they have no Documents.
+  - A Test Studio document's edit page is `#/review-queues/test-sets/<id>/items/<document>`.
+  - `?section=<id>` opens a section, `?field=<path>` selects a field and
+    `?view=source` opens the original file, on either page. An older Production item
+    link, `#/review-queues/items/<document>`, opens the document's edit page with the
+    same query, and an older Test Studio document link,
+    `#/test-studio/sets/<id>/doc/<document>`, opens its Test Studio item.
 
-  The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
-  role. The title is the document's name with its status in parentheses, over the
+  The breadcrumb is **Home › {queue, test set, Documents or Tasks} › {document}**,
+  from the mode: the queue for a queue item, Documents for a direct edit (Tasks for
+  an Annotator-only user), and Home alone while the page is still loading. The title is the document's name with its status in parentheses, over the
   full object key; a queue item's **Review Reason** follows, then the **Document
   Editor** panel, which holds the editor with a **Section** dropdown at its top left.
   The actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
   activity; **Summary**; **Processing Report**); **More Actions** (**Edit Page Class**,
-  each section's pages and class; **Use As Evaluation Baseline**, for Admins and
-  Authors); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
+  each section's pages and class, for the roles that may change them: an Admin or a
+  Reviewer on a direct edit, an Admin on a queue item; **Use As Evaluation Baseline**,
+  for Admins and Authors); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
   (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
   menu item that doesn't apply yet, such as Summary before a document is finished, is
   disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes works like the Sections panel's: it re-runs
@@ -716,11 +726,12 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   which has no review copy, it only marks the labels reviewed. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
-  item directly (the first saved edit, or Reprocess, assigns it to them) and
+  item directly (the first saved edit, or Process Changes, assigns it to them) and
   uses **Take over** on one assigned to someone else.
 - The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
-  **Review Status** as **In Review**, which for Admins and Annotators links to the queue
-  item. A queued document is reviewed only from that item; the legacy Reviewer flow
+  **Review Status** as **In Review**, which for Admins and Annotators links to the
+  document's edit page (its queue item). A queued document is reviewed only from that
+  item, and the server refuses a direct upload of its section results meanwhile; the legacy Reviewer flow
   (**Start Review**) applies to documents outside the queues.
 
 ## Inbox

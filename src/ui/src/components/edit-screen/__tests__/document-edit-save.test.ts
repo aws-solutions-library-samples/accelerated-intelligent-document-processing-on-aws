@@ -5,16 +5,17 @@
  * Saving a direct edit. What has to hold: a reviewer-only caller saves the prediction
  * through saveSectionReviewEdits and never writes the baseline; an Admin or Author
  * uploads the prediction to its output key and the baseline to the baseline bucket at
- * the same key; both files get the same `_editHistory` entry; and changed paths drop
- * array indices.
+ * the same key; both files get the same `_editHistory` entry; changed paths drop array
+ * indices; and a server refusal because the document went into a review queue
+ * (`QUEUE_MANAGED`) says so, and writes no baseline.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => graphql(...a) }) }));
 
-import { diffLeafPaths, saveDirectSectionEdits } from '../document-edit-save';
+import { IN_REVIEW_SAVE_REFUSED, diffLeafPaths, saveDirectSectionEdits } from '../document-edit-save';
 import type { SaveDirectSectionEditsOptions } from '../document-edit-save';
 
 const fetchMock = vi.fn();
@@ -48,6 +49,11 @@ beforeEach(() => {
   });
   fetchMock.mockReset().mockResolvedValue({ ok: true });
   vi.stubGlobal('fetch', fetchMock);
+});
+
+// No direct save finishes a review: the Reviewer's path is saveSectionReviewEdits.
+afterEach(() => {
+  expect(graphql.mock.calls.filter((c) => queryName(c).includes('completeSectionReview'))).toEqual([]);
 });
 
 describe('saveDirectSectionEdits', () => {
@@ -107,5 +113,19 @@ describe('diffLeafPaths', () => {
     );
     expect([...changes.keys()].sort()).toEqual(['Address.City', 'Rows.Amount']);
     expect(changes.get('Rows.Amount')).toEqual({ original: 2, current: 3 });
+  });
+
+  it('says the document went into a review queue when the server refuses the prediction, and writes no baseline', async () => {
+    graphql.mockImplementation(async ({ query }: { query: string }) => {
+      if (query.includes('uploadDocument')) {
+        throw {
+          errors: [{ message: 'QUEUE_MANAGED: this document is in a review queue; work it from Review Queues', errorType: 'BadRequest' }],
+        };
+      }
+      return { data: {} };
+    });
+    await expect(saveDirectSectionEdits(opts())).rejects.toThrow(IN_REVIEW_SAVE_REFUSED);
+    expect(uploads().map((u) => u.bucket)).toEqual(['out-bucket']);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

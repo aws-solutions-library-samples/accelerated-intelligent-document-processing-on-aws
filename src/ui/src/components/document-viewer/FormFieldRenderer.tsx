@@ -3,9 +3,8 @@
 
 /* eslint-disable prettier/prettier */
 
-// Extracted verbatim from VisualEditorModal.tsx so the recursive form renderer
-// (and its comparison-key helpers) can be reused outside the modal — e.g. the
-// Test Studio ground-truth editor. Pure presentational: no hooks, no S3/API
+// The recursive form renderer (and its comparison-key helpers) of the edit page's
+// Visual Editor tab (SectionEditor). Pure presentational: no hooks, no S3/API
 // calls; everything it needs arrives via props.
 
 import React, { memo } from 'react';

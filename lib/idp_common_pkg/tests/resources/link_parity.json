@@ -1,0 +1,33 @@
+{
+  "_comment": "Links the UI and idp_common must build byte-identically. Expected values are encodeURIComponent output, written literally. Read by tests/unit/notifications/test_link_parity.py and src/ui/src/routes/__tests__/link-parity.test.ts.",
+  "cases": [
+    {
+      "objectKey": "a/b c.pdf",
+      "testSetId": "ts-1",
+      "documentDetail": "/documents/a%2Fb%20c.pdf",
+      "documentEdit": "/documents/a%2Fb%20c.pdf/edit",
+      "testSetItem": "/review-queues/test-sets/ts-1/items/a%2Fb%20c.pdf"
+    },
+    {
+      "objectKey": "x~*'()_-.y!%z.pdf",
+      "testSetId": "ts-1",
+      "documentDetail": "/documents/x~*'()_-.y!%25z.pdf",
+      "documentEdit": "/documents/x~*'()_-.y!%25z.pdf/edit",
+      "testSetItem": "/review-queues/test-sets/ts-1/items/x~*'()_-.y!%25z.pdf"
+    },
+    {
+      "objectKey": "ünï/ç ø.pdf",
+      "testSetId": "ts-1",
+      "documentDetail": "/documents/%C3%BCn%C3%AF%2F%C3%A7%20%C3%B8.pdf",
+      "documentEdit": "/documents/%C3%BCn%C3%AF%2F%C3%A7%20%C3%B8.pdf/edit",
+      "testSetItem": "/review-queues/test-sets/ts-1/items/%C3%BCn%C3%AF%2F%C3%A7%20%C3%B8.pdf"
+    },
+    {
+      "objectKey": "100%/off#1.pdf",
+      "testSetId": "ts-1",
+      "documentDetail": "/documents/100%25%2Foff%231.pdf",
+      "documentEdit": "/documents/100%25%2Foff%231.pdf/edit",
+      "testSetItem": "/review-queues/test-sets/ts-1/items/100%25%2Foff%231.pdf"
+    }
+  ]
+}

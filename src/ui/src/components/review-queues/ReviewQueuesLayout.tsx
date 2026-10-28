@@ -20,12 +20,14 @@ const QUEUE_MANAGEMENT_CRUMB: BreadcrumbGroupProps.Item = { text: 'Queue Managem
 interface ReviewQueuesLayoutProps {
   /** Breadcrumbs after "Home › Queue Management" (or after `root`). */
   crumbs?: BreadcrumbGroupProps.Item[];
-  /** The section crumb; Queue Management (HITL) by default. */
-  root?: BreadcrumbGroupProps.Item;
+  /** The section crumb; Queue Management (HITL) by default; null for none (Home only, then `crumbs`). */
+  root?: BreadcrumbGroupProps.Item | null;
   children: React.ReactNode;
   contentType?: 'default' | 'table' | 'wizard';
   /** The info panel the info icon opens, as on the document pages; omitted, there is none. */
   tools?: React.ReactNode;
+  /** The side-navigation entry to highlight; null for none; omitted, derived from the URL. */
+  navActiveHref?: string | null;
 }
 
 const ReviewQueuesLayout = ({
@@ -34,18 +36,19 @@ const ReviewQueuesLayout = ({
   children,
   contentType = 'default',
   tools,
+  navActiveHref,
 }: ReviewQueuesLayoutProps): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const flashItems = mapNotificationsToFlashbar(useNotifications());
   // Closed until asked for, as on the document pages.
   const [toolsOpen, setToolsOpen] = useState(false);
-  const items = [{ text: 'Home', href: '#/' }, root ?? QUEUE_MANAGEMENT_CRUMB, ...crumbs];
+  const items = [{ text: 'Home', href: '#/' }, ...(root === null ? [] : [root ?? QUEUE_MANAGEMENT_CRUMB]), ...crumbs];
 
   return (
     <AppLayout
       headerSelector="#top-navigation"
       ariaLabels={appLayoutLabels}
-      navigation={<Navigation />}
+      navigation={<Navigation activeHref={navActiveHref} />}
       navigationOpen={navigationOpen}
       onNavigationChange={({ detail }) => setNavigationOpen(detail.open)}
       notifications={<Flashbar items={flashItems} />}

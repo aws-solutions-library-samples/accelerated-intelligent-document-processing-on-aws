@@ -48,10 +48,8 @@ flows:
     persona: Admin
     priority: p0
     paths:
-      - src/ui/src/components/test-studio/AnnotationQueueLanding.tsx
       - src/ui/src/components/test-studio/AnnotationWorkspace.tsx
-      - src/ui/src/components/test-studio/GroundTruthSectionEditor.tsx
-      - src/ui/src/components/test-studio/TestSetDocumentDetail.tsx
+      - src/ui/src/components/edit-screen/**
     setup:
       - A test set exists with at least one labeled document.
       - Reachable from Test Studio → Test sets → (set) → Annotate.
@@ -59,8 +57,8 @@ flows:
       - Open the annotation queue for the test set.
       - Open the first document in the queue.
       - Change one field's value to something recognisably different.
-      - Save.
-      - Navigate away and reopen the same document.
+      - Save, then choose Process Changes.
+      - Reopen the same document.
     expect:
       - The queue lists documents and indicates which need review.
       - The edited value persisted across the reload.
@@ -79,7 +77,8 @@ flows:
     paths:
       - src/ui/src/components/document-details/**
       - src/ui/src/components/document-viewer/**
-      - src/ui/src/components/evaluation-correction/**
+      - src/ui/src/components/edit-screen/SectionEditor.tsx
+      - src/ui/src/components/edit-screen/use-section-evaluation.ts
     setup:
       # Do NOT create this by using flow 6.2 — that flow is currently broken and
       # drops the corrected class, so the fixture never appears and 6.1 looks
@@ -96,7 +95,8 @@ flows:
         (see the comment above), not via flow 6.2.
     steps:
       - Open the document's detail page.
-      - Open View Data and enable Show evaluation.
+      - Choose Edit on the document page (or Edit Data on a section) and turn on
+        Show Evaluation.
     expect:
       - The classification comparison is shown, naming both the expected and the
         predicted class.
@@ -159,7 +159,8 @@ flows:
     persona: Annotator
     priority: p1
     paths:
-      - src/ui/src/components/test-studio/AnnotationQueueLanding.tsx
+      - src/ui/src/components/review-queues/MyQueuesPage.tsx
+      - src/ui/src/components/test-studio/AnnotationWorkspace.tsx
     setup:
       - An annotator assigned to exactly one test set with several labeled
         documents of differing confidence.

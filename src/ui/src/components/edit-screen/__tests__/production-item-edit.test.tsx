@@ -8,7 +8,7 @@
  * is sent; if an Annotator got there first the screen says so and goes view-only; an
  * Admin on someone else's item sees it view-only with Take over, which calls
  * takeOverReviewItem; there is no Reject; Skip is offered only to the assignee; and
- * the screen reports the item's queue for the breadcrumbs. The bar adds Save
+ * the screen gives the breadcrumbs the item's queue. The bar adds Save
  * and Discard Changes (through the editor's controller), Processing Report, and an Edit
  * page grouping that stays disabled while the item is in review; History has the item's
  * review activity; and there is no "Queue · profile · priority" meta line.
@@ -76,6 +76,19 @@ vi.mock('../production-item-edit-adapter', () => ({
     };
   },
 }));
+/** The breadcrumb root the page gives its layout. */
+let layoutRoot: unknown = null;
+/** Every breadcrumb root the page gave, in order, and the navigation entry it highlights. */
+const layoutRoots: unknown[] = [];
+let layoutActiveHref: unknown;
+vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
+  default: ({ children, root, navActiveHref }: { children: React.ReactNode; root?: unknown; navActiveHref?: unknown }) => {
+    layoutRoot = root;
+    layoutRoots.push(root);
+    layoutActiveHref = navActiveHref;
+    return <>{children}</>;
+  },
+}));
 vi.mock('../SectionEditor', () => ({
   default: (props: NonNullable<typeof editor>) => {
     editor = props;
@@ -106,6 +119,7 @@ vi.mock('../../common/PageGroupingEditor', () => ({
 }));
 
 import ProductionItemEdit from '../ProductionItemEdit';
+import { QUEUE_REGROUP_ROLE_REASON } from '../production-item-edit-model';
 import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 
 const ADMIN = 'admin@example.com';
@@ -138,11 +152,10 @@ const detailFor = (over: Partial<ReviewItem>): ReviewItemDetail =>
 const mine = () => detailFor({ state: 'CLAIMED', ownerEmail: ADMIN, isMine: true });
 const annotators = () => detailFor({ state: 'CLAIMED', ownerEmail: ANN, isMine: false });
 
-const onItemQueue = vi.fn();
-const renderScreen = () =>
+const renderScreen = (path = '/documents/in%2Fw2.pdf/edit') =>
   render(
-    <MemoryRouter>
-      <ProductionItemEdit objectKey="in/w2.pdf" onItemQueue={onItemQueue} />
+    <MemoryRouter initialEntries={[path]}>
+      <ProductionItemEdit objectKey="in/w2.pdf" />
     </MemoryRouter>,
   );
 
@@ -164,8 +177,8 @@ beforeEach(() => {
   editor = null;
   role.isAdmin = true;
   role.isAnnotator = false;
-  for (const f of [saveSection, complete, claimItem, releaseItem, takeOverItem, setErrorMessage, setSuccessMessage, exit, onItemQueue])
-    f.mockReset();
+  role.canWrite = true;
+  for (const f of [saveSection, complete, claimItem, releaseItem, takeOverItem, setErrorMessage, setSuccessMessage, exit]) f.mockReset();
   controller.save.mockReset().mockResolvedValue(true);
   refreshDocument.mockReset().mockResolvedValue(undefined);
   saveDocumentGrouping.mockReset().mockResolvedValue({ success: true, message: 'Page grouping saved' });
@@ -402,6 +415,16 @@ describe('the actions', () => {
     expect(refreshDocument).not.toHaveBeenCalled();
   });
 
+  it('disable Edit Page Class for an Annotator holding the item, saying why', () => {
+    Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false });
+    server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ANN, isMine: true });
+    renderScreen();
+    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+      disabled: true,
+      disabledReason: QUEUE_REGROUP_ROLE_REASON,
+    });
+  });
+
   it('disable Edit Page Grouping on an item assigned to someone else, saying why', () => {
     server.detail = annotators();
     renderScreen();
@@ -496,6 +519,49 @@ describe('the actions', () => {
 describe('the breadcrumbs', () => {
   it('are told the item’s queue id and name', () => {
     renderScreen();
-    expect(onItemQueue).toHaveBeenCalledWith({ id: 'default', name: 'Default' });
+    expect(layoutRoot).toEqual({ text: 'Default', href: '#/review-queues/queues/default' });
+  });
+});
+
+describe('the edit page’s URL and navigation', () => {
+  it('opens the ?section= section and copies field links to the edit page', () => {
+    server.detail = mine();
+    renderScreen('/documents/in%2Fw2.pdf/edit?section=2&field=Box1');
+    const props = editor as unknown as { initialSectionId?: string; focusFieldPath?: string; buildFieldLink: (f: string) => string };
+    expect(props.initialSectionId).toBe('2');
+    expect(props.focusFieldPath).toBe('Box1');
+    expect(props.buildFieldLink('Box 1')).toBe(`${window.location.origin}/#/documents/in%2Fw2.pdf/edit?field=Box%201`);
+  });
+
+  it('names the queue in the breadcrumbs from the first render, never another root first', () => {
+    server.detail = mine();
+    layoutRoots.length = 0;
+    renderScreen();
+    expect(layoutRoots[0]).toEqual({ text: 'Default', href: '#/review-queues/queues/default' });
+    expect(new Set(layoutRoots.map((r) => JSON.stringify(r))).size).toBe(1);
+  });
+
+  it('highlights Queue Management for an Admin and Tasks for an Annotator', () => {
+    server.detail = mine();
+    renderScreen();
+    expect(layoutActiveHref).toBe('#/review-queues');
+    document.body.innerHTML = '';
+    Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false });
+    server.detail = annotators();
+    renderScreen();
+    expect(layoutActiveHref).toBe('#/my-work/tasks');
+  });
+
+  it.each([
+    ['HOLDING', 'This item is being prepared for review. It can be edited once it reaches its queue.'],
+    [
+      'FINALIZE_FAILED',
+      "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Queue Management.",
+    ],
+  ])('says what happens next on a %s item', (state, notice) => {
+    server.detail = detailFor({ state });
+    renderScreen();
+    expect(document.body.textContent).toContain(notice);
+    expect(document.body.textContent).not.toContain('This review is finished');
   });
 });

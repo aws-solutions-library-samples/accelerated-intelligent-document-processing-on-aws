@@ -56,10 +56,14 @@ export interface AnnotationSelection {
  * authorization error at save. The server is still what enforces this; these booleans
  * exist so the UI does not invite work it cannot persist.
  */
-export const saveCapabilities = (roles: AnnotationRoles): { canSaveViaReview: boolean; canSaveDirectToBaseline: boolean } => ({
+export const saveCapabilities = (
+  roles: AnnotationRoles,
+): { canSaveViaReview: boolean; canSaveDirectToBaseline: boolean; canDraft: boolean } => ({
   canSaveViaReview: roles.isAdmin || roles.isReviewer || roles.isAnnotator,
   // saveTestSetDocumentSection: an Annotator saves only documents assigned to them.
   canSaveDirectToBaseline: roles.isAdmin || roles.isAuthor || roles.isAnnotator,
+  // saveTestSetDocumentSectionDraft: an Author only on authored ground truth.
+  canDraft: roles.isAdmin || roles.isAuthor || roles.isAnnotator,
 });
 
 export interface AnnotationEditFlags {
@@ -103,8 +107,11 @@ export const annotationEditFlags = (
 ): AnnotationEditFlags => {
   const { canSaveViaReview, canSaveDirectToBaseline } = saveCapabilities(roles);
   const saveViaReview = Boolean(selected.reviewObjectKey);
+  // A review copy is edited (saved as a draft, then completed) by an Admin or an
+  // Annotator: the draft operation has no Reviewer, and completion has no Author.
+  const mayEditReviewCopy = canSaveViaReview && (roles.isAdmin || roles.isAnnotator);
   return {
-    isReadOnly: !draft || (saveViaReview ? !canSaveViaReview : !canSaveDirectToBaseline),
+    isReadOnly: !draft || (saveViaReview ? !mayEditReviewCopy : !canSaveDirectToBaseline),
     saveViaReview,
     canChangeClass: roles.canAnnotate,
     canSaveViaReview,
@@ -205,7 +212,7 @@ export const DRAFT_PROMPT_BODY =
 export const groundTruthAlertSuffix = (canSaveDirectToBaseline: boolean, draft: AnnotationDraft | null): string =>
   canSaveDirectToBaseline
     ? draft
-      ? ' Saving a section, or Complete, writes the ground truth and counts the document as reviewed.'
+      ? ' Save keeps your changes; Process Changes writes the ground truth and counts the document as reviewed.'
       : ' Use Start annotating, above, to correct it.'
     : ' Only its assignee, an Admin or an Author can change it — you can inspect the values below.';
 

@@ -35,18 +35,25 @@ vi.mock('../test-set-item-edit-adapter', () => ({
     loadError: null,
     reload: vi.fn(),
     openDraft: vi.fn(),
-    saveSection: vi.fn(),
-    confirmSections: vi.fn(),
+    saveDraft: vi.fn(),
+    loadSection: vi.fn(),
+    reloadToken: 0,
+    applyAndComplete: vi.fn(),
     skip: (...a: unknown[]) => skip(...a),
   }),
+}));
+vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: null }) }));
+vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => ({ versions: [] }) }));
+vi.mock('../../../hooks/use-test-doc-pages', () => ({
+  default: () => ({ pages: [], isLoading: false, error: null, previewUnavailable: false }),
 }));
 vi.mock('../use-edit-exit', () => ({ default: () => exit, useLeavePath: () => (queuePath: string) => queuePath }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage: vi.fn(), setSuccessMessage: vi.fn() }) }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
-vi.mock('../../../hooks/use-user-role', () => ({
-  default: () => ({ isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false }),
-}));
+const role = { isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false };
+vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
+vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
 import { chooseMenuItem } from './edit-bar';
@@ -54,6 +61,7 @@ import { chooseMenuItem } from './edit-bar';
 beforeEach(() => {
   skip.mockReset().mockResolvedValue(undefined);
   exit.mockReset();
+  Object.assign(role, { isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false });
   document.body.innerHTML = '';
 });
 
@@ -94,5 +102,18 @@ describe('Skip on a Test Studio document', () => {
     chooseMenuItem('Reports', 'History');
     const tabs = createWrapper(document.body).findTabs()!;
     expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits', 'Review Activity']);
+  });
+
+  it('tells a Reviewer-only caller it is not available for their account', () => {
+    Object.assign(role, { isAnnotator: false, isReviewer: true, canAnnotate: false });
+    render(
+      <MemoryRouter>
+        <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
+      </MemoryRouter>,
+    );
+    const alert = createWrapper(document.body).findAlert()!;
+    expect(alert.findHeader()!.getElement().textContent).toBe('Not available for your account');
+    expect(alert.findContent().getElement().textContent).toContain('Editing ground truth requires an Annotator, Author or Admin role.');
+    expect(skip).not.toHaveBeenCalled();
   });
 });

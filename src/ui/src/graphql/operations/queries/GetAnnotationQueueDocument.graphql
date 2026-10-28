@@ -45,6 +45,13 @@ query GetAnnotationQueueDocument($testSetId: String!, $objectKey: String!) {
       reviewStatus
       reviewed
       available
+      draftSections {
+        sectionId
+        revision
+        draftUri
+        updatedAt
+        updatedBy
+      }
     }
   }
 }

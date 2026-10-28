@@ -327,7 +327,16 @@ interface NavigationProps {
   header?: { text: string; href: string };
   items?: SideNavigationProps.Item[];
   onFollowHandler?: (ev: CustomEvent<SideNavigationProps.FollowDetail>) => void;
+  /**
+   * The entry to highlight, set by a page whose URL does not say (the edit page, from its
+   * mode). `null` highlights nothing; omitted, the entry is derived from the URL.
+   */
+  activeHref?: string | null;
 }
+
+/** The page's override, or the entry derived from the URL. */
+const resolveActiveHref = (override: string | null | undefined, computed: string): string | undefined =>
+  override === undefined ? computed : (override ?? undefined);
 
 /**
  * Build the AWS CloudFormation "Update stack" deep-link for the current
@@ -348,7 +357,12 @@ const buildCfnUpdateStackUrl = (region: string | undefined, stackName: string | 
   );
 };
 
-const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
+const FullNavigation = ({
+  header,
+  items,
+  onFollowHandler = defaultOnFollowHandler,
+  activeHref: pinned,
+}: NavigationProps): React.JSX.Element => {
   const location = useLocation();
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
@@ -625,7 +639,12 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
           </Hotspot>
         </div>
       )}
-      <SideNavigation items={withNavHotspots(navigationItems)} header={header} activeHref={activeHref} onFollow={onFollowHandler} />
+      <SideNavigation
+        items={withNavHotspots(navigationItems)}
+        header={header}
+        activeHref={resolveActiveHref(pinned, activeHref)}
+        onFollow={onFollowHandler}
+      />
     </div>
   );
 };
@@ -634,7 +653,7 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
  * Navigation for an Annotator-only user: Home (Inbox, Tasks, Queues)
  * and nothing else. Mounts no feature, catalog or version hooks.
  */
-const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
+const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
   const location = useLocation();
   const path = location.pathname;
   const { unreadCount } = useInbox();
@@ -642,15 +661,16 @@ const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: Navig
   const items: SideNavigationProps.Item[] = [
     buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
   ];
-  // The edit screens (under /review-queues/.../items) are opened from Tasks; a
-  // queue's own page (under /review-queues) from Queues.
+  // The edit pages (a Test Studio item under /review-queues/.../items, or a document's
+  // edit page, which sets the entry itself) are opened from Tasks; a queue's own page
+  // (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
   if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
   else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
     activeHref = `#${MY_QUEUES_PATH}`;
   return (
     <div className="idp-side-nav">
-      <SideNavigation items={items} activeHref={activeHref} onFollow={onFollowHandler} />
+      <SideNavigation items={items} activeHref={resolveActiveHref(pinned, activeHref)} onFollow={onFollowHandler} />
     </div>
   );
 };

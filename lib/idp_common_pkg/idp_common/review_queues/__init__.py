@@ -49,6 +49,8 @@ _LAZY = (
     "sweeper",
     "queue_defs",
     "testset_docs",
+    "section_writes",
+    "testset_labels",
 )
 
 

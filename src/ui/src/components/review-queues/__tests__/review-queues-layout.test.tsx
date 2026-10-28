@@ -4,8 +4,8 @@
 /**
  * The HITL pages' layout and its info panel. What has to hold: given a panel, the
  * layout has the info toggle the document pages have, closed until asked for, and opens
- * the panel; without one there is no toggle; and the queue and edit routes each pass
- * their own panel.
+ * the panel; without one there is no toggle; and the queue routes pass their own panel
+ * and the edit page passes its own, once for every mode.
  */
 
 import React from 'react';
@@ -49,12 +49,15 @@ describe('the HITL layout info panel', () => {
     expect(createWrapper(document.body).findAppLayout()!.findToolsToggle()).toBeNull();
   });
 
-  it('is given a panel by Queue Management, both queue pages, both item pages and the direct edit', () => {
+  it('is given a panel by Queue Management, both queue pages and the edit page, once for every mode', () => {
     const routes = readFileSync(join(__dirname, '..', '..', '..', 'routes', 'ReviewQueuesRoutes.tsx'), 'utf-8');
-    expect(routes.match(/tools=\{<EditScreenToolsPanel \/>\}/g) ?? []).toHaveLength(2);
+    // The edit page lays itself out, in every mode; the routes give it no layout of their own.
+    expect(routes.match(/EditScreenToolsPanel/g) ?? []).toHaveLength(0);
     expect(routes.match(/tools=\{<QueueToolsPanel \/>\}/g) ?? []).toHaveLength(2);
     expect(routes.match(/tools=\{<QueueManagementToolsPanel \/>\}/g) ?? []).toHaveLength(1);
+    const page = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'EditPage.tsx'), 'utf-8');
+    expect(page.match(/tools=\{<EditScreenToolsPanel \/>\}/g) ?? []).toHaveLength(1);
     const direct = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'DocumentEditPage.tsx'), 'utf-8');
-    expect(direct).toMatch(/tools=\{<EditScreenToolsPanel \/>\}/);
+    expect(direct).not.toMatch(/EditScreenToolsPanel/);
   });
 });

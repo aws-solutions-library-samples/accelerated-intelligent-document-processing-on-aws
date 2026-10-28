@@ -2,29 +2,28 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * SectionEditor — the shared section editor of the edit screen.
+ * SectionEditor — the edit page's Document Editor panel, the same in every mode.
  *
- * Page images on the left; on the right, tabs with a visual form over the section
- * result's `inference_result`, a raw JSON editor and the edit history. Used by Test
- * Studio annotation (through GroundTruthSectionEditor) and by live review queues.
+ * A Section dropdown at its top left (for more than one section); page images on the
+ * left and, on the right, tabs with a visual form over the section result's
+ * `inference_result` and a raw JSON editor. The field edits are under the page's
+ * History, and its Save and Cancel are in the page's bar (through `controllerRef`).
  *
  * The editor owns the field editing and change tracking. How a section is loaded and
- * saved, and anything adapter-specific (the class control, page regrouping,
- * provenance badges), comes in through props and slots, so there is one editor rather
- * than one per surface.
+ * saved, and anything mode-specific (a Test Studio item's notices, Re-extract and
+ * pages field, from test-set-editor-slots.tsx), comes in through props and slots, so
+ * there is one editor rather than one per mode.
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Alert,
   Box,
-  Button,
   Container,
   CopyToClipboard,
   FormField,
   Header,
   Select,
-  SegmentedControl,
   SpaceBetween,
   Spinner,
   Tabs,
@@ -37,7 +36,6 @@ import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
-import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
 import { buildEditEntry, diffLeafPaths } from './document-edit-save';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
@@ -68,7 +66,7 @@ export interface SectionEditorController {
   isDirty: () => boolean;
 }
 
-interface SectionEditorProps {
+export interface SectionEditorProps {
   objectKey: string;
   sections: ReviewSectionRef[];
   pages: ReviewPage[];
@@ -93,16 +91,10 @@ interface SectionEditorProps {
   buildFieldLink?: ((fieldPath: string) => string) | null;
   /** Bumped by the adapter to re-read the open section (its key is unchanged). */
   reloadToken?: number;
-  title?: React.ReactNode;
-  saveButtonText?: string;
-  /** Under the header: provenance, notices, structure editors. */
+  /** Under the section dropdown: notices about the document's sections. */
   headerExtras?: Slot;
   /** At the top of the visual tab: the class control and section facts. */
   classSlot?: Slot;
-  /** Beside the section selector: controls that change the sections themselves. */
-  structureSlot?: Slot;
-  /** Hide the section selector row (while a structure editor replaces it). */
-  hideSectionRow?: boolean;
   /** What to say when the open section has no field values. */
   emptyFieldsSlot?: Slot;
   /** Above the page images: loading and availability notices. */
@@ -113,14 +105,8 @@ interface SectionEditorProps {
   /** Ask before switching sections with unsaved changes (off when autosaving). */
   confirmSectionSwitch?: boolean;
   unsavedChangesMessage?: string;
-  /** Filled with the editor's save, discard and dirty check, for a parent's own buttons. */
+  /** Filled with the editor's save, discard and dirty check, for the page's bar. */
   controllerRef?: React.MutableRefObject<SectionEditorController | null>;
-  /** `external` hides the in-pane Discard and Save: the parent shows them. */
-  actionsPlacement?: 'header' | 'external';
-  /** Show the Edit history tab; the unified editor shows the edits under History instead. */
-  showHistoryTab?: boolean;
-  /** Hide the title row (the frame already names the document and holds the actions). */
-  hideHeader?: boolean;
   /**
    * Append an `_editHistory` entry (who, when, which fields) to every save that changes
    * a field, for a save path that doesn't record one itself (a review draft).
@@ -128,8 +114,6 @@ interface SectionEditorProps {
   recordEditHistory?: { editedBy: string; source: string };
   onSavingChange?: (saving: boolean) => void;
   onSelectedSectionChange?: (sectionId: string | null) => void;
-  /** Switching sections with unsaved changes saves them first, instead of asking. */
-  saveOnSectionSwitch?: boolean;
   /** The document's configuration, for the field renderer's per-field thresholds. */
   mergedConfig?: Record<string, unknown>;
   /** The evaluation baseline to compare with and edit (direct edit). */
@@ -137,14 +121,7 @@ interface SectionEditorProps {
   /** The section to open first; defaults to the first section. */
   initialSectionId?: string | null;
   /**
-   * `widget`: the edit screen's Document Editor panel, with a section dropdown at its
-   * top left, the structure slot at its top right, and the panes sized to the viewport.
-   * `inline` (the default): a title row over a section row, for a page that lays the
-   * editor out itself.
-   */
-  variant?: 'widget' | 'inline';
-  /**
-   * Shown in the widget in place of the panes (the source document). The editor stays
+   * Shown in place of the panes (the source document). The editor stays
    * mounted meanwhile, so switching back keeps the unsaved edits.
    */
   body?: React.ReactNode;
@@ -183,12 +160,8 @@ const SectionEditor = ({
   focusFieldPath = null,
   buildFieldLink = null,
   reloadToken = 0,
-  title,
-  saveButtonText,
   headerExtras,
   classSlot,
-  structureSlot,
-  hideSectionRow = false,
   emptyFieldsSlot,
   pagesNotice,
   pagesLoading = false,
@@ -196,17 +169,12 @@ const SectionEditor = ({
   confirmSectionSwitch = true,
   unsavedChangesMessage = 'You have unsaved changes. Leave this document and discard them?',
   controllerRef,
-  actionsPlacement = 'header',
-  showHistoryTab = true,
-  hideHeader = false,
   recordEditHistory,
   onSavingChange,
   onSelectedSectionChange,
-  saveOnSectionSwitch = false,
   mergedConfig,
   evaluation,
   initialSectionId = null,
-  variant = 'inline',
   body,
   defaultFilter = 'none',
 }: SectionEditorProps): React.JSX.Element => {
@@ -482,11 +450,6 @@ const SectionEditor = ({
   };
 
   const handleSectionChange = async (sectionId: string) => {
-    if (saveOnSectionSwitch && hasChanges) {
-      // Saved first rather than discarded: the parent shows no Save to fall back on.
-      if (await handleSave()) setSelectedSectionId(sectionId);
-      return;
-    }
     if (confirmSectionSwitch && isDirty && !window.confirm('You have unsaved ground truth changes. Discard them and switch sections?')) {
       return;
     }
@@ -519,15 +482,13 @@ const SectionEditor = ({
     hasChanges,
   };
 
-  const widget = variant === 'widget';
   /* The open section's class comes from its loaded result, which may carry an unsaved
      edit; the others come from the payload. Falling back to the payload while the
      result is still loading keeps an entry from flashing "(no class)" at a section
      that has one. */
   const sectionLabel = (s: ReviewSectionRef): string =>
     sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass);
-  // One section needs no selector. The widget lists them in a dropdown, which holds any
-  // number of sections in one line; the inline layout keeps the segmented control.
+  // One section needs no selector. The dropdown holds any number of sections in one line.
   const sectionOptions = sections.map((s) => ({ value: s.sectionId, label: sectionLabel(s) }));
   const sectionSelect =
     sections.length > 1 ? (
@@ -538,23 +499,14 @@ const SectionEditor = ({
         options={sectionOptions}
       />
     ) : null;
-  const sectionToggle =
-    sections.length > 1 ? (
-      <SegmentedControl
-        label="Section"
-        selectedId={selectedSectionId}
-        onChange={({ detail }) => void handleSectionChange(detail.selectedId)}
-        options={sections.map((s) => ({ id: s.sectionId, text: sectionLabel(s) }))}
-      />
-    ) : null;
   const noGeometry =
     !explainabilityInfo && localData ? 'No field geometry available for this baseline — bounding-box highlighting is disabled.' : null;
 
-  // The widget keeps the page image in view while the fields scroll, and sizes the
-  // fields pane to the viewport rather than a fixed height.
+  // The page image stays in view while the fields scroll, and the fields pane is sized
+  // to the viewport rather than a fixed height.
   const panes = (
-    <div style={{ display: 'flex', gap: '16px', alignItems: widget ? 'flex-start' : 'stretch' }}>
-      <div style={widget ? { flex: 1, minWidth: 0, position: 'sticky', top: 0 } : { flex: 1, minWidth: 0 }}>
+    <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
+      <div style={{ flex: 1, minWidth: 0, position: 'sticky', top: 0 }}>
         {pagesLoading && (
           <Box textAlign="center" padding="xl">
             <Spinner /> Rendering document pages…
@@ -564,14 +516,14 @@ const SectionEditor = ({
         {!pagesLoading && sectionPages.length > 0 && (
           <PageImageViewer pageIds={pageIds} documentPages={sectionPages} activeFieldGeometry={activeFieldGeometry} />
         )}
-        {widget && noGeometry && (
+        {noGeometry && (
           <Box variant="small" color="text-body-secondary">
             {noGeometry}
           </Box>
         )}
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, maxHeight: widget ? WIDGET_PANE_HEIGHT : '760px', overflowY: 'auto' }}>
+      <div style={{ flex: 1, minWidth: 0, maxHeight: WIDGET_PANE_HEIGHT, overflowY: 'auto' }}>
         {isLoading && (
           <Box textAlign="center" padding="xl">
             <Spinner /> Loading the section…
@@ -714,17 +666,6 @@ const SectionEditor = ({
                   />
                 ),
               },
-              ...(showHistoryTab
-                ? [
-                    {
-                      id: 'history',
-                      // See the same tab in VisualEditorModal: these are field edits,
-                      // not revisions.
-                      label: 'Edit history',
-                      content: <EditHistoryTab predictionData={localData} baselineData={baselineData} />,
-                    },
-                  ]
-                : []),
             ]}
           />
         )}
@@ -732,69 +673,17 @@ const SectionEditor = ({
     </div>
   );
 
-  if (widget) {
-    // The section dropdown (top left) and the controls that change the sections (top
-    // right) act on the editor, so they sit in its panel rather than in the screen's
-    // action bar, and are hidden while `body` (the source document) is shown.
-    const showSectionControls = !hideSectionRow && !body;
-    const structure = showSectionControls && structureSlot ? structureSlot(ctx) : null;
-    return (
-      <Container header={<Header variant="h2">Document Editor</Header>}>
-        <SpaceBetween size="s">
-          {showSectionControls && (sectionSelect || structure) && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ minWidth: '280px' }}>{sectionSelect}</div>
-              {structure}
-            </div>
-          )}
-          {!body && headerExtras && headerExtras(ctx)}
-          {error && <Alert type="error">{error}</Alert>}
-          {body ?? panes}
-        </SpaceBetween>
-      </Container>
-    );
-  }
-
+  // The section dropdown (top left) acts on the editor, so it sits in its panel rather
+  // than in the page's bar, and is hidden while `body` (the source document) is shown.
   return (
-    <SpaceBetween size="s">
-      {!hideHeader && (
-        <Header
-          variant="h3"
-          actions={
-            !isReadOnly &&
-            actionsPlacement === 'header' && (
-              <SpaceBetween direction="horizontal" size="xs">
-                <Button onClick={handleDiscard} disabled={!hasChanges || isSaving}>
-                  Discard changes
-                </Button>
-                <Button variant="primary" onClick={() => void handleSave()} loading={isSaving} disabled={!hasChanges}>
-                  {saveButtonText ?? 'Save changes'}
-                </Button>
-              </SpaceBetween>
-            )
-          }
-        >
-          {title ?? objectKey}
-        </Header>
-      )}
-
-      {headerExtras && headerExtras(ctx)}
-
-      {/* The section selector and the control that changes the sections themselves, on one
-          row. Wraps rather than holding one line: a six-section packet already fills this
-          row, and the pills must not be pushed into an overflow to make space for a button. */}
-      {!hideSectionRow && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-          {sectionToggle ?? <span />}
-          {structureSlot && structureSlot(ctx)}
-        </div>
-      )}
-
-      {error && <Alert type="error">{error}</Alert>}
-      {noGeometry && <Alert type="info">{noGeometry}</Alert>}
-
-      {panes}
-    </SpaceBetween>
+    <Container header={<Header variant="h2">Document Editor</Header>}>
+      <SpaceBetween size="s">
+        {!body && sectionSelect && <div style={{ minWidth: '280px', maxWidth: '480px' }}>{sectionSelect}</div>}
+        {!body && headerExtras && headerExtras(ctx)}
+        {error && <Alert type="error">{error}</Alert>}
+        {body ?? panes}
+      </SpaceBetween>
+    </Container>
   );
 };
 

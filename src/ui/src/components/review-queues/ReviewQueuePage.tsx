@@ -55,8 +55,8 @@ interface ReviewQueuePageProps {
 }
 
 const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element => {
-  const { queue: rawQueue = '' } = useParams();
-  const queueId = decodeURIComponent(rawQueue);
+  // The router has already decoded the queue id once.
+  const { queue: queueId = '' } = useParams();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin, loading: roleLoading } = useUserRole();
   const reviewWork = useOptionalReviewWork();

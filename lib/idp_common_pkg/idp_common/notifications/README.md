@@ -103,8 +103,10 @@ notify(type_id="...", title="...", source="...", groups=["Admin"], severity="war
 `default_severity`. `link` must be an **internal route** (starting with a single
 `/`); anything with a scheme or host, `://`, a backslash, whitespace or a control
 character is refused, matching the UI's `isInternalRoute`. Build document links with
-`document_detail_link(object_key)`, which encodes the key exactly as the UI's
-`encodeURIComponent` does.
+`document_detail_link(object_key)` (the document page) or `document_edit_link(object_key)`
+(the document's edit page, which opens its review item while it is in review), which
+encode the key exactly as the UI's `encodeURIComponent` does. Both are pinned against
+the UI's builders by one fixture, `tests/resources/link_parity.json`.
 
 ## Dedupe
 

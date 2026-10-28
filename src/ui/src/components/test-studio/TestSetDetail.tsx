@@ -4,10 +4,9 @@
 /**
  * TestSetDetail — list a test set's documents (route: /test-studio/sets/:testSetId).
  *
- * Mirrors the Document List -> Document Details structure of the main app:
- * each row links to the TestSetDocumentDetail page, with per-row quick
- * actions ("View Source" / "Ground Truth") that deep-link straight to the
- * corresponding view on that page.
+ * Mirrors the Document List structure of the main app: each row links to the
+ * document's Test Studio item (its edit page), where its ground truth is read and
+ * edited.
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -55,7 +54,7 @@ import useUserRole from '../../hooks/use-user-role';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import Navigation from '../genaiidp-layout/navigation';
 import { appLayoutLabels } from '../common/labels';
-import { TEST_STUDIO_PATH, testSetDocumentHref, testSetAnnotateHref } from '../../routes/constants';
+import { TEST_STUDIO_PATH, testSetAnnotateHref } from '../../routes/constants';
 import TestDocThumbnail from './TestDocThumbnail';
 import ReviewEffortModal from './ReviewEffortModal';
 import GenerateDraftLabelsModal from './GenerateDraftLabelsModal';
@@ -63,7 +62,7 @@ import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
 import PublishVersionModal, { type PublishVersionInput } from './PublishVersionModal';
 import RemoveDocumentsModal from './RemoveDocumentsModal';
-import type { TestSetDocumentSectionRef } from './GroundTruthSectionEditor';
+import type { TestSetDocumentSectionRef } from '../edit-screen/test-set-editor-slots';
 import { createLatestResponseGuard } from './latestResponseOnly';
 
 const client = generateClient();
@@ -117,21 +116,6 @@ export const renderLabelSource = (labelSource?: string | null): React.JSX.Elemen
   const badge = LABEL_SOURCE_BADGES[labelSource];
   return badge ? <Badge color={badge.color}>{badge.text}</Badge> : <Badge color="grey">{labelSource}</Badge>;
 };
-
-/**
- * Provenance for a baseline whose bytes are already loaded.
- *
- * `renderLabelSource(undefined)` renders "Unlabeled", which is correct for a
- * document row where the baseline may not exist at all. It is wrong once the file
- * has been read: the pipeline writes `labelSource` and a hand-uploaded ground-truth
- * file does not, so absence in a loaded baseline means authored ground truth.
- *
- * The server already codifies this — `_attach_label_metadata` falls back to
- * `uploaded` for exactly this reason — and the editor did not, so the same document
- * read "Uploaded" in the review queue and "Unlabeled" in the editor header, two
- * lines below an alert saying "Already ground truth".
- */
-export const renderLoadedLabelSource = (labelSource?: string | null): React.JSX.Element => renderLabelSource(labelSource || 'uploaded');
 
 /**
  * Confidence as a percentage, colored against the configured alert threshold: red
@@ -1257,7 +1241,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   id: 'objectKey',
                   header: 'Document',
                   cell: (item: TestSetDocumentItem) => (
-                    <Link href={testSetDocumentHref(testSetId ?? '', item.objectKey)}>{item.objectKey}</Link>
+                    <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey)}>{item.objectKey}</Link>
                   ),
                   sortingComparator: compareByObjectKey,
                 },

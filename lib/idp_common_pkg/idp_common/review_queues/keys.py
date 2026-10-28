@@ -14,7 +14,9 @@ Base table (``PK`` / ``SK``):
 * ``QREG`` / ``Q#<queueId>``: the queue registry (with a member snapshot).
 * ``QUEUE#<queueId>`` / ``ANNOUNCE``: the "items waiting" debounce.
 * ``TSDOC#<testSetId>`` / ``D#<objectKey>``: a Test Studio document's summary
-  (labels, alerts, classes) and assignment; its content stays in S3.
+  (labels, alerts, classes) and assignment; its content stays in S3. Each section
+  draft is a top-level ``Draft#<sectionId>`` map on it (``Revision``, ``S3Key``,
+  ``UpdatedAt``, ``UpdatedBy``); the draft itself is in S3.
 
 Sparse GSIs, present only in the states named:
 
@@ -121,6 +123,41 @@ def tsdoc_pk(test_set_id: str) -> str:
 
 def tsdoc_key(test_set_id: str, object_key: str) -> dict[str, str]:
     return {"PK": tsdoc_pk(test_set_id), "SK": f"D#{object_key}"}
+
+
+#: Prefix of a Test Studio document's per-section draft attributes.
+TSDOC_DRAFT_ATTR_PREFIX = "Draft#"
+
+
+def tsdoc_draft_attr(section_id: str) -> str:
+    """The ``Draft#<sectionId>`` attribute of a Test Studio document item."""
+    return f"{TSDOC_DRAFT_ATTR_PREFIX}{section_id}"
+
+
+def tsdoc_draft_entries(item: Optional[dict]) -> list[dict[str, Any]]:
+    """The section drafts a Test Studio document item records, ordered by section id.
+
+    Plain dicts (``section_id``, ``revision``, ``s3_key``, ``updated_at``,
+    ``updated_by``); an attribute that is not a well-formed draft map is skipped.
+    """
+    entries = []
+    for attr, value in (item or {}).items():
+        if not str(attr).startswith(TSDOC_DRAFT_ATTR_PREFIX) or not isinstance(
+            value, dict
+        ):
+            continue
+        if not value.get("S3Key") or value.get("Revision") is None:
+            continue
+        entries.append(
+            {
+                "section_id": str(attr)[len(TSDOC_DRAFT_ATTR_PREFIX) :],
+                "revision": int(value["Revision"]),
+                "s3_key": str(value["S3Key"]),
+                "updated_at": str(value.get("UpdatedAt") or ""),
+                "updated_by": str(value.get("UpdatedBy") or ""),
+            }
+        )
+    return sorted(entries, key=lambda e: (len(e["section_id"]), e["section_id"]))
 
 
 def tsdoc_owner_pk(reviewer_key: str) -> str:
