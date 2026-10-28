@@ -1026,6 +1026,31 @@ def test_saving_requires_edited_data(mod, table):
         )
 
 
+@pytest.mark.unit
+def test_saving_requires_a_section_id(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="objectKey and sectionId are required"):
+        mod.handler(
+            event(
+                "saveSectionReviewEdits",
+                ["Reviewer"],
+                arguments={"objectKey": OBJECT_KEY, "editedData": "{}"},
+            ),
+            None,
+        )
+
+
+@pytest.mark.unit
+def test_saving_edits_on_an_unknown_document_is_refused(mod, table):
+    service = FakeDocumentService(None)
+    with (
+        patch.object(mod, "create_document_service", return_value=service),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        mod.save_section_review_edits(OBJECT_KEY, "sec-1", "{}", "rev", False)
+    assert service.updated == []
+
+
 # --------------------------------------------------------------------------
 # Persisting the reviewer's edits
 # --------------------------------------------------------------------------
@@ -1147,6 +1172,26 @@ def test_an_object_key_with_no_run_prefix_uses_the_whole_key_as_the_filename(
     assert (
         s3_json(mod, TEST_SET_BUCKET, baseline_key("ts-1", "solo.pdf", "sec-1"))["x"]
         == 1
+    )
+
+
+@pytest.mark.unit
+def test_a_correction_that_is_not_an_object_writes_no_baseline(mod, table, caplog):
+    """A list or a scalar is not a label; it is set aside, not tried and failed."""
+    put_doc(table, TestSetId="ts-1")
+    with caplog.at_level("WARNING"):
+        mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", "[1, 2]")
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
+    assert "Ignoring a non-object correction" in caplog.text
+    assert "Failed to write correction" not in caplog.text
+
+
+@pytest.mark.unit
+def test_an_absent_label_reads_as_none(mod):
+    """A sibling section with no label yet is not reviewed, rather than an error."""
+    assert (
+        mod._read_json(TEST_SET_BUCKET, "ts-1/baseline/x.pdf/sections/9/result.json")
+        is None
     )
 
 
