@@ -23,6 +23,7 @@ import {
   ExpandableSection,
 } from '@cloudscape-design/components';
 import useConfiguration from '../../hooks/use-configuration';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import useUserRole from '../../hooks/use-user-role';
 import useSettingsContext from '../../contexts/settings';
@@ -219,8 +220,6 @@ const CapacityPlanningLayout = () => {
     customDateRange,
     setCustomDateRange,
   } = useDocumentsContext();
-
-  const [manualPattern, setManualPattern] = useState<string | null>(null);
 
   // The list is loaded by whichever page asks for it first, and only the Document
   // List used to ask, so opening Capacity Planning directly left Populate with
@@ -480,12 +479,12 @@ const CapacityPlanningLayout = () => {
           data.summarizationRequests += estimateRequestsFromTokens(tokenCount, 'Summarization');
         } else if (key.startsWith('BDAProject/bda/') && metrics.pages) {
           const pages = Number(metrics.pages) || 0;
-          // Extract page count from BDA pattern
+          // Extract page count from BDA-mode metering
           data.avgPages = Math.max(data.avgPages, pages);
           logger.debug(`📄 Extracted page count from BDA ${key}: ${pages} pages`);
           const tokensPerPageConfig = import.meta.env.VITE_BDA_TOKENS_PER_PAGE;
           if (!tokensPerPageConfig) {
-            logger.warn('VITE_BDA_TOKENS_PER_PAGE environment variable is not configured for BDA pattern');
+            logger.warn('VITE_BDA_TOKENS_PER_PAGE environment variable is not configured for BDA-mode documents');
             return; // Skip this entry in forEach
           }
           const estimatedTokensPerPage = parseInt(tokensPerPageConfig, 10);
@@ -1177,29 +1176,12 @@ const CapacityPlanningLayout = () => {
     return [defaultOption, ...configuredOptions];
   }, [documentConfigs]);
 
+  // Capacity planning sizes the pipeline (Textract + Bedrock) only. Every stack
+  // deploys the unified pattern, and the calculator's API names the pipeline
+  // `PATTERN-2`; BDA mode is not supported (see the BDA alert below).
   const getDeployedPattern = () => {
-    // Manual override takes precedence over everything
-    if (manualPattern) {
-      return manualPattern;
-    }
-
-    // Use the same logic as the left panel - simple and reliable
-    if (deploymentSettings?.IDPPattern) {
-      const pattern = String(deploymentSettings.IDPPattern).split(' ')[0]; // Extract just "Pattern1", "Pattern2", "Unified", etc.
-
-      if (pattern === 'Pattern1') {
-        return 'PATTERN-1';
-      }
-      if (pattern === 'Pattern3') {
-        return 'PATTERN-3';
-      }
-      if (pattern === 'Pattern2') {
-        return 'PATTERN-2';
-      }
-      // Unified pattern uses the same Bedrock pipeline as Pattern-2
-      if (pattern.toLowerCase() === 'unified') {
-        return 'PATTERN-2';
-      }
+    if (deploymentSettings?.IDPPattern && String(deploymentSettings.IDPPattern).split(' ')[0].toLowerCase() === 'unified') {
+      return 'PATTERN-2';
     }
 
     // If data is still loading, return loading state
@@ -1207,7 +1189,7 @@ const CapacityPlanningLayout = () => {
       return 'LOADING...';
     }
 
-    // No fallback - require explicit pattern configuration
+    // No fallback - deployment settings must name the unified pattern
     return 'CONFIGURATION_REQUIRED';
   };
 
@@ -1490,7 +1472,7 @@ const CapacityPlanningLayout = () => {
       }
 
       if (!input.pattern || input.pattern === 'loading...' || input.pattern === 'configuration_required') {
-        throw new Error('Pattern not loaded yet, please wait and try again');
+        throw new Error('Deployment settings not loaded yet, please wait and try again');
       }
 
       if (!input.timeSlots || input.timeSlots === '[]') {
@@ -1505,7 +1487,7 @@ const CapacityPlanningLayout = () => {
       if (!input.pattern || input.pattern === 'loading...' || input.pattern === 'configuration_required') {
         setResults({
           success: false,
-          errorMessage: 'Pattern not detected. Please ensure deployment is complete.',
+          errorMessage: 'Deployment settings not detected. Please ensure deployment is complete.',
           metrics: [
             { label: 'Total Docs', value: '0' },
             { label: 'Total Pages', value: '0' },
@@ -1807,7 +1789,7 @@ const CapacityPlanningLayout = () => {
       return quotaList;
     }
     return [];
-  }, [documentConfigs, processingConfig, configuration, results, manualPattern, deploymentSettings]);
+  }, [documentConfigs, processingConfig, configuration, results, deploymentSettings]);
 
   const groupQuotasByCategory = (quotas: QuotaRequirement[]) => {
     const grouped: Record<string, QuotaRequirement[]> = {};
@@ -1974,7 +1956,7 @@ const CapacityPlanningLayout = () => {
 
   const exportCapacityPlan = () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = prompt('Enter filename for export:', `capacity-plan-${getDeployedPattern()}-${timestamp}`);
+    const filename = prompt('Enter filename for export:', `capacity-plan-${timestamp}`);
     if (!filename) return;
 
     let csvContent = '';
@@ -1987,7 +1969,7 @@ const CapacityPlanningLayout = () => {
     csvContent += 'GENERAL INFORMATION\n';
     csvContent += '-------------------\n';
     csvContent += `Export Date:,${new Date().toISOString()}\n`;
-    csvContent += `Pattern:,${getDeployedPattern().toUpperCase()}\n`;
+    csvContent += 'Processing Mode:,Pipeline (Textract + Bedrock)\n';
 
     // Configuration profile information
     const currentVersion = versions.find((v) => v.versionName === selectedConfigVersion?.value);
@@ -2140,7 +2122,7 @@ const CapacityPlanningLayout = () => {
             <strong>✓</strong> Using configuration profile: <Badge color="green">{selectedConfigVersion?.value || 'default'}</Badge>
             {selectedConfigVersion?.label?.includes('Active') && <Badge color="blue">Active</Badge>}
             <Box margin={{ top: 'xs' }}>
-              Token calculations and processing times are loaded from your pattern configuration. Update models in{' '}
+              Token calculations and processing times are loaded from the selected configuration profile. Update models in{' '}
               <strong>View/Edit Configuration</strong> to see changes reflected immediately, or select a different configuration profile
               above.
             </Box>
@@ -2152,41 +2134,26 @@ const CapacityPlanningLayout = () => {
         {!configuration && openingProfile.status !== 'none' && (
           <Alert type="warning">
             <strong>⚠️ Configuration not loaded.</strong> Please visit the <strong>View/Edit Configuration</strong> tab first to load your
-            pattern configuration, then return to Capacity Planning.
+            configuration profile, then return to Capacity Planning.
           </Alert>
         )}
 
-        {getDeployedPattern() === 'PATTERN-2' && !classificationModelOf(configuration?.classification) && !manualPattern && (
+        {isBdaModeConfig(configuration as Record<string, unknown> | null) && (
           <Alert type="warning">
-            <strong>⚠️ Pattern Detection Used Fallback.</strong> Using Pattern 2 default. Configure models in{' '}
-            <strong>View/Edit Configuration</strong> for accurate calculations.
-            <Box margin={{ top: 'm' }}>
-              <strong>Manual Override Available:</strong> If you know your actual deployment pattern:
-              <Box margin={{ top: 'xs' }}>
-                <SpaceBetween direction="horizontal" size="s">
-                  <Button variant="normal" onClick={() => setManualPattern('PATTERN-1')}>
-                    Pattern 1 (BDA)
-                  </Button>
-                  <Button variant="normal" onClick={() => setManualPattern('PATTERN-2')}>
-                    Pattern 2 (Bedrock)
-                  </Button>
-                  <Button variant="normal" onClick={() => setManualPattern('PATTERN-3')}>
-                    Pattern 3 (SageMaker)
-                  </Button>
-                </SpaceBetween>
-              </Box>
-            </Box>
+            <strong>⚠️ BDA mode is not supported.</strong> This configuration profile processes documents with Bedrock Data Automation (
+            <code>use_bda: true</code>). Capacity planning sizes the pipeline mode steps (OCR, Classification, Extraction, Assessment,
+            Summarization) only, so its quota requirements do not apply to this profile.
           </Alert>
         )}
 
-        {manualPattern && (
-          <Alert type="warning">
-            <strong>⚠️ Manual Pattern Override Active:</strong> Using manually selected {manualPattern}.
-            <Button variant="link" onClick={() => setManualPattern(null)}>
-              Reset to Automatic Detection
-            </Button>
-          </Alert>
-        )}
+        {configuration &&
+          !isBdaModeConfig(configuration as Record<string, unknown>) &&
+          !classificationModelOf(configuration?.classification) && (
+            <Alert type="warning">
+              <strong>⚠️ No classification model configured.</strong> Configure models in <strong>View/Edit Configuration</strong> for
+              accurate calculations.
+            </Alert>
+          )}
 
         {/* Beta Feedback Alert */}
         <Alert type="info">
@@ -2862,7 +2829,7 @@ const CapacityPlanningLayout = () => {
                       <li>No token usage configured (check Expected Token Usage section)</li>
                       <li>All OCR token values are zero</li>
                       <li>Backend calculation returned empty quota requirements</li>
-                      <li>Pattern detection issue</li>
+                      <li>The configuration profile runs in BDA mode, which capacity planning does not support</li>
                     </ul>
                     <div>
                       <strong>Debug info:</strong>
@@ -2870,7 +2837,6 @@ const CapacityPlanningLayout = () => {
                     <div>Results success: {results?.success ? 'true' : 'false'}</div>
                     <div>Quota requirements length: {results?.quotaRequirements?.length || 0}</div>
                     <div>Has calculated: {hasCalculated ? 'true' : 'false'}</div>
-                    <div>Pattern: {getDeployedPattern()}</div>
                     <div>
                       Document configs with OCR tokens:{' '}
                       {documentConfigs.filter((config) => config.ocrTokens && parseFloat(String(config.ocrTokens)) > 0).length}
@@ -2887,7 +2853,7 @@ const CapacityPlanningLayout = () => {
                 variant="primary"
                 iconName="download"
                 onClick={() => {
-                  const filename = prompt('Enter filename for export:', `capacity-planning-${getDeployedPattern()}`);
+                  const filename = prompt('Enter filename for export:', 'capacity-planning');
                   if (!filename) return;
 
                   // Create CSV content
@@ -3475,7 +3441,7 @@ const CapacityPlanningLayout = () => {
                           });
                         })()}
 
-                        {/* Legend - Dynamic based on pattern */}
+                        {/* Legend - Dynamic based on OCR backend */}
                         <div
                           style={{
                             position: 'absolute',
@@ -3486,16 +3452,8 @@ const CapacityPlanningLayout = () => {
                           }}
                         >
                           {(() => {
-                            const pattern = getDeployedPattern();
                             const isBedrockOcr = configuration?.ocr?.backend === 'bedrock';
 
-                            if (pattern === 'PATTERN-1') {
-                              return (
-                                <>
-                                  <span style={{ color: '#ef4444' }}>■</span> Summarization
-                                </>
-                              );
-                            }
                             return (
                               <>
                                 {isBedrockOcr && (

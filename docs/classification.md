@@ -480,7 +480,7 @@ statements filed back to back merged into one section where page granularity got
 them right. `boundary_hints: class_names` was also measured on the over-split
 case and left it at 3 sections. See [Neither granularity dominates, and the
 failure modes are
-opposite](#neither-granularity-dominates-and-the-failure-modes-are-opposite) for
+opposite](#page-versus-packet-granularity-opposite-failure-modes) for
 the pair. So on a corpus of long single-section documents, packet granularity is a
 genuine fix for this shape; on a mixed corpus the class-description `BOUNDARY:`
 sentence remains the only lever measured not to cost anything elsewhere.
@@ -1240,7 +1240,7 @@ title, an institution's own name for a statement. Those give the model a literal
 token to look for at the top of a page. If your class names are internal labels
 (`type_a`, `customer_doc_3`), `class_names` sends tokens that match nothing and
 costs the saving for no signal. On the over-split fixture [measured
-above](#neither-granularity-dominates-and-the-failure-modes-are-opposite),
+above](#page-versus-packet-granularity-opposite-failure-modes),
 `class_names` changed nothing, which is the expected result when the ambiguity
 is about extent rather than identity. `class_names` sends names only, never
 descriptions or examples.
@@ -1362,7 +1362,7 @@ modality only — it is always one call per section).
   requires a real OCR backend only if you still want the page-content regex
   shortcut (which reads the text even when it is not sent).
 
-### Neither granularity dominates, and the failure modes are opposite
+### Page versus packet granularity: opposite failure modes
 
 The hardest boundary case is a **reprinted identity block**: a multi-page
 document whose header, account number and address appear again on every page.
@@ -2279,7 +2279,7 @@ as `section_confidence`: a fabricated `1.0` there would be indistinguishable
 from a genuinely confident classification and would silently corrupt any
 analysis of it.
 
-### Section confidence is the weakest page
+### Section confidence is the lowest page confidence
 
 A section's confidence is the **minimum** across its pages, and *not scored* if
 any of its pages is unscored. A mean would hide the one page the classifier was

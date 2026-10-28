@@ -269,7 +269,7 @@ free-form content whose names are yours to choose — your document `classes`, a
 pipeline hook's `args` — and the pipeline-hook blocks, which keep whatever they are
 given.
 
-#### Pricing and Model Limits are separate records, and they report the same way
+#### Pricing and Model Limits records
 
 The **Pricing** and **View / Edit Model Limits** panels edit their own records
 rather than part of the configuration document, so the paragraphs above describe

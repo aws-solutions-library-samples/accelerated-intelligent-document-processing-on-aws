@@ -5,7 +5,7 @@ title: "Greedy Decoding and Invalid Tool-Use Sequences"
 <!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
 <!-- SPDX-License-Identifier: MIT-0 -->
 
-# Does `topK: 1` fix the invalid tool-use failures? No — and here is what does cause them
+# Greedy Decoding and Invalid Tool-Use Sequences
 
 > **Why this page exists.** Nova Lite fails mid-stream on Advanced (agentic)
 > extraction with Bedrock's `Model produced invalid sequence as part of ToolUse`.
@@ -33,7 +33,7 @@ Measured 2026-09-20, `us-west-2`, code version `v0.6.10.dev1`, stack
 
 ---
 
-## 1. `topK` is not a Converse field, and every family carries it differently
+## 1. How `topK` is passed to each model family
 
 `inferenceConfig.topK` does not exist. **botocore rejects it client-side, for every
 model**, before any request is sent:
@@ -85,9 +85,9 @@ round masked the `topK` answer for those models, because they rejected the reque
 
 ---
 
-## 2. The A/B on Nova Lite: a well-powered null
+## 2. A/B test on Nova Lite
 
-### 2a. Direct-Bedrock micro-probe — the layer the conclusion rests on
+### 2a. Direct Bedrock probe
 
 Direct `bedrock-runtime.converse_stream` calls outside `idp_common`, so the
 measurement does not inherit the pipeline's prompt assembly or model routing.
@@ -124,7 +124,7 @@ the arms are not distinguishable (*p* = 0.44 and *p* = 1.00). Treat the pooled r
 the generous reading: the movement of a single arm between batches bounds how much
 meaning a 2.5-point difference between arms can carry.
 
-### 2b. Power — read this beside the null every time
+### 2b. Statistical power
 
 At the observed base rate of 0.787 and n = 160 per arm (two-sided α = 0.05), 80%
 power detects a drop in the failure rate only as far as **0.646** — 14 percentage
@@ -140,7 +140,7 @@ Every point estimate in §2a moved in the *unhelpful* direction, none of them
 significantly. This is a null result with a stated floor, not a demonstration that the
 two settings are identical.
 
-### 2c. Pipeline A/B — two units of observation, disagreeing in direction
+### 2c. End-to-end pipeline A/B
 
 64 pipeline runs on the deployed stack (32 per arm), Nova Lite extraction, Advanced
 mode, across three documents at unequal repeat counts: `longdesc_100` and
@@ -187,7 +187,7 @@ independent evidence.
 
 ---
 
-## 3. Nova Lite's completion rate on the Advanced path, and why the survivor quality must not be quoted
+## 3. Nova Lite's completion rate in Advanced mode
 
 Of the 64 pipeline runs, **23 reached `COMPLETED`** — 14 without `topK`, 9 with
 `topK: 1`. One further run was still `EXTRACTING` when the set was scored and is
@@ -205,7 +205,7 @@ biased toward the easiest work.
 
 ---
 
-## 4. The trigger: a list-of-objects that must be closed before further keys, with content to fill it
+## 4. What triggers the invalid tool-use sequences
 
 Walking the request shape from trivial to real, one property group at a time.
 `us.amazon.nova-lite-v1:0`, the same one page of OCR text throughout.
@@ -231,7 +231,7 @@ cause of a malformed call.
 | real schema with the **OCR text removed** | 2,181 | plain | 2 (no-topK arm only) | all valid |
 | real schema **minus** the `Transactions` array — no array anywhere in the schema | 1,964 | rows demanded | 3 | all **invalid**, both arms — but see the caveat below |
 
-### What is ruled out
+### Causes ruled out
 
 **Schema size is not the trigger.** A 1,696-character schema passes and a
 401-character one fails. **JSON Schema vocabulary is not the trigger** either:
@@ -241,7 +241,7 @@ no effect. Nor is the **amount of input**: doubling the OCR text did not change 
 outcome. Content is nonetheless *necessary* — with the OCR text removed, so there is
 nothing to extract, the real schema passes.
 
-### What is established, and what is not
+### What is and is not established
 
 **One shape is demonstrably sufficient to trigger it: a list-of-objects property with
 at least one sibling scalar property, and content to fill the list.** That is the
@@ -266,7 +266,7 @@ would need the same variant re-run under the plain prompt, which was not done.
 schema with content is one shape that reliably produces it; and whether that is the
 *only* such shape is open.
 
-### Two sample-size limits on the table
+### Sample-size limits
 
 - Every "all valid" row is **n = 2 or n = 3**. A shape that truly failed 20% of the
   time passes 3/3 about half the time, so these rows establish that those shapes are

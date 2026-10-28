@@ -5,7 +5,7 @@ title: "Advanced Extraction — Seven Candidate Refinements, Measured"
 <!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
 <!-- SPDX-License-Identifier: MIT-0 -->
 
-# Advanced (agentic) extraction: seven candidate refinements, measured
+# Advanced Extraction — Seven Candidate Refinements, Measured
 
 > **Why this page exists.** After the v0.6.8 release benchmark, seven ideas were on
 > the table for making *advanced* extraction cheaper or more complete: getting the
@@ -38,7 +38,7 @@ where that pricing is itself wrong. Extraction model is Sonnet 5
 
 ---
 
-## 0. First, the noise floor — because most of these deltas are smaller than it
+## 0. Run-to-run noise floor
 
 Two arms in this study were run with configurations that are **byte-identical in
 behaviour**: the arm labelled `lazy-images-off` set a config key that nothing read
@@ -71,7 +71,7 @@ configuration — replicate B recovered every row on the same inputs.
 
 ---
 
-## 1. Sonnet 5 on the 1M-token context tier: the 1.8× price gap is mostly a cost-table artifact
+## 1. Sonnet 5 on the 1M-token context tier: actual cost versus list price
 
 Sonnet 5 can be selected as `sonnet5_1m`, which the product turns into a request on
 the 1M-token context tier. The hope was that wider shards would remove the shard
@@ -211,7 +211,7 @@ is §2.
 
 ---
 
-## 2. Wider shards on the 1M tier: they failed outright, and once fixed they cost 5×
+## 2. Wider shards on the 1M-token context tier
 
 The point of a 1M-token context is to stop cutting documents into shards. The arm
 that tests that is `sonnet5_1m` combined with `shard_pages=wide25`, which sets
@@ -244,7 +244,7 @@ too long for requested model.` The configuration that exists to prevent exactly 
 on that path it was being applied to the wrong copy of the images. That is the third
 defect in §4, and it is the reason a wide-shard setting fails instead of degrading.
 
-### The re-run with the fix in place: the failures move, and the cost gets worse
+### Re-run after the fix
 
 The arm above was re-run on the same stack with the §4 and §5 fixes deployed
 (`advfix2__sonnet5-1m-wide25`, 2026-09-15). Comparing it against the post-fix default
@@ -306,7 +306,7 @@ rows.
 
 ---
 
-## 3. Prompt caching does survive sharding
+## 3. Prompt caching with sharding
 
 The concern was mechanical: each shard is a separate agent conversation, so a
 50-page document might be paying to write the same schema prefix five times and
@@ -332,7 +332,7 @@ this checkable at all.
 
 ---
 
-## 4. "Images off" was not a measurement, it was three bugs
+## 4. Turning page images off
 
 The idea was ordinary: for a table document the agent works from OCR text and can
 fetch a page with `view_image` when it needs to, so attaching every page image to
@@ -444,7 +444,7 @@ where the cap allowed 2, and 8 where 4 pages should have produced 4.
 
 ---
 
-## 5. Parse-first: the table tool's rows were being thrown away over date formats
+## 5. Parse-first table extraction and date formats
 
 The most valuable form of "parse first" is already implemented: `parse_table` →
 `map_table_to_schema` → `finalize_table_extraction` keeps the full parsed rows in
@@ -510,7 +510,7 @@ that is observability only, with no effect on what the model sees.
 > unchanged at 1.000) is inferred from the 1,512,506 → 681,222 output-token drop
 > measured below for the analogous single-pass fix, not observed for this change.
 
-### What the two fixes are worth, measured
+### Measured effect of the two fixes
 
 Both fixes — the date transforms from this section and the sharded-path `lazy_images`
 fix from §4 — were deployed to the live stack's extraction Lambdas, and the same 12-run
@@ -566,7 +566,7 @@ unaffected, since both sides of every one of them ran on the same image.
 
 ---
 
-## 6. Textract feature set: `[LAYOUT]` alone is 23% cheaper and breaks the parser on the densest document
+## 6. Textract feature set: `[LAYOUT]` without `[TABLES]`
 
 This was not one of the seven, but it fell out of the same corpus and it is the only
 real cost lever measured here, so it belongs on the page. The `advscalelayout` suite
@@ -606,7 +606,7 @@ document — which is a larger change than this study's scope.
 
 ---
 
-## 7. Passing OCR confidence through instead of asking a model: not a cost lever
+## 7. Using OCR confidence instead of a confidence model
 
 The proposal was to report Textract's per-cell OCR confidence for cells the
 deterministic parser produced, instead of running a separate model pass to score
@@ -634,7 +634,7 @@ read is closer to a guess — and reliability, since the model pass has historic
 truncated and looped. Those are real arguments, but they are not this study's, and
 they would have to be made on a corpus with actual OCR errors.
 
-## 8. Bedrock batch inference at 50%: the agentic path cannot use it, and it would not pay
+## 8. Bedrock batch inference
 
 Two independent findings, either one sufficient.
 
@@ -672,7 +672,7 @@ available runs it is roughly a wash for Claude arms (+2% to +6%), clearly worse 
 for the highest-caching arm, and marginally better for one — not the 50% saving the
 price sheet suggests.
 
-## 9. Deliberately not measured
+## 9. Not measured in this study
 
 Two items were dropped before spending anything, and both deserve a sentence so the
 next person does not re-run them.

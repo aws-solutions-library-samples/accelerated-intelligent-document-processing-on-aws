@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 # All settings not explicitly defined here are inherited from system defaults.
-notes: Pattern-2 default configuration - Bedrock LLM-based processing
+notes: Pipeline mode default configuration - Bedrock LLM-based processing
 classes:
 - $schema: https://json-schema.org/draft/2020-12/schema
   $id: BANK_CHECK

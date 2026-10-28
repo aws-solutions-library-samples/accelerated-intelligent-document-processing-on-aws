@@ -94,7 +94,7 @@ of scans per packet, with extraction and assessment dominating). A deployment wi
 very cheap extraction and very long documents will see classification — and this
 setting — take a larger share.
 
-## 2. Headline numbers
+## 2. Results
 
 | Metric | Nova 2 Lite (default) | Claude Haiku 4.5 |
 |---|---|---|
@@ -114,7 +114,7 @@ Accuracy being equal is itself worth noting: on this corpus the cheaper default
 classifies as well as the 6× model. The difference is entirely in *knowing when it
 is wrong*.
 
-## 3. The failure mode, quantified
+## 3. How confidence is distributed across pages
 
 Confidence distribution over all 298 pages:
 
@@ -137,7 +137,7 @@ wrong), so the signal is a coarse two-level flag rather than a probability.
 
 Haiku 4.5's distribution is graded, and its errors concentrate in the low bins.
 
-## 4. What it buys you: escalation at a threshold
+## 4. Escalating low-confidence pages at a threshold
 
 Flag pages below a confidence threshold for review. *Error recall* = share of the
 model's misclassifications caught; *precision* = share of flagged pages that really
@@ -165,7 +165,7 @@ Haiku dominates on both axes at its best operating point: fewer *wasted* reviews
 Nova's ceiling is structural — 23 errors are indistinguishable at 0.95, so no
 threshold can reach them.
 
-## 5. Prompt caching does not engage for Haiku here
+## 5. Prompt caching with Haiku
 
 Measured per page: Nova 2 Lite served **~934 input tokens/page from prompt cache**;
 Haiku 4.5 reported **zero** cache reads and zero cache writes, paying its full
@@ -214,7 +214,7 @@ run's classification spend is reported under `BoundaryDetection/` and
    The harness prints `class_calibration_separation`, `class_accuracy` and
    `n_class_scored_pages` for exactly this purpose.
 
-## 7. Honesty / limits
+## 7. Limitations
 
 - **One run per model per mode, 20 packets, 298 pages.** No repeats, so neither the
   0.7-point between-model accuracy gap nor the ±1-point off-vs-topk deltas are claims

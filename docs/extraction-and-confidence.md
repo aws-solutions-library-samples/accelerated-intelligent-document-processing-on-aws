@@ -1012,7 +1012,7 @@ now preserved (the first becomes the section result, the rest are recorded in
 `metadata.recovered_instances`) and the section is flagged for review rather than
 failed.
 
-#### The silent case, and the warning that catches it
+#### When the model returns a single record for a multi-record section
 
 The hard case is the model returning a **single object** for a several-record
 section. Only that one record exists in the response, so nothing can recover the
@@ -2920,4 +2920,4 @@ the system automatically adds `confidence_threshold` from configuration.
 - [OpenAI GPT-5.x Models](openai-models.md) — non-agentic-only model support
 - [Classification](classification.md) — excluding static pages
 - [Web UI](web-ui.md) — UI integration and display
-- [Pattern 2 Reference](pattern-2.md) — Pipeline mode details
+- [Pipeline Mode Reference](pattern-2.md) — Pipeline mode details

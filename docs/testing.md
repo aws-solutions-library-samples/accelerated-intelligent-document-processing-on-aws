@@ -202,7 +202,7 @@ under `tests/unit/` is in it. And because nothing gates them, a broken one stays
 broken: a test whose seams are all mocked needs no credentials and belongs in the
 default gate, where something will notice.
 
-### A run can measure the wrong checkout, and the `make` targets pin against it
+### Making sure a run tests this checkout
 
 `idp_common` and the SDKs are **editable installs**, so `import idp_common` reads
 whatever pointer is in the active interpreter's `site-packages` — not necessarily this

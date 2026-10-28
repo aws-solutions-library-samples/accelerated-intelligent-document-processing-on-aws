@@ -881,7 +881,6 @@ make setup-venv
 # Deploy a new stack
 idp-cli deploy \
     --stack-name my-idp-stack \
-    --pattern pattern-2 \
     --admin-email your.email@example.com \
     --max-concurrent 100 \
     --wait
@@ -889,7 +888,6 @@ idp-cli deploy \
 # Deploy with custom configuration
 idp-cli deploy \
     --stack-name my-idp-stack \
-    --pattern pattern-2 \
     --custom-config ./config_library/unified/bank-statement-sample/config.yaml \
     --wait
 

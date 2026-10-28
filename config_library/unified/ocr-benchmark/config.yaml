@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 # All settings not explicitly defined here are inherited from system defaults.
-notes: Pattern-2 default configuration - Bedrock LLM-based processing
+notes: Pipeline mode default configuration - Bedrock LLM-based processing
 chat:
   # ocr-benchmark is an accuracy benchmark; document chat not needed.
   enabled: false

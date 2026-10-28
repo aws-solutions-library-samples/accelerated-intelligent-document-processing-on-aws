@@ -15,7 +15,7 @@
 # preset runs as-is on any account. To run the fine-tuned arm, fine-tune that base
 # model, deploy it, and substitute your own deployment ARN at each `model` marked
 # below. See README.md in this directory.
-notes: Pattern-2 default configuration - Bedrock LLM-based processing
+notes: Pipeline mode default configuration - Bedrock LLM-based processing
 classes:
 - $schema: https://json-schema.org/draft/2020-12/schema
   $id: BANK_CHECK

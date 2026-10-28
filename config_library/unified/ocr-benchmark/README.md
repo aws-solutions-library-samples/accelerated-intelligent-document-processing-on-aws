@@ -22,7 +22,7 @@ The OCR Benchmark dataset contains diverse document types with ground truth JSON
 
 ## Benchmark Results
 
-Evaluated on the full 293-document dataset using IDP Accelerator v0.5.0 (pattern-2, pipeline mode). Evaluation methods are identical across all configs for apples-to-apples comparison.
+Evaluated on the full 293-document dataset using IDP Accelerator v0.5.0 in pipeline mode. Evaluation methods are identical across all configs for apples-to-apples comparison.
 
 | Metric | Previous Config | This Config (Nova 2 Lite) | With Sonnet 4.6 |
 |--------|----------------|---------------------------|------------------|
