@@ -478,9 +478,8 @@ against, and a packet call sees every page at once. The cost is the mirror-image
 error, measured on the same pair of fixtures: at packet granularity two 3-page
 statements filed back to back merged into one section where page granularity got
 them right. `boundary_hints: class_names` was also measured on the over-split
-case and left it at 3 sections. See [Neither granularity dominates, and the
-failure modes are
-opposite](#page-versus-packet-granularity-opposite-failure-modes) for
+case and left it at 3 sections. See [Page versus packet granularity: opposite failure
+modes](#page-versus-packet-granularity-opposite-failure-modes) for
 the pair. So on a corpus of long single-section documents, packet granularity is a
 genuine fix for this shape; on a mixed corpus the class-description `BOUNDARY:`
 sentence remains the only lever measured not to cost anything elsewhere.

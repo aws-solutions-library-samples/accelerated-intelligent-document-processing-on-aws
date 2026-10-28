@@ -366,12 +366,14 @@ Marketplace extensions are published separately by their authors with
 
 Run these as unauthenticated requests from a shell with no AWS credentials. A request
 that succeeds without credentials proves the object is public, while a credential in
-scope could read a private object and hide the problem. Set `REGIONS`, `BASENAME` and
-`PREFIX` to match your release script:
+scope could read a private object and hide the problem. Set `RELEASES` to one
+`<region>:<basename>` pair per publish line in your release script, since the
+basename can differ from region to region, and `PREFIX` to its `--prefix`:
 
 ```bash
 V=$(cat VERSION)
-for R in $REGIONS; do
+for RB in $RELEASES; do
+  R="${RB%%:*}"; BASENAME="${RB##*:}"
   B="https://s3.$R.amazonaws.com/$BASENAME-$R/$PREFIX"
   echo "== $R"
   curl -sI "$B/idp-main_$V.yaml"  -o /dev/null -w '  versioned  %{http_code}\n'
