@@ -45,7 +45,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 VALID_GRANULARITY = {"page", "packet"}
-VALID_STRATEGY = {"single_pass", "two_stage"}
+VALID_STRATEGY = {"combined", "split_then_classify"}
 
 # `"granularity": "x"` (JSON and a notebook's `\"`-escaped source) and
 # `granularity: x` (YAML). An empty value is legitimate: the validator accepts it
@@ -68,6 +68,30 @@ _SETTING = re.compile(
 )
 
 _VALID = {"granularity": VALID_GRANULARITY, "strategy": VALID_STRATEGY}
+
+
+def _is_flat_classification_config(path: Path) -> bool:
+    """Whether ``path`` is a pre-0.9 flat configuration the migration converts.
+
+    Such a file is read through ``v08_to_v09``, which maps the v0.8 spellings of
+    ``strategy`` (``EARLIER_STRATEGY_VALUES``) to the v0.9 values, so a v0.8 spelling
+    in it is the format's own spelling rather than a stale one. A nested file is
+    written in the current layout, so the same spelling there is still a finding:
+    the reader would convert it, but a file in this tree that needs converting is
+    one nobody updated.
+    """
+    from idp_common.config.migrations.v08_to_v09 import _has_flat_keys
+
+    if path.suffix not in {".yaml", ".yml", ".json"}:
+        return False
+    try:
+        import yaml
+
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - unparseable means "not a config"
+        return False
+    return isinstance(doc, dict) and _has_flat_keys(doc)
+
 
 # ⚠️ **No skip list, deliberately.** A `(merge|splitting|retry)_strategy` key in
 # some other namespace looks like it would need excusing, and it does not: `\b`
@@ -93,22 +117,31 @@ def _tracked_text_files() -> list[Path]:
     ]
 
 
-def _findings() -> list[tuple[str, int, str, str]]:
+def _findings(
+    paths: list[Path] | None = None, root: Path = REPO
+) -> list[tuple[str, int, str, str]]:
+    from idp_common.config.migrations.v08_to_v09 import EARLIER_STRATEGY_VALUES
+
     bad: list[tuple[str, int, str, str]] = []
-    for path in _tracked_text_files():
+    for path in _tracked_text_files() if paths is None else paths:
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
         if "granularity" not in text and "strategy" not in text:
             continue
+        flat: bool | None = None
         for lineno, line in enumerate(text.splitlines(), start=1):
             for key, quoted, bare in _SETTING.findall(line):
                 value = quoted or bare
-                if value == "":
+                if value == "" or value in _VALID[key]:
                     continue
-                if value not in _VALID[key]:
-                    bad.append((str(path.relative_to(REPO)), lineno, key, value))
+                if key == "strategy" and value in EARLIER_STRATEGY_VALUES:
+                    if flat is None:
+                        flat = _is_flat_classification_config(path)
+                    if flat:
+                        continue
+                bad.append((str(path.relative_to(root)), lineno, key, value))
     return bad
 
 
@@ -154,6 +187,18 @@ def test_the_scan_would_catch_the_defect_it_was_written_for():
             (q or b) in VALID_GRANULARITY or (q or b) == ""
             for _, q, b in _SETTING.findall(ok)
         ), ok
+
+
+@pytest.mark.unit
+def test_a_v08_strategy_spelling_is_accepted_only_in_a_flat_file(tmp_path):
+    """The v0.8 spelling is accepted where the migration reads it, and nowhere
+    else: the same line in a nested file is a stale spelling."""
+    flat = tmp_path / "flat.yaml"
+    flat.write_text("classification:\n  model: m\n  strategy: single_pass\n")
+    nested = tmp_path / "nested.yaml"
+    nested.write_text("classification:\n  combined: {}\n  strategy: single_pass\n")
+    found = _findings([flat, nested], root=tmp_path)
+    assert found == [("nested.yaml", 3, "strategy", "single_pass")]
 
 
 @pytest.mark.unit

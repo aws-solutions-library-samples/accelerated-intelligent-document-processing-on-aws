@@ -952,7 +952,7 @@ The unified architecture supports two processing modes, controlled by the `use_b
 
 2. **Pipeline Mode** (formerly Pattern 2)
    - OCR with Amazon Textract
-   - Classification with Bedrock (`page` or `packet` granularity; one-stage or two-stage strategy)
+   - Classification with Bedrock (`page` or `packet` granularity; combined or split-then-classify strategy)
    - Extraction with Bedrock (traditional or agentic)
    - Supports few-shot examples
    - Optional agentic extraction with deterministic table parsing

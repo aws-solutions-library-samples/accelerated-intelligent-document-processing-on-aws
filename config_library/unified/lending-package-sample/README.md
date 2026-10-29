@@ -48,9 +48,9 @@ comes from the system defaults in
 `lib/idp_common_pkg/idp_common/config/system_defaults/`. They are the effective
 settings, not preset choices — change the preset and they move with the defaults.
 
-- **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
+- **Strategy**: Combined (`classification.strategy: combined`) — a single call
   returns both the section boundaries and the classes
-- **Granularity**: page (`classification.one_stage.granularity`) — one classification
+- **Granularity**: page (`classification.combined.granularity`) — one classification
   per page rather than per packet
 - **Model**: `us.amazon.nova-2-lite-v1:0`
 - **Temperature**: 0 (deterministic outputs)

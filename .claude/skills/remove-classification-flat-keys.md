@@ -175,7 +175,7 @@ raised:**
 | `patterns/unified/src/mlflow_logger_function/index.py` — `_classification_view` | the flat-dict fallback branch |
 | `src/lambda/update_configuration/index.py` | nothing — it writes the nested path already; confirm |
 | `lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.6.12.yaml`, `base-classification-0.8.yaml` | keep, and repoint their tests at the refusal |
-| tests that **build** flat classification dicts as a shorthand | `grep -rn '"classification": {' lib/idp_common_pkg/tests` and look for flat keys; the `_service` helpers in `test_two_stage.py`, `test_packet_granularity.py`, `test_modality.py` and `test_classification_service.py` are the large ones |
+| tests that **build** flat classification dicts as a shorthand | `grep -rn '"classification": {' lib/idp_common_pkg/tests` and look for flat keys; the `_service` helpers in `test_split_then_classify.py`, `test_packet_granularity.py`, `test_modality.py` and `test_classification_service.py` are the large ones |
 | `scripts/tests/test_classification_prompt_copies_in_sync.py`, `test_nuveen_boundary_precedence.py` | their `_page_prompt` helpers read either shape; drop the flat branch |
 | `docs/migration-v0612-to-v0613.md` | keep; add a line saying which release stopped reading the old layout |
 

@@ -7,13 +7,15 @@
 
 classification:
   # How many model calls classification makes, and what each one does.
-  # single_pass (UI: One stage): one call returns boundaries AND classes.
-  # two_stage: boundaries first with no class vocabulary, then one call per
-  # section to classify it. Every setting below lives inside the call that
+  # combined (UI: Split and classify together (one call)): one call returns
+  # boundaries AND classes.
+  # split_then_classify (UI: Split first, then classify each section): a splitting
+  # call finds the boundaries with no class vocabulary, then one call per section
+  # classifies it. Every setting below lives inside the call that
   # uses it, so nothing here is silently ignored by the other strategy.
-  strategy: single_pass
+  strategy: combined
   # The ONE fallback: assigned when a class cannot be decided — validation
-  # retries ran out, or (two-stage, non-LLM methods) the classifier was not
+  # retries ran out, or (split_then_classify, non-LLM methods) the classifier was not
   # confident. Normally one of the configured classes, or the built-in
   # 'unclassified'.
   #
@@ -22,8 +24,8 @@ classification:
   # class declares. Sections then carry that name downstream, where nothing
   # matches it. Check the spelling yourself against `classes`.
   fallback_class: unclassified
-  # ── strategy: single_pass ────────────────────────────────────────────────
-  one_stage:
+  # ── strategy: combined ────────────────────────────────────────────────
+  combined:
     # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.
     granularity: page
     page:
@@ -135,10 +137,10 @@ classification:
         task_prompt_verbalized_packet: |-
           <class-confidence> Each object in your "segments" array MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report for THAT segment is correct.
           Base it on how much better the segment's pages match the type you chose than the other types in <document-types>. Do not default to a high value: a segment whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
-  # ── strategy: two_stage ──────────────────────────────────────────────────
-  two_stage:
+  # ── strategy: split_then_classify ──────────────────────────────────────────────────
+  split_then_classify:
     # Boundaries only, with no class vocabulary: the prefix saving.
-    boundary_detection:
+    splitting:
       method: llm
       llm:
         # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.

@@ -460,11 +460,11 @@ and two of the three causes report nothing here:
 ⚠️ **That last case is not always rare, and which configuration you run decides
 it.** With `enforceValidClasses` on (the default) — it lives in each
 class-assigning call's `validation` block, at
-`classification.one_stage.llm.validation.enforceValidClasses` and
-`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+`classification.combined.llm.validation.enforceValidClasses` and
+`classification.split_then_classify.section_classification.llm.validation.enforceValidClasses`
 — every call that
-assigns a class — one stage at page or packet granularity, and two-stage section
-classification — re-prompts on an out-of-vocabulary prediction and then assigns
+assigns a class — combined classification at page or packet granularity, and
+split-then-classify section classification — re-prompts on an out-of-vocabulary prediction and then assigns
 `fallback_class`, so it becomes the silent `unclassified` case above and the count
 really is bounded by configuration edits. With `enforceValidClasses: false` the
 model's invented class name is stored verbatim, and there the rate follows model

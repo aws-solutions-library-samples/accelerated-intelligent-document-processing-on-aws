@@ -37,12 +37,12 @@ import { parseMetering } from '../../graphql/awsjson-parsers';
 import { chooseOpeningProfile, isProfileReadable } from '../../utils/readable-profile';
 import { classificationModelOf } from '../../utils/classification-config';
 
-// Two-stage classification meters its halves as BoundaryDetection and
+// The split-then-classify strategy meters its halves as Splitting and
 // SectionClassification instead of Classification; all three are the
 // classification step.
 
 const logger = new ConsoleLogger('CapacityPlanningLayout');
-const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'BoundaryDetection/', 'SectionClassification/'];
+const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'Splitting/', 'SectionClassification/'];
 
 // Type definitions for configuration and state
 interface Configuration {

@@ -9,9 +9,10 @@ With two strategies and three calls between them, a large share of those setting
 did nothing in whichever mode was selected, and nothing in the file said which.
 v0.9 nests each setting inside the call that uses it:
 
-* ``one_stage``                        — ``strategy: single_pass``
-* ``two_stage.boundary_detection.llm`` — two-stage, boundaries only
-* ``two_stage.section_classification`` — two-stage, one class per section
+* ``combined``                        — ``strategy: combined``, one call
+* ``split_then_classify.splitting.llm`` — split-then-classify, the splitting call
+* ``split_then_classify.section_classification`` — split-then-classify, one class
+  per section
 * ``document_shape``                   — what is already known about the document
 * ``fallback_class``                   — the one fallback, used everywhere
 
@@ -20,26 +21,26 @@ that true rather than approximately true:
 
 1. ⚠️ **Model parameters, modality and image settings are copied into every block
    that was not already carrying its own value.** A v0.8 configuration is pure flat:
-   its two-stage stages had no parameters at all, so every one of them is absent
+   its split-then-classify calls had no parameters at all, so every one of them is absent
    here and takes the flat value — which is what made the conversion exact, and is
    why the copy must not be conditional on the stage's *model*. The condition is on
    the setting itself, and it is the same three-way test row 2 applies to the model:
-   absent, blank, or equal to the one-stage value the profile already had. The case
+   absent, blank, or equal to the combined value the profile already had. The case
    it protects is a **hybrid**, where by definition the stage blocks exist and may
    hold values the operator chose; copying over those unconditionally lost them, and
    is the harm row 2 already prevents for the model.
 2. ⚠️ **An empty stage model means "inherit"**, so it becomes the flat model. A
    stage model that was set is kept.
-3. ⚠️ **The packet window is copied into boundary detection too.** Stage A read the
-   shared ``packet.window_pages`` / ``overlap_pages`` in v0.8.
+3. ⚠️ **The packet window is copied into the splitting call too.** The splitting
+   call read the shared ``packet.window_pages`` / ``overlap_pages`` in v0.8.
 
 Two behaviours are deliberate and the migration guide states them:
 
 * **Modality inference moves with the prompt.** In v0.8 every call inferred an
-  unset modality flag from the single-pass prompt. In v0.9 each call infers from
+  unset modality flag from the flat (combined) prompt. In v0.9 each call infers from
   its own. For the shipped prompts the answer is identical — all of them carry
-  both placeholders — so for a two-stage configuration the inferred flags are
-  written explicitly onto the stage blocks whenever the single-pass prompt they
+  both placeholders — so for a split-then-classify configuration the inferred flags
+  are written explicitly onto the stage blocks whenever the flat prompt they
   were inferred from is present, and the stage calls see exactly what they saw.
 * **A page limit implies "one section".** ``maxPagesForClassification`` exists
   to give a whole document one class from its first N pages. Combined with boundary
@@ -61,6 +62,13 @@ setting ``classification.model`` on a full v0.9 configuration. In every one of
 those the flat key is the more recent, more deliberate value, and letting the
 nested value win would discard it silently. Migration removes the flat keys, so
 running it again is still a no-op.
+
+**Development builds' names are read too.** Builds of this layout made before its
+blocks took their current names wrote ``strategy: single_pass`` or ``two_stage``,
+``one_stage``, ``two_stage.segmentation`` or ``two_stage.boundary_detection``, and
+``file_shape``, with no flat key. Those are renamed first, whatever the stamp, so
+such a profile or pinned revision loads with its settings instead of being refused
+or losing them (``PRERELEASE_BLOCK_NAMES``, ``PRERELEASE_SPLITTING_BLOCKS``).
 """
 
 from __future__ import annotations
@@ -128,15 +136,94 @@ SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS = frozenset(
     {"task_prompt_topk_packet", "task_prompt_verbalized_packet"}
 )
 
-ONE_STAGE_LLM = ("one_stage", "llm")
-BOUNDARY_DETECTION_LLM = ("two_stage", "boundary_detection", "llm")
-SECTION_CLASSIFICATION = ("two_stage", "section_classification")
+#: The earlier spellings of ``classification.strategy`` (``single_pass`` and
+#: ``two_stage``), written by v0.8 and by development builds of the v0.9 layout,
+#: mapped to the current values. The current names say what each strategy does,
+#: and each strategy's settings block carries the same name.
+#:
+#: ⚠️ Built from pairs rather than a dict literal: Bandit's B105 reads a dict key
+#: containing "pass" as a hardcoded password and SRT promotes it to HIGH, so
+#: ``"single_pass"`` must not appear as a literal key.
+EARLIER_STRATEGY_VALUES = dict(
+    (("single_pass", "combined"), ("two_stage", "split_then_classify"))
+)
+
+#: Block names that development builds of the v0.9 layout wrote, mapped to the
+#: current names. A profile or a
+#: pinned revision such a build saved is otherwise refused (its ``strategy`` is
+#: spelled the v0.8 way) or loses every setting in these blocks, and a pinned
+#: revision cannot be re-saved, so they are read rather than dropped. Never written.
+PRERELEASE_BLOCK_NAMES = {
+    "one_stage": "combined",
+    "two_stage": "split_then_classify",
+    "file_shape": "document_shape",
+}
+#: The same, for the first call inside ``split_then_classify``. Development builds
+#: named it ``segmentation`` and then ``boundary_detection``.
+PRERELEASE_SPLITTING_BLOCKS = ("segmentation", "boundary_detection")
+
+COMBINED_LLM = ("combined", "llm")
+SPLITTING_LLM = ("split_then_classify", "splitting", "llm")
+SECTION_CLASSIFICATION = ("split_then_classify", "section_classification")
 SECTION_CLASSIFICATION_LLM = SECTION_CLASSIFICATION + ("llm",)
 
 
 def _has_flat_keys(config: Dict[str, Any]) -> bool:
     classification = config.get("classification")
     return isinstance(classification, dict) and bool(FLAT_KEYS & classification.keys())
+
+
+def _has_prerelease_names(config: Dict[str, Any]) -> bool:
+    """Whether ``config`` uses a strategy or block name of a v0.9 development build."""
+    classification = config.get("classification")
+    if not isinstance(classification, dict):
+        return False
+    strategy = str(classification.get("strategy") or "").strip().lower()
+    if strategy in EARLIER_STRATEGY_VALUES or PRERELEASE_BLOCK_NAMES.keys() & set(
+        classification
+    ):
+        return True
+    split = classification.get("split_then_classify")
+    return isinstance(split, dict) and any(
+        name in split for name in PRERELEASE_SPLITTING_BLOCKS
+    )
+
+
+def _overlay(base: Any, top: Any) -> Any:
+    """``top`` deep-merged over ``base``; a non-dict on either side means ``top``."""
+    if not isinstance(base, dict) or not isinstance(top, dict):
+        return copy.deepcopy(top)
+    merged = copy.deepcopy(base)
+    for key, value in top.items():
+        merged[key] = _overlay(merged.get(key), value)
+    return merged
+
+
+def _rename_block(parent: Dict[str, Any], old: str, new: str) -> None:
+    """Move ``parent[old]`` to ``parent[new]``. In a hybrid, the old name wins.
+
+    A hybrid arises when a delta saved under the old name is merged onto current
+    defaults, which carry the new name: the old block holds what the operator
+    chose and the new one only defaults, which is the reason the flat-key rule in
+    this module gives the flat key precedence too.
+    """
+    if old not in parent:
+        return
+    block = parent.pop(old)
+    parent[new] = _overlay(parent[new], block) if new in parent else block
+
+
+def _rename_prerelease_names(classification: Dict[str, Any]) -> None:
+    """Rewrite a v0.9 development build's names to the current ones, in place."""
+    strategy = str(classification.get("strategy") or "").strip().lower()
+    if strategy in EARLIER_STRATEGY_VALUES:
+        classification["strategy"] = EARLIER_STRATEGY_VALUES[strategy]
+    for old, new in PRERELEASE_BLOCK_NAMES.items():
+        _rename_block(classification, old, new)
+    split = classification.get("split_then_classify")
+    if isinstance(split, dict):
+        for old in PRERELEASE_SPLITTING_BLOCKS:
+            _rename_block(split, old, "splitting")
 
 
 def _node(root: Dict[str, Any], path: Iterable[str]) -> Dict[str, Any]:
@@ -176,22 +263,22 @@ def _is_unset(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
-def _follows_one_stage(existing: Any, previous_one_stage: Any) -> bool:
-    """Whether a stage's value was *following* the one-stage value, not chosen.
+def _follows_combined(existing: Any, previous_combined: Any) -> bool:
+    """Whether a stage's value was *following* the combined value, not chosen.
 
     The same test row 2 of the module docstring applies to the model, applied to the
     rest of ``_PER_CALL_SETTINGS``: a stage value that is absent or blank was never
-    set, and one equal to the value the one-stage call already had was following it.
+    set, and one equal to the value the combined call already had was following it.
     Either way the flat value replaces it. A stage value that differs was chosen by
     the operator and is kept.
 
     The equality is **type-sensitive**, deliberately matching the rule row 2 already
-    applies to the model: a stage holding ``"0.0"`` against a one-stage ``0.0`` reads
+    applies to the model: a stage holding ``"0.0"`` against a combined ``0.0`` reads
     as chosen and is kept. That is the protective direction, and the shipped defaults
     are consistently typed on all three calls, so the case needs a hand edit that
     mixes the two spellings to arise at all.
     """
-    return _is_unset(existing) or existing == previous_one_stage
+    return _is_unset(existing) or existing == previous_combined
 
 
 def _inferred_modality(prompt: Any) -> Dict[str, bool]:
@@ -285,7 +372,7 @@ def _repair_reasoning_effort(out: Dict[str, Any]) -> None:
     """
     from ..models import normalise_reasoning_effort
 
-    for path in (ONE_STAGE_LLM, BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
+    for path in (COMBINED_LLM, SPLITTING_LLM, SECTION_CLASSIFICATION_LLM):
         node = _dict_or_empty(_walk(out, path))
         if "reasoning_effort" not in node:
             continue
@@ -343,6 +430,14 @@ def migrate_v08_to_v09(config: Any) -> Any:
     """Convert a v0.8 (flat) classification block to the v0.9 nested shape."""
     if not isinstance(config, dict):
         return config
+    if _has_prerelease_names(config):
+        config = copy.deepcopy(config)
+        _rename_prerelease_names(config["classification"])
+        logger.info(
+            "Read classification strategy and block names written by a v0.9 "
+            "development build under their current names (combined, "
+            "split_then_classify, splitting, document_shape)"
+        )
     if not _has_flat_keys(config):
         if is_at_or_after(config.get("config_format_version"), TARGET_VERSION):
             # Preserve object identity for the pure no-op case, matching the
@@ -364,17 +459,18 @@ def migrate_v08_to_v09(config: Any) -> Any:
     #
     # In a hybrid, a stage call that already names its own model keeps it: the
     # flat model replaces a stage model only where that stage was following the
-    # one-stage model (same value) or names none. Otherwise a flat
-    # `classification.model` written by an old script onto a two-stage profile
+    # combined model (same value) or names none. Otherwise a flat
+    # `classification.model` written by an old script onto a split-then-classify
+    # profile
     # would overwrite stage models the operator chose, which v0.8 never did.
     flat_model = flat.get("model")
-    previous_one_stage_model = _dict_or_empty(
-        _dict_or_empty(out.get("one_stage")).get("llm")
+    previous_combined_model = _dict_or_empty(
+        _dict_or_empty(out.get("combined")).get("llm")
     ).get("model")
     if flat_model is not None:
-        _put(out, ONE_STAGE_LLM, "model", flat_model)
+        _put(out, COMBINED_LLM, "model", flat_model)
     for stage_cfg, path in (
-        (segmentation, BOUNDARY_DETECTION_LLM),
+        (segmentation, SPLITTING_LLM),
         (labeling, SECTION_CLASSIFICATION_LLM),
     ):
         stage_model = stage_cfg.get("model")
@@ -382,20 +478,20 @@ def migrate_v08_to_v09(config: Any) -> Any:
             _put(out, path, "model", stage_model)
         elif flat_model is not None:
             existing = _node(out, path).get("model")
-            follows_one_stage = (
+            follows_combined = (
                 not isinstance(existing, str)
                 or not existing.strip()
-                or existing == previous_one_stage_model
+                or existing == previous_combined_model
             )
-            if follows_one_stage:
+            if follows_combined:
                 _put(out, path, "model", flat_model)
 
     # ── Parameters, modality and image: every call that was not carrying its own
-    # value for the setting (row 1). Read the "previous" one-stage values before
+    # value for the setting (row 1). Read the "previous" combined values before
     # anything below writes to that block, for the same reason the model does.
-    previous_one_stage = _dict_or_empty(_dict_or_empty(out.get("one_stage")).get("llm"))
+    previous_combined = _dict_or_empty(_dict_or_empty(out.get("combined")).get("llm"))
     previous_per_call = {
-        key: copy.deepcopy(previous_one_stage.get(key)) for key in _PER_CALL_SETTINGS
+        key: copy.deepcopy(previous_combined.get(key)) for key in _PER_CALL_SETTINGS
     }
 
     for key in _PER_CALL_SETTINGS:
@@ -407,64 +503,64 @@ def migrate_v08_to_v09(config: Any) -> Any:
             # A sub-block merges key by key, so the protection is per inner key too:
             # `image: {target_width: 1000}` written flat must not reset a stage's own
             # target_height, and must not take a target_width that stage chose.
-            _put_merged(out, ONE_STAGE_LLM, key, value)
+            _put_merged(out, COMBINED_LLM, key, value)
             previous_block = _dict_or_empty(previous)
-            for path in (BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
+            for path in (SPLITTING_LLM, SECTION_CLASSIFICATION_LLM):
                 node = _node(out, path + (key,))
                 for inner, inner_value in value.items():
-                    if _follows_one_stage(node.get(inner), previous_block.get(inner)):
+                    if _follows_combined(node.get(inner), previous_block.get(inner)):
                         node[inner] = copy.deepcopy(inner_value)
         else:
-            _put(out, ONE_STAGE_LLM, key, value)
-            for path in (BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
-                if _follows_one_stage(_node(out, path).get(key), previous):
+            _put(out, COMBINED_LLM, key, value)
+            for path in (SPLITTING_LLM, SECTION_CLASSIFICATION_LLM):
+                if _follows_combined(_node(out, path).get(key), previous):
                     _put(out, path, key, value)
 
     _repair_reasoning_effort(out)
 
-    # ── Granularity and page input apply to one stage and to boundary detection.
+    # ── Granularity and page input apply to the combined call and to splitting.
     if "granularity" in flat:
-        _put(out, ("one_stage",), "granularity", flat["granularity"])
-        _put(out, BOUNDARY_DETECTION_LLM, "granularity", flat["granularity"])
+        _put(out, ("combined",), "granularity", flat["granularity"])
+        _put(out, SPLITTING_LLM, "granularity", flat["granularity"])
     if "contextPagesCount" in flat:
-        _put(out, ("one_stage", "page"), "contextPagesCount", flat["contextPagesCount"])
+        _put(out, ("combined", "page"), "contextPagesCount", flat["contextPagesCount"])
         _put(
             out,
-            BOUNDARY_DETECTION_LLM + ("page",),
+            SPLITTING_LLM + ("page",),
             "contextPagesCount",
             flat["contextPagesCount"],
         )
 
-    # ── One-stage prompts.
+    # ── Combined prompts.
     for key in ("system_prompt", "task_prompt"):
         if key in flat:
-            _put(out, ("one_stage", "page"), key, flat[key])
+            _put(out, ("combined", "page"), key, flat[key])
         if key in packet:
-            _put(out, ("one_stage", "packet"), key, packet[key])
+            _put(out, ("combined", "packet"), key, packet[key])
 
-    # ── The packet window is shared with boundary detection (row 3).
+    # ── The packet window is shared with the splitting call (row 3).
     for key in ("window_pages", "overlap_pages"):
         if key in packet:
-            _put(out, ("one_stage", "packet"), key, packet[key])
-            _put(out, BOUNDARY_DETECTION_LLM + ("packet",), key, packet[key])
+            _put(out, ("combined", "packet"), key, packet[key])
+            _put(out, SPLITTING_LLM + ("packet",), key, packet[key])
 
-    # ── Boundary detection (was the flat ``segmentation`` block).
+    # ── Splitting (the v0.8 flat ``segmentation`` block).
     for key in ("system_prompt", "task_prompt"):
         if key in segmentation:
-            _put(out, BOUNDARY_DETECTION_LLM + ("page",), key, segmentation[key])
+            _put(out, SPLITTING_LLM + ("page",), key, segmentation[key])
     seg_packet = _dict_or_empty(segmentation.get("packet"))
     for key in ("system_prompt", "task_prompt"):
         if key in seg_packet:
-            _put(out, BOUNDARY_DETECTION_LLM + ("packet",), key, seg_packet[key])
+            _put(out, SPLITTING_LLM + ("packet",), key, seg_packet[key])
     if "boundary_hints" in segmentation:
         _put(
             out,
-            BOUNDARY_DETECTION_LLM,
+            SPLITTING_LLM,
             "boundary_hints",
             segmentation["boundary_hints"],
         )
 
-    # ── Section classification (was labeling).
+    # ── Section classification (the v0.8 flat ``labeling`` block).
     for key in ("method", "pages", "k"):
         if key in labeling:
             _put(out, SECTION_CLASSIFICATION, key, labeling[key])
@@ -475,10 +571,10 @@ def migrate_v08_to_v09(config: Any) -> Any:
     # ── Validation and confidence: the two class-assigning calls only.
     for key in ("enforceValidClasses", "maxValidationRetries"):
         if key in flat:
-            _put(out, ONE_STAGE_LLM + ("validation",), key, flat[key])
+            _put(out, COMBINED_LLM + ("validation",), key, flat[key])
             _put(out, SECTION_CLASSIFICATION_LLM + ("validation",), key, flat[key])
     if isinstance(flat.get("confidence"), dict):
-        _put_merged(out, ONE_STAGE_LLM, "confidence", flat["confidence"])
+        _put_merged(out, COMBINED_LLM, "confidence", flat["confidence"])
         _put_merged(
             out,
             SECTION_CLASSIFICATION_LLM,
@@ -521,10 +617,10 @@ def migrate_v08_to_v09(config: Any) -> Any:
                 )
                 out["document_shape"]["sectionSplitting"] = "disabled"
 
-    # ── Modality inference moves with the prompt. For a two-stage config, write
-    # the flags the stages inferred in v0.8 — from the single-pass prompt — onto
+    # ── Modality inference moves with the prompt. For a split-then-classify config,
+    # write the flags the stages inferred in v0.8 — from the flat prompt — onto
     # the stage blocks, so they keep seeing what they saw.
-    if str(flat.get("strategy", "")).strip().lower() == "two_stage":
+    if str(out.get("strategy") or "").strip().lower() == "split_then_classify":
         granularity = str(flat.get("granularity") or "page").strip().lower()
         legacy_prompt = (
             packet.get("task_prompt")
@@ -534,7 +630,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
         if isinstance(legacy_prompt, str) and legacy_prompt:
             inferred = _inferred_modality(legacy_prompt)
             explicit = _dict_or_empty(flat.get("modality"))
-            for path in (BOUNDARY_DETECTION_LLM, SECTION_CLASSIFICATION_LLM):
+            for path in (SPLITTING_LLM, SECTION_CLASSIFICATION_LLM):
                 modality = _node(out, path + ("modality",))
                 for flag in ("text", "images"):
                     if explicit.get(flag) in (None, "") and modality.get(flag) in (

@@ -7,8 +7,8 @@
  * Config format 0.9 nests every classification setting inside the call that uses
  * it, and the panel shows only the calls the selected strategy makes. Those
  * gates are `showWhen` conditions resolved by a scope walk from several levels
- * down (`strategy` from inside `two_stage`, `method` from inside
- * `boundary_detection.llm`, `granularity` from inside a page group), so a typo in a
+ * down (`strategy` from inside `split_then_classify`, `method` from inside
+ * `splitting.llm`, `granularity` from inside a page group), so a typo in a
  * field name or a level the walk does not reach hides a block silently. These
  * tests read the real schema rather than a copy of it for that reason.
  *
@@ -73,40 +73,40 @@ const renderClassification = (classification: Record<string, unknown>) =>
 const visible = (text: string) => screen.queryAllByText(text).length > 0;
 
 describe('the shipped classification schema', () => {
-  it('shows the one-stage block, and not the two-stage one, for single_pass', () => {
-    renderClassification({ strategy: 'single_pass', one_stage: { granularity: 'page' } });
-    expect(visible('One stage')).toBe(true);
-    expect(visible('Boundary detection')).toBe(false);
+  it('shows the combined block, and not the split-then-classify one, for combined', () => {
+    renderClassification({ strategy: 'combined', combined: { granularity: 'page' } });
+    expect(visible('Split and classify together')).toBe(true);
+    expect(visible('Splitting')).toBe(false);
     expect(visible('Section classification')).toBe(false);
   });
 
-  it('shows the one-stage block when no strategy is stored, which is the default', () => {
+  it('shows the combined block when no strategy is stored, which is the default', () => {
     renderClassification({});
-    expect(visible('One stage')).toBe(true);
-    expect(visible('Boundary detection')).toBe(false);
+    expect(visible('Split and classify together')).toBe(true);
+    expect(visible('Splitting')).toBe(false);
   });
 
-  it('shows both two-stage calls, and not the one-stage block, for two_stage', () => {
+  it('shows both split-then-classify calls, and not the combined block, for split_then_classify', () => {
     renderClassification({
-      strategy: 'two_stage',
-      two_stage: { boundary_detection: { method: 'llm' }, section_classification: { method: 'llm' } },
+      strategy: 'split_then_classify',
+      split_then_classify: { splitting: { method: 'llm' }, section_classification: { method: 'llm' } },
     });
-    expect(visible('Boundary detection')).toBe(true);
-    expect(visible('LLM boundary detection')).toBe(true);
+    expect(visible('Splitting')).toBe(true);
+    expect(visible('LLM splitting')).toBe(true);
     expect(visible('LLM section classification')).toBe(true);
-    expect(visible('One stage')).toBe(false);
+    expect(visible('Split and classify together')).toBe(false);
   });
 
   it('gates page and packet settings on the granularity of their own call', () => {
-    renderClassification({ strategy: 'single_pass', one_stage: { granularity: 'packet' } });
+    renderClassification({ strategy: 'combined', combined: { granularity: 'packet' } });
     expect(visible('Window size (pages)')).toBe(true);
     expect(visible('Context pages')).toBe(false);
   });
 
-  it('gives section classification validation and confidence, and boundary detection neither', () => {
+  it('gives section classification validation and confidence, and splitting neither', () => {
     renderClassification({
-      strategy: 'two_stage',
-      two_stage: { boundary_detection: { method: 'llm', llm: {} }, section_classification: { method: 'llm', llm: {} } },
+      strategy: 'split_then_classify',
+      split_then_classify: { splitting: { method: 'llm', llm: {} }, section_classification: { method: 'llm', llm: {} } },
     });
     // One "Class validation" and one "Class confidence" group: section classification's.
     expect(screen.getAllByText('Class validation')).toHaveLength(1);
@@ -125,9 +125,9 @@ describe('the shipped classification schema', () => {
 
   it('labels the strategy values without changing what is stored', () => {
     const strategy = (classificationSchema.properties as Record<string, Record<string, unknown>>).strategy;
-    expect(strategy.enum).toEqual(['single_pass', 'two_stage']);
-    expect(enumOptionLabel(strategy, 'single_pass')).toBe('One stage');
-    expect(enumOptionLabel(strategy, 'two_stage')).toBe('Two stage');
+    expect(strategy.enum).toEqual(['combined', 'split_then_classify']);
+    expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call)');
+    expect(enumOptionLabel(strategy, 'split_then_classify')).toBe('Split first, then classify each section');
   });
 });
 

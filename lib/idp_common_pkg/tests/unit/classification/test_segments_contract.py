@@ -123,11 +123,12 @@ class TestSegment:
         segment = Segment(page_ids=["7"])
         assert segment.start_page == segment.end_page == "7"
 
-    def test_the_class_is_optional_so_a_boundary_detection_only_stage_needs_no_rework(
+    def test_the_class_is_optional_so_a_splitting_only_stage_needs_no_rework(
         self,
     ):
-        """The whole reason ``doc_class`` is Optional — two-stage Stage A emits
-        segments with no class at all, and Stage B fills them in."""
+        """The whole reason ``doc_class`` is Optional — the split-then-classify
+        splitting call emits segments with no class at all, and section
+        classification fills them in."""
         segment = Segment(page_ids=["1", "2"])
         assert segment.doc_class is None
         assert segment.confidence is None

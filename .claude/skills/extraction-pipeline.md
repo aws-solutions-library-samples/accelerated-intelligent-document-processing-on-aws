@@ -13,9 +13,9 @@ Controlled by `use_bda` flag in configuration:
 
 ### Pipeline Mode (`use_bda: false`) — Default
 1. **OCR**: Amazon Textract (or Bedrock OCR backend)
-2. **Classification**: Bedrock LLM — `classification.strategy` is `single_pass` (one
-   call returns boundaries and classes) or `two_stage` (boundaries first, then one
-   classification call per section); `classification.one_stage.granularity` is `page`
+2. **Classification**: Bedrock LLM — `classification.strategy` is `combined` (one
+   call returns boundaries and classes) or `split_then_classify` (boundaries first, then one
+   classification call per section); `classification.combined.granularity` is `page`
    or `packet`; `modality.text` / `modality.images` decide what each call is sent
 3. **Extraction**: Bedrock LLM — traditional or agentic mode
 4. **Assessment**: LLM-powered confidence assessment with multimodal analysis

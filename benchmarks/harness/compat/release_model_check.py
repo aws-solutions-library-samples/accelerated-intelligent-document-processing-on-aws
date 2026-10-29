@@ -11,7 +11,7 @@ release's own models and reports, as errors:
   would drop (walked recursively into its sub-models);
 * when the file carries the back-compat flat keys written by
   ``classification_flat.with_flat_classification``, every flat setting whose value
-  the old release resolves differently from what the file's nested one-stage
+  the old release resolves differently from what the file's nested combined
   blocks ask for (read by the current reader with the flat keys removed). In that
   case the v0.9 blocks themselves
   (``classification_flat.V09_BLOCKS``) are expected to be dropped by the old
@@ -177,8 +177,8 @@ def _get(node: Any, path: Tuple[str, ...]) -> Any:
 
 
 def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
-    """(old flat field, current nested path) pairs a single-pass run reads."""
-    llm = ("one_stage", "llm")
+    """(old flat field, current nested path) pairs a combined run reads."""
+    llm = ("combined", "llm")
     pairs: List[Tuple[str, Tuple[str, ...]]] = [
         (key, llm + (key,))
         for key in (
@@ -193,9 +193,9 @@ def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
         )
     ]
     pairs += [
-        ("system_prompt", ("one_stage", granularity, "system_prompt")),
-        ("task_prompt", ("one_stage", granularity, "task_prompt")),
-        ("contextPagesCount", ("one_stage", "page", "contextPagesCount")),
+        ("system_prompt", ("combined", granularity, "system_prompt")),
+        ("task_prompt", ("combined", granularity, "task_prompt")),
+        ("contextPagesCount", ("combined", "page", "contextPagesCount")),
         ("enforceValidClasses", llm + ("validation", "enforceValidClasses")),
         ("maxValidationRetries", llm + ("validation", "maxValidationRetries")),
         ("invalidClassFallback", ("fallback_class",)),
@@ -210,7 +210,7 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
 
     An empty list means every classification key in the file is one the release
     reads and, for a back-compat file, that the release resolves each flat setting
-    to the value the file's nested one-stage blocks ask for.
+    to the value the file's nested combined blocks ask for.
     """
     answer = resolve_in_release(cfg, lib_root)
     if answer.get("fatal"):
@@ -253,12 +253,12 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
         migrate_config(nested_only)
     ).classification.model_dump(mode="json")
     old = answer["classification"]
-    granularity = str(_get(current, ("one_stage", "granularity")) or "page")
+    granularity = str(_get(current, ("combined", "granularity")) or "page")
     expected_method = METHOD_FOR_GRANULARITY.get(granularity)
     if old.get("classificationMethod") != expected_method:
         errors.append(
             f"classificationMethod resolves to {old.get('classificationMethod')!r} on "
-            f"this release; one_stage.granularity {granularity!r} needs "
+            f"this release; combined.granularity {granularity!r} needs "
             f"{expected_method!r}"
         )
     for flat_key, nested in resolved_flat_pairs(granularity):
@@ -275,12 +275,12 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
                 f"but classification.{'.'.join(nested)} asks for {_short(want)}"
             )
     old_conf = old.get("confidence") or {}
-    new_conf = _get(current, ("one_stage", "llm", "confidence")) or {}
+    new_conf = _get(current, ("combined", "llm", "confidence")) or {}
     for key, got in old_conf.items():
         if got != new_conf.get(key):
             errors.append(
                 f"classification.confidence.{key} resolves to {_short(got)} on this "
-                f"release but one_stage.llm.confidence.{key} asks for "
+                f"release but combined.llm.confidence.{key} asks for "
                 f"{_short(new_conf.get(key))}"
             )
     return errors
