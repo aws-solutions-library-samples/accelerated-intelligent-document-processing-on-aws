@@ -87,6 +87,38 @@ it is read; nothing needs editing.
 [Migrating from v0.6.12 to v0.6.13](migration-v0612-to-v0613.md) lists what each
 old setting becomes and the cases where the conversion is not a pure move.
 
+### Configuration keys and their labels in the editor
+
+The configuration editor's form view names settings by what they do. The JSON and
+YAML views, uploaded files, and the cost table use the configuration keys and
+stored values.
+
+| Configuration key | Label in the form view |
+|---|---|
+| `strategy: combined` | *Split and classify together (one call)* |
+| `strategy: split_then_classify` | *Split first, then classify each section* |
+| `fallback_class` | *Fallback class* |
+| `combined` | *Split and classify together* |
+| `split_then_classify` | *Split first, then classify each section* |
+| `split_then_classify.splitting` | *Splitting*; its `method` is *Splitting method*, with `llm` shown as *LLM* |
+| `split_then_classify.section_classification` | *Section classification*; its `method` is *Section classification method*, with `llm` shown as *LLM* |
+| `…granularity` | *Granularity*: `page` is *Page — one call per page, in parallel (default)*, `packet` is *Packet — one call for the whole document* |
+| `…page`, `…packet` | *Page settings*, *Packet settings* |
+| `…llm` | *Inference settings* |
+| `…llm.model` | *Model ID* |
+| `…modality.text`, `…modality.images` | *Send page text*, *Send page images*: empty is *Infer from the task prompt (default)*, `true` is *Yes*, `false` is *No* |
+| `…image.target_width`, `…image.target_height` | *Target width (px)*, *Target height (px)* |
+| `…confidence.mode` | *Class confidence mode*: `topk` is *Top-K — ranked candidate classes (default)*, `verbalized` is *Verbalized — one 0–1 score*, `off` is *Off — no score* |
+| `split_then_classify.splitting.llm.boundary_hints` | *Boundary hints*: `none` is *None — no class vocabulary (default)*, `class_names` is *Class names — names only, as a hint* |
+| `split_then_classify.section_classification.pages` | *Pages per section*: `first` is *First page*, `first_k` is *First k pages (default)*, `all` is *All pages* |
+| `document_shape` | *Advanced — known document shape* |
+| `document_shape.sectionSplitting` | *Section splitting*: `llm_determined` is *Detect boundaries (default)*, `disabled` is *One section*, `page` is *One per page* |
+| `document_shape.maxPagesForClassification` | *Pages to classify*: `ALL` is *All pages (default)* |
+
+In the cost table, *Splitting* is metered as `Splitting/…` and *Section
+classification* as `SectionClassification/…`. The combined strategy stays under
+`Classification/…`.
+
 ### What each setting costs
 
 - **`granularity: packet` saves the repeated prefix and the per-page output.**

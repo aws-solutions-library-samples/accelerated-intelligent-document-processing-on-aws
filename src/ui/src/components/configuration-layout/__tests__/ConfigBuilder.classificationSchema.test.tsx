@@ -112,7 +112,7 @@ describe('the shipped classification schema', () => {
     expect(screen.getAllByText('Class validation')).toHaveLength(1);
     expect(screen.getAllByText('Class confidence')).toHaveLength(1);
     // But a model picker on both calls.
-    expect(screen.getAllByText('Model', { exact: true }).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('Model ID', { exact: true }).length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows Pages to classify only for a one-document file', () => {
