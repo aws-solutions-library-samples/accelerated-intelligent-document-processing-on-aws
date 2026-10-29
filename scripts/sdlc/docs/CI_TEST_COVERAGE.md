@@ -2232,8 +2232,6 @@ Tracked in `scripts/run_all_tests.py` (`QUARANTINE`). Correctly excluded today,
 but revisit:
 
 - [ ] `src/lambda/ocr_benchmark_deployer` — needs `huggingface_hub` as a test dep.
-- [ ] `nested/bedrockkb/src/s3_vectors_manager` — needs the Lambda-runtime-only
-      `cfnresponse` module available under test.
 - [ ] `scripts/test_api_rbac.py` — the live RBAC harness (not a pytest suite);
       leave excluded unless refactored.
 - [ ] `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` — `test_local.py`

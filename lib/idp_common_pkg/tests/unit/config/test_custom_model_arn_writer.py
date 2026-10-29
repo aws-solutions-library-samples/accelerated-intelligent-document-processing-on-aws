@@ -29,7 +29,7 @@ ARN = "arn:aws:bedrock:us-west-2:123456789012:custom-model-deployment/abc123"
 
 @pytest.fixture
 def update_config_module(monkeypatch):
-    sys.modules.setdefault("cfnresponse", MagicMock())
+    monkeypatch.setitem(sys.modules, "cfnresponse", MagicMock())
     monkeypatch.syspath_prepend(str(_LAMBDA_DIR))
     sys.modules.pop("index", None)
     module = importlib.import_module("index")
