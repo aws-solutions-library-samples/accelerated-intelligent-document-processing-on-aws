@@ -151,7 +151,17 @@ describe('enum labels across the whole shipped schema', () => {
   it('labels only values the field can hold, each with non-empty text', () => {
     // A label keyed by a value the enum does not have is never shown: the
     // dropdown falls back to the raw value with nothing saying why.
+    // The walk follows `properties` and `items`, which is how the form renders
+    // fields. Count every `enumLabels` anywhere in the schema independently, so a
+    // label placed where the walk (and the form) never reaches fails here rather
+    // than being silently unchecked.
+    const everywhere = (node: unknown): number => {
+      if (Array.isArray(node)) return node.reduce((n: number, child) => n + everywhere(child), 0);
+      if (!node || typeof node !== 'object') return 0;
+      return Object.entries(node).reduce((n, [key, child]) => n + (key === 'enumLabels' ? 1 : 0) + everywhere(child), 0);
+    };
     expect(labelled.length).toBeGreaterThan(0);
+    expect(labelled.length).toBe(everywhere(fullSchema));
     for (const { path: at, node } of labelled) {
       const values = ((node.enum as unknown[]) || []).map(String);
       for (const [value, label] of Object.entries(node.enumLabels as Record<string, unknown>)) {
