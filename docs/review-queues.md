@@ -12,7 +12,7 @@ SPDX-License-Identifier: MIT-0
 - [Overview](#overview)
 - [How a document reaches a queue](#how-a-document-reaches-a-queue)
 - [Annotator guide](#annotator-guide)
-- [Admin guide: Review Management](#admin-guide-queue-management)
+- [Admin guide: Review Management](#admin-guide-review-management)
 - [Reviewing from the document page](#reviewing-from-the-document-page)
 - [Turning review queues on](#turning-review-queues-on)
 - [Review status for downstream consumers](#review-status-for-downstream-consumers)
