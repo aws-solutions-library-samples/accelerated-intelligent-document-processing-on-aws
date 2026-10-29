@@ -253,7 +253,13 @@ class TestClaimExclusivity:
     """The collaborative queue depends on a claim being exclusive, not advisory."""
 
     def _seed(self, table, s3):
+        # Claiming needs a review to have been raised; this is one waiting, unowned.
         _seed_review_doc(table, s3)
+        table.update_item(
+            Key={"PK": "doc#run1/a.pdf", "SK": "none"},
+            UpdateExpression="SET HITLStatus = :pending",
+            ExpressionAttributeValues={":pending": "Review Pending"},
+        )
 
     def test_second_claimant_loses(self, review_env):
         """Regression: claim_review read the owner then wrote unconditionally, so

@@ -124,6 +124,8 @@ def _run_lowercase_function(template, properties: dict[str, Any]) -> str:
     finally:
         if previous is not None:
             sys.modules["cfnresponse"] = previous
+        else:
+            del sys.modules["cfnresponse"]
     namespace["handler"]({"ResourceProperties": properties}, None)
     ((data,),) = [(d,) for d in sent]
     return data["OutputString"]
@@ -347,6 +349,27 @@ def test_the_lowercase_function_still_truncates_the_collection_name_to_32(templa
     for name in ("IDP1-DOCUMENTKB-1LSEGJJKD4T8Y-AND-SOME-MORE", "a--b", "x" * 80):
         output = _run_lowercase_function(template, {"InputString": name})
         assert output == name.lower()[:32]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("present", [True, False], ids=["bound", "absent"])
+def test_running_the_inline_code_leaves_sys_modules_as_it_found_it(
+    template, monkeypatch, present
+):
+    """The stub this file installs to run the inline code must not outlive the run:
+    whatever imports ``cfnresponse`` next would bind it instead of its own module."""
+    import sys
+
+    before = sys.modules.get("cfnresponse")
+    if not present:
+        monkeypatch.delitem(sys.modules, "cfnresponse", raising=False)
+
+    _run_lowercase_function(template, {"InputString": "Stack"})
+
+    if present:
+        assert sys.modules["cfnresponse"] is before
+    else:
+        assert "cfnresponse" not in sys.modules
 
 
 @pytest.mark.unit
