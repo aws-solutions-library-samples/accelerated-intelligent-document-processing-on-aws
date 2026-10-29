@@ -609,9 +609,7 @@ class TestS3SourceScanAndCopy:
             "config-revision": "7",
         }
 
-    def test_process_batch_pins_profile_and_revision_for_an_s3_uri(
-        self, processor, s3
-    ):
+    def test_process_batch_pins_profile_and_revision_for_an_s3_uri(self, processor, s3):
         """``process_batch`` is the general entry point, so its S3 branch must
         forward the pin as the manifest and directory branches do."""
         s3.put_object(Bucket=SOURCE_BUCKET, Key="in/a.pdf", Body=b"a")
