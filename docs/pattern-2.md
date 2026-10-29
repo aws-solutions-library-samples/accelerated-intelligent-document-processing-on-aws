@@ -125,7 +125,7 @@ Each step includes comprehensive retry logic for handling transient errors:
 #### Classification Function
 - **Purpose**: Classifies pages or packets using Claude via Bedrock and splits the document into sections
 - **Key Features**:
-  - Two classification granularities, set by `classification.combined.granularity` (see [Classification](./classification.md)):
+  - Two classification granularities, set by `classification.combined.granularity` under the default `combined` strategy and by `classification.split_then_classify.splitting.llm.granularity` under `split_then_classify` (see [Classification](./classification.md)):
     - Page granularity (the default): one call per page
     - Packet granularity: one call per packet
   - RVL-CDIP dataset categories for classification
@@ -420,7 +420,7 @@ ocr:
 
 ## Customizing Classification
 
-Classification runs at one of two granularities, set in the configuration by `classification.combined.granularity`:
+Classification runs at one of two granularities, set in the configuration by `classification.combined.granularity` under the default `combined` strategy. Under `split_then_classify` it is set by `classification.split_then_classify.splitting.llm.granularity` instead, and applies to the splitting call, which returns section boundaries without classes; each section is then classified by a call of its own. The two descriptions below are of the combined call:
 
 1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.combined.page.system_prompt` and `classification.combined.page.task_prompt`.
 

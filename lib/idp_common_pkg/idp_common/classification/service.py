@@ -2554,7 +2554,7 @@ class ClassificationService:
                 logger.warning(f"Failed to load image content from {image_uri}: {e}")
                 # Continue without image content
 
-        # Check for page content regex match (multi-modal page-level classification only)
+        # Check for page content regex match (combined strategy, page granularity only)
         if text_content:
             regex_matched_class = self._check_page_content_regex(text_content)
             if regex_matched_class:
