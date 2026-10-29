@@ -1153,7 +1153,7 @@ Resources:
                         order: 3
                   llm:
                     type: object
-                    sectionLabel: Model
+                    sectionLabel: Inference settings
                     collapsible: false
                     description: "The model this call uses, what it is sent, and how its class is checked and scored."
                     order: 2
