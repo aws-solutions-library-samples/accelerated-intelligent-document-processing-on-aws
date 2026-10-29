@@ -178,6 +178,11 @@ HITL review is automatically triggered when:
      review is pending and unclaimed)
    - Document status changes to **Review In Progress**
    - You become the review owner
+   - Only a document a review was raised on can be claimed, by any user, Admins
+     included: claiming a document with no review waiting is refused with
+     `NO_REVIEW_PENDING`, and the document list and document page offer **Start
+     Review** only where a review was raised. When a claim is refused, the page shows
+     the server's message
 
 3. **Review Sections**:
    - In the document detail view, locate the **Sections** panel
@@ -451,7 +456,8 @@ When evaluation data is available, turn on **Show Evaluation**:
 - Ensure extraction confidence scores are being calculated
 
 **Cannot Start Review:**
-- Verify document is in **Review Pending** status
+- Verify document is in **Review Pending** status. A document no review was raised on
+  cannot be claimed (`NO_REVIEW_PENDING`)
 - Check if document is already claimed by another reviewer
 - Ensure you have Reviewer or Admin persona
 

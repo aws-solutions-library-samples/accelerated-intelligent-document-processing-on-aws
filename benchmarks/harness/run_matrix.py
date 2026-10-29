@@ -218,7 +218,7 @@ def prepare_native_configs(cells, release):
     Each config is the cell's file with the pre-0.9 flat classification keys added
     (``compat/classification_flat.py``), so the previous release reads the cell's
     classification settings instead of dropping the nested blocks and running its
-    code defaults. The current reader resolves the same file to the same single-pass
+    code defaults. The current reader resolves the same file to the same combined
     classification, because a flat key wins over a nested one, so one file still
     serves both sides of the A/B. Then each config is checked against ``release``'s
     own models (``compat/release_model_check.py``): any ``classification`` key that

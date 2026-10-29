@@ -881,7 +881,6 @@ make setup-venv
 # Deploy a new stack
 idp-cli deploy \
     --stack-name my-idp-stack \
-    --pattern pattern-2 \
     --admin-email your.email@example.com \
     --max-concurrent 100 \
     --wait
@@ -889,7 +888,6 @@ idp-cli deploy \
 # Deploy with custom configuration
 idp-cli deploy \
     --stack-name my-idp-stack \
-    --pattern pattern-2 \
     --custom-config ./config_library/unified/bank-statement-sample/config.yaml \
     --wait
 
@@ -952,7 +950,7 @@ The unified architecture supports two processing modes, controlled by the `use_b
 
 2. **Pipeline Mode** (formerly Pattern 2)
    - OCR with Amazon Textract
-   - Classification with Bedrock (`page` or `packet` granularity; one-stage or two-stage strategy)
+   - Classification with Bedrock (`page` or `packet` granularity; combined or split-then-classify strategy)
    - Extraction with Bedrock (traditional or agentic)
    - Supports few-shot examples
    - Optional agentic extraction with deterministic table parsing

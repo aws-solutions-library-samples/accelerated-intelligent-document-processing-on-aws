@@ -26,6 +26,7 @@ import re
 import urllib.error
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -217,3 +218,15 @@ def test_the_presigned_url_is_not_logged(vendored, caplog):
     vendored.module.send(EVENT, CONTEXT, "SUCCESS", {})
 
     assert "X-Amz-Signature" not in caplog.text
+
+
+def test_the_handler_binds_the_vendored_module_with_send_replaced():
+    """``handler`` must bind the ``cfnresponse.py`` beside it, not a stand-in left in
+    ``sys.modules``, and its ``send`` must be the per-test recorder the conftest
+    installs, so a test that does not patch ``send`` still cannot PUT."""
+    import handler
+
+    assert Path(handler.cfnresponse.__file__).resolve() == SRC / (
+        "s3_vectors_manager/cfnresponse.py"
+    )
+    assert isinstance(handler.cfnresponse.send, MagicMock)

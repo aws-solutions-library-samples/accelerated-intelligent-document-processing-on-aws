@@ -14,8 +14,8 @@ This module provides document classification capabilities for the IDP Accelerato
   - Document name regex matching when all pages should be classified as the same class
   - Page content regex matching for multi-modal page-level classification
 - **Valid-class enforcement with re-prompt/retry** on every call that assigns a
-  class — one stage at page *and* packet granularity, and two-stage section
-  classification — rejects out-of-vocabulary predictions and re-prompts the model
+  class — the combined call at page *and* packet granularity, and
+  split-then-classify's section classification — rejects out-of-vocabulary predictions and re-prompts the model
   with the allowed classes
 - Direct integration with the Document data model
 - Support for both text and image content
@@ -33,25 +33,25 @@ call that uses it:
 
 | Block | Used when | Holds |
 |---|---|---|
-| `strategy` | always | `single_pass` \| `two_stage` |
+| `strategy` | always | `combined` \| `split_then_classify` |
 | `fallback_class` | always | the one class assigned when no class can be decided; extraction reads it too |
-| `one_stage` | `single_pass` | `granularity`, `page`, `packet`, `llm` (class-assigning model settings) |
-| `two_stage.boundary_detection` | `two_stage` | `method`, `llm` (`granularity`, `page`, `packet`, `boundary_hints`, model settings), `boundary_model` (declared, not implemented) |
-| `two_stage.section_classification` | `two_stage` | `method`, `pages`, `k`, `llm` (prompts + class-assigning model settings), `embeddings`, `decision_model`, `low_confidence` (declared, not implemented) |
+| `combined` | `combined` | `granularity`, `page`, `packet`, `llm` (class-assigning model settings) |
+| `split_then_classify.splitting` | `split_then_classify` | `method`, `llm` (`granularity`, `page`, `packet`, `boundary_hints`, model settings), `boundary_model` (declared, not implemented) |
+| `split_then_classify.section_classification` | `split_then_classify` | `method`, `pages`, `k`, `llm` (prompts + class-assigning model settings), `embeddings`, `decision_model`, `low_confidence` (declared, not implemented) |
 | `document_shape` | always | `sectionSplitting`, `maxPagesForClassification` |
 
 A model-settings block (`ClassificationModelSettings`) is the model, its
 parameters, `modality` and `image`. The class-assigning variant
 (`ClassificationClassAssigningSettings`) adds `validation` and `confidence`;
-boundary detection uses the plain one because it returns no class.
+the splitting call uses the plain one because it returns no class.
 `ClassificationConfig.page_input_call()` and `class_assigning_llm()` return the
 blocks in force under the configured strategy.
 
 The service resolves every read through a handful of methods, so the
 strategy-dependent choice of block is made in one place:
 
-- `_reader_stage()` — the stage whose call reads pages: boundary detection under two
-  stage, classification otherwise.
+- `_reader_stage()` — the stage whose call reads pages: the splitting call under
+  `split_then_classify`, the combined call otherwise.
 - `_call(stage)` — that stage's model-settings block. Model, parameters, modality,
   image size, validation and confidence are all read from it, so each call uses
   its own.
@@ -59,11 +59,11 @@ strategy-dependent choice of block is made in one place:
   page-reading call. `self.granularity` is resolved from it.
 - `_document_shape()` — `sectionSplitting` and the page limit.
 
-`_stage_prompt(stage, field)` resolves prompts. One stage and boundary detection read
-`page` or `packet` by their own granularity; section classification is not
+`_stage_prompt(stage, field)` resolves prompts. The combined call and the splitting
+call read `page` or `packet` by their own granularity; section classification is not
 granularity-dependent, because it is always one call about one segment's pages.
 An empty prompt falls back to the shipped default for that block (read from
-`system_defaults` by `_shipped_classification_defaults`), except the one-stage
+`system_defaults` by `_shipped_classification_defaults`), except the combined
 page prompt, whose absence is refused with `No task_prompt found` as it always
 was.
 
@@ -87,17 +87,17 @@ directly from flat keys is converted too. Four rows of the conversion are what
 keep behaviour exactly as it was:
 
 - **Model parameters, modality and image settings are copied into every call.**
-  The two-stage calls had no parameters of their own and always inherited the
-  flat ones.
+  The split-then-classify calls had no parameters of their own in 0.8 and always
+  inherited the flat ones.
 - **An empty stage model means inherit**, so it becomes the flat model; a stage
   model that was set is kept.
-- **The packet window is copied into boundary detection too**, which read the shared
+- **The packet window is copied into the splitting call too**, which read the shared
   window.
-- **For a two-stage configuration the inferred modality is written onto the stage
-  blocks** whenever the single-pass prompt it was inferred from is present,
+- **For a split-then-classify configuration the inferred modality is written onto
+  the stage blocks** whenever the flat prompt it was inferred from is present,
   because each call now infers from its own prompt.
 
-A page limit combined with boundary detection is converted to
+A page limit together with boundary detection is converted to
 `sectionSplitting: disabled`, with a warning. In a hybrid of flat and nested keys
 the flat key wins, because a hybrid only arises when a flat key is applied on top
 of a nested configuration. The trigger is the presence of a flat key
@@ -118,7 +118,7 @@ overlapping page**: it is the one that saw the pages before them, which is what 
 boundary decision mostly rests on. A single window is used directly rather than
 folded, so the common case is byte-identical to the unwindowed path.
 
-A one-stage packet call validates every segment's class like the page path does:
+A combined packet call validates every segment's class like the page path does:
 a reply naming an invalid class re-prompts the window up to
 `validation.maxValidationRetries` times, and a segment still invalid afterwards is
 given `fallback_class`.
@@ -144,41 +144,41 @@ is the minimum across its pages, so building per-page sections from segments
 alone would report every page of a run as being as uncertain as its worst page —
 in the one strategy whose entire purpose is per-page granularity.
 
-### Two-stage
+### Split-then-classify
 
-`strategy: two_stage` runs `_detect_boundaries` (boundary detection, metered as
-`BoundaryDetection`) then `_classify_segments` (section classification, metered as
-`SectionClassification`). One stage is metered as `Classification`. Each stage
+`strategy: split_then_classify` runs `_detect_boundaries` (the splitting call, metered
+as `Splitting`) then `_classify_segments` (section classification, metered as
+`SectionClassification`). The combined call is metered as `Classification`. Each stage
 reads its own model settings through `_call(stage)`. A forced class
 (document-name regex match) skips section classification entirely. Under
 `sectionSplitting: disabled` or `page`, `_segments_from_document_shape` builds the
-segments directly and boundary detection is not called. A segment whose section
+segments directly and the splitting call is not made. A segment whose section
 classification call fails keeps `doc_class = None` and is reported — its
 boundaries are still good, and an invented class would propagate into extraction
 as though it had been decided.
 
 #### Which placeholders a stage is allowed to render
 
-The prefix saving is the whole justification for two-stage, so **boundary detection
-renders `{CLASS_NAMES_AND_DESCRIPTIONS}`, `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
+The prefix saving is the whole justification for split-then-classify, so **the
+splitting call renders `{CLASS_NAMES_AND_DESCRIPTIONS}`, `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
 and `{FEW_SHOT_EXAMPLES}` as empty**, whichever granularity it runs at and
 whatever `contextPagesCount` is set to. That is decided by the stage, in
 `_stage_withholds_class_vocabulary` and `_build_classification_substitutions`,
 rather than by the content builder that happens to render the prompt — the page
 builder, the context-page builder and the packet builder are each shared between
-single-pass, boundary detection and section classification, so a per-builder answer is
-three answers. `boundary_hints: class_names` stays the one supported way to put
-class **names** into a boundary detection prompt.
+the combined call, the splitting call and section classification, so a per-builder
+answer is three answers. `boundary_hints: class_names` stays the one supported way
+to put class **names** into a splitting prompt.
 
 Symmetrically, **`{BOUNDARY_HINTS}` renders as empty for every stage other than
-boundary detection.** The setting lives under `two_stage.boundary_detection.llm` and so is
-inert under `strategy: single_pass`, but that subtree is readable either way;
+the splitting call.** The setting lives under `split_then_classify.splitting.llm` and
+so is inert under `strategy: combined`, but that subtree is readable either way;
 the block it produces ends "do NOT report a type, only where each document
-starts and ends", which is the one thing a single-pass or section-classification
+starts and ends", which is the one thing a combined or section-classification
 call exists to do.
 
-None of this is observable with the shipped prompts — the shipped boundary detection
-prompts reference neither vocabulary placeholder, and the shipped one-stage
+None of this is observable with the shipped prompts — the shipped splitting
+prompts reference neither vocabulary placeholder, and the shipped combined
 prompts do not reference `{BOUNDARY_HINTS}` — so it matters for an edited
 prompt, which every one of these is.
 
@@ -268,7 +268,7 @@ Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
 
 ### A class description can override the boundary rules (`PRECEDENCE`)
 
-`<boundary-detection-rules>` in the default one-stage page prompt (`classification.one_stage.page.task_prompt`) ends with a `PRECEDENCE:` clause that promotes a document type's **own** boundary instructions above the generic rules. `_format_classes_list()` puts every class's `description` into `{CLASS_NAMES_AND_DESCRIPTIONS}`, so that clause makes the description the supported place to state a per-class rule — no code path or config key is involved.
+`<boundary-detection-rules>` in the default combined page prompt (`classification.combined.page.task_prompt`) ends with a `PRECEDENCE:` clause that promotes a document type's **own** boundary instructions above the generic rules. `_format_classes_list()` puts every class's `description` into `{CLASS_NAMES_AND_DESCRIPTIONS}`, so that clause makes the description the supported place to state a per-class rule — no code path or config key is involved.
 
 This is the fix for the one shape the generic rules get wrong ([#750](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/750)): a long table that reprints its title and column headers on every page and paginates with a bare number. Rule 3 (opening header block ⇒ `start`) outranks rule 4 (continuation evidence ⇒ `continue`), the running header satisfies rule 3, and a lone `7` matches none of rule 1's pagination patterns — so continuation pages are read as new sections. Measured on `us.amazon.nova-2-lite-v1:0` at `temperature: 0`, a 16-page fund table split into 2–5 sections in 10 of 10 runs; with a `BOUNDARY:` sentence in the class description, 1 section in 10 of 10.
 
@@ -337,7 +337,7 @@ fewer signals than a miss.
 `topk` (**default**), `verbalized`, or `off`. `class_confidence.py` owns both halves:
 
 - **Prompt assembly.** The block lives on each class-assigning call
-  (`one_stage.llm.confidence`, `two_stage.section_classification.llm.confidence`).
+  (`combined.llm.confidence`, `split_then_classify.section_classification.llm.confidence`).
   `append_class_confidence_block` splices its `task_prompt_topk` /
   `task_prompt_verbalized` into
   the task prompt **before** the first `<<CACHEPOINT>>` / `<document-ocr-data>` /
@@ -345,17 +345,17 @@ fewer signals than a miss.
   prompt-cache prefix — the same rule, for the same reason, as
   `extraction/prompt_assembly.py::_append_bbox_block`, and it matters more here
   because classification runs per page. The splice is idempotent (a prompt that
-  already carries a `<class-confidence>` block is left alone). A one-stage packet
+  already carries a `<class-confidence>` block is left alone). A combined packet
   call takes the per-segment `task_prompt_topk_packet` /
   `task_prompt_verbalized_packet` instead, because its response is a segment list;
   section classification always takes the page-shaped block, being one call about
-  one segment. Boundary detection is never given a block: it decides no class.
+  one segment. The splitting call is never given a block: it decides no class.
   Consequently the section-classification call carries **no** `_packet` blocks:
   `base-classification.yaml` ships none there and `migrations.v08_to_v09` does not
   copy them into it
   (`SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS`), so the keys an operator can
-  see on that call are the ones it can actually read. The one-stage call keeps
-  both, because one stage can run at packet granularity.
+  see on that call are the ones it can actually read. The combined call keeps
+  both, because it can run at packet granularity.
 - **Resolution.** `resolve_class_and_confidence` prefers an explicit
   `confidence`, else `confidence_from_candidates`, which returns the probability
   of the class being **stored** — not the top of the list. Those differ when the
@@ -424,8 +424,8 @@ full. Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only documents longer than N while
 sectioning shorter ones normally.
 
-Under two stage, `disabled` and `page` also skip boundary detection: the segments are
-known, so `_segments_from_document_shape` builds them and section classification runs
+Under split-then-classify, `disabled` and `page` also skip the splitting call: the
+segments are known, so `_segments_from_document_shape` builds them and section classification runs
 on each.
 
 ### Single-class configurations
@@ -672,7 +672,7 @@ change its answer.
 
 Implemented in `ClassificationService.classify_page_bedrock` (page granularity),
 `_classify_one_packet_window` (packet granularity) and
-`_invoke_with_class_validation` (two-stage section classification), with the
+`_invoke_with_class_validation` (split-then-classify section classification), with the
 helper `_build_validation_retry_content`. Metering is aggregated across all
 attempts. The settings are read from the class-assigning call of the configured
 strategy (`_class_validation_enforced`, `_class_validation_retries`).
@@ -680,7 +680,7 @@ strategy (`_class_validation_enforced`, `_class_validation_retries`).
 ```yaml
 classification:
   fallback_class: unclassified        # default: unclassified
-  one_stage:
+  combined:
     llm:
       validation:
         enforceValidClasses: true     # default: true
@@ -699,10 +699,10 @@ classification:
 
 > At **packet granularity** a reply naming an invalid class for any segment
 > re-prompts the whole window, and a segment still invalid after the retries gets
-> the fallback class. **Two-stage section classification** re-prompts its one
-> segment. A class outside the vocabulary is exactly as wrong whether a page or a
-> segment produced it. The fallback carries no confidence score, because it is not
-> a prediction.
+> the fallback class. **Section classification under split-then-classify**
+> re-prompts its one segment. A class outside the vocabulary is exactly as wrong
+> whether a page or a segment produced it. The fallback carries no confidence
+> score, because it is not a prediction.
 
 See `notebooks/misc/classification-valid-class-enforcement.ipynb` for a
 deterministic, mock-driven walkthrough of all three scenarios (retry-then-valid,
@@ -710,8 +710,8 @@ retries-exhausted-fallback, and enforcement-disabled).
 
 ## Reporting a Page That Could Not Be Classified
 
-`_record_unclassified_page_issues` runs once per document on the one-stage page
-granularity path, immediately after section splitting, and
+`_record_unclassified_page_issues` runs once per document on the combined
+page-granularity path, immediately after section splitting, and
 turns each page classification that carries an `error` or a `validation_error` into
 a `ProcessingIssue` on the section holding that page.
 
@@ -924,8 +924,8 @@ The classification service uses the following configuration structure:
     }
   ],
   "classification": {
-    "strategy": "single_pass",
-    "one_stage": {
+    "strategy": "combined",
+    "combined": {
       "granularity": "page",
       "page": {
         "system_prompt": "You are a document classification expert...",
@@ -1324,7 +1324,7 @@ The service automatically:
 2. Includes them in classification prompts using the `{FEW_SHOT_EXAMPLES}` placeholder
 3. Formats examples appropriately for both classification and extraction tasks
 
-The shipped default `classification.one_stage.page.task_prompt` in
+The shipped default `classification.combined.page.task_prompt` in
 `config/system_defaults/base-classification.yaml` **already contains
 `{FEW_SHOT_EXAMPLES}`**, positioned after `<document-types>` and before
 `<<CACHEPOINT>>` (examples are static per config, so they belong in the cacheable
@@ -1366,7 +1366,7 @@ classes:
         x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/email1.jpg"
 
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document into exactly one of these categories:
@@ -1395,7 +1395,7 @@ similar names but have very different extraction schemas (e.g.
 
 - **Page-granularity** prompts get an XML-tagged listing.
 - **Packet-granularity** prompts get a three-column markdown table
-  (`type | description | attributes`). Two-stage section classification uses
+  (`type | description | attributes`). Split-then-classify section classification uses
   the packet builders, so it gets the table too.
 - The placeholder is fully **opt-in** — token usage and cost are
   unchanged for users who don't reference it. The library only
@@ -1423,7 +1423,7 @@ Example:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this page using the schema attribute names as a

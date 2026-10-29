@@ -59,7 +59,7 @@
     "id": "GHSA-3w55-933p-8pv5",
     "package": "strands-agents",
     "severity": "HIGH",
-    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage directory under the system temp dir follows a symbolic link another local user planted there. Only a caller that constructs a session manager reaches it: Agent's session_manager defaults to None and the SDK never creates a FileSessionManager itself, and nothing in this repo imports strands.session or passes session_manager, so no agent here writes session files. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin, the same upgrade GHSA-4v6f-7vjh-6x4m is waiting on. Re-check this entry if a session manager is ever added.",
-    "triagedOn": "2026-10-27"
+    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage under /tmp/strands/sessions follows a pre-placed symlink when it writes session files. The SDK creates no session manager on its own: Agent's session_manager argument defaults to None in 1.14.0, and FileSessionManager is instantiated only by the caller. Nothing in this repo imports strands.session, names FileSessionManager or any SessionManager, or passes session_manager to an Agent (git grep over every tracked file, including idp_common/agents, extraction/agentic_idp.py, the discovery code and nested/multi-doc-discovery); chat history is persisted to DynamoDB by src/lambda/agent_chat_processor, not through strands. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin and belongs with the same agent-framework upgrade as GHSA-4v6f-7vjh-6x4m. Re-check this entry if a strands session manager is ever configured.",
+    "triagedOn": "2026-10-28"
   }
 ]

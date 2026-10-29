@@ -149,7 +149,7 @@ Users only need to specify what differs from defaults:
 notes: "My lending package processor"
 
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-lite-v1:0
 

@@ -50,9 +50,10 @@ The workflow consists of three main processing steps with an optional assessment
 2. Document classification using Amazon Bedrock. `classification.strategy`
    chooses between two strategies, and the page-reading call then works at one of
    two granularities:
-   - `single_pass` (*One stage* in the configuration editor): one call returns a
+   - `combined` (*Split and classify together (one call)* in the configuration
+     editor): one call returns a
      page's or packet's section boundaries and classes together
-   - `two_stage`: boundaries first, with no class vocabulary in the prompt, then
+   - `split_then_classify`: boundaries first, with no class vocabulary in the prompt, then
      one call per detected section to classify it
    - Within either, `granularity: page` makes one call per page and
      `granularity: packet` one call per packet or window of `window_pages` pages
@@ -124,7 +125,7 @@ Each step includes comprehensive retry logic for handling transient errors:
 #### Classification Function
 - **Purpose**: Classifies pages or packets using Claude via Bedrock and splits the document into sections
 - **Key Features**:
-  - Two classification granularities, set by `classification.one_stage.granularity` (see [Classification](./classification.md)):
+  - Two classification granularities, set by `classification.combined.granularity` (see [Classification](./classification.md)):
     - Page granularity (the default): one call per page
     - Packet granularity: one call per packet
   - RVL-CDIP dataset categories for classification
@@ -419,13 +420,13 @@ ocr:
 
 ## Customizing Classification
 
-Classification runs at one of two granularities, set in the configuration by `classification.one_stage.granularity`:
+Classification runs at one of two granularities, set in the configuration by `classification.combined.granularity`:
 
-1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.one_stage.page.system_prompt` and `classification.one_stage.page.task_prompt`.
+1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.combined.page.system_prompt` and `classification.combined.page.task_prompt`.
 
-2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify the boundaries between its sections. It detects section boundaries and identifies each section's class in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies the sections with start and end page numbers. Its prompts are `classification.one_stage.packet.system_prompt` and `classification.one_stage.packet.task_prompt`.
+2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify the boundaries between its sections. It detects section boundaries and identifies each section's class in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies the sections with start and end page numbers. Its prompts are `classification.combined.packet.system_prompt` and `classification.combined.packet.task_prompt`.
 
-The granularity is a configuration setting, not a stack parameter: change it in the configuration (for example in the web UI's configuration editor). [Classification](./classification.md) covers both granularities, the two-stage strategy, and how to choose between them.
+The granularity is a configuration setting, not a stack parameter: change it in the configuration (for example in the web UI's configuration editor). [Classification](./classification.md) covers both granularities, the split-then-classify strategy, and how to choose between them.
 
 The classification system uses RVL-CDIP dataset categories and can be customized through the configuration files. Classification models and prompts are now managed through the configuration library rather than CloudFormation parameters.
 

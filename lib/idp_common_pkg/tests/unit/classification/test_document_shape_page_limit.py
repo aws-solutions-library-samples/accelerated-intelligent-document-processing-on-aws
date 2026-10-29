@@ -25,7 +25,7 @@ def _service(document_shape):
         config={
             "classes": [{"$id": "invoice", "description": "an invoice"}],
             "classification": {
-                "one_stage": {
+                "combined": {
                     "page": {
                         "system_prompt": "s",
                         "task_prompt": "{DOCUMENT_TEXT}",
@@ -46,9 +46,7 @@ class TestThePageLimitNeedsOneDocumentPerFile:
         assert service.max_pages_for_classification == "3"
 
     @pytest.mark.parametrize("splitting", ["llm_determined", "page"])
-    def test_a_limit_with_boundary_detection_is_ignored_and_says_so(
-        self, splitting, caplog
-    ):
+    def test_a_limit_with_splitting_is_ignored_and_says_so(self, splitting, caplog):
         with caplog.at_level(logging.WARNING):
             service = _service(
                 {"sectionSplitting": splitting, "maxPagesForClassification": "3"}

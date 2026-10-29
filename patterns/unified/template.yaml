@@ -1052,7 +1052,7 @@ Resources:
             #
             # ⚠️ Do NOT restore the old claim that classification "is skipped when only a
             # single class is defined, or when a document name matches a RegEx rule".
-            # Under the default boundary detection a multi-page document is still classified,
+            # Under the default `sectionSplitting: llm_determined` a multi-page document is still classified,
             # because knowing WHAT a packet contains says nothing about WHERE each section
             # starts.
             description: "Splits the document into sections and assigns a class to each section. Strategy decides how many model calls are made; each call's settings sit inside it."
@@ -1061,10 +1061,10 @@ Resources:
               strategy:
                 type: string
                 title: Strategy
-                description: "'One stage' (stored as strategy: single_pass): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Two stage' (stored as strategy: two_stage): first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
-                enum: ["single_pass", "two_stage"]
-                enumLabels: { single_pass: "One stage", two_stage: "Two stage" }
-                default: "single_pass"
+                description: "'Split and classify together' (stored as strategy: combined): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Split first, then classify each section' (stored as strategy: split_then_classify): a splitting call first finds the boundaries with no class list in the prompt, then one classification call is made per section — cheaper on long documents with few sections, lets each call use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
+                enum: ["combined", "split_then_classify"]
+                enumLabels: { combined: "Split and classify together (one call)", split_then_classify: "Split first, then classify each section" }
+                default: "combined"
                 order: 0
               fallback_class:
                 type: string
@@ -1072,13 +1072,13 @@ Resources:
                 description: "The class assigned when a class cannot be decided — for example once validation retries run out. One of your classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction. Extraction reads it too."
                 default: "unclassified"
                 order: 0.5
-              one_stage:
+              combined:
                 type: object
-                sectionLabel: One stage
+                sectionLabel: Split and classify together
                 collapsible: false
                 description: "One call returns both where each section starts and its class."
                 order: 1
-                showWhen: [{ field: "strategy", notValues: ["two_stage"] }]
+                showWhen: [{ field: "strategy", notValues: ["split_then_classify"] }]
                 properties:
                   granularity:
                     type: string
@@ -1153,7 +1153,7 @@ Resources:
                         order: 3
                   llm:
                     type: object
-                    sectionLabel: Model
+                    sectionLabel: Inference settings
                     collapsible: false
                     description: "The model this call uses, what it is sent, and how its class is checked and scored."
                     order: 2
@@ -1422,17 +1422,17 @@ Resources:
                             order: 5
                             dependsOn: { field: "mode", value: "verbalized" }
                             showWhen: [{ field: "granularity", value: "packet" }]
-              two_stage:
+              split_then_classify:
                 type: object
-                sectionLabel: Two stage
+                sectionLabel: Split first, then classify each section
                 collapsible: false
-                description: "Boundary detection finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, boundary detection makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-boundary-detection-then-section-classification)"
+                description: "Splitting finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, splitting makes no calls. [How split then classify works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#the-split-then-classify-strategy)"
                 order: 2
-                showWhen: [{ field: "strategy", value: "two_stage" }]
+                showWhen: [{ field: "strategy", value: "split_then_classify" }]
                 properties:
-                  boundary_detection:
+                  splitting:
                     type: object
-                    sectionLabel: Boundary detection
+                    sectionLabel: Splitting
                     collapsible: true
                     defaultExpanded: true
                     description: "Finds where each section starts and ends. Returns page ranges only — no class — so its calls carry no class list, descriptions or examples."
@@ -1440,30 +1440,30 @@ Resources:
                     properties:
                       method:
                         type: string
-                        title: Boundary detection method
-                        description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
+                        title: Splitting method
+                        description: "How boundaries are found. 'llm' is the only method today; a boundary-model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
                         enum: ["llm"]
                         default: "llm"
                         order: 0
                       llm:
                         type: object
-                        sectionLabel: LLM boundary detection
+                        sectionLabel: LLM splitting
                         collapsible: false
-                        description: "The boundary calls: how many are made, their prompts, and the model they use."
+                        description: "The splitting calls: how many are made, their prompts, and the model they use."
                         order: 1
                         showWhen: [{ field: "method", value: "llm" }]
                         properties:
                           granularity:
                             type: string
                             title: Granularity
-                            description: "How many boundary calls are made. 'page': one per page, each saying whether that page starts a new section; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
+                            description: "How many splitting calls are made. 'page': one per page, each saying whether that page starts a new section; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
                             enum: ["page", "packet"]
                             default: "page"
                             order: 0
                           boundary_hints:
                             type: string
                             title: Boundary hints
-                            description: "Whether the boundary calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a section's first page is titled like one of your classes."
+                            description: "Whether the splitting calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a section's first page is titled like one of your classes."
                             enum: ["none", "class_names"]
                             default: "none"
                             order: 0.5
@@ -1471,7 +1471,7 @@ Resources:
                             type: object
                             sectionLabel: Page settings
                             collapsible: false
-                            description: "One boundary call per page."
+                            description: "One splitting call per page."
                             order: 1
                             showWhen: [{ field: "granularity", notValues: ["packet"] }]
                             properties:
@@ -1487,7 +1487,7 @@ Resources:
                                 type: string
                                 title: System prompt (page)
                                 format: textarea
-                                description: "System prompt for the per-page boundary calls. Empty uses the shipped default."
+                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default."
                                 order: 1
                               task_prompt:
                                 type: string
@@ -1499,7 +1499,7 @@ Resources:
                             type: object
                             sectionLabel: Packet settings
                             collapsible: false
-                            description: "One boundary call per packet, or per window of a long packet."
+                            description: "One splitting call per packet, or per window of a long packet."
                             order: 1.5
                             showWhen: [{ field: "granularity", value: "packet" }]
                             properties:
@@ -1523,7 +1523,7 @@ Resources:
                                 type: string
                                 title: System prompt (packet)
                                 format: textarea
-                                description: "System prompt for the packet boundary calls. Empty uses the shipped default."
+                                description: "System prompt for the packet splitting calls. Empty uses the shipped default."
                                 order: 2
                               task_prompt:
                                 type: string
@@ -1534,7 +1534,7 @@ Resources:
                           model:
                             type: string
                             title: Model
-                            description: "Model for the boundary calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1639,7 +1639,7 @@ Resources:
                             type: object
                             sectionLabel: Modality
                             collapsible: false
-                            description: "What each boundary call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            description: "What each splitting call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
                             order: 3
                             properties:
                               text:
@@ -1723,7 +1723,7 @@ Resources:
                     sectionLabel: Section classification
                     collapsible: true
                     defaultExpanded: true
-                    description: "Gives each section that boundary detection found one class. One call per section, not per page. Skipped for a section whose class a name RegEx already decided."
+                    description: "Gives each section that splitting found one class. One call per section, not per page. Skipped for a section whose class a name RegEx already decided."
                     order: 1
                     properties:
                       method:

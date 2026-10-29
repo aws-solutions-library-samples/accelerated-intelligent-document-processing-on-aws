@@ -11,9 +11,8 @@ is written once and never overwritten.
 If you are evaluating whether to deploy or upgrade to a given release, this is the record of
 what was actually exercised against live AWS infrastructure, and what was found.
 
-This directory covers **validating** a release. For the procedure that **publishes** one —
-`scripts/aws-release.sh`, the four public buckets, and the failure/recovery paths — see the
-[Release Runbook](../release-runbook.md).
+This directory covers **validating** a release. For how a release is **published** to S3,
+including the failure and recovery paths, see the [Release Runbook](../release-runbook.md).
 
 | Release | Verdict | Record |
 |---------|---------|--------|

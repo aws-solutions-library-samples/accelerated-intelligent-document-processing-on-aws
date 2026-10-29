@@ -14,66 +14,66 @@ import {
 import pageLimitFixtures from './page-limit.fixtures.json';
 
 describe('classAssigningLlmPath', () => {
-  it('is the one-stage call for single_pass, and by default', () => {
-    expect(classAssigningLlmPath({ strategy: 'single_pass' })).toEqual(['one_stage', 'llm']);
-    expect(classAssigningLlmPath({})).toEqual(['one_stage', 'llm']);
-    expect(classAssigningLlmPath(undefined)).toEqual(['one_stage', 'llm']);
+  it('is the combined call for combined, and by default', () => {
+    expect(classAssigningLlmPath({ strategy: 'combined' })).toEqual(['combined', 'llm']);
+    expect(classAssigningLlmPath({})).toEqual(['combined', 'llm']);
+    expect(classAssigningLlmPath(undefined)).toEqual(['combined', 'llm']);
   });
 
-  it('is section classification for two_stage', () => {
-    expect(classAssigningLlmPath({ strategy: 'two_stage' })).toEqual(['two_stage', 'section_classification', 'llm']);
+  it('is section classification for split_then_classify', () => {
+    expect(classAssigningLlmPath({ strategy: 'split_then_classify' })).toEqual(['split_then_classify', 'section_classification', 'llm']);
   });
 });
 
 describe('classificationModelOf', () => {
   const cls = {
-    one_stage: { llm: { model: 'one-stage-model' } },
-    two_stage: {
-      boundary_detection: { llm: { model: 'boundary-model' } },
+    combined: { llm: { model: 'combined-model' } },
+    split_then_classify: {
+      splitting: { llm: { model: 'splitting-model' } },
       section_classification: { llm: { model: 'section-model' } },
     },
   };
 
-  it('reads the active strategy, never the boundary model', () => {
-    expect(classificationModelOf({ ...cls, strategy: 'single_pass' })).toBe('one-stage-model');
-    expect(classificationModelOf({ ...cls, strategy: 'two_stage' })).toBe('section-model');
+  it('reads the active strategy, never the splitting model', () => {
+    expect(classificationModelOf({ ...cls, strategy: 'combined' })).toBe('combined-model');
+    expect(classificationModelOf({ ...cls, strategy: 'split_then_classify' })).toBe('section-model');
   });
 
   it('is undefined for an absent or empty model', () => {
     expect(classificationModelOf({})).toBeUndefined();
-    expect(classificationModelOf({ one_stage: { llm: { model: '' } } })).toBeUndefined();
+    expect(classificationModelOf({ combined: { llm: { model: '' } } })).toBeUndefined();
   });
 });
 
 describe('setClassificationModel', () => {
-  it('writes the class-assigning call and leaves boundary detection alone', () => {
+  it('writes the class-assigning call and leaves the splitting call alone', () => {
     const cls: Record<string, unknown> = {
-      strategy: 'two_stage',
-      two_stage: { boundary_detection: { llm: { model: 'boundary-model' } } },
+      strategy: 'split_then_classify',
+      split_then_classify: { splitting: { llm: { model: 'splitting-model' } } },
     };
     setClassificationModel(cls, 'arn:custom');
     expect(classificationModelOf(cls)).toBe('arn:custom');
-    expect((cls.two_stage as { boundary_detection: { llm: { model: string } } }).boundary_detection.llm.model).toBe('boundary-model');
+    expect((cls.split_then_classify as { splitting: { llm: { model: string } } }).splitting.llm.model).toBe('splitting-model');
     expect(cls).not.toHaveProperty('model');
   });
 
   it('creates the path in an empty block', () => {
     const cls: Record<string, unknown> = {};
     setClassificationModel(cls, 'arn:custom');
-    expect(cls).toEqual({ one_stage: { llm: { model: 'arn:custom' } } });
+    expect(cls).toEqual({ combined: { llm: { model: 'arn:custom' } } });
   });
 });
 
 describe('flatClassificationKeysIn', () => {
   it('names the pre-0.9 keys a file still carries', () => {
-    expect(flatClassificationKeysIn({ classification: { model: 'm', granularity: 'page', strategy: 'single_pass' } })).toEqual([
+    expect(flatClassificationKeysIn({ classification: { model: 'm', granularity: 'page', strategy: 'combined' } })).toEqual([
       'model',
       'granularity',
     ]);
   });
 
   it('is empty for a nested file and for a file with no classification', () => {
-    expect(flatClassificationKeysIn({ classification: { one_stage: { granularity: 'page' } } })).toEqual([]);
+    expect(flatClassificationKeysIn({ classification: { combined: { granularity: 'page' } } })).toEqual([]);
     expect(flatClassificationKeysIn({ extraction: {} })).toEqual([]);
     expect(flatClassificationKeysIn(null)).toEqual([]);
   });

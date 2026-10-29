@@ -473,6 +473,24 @@ export const DocumentViewSelector = ({
   />
 );
 
+/**
+ * Whether Start Review can claim this document: a review was raised on it, it has
+ * not finished, and nobody owns it. The server refuses a claim where no review was
+ * raised (`NO_REVIEW_PENDING`) or the review has finished (`REVIEW_FINISHED`). A
+ * queued document is claimed from its queue item, so it never counts here.
+ */
+export const isClaimableForReview = (item: MappedDocument): boolean =>
+  Boolean(item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner && !isQueueManaged(item.hitlStatus));
+
+/**
+ * Whether Release Review can release this document: somebody has claimed it and
+ * its review has not finished. The server refuses a release nobody claimed
+ * (`NOT_CLAIMED`) or of a finished review (`REVIEW_FINISHED`). A queued document
+ * is released from its queue item, so it never counts here.
+ */
+export const isReleasableForReview = (item: MappedDocument): boolean =>
+  Boolean(item.hitlReviewOwner && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
+
 export const DocumentsCommonHeader = ({
   resourceName = 'Documents',
   selectedItems = [],
@@ -524,12 +542,8 @@ export const DocumentsCommonHeader = ({
   // Check if any selected items can be aborted
   const hasAbortableItems = selectedItems.some((item) => ABORTABLE_STATUSES.includes(item.objectStatus));
   // Check if any selected items can be claimed (pending HITL and not owned)
-  // A queued document is claimed from its queue item, so it never counts here.
-  const hasClaimableItems = selectedItems.some(
-    (item) => item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner && !isQueueManaged(item.hitlStatus),
-  );
-  // Check if any selected items can be released (has review owner and HITL not completed)
-  const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
+  const hasClaimableItems = selectedItems.some(isClaimableForReview);
+  const hasReleasableItems = selectedItems.some(isReleasableForReview);
   // Reprocess re-queues a document directly, bypassing the malware-scanning
   // ingest gate — the refused file is still in the input bucket, so reprocessing
   // a quarantined document would push it into OCR and Bedrock. The resolver

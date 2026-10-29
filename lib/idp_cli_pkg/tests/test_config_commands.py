@@ -511,7 +511,7 @@ def test_validate_refuses_max_tokens_above_the_model_limit():
     assert result.exit_code == 1
     flat = " ".join(result.output.split())
     assert (
-        "classification.one_stage.llm.max_tokens (999999) exceeds model limit (10,000)"
+        "classification.combined.llm.max_tokens (999999) exceeds model limit (10,000)"
         in flat
     )
     # The remedy has to carry the number, or the user guesses.
@@ -529,7 +529,7 @@ def test_validate_refuses_a_value_of_the_wrong_type():
     assert "Pydantic validation failed" in flat
     # A flat (pre-0.9) key is migrated before validation, so the error names
     # the call it now belongs to.
-    assert "classification.one_stage.llm.temperature" in flat
+    assert "classification.combined.llm.temperature" in flat
 
 
 @pytest.mark.unit

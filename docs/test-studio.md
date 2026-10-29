@@ -1029,7 +1029,7 @@ be sized off. When a partial sample holds only ground truth, the dialog says how
 much of the set it read rather than reporting the set as fully labelled, and still
 lets you continue to the annotation queue, which lists every document.
 
-### The curve is measured, and it improves
+### How the curve is measured and refined
 
 The curve comes from three sources of increasing fidelity:
 
