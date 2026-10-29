@@ -140,7 +140,13 @@ class BatchProcessor:
             )
         elif s3_uri:
             return self.process_batch_from_s3_uri(
-                s3_uri, file_pattern, recursive, output_prefix, batch_id
+                s3_uri,
+                file_pattern,
+                recursive,
+                output_prefix,
+                batch_id,
+                config_version,
+                config_revision,
             )
         else:
             raise ValueError("Must specify one of: manifest_path, directory, or s3_uri")
