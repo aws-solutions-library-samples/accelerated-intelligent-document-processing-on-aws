@@ -131,6 +131,48 @@ describe('the shipped classification schema', () => {
   });
 });
 
+describe('enum labels across the whole shipped schema', () => {
+  const fullSchema = (
+    yaml.load(fs.readFileSync(TEMPLATE, 'utf8'), { schema: CFN_SCHEMA }) as {
+      Resources: { UpdateSchemaConfig: { Properties: { Schema: Record<string, unknown> } } };
+    }
+  ).Resources.UpdateSchemaConfig.Properties.Schema;
+
+  const labelled: { path: string; node: Record<string, unknown> }[] = [];
+  const walk = (node: unknown, at: string): void => {
+    if (!node || typeof node !== 'object') return;
+    const n = node as Record<string, unknown>;
+    if (n.enumLabels) labelled.push({ path: at, node: n });
+    for (const [key, child] of Object.entries((n.properties as Record<string, unknown>) || {})) walk(child, `${at}.${key}`);
+    if (n.items) walk(n.items, `${at}[]`);
+  };
+  walk(fullSchema, 'schema');
+
+  it('labels only values the field can hold, each with non-empty text', () => {
+    // A label keyed by a value the enum does not have is never shown: the
+    // dropdown falls back to the raw value with nothing saying why.
+    expect(labelled.length).toBeGreaterThan(0);
+    for (const { path: at, node } of labelled) {
+      const values = ((node.enum as unknown[]) || []).map(String);
+      for (const [value, label] of Object.entries(node.enumLabels as Record<string, unknown>)) {
+        expect(values, `${at}: label for '${value}'`).toContain(value);
+        expect(typeof label === 'string' && label.trim().length > 0, `${at}: '${value}'`).toBe(true);
+      }
+    }
+  });
+
+  it("shows the empty modality value as 'Infer from the task prompt'", () => {
+    const modality = (
+      (classificationSchema.properties as Record<string, Record<string, unknown>>).combined.properties as Record<
+        string,
+        Record<string, unknown>
+      >
+    ).llm.properties as Record<string, Record<string, unknown>>;
+    const text = (modality.modality.properties as Record<string, Record<string, unknown>>).text;
+    expect(enumOptionLabel(text, '')).toBe('Infer from the task prompt (default)');
+  });
+});
+
 describe('enumOptionLabel', () => {
   it('falls back to the value itself', () => {
     expect(enumOptionLabel({}, 'page')).toBe('page');
