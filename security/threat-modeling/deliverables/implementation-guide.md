@@ -12,16 +12,19 @@
 ## 1. Overview
 
 This guide details the security controls implemented in the GenAI IDP Accelerator
-to mitigate the 99 identified threats. Controls are organized by security domain
+to mitigate the 103 identified threats. Controls are organized by security domain
 and mapped to the specific threats they address.
 
 > **A control listed here is a control that exists in the shipped templates and
 > code.** Where a control is instead the subject of an open change, it is marked
-> **pending** with its issue number and must not be read as present. As of v3.2
-> that applies to the chat streaming transport's group and ownership checks
-> (**#920**), a default-deny gate at the API dispatcher (**#928**), uniform hook
-> failure containment (**#919**), the narrowed deployment service role
-> (**#927**) and converged log-redaction denylists (**#921**).
+> **pending** with its issue number and must not be read as present. Of the
+> changes this guide has tracked that way, the dispatcher's default deny (**#928**),
+> uniform hook failure containment (**#919**) and the converged log-redaction
+> denylist (**#921**) have merged and are described below as controls; the
+> deployment service role's permissions boundary (**#927**) has merged while its
+> own `iam:*` is unchanged; and **#920** closed without giving the chat streaming
+> transport a verified per-user subject, so its group and ownership checks remain
+> absent (§3.1a).
 
 ## 2. Authentication & Identity (AUTH)
 
@@ -37,7 +40,7 @@ and mapped to the specific threats they address.
 | Advanced security | Compromised credential detection, adaptive auth | Optional |
 | Admin-only group management | IAM policies on `cognito-idp:Admin*` operations | IAM policies |
 
-### 2.2 RBAC (4-Tier Role System)
+### 2.2 RBAC (Five Groups)
 
 **Threats mitigated**: AUTH.T01, AUTH.T03, PM.T06, PM.T07, KB.T01, RPT.T05
 
@@ -45,18 +48,24 @@ and mapped to the specific threats they address.
 |------|-----------|-------------------|
 | **Admin** | `{StackName}-Admin` | All operations including user management, KB management, BDA project config |
 | **Author** | `{StackName}-Author` | Config CRUD, document upload, processing, agent access, test studio |
-| **Reviewer** | `{StackName}-Reviewer` | Document review, HITL tasks, view results |
+| **Reviewer** | `{StackName}-Reviewer` | Legacy document review (`claimReview`, `completeSectionReview`), view results |
+| **Annotator** | `{StackName}-Annotator` | Test-set annotation within `allowedTestSets`, and production **review-queue** items in the queues that list them as eligible (v0.6.13) |
 | **Viewer** | `{StackName}-Viewer` | Read-only access to results and dashboards |
 
-**Enforcement layers** (v0.6 — the authorization boundary is the resolver Lambda):
-1. **Resolver Lambda authorization**: every resolver checks `cognito:groups` from the
-   dispatcher-normalized identity and raises `PermissionError` (→ HTTP 403). The API
-   Gateway Cognito authorizer **only authenticates** — it performs no group evaluation.
+**Enforcement layers** (the API Gateway Cognito authorizer **only authenticates** — it performs no group evaluation):
+1. **Dispatcher group floor**: `authz.py` checks `cognito:groups` against a manifest
+   generated from `scripts/api_rbac_expectations.yaml` before routing, and refuses an
+   operation with no entry (default deny). Resolvers repeat the group check and raise
+   `PermissionError` (→ HTTP 403); every 403 names the refusing layer in
+   `errors[0].authzControl`.
 2. **Config-version scope**: scope-aware resolvers additionally check the caller's
    `allowedConfigVersions` (from the UsersTable) — denials return an in-band
    `Unauthorized` body with HTTP 200.
 3. **Object-level authorization**: owner-scoped keys / `ownerSub`-vs-caller checks on
-   user-owned resources (chat sessions, agent jobs).
+   user-owned resources (chat sessions, agent jobs, Inbox messages), test-set scope
+   (`allowedTestSets`), and review-queue eligibility plus holder-only conditional
+   writes on queue items (HITL.T02). These are opt-in per resolver
+   (AUTH.T16).
 4. **UI authorization**: React components conditionally rendered based on role
    (**presentation only — never a security control**; the API is directly callable).
 
@@ -83,7 +92,8 @@ and mapped to the specific threats they address.
 | Control | Implementation |
 |---------|---------------|
 | **Authentication** | API Gateway Cognito User Pools authorizer (authenticate only) |
-| **Authorization** | Per-operation `cognito:groups` checks **inside each resolver Lambda** |
+| **Authorization** | Default-deny group floor in the dispatcher, then per-object checks (scope, ownership, queue eligibility) **inside each resolver Lambda** |
+| **Error disclosure** | Unexpected errors answer a generic 500 `InternalError` with a request id; the detail is logged server-side only |
 | **Input-shape validation** | Dispatcher validates `arguments` against a build-time spec generated from `schema.graphql`; rejects unknown/missing/wrong-typed/out-of-enum args with HTTP 400 |
 | **Network posture** | Optional `ApiGatewayVisibility=PRIVATE` + VPCe resource policy; optional WAFv2 default-Block IP allow-list on the stage |
 | **Rate limiting** | API Gateway stage throttling + Lambda reserved concurrency + CloudWatch alarms |
@@ -99,10 +109,10 @@ and mapped to the specific threats they address.
 
 | Control | Implementation |
 |---------|---------------|
-| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` granted to `CognitoAuthorizedRole` |
+| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole` |
 | **CORS** | `AllowCredentials: false`, SigV4 in headers, no cookies |
-| **Group authorization** | **NOT ENFORCED** — the Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them (open gap, CHAT.T03; fix **pending in issue #920**) |
-| **Session ownership** | **NOT ENFORCED** on this transport (open gap, CHAT.T03; fix **pending in issue #920**) |
+| **Group authorization** | **NOT ENFORCED** — the Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them, and no group claim reaches this transport (open gap, CHAT.T03, `GAP-07`; issue #920 closed without changing it) |
+| **Session ownership** | **NOT ENFORCED** on this transport, which carries no verified per-user subject (open gap, CHAT.T03) |
 | **Caller identity** | The value the handler derives from the request context is the assumed-role **session name**, not a verified Cognito `sub`; on `/chat/agent` a body-supplied `callerSub` takes precedence over it (CHAT.T06). That session name is also the **same for every user** of the deployment, because the Identity Pool's enhanced flow picks it and one authenticated role is shared by all groups — so the remedy is a verified subject (an ID token presented alongside the signed request), not a reordering. **Issue #920** / PR #954 addresses the precedence and leaves the verified subject outstanding |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
 | **Automated testing** | **None** — `make api-test` drives `POST /op/{field}` only |
@@ -168,17 +178,17 @@ and mapped to the specific threats they address.
 **Threats mitigated**: CHAT.T04, KB.T03, RPT.T01
 
 Verified against `template.yaml`, `nested/api-resolvers/template.yaml` and
-`patterns/unified/template.yaml` at v0.6.9. The stack creates its own KMS
+`patterns/unified/template.yaml` at v0.6.13. The stack creates its own KMS
 customer-managed key (`CustomerManagedEncryptionKey`) and most data stores are
 bound to it.
 
 | Resource | Encryption |
 |----------|-----------|
 | S3 buckets | 11 of 13 use the stack's KMS **customer-managed key**; `LoggingBucket` and `WebUIBucket` use `AES256` (they hold access logs and public static assets). All 13 additionally carry a bucket policy denying any request where `aws:SecureTransport` is false |
-| SQS queues and DLQs | All **17** (16 in `template.yaml`, 1 in `patterns/unified/template.yaml`) set `KmsMasterKeyId` to the stack CMK — **not** SSE-SQS. None falls back to SSE-SQS |
-| DynamoDB tables | All 12 set `SSESpecification` with `SSEType: KMS` and the stack CMK — **not** the AWS-owned default key |
+| SQS queues and DLQs | All **18** (17 in `template.yaml`, one of them the malware-verdict DLQ created only when `MalwareScanning` is on, and 1 in `patterns/unified/template.yaml`) set `KmsMasterKeyId` to the stack CMK — **not** SSE-SQS. None falls back to SSE-SQS |
+| DynamoDB tables | All 14 in the three templates (12 in `template.yaml`, including `HITLTable` and `NotificationsTable`, and one in each nested template) set `SSESpecification` with `SSEType: KMS` and the stack CMK — **not** the AWS-owned default key. The feature platform's `InstalledFeaturesTable`, in its own nested stack, uses the AWS-managed key |
 | OpenSearch Serverless | Encryption at rest (AWS-managed) |
-| CloudWatch Logs | **106 of the 109** log groups declared in the three templates (56 + 33 + 20) set `KmsKeyId` to the stack CMK. The three exceptions are `HttpApiDispatcherLogGroup` — the group for the component every UI API request passes through — and the `StacknameCheckFunction` and `ReadPreviousIDPPatternFunction` custom-resource groups, which handle no request data. Retention is a **separate** statistic for the same 109 resources — 108 take `RetentionInDays` from `!Ref LogRetentionDays` and one hardcodes `30`, that one being the dispatcher group again — so the two counts must not be merged. See AUTH.T15 |
+| CloudWatch Logs | **113 of the 115** log groups declared in the three templates (60 + 35 + 20) set `KmsKeyId` to the stack CMK, `HttpApiDispatcherLogGroup` among them. The two exceptions are the `StacknameCheckFunction` and `ReadPreviousIDPPatternFunction` custom-resource groups, which handle no request data. Retention is a **separate** statistic for the same 115 resources — all 115 set `RetentionInDays` — so the two counts must not be merged. `scripts/tests/test_log_group_encryption.py` enforces both. See AUTH.T15 |
 
 > **Three residual notes on the key itself.** Its key policy grants the account
 > root `kms:*` and sets no `kms:ViaService` condition, so the key is usable by any
@@ -379,12 +389,14 @@ For deployments requiring network-level isolation:
 - [ ] Review and customize RBAC role permissions for your organization
 - [ ] Configure Cognito password policy and advanced security settings
 - [ ] Review the stack's KMS customer-managed key policy — it grants the account root `kms:*` and sets no `kms:ViaService` condition, so IAM is the only boundary on its use
-- [ ] Review Lambda hook security requirements
+- [ ] Review Lambda hook security requirements, and make hooks before the review point idempotent if review queues are used — they run in both executions of a reviewed document
+- [ ] Decide `MalwareScanning` (and `AllowUnscannableDocuments`) for any deployment that accepts documents from outside the organisation (PM.T09)
 - [ ] Plan VPC configuration if network isolation is required
 
 ### Post-Deployment
 
-- [ ] Create Cognito users with appropriate group assignments
+- [ ] Create Cognito users with appropriate group assignments; after upgrading from v0.6.12, review the groups of any user whose persona was changed in User Management, since the earlier sync could add `Reviewer` to an Author, Annotator or Viewer
+- [ ] Set each review queue's **Eligible Annotators** deliberately — an empty list admits no Annotator, and an Annotator removed from a queue keeps the items already assigned to them
 - [ ] Run `make api-test-static` and `make api-test` — verify every operation's resolver-side group/scope check passes and no new WARN gaps appeared
 - [ ] Confirm any newly added API operation has an entry in `scripts/api_rbac_expectations.yaml` (the static scan fails on drift)
 - [ ] Test RBAC permissions across all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`) — and note that `Precedence` orders IAM-role selection only, so no group inherits another's permissions

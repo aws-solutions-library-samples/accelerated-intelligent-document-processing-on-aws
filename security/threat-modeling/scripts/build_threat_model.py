@@ -59,6 +59,7 @@ PREFIX_DOCS = {
     "JOB": "Jobs API",
     "PII": "PII Anonymization",
     "SELL": "Seller Entitlement Service",
+    "HITL": "Review Queues",
 }
 
 # Curated per-threat risk + mitigation status. This is the ONLY place status is
@@ -78,6 +79,9 @@ STATUS: dict[str, tuple[int, str]] = {
     "PM.T06": (8, "Mitigated"),
     "PM.T07": (2, "Mitigated"),
     "PM.T08": (4, "Partially Mitigated"),
+    # Low x High. The GuardDuty ingest gate is optional and off by default, and
+    # static detection only; the Staging bucket's archive decoder is outside it.
+    "PM.T09": (3, "Partially Mitigated"),
     # BDA mode
     "BDA.T01": (4, "Partially Mitigated"),
     "BDA.T02": (2, "Mitigated"),
@@ -116,14 +120,12 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T04": (3, "Mitigated"),
     "AUTH.T05": (3, "Mitigated"),
     "AUTH.T06": (2, "Mitigated"),
-    # Two consumers fail closed (the pii-anonymizer feature API and
-    # chat_with_document_processor). Five NAMED scope-aware resolvers — six source
-    # files, list_documents_* being two — still read a failed lookup as
-    # "unrestricted"; the scope is keyed on an email that can diverge from the row;
-    # what identifier the claims yield is unconstrained at the adapter; and
-    # Chat-with-Document is unrestricted on the streaming transport, which forwards
-    # no verified caller (GAP-07). All four are written out in the entry's Residual
-    # risk field.
+    # Every REST consumer shares one fail-closed lookup (idp_common/config_scope.py)
+    # that prefers the immutable `sub`. Partially Mitigated on the residuals the
+    # entry writes out: rows the `sub` back-fill cannot reach, the token type being
+    # a property of the authorizer, the class gate having no rule about the matcher,
+    # and the suppressed allowedTestSets lookup. Chat-with-Document's stand-down on
+    # the streaming transport (GAP-07) is carried by AUTH.T14 and CHAT.T03.
     "AUTH.T07": (6, "Partially Mitigated"),
     "AUTH.T08": (6, "Mitigated"),
     "AUTH.T09": (6, "Mitigated"),
@@ -198,6 +200,14 @@ STATUS: dict[str, tuple[int, str]] = {
     "SELL.T08": (6, "Partially Mitigated"),
     "SELL.T09": (4, "Mitigated"),
     "SELL.T10": (4, "Accepted"),
+    # HITL review queues and Inbox (v0.6.13). Scores are Likelihood x Severity on
+    # the risk matrix's scale, per entry.
+    # Low x High: holder-only conditional writes; drafts are not schema-checked.
+    "HITL.T02": (3, "Partially Mitigated"),
+    # Medium x Low: metadata only; announcements address whole groups.
+    "HITL.T03": (2, "Partially Mitigated"),
+    # Low x High: grants are stack-scoped but wider than any Annotator operation.
+    "HITL.T04": (3, "Partially Mitigated"),
 }
 
 BLOCK_RE = re.compile(
