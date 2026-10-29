@@ -24,7 +24,7 @@ class DocumentType:
     """Optional regex pattern to match against document ID/name. When matched, all pages are classified as this type (single-class configurations only)."""
 
     document_page_content_regex: Optional[str] = None
-    """Optional regex pattern to match against page content text. When matched during multi-modal page-level classification, the page is classified as this type."""
+    """Optional regex pattern to match against page content text. When matched during page-granularity classification under the combined strategy, the page is classified as this type."""
 
     excluded: bool = False
     """When True, sections classified as this document type are skipped by

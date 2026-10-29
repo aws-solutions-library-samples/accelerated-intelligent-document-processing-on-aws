@@ -108,7 +108,7 @@ classification:
 ```
 
 The two may legitimately differ, and that pairing is the obvious mixed-tier case:
-a `:priority` labeller over a `:flex` segmenter puts the latency where it affects
+a `:priority` section classification call over a `:flex` splitting call puts the latency where it affects
 the rest of the pipeline and takes the discount on the pass that does not.
 
 ### How It Works

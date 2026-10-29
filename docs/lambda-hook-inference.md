@@ -48,7 +48,7 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 1. Navigate to the **Configuration** page
 2. Select the step you want to customize (e.g., Extraction)
 3. In the **Model** dropdown, select **"LambdaHook"** (first option)
-4. Enter your Lambda function ARN in the **Model Lambda Hook ARN** field
+4. Enter your Lambda function ARN in the **Model Lambda hook ARN** field
 5. Save the configuration
 
 For **Classification** there is one *Model* dropdown per model call, and which

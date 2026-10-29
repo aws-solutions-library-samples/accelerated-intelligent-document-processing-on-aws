@@ -1118,7 +1118,7 @@ class ClassificationService:
                     f"All {len(cached_page_classifications)} page classifications found in cache"
                 )
 
-            # Apply configured section splitting strategy
+            # Apply configured section splitting value
             document = self._apply_section_splitting_strategy(
                 document, all_page_results
             )
@@ -2554,7 +2554,7 @@ class ClassificationService:
                 logger.warning(f"Failed to load image content from {image_uri}: {e}")
                 # Continue without image content
 
-        # Check for page content regex match (multi-modal page-level classification only)
+        # Check for page content regex match (combined strategy, page granularity only)
         if text_content:
             regex_matched_class = self._check_page_content_regex(text_content)
             if regex_matched_class:
@@ -3722,7 +3722,7 @@ class ClassificationService:
         self, document: Document, page_results: List[PageClassification]
     ) -> Document:
         """
-        Apply configured section splitting strategy.
+        Apply configured section splitting value.
 
         Args:
             document: Document with classified pages
