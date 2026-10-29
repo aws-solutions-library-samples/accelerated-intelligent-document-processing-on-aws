@@ -2288,7 +2288,7 @@ be more certain than its least certain page.
 
 ### Where it shows up
 
-- **Web UI** — a **Class conf.** column in the **Document Pages** table on the
+- **Web UI** — a **Class Confidence** column in the **Document Pages** table on the
   document detail page, beside `Class/Type` rather than inside it. It **sorts**,
   so you can put the least-confident pages first — which is how you find the ones
   worth a second look. The percentage is a link: click it for **"Why this
@@ -2301,7 +2301,7 @@ be more certain than its least certain page.
   numbers already listed per page in the table directly below, and two extra
   columns squeezed that table until its own headers wrapped. `Section.Confidence`
   is still on the API and still lands in the reporting lake as
-  `section_confidence`. The **Low-conf. fields** column there is a different
+  `section_confidence`. The **Low Confidence Fields** column there is a different
   measurement entirely — per-extracted-field confidence, not the class.
 
   The number is deliberately shown the same way at every value. There is no

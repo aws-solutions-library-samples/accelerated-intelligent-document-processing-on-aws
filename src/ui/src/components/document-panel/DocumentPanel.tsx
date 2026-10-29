@@ -2,16 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import {
-  Alert,
-  Box,
-  ColumnLayout,
-  Container,
-  SpaceBetween,
-  Header,
-  ExpandableSection,
-  StatusIndicator,
-} from '@cloudscape-design/components';
+import { Alert, Box, ColumnLayout, Container, SpaceBetween, Header, StatusIndicator } from '@cloudscape-design/components';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
@@ -21,7 +12,6 @@ import SectionsPanel from '../sections-panel';
 import PagesPanel from '../pages-panel';
 import ChatPanel from '../chat-panel';
 import useConfiguration from '../../hooks/use-configuration';
-import usePricing from '../../hooks/use-pricing';
 import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
@@ -34,10 +24,6 @@ import type { DocumentVersionDetail } from './DocumentVersionsPanel';
 import { DocumentVersionProvider } from '../../contexts/document-version';
 import usePolling from '../../hooks/use-polling';
 import useClassificationComparison from '../../hooks/use-classification-comparison';
-import { calculateTotalCosts } from './metering-cost';
-import MeteringTable from './MeteringTable';
-import type { PricingData } from './MeteringTable';
-import type { PricingLookup } from './pricing';
 import { isProfileReadable } from '../../utils/readable-profile';
 import { lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
 import { SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
@@ -98,11 +84,6 @@ interface ConfidenceAlertsSectionProps {
   mergedConfig: Record<string, unknown> | undefined;
 }
 
-interface MeteringExpandableSectionProps {
-  meteringData: Record<string, Record<string, unknown>> | null;
-  documentItem: MappedDocument;
-}
-
 interface DocumentAttributesProps {
   item: MappedDocument;
   versions: ConfigVersion[];
@@ -157,48 +138,6 @@ const ConfidenceAlertsSection = ({ sections, mergedConfig }: ConfidenceAlertsSec
   }
 
   return <StatusIndicator type="warning">{totalAlertCount}</StatusIndicator>;
-};
-
-// Expandable section containing the metering table
-/** Estimated Cost, in its own container below Document Details. */
-const MeteringExpandableSection = ({ meteringData, documentItem }: MeteringExpandableSectionProps): React.JSX.Element => {
-  const [expanded, setExpanded] = useState(false);
-  const { pricing } = usePricing();
-  const [pricingData, setPricingData] = useState<PricingLookup | null>(null);
-
-  // Convert pricing data to lookup format
-  useEffect(() => {
-    if (pricing && (pricing as PricingData).pricing) {
-      const pricingLookup: PricingLookup = {};
-      (pricing as PricingData).pricing.forEach((item) => {
-        if (item.name && item.units) {
-          pricingLookup[item.name] = {};
-          item.units.forEach((unitItem) => {
-            if (unitItem.name && unitItem.price !== undefined) {
-              pricingLookup[item.name][unitItem.name] = Number(unitItem.price);
-            }
-          });
-        }
-      });
-      setPricingData(pricingLookup);
-    }
-  }, [pricing]);
-
-  // Calculate the cost per page for the header
-  const { totalCost, costPerPage } = calculateTotalCosts(meteringData, documentItem?.pageCount, pricingData);
-
-  return (
-    <ExpandableSection
-      variant="container"
-      headerText={`Estimated Cost (per page: $${costPerPage.toFixed(4)})`}
-      expanded={expanded}
-      onChange={({ detail }) => setExpanded(detail.expanded)}
-    >
-      <div style={{ width: '100%' }}>
-        <MeteringTable meteringData={meteringData} preCalculatedTotals={{ totalCost, costPerPage }} />
-      </div>
-    </ExpandableSection>
-  );
 };
 
 const isHitlSkippedStatus = (raw: string | null | undefined): boolean => normalizeHitlStatus(raw).kind === 'skipped';
@@ -506,7 +445,6 @@ export const DocumentPanel = ({
                 <DocumentAttributes item={enhancedItem} versions={versions} evaluationCell={actions.evaluationStatusCell} />
               </SpaceBetween>
             </Container>
-            {displayedItem.metering && <MeteringExpandableSection meteringData={displayedItem.metering} documentItem={displayedItem} />}
             <SectionsPanel
               sections={displayedItem.sections as never}
               documentItem={displayedItem}

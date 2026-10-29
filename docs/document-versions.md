@@ -95,14 +95,14 @@ The document detail page includes a **Version History** panel listing every
 retained version newest-first, with the current version badged. From there you
 can:
 
-- **View a past version** — choose *View* on any row to render that run's
+- **View a past version** — choose *View* in a row's **⋮** menu to render that run's
   snapshot on the page (read-only): its sections, page text/images, extraction
   results, and summary/evaluation reports are all fetched from the run's pinned
   S3 object versions (page images via version-pinned presigned URLs), so you see
   exactly what that run produced even after later runs overwrote the outputs. A
   banner indicates you're viewing a previous version; *Return to current
   version* switches back. While you view a past version, every change action on
-  the page (the **More Actions** items, such as **Edit Page Class**, **Re-extract
+  the page (the **More Actions** items, such as **Edit Page Grouping**, **Re-extract
   Sections**, **Use As Evaluation Baseline** and **Reprocess**) is
   disabled with the reason "Not available while you view a past version…", and so
   are **Refresh** and **Edit**. **Reports › Rule Validation Summary** is unavailable,

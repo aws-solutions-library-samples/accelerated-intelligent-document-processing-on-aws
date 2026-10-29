@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * More Actions › Edit Page Class on the document page (replacing SectionsPanel.regrouping,
+ * More Actions › Edit Page Grouping on the document page (replacing SectionsPanel.regrouping,
  * and SectionsPanel.reviewQueue's queue case). What has to hold: the board gets the
  * document's sections with page ids **unconverted** (1-based, or BDA's 0-based: no
  * arithmetic here); Save page grouping sends updateDocumentSections in the reviewer's
@@ -215,11 +215,11 @@ const MOVED: Draft = [
 
 const openBoard = async (item = doc()) => {
   renderPanel(item);
-  detailBar.chooseMenuItem('More Actions', 'Edit Page Class');
+  detailBar.chooseMenuItem('More Actions', 'Edit Page Grouping');
   await waitFor(() => expect(boardOpen()).toBe(true));
 };
 
-describe('Edit Page Class › Save page grouping', () => {
+describe('Edit Page Grouping › Save page grouping', () => {
   it('opens the board on the document’s sections, page ids unconverted', async () => {
     await openBoard();
     expect(board().sections).toEqual(AS_LOADED);
@@ -274,7 +274,7 @@ describe('Edit Page Class › Save page grouping', () => {
   });
 });
 
-describe('Edit Page Class › Save and Re-extract', () => {
+describe('Edit Page Grouping › Save and Re-extract', () => {
   it('is offered as the board’s second save', async () => {
     await openBoard();
     expect(board().secondarySave.label).toBe('Save and Re-extract');
@@ -307,7 +307,7 @@ describe('Edit Page Class › Save and Re-extract', () => {
     act(() => board().secondarySave.onSave(MOVED));
     await waitFor(() => shown(modalTitled('Confirm Reprocessing')));
     await act(async () => footerButton('Confirm Reprocessing', 'Confirm & Process').click());
-    const failure = await waitFor(() => shown(modalTitled('Edit Page Class')));
+    const failure = await waitFor(() => shown(modalTitled('Edit Page Grouping')));
     expect(failure.findContent().getElement().textContent).toContain(
       'The page grouping was saved, but the sections were not re-extracted: Throttled',
     );
@@ -315,13 +315,13 @@ describe('Edit Page Class › Save and Re-extract', () => {
     expect(order()).toEqual(['updateDocumentSections', 'processChanges']);
 
     refuse = false;
-    await act(async () => footerButton('Edit Page Class', 'Re-extract again').click());
+    await act(async () => footerButton('Edit Page Grouping', 'Re-extract again').click());
     await waitFor(() => expect(order()).toEqual(['updateDocumentSections', 'processChanges', 'processChanges']));
     expect(sent('processChanges')[1].modifiedSections).toEqual([
       { sectionId: '1', classification: 'FieldTicket', pageIds: [1, 2], isNew: false, isDeleted: false },
       { sectionId: '2', classification: 'Invoice', pageIds: [3, 4], isNew: false, isDeleted: false },
     ]);
-    await waitFor(() => expect(modalTitled('Edit Page Class')).toBeUndefined());
+    await waitFor(() => expect(modalTitled('Edit Page Grouping')).toBeUndefined());
   });
 
   it('is unavailable for a pure reorder, which needs no re-extracting', async () => {
@@ -336,22 +336,26 @@ describe('Edit Page Class › Save and Re-extract', () => {
     expect(board().secondarySave.disabledReason(withNew)).toBe(reextractNoClassReason(['3']));
   });
 
-  it('is not reachable in BDA mode: Edit Page Class itself is disabled there', () => {
+  it('is not reachable in BDA mode: Edit Page Grouping itself is disabled there', () => {
     state.config = { mergedConfig: { use_bda: 'true', classes: [] }, loading: false };
     renderPanel();
-    expect(moreItem('Edit Page Class')).toEqual({ text: 'Edit Page Class', disabled: true, disabledReason: BDA_REGROUP_REASON });
+    expect(moreItem('Edit Page Grouping')).toEqual({ text: 'Edit Page Grouping', disabled: true, disabledReason: BDA_REGROUP_REASON });
   });
 });
 
-describe('Edit Page Class availability', () => {
+describe('Edit Page Grouping availability', () => {
   it('is disabled with the queue reason while the document is in a review queue', () => {
     renderPanel(doc({ hitlStatus: 'in_review', hitlTriggered: true }));
-    expect(moreItem('Edit Page Class')).toEqual({ text: 'Edit Page Class', disabled: true, disabledReason: inReviewQueueEditReason(true) });
+    expect(moreItem('Edit Page Grouping')).toEqual({
+      text: 'Edit Page Grouping',
+      disabled: true,
+      disabledReason: inReviewQueueEditReason(true),
+    });
   });
 
   it('is not offered to a Viewer', () => {
     state.role = { ...ADMIN, isAdmin: false, isViewer: true, canWorkReviewQueues: false };
     renderPanel();
-    expect(moreItem('Edit Page Class')).toBeUndefined();
+    expect(moreItem('Edit Page Grouping')).toBeUndefined();
   });
 });

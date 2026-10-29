@@ -24,7 +24,7 @@ describe('Review Status column', () => {
     statusCell(true, 'in_review');
     expect(screen.getByRole('link', { name: /In Review/ })).toHaveAttribute(
       'href',
-      `#/documents/${encodeURIComponent('tenant/one/lending.pdf')}/edit`,
+      `#/documents/${encodeURIComponent('tenant/one/lending.pdf')}/edit?from=document`,
     );
   });
 

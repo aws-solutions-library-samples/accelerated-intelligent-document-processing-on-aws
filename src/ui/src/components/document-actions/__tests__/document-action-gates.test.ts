@@ -5,7 +5,7 @@
  * When an offered document page action applies. What has to hold: each action is
  * disabled with the reason that applies first, in the order past version, review queue,
  * still processing, configuration loading, BDA mode, then its own availability; Summary
- * on a past version ignores what the live document is doing; Edit Page Class is refused
+ * on a past version ignores what the live document is doing; Edit Page Grouping is refused
  * for a legacy review in progress, and only it is; a Reviewer-only user may not change a
  * section's class once the review is finished, while it is processing, or on an
  * unclaimed review, but may while holding a review in progress (the guarantees the
@@ -132,7 +132,7 @@ describe('the situational reasons, first match wins', () => {
     }
   });
 
-  it('refuses Edit Page Class in BDA mode with its own reason, after configuration loading', () => {
+  it('refuses Edit Page Grouping in BDA mode with its own reason, after configuration loading', () => {
     expect(reason('regroup', B)).toBe(BDA_REGROUP_REASON);
     expect(reason('regroup', { configLoading: true, bdaMode: true })).toBe(CONFIG_LOADING_REASON);
   });
@@ -191,7 +191,7 @@ describe('each action’s own availability', () => {
     expect(reason('summary', { isHistorical: true, displayed: { summaryReportUri: '' } })).toBe(NO_SUMMARY_REASON);
   });
 
-  it('refuses Edit Page Class only, for a legacy review in progress', () => {
+  it('refuses Edit Page Grouping only, for a legacy review in progress', () => {
     const legacy = { doc: { objectStatus: 'HITL_IN_PROGRESS', hitlStatus: 'InProgress', hitlTriggered: true, hitlReviewOwner: 'r' } };
     expect(reason('regroup', legacy)).toBe(LEGACY_REVIEW_REGROUP_REASON);
     for (const action of ['reextract', 'page-text', 'reset-class', 'baseline'] as DocumentActionId[]) {
@@ -263,7 +263,7 @@ describe('the processChanges actions for a caller who is not an Admin (the serve
     for (const action of PROCESS_ACTIONS) expect(reason(action, { doc: { ...open, hitlReviewOwner: 'someone' } }), action).toBeUndefined();
   });
 
-  it('comes after BDA mode, and does not touch Edit Page Class, which is not processChanges', () => {
+  it('comes after BDA mode, and does not touch Edit Page Grouping, which is not processChanges', () => {
     expect(reason('reextract', { roles: REVIEWER, ...B })).toBe(BDA_REPROCESS_REASON);
     expect(reason('regroup', { roles: REVIEWER })).toBeUndefined();
   });

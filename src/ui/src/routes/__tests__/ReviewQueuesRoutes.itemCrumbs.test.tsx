@@ -93,18 +93,37 @@ beforeEach(() => {
 describe('a Test Studio item’s breadcrumbs', () => {
   const TEST_ITEM = `/review-queues/test-sets/ts-1/items/${encodeURIComponent('in/a.pdf')}`;
 
-  it('name the test set once its queue has loaded', async () => {
+  it('lead back through Review Management for an Admin, naming the set once its queue has loaded', async () => {
     testSetName.value = 'Invoices';
     renderAt(TEST_ITEM);
-    await waitFor(() => expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Invoices', 'a.pdf']));
-    expect(crumbs()[1].href).toBe('#/review-queues/test-sets/ts-1');
+    await waitFor(() => expect(crumbs().map((c) => c.text)).toEqual(['Review Studio', 'Review Management', 'Test set: Invoices', 'a.pdf']));
+    expect(crumbs()[1].href).toBe('#/review-queues?view=test');
+    expect(crumbs()[2].href).toBe('#/review-queues/test-sets/ts-1');
   });
 
-  it('show Home only until the queue loads', () => {
+  it('never name the set by its id first', () => {
+    testSetName.value = undefined;
+    renderAt(TEST_ITEM);
+    expect(crumbs().map((c) => c.text)).toEqual(['Review Studio', 'Review Management', 'a.pdf']);
+  });
+
+  it('lead back to Tasks for an Annotator by default', () => {
     testSetName.value = undefined;
     role.isAdmin = false;
     role.isAnnotator = true;
     renderAt(TEST_ITEM);
-    expect(crumbs().map((c) => c.text)).toEqual(['Home']);
+    expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Tasks', 'a.pdf']);
+  });
+
+  it.each([
+    ['queues', ['Home', 'Queues', 'Test set: Invoices', 'a.pdf']],
+    ['test-studio', ['Test Studio', 'Invoices', 'a.pdf']],
+    ['tasks', ['Home', 'Tasks', 'a.pdf']],
+    ['inbox', ['Home', 'Inbox', 'a.pdf']],
+  ])('follow where the item was opened from (from=%s)', async (from, expected) => {
+    testSetName.value = 'Invoices';
+    renderAt(`${TEST_ITEM}?from=${from}`);
+    await waitFor(() => expect(crumbs().map((c) => c.text)).toEqual(expected));
+    if (from === 'test-studio') expect(crumbs()[1].href).toBe('#/test-studio/sets/ts-1');
   });
 });

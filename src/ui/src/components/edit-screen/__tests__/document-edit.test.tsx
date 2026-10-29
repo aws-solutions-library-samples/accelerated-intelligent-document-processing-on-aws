@@ -53,7 +53,7 @@ vi.mock('../../document-viewer/MarkdownViewer', () => ({
   MarkdownReport: ({ reportUri }: { reportUri: string }) => <div data-testid="summary-report">{reportUri}</div>,
 }));
 /** The breadcrumbs the page gives its layout. */
-let layout: { root?: { href?: string } | null; crumbs?: { href?: string }[] } = {};
+let layout: { trail?: { href?: string }[] } = {};
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
   default: ({ children, ...props }: { children: React.ReactNode }) => {
     layout = props;
@@ -64,7 +64,22 @@ vi.mock('../SectionEditor', () => ({
   default: (props: Record<string, unknown>) => {
     editorProps = props;
     (props.controllerRef as { current: unknown }).current = controller;
-    return <div data-testid="editor" data-readonly={String(props.isReadOnly)} />;
+    const regroup = props.regroup as { disabledReason?: string; onClick: () => void } | undefined;
+    const regroupButton = regroup && (
+      <button
+        data-testid="editor-regroup"
+        disabled={!!regroup.disabledReason}
+        data-reason={regroup.disabledReason}
+        onClick={regroup.onClick}
+      >
+        Edit Page Grouping
+      </button>
+    );
+    return (
+      <div data-testid="editor" data-readonly={String(props.isReadOnly)}>
+        {regroupButton}
+      </div>
+    );
   },
 }));
 
@@ -72,6 +87,7 @@ import DocumentEdit from '../DocumentEdit';
 import { BDA_REGROUP_REASON, EDIT_ROLE_REASON, MIRROR_LAG_REASON, PROCESS_OWNER_REASON, REGROUP_ROLE_REASON } from '../direct-edit-model';
 import type { DirectEditOptions } from '../direct-edit-model';
 import { inReviewQueueEditReason } from '../../common/review-status';
+import { regroupItem } from './regroup-stand-in';
 
 /** Where the screen has navigated to. */
 const LocationProbe = (): React.JSX.Element => <div data-testid="location">{useLocation().pathname}</div>;
@@ -167,7 +183,8 @@ describe('the direct edit', () => {
     expect(menuNames()).toEqual(['Reports', 'More Actions']);
     expect(barButtonLabels()).toEqual(['Refresh', 'Cancel', 'Save', 'Process Changes']);
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Summary', 'Processing Report']);
-    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class', 'Use As Evaluation Baseline']);
+    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Use As Evaluation Baseline']);
+    expect(regroupItem()).toMatchObject({ disabled: false });
     expect(editorProps!.isReadOnly).toBe(false);
   });
 
@@ -176,7 +193,7 @@ describe('the direct edit', () => {
     // IDPPattern at all, so nothing else could be deciding.
     configured.config = { classes: [], use_bda: true };
     await renderEditor();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+    expect(regroupItem()).toMatchObject({
       disabled: true,
       disabledReason: BDA_REGROUP_REASON,
     });
@@ -190,7 +207,7 @@ describe('the direct edit', () => {
   it('offers page grouping when the configuration says use_bda is "false"', async () => {
     configured.config = { classes: [], use_bda: 'false' };
     await renderEditor();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({ disabled: false });
+    expect(regroupItem()).toMatchObject({ disabled: false });
   });
 
   describe('Process Changes for a caller who is not an Admin', () => {
@@ -262,10 +279,10 @@ describe('the direct edit', () => {
     expect(disabledReason('Process Changes')).toBe('Process Changes needs the Admin or Reviewer role.');
   });
 
-  it('shows an Author Edit Page Class disabled, saying why', async () => {
+  it('shows an Author Edit Page Grouping disabled, saying why', async () => {
     Object.assign(role, { isAdmin: false, isAuthor: true, canWrite: true, canReview: false, canWorkReviewQueues: false });
     await renderEditor();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+    expect(regroupItem()).toMatchObject({
       disabled: true,
       disabledReason: REGROUP_ROLE_REASON,
     });
@@ -284,7 +301,7 @@ describe('the direct edit', () => {
     ).toBeUndefined();
     const reason = inReviewQueueEditReason(false);
     expect(disabledReason('Save')).toBe(reason);
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({ disabled: true, disabledReason: reason });
+    expect(regroupItem()).toMatchObject({ disabled: true, disabledReason: reason });
     expect(disabledReason('Process Changes')).toBe(reason);
   });
 
@@ -331,8 +348,8 @@ describe('the direct edit', () => {
     Object.assign(role, { isAdmin: false, isAnnotator: true, isAnnotatorOnly: true, canWrite: false, canReview: false });
     await renderEditor();
     expect(document.querySelector('a[href^="#/documents"]')).toBeNull();
-    const hrefs = [layout.root?.href, ...(layout.crumbs ?? []).map((c) => c.href)];
-    expect(hrefs[0]).toBe('#/my-work/tasks');
+    const hrefs = (layout.trail ?? []).map((c) => c.href);
+    expect(hrefs[1]).toBe('#/my-work/tasks');
     expect(hrefs.filter((h) => h?.startsWith('#/documents'))).toEqual([]);
   });
 

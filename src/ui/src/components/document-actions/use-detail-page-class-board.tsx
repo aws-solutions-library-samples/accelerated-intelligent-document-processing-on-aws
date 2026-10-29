@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The document page's Edit Page Class: the edit page's board (use-page-class-board),
+// The document page's Edit Page Grouping: the edit page's board (use-page-class-board),
 // over this document's pages and sections, with Save page grouping
 // (updateDocumentSections, which keeps the extracted values) and Save and Re-extract
 // (that save, then processChanges for the sections whose class or pages changed).

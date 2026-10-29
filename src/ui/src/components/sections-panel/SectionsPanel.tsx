@@ -31,6 +31,7 @@ import { documentEditHref } from '../../routes/constants';
 import { getFilePresignedUrl } from '../../graphql/generated';
 import { isBaselineAvailable } from '../document-panel/document-export';
 import { SECTION_NO_DATA_REASON } from '../document-actions/action-reasons';
+import { ColumnPreferences, fillTableColumns, useColumnPreferences } from '../common/detail-table-columns';
 
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
@@ -401,7 +402,7 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
     {
       id: 'edit-data',
       text: canEdit ? 'Edit Data' : 'View Data',
-      href: documentEditHref(objectKey, { section: String(item.Id) }),
+      href: documentEditHref(objectKey, { section: String(item.Id), from: 'document' }),
       ...(canEdit ? { iconName: 'edit' as const } : {}),
       disabled: !objectKey || !item.OutputJSONUri,
       disabledReason: !item.OutputJSONUri ? SECTION_NO_DATA_REASON : undefined,
@@ -424,9 +425,19 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
   );
 };
 
+/** The data columns a user may show or hide (⚙), with their headers. */
+export const SECTION_COLUMN_OPTIONS = [
+  { id: 'id', label: 'Section ID' },
+  { id: 'class', label: 'Class/Type' },
+  { id: 'pageIds', label: 'Page IDs' },
+  { id: 'confidenceAlerts', label: 'Low Confidence Fields' },
+  { id: 'status', label: 'Status' },
+] as const;
+
 /**
- * The sections table's columns: narrow data columns, resizable, and the ⋮ Actions column
- * last, taking the rest of the table's width.
+ * The sections table's columns, the ⋮ Actions column last. Their widths come from
+ * fillTableColumns (common/detail-table-columns): Actions fixed on the right, the data
+ * columns sharing the rest evenly.
  */
 export const sectionColumnDefinitions = (
   documentItem: DocumentItem | undefined,
@@ -439,39 +450,32 @@ export const sectionColumnDefinitions = (
       header: 'Section ID',
       cell: (item: SectionItem) => <IdCell item={item} />,
       sortingField: 'Id',
-      width: 110,
     },
     {
       id: 'class',
       header: 'Class/Type',
       cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
       sortingField: 'Class',
-      width: 180,
     },
     {
       id: 'pageIds',
       header: 'Page IDs',
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
-      width: 100,
     },
     {
       id: 'confidenceAlerts',
-      header: 'Low-conf. fields',
+      header: 'Low Confidence Fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
-      width: 130,
     },
     {
       id: 'status',
       header: 'Status',
       cell: (item: SectionItem) => <StatusCell item={item} />,
-      width: 130,
     },
     {
       id: 'actions',
       header: 'Actions',
       cell: (item: SectionItem) => <ActionsCell item={item} documentItem={documentItem} />,
-      // Fills the rest of the table, so its header stays on one line.
-      minWidth: 100,
     },
   ];
 };
@@ -497,16 +501,25 @@ const SectionsPanel = ({
   // the direction, so every column that declares a sort works. Starts unsorted,
   // so the default view keeps its existing order.
   const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
+  const { preferences, setPreferences, visibleColumns } = useColumnPreferences('document-sections-columns', SECTION_COLUMN_OPTIONS);
 
   return (
     <Container header={<Header variant="h2">Document Sections</Header>}>
       <div style={{ overflowX: 'auto', position: 'relative' }}>
         <Table
-          columnDefinitions={sectionColumnDefinitions(documentItem, mergedConfig, classificationIndex)}
+          columnDefinitions={fillTableColumns(sectionColumnDefinitions(documentItem, mergedConfig, classificationIndex), visibleColumns)}
+          visibleColumns={visibleColumns}
+          preferences={
+            <ColumnPreferences
+              title="Document Sections"
+              options={SECTION_COLUMN_OPTIONS}
+              preferences={preferences}
+              setPreferences={setPreferences}
+            />
+          }
           items={sortedItems}
           {...collectionProps}
           variant="embedded"
-          resizableColumns
           stickyHeader={false}
           empty={
             <Box textAlign="center" color="inherit">

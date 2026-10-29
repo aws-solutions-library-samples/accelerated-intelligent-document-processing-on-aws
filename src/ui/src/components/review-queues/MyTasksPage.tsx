@@ -23,7 +23,7 @@ const MyTasksPage = (): React.JSX.Element => {
   const [refreshing, setRefreshing] = useState(false);
 
   const items = useMemo(
-    () => [...(reviewWork?.myItems ?? []).map(fromReviewItem), ...(reviewWork?.testSetTasks ?? [])],
+    () => [...(reviewWork?.myItems ?? []).map(fromReviewItem('tasks')), ...(reviewWork?.testSetTasks ?? [])],
     [reviewWork?.myItems, reviewWork?.testSetTasks],
   );
 

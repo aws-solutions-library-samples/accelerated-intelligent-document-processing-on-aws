@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // Submits a document for reprocessing (processChanges). Shared by the edit page's Process
-// Changes on a direct edit and the document page's Edit Page Class (Save and
+// Changes on a direct edit and the document page's Edit Page Grouping (Save and
 // Re-extract), Re-extract Sections, Edit Page Text and Reset Page Class.
 import { generateClient } from '../../api/client-shim';
 import { processChanges } from '../../graphql/generated';

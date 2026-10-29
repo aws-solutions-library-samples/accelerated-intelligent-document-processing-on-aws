@@ -19,6 +19,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Alert,
   Box,
+  Button,
   Container,
   CopyToClipboard,
   FormField,
@@ -85,6 +86,11 @@ export interface SectionEditorProps {
   /** Called whenever the working copy changes, so an adapter can derive state from it. */
   onDataChange?: (data: Record<string, unknown> | null) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Edit Page Grouping, the last of the widget's buttons: opens the page-grouping board.
+   * Omitted where the mode offers no regrouping.
+   */
+  regroup?: { disabledReason?: string; loading?: boolean; onClick: () => void };
   /** Canonical path of a field to select on open ("LineItems[0].Rate"). */
   focusFieldPath?: string | null;
   /** Builds a shareable link to one field; omitted hides the affordance. */
@@ -129,7 +135,7 @@ export interface SectionEditorProps {
   defaultFilter?: 'none' | 'confidence-alerts';
 }
 
-const FILTER_ALL: SelectProps.Option = { label: 'Show all fields', value: 'none' };
+const FILTER_ALL: SelectProps.Option = { label: 'All fields', value: 'none' };
 const FILTER_ALERTS: SelectProps.Option = { label: 'Confidence alerts only', value: 'confidence-alerts' };
 /** The widget's panes fill the viewport below the screen's header, but never shrink below a usable height. */
 const WIDGET_PANE_HEIGHT = 'max(480px, calc(100vh - 260px))';
@@ -176,6 +182,7 @@ const SectionEditor = ({
   evaluation,
   initialSectionId = null,
   body,
+  regroup,
   defaultFilter = 'none',
 }: SectionEditorProps): React.JSX.Element => {
   const firstSectionId = (): string =>
@@ -488,17 +495,57 @@ const SectionEditor = ({
      that has one. */
   const sectionLabel = (s: ReviewSectionRef): string =>
     sectionTabLabel(s.sectionId, s.sectionId === selectedSectionId && localData ? documentClassType : s.documentClass);
-  // One section needs no selector. The dropdown holds any number of sections in one line.
+  // The widget's buttons, right-aligned in its header: Show Evaluation (where the document
+  // has a baseline), the section, the fields to show, then Edit Page Grouping. They act
+  // on the editor, so they are hidden while `body` (the source document) is shown.
+  // The dropdown holds any number of sections in one line, and is shown for one too.
   const sectionOptions = sections.map((s) => ({ value: s.sectionId, label: sectionLabel(s) }));
-  const sectionSelect =
-    sections.length > 1 ? (
+  const fieldsShown = activeTabId === 'visual' && !isLoading && hasFieldValues;
+  const widgetButtons = (
+    <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+      {evaluation?.available && (
+        <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
+          <Toggle
+            checked={showEvaluation}
+            disabled={evaluation.loading || !baselineData}
+            onChange={({ detail }) => setShowEvaluation(detail.checked)}
+          >
+            Show Evaluation
+          </Toggle>
+          {evaluation.loading && <Spinner />}
+        </SpaceBetween>
+      )}
       <Select
         inlineLabelText="Section"
         selectedOption={sectionOptions.find((o) => o.value === selectedSectionId) ?? null}
         onChange={({ detail }) => void handleSectionChange(detail.selectedOption.value ?? selectedSectionId)}
         options={sectionOptions}
+        disabled={sections.length < 2}
       />
-    ) : null;
+      {/* The filter applies to the Visual Editor's fields, so it is disabled on the JSON tab. */}
+      <Select
+        inlineLabelText="Show Fields"
+        selectedOption={filterMode}
+        onChange={({ detail }) => setFilterMode(detail.selectedOption)}
+        disabled={!fieldsShown}
+        options={[
+          FILTER_ALL,
+          FILTER_ALERTS,
+          ...(evaluation?.available ? [{ label: 'Evaluation mismatches only', value: 'eval-mismatches', disabled: !showEvaluation }] : []),
+        ]}
+      />
+      {regroup && (
+        <Button
+          disabled={!!regroup.disabledReason}
+          disabledReason={regroup.disabledReason}
+          loading={regroup.loading}
+          onClick={regroup.onClick}
+        >
+          Edit Page Grouping
+        </Button>
+      )}
+    </SpaceBetween>
+  );
   const noGeometry =
     !explainabilityInfo && localData ? 'No field geometry available for this baseline — bounding-box highlighting is disabled.' : null;
 
@@ -564,33 +611,6 @@ const SectionEditor = ({
                     )}
                     {hasFieldValues ? (
                       <>
-                        <SpaceBetween direction="horizontal" size="m" alignItems="end">
-                          <FormField label="Fields to show">
-                            <Select
-                              selectedOption={filterMode}
-                              onChange={({ detail }) => setFilterMode(detail.selectedOption)}
-                              options={[
-                                FILTER_ALL,
-                                FILTER_ALERTS,
-                                ...(evaluation?.available
-                                  ? [{ label: 'Evaluation mismatches only', value: 'eval-mismatches', disabled: !showEvaluation }]
-                                  : []),
-                              ]}
-                            />
-                          </FormField>
-                          {evaluation?.available && (
-                            <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                              <Toggle
-                                checked={showEvaluation}
-                                disabled={evaluation.loading || !baselineData}
-                                onChange={({ detail }) => setShowEvaluation(detail.checked)}
-                              >
-                                Show Evaluation
-                              </Toggle>
-                              {evaluation.loading && <Spinner />}
-                            </SpaceBetween>
-                          )}
-                        </SpaceBetween>
                         {/* One affordance for the selected field rather than a button on
                               every one of them: a bank statement section runs to hundreds of
                               fields, and the reviewer has already clicked the one they mean
@@ -673,12 +693,15 @@ const SectionEditor = ({
     </div>
   );
 
-  // The section dropdown (top left) acts on the editor, so it sits in its panel rather
-  // than in the page's bar, and is hidden while `body` (the source document) is shown.
   return (
-    <Container header={<Header variant="h2">Document Editor</Header>}>
+    <Container
+      header={
+        <Header variant="h2" actions={body ? undefined : widgetButtons}>
+          Document Editor
+        </Header>
+      }
+    >
       <SpaceBetween size="s">
-        {!body && sectionSelect && <div style={{ minWidth: '280px', maxWidth: '480px' }}>{sectionSelect}</div>}
         {!body && headerExtras && headerExtras(ctx)}
         {error && <Alert type="error">{error}</Alert>}
         {body ?? panes}

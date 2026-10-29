@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Edit Page Class's page thumbnails on the document page (replacing
+ * Edit Page Grouping's page thumbnails on the document page (replacing
  * SectionsPanel.thumbnailDeferral). What has to hold: the page signs no thumbnail on
  * mount (they feed only the board); opening the board signs every page once, in one
  * batch; and a refused batch says why the board has no page images.
@@ -162,14 +162,14 @@ const signAll = () => {
   };
 };
 
-describe('Edit Page Class thumbnails', () => {
+describe('Edit Page Grouping thumbnails', () => {
   it('signs nothing on mount, and signs every page once the board is opened', async () => {
     signAll();
     renderPanel();
     await waitFor(() => expect(detailBar.menuNames()).toContain('More Actions'));
     expect(presignCalls()).toHaveLength(0);
 
-    detailBar.chooseMenuItem('More Actions', 'Edit Page Class');
+    detailBar.chooseMenuItem('More Actions', 'Edit Page Grouping');
     await waitFor(() => expect(presignCalls()).toHaveLength(1));
     expect((presignCalls()[0][0].variables as { files: { s3Uri: string }[] }).files.map((f) => f.s3Uri)).toEqual(
       doc().pages.map((p) => p.ImageUri),
@@ -179,7 +179,7 @@ describe('Edit Page Class thumbnails', () => {
   it('says why the board has no page images when the resolver refuses them', async () => {
     routes.getFilePresignedUrls = () => Promise.reject({ errors: [{ errorType: 'Unauthorized', message: 'Unauthorized' }] });
     renderPanel();
-    detailBar.chooseMenuItem('More Actions', 'Edit Page Class');
+    detailBar.chooseMenuItem('More Actions', 'Edit Page Grouping');
     await waitFor(() => expect(document.body.textContent).toContain(FILE_ACCESS_DENIED_MESSAGE));
     expect(document.body.textContent).toContain('Page thumbnails unavailable');
   });

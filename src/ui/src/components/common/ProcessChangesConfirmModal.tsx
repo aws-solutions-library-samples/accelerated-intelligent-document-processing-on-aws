@@ -3,7 +3,7 @@
 //
 // The "Confirm Reprocessing" dialog before processChanges: what reprocessing will do.
 // Shared by the edit page's Process Changes on a direct edit and the document page's
-// Edit Page Class › Save and Re-extract, which lists the sections it re-extracts.
+// Edit Page Grouping › Save and Re-extract, which lists the sections it re-extracts.
 import React from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
 

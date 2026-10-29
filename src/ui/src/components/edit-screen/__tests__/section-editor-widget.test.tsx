@@ -57,16 +57,52 @@ const renderWidget = async (props: Partial<React.ComponentProps<typeof SectionEd
 };
 
 const panel = () => createWrapper(document.body).findContainer()!;
+const panelHeader = () => createWrapper(panel().findHeader()!.getElement()).findHeader()!;
 /** The Section dropdown, by its inline label (the panes hold the Fields to show dropdown too). */
 const sectionSelect = () =>
   createWrapper(panel().getElement())
     .findAllSelects()
     .find((s) => (s.getElement().textContent ?? '').startsWith('Section'));
 
+/** The panel header's controls, in order, by label. */
+const widgetControls = () => {
+  const actions = panelHeader().findActions();
+  if (!actions) return [];
+  const labels: string[] = [];
+  if (actions.findToggle()) labels.push(actions.findToggle()!.getElement().textContent ?? '');
+  actions
+    .findAllSelects()
+    .forEach((s) => labels.push((s.getElement().textContent ?? '').startsWith('Section') ? 'Section' : 'Show Fields'));
+  actions.findAllButtons().forEach((b) => {
+    if (!b.getElement().closest('[class*="select"]')) labels.push(b.getElement().textContent ?? '');
+  });
+  return labels.filter((t) => t !== '');
+};
+const fieldsSelect = () =>
+  createWrapper(panel().getElement())
+    .findAllSelects()
+    .find((s) => (s.getElement().textContent ?? '').startsWith('Show Fields'))!;
+const regroupButton = () =>
+  panelHeader()
+    .findActions()
+    ?.findAllButtons()
+    .find((b) => (b.getElement().textContent ?? '').startsWith('Edit Page Grouping'));
+const EVALUATION = {
+  available: true,
+  loading: false,
+  baseline: { inference_result: { Name: 'Ann' } },
+  originalBaseline: null,
+  setBaseline: vi.fn(),
+  markBaselineSaved: vi.fn(),
+  evaluationResults: null,
+  classificationIndex: {} as never,
+  canEditBaseline: true,
+};
+
 describe('the Document Editor panel', () => {
   it('is titled Document Editor', async () => {
     await renderWidget();
-    expect(panel().findHeader()!.getElement().textContent).toBe('Document Editor');
+    expect(panelHeader().findHeadingText().getElement().textContent).toBe('Document Editor');
   });
 
   it('lists the sections in a dropdown, and opens the one chosen', async () => {
@@ -91,15 +127,53 @@ describe('the Document Editor panel', () => {
     expect(document.body.textContent).not.toContain('Edit history');
   });
 
-  it('has no dropdown for a single section', async () => {
+  it('shows the Section dropdown for a single section too, disabled since there is nothing to choose', async () => {
     await renderWidget({ sections: [SECTIONS[0]] });
-    expect(sectionSelect()).toBeUndefined();
+    expect(sectionSelect()!.isDisabled()).toBe(true);
   });
 
   it('shows `body` in place of the panes, without the section controls', async () => {
     await renderWidget({ body: <div data-testid="source">source</div> });
     expect(document.querySelector('[data-testid="source"]')).not.toBeNull();
     expect(sectionSelect()).toBeUndefined();
+    expect(widgetControls()).toEqual([]);
     expect(panel().findHeader()!.getElement().textContent).toBe('Document Editor');
+  });
+});
+
+describe('the Document Editor panel’s buttons', () => {
+  const regroup = (over: { disabledReason?: string } = {}) => ({ onClick: vi.fn(), ...over });
+
+  it('are, right of the title: Show Evaluation where there is a baseline, Section, Show Fields, Edit Page Grouping', async () => {
+    await renderWidget({ evaluation: EVALUATION, regroup: regroup() });
+    expect(widgetControls()).toEqual(['Show Evaluation', 'Section', 'Show Fields', 'Edit Page Grouping']);
+  });
+
+  it('leave out Show Evaluation without a baseline, and Edit Page Grouping where the mode offers none', async () => {
+    await renderWidget();
+    expect(widgetControls()).toEqual(['Section', 'Show Fields']);
+  });
+
+  it('open the board from Edit Page Grouping, or show why it is unavailable', async () => {
+    const on = regroup();
+    await renderWidget({ regroup: on });
+    regroupButton()!.click();
+    expect(on.onClick).toHaveBeenCalledTimes(1);
+    document.body.innerHTML = '';
+    await renderWidget({ regroup: regroup({ disabledReason: 'Available when processing finishes' }) });
+    expect(regroupButton()!.isDisabled()).toBe(true);
+    act(() =>
+      regroupButton()!
+        .getElement()
+        .dispatchEvent(new FocusEvent('focus', { bubbles: false })),
+    );
+    expect(document.body.textContent).toContain('Available when processing finishes');
+  });
+
+  it('disable Show Fields on the JSON tab, where the filter does not apply', async () => {
+    await renderWidget();
+    await waitFor(() => expect(fieldsSelect().isDisabled()).toBe(false));
+    act(() => createWrapper(panel().getElement()).findTabs()!.findTabLinkById('json')!.click());
+    expect(fieldsSelect().isDisabled()).toBe(true);
   });
 });

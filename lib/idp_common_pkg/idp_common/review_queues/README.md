@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT-0
 
 HITL review queues hold documents that raised confidence alerts until a person has
 reviewed them. Queues are system-wide definitions (`queue_defs.py`) that Admins
-manage in HITL › Queue Management, and they have no confidence threshold of their
+manage in Review Studio › Review Management, and they have no confidence threshold of their
 own. When HITL is enabled in a document's configuration (`hitl.enabled`) and the
 Default queue is enabled, a production document whose sections raised confidence
 alerts (each field's own threshold, otherwise `hitl.confidence_threshold`) waits in
@@ -212,7 +212,7 @@ document, so it finishes with the new grouping.
   `getAnnotationQueue` returns the summaries written so far with
   `summaryStatus: BUILDING`.
 - **The Test Studio queue list** is `listTestSetQueues` (every set for an Admin in
-  Queue Management, only the sets listing the caller for an Annotator in My Work ›
+  Review Management, only the sets listing the caller for an Annotator in My Work ›
   Queues): one DynamoDB read
   of the sets' metadata items, with the counts the build, assignments and reviews
   keep there (`fileCount`, `QueueReviewedDocs`, `QueueAssignedDocs` via
@@ -304,7 +304,7 @@ assignment). The producers `review.queue_items_waiting` (debounced per queue, 10
 minutes), `review.claim_expiring` and `review.claim_expired` exist but send nothing in
 this release: arrivals in a queue are announced to nobody (`QueueDirectory.members`
 returns no recipients) and assignments do not expire. Admins see waiting work in
-Queue Management, whose counts (pending, assigned, in progress, annotators) come from
+Review Management, whose counts (pending, assigned, in progress, annotators) come from
 `getReviewQueuesOverview` for production queues and from the test sets' metadata
 (`store_assigned_count`) for Test Studio queues. Links point at the document's edit
 page, `/documents/<encoded key>/edit` (`idp_common.notifications.links.document_edit_link`),

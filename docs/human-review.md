@@ -192,7 +192,7 @@ HITL review is automatically triggered when:
    - Click **Process Changes** on the edit page to finish the review and process the
      changes: evaluation and summarization re-run, and OCR, classification and
      extraction are not repeated. The edit page saves your latest edits first and
-     asks you to confirm. (On the document page, **More Actions › Edit Page Class ›
+     asks you to confirm. (On the document page, **More Actions › Edit Page Grouping ›
      Save and Re-extract** and **More Actions › Re-extract Sections** also complete a
      pending review, after re-extracting the changed sections.)
    - Document status changes to **Review Completed**, and **Review Completed By**
@@ -333,7 +333,7 @@ hover.
 | Reports | **History** | The open section's field edits (prediction and baseline) and the document's review activity | everyone |
 | Reports | **Summary** | The document's summary, on a processed document that has one | everyone |
 | Reports | **Processing Report** | How the open section was extracted | everyone |
-| More Actions | **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | Admin, Reviewer (disabled for other roles, with the reason) |
+| Document Editor panel | **Edit Page Grouping** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | Admin, Reviewer (disabled for other roles, with the reason) |
 | More Actions | **Use As Evaluation Baseline** | Copies the processed document's results into the evaluation baseline, as the document page's **More Actions › Use As Evaluation Baseline** does; disabled while a copy is in progress | Admin, Author |
 | Button | **Cancel** | Leaves for the document page; asks first when there are unsaved edits, and discards them | editors |
 | Button | **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
@@ -467,8 +467,7 @@ When evaluation data is available, turn on **Show Evaluation**:
 - Clear browser cache and re-login
 
 **Estimated Cost Shows Zero After Start Review:**
-- This issue has been fixed - HITL operations no longer re-serialize document data
-- If still occurring, ensure you have the latest deployment
+- HITL operations do not re-serialize document data, so **Reports › Estimated Cost** keeps the document's cost; if it shows zero, ensure you have the latest deployment
 
 ### Monitoring
 

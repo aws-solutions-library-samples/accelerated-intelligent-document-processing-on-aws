@@ -50,6 +50,19 @@ const menuOf = (id: string) => {
   return menu;
 };
 
+/** Each rendered column's header and the width it is given (the table's own header row; a sticky header repeats it). */
+const columnWidths = () =>
+  Array.from(document.querySelector('table')!.querySelectorAll('thead th')).map((th) => [
+    (th.textContent ?? '').trim(),
+    (th as HTMLElement).style.width,
+  ]);
+/** A width as the browser keeps it, so `calc()` reads the same however it was written. */
+const css = (width: string) => {
+  const probe = document.createElement('div');
+  probe.style.width = width;
+  return probe.style.width;
+};
+
 beforeEach(() => {
   cleanup();
   state.role = { canWrite: true, canReview: true };
@@ -81,7 +94,7 @@ describe('the Document Sections table', () => {
     const menu = menuOf('1');
     expect(menu.findItems().map((i) => i.getElement().textContent)).toEqual(['Edit Data', 'Download Data', 'Download Baseline']);
     expect(menu.findItemById('edit-data')!.find('a')!.getElement().getAttribute('href')).toBe(
-      documentEditHref('in/a.pdf', { section: '1' }),
+      documentEditHref('in/a.pdf', { section: '1', from: 'document' }),
     );
   });
 
@@ -112,17 +125,35 @@ describe('the Document Sections table', () => {
     expect(alert).not.toHaveBeenCalled();
   });
 
-  it('gives the data columns narrow fixed widths and puts Actions last, filling the rest', () => {
-    const columns = sectionColumnDefinitions(DOC as never, {}, EMPTY_CLASSIFICATION_INDEX);
-    const last = columns[columns.length - 1];
-    expect(last).toMatchObject({ id: 'actions', header: 'Actions', minWidth: 100 });
-    expect(last).not.toHaveProperty('width');
-    expect(Object.fromEntries(columns.slice(0, -1).map((c) => [c.id, (c as { width?: number }).width]))).toEqual({
-      id: 110,
-      class: 180,
-      pageIds: 100,
-      confidenceAlerts: 130,
-      status: 130,
-    });
+  it('puts Actions last at 100px, the data columns sharing the rest of the width evenly', () => {
+    renderPanel();
+    const share = css('calc((100% - 100px) / 5)');
+    expect(columnWidths()).toEqual([
+      ['Section ID', share],
+      ['Class/Type', share],
+      ['Page IDs', share],
+      ['Low Confidence Fields', share],
+      ['Status', share],
+      ['Actions', '100px'],
+    ]);
+    expect(sectionColumnDefinitions(DOC as never, {}, EMPTY_CLASSIFICATION_INDEX).map((c) => c.id)).toEqual([
+      'id',
+      'class',
+      'pageIds',
+      'confidenceAlerts',
+      'status',
+      'actions',
+    ]);
+  });
+
+  it('shows the columns chosen in its preferences, remembered, Actions always', () => {
+    window.localStorage.setItem('document-sections-columns', JSON.stringify({ visibleContent: ['status'] }));
+    renderPanel();
+    expect(columnWidths()).toEqual([
+      ['Status', css('calc((100% - 100px) / 1)')],
+      ['Actions', '100px'],
+    ]);
+    expect(createWrapper(document.body).findTable()!.findCollectionPreferences()).not.toBeNull();
+    window.localStorage.removeItem('document-sections-columns');
   });
 });

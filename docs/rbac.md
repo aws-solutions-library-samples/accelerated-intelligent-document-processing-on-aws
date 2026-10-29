@@ -112,7 +112,7 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - The `ANY_GROUP` operations every role gets: its own profile, the Inbox and
     document reads.
 - **What is Admin-only.**
-  - Queue Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
+  - Review Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
     `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
     `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
   - Assignment: `reassignReviewItem` (assign), `takeOverReviewItem` (take an item
@@ -140,7 +140,7 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   has **Tasks** and **Queues** under Home, and a user whose only app group is
   `Annotator` sees exactly that: Home (Inbox, Tasks and Queues), plus a document's
   edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to;
-  the rest of the documents app isn't routed for them. **HITL › Queue Management** is
+  the rest of the documents app isn't routed for them. **Review Studio › Review Management** is
   Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
@@ -173,7 +173,7 @@ DOCUMENTS
   Reprocess documents              ✅      ✅       ❌        ❌
   Abort workflows                  ✅      ✅       ❌        ❌
   Copy to evaluation baseline      ✅      ✅       ❌        ❌
-  Regroup pages (Edit Page Class)  ✅      ❌       ✅        ❌
+  Regroup pages (Edit Page Grouping)  ✅      ❌       ✅        ❌
   Troubleshoot                     ✅      ✅       ❌        ✅
 
 HITL REVIEW

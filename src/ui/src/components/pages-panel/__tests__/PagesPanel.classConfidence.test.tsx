@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Wiring test for the "Class conf." column in the Document Pages table.
+ * Wiring test for the "Class Confidence" column in the Document Pages table.
  *
  * The presentation contract this pins:
  *   scored + detail   -> the percentage is a CLICKABLE trigger (button role) that
@@ -73,9 +73,9 @@ const columnIndex = (header: string): number => {
   return index;
 };
 
-/** The Class conf. cell for the row whose Page ID cell is `pageId`. */
+/** The Class Confidence cell for the row whose Page ID cell is `pageId`. */
 const confidenceCell = (pageId: string): HTMLElement => {
-  const index = columnIndex('Class conf.');
+  const index = columnIndex('Class Confidence');
   const row = Array.from(document.querySelectorAll('tbody tr')).find(
     (tr) => tr.querySelectorAll('td')[columnIndex('Page ID')]?.textContent?.trim() === pageId,
   );
@@ -83,10 +83,10 @@ const confidenceCell = (pageId: string): HTMLElement => {
   return (row as HTMLElement).querySelectorAll('td')[index] as HTMLElement;
 };
 
-describe('Document Pages — Class conf. column', () => {
+describe('Document Pages — Class Confidence column', () => {
   it('has its own column, separate from Class/Type', () => {
     renderPanel();
-    expect(columnIndex('Class conf.')).toBeGreaterThan(columnIndex('Class/Type'));
+    expect(columnIndex('Class Confidence')).toBeGreaterThan(columnIndex('Class/Type'));
   });
 
   it('renders the confidence as a percentage', () => {
@@ -147,7 +147,7 @@ describe('Document Pages — Class conf. column', () => {
   it('offers sorting on the column', () => {
     renderPanel();
     const header = Array.from(document.querySelectorAll('th')).find((th) =>
-      th.textContent?.trim().startsWith('Class conf.'),
+      th.textContent?.trim().startsWith('Class Confidence'),
     ) as HTMLElement;
     // Sorting is what makes least-confident-first possible; the whole table used
     // to be sortingDisabled.

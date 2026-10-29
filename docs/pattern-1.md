@@ -233,7 +233,7 @@ section or page change to such a document for every role; see
 - **Edit the evaluation baseline**: With **Show Evaluation** on, edit the baseline values the document is evaluated against. A test set's ground truth is edited in Test Studio
 - **Process the corrections**: The edit page's **Process Changes** saves the edits and
   re-runs evaluation and summarization on them, without BDA re-invocation
-- **Regroup pages**: **More Actions › Edit Page Class › Save page grouping** on the
+- **Regroup pages**: **More Actions › Edit Page Grouping › Save page grouping** on the
   document page saves a new page grouping and keeps the extracted values; nothing is
   reprocessed
 

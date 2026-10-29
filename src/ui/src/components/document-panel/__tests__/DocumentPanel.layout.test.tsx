@@ -84,6 +84,7 @@ vi.mock('../TroubleshootModal', () => ({
 }));
 
 import DocumentPanel, { DocumentAttributes } from '../DocumentPanel';
+import { detailBar } from '../../document-actions/__tests__/detail-bar';
 
 const ITEM = {
   objectKey: 'in/a.pdf',
@@ -141,14 +142,13 @@ describe('Document Details', () => {
     expect(createWrapper(statusField).findStatusIndicator()!.getElement().textContent).toBe('COMPLETED');
   });
 
-  it('puts Estimated Cost in its own container, below Document Details', () => {
+  it('has no Estimated Cost panel: Reports › Estimated Cost opens it in a dialog', () => {
     render(<DocumentPanel item={ITEM as never} />);
-    const details = createWrapper(document.body)
-      .findAllContainers()
-      .find((c) => c.findHeader()?.getElement().textContent === 'Document Details')!;
-    const cost = createWrapper(document.body).findExpandableSection()!;
-    expect(cost.findHeaderText()!.getElement().textContent).toMatch(/^Estimated Cost \(per page: \$/);
-    expect(details.getElement().contains(cost.getElement())).toBe(false);
-    expect(details.getElement().compareDocumentPosition(cost.getElement()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(createWrapper(document.body).findExpandableSection()).toBeNull();
+    expect(document.body.textContent).not.toContain('Estimated Cost (per page');
+    detailBar.chooseMenuItem('Reports', 'Estimated Cost');
+    const modal = createWrapper(document.body).findModal()!;
+    expect(modal.findHeader().getElement().textContent).toMatch(/^Estimated Cost \(per page: \$/);
+    expect(modal.findContent().findTable()).not.toBeNull();
   });
 });

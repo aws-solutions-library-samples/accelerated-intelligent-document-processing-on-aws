@@ -45,7 +45,7 @@ import type { EditModel, EditReady } from '../edit-model';
 import { barButtonLabels, barButtons, buttonLabel } from './edit-bar';
 
 const ready = (over: Partial<EditReady> = {}): EditModel => ({
-  navigation: { root: undefined, crumbs: [] },
+  navigation: { trail: [] },
   state: {
     kind: 'ready',
     header: { title: 'a.pdf', status: 'Done', objectKey: 'in/a.pdf', source: null, offerReport: false },

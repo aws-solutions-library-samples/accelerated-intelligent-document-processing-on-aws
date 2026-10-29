@@ -51,11 +51,11 @@ const ToolsPanel = (): React.JSX.Element => (
           <b>Details | Source</b> switches between the page&apos;s panels and the original file.
         </li>
         <li>
-          <b>Reports</b>: the Summary, Evaluation Report, Rule Validation Summary and Processing Flow, each in a dialog.
+          <b>Reports</b>: the Summary, Evaluation Report, Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.
         </li>
         <li>
-          <b>More Actions</b>: Edit Page Class, Re-extract Sections, Edit Page Text, Reset Page Class, Use As Evaluation Baseline, Skip All
-          Reviews; then the downloads (the document&apos;s outputs as a ZIP); then Reprocess, Abort and Delete.
+          <b>More Actions</b>: Edit Page Grouping, Re-extract Sections, Edit Page Text, Reset Page Class, Use As Evaluation Baseline, Skip
+          All Reviews; then the downloads (the document&apos;s outputs as a ZIP); then Reprocess, Abort and Delete.
         </li>
         <li>
           <b>Refresh</b> the page, <b>Troubleshoot</b> what went wrong, and <b>Edit</b> the document&apos;s extracted values.
@@ -67,10 +67,11 @@ const ToolsPanel = (): React.JSX.Element => (
       </p>
       <h3>On the page</h3>
       <ul>
-        <li>The document&apos;s fields, status and estimated cost</li>
+        <li>The document&apos;s fields and status</li>
         <li>Each section&apos;s class, pages and status; its ⋮ menu opens or downloads its data</li>
         <li>Each page&apos;s class, confidence and thumbnail; its ⋮ menu opens the page text</li>
-        <li>Version History, to view or compare past processing runs, and Chat with the document</li>
+        <li>The ⚙ icon on each table chooses which columns it shows</li>
+        <li>Version History, to view (from each row&apos;s ⋮ menu) or compare past processing runs, and Chat with the document</li>
       </ul>
     </div>
   </HelpPanel>

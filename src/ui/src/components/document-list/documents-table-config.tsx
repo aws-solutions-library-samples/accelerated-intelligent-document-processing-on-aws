@@ -274,7 +274,7 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'hitlStatus',
     header: 'Review Status',
-    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? documentEditHref(item.objectKey) : undefined),
+    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? documentEditHref(item.objectKey, { from: 'document' }) : undefined),
     sortingField: 'hitlStatus',
     width: 150,
   },

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The queue tables in HITL › Queue Management. What has to hold: there is no Create
+ * The queue tables in Review Studio › Review Management. What has to hold: there is no Create
  * queue control (queues other than Default stay listed and usable); both tables show
  * exactly Queue, Items, Pending, Assigned, Annotators and the actions menu, in that
  * order (Assigned counts every assigned item, started or not; the other settings
@@ -61,9 +61,9 @@ const health = (name: string, depth: number, claimed = 0, inProgress = 0) => ({
   summary: { name, displayName: name, depth, unclaimed: depth - claimed, claimed, inProgress },
 });
 
-const renderPage = async () => {
+const renderPage = async (path = '/') => {
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <QueuesPage />
     </MemoryRouter>,
   );
@@ -71,7 +71,12 @@ const renderPage = async () => {
 };
 
 const table = () => createWrapper(document.body).findTable()!;
-const testSetTable = () => createWrapper(document.body).findAllTables()[1]!;
+const testSetTable = () => createWrapper(document.body).findTable()!;
+const tableTitles = () =>
+  createWrapper(document.body)
+    .findAllTables()
+    .map((t) => t.findHeaderSlot()?.findHeader()?.findHeadingText().getElement().textContent);
+const viewSwitch = () => createWrapper(document.body).findSegmentedControl()!;
 const headers = (t = table()) => t.findColumnHeaders().map((h) => h.getElement().textContent);
 const cell = (queue: string, header: string): string => {
   const col = headers().indexOf(header);
@@ -177,9 +182,31 @@ describe('the Production Queues table', () => {
   });
 });
 
+describe('the Production | Test Studio switch', () => {
+  it('shows the Production Queues alone by default, and reads only them', async () => {
+    await renderPage();
+    expect(tableTitles()).toEqual(['Production Queues']);
+    expect(viewSwitch().findSelectedSegment()!.getElement().textContent).toBe('Production');
+    expect(listTestSetQueues).not.toHaveBeenCalled();
+  });
+
+  it('shows the Test Studio Queues alone once switched, and reads them', async () => {
+    await renderPage();
+    viewSwitch().findSegments()[1].click();
+    await waitFor(() => expect(tableTitles()).toEqual(['Test Studio Queues']));
+    expect(listTestSetQueues).toHaveBeenCalled();
+  });
+
+  it('opens on the Test Studio Queues for ?view=test, as the queue pages’ breadcrumbs link', async () => {
+    await renderPage('/?view=test');
+    expect(tableTitles()).toEqual(['Test Studio Queues']);
+    expect(listReviewQueues).not.toHaveBeenCalled();
+  });
+});
+
 describe('the Test Studio Queues table', () => {
   it('shows the same columns as the production table, Assigned counting started documents too', async () => {
-    await renderPage();
+    await renderPage('/?view=test');
     await waitFor(() => expect(testSetTable().findRows().length).toBe(1));
     expect(headers(testSetTable())).toEqual(['Queue', 'Items', 'Pending', 'Assigned', 'Annotators', 'Actions']);
     const row = (header: string) =>

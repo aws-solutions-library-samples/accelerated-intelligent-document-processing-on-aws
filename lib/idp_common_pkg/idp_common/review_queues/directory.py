@@ -111,6 +111,6 @@ class QueueDirectory:
         """``(groups, emails)`` told when work arrives in a queue: nobody.
 
         Only Annotators have an Inbox, and they hear about an item when it is
-        assigned to them; Admins see waiting work on HITL › Queue Management.
+        assigned to them; Admins see waiting work on Review Studio › Review Management.
         """
         return [], []

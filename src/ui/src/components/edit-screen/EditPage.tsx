@@ -4,7 +4,7 @@
 // The edit page, the same for every mode: it renders one EditModel (see edit-model.ts).
 // The layout and breadcrumbs, the load and error states, the bar (EditScreen), the
 // shared SectionEditor, the Edit | View switch, History, Skip's reason, Cancel, Refresh, the
-// Process Changes confirmation, Edit Page Class and the exit once the work is done are
+// Process Changes confirmation, Edit Page Grouping and the exit once the work is done are
 // all here, once. What applies, what each action does and what it says come from the
 // model, so this file holds no mode-specific code (pinned by
 // edit-page.no-mode-branching.test.ts).
@@ -55,12 +55,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
   const { navigation } = model;
 
   const page = (content: React.ReactNode) => (
-    <ReviewQueuesLayout
-      root={navigation.root}
-      crumbs={navigation.crumbs}
-      navActiveHref={navigation.activeHref}
-      tools={<EditScreenToolsPanel />}
-    >
+    <ReviewQueuesLayout trail={navigation.trail} navActiveHref={navigation.activeHref} tools={<EditScreenToolsPanel />}>
       {content}
     </ReviewQueuesLayout>
   );
@@ -293,6 +288,15 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             {...session.editorBindings}
             /* The editor stays mounted behind the source view, so unsaved edits survive the switch. */
             body={sourceView}
+            regroup={
+              bar.showRegroup
+                ? {
+                    disabledReason: session.busy !== null ? 'Working…' : bar.regroupDisabledReason,
+                    loading: session.busy === 'regroup',
+                    onClick: () => void handleAction('regroup'),
+                  }
+                : undefined
+            }
           />
         ))}
     </EditScreen>,

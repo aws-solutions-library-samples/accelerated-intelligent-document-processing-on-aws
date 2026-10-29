@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// Edit Page Class, the same on the edit page and the document page: the page-class board
+// Edit Page Grouping, the same on the edit page and the document page: the page-class board
 // as a dialog, over the board's pages and sections, with its save error shown inside the
 // board so the work in it is not lost. The board decides what saving does and what it
 // says.
@@ -9,7 +9,7 @@
 // A board that can re-extract (the document page's) also offers Save and Re-extract:
 // after a confirmation listing the sections whose class or pages changed, it saves the
 // grouping, then extracts those sections again. When the save works but the re-extract
-// fails, the board closes (the grouping it shows is saved) and an "Edit Page Class"
+// fails, the board closes (the grouping it shows is saved) and an "Edit Page Grouping"
 // dialog reports the failure, with Re-extract again.
 import React, { useMemo, useState } from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
@@ -121,7 +121,7 @@ const usePageClassBoard = (
   const boardDialog = board && isOpen && (
     <PageGroupingEditor
       presentation="modal"
-      title="Edit Page Class"
+      title="Edit Page Grouping"
       pages={boardPages}
       sections={board.sections(openSectionId, openData)}
       classOptions={board.classOptions}
@@ -166,7 +166,7 @@ const usePageClassBoard = (
       {partial && (
         <Modal
           visible
-          header="Edit Page Class"
+          header="Edit Page Grouping"
           onDismiss={() => setPartial(null)}
           footer={
             <Box float="right">

@@ -11,18 +11,19 @@
 // item directly: the first draft save, or Process Changes, assigns it to them. An item
 // assigned to someone else is view-only for an Admin until they Take over.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditHref, productionQueuePath } from '../../routes/constants';
+import { MY_QUEUES_PATH, documentEditHref, parseEditOrigin, productionQueuePath } from '../../routes/constants';
 import type { ReviewItem, ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
+import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
 import { productionWorkItemId } from '../review-queues/work-item-ids';
@@ -37,12 +38,12 @@ import type { EditorSession } from './use-editor-session';
 const REVIEW_NOT_COMPLETE = 'Available once the review is complete';
 
 /** On a Production item only an Admin holding it may regroup: an Annotator regroups only test-set documents. */
-export const QUEUE_REGROUP_ROLE_REASON = 'Edit Page Class needs the Admin role on a review queue item.';
+export const QUEUE_REGROUP_ROLE_REASON = 'Edit Page Grouping needs the Admin role on a review queue item.';
 
 /** Notices for the in-review states that are not open for editing, each saying what happens next. */
 export const HOLDING_NOTICE = 'This item is being prepared for review. It can be edited once it reaches its queue.';
 export const FINALIZE_FAILED_NOTICE =
-  "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Queue Management.";
+  "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Review Management.";
 
 /** What a failed action was trying to do, in the error it reports. */
 const FAILED_ACTION: Record<EditAction, string> = {
@@ -75,6 +76,7 @@ export const useProductionItemEditModel = (
   const reviewWork = useOptionalReviewWork();
   const leavePath = useLeavePath();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const focusField = searchParams.get('field');
   const initialSectionId = searchParams.get('section');
   const [takingOver, setTakingOver] = useState(false);
@@ -135,12 +137,17 @@ export const useProductionItemEditModel = (
 
   const queueId = detail?.item.queue;
   const queueCrumb = queueId ? { text: detail?.queueName || queueId, href: `#${productionQueuePath(queueId)}` } : null;
+  // The trail the user came by; without one, an Admin works items from Review Management
+  // and an Annotator from Tasks.
+  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : 'tasks');
   const navigation: EditNavigation = {
-    // Home only until the item, and so its queue, is known.
-    root: queueCrumb,
-    crumbs: queueCrumb ? [{ text: documentName(objectKey), href: '#' }] : [],
-    // An Admin works items from Queue Management; an Annotator from Tasks.
-    activeHref: isAdmin ? `#${REVIEW_QUEUES_PATH}` : `#${MY_TASKS_PATH}`,
+    trail: editTrail({
+      origin,
+      objectKey,
+      name: documentName(objectKey),
+      queue: queueCrumb ? { crumb: queueCrumb, view: 'production' } : null,
+    }),
+    activeHref: editActiveHref(origin),
   };
 
   if (loadError && !detail) {

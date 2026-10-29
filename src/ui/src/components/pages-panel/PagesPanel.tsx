@@ -12,6 +12,7 @@ import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/
 import PageTextEditorModal from './PageTextEditorModal';
 import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
 import { PAGE_NO_TEXT_REASON } from '../document-actions/action-reasons';
+import { ColumnPreferences, fillTableColumns, useColumnPreferences } from '../common/detail-table-columns';
 
 interface PageItem {
   Id: string;
@@ -114,9 +115,17 @@ const ActionsCell = ({
   );
 };
 
+/** The data columns a user may show or hide (⚙), with their headers. */
+export const PAGE_COLUMN_OPTIONS = [
+  { id: 'id', label: 'Page ID' },
+  { id: 'class', label: 'Class/Type' },
+  { id: 'classConfidence', label: 'Class Confidence' },
+  { id: 'thumbnail', label: 'Thumbnail' },
+] as const;
+
 /**
- * The pages table's columns: narrow data columns, resizable, and the ⋮ Actions column
- * last, taking the rest of the table's width.
+ * The pages table's columns, the ⋮ Actions column last. Their widths come from
+ * fillTableColumns (common/detail-table-columns), as the sections table's do.
  */
 export const pageColumnDefinitions = (
   thumbnailUrls: Record<string, string | null>,
@@ -129,18 +138,16 @@ export const pageColumnDefinitions = (
     header: 'Page ID',
     cell: (item: PageItem) => <IdCell item={item} />,
     sortingField: 'Id',
-    width: 90,
   },
   {
     id: 'class',
     header: 'Class/Type',
     cell: (item: PageItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
     sortingField: 'Class',
-    width: 180,
   },
   {
     id: 'classConfidence',
-    header: 'Class conf.',
+    header: 'Class Confidence',
     // The classifier's confidence in Class, and the affordance for its reasoning
     // and ranked alternatives. Its own column rather than more text in
     // Class/Type: it aligns down the column, and it sorts — least-confident-first
@@ -149,20 +156,16 @@ export const pageColumnDefinitions = (
       <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
     ),
     sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
-    width: 110,
   },
   {
     id: 'thumbnail',
     header: 'Thumbnail',
     cell: (item: PageItem) => <ThumbnailCell imageUrl={thumbnailUrls[item.Id]} />,
-    width: 130,
   },
   {
     id: 'actions',
     header: 'Actions',
     cell: (item: PageItem) => <ActionsCell item={item} onView={onView} pageTextEdit={pageTextEdit} />,
-    // Fills the rest of the table, so its header stays on one line.
-    minWidth: 100,
   },
 ];
 
@@ -181,6 +184,7 @@ const PagesPanel = ({
   // so the default view keeps its existing order. `sortedItems` feeds the table
   // ONLY — `tableItems` still feeds the text viewer, which pages in document order.
   const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
+  const { preferences, setPreferences, visibleColumns } = useColumnPreferences('document-pages-columns', PAGE_COLUMN_OPTIONS);
 
   return (
     <SpaceBetween size="l">
@@ -195,11 +199,22 @@ const PagesPanel = ({
             </Alert>
           )}
           <Table
-            columnDefinitions={pageColumnDefinitions(thumbnailUrls, setViewing, classificationIndex, pageTextEdit)}
+            columnDefinitions={fillTableColumns(
+              pageColumnDefinitions(thumbnailUrls, setViewing, classificationIndex, pageTextEdit),
+              visibleColumns,
+            )}
+            visibleColumns={visibleColumns}
+            preferences={
+              <ColumnPreferences
+                title="Document Pages"
+                options={PAGE_COLUMN_OPTIONS}
+                preferences={preferences}
+                setPreferences={setPreferences}
+              />
+            }
             items={sortedItems}
             {...collectionProps}
             variant="embedded"
-            resizableColumns
             stickyHeader
             empty={
               <Box textAlign="center" color="inherit">
