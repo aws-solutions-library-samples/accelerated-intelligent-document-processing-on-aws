@@ -239,6 +239,7 @@ describe('CapacityPlanningLayout — processing mode', () => {
     expect(screen.getByText(/BDA mode is not supported/)).toBeInTheDocument();
     expect(screen.queryByText(/No classification model configured/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Pattern [123]/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Calculate Capacity Requirements' })).toBeDisabled();
   });
 
   it('asks for a classification model on a pipeline-mode profile that names none', async () => {
@@ -253,5 +254,6 @@ describe('CapacityPlanningLayout — processing mode', () => {
 
     expect(screen.queryByText(/BDA mode is not supported/)).not.toBeInTheDocument();
     expect(screen.queryByText(/No classification model configured/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Calculate Capacity Requirements' })).toBeEnabled();
   });
 });

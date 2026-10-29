@@ -275,8 +275,9 @@ Capacity planning calculates quota requirements for the pipeline mode steps (OCR
 Classification, Extraction, Assessment, Summarization), which is the right basis for a
 configuration profile whose documents run in pipeline mode (`use_bda: false`). It does
 not support BDA mode. When the selected profile sets `use_bda: true`, the screen shows a
-**⚠️ BDA mode is not supported** alert, because the quota requirements it reports are
-for steps those documents never call.
+**⚠️ BDA mode is not supported** alert and disables **Calculate Capacity
+Requirements**, because the quota requirements it would report are for steps those
+documents never call.
 
 For a pipeline-mode profile that names no classification model, the screen shows a
 **⚠️ No classification model configured** alert. Set the model in **View/Edit

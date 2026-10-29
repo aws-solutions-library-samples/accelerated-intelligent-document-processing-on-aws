@@ -2142,7 +2142,7 @@ const CapacityPlanningLayout = () => {
           <Alert type="warning">
             <strong>⚠️ BDA mode is not supported.</strong> This configuration profile processes documents with Bedrock Data Automation (
             <code>use_bda: true</code>). Capacity planning sizes the pipeline mode steps (OCR, Classification, Extraction, Assessment,
-            Summarization) only, so its quota requirements do not apply to this profile.
+            Summarization) only, so its quota requirements do not apply to this profile, and Calculate Capacity Requirements is disabled.
           </Alert>
         )}
 
@@ -2771,7 +2771,7 @@ const CapacityPlanningLayout = () => {
           variant="primary"
           onClick={calculateCapacityRequirements}
           loading={loading}
-          disabled={!selectedConfigVersion || !configuration}
+          disabled={!selectedConfigVersion || !configuration || isBdaModeConfig(configuration as Record<string, unknown>)}
         >
           {!selectedConfigVersion ? 'Loading configuration profile...' : 'Calculate Capacity Requirements'}
         </Button>
