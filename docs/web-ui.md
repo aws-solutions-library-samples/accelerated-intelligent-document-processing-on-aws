@@ -169,6 +169,11 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 | Troubleshoot | Admin, Author, Viewer |
 | Edit | Admin, Author, Reviewer; and Admins and Annotators on a document in a review queue |
 
+A Reviewer, or any caller who isn't an Admin, may run Re-extract Sections, Reset Page
+Class and Edit Page Class's **Save and Re-extract** only while holding the document's
+open review: they are disabled on a finished review, on one not yet started (choose
+**Start Review** first), and on one someone else holds.
+
 The server enforces the same rules; see [RBAC](rbac.md).
 
 Below the bar, **Document Details** lists the document's fields in four aligned columns,
@@ -322,12 +327,11 @@ progress; on the document page Edit Page Class is disabled with the reason, and 
 server refuses a save anyway, the arrangement you made stays on the board with the
 message.
 
+In BDA mode Edit Page Class is disabled with the reason; see [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
+
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
-stays a deliberate act. ⚠️ **That applies in BDA mode too**, where the values were
-produced by Bedrock Data Automation rather than by the pipeline's extraction step:
-deleting the section still discards them, and there is no read-only variant of this
-board to fall back on. The same board and the same rules are used for test-set ground
+stays a deliberate act. The same board and the same rules are used for test-set ground
 truth; see
 [test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
 being preserved matters most because they are the annotations being built.
@@ -351,6 +355,55 @@ Data Automation produced the values, and the workflow skips it for any document 
 still has sections, so a re-extracted section would come back with no values. To correct
 a value in any mode, use **Edit Data** in the section row's ⋮ menu: it opens the edit
 screen on the section and writes the value without reprocessing anything.
+
+## BDA-mode documents offer data-only editing
+
+A document is in **BDA mode** when its configuration profile routes it to Bedrock Data
+Automation: the profile sets `use_bda` and a BDA project is linked to it. A profile that
+sets `use_bda` with no linked project processes in pipeline mode. The Web UI reads the
+profile's `use_bda` alone, so for such a profile it offers data-only editing although the
+server would accept the change. The Web UI reads the profile as it is now. The server
+reads `use_bda` from the configuration revision the document is pinned to, which is the
+revision the requeued run is routed by, and reads the profile as it is now only for a
+document with no pinned revision. So after a profile's `use_bda` changes, the Web UI can
+offer or withhold an edit that the server decides the other way for a document pinned to
+an earlier revision. For a BDA-mode document the Web UI disables, with the reason, the
+edits that change its structure or text:
+
+- **Edit Page Class**, on the document page's **More Actions** and on the edit page.
+- **Re-extract Sections**, **Edit Page Text** and **Reset Page Class**, and **Save and
+  Re-extract** on the Edit Page Class board.
+
+Field values stay editable everywhere: **Edit Data** on a section row, and the edit
+page's **Save** and **Process Changes**.
+
+The server applies the same rule. `processChanges` refuses any section or page change to
+a document whose profile routes it to BDA, for every role including Admin, with an error
+beginning `BDA_MODE:`, and nothing about the document is changed. A request with no
+section or page changes — field values already saved, reprocessed for evaluation and
+summarization — is accepted. The mode is the one the requeued run will take, so a
+document whose profile sets `use_bda` with no BDA project linked takes section and page
+changes. If the profile or the document's pinned revision cannot be read, a section or
+page change is refused rather than assumed to be safe.
+
+The reason is how a BDA-mode document is reprocessed. Bedrock Data Automation decided the
+section boundaries and the extracted values in the first place, and a structural or text
+edit clears the values of the sections it touches before the document is requeued. The
+workflow then skips Bedrock Data Automation for any document that still has at least one
+section, whatever state that section's extraction data is in, and nothing else in the
+BDA branch extracts values. So an edited section would come back with its values gone and
+nothing to replace them.
+
+⚠️ **The Web UI can only tell that a document is in BDA mode when it can read the
+document's configuration profile.** Users in none of the **Admin**, **Author** and
+**Viewer** groups — a **Reviewer**, for example, or a **Reviewer** who is also an
+**Annotator** — receive only a profile's class list, so for them these actions stay
+enabled, and the server then refuses the reprocess with the `BDA_MODE:` error, which the
+page shows; nothing is lost. A reviewer correcting a BDA-mode document should use **Edit
+Data** on the section row, which writes the value without touching the structure. The
+page-grouping save keeps the extracted values and does not reprocess, and the server does
+not refuse it.
+
 
 ## Edit Pages
 

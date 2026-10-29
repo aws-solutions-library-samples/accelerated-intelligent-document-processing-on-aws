@@ -478,23 +478,39 @@ These take effect as written:
 | `xray_analysis_hours` | `3` | Window for X-Ray service-graph analysis (max 6) |
 | `xray_error_rate_threshold` | `0.05` | Error rate treated as significant |
 | `max_log_groups` | `20` | Log groups `search_cloudwatch_logs` searches when the model passes no `max_log_groups`; a value the model passes is used instead. A configured value above 50, the maximum the tool advertises, is treated as 50 |
+| `max_log_events` | `10` | Events per log group that `search_cloudwatch_logs` and `search_performance_issues` return when the model passes no `max_log_events`, or passes a count below 1, which CloudWatch Logs would reject; a count of 1 or more that the model passes is used instead. A configured value above 50, the maximum the tools advertise, is treated as 50 |
 
-⚠️ **`max_log_events` is read but cannot currently override the tool
-default.** `search_cloudwatch_logs` and `search_performance_issues` declare
-`max_log_events: int = 10` in their own signatures, so when the model omits the
-argument a search returns up to 10 events per log group whatever this is set to.
-Both tools fall through to the configured value only when the model passes a
-count below 1, which CloudWatch Logs would reject. The configured
-default is `5`, and every saved configuration profile stores that `5`, so making
-the setting take effect would change the number of events every existing
-deployment receives; that is an open decision on
-[issue #1555](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1555).
-To change how many events come back, ask for it in the query — the model passes
-the argument through.
+⚠️ **A configuration saved before configuration format `0.10` that stores
+`max_log_events: 5` is read as `10`.** Until format `0.10` the tools ignored this
+setting and returned up to 10 events per log group, while the setting's own
+default was `5`, and every saved configuration profile and revision stores a full
+snapshot, so they all store that `5`. Read as written, each would drop to 5 events
+per log group. The configuration migration therefore reads a stored `5` in a
+configuration stamped older than `0.10` (or carrying no
+`config_format_version` at all) as `10`, so the number of events a deployment
+receives is unchanged by the upgrade. The stored data cannot tell the untouched
+default from a `5` someone chose, so a deliberate `5` is read as `10` too. To use
+5, set it again after upgrading, either in the JSON or YAML view of the
+Configuration editor or with `idp-cli config-upload`. A value you save that way is
+used as written, unless what you save was written for an earlier format: a file
+that carries a `config_format_version` older than `0.10` (or one that cannot be
+read), or that carries a
+setting an earlier format used, has a `5` read as `10`. A file downloaded from an
+earlier release is one of those (releases before v0.6 wrote no stamp, but their
+downloads carry the retired `assessment` block), so set its stamp to `"0.10"`, or
+upload it and then set 5 again. The stack's `CustomConfigPath` file is also read
+as older than `0.10` when it carries no stamp, so add
+`config_format_version: "0.10"` to it to keep a 5; `idp-cli config-validate`
+reads an unstamped file the same way, so its preview shows 10 for a 5 that
+`config-upload` would keep. Any other stored value, and any value
+in a configuration stamped `0.10` or later, is used as written. The rewrite is
+applied as the configuration is read; a pinned revision's stored body is never
+rewritten.
 
-`time_range_hours_default` is declared and validated by the configuration
-model, so setting it is accepted, but nothing in the agent or its tools reads
-it. Set the default window with `lookback_hours`, described above.
+`time_range_hours_default` is an unused alias. The configuration model declares
+and validates it, so saved configurations that carry it still load, but nothing
+in the agent or its tools reads it. Set the default window with
+`lookback_hours`, described above.
 
 ### Configuration Example (config.yaml)
 
@@ -920,10 +936,10 @@ For a single question, ask for it in the query. The model passes `hours_back`,
 the model passes always wins over configuration.
 
 To change the default for every question, set
-[`lookback_hours`](#lookback_hours) for the log-search window and
-`parameters.max_log_groups` for the number of log groups searched.
-`parameters.max_log_events` cannot override the tool default — see
-[Advanced parameters](#advanced-parameters-config-file-only) for why.
+[`lookback_hours`](#lookback_hours) for the log-search window,
+`parameters.max_log_groups` for the number of log groups searched, and
+`parameters.max_log_events` for the number of events returned per log group — see
+[Advanced parameters](#advanced-parameters-config-file-only).
 
 What you *can* set usefully in `parameters` is how much of each result is
 retained:
@@ -1163,8 +1179,8 @@ that package's `__init__.py`, and is registered on the agent in
 
 | Tool | Module | Signature |
 |---|---|---|
-| `search_cloudwatch_logs` | `cloudwatch_tool.py` | `(document_id="", filter_pattern="ERROR", hours_back=None, max_log_events=10, max_log_groups=None)` |
-| `search_performance_issues` | `cloudwatch_tool.py` | `(issue_type="performance", hours_back=None, max_log_events=10)` |
+| `search_cloudwatch_logs` | `cloudwatch_tool.py` | `(document_id="", filter_pattern="ERROR", hours_back=None, max_log_events=None, max_log_groups=None)` |
+| `search_performance_issues` | `cloudwatch_tool.py` | `(issue_type="performance", hours_back=None, max_log_events=None)` |
 | `fetch_document_record` | `dynamodb_tool.py` | `(object_key)` |
 | `fetch_recent_records` | `dynamodb_tool.py` | `(date="", hours_back=24, limit=100)` |
 | `fetch_pipeline_configuration` | `config_tool.py` | `(config_version="")` |
@@ -1188,8 +1204,9 @@ supplied:
 
 Both paths truncate individual messages at `max_log_message_length` and cap
 the number of log groups searched. An omitted `hours_back` resolves to the
-configured `lookback_hours` and an omitted `max_log_groups` to
-`parameters.max_log_groups`.
+configured `lookback_hours`, an omitted `max_log_groups` to
+`parameters.max_log_groups`, and an omitted `max_log_events` to
+`parameters.max_log_events`.
 
 #### retrieve_document_context
 

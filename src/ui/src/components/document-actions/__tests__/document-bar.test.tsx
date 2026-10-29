@@ -29,6 +29,7 @@ const state = vi.hoisted(() => ({
   setSuccessMessage: vi.fn(),
   flowVisible: false,
   troubleshootVisible: false,
+  user: null as { username: string } | null,
 }));
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => state.graphql(...a) }) }));
@@ -46,7 +47,12 @@ vi.mock('../../../hooks/use-polling', () => ({
 vi.mock('../../../hooks/use-classification-comparison', () => ({ default: () => null }));
 vi.mock('../../../contexts/app', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../contexts/app')>()),
-  default: () => ({ currentCredentials: null, setErrorMessage: state.setErrorMessage, setSuccessMessage: state.setSuccessMessage }),
+  default: () => ({
+    currentCredentials: null,
+    user: state.user,
+    setErrorMessage: state.setErrorMessage,
+    setSuccessMessage: state.setSuccessMessage,
+  }),
 }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 vi.mock('../../sections-panel', () => ({ default: () => <div data-testid="sections-panel" /> }));
@@ -79,7 +85,15 @@ vi.mock('../../document-panel/TroubleshootModal', () => ({
 }));
 
 import DocumentPanel from '../../document-panel/DocumentPanel';
-import { NO_EVALUATION_REPORT_REASON, NO_RULE_VALIDATION_REASON } from '../action-reasons';
+import { BDA_REGROUP_REASON } from '../../edit-screen/document-edit-status';
+import {
+  BDA_REPROCESS_REASON,
+  NO_EVALUATION_REPORT_REASON,
+  NO_RULE_VALIDATION_REASON,
+  REVIEWER_FINISHED_REASON,
+  REVIEWER_UNCLAIMED_REASON,
+  REVIEW_OWNER_REASON,
+} from '../action-reasons';
 import { detailBar } from './detail-bar';
 
 const ADMIN = {
@@ -145,6 +159,7 @@ beforeEach(() => {
   state.polling = [];
   state.flowVisible = false;
   state.troubleshootVisible = false;
+  state.user = null;
   state.setErrorMessage.mockReset();
   state.setSuccessMessage.mockReset();
   getDocumentDetailsFromIds.mockReset().mockResolvedValue([]);
@@ -371,5 +386,75 @@ describe('Troubleshoot', () => {
     renderPanel();
     act(() => button('Troubleshoot')!.click());
     await waitFor(() => expect(state.troubleshootVisible).toBe(true));
+  });
+});
+
+describe('BDA mode, read from the document’s own configuration', () => {
+  const reasons = () =>
+    Object.fromEntries(
+      detailBar
+        .menuItems('More Actions')
+        .filter((i) => ['Edit Page Class', 'Re-extract Sections', 'Edit Page Text', 'Reset Page Class'].includes(i.text))
+        .map((i) => [i.text, i.disabledReason]),
+    );
+
+  it.each([true, 'true'])('disables the structural and re-extraction actions when use_bda is %j', (useBda) => {
+    state.config = { mergedConfig: { use_bda: useBda }, loading: false };
+    renderPanel();
+    expect(reasons()).toEqual({
+      'Edit Page Class': BDA_REGROUP_REASON,
+      'Re-extract Sections': BDA_REPROCESS_REASON,
+      'Edit Page Text': BDA_REPROCESS_REASON,
+      'Reset Page Class': BDA_REPROCESS_REASON,
+    });
+  });
+
+  it.each([false, 'false', undefined])('offers them in pipeline mode (use_bda %j)', (useBda) => {
+    state.config = { mergedConfig: { use_bda: useBda }, loading: false };
+    renderPanel();
+    expect(Object.values(reasons())).toEqual([null, null, null, null]);
+  });
+});
+
+describe('the processChanges actions for a caller who is not an Admin', () => {
+  // The server's rule: hold the document's OPEN review.
+  const reextract = () => detailBar.menuItems('More Actions').find((i) => i.text === 'Re-extract Sections');
+
+  it('are offered to the reviewer holding the open review', () => {
+    state.role = { ...REVIEWER };
+    state.user = { username: 'alice' };
+    renderPanel(doc({ hitlStatus: 'InProgress', hitlReviewOwner: 'alice' }));
+    expect(reextract()).toMatchObject({ disabled: false });
+  });
+
+  it.each([
+    ['a finished review the caller holds', { hitlStatus: 'Review Completed', hitlReviewOwner: 'alice' }, REVIEWER_FINISHED_REASON],
+    ['an unclaimed pending review', { hitlStatus: 'PendingReview' }, REVIEWER_UNCLAIMED_REASON],
+    ['an open review someone else holds', { hitlStatus: 'InProgress', hitlReviewOwner: 'bob' }, REVIEW_OWNER_REASON],
+    ['a document with no review', { hitlTriggered: false, hitlStatus: null }, REVIEW_OWNER_REASON],
+  ])('are not offered to a Reviewer on %s', (_label, over, reason) => {
+    state.role = { ...REVIEWER };
+    state.user = { username: 'alice' };
+    renderPanel(doc(over));
+    expect(reextract()).toMatchObject({ disabled: true, disabledReason: reason });
+  });
+
+  it('are not offered to a Reviewer who is also an Author, on a review they do not hold', () => {
+    state.role = { ...REVIEWER, isAuthor: true, isReviewerOnly: false, canWrite: true };
+    state.user = { username: 'alice' };
+    renderPanel(doc({ hitlStatus: 'InProgress', hitlReviewOwner: 'bob' }));
+    expect(reextract()).toMatchObject({ disabled: true, disabledReason: REVIEW_OWNER_REASON });
+  });
+});
+
+describe('Start Review', () => {
+  it('reports a claim the server refused with its message', async () => {
+    // The REST client rejects with the dispatcher's body, not an Error.
+    state.graphql.mockRejectedValue({ errors: [{ message: 'REVIEW_FINISHED: this review is already finished', errorType: 'BadRequest' }] });
+    renderPanel();
+    act(() => button('Start Review')!.click());
+    await waitFor(() =>
+      expect(state.setErrorMessage).toHaveBeenCalledWith('Failed to start review: REVIEW_FINISHED: this review is already finished'),
+    );
   });
 });

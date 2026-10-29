@@ -42,10 +42,14 @@ may perform but that does not apply **now** is shown disabled, with its reason.
   enforces every policy.
 - **Why it is disabled.** The reasons are checked in one order and the first that
   applies wins: a past version is being viewed, the document is in a review queue, it is
-  still processing, its configuration is loading, it is in BDA mode (the configuration's
-  `use_bda`), then the action's own availability (a report that does not exist, no
-  pending review). `__tests__/document-action-gates.test.ts` pins each reason and the
-  order.
+  still processing, its configuration is loading, it is in BDA mode (the document's own
+  configuration profile's `use_bda`, read with `isBdaModeConfig`), then the action's own
+  availability (a report that does not exist, no pending review). BDA mode disables Edit
+  Page Class as well as the actions that reprocess. The actions that call
+  `processChanges` (Re-extract Sections, Edit Page Text, Reset Page Class, and the
+  board's Save and Re-extract) also follow the server's rule for a caller who is not an
+  Admin: refused on a finished review, and unless the caller holds the document's open
+  review. `__tests__/document-action-gates.test.ts` pins each reason and the order.
 
 ## Adding an action
 

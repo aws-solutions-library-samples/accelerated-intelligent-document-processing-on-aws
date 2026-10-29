@@ -145,11 +145,17 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
   `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
-  Annotators.
+  Annotators. `claimReview` and `releaseReview` refuse a finished review
+  (`REVIEW_FINISHED`) for every role, and `skipAllSectionsReview` refuses a caller
+  who is not an Admin unless a review was raised on the document and has not
+  finished (`REVIEW_FINISHED`, `NO_REVIEW_PENDING`), which is where the web UI offers
+  **Skip All Reviews**.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
   are in a production review queue (`QUEUE_MANAGED`), and `uploadDocument` refuses a
   section result of such a document (`<document>/sections/<id>/result.json` in the
-  Output bucket).
+  Output bucket). For a Reviewer who is not an Admin, `processChanges` also requires
+  owning the document's open review, refuses a finished review or a document that is
+  still processing, and applies the caller's `allowedConfigVersions`.
 - **Residual access.** Like every role, an Annotator can call `getDocument` and
   read document objects through the identity pool's S3 grants, for keys it knows.
   The review pages are a convenience, not the security boundary.
@@ -229,7 +235,7 @@ MODEL LIMITS
   View model limits                ✅      ✅       ❌        ✅
   Edit model limits                ✅      ❌       ❌        ❌
 
-✅* = Reviewer sees only HITL-pending docs + their own completed reviews (server-side filtered)
+✅* = Reviewer sees only docs awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them (server-side filtered); see Document Filtering below
 ✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
 Regroup pages: the server also admits an Annotator for documents in their test sets; the document page doesn't offer it
 ```
@@ -818,7 +824,8 @@ enforcement itself is Layer 2.
 | `syncBdaIdp`, `uploadDiscoveryDocument`, `deleteDiscoveryJob`, `autoDetectSections` | Admin, Author |
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
-| `processChanges`, `skipAllSectionsReview` | Admin, Reviewer |
+| `processChanges` (a caller who is not an Admin must own the document's open review, the review must not be finished, the document must not be processing, and the document must be inside the caller's configuration-profile scope — the same checks as `saveSectionReviewEdits`, plus the document-status and scope checks) | Admin, Reviewer |
+| `skipAllSectionsReview` | Admin, Reviewer |
 | `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a test-set document assigned to them) |
 | `saveTestSetDocumentSection`, `saveTestSetDocumentSectionDraft`, `skipTestSetDocument`, `updateTestSetDocumentSections` | Admin, Author, Annotator (an Annotator only for a document assigned to them; an Author drafts authored ground truth only) |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |
@@ -868,6 +875,17 @@ those — `PermissionError`/`AuthorizationError`, or a message beginning
 `Unauthorized`/`Forbidden`, becomes **403 `Unauthorized`**; `ValueError`/`KeyError`
 becomes **400 `BadRequest`**; `ResourceNotFound` becomes **404 `ResourceNotFound`**;
 anything else becomes **500 `InternalError`**.
+
+The message of a 403, 400 or 404 is the resolver's own and reaches the caller
+unchanged, which is how a resolver tells the user what to do (`NOT_CLAIMED`,
+`QUEUE_MANAGED`, `REVIEW_FINISHED`). A 500 does not carry the exception's text: the
+caller gets "An unexpected server error occurred. Request ID: …" with the same id in
+`errors[0].requestId`, and the dispatcher logs the full error under that id, which
+is its Lambda request id. The one exception is `ReportedServerError`
+(`idp_common.api_adapter`), a 500 whose message the resolver wrote for the caller and
+which is passed through. `deleteDocument` uses it to say which documents could not be
+completely deleted, and the file-read, chat-history, chat-session-list and
+sample-link resolvers use it for their "Contact an administrator" messages.
 
 The 404's errorType is deliberately `ResourceNotFound` and not the `NotFound` the
 dispatcher already returns for an operation this deployment does not route: the live
@@ -991,7 +1009,7 @@ filtering based on the caller's identity:
 **Document Filtering:**
 - **Admin**: See all documents
 - **Author/Viewer**: See all documents, filtered by `allowedConfigVersions` if scope is set
-- **Reviewer-only**: See only HITL-pending documents + their own completed reviews, plus config-version scope
+- **Reviewer-only**: See only documents awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them, plus config-version scope. A completed or skipped review is listed only for the reviewer who owns it, and only on a document carrying the legacy `HITLTriggered` flag or one whose finished review was claimed again, which sets it back to in progress. `listDocuments`, `getDocumentCount` and `listDocumentsByDateRange` apply the same filter
 
 **Configuration Filtering:**
 - `getConfigVersions`: Returns only profiles in user's scope (or all if unrestricted)

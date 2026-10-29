@@ -10,7 +10,10 @@ raises one when its confidence is below its own threshold
 ``hitl.confidence_threshold`` when it has none. Each alert becomes a
 ``low_confidence`` reason, so routing agrees exactly with the alerts users see.
 BDA mode adds a ``blueprint_confidence`` reason when the matched blueprint's
-confidence is under ``hitl.confidence_threshold``. No result is read from S3.
+confidence is under ``hitl.confidence_threshold``, or when the blueprint matched
+but its confidence is unscored (``Section.blueprint_unscored``), at every
+threshold, as legacy HITL marks it; that reason carries a score of 0.0. No
+result is read from S3.
 
 This module must not import ``idp_common.assessment`` (or anything heavy): the
 Pipeline ProcessResults Lambda installs only the ``review_queues`` extra.
@@ -96,14 +99,19 @@ def build_reasons(
         if mode == "bda":
             confidence = _num(getattr(section, "confidence", None))
             threshold = _hitl_threshold(config)
-            if confidence is not None and confidence < threshold:
+            unscored = confidence is None and bool(
+                getattr(section, "blueprint_unscored", False)
+            )
+            # A matched blueprint with no usable confidence is held for review
+            # at every threshold, as legacy HITL marks it (GitHub #1581).
+            if unscored or (confidence is not None and confidence < threshold):
                 reasons.append(
                     ReviewReason(
                         kind="blueprint_confidence",
                         section_id=section_id,
                         field=None,
                         label=None,
-                        score=confidence,
+                        score=0.0 if confidence is None else confidence,
                         threshold=threshold,
                     )
                 )

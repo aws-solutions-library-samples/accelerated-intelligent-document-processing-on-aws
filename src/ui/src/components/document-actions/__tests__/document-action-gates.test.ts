@@ -16,7 +16,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { inReviewQueueEditReason } from '../../common/review-status';
-import { IN_REVIEW_SHORT_REASON, NO_SECTIONS_REASON, NO_SUMMARY_REASON, PROCESSING_REASON } from '../../edit-screen/document-edit-status';
+import {
+  BDA_REGROUP_REASON,
+  IN_REVIEW_SHORT_REASON,
+  NO_SECTIONS_REASON,
+  NO_SUMMARY_REASON,
+  PROCESSING_REASON,
+} from '../../edit-screen/document-edit-status';
 import {
   BASELINE_COPYING_REASON,
   BDA_REPROCESS_REASON,
@@ -32,6 +38,7 @@ import {
   NO_RULE_VALIDATION_REASON,
   REVIEWER_FINISHED_REASON,
   REVIEWER_UNCLAIMED_REASON,
+  REVIEW_OWNER_REASON,
   RULE_VALIDATION_HISTORICAL_REASON,
 } from '../action-reasons';
 import { documentActionGates } from '../document-action-gates';
@@ -67,6 +74,7 @@ interface Situation {
   doc?: Partial<GatedDocument>;
   displayed?: GateInput['displayed'];
   isHistorical?: boolean;
+  holdsReview?: boolean;
   bdaMode?: boolean;
   configLoading?: boolean;
   baselineRequestInFlight?: boolean;
@@ -80,6 +88,7 @@ const gatesFor = ({ doc = {}, displayed, roles = ADMIN, ...rest }: Situation = {
     doc: d,
     displayed: displayed ?? d,
     isHistorical: false,
+    holdsReview: false,
     bdaMode: false,
     configLoading: false,
     baselineRequestInFlight: false,
@@ -97,7 +106,7 @@ const QUEUE = inReviewQueueEditReason(true);
 
 describe('the situational reasons, first match wins', () => {
   it.each([
-    ['regroup', [H, Q, P]],
+    ['regroup', [H, Q, P, C]],
     ['reextract', [H, Q, P, C, B]],
     ['page-text', [H, Q, P, C, B]],
     ['reset-class', [H, Q, P, C, B]],
@@ -121,6 +130,11 @@ describe('the situational reasons, first match wins', () => {
       expect(reason(action, { doc: { objectStatus: 'RUNNING' }, configLoading: true, bdaMode: true })).toBe(PROCESSING_REASON);
       expect(reason(action, { configLoading: true, bdaMode: true })).toBe(CONFIG_LOADING_REASON);
     }
+  });
+
+  it('refuses Edit Page Class in BDA mode with its own reason, after configuration loading', () => {
+    expect(reason('regroup', B)).toBe(BDA_REGROUP_REASON);
+    expect(reason('regroup', { configLoading: true, bdaMode: true })).toBe(CONFIG_LOADING_REASON);
   });
 
   it('names the queue reason for a caller who does not work queues', () => {
@@ -204,7 +218,7 @@ describe('the Reviewer-only class lock', () => {
 
   it('leaves it open to the holder of a review in progress', () => {
     expect(gatesFor({ roles: REVIEWER, doc: { ...held, hitlStatus: 'InProgress' } }).canChangeClass).toBe(true);
-    expect(reason('reset-class', { roles: REVIEWER, doc: { ...held, hitlStatus: 'InProgress' } })).toBeUndefined();
+    expect(reason('reset-class', { roles: REVIEWER, holdsReview: true, doc: { ...held, hitlStatus: 'InProgress' } })).toBeUndefined();
   });
 
   it('locks an unclaimed review, and a document still processing', () => {
@@ -217,5 +231,40 @@ describe('the Reviewer-only class lock', () => {
   it('does not lock an Admin', () => {
     expect(gatesFor({ doc: { ...held, hitlStatus: 'complete' } }).canChangeClass).toBe(true);
     expect(reason('reset-class', { doc: { hitlTriggered: true, hitlStatus: 'complete' } })).toBeUndefined();
+  });
+});
+
+describe('the processChanges actions for a caller who is not an Admin (the server’s open-review owner rule)', () => {
+  const AUTHOR_REVIEWER: ActionRoles = { ...REVIEWER, isAuthor: true, isReviewerOnly: false };
+  const open = { hitlTriggered: true, hitlStatus: 'InProgress', hitlReviewOwner: 'r' };
+  const PROCESS_ACTIONS = ['reextract', 'page-text', 'reset-class'] as DocumentActionId[];
+
+  it.each([REVIEWER, AUTHOR_REVIEWER])('are open to the holder of the open review (%#)', (roles) => {
+    for (const action of PROCESS_ACTIONS) expect(reason(action, { roles, holdsReview: true, doc: open }), action).toBeUndefined();
+    expect(gatesFor({ roles, holdsReview: true, doc: open }).reextractBlockedReason).toBeUndefined();
+  });
+
+  it.each([
+    ['a finished review the caller holds', { ...open, hitlStatus: 'Review Completed' }, true, REVIEWER_FINISHED_REASON],
+    ['an unclaimed pending review', { hitlTriggered: true, hitlStatus: 'PendingReview' }, false, REVIEWER_UNCLAIMED_REASON],
+    ['an open review someone else holds', open, false, REVIEW_OWNER_REASON],
+    ['a document with no review', {}, false, REVIEW_OWNER_REASON],
+  ] as [string, Partial<GatedDocument>, boolean, string][])(
+    'are refused on %s, for a Reviewer and an Author',
+    (_label, doc, holdsReview, expected) => {
+      for (const roles of [REVIEWER, AUTHOR_REVIEWER]) {
+        for (const action of PROCESS_ACTIONS) expect(reason(action, { roles, holdsReview, doc }), action).toBe(expected);
+        expect(gatesFor({ roles, holdsReview, doc }).reextractBlockedReason).toBe(expected);
+      }
+    },
+  );
+
+  it('does not apply to an Admin', () => {
+    for (const action of PROCESS_ACTIONS) expect(reason(action, { doc: { ...open, hitlReviewOwner: 'someone' } }), action).toBeUndefined();
+  });
+
+  it('comes after BDA mode, and does not touch Edit Page Class, which is not processChanges', () => {
+    expect(reason('reextract', { roles: REVIEWER, ...B })).toBe(BDA_REPROCESS_REASON);
+    expect(reason('regroup', { roles: REVIEWER })).toBeUndefined();
   });
 });

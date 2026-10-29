@@ -8,6 +8,8 @@
 export const HISTORICAL_REASON = 'Not available while you view a past version. Choose Return to current version in Version History.';
 export const LEGACY_REVIEW_REGROUP_REASON = "Available once this document's review is finished";
 export const BDA_REPROCESS_REASON = 'Not available in BDA mode: reprocessing would leave the changed sections without extracted data.';
+/** processChanges for a caller who is not an Admin: the server's open-review owner rule. */
+export const REVIEW_OWNER_REASON = "Needs an Admin, or the reviewer who holds this document's open review.";
 export const CONFIG_LOADING_REASON = "Loading this document's configuration…";
 export const NO_PAGES_REASON = 'This document has no pages';
 export const NO_PAGE_TEXT_REASON = 'This document has no page text';

@@ -174,7 +174,10 @@ def test_skip_all_triggers_reprocessing(mod):
         mod, "build_document_response", return_value={"ObjectStatus": "ok"}
     ):
         result = mod.skip_all_sections_review(
-            "doc/key.pdf", username="admin", user_email="admin@example.com"
+            "doc/key.pdf",
+            username="admin",
+            user_email="admin@example.com",
+            is_admin=True,
         )
 
     # The document is finalized in DynamoDB (status set, pending cleared) ...
@@ -204,7 +207,7 @@ def test_skip_all_finalizes_status_review_skipped(mod):
     ), patch.object(mod, "trigger_reprocessing"), patch.object(
         mod, "build_document_response", return_value={"ObjectStatus": "ok"}
     ):
-        mod.skip_all_sections_review("doc/key.pdf", username="admin")
+        mod.skip_all_sections_review("doc/key.pdf", username="admin", is_admin=True)
 
     _, kwargs = fake_table.update_item.call_args
     values = kwargs["ExpressionAttributeValues"]

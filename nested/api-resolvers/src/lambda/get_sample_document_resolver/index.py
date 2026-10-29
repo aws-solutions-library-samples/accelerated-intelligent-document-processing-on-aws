@@ -16,6 +16,16 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+
+class ReportedServerError(RuntimeError):
+    """A 500 whose message is written for the caller, so the dispatcher passes it on.
+
+    Declared locally because this resolver does not import ``idp_common``; the
+    dispatcher matches the class by name. The canonical class, and the rule for
+    when to raise it, is ``idp_common.api_adapter.ReportedServerError``.
+    """
+
+
 CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET")
 _SAMPLES_PREFIX = "samples/"
 _URL_TTL_SECONDS = 900
@@ -87,6 +97,6 @@ def handler(event, context=None):
         )
     except ClientError as e:
         logger.error("Failed to presign sample %s: %s", key, e)
-        raise Exception("Could not generate a link for the requested sample")
+        raise ReportedServerError("Could not generate a link for the requested sample")
 
     return {"url": url, "s3Key": key}

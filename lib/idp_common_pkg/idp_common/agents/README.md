@@ -380,15 +380,24 @@ signature default is always present. For a setting meant to supply the default,
 declare the argument `Optional[...] = None` and resolve `None` to the configured
 value inside the tool. The Error Analyzer's `search_cloudwatch_logs` and
 `search_performance_issues` resolve `hours_back` from
-`agents.error_analyzer.lookback_hours` this way, and `search_cloudwatch_logs`
-resolves `max_log_groups` from `parameters.max_log_groups`. A configured value is
-clamped to the maximum the tool description advertises (168 hours, 50 groups),
-because the configuration model accepts any positive value and a saved profile must
-still load.
+`agents.error_analyzer.lookback_hours` this way, both resolve `max_log_events` from
+`parameters.max_log_events`, and `search_cloudwatch_logs` resolves `max_log_groups`
+from `parameters.max_log_groups`. A configured value is clamped to the maximum the
+tool description advertises (168 hours, 50 events, 50 groups), because the
+configuration model accepts any positive value and a saved profile must still load.
 `tests/unit/agents/error_analyzer/test_config_reaches_tools.py` invokes both through
-the real agent with no arguments and asserts the window and group count on the
-CloudWatch Logs requests. `parameters.max_log_events` and
-`parameters.time_range_hours_default` are not wired; see
+the real agent with no arguments and asserts the window, event limit and group count
+on the CloudWatch Logs requests.
+
+Changing a configured default that saved profiles already store takes a
+configuration-format migration, because every profile and revision stores a full
+snapshot. `max_log_events` is the worked example: its default moved from 5 to 10,
+the limit the tools applied while they ignored it, and
+`idp_common/config/migrations/v09_to_v010.py` reads a stored `5` in a pre-0.10
+configuration as `10` so no deployment's event limit changes. See the
+[configuration module README](../config/README.md#config-format-migrations).
+`parameters.time_range_hours_default` is an unused alias kept so saved profiles that
+carry it still validate; see
 [Advanced parameters](../../../../docs/error-analyzer.md#advanced-parameters-config-file-only).
 
 ## Usage Examples

@@ -175,3 +175,29 @@ class TestTheClaimsObjectIsNotLogged:
                 )
 
         assert "REDACTED" in caplog.text
+
+
+def test_a_dynamodb_fault_is_reported_with_a_message_for_the_caller():
+    """``ReportedServerError`` is the class the dispatcher passes a 500 message
+    through for; the botocore text, which names role and table ARNs, is not it."""
+    from botocore.exceptions import ClientError
+
+    table = MagicMock()
+    table.query.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "AccessDeniedException",
+                "Message": "User: arn:aws:sts::1:assumed-role/R/x is not authorized",
+            }
+        },
+        "Query",
+    )
+    with patch.object(index.dynamodb, "Table", return_value=table):
+        with pytest.raises(Exception) as excinfo:
+            index.handler(
+                {"arguments": {}, "identity": {"username": "u@example.com"}}, None
+            )
+    assert type(excinfo.value).__name__ == "ReportedServerError"
+    assert str(excinfo.value) == (
+        "This deployment could not read the chat data. Contact an administrator."
+    )

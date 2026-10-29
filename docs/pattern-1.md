@@ -218,8 +218,11 @@ For comprehensive HITL documentation including workflow details, configuration s
 
 ## Editing BDA Documents
 
-A document processed in BDA mode (`use_bda: true` in the configuration) is corrected
-on its edit page, without re-invoking Bedrock Data Automation.
+A document processed in BDA mode (its configuration profile sets `use_bda`) is corrected
+on its edit page, without re-invoking Bedrock Data Automation. The Web UI decides this
+from the document's configuration profile, and the `processChanges` operation refuses any
+section or page change to such a document for every role; see
+[BDA-mode documents offer data-only editing](./web-ui.md#bda-mode-documents-offer-data-only-editing).
 
 ### Capabilities
 
@@ -237,11 +240,10 @@ on its edit page, without re-invoking Bedrock Data Automation.
 ### Limitations
 
 BDA splits the document into sections, classifies them and extracts their data, so
-the document page's re-extraction actions are disabled in BDA mode: **Save and
-Re-extract** (in **Edit Page Class**), **Re-extract Sections**, **Edit Page Text** and
-**Reset Page Class** show the reason "Not available in BDA mode: reprocessing would
-leave the changed sections without extracted data." Correct values with **Edit Data**
-(the edit page) instead.
+the document page's structural and re-extraction actions are disabled in BDA mode: **Edit
+Page Class** (on the document page and the edit page), **Save and Re-extract**,
+**Re-extract Sections**, **Edit Page Text** and **Reset Page Class** show the reason.
+Correct values with **Edit Data** (the edit page) instead.
 
 ### How It Works
 

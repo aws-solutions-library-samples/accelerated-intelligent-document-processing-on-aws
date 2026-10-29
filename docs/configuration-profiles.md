@@ -276,6 +276,23 @@ r8, and the result would correspond to no single configuration. The pinned
 revision is recorded as `ConfigRevision` on the document and shown next to the
 configuration profile in the document list, document details, and exports.
 
+The choice between BDA mode and Pipeline mode (`use_bda`) is read from the pinned
+revision as well, and so is the class list the reporting step writes, so both agree
+with the configuration the rest of the pipeline uses. Those two reads differ from a
+processing step in one way: if the pinned revision cannot be read, they use the
+profile's current configuration, which is what they read before revisions were
+pinned, rather than failing. Routing chooses a branch rather than processing the
+document, and the processing steps on that branch load the pinned revision
+themselves and fail the document if it is still unavailable when they run. In BDA
+mode the first step that loads it is the one that processes BDA's results, after the
+BDA job has run. A pinned read that fails only briefly can therefore send a document
+down the branch the current configuration selects while the later steps process it
+under its pinned revision; the queue processor logs a warning naming the revision
+when it falls back. The reporting step runs last, and falls back so that the report
+keeps its class and pricing data. The BDA project a BDA-mode document is sent to is
+always the one currently linked to the profile, because no per-revision project is
+recorded.
+
 A pinned revision that has been deleted, pruned or expired **fails the step**
 rather than falling back to the profile's current configuration: a run that
 silently used the wrong configuration would look successful, and its numbers would

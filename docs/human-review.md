@@ -76,7 +76,7 @@ Admins have full access to all system features:
 | Upload Documents | ✅ Allowed |
 | View/Edit Extraction Results | ✅ Full access |
 | Complete Section Reviews | ✅ Allowed |
-| Skip All Reviews | ✅ Allowed (document page **More Actions**, for a pending review outside a review queue) |
+| Skip All Reviews | ✅ Allowed on any document outside a review queue (document page **More Actions**) |
 | Release Any Review | ✅ Allowed (can release reviews owned by others) |
 | View/Edit Configuration | ✅ Full access |
 | User Management | ✅ Full access (create/delete users) |
@@ -89,19 +89,19 @@ Reviewers have limited access focused on document review tasks:
 
 | Feature | Access |
 |---------|--------|
-| View Documents | ✅ Pending and own in-progress reviews only |
+| View Documents | ✅ Unclaimed reviews (pending, or released back to the queue) and reviews they have claimed |
 | Upload Documents | ❌ Not allowed |
 | Start Review | ✅ Claim ownership of pending documents |
 | View/Edit Extraction Results | ✅ Can view and edit (only for owned documents) |
 | Complete Section Reviews | ✅ Allowed (only for owned documents) |
 | Release Review | ✅ Can release own reviews only |
-| Skip All Reviews | ✅ Allowed (document page **More Actions**, for a pending review outside a review queue) |
+| Skip All Reviews | ✅ Only on a review that is still waiting (raised, and not completed or skipped), outside a review queue (document page **More Actions**) |
 | View/Edit Configuration | ❌ Not allowed |
 | User Management | ❌ Not allowed |
 | Discovery | ❌ Not allowed |
 | Analytics & Agents | ❌ Limited access |
 
-**Note:** Reviewers see only documents that are pending review (unassigned) or documents they have claimed for review.
+**Note:** Reviewers see only documents that are waiting for review and unclaimed, including a review another reviewer has released back to the queue, or documents they have claimed for review. A review leaves the Reviewer's list once it is completed or skipped. It stays listed for the reviewer who owns it only on documents processed by earlier versions, which carry the legacy `HITLTriggered` flag.
 
 ### Managing Users
 
@@ -197,11 +197,17 @@ HITL review is automatically triggered when:
      pending review, after re-extracting the changed sections.)
    - Document status changes to **Review Completed**, and **Review Completed By**
      records you
+   - Unless you are an Admin, **Process Changes** applies the same checks as saving:
+     you must be the document's review owner (click **Start Review** first), the
+     review must not already be finished, the document must not be processing, and
+     the document must be inside your configuration-profile scope
 
 5. **Release Review** (optional):
    - If you need to stop reviewing, click **Release Review**
    - Document returns to **Review Pending** status
    - Another reviewer can claim it
+   - Only a claimed review can be released: releasing a document nobody has claimed is refused
+   - A finished review (completed or skipped) can be neither claimed nor released, by any user, Admins included
 
 **Skipping a review (Admins and Reviewers):**
 
@@ -211,6 +217,7 @@ HITL review is automatically triggered when:
   - Choose a reason (for example **Extracted values look correct** or **Duplicate document**) and optionally add a note; both are recorded with the skip in the review history, and the document page shows them as **Skip Reason**
   - Document status changes to **Review Skipped**
   - The **Review Completed By** field records the user who skipped
+  - Reviewers can skip too, but only a review that is still waiting: the server refuses a Reviewer's skip on a document whose review has finished or was never raised
   - Downstream reprocessing (Summarization/Evaluation) is triggered automatically — consistent with completing all sections — which also fires the optional post-processing Lambda hook (`PostProcessingLambdaHookFunctionArn`) on workflow completion
 
 **For Admins:**
@@ -302,7 +309,7 @@ The section review interface provides:
 |--------|--------------|-------------|
 | **Start Review** | Reviewers, Admins | Claim a pending, unclaimed document for review (document page action bar) |
 | **Release Review** | Owner, Admins | Release document back to pending status |
-| **Skip All Reviews** | Reviewers, Admins | Skip all remaining sections, with a reason (document page **More Actions**) |
+| **Skip All Reviews** | Reviewers (on a review still waiting), Admins | Skip all remaining sections, with a reason (document page **More Actions**) |
 | **Process Changes** (edit page) | Owner, Admins | Complete the review and process the changes |
 
 ### Document Editor
@@ -454,7 +461,7 @@ When evaluation data is available, turn on **Show Evaluation**:
 - Ensure all required fields are filled
 
 **User Cannot See Documents:**
-- Reviewers only see pending documents and their own in-progress reviews
+- Reviewers only see unclaimed pending documents (including reviews released back to the queue) and their own in-progress reviews
 - Verify user is in the correct Cognito group
 - Check user persona in User Management
 - Clear browser cache and re-login

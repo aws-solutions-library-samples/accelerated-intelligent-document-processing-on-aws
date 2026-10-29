@@ -66,7 +66,16 @@ const input = (roles: ActionRoles, over: Partial<GateInput['doc']> = {}): GateIn
     pagesWithText: 3,
     ...over,
   };
-  return { roles, doc, displayed: doc, isHistorical: false, bdaMode: false, configLoading: false, baselineRequestInFlight: false };
+  return {
+    roles,
+    doc,
+    displayed: doc,
+    isHistorical: false,
+    holdsReview: false,
+    bdaMode: false,
+    configLoading: false,
+    baselineRequestInFlight: false,
+  };
 };
 
 const ACTIONS = Object.keys(ACTION_OPERATIONS) as Exclude<DocumentActionId, 'edit'>[];

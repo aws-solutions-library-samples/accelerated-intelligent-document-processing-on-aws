@@ -49,6 +49,15 @@ class TestParseConfidence:
             (95, 0.95),  # percentage, which models emit routinely
             ("95", 0.95),
             ("95%", 0.95),
+            # An explicit percent sign always divides by 100 (GitHub #1581):
+            # "0.9%" used to read as 0.9 and "1%" as certainty.
+            ("0.9%", 0.009),
+            ("1%", 0.01),
+            ("0%", 0.0),
+            ("100%", 1.0),
+            (" 50 % ", 0.5),
+            ("95%%", 0.95),  # repeated signs are one percent sign
+            ("95% ", 0.95),
             (" 0.5 ", 0.5),
             (100, 1.0),
         ],
@@ -65,6 +74,9 @@ class TestParseConfidence:
             "high",  # verbalized, not numeric
             -0.5,
             101,
+            "150%",
+            "-5%",
+            "%",
             float("nan"),
             float("inf"),
             True,  # a bool is not a confidence

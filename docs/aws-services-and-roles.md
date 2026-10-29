@@ -200,6 +200,8 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
   * `states:StartExecution`
   * `states:ListExecutions` (read-only, scoped to this stack's state machine — used to reconcile the workflow-concurrency counter against the executions that are really running, so a leaked counter cannot permanently stop the stack admitting documents)
+  * `states:StopExecution` (scoped to executions of this stack's own state machine — used only to stop an execution the processor has just started when the document was aborted while that start was in flight, so the abort is not overwritten by a running workflow)
+  * `s3:GetObject` on the Configuration bucket's `config_revisions/*` prefix, and `s3:ListBucket` on that bucket conditioned on the same prefix (reads the body of the configuration revision a document is pinned to, so BDA or Pipeline routing follows that revision; the prefix-scoped `ListBucket` is the grant every revision-body reader carries, because S3 answers a missing key with 403 rather than 404 to a caller with no `ListBucket`)
   * `cloudwatch:PutMetricData` (restricted by an `IAM` condition to the stack's own metric namespace — publishes the concurrency-counter drift the `ConcurrencyCounterDriftAlarm` watches)
   * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
 
@@ -293,8 +295,9 @@ The solution creates various IAM roles to run different components of the system
   * `s3:ListBucket`, `s3:GetObject` (when using S3 data source)
 
 * **S3 Vectors Manager Role** (custom-resource Lambda, default S3 Vectors store only):
-  * `s3vectors:CreateVectorBucket`, `s3vectors:GetVectorBucket`, `s3vectors:DeleteVectorBucket` on `bucket/*` in the deploying account and Region — the bucket segment is a wildcard because the Lambda lowercases and sanitizes the stack-derived bucket name, which CloudFormation cannot reproduce
+  * `s3vectors:CreateVectorBucket`, `s3vectors:GetVectorBucket`, `s3vectors:DeleteVectorBucket` on `bucket/*` in the deploying account and Region — the bucket segment is a wildcard because the Lambda lowercases and sanitizes the stack-derived bucket name, which CloudFormation cannot reproduce for every stack name
   * `s3vectors:CreateIndex`, `s3vectors:DeleteIndex` on `bucket/*/index/<index name>` (the index name is exact)
+  * `s3vectors:ListIndexes`, and `s3vectors:DeleteIndex` on any index, on the stack's own vector bucket only, named exactly — deleting the stack deletes every index in that bucket before the bucket, because S3 Vectors will not delete a bucket that still holds an index. Not granted when `pS3VectorBucketName` names the bucket
   * `bedrock:CreateKnowledgeBase`, `bedrock:DeleteKnowledgeBase`, `bedrock:GetKnowledgeBase`, `bedrock:UpdateKnowledgeBase`, `bedrock:ListKnowledgeBases`
   * `iam:PassRole` (to hand the Knowledge Base Service Role to Bedrock)
 
@@ -321,6 +324,13 @@ The solution creates various IAM roles to run different components of the system
   * `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:GetQueryResults`, `athena:StopQueryExecution`
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (reporting/Athena results buckets)
   * `logs:*`
+
+* **Save Reporting Data Role** (`SaveReportingDataFunctionV2`, writes each document's reporting Parquet):
+  * Read and write on the reporting bucket (SAM `S3CrudPolicy`), read on the output bucket (`S3ReadPolicy`)
+  * Read-only on the configuration table (`DynamoDBReadPolicy`)
+  * `s3:GetObject` on the Configuration bucket's `config_revisions/*` prefix, and `s3:ListBucket` on that bucket conditioned on the same prefix (reads the configuration revision a document is pinned to, so its report's classes match the configuration it ran under)
+  * `glue:CreateTable`, `glue:GetTable`, `glue:UpdateTable`, `glue:GetDatabase` (the reporting database's tables)
+  * `cloudwatch:PutMetricData` (restricted to the stack's own metric namespace), and use of the stack's KMS key
 
 * **Data-Mart Rollup Lambda Role** (`DataMartRollupFunction`, scheduled hourly + daily + reconciler + migration state-machine task-mode invocations):
   * `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:GetQueryResults`, `athena:StopQueryExecution` (writes rollup tables via `INSERT INTO`)

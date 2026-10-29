@@ -45,7 +45,12 @@ vi.mock('../../../hooks/use-polling', () => ({
 vi.mock('../../../hooks/use-classification-comparison', () => ({ default: () => null }));
 vi.mock('../../../contexts/app', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../contexts/app')>()),
-  default: () => ({ currentCredentials: null, setErrorMessage: state.setErrorMessage, setSuccessMessage: state.setSuccessMessage }),
+  default: () => ({
+    currentCredentials: null,
+    user: { username: 'rev' },
+    setErrorMessage: state.setErrorMessage,
+    setSuccessMessage: state.setSuccessMessage,
+  }),
 }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 vi.mock('../../sections-panel', () => ({ default: () => <div data-testid="sections-panel" /> }));

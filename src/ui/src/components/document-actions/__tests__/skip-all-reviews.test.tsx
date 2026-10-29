@@ -163,8 +163,16 @@ describe('Skip All Reviews', () => {
     expect(getDocumentDetailsFromIds).toHaveBeenCalledWith(['packet.pdf']);
   });
 
-  it('reports a skip the server refused', async () => {
-    state.graphql.mockRejectedValue(new Error('denied'));
+  it.each([
+    ['an Error', new Error('denied'), 'denied'],
+    // The REST client rejects with the dispatcher's body, not an Error.
+    [
+      "the dispatcher's body",
+      { errors: [{ message: 'REVIEW_FINISHED: this review is already finished', errorType: 'BadRequest' }] },
+      'REVIEW_FINISHED: this review is already finished',
+    ],
+  ])('reports a skip the server refused, as %s, with its message', async (_label, rejection, message) => {
+    state.graphql.mockRejectedValue(rejection);
     renderPanel();
     detailBar.chooseMenuItem('More Actions', 'Skip All Reviews');
     const modal = await waitFor(() => shown(createWrapper(document.body).findModal()));
@@ -178,7 +186,7 @@ describe('Skip All Reviews', () => {
         .find((b) => b.getElement().textContent === 'Skip All Reviews')!
         .click(),
     );
-    await waitFor(() => expect(state.setErrorMessage).toHaveBeenCalledWith('Failed to skip all sections: denied'));
+    await waitFor(() => expect(state.setErrorMessage).toHaveBeenCalledWith(`Failed to skip all sections: ${message}`));
   });
 
   it('is available for a legacy review pending', () => {

@@ -22,6 +22,7 @@ import { claimReview, skipAllSectionsReview } from '../../graphql/generated';
 import useUserRole from '../../hooks/use-user-role';
 import { documentEditHref } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 import type { ActionBarControl, ActionBarMenu, ActionBarMenuItem } from '../common/ActionBar';
 import { copyDocumentToBaseline } from '../common/copy-to-baseline';
 import ReasonModal from '../common/ReasonModal';
@@ -115,7 +116,7 @@ const offered = (gate: ActionGate, id: string, text: string): ActionBarMenuItem[
 export const useDocumentActions = (input: DocumentActionsInput): DocumentActions => {
   const { item, displayed, isHistorical, mergedConfig, configLoading, view, onViewChange, refresh, onDocumentUpdate, download } = input;
   const roles = useUserRole();
-  const { setErrorMessage, setSuccessMessage } = useAppContext();
+  const { user, setErrorMessage, setSuccessMessage } = useAppContext();
   const [busy, setBusy] = useState<Busy>(null);
   const [baselineRequestInFlight, setBaselineRequestInFlight] = useState(false);
   const [report, setReport] = useState<DocumentReport | null>(null);
@@ -161,7 +162,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     },
     displayed,
     isHistorical,
-    bdaMode: mergedConfig?.use_bda === true,
+    holdsReview:
+      (!!item.hitlReviewOwner && item.hitlReviewOwner === user?.username) ||
+      (!!item.hitlReviewOwnerEmail && item.hitlReviewOwnerEmail.toLowerCase() === (user?.signInDetails?.loginId ?? '').toLowerCase()),
+    bdaMode: isBdaModeConfig(mergedConfig),
     configLoading,
     baselineRequestInFlight,
   });
@@ -210,7 +214,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         void refresh();
       } catch (error) {
         logger.error('Failed to claim review:', error);
-        setErrorMessage(`Failed to start review: ${(error as Error).message || 'Unknown error'}`);
+        setErrorMessage(`Failed to start review: ${getErrorMessage(error)}`);
       }
     });
 
@@ -258,7 +262,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         void refresh();
       } catch (error) {
         logger.error('Failed to skip all sections review:', error);
-        setErrorMessage(`Failed to skip all sections: ${(error as Error).message || 'Unknown error'}`);
+        setErrorMessage(`Failed to skip all sections: ${getErrorMessage(error)}`);
       }
     });
 

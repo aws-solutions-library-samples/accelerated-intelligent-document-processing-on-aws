@@ -14,11 +14,14 @@
 // reasons are checked in one order and the first that applies wins: a past version is
 // being viewed (H), the document is in a review queue (Q), it is still processing (P),
 // its configuration is loading (C), it is in BDA mode (B), then the action's own
-// availability.
+// availability. The actions that call processChanges are, for a caller who is not an
+// Admin, also refused unless the caller holds the document's open review (O), as the
+// server refuses them.
 import { baselineCopyBlockedReason } from '../common/copy-to-baseline';
 import { ABORTABLE_STATUSES } from '../common/document-statuses';
 import { inReviewQueueEditReason, isHitlReviewFinished, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import {
+  BDA_REGROUP_REASON,
   IN_REVIEW_SHORT_REASON,
   NO_SECTIONS_REASON,
   NO_SUMMARY_REASON,
@@ -40,6 +43,7 @@ import {
   NO_RULE_VALIDATION_REASON,
   REVIEWER_FINISHED_REASON,
   REVIEWER_UNCLAIMED_REASON,
+  REVIEW_OWNER_REASON,
   RULE_VALIDATION_HISTORICAL_REASON,
 } from './action-reasons';
 
@@ -154,6 +158,8 @@ export interface GateInput {
   /** What the page shows: the live document, or a past version's reports. */
   displayed: Pick<GatedDocument, 'summaryReportUri' | 'evaluationReportUri' | 'ruleValidationResultUri'>;
   isHistorical: boolean;
+  /** The caller holds the document's review (its owner, by username or email). */
+  holdsReview: boolean;
   bdaMode: boolean;
   configLoading: boolean;
   baselineRequestInFlight: boolean;
@@ -169,7 +175,7 @@ export type DocumentActionGates = Record<DocumentActionId, ActionGate> & {
   editInQueue: boolean;
   /** Whether Edit Page Class may change a section's class (a Reviewer-only user's lock). */
   canChangeClass: boolean;
-  /** Why Save and Re-extract can't run now (configuration, BDA mode), for the board. */
+  /** Why Save and Re-extract can't run now (configuration, BDA mode, the review owner rule), for the board. */
   reextractBlockedReason?: string;
 };
 
@@ -187,7 +193,7 @@ const inGroups = (roles: ActionRoles, groups: readonly AppGroup[]): boolean => g
 const first = (...checks: [boolean, string | undefined][]): string | undefined => checks.find(([applies]) => applies)?.[1];
 
 export const documentActionGates = (input: GateInput): DocumentActionGates => {
-  const { roles, doc, displayed, isHistorical, bdaMode, configLoading, baselineRequestInFlight } = input;
+  const { roles, doc, displayed, isHistorical, holdsReview, bdaMode, configLoading, baselineRequestInFlight } = input;
   const H: [boolean, string] = [isHistorical, HISTORICAL_REASON];
   const inQueue = isInReviewQueue(doc.hitlStatus);
   const Q: [boolean, string] = [inQueue, inReviewQueueEditReason(roles.canWorkReviewQueues)];
@@ -201,8 +207,15 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
   const finished = isHitlReviewFinished(doc.hitlStatus);
   // A legacy review waiting for a reviewer (not one managed by a review queue).
   const pendingReview = !!doc.hitlTriggered && !hitl.queueManaged && !finished;
-  const reviewerUnclaimed = roles.isReviewerOnly && !!doc.hitlTriggered && !hasOwner;
-  const reviewerFinished = roles.isReviewerOnly && finished;
+  // processChanges for a caller who is not an Admin: refused on a finished review, and
+  // unless the caller holds the document's open review (pending or in progress).
+  const nonAdmin = !roles.isAdmin;
+  const reviewOpen = ['pending', 'in_progress'].includes(hitl.kind);
+  const O: [boolean, string][] = [
+    [nonAdmin && finished, REVIEWER_FINISHED_REASON],
+    [nonAdmin && reviewOpen && !hasOwner, REVIEWER_UNCLAIMED_REASON],
+    [nonAdmin && !(reviewOpen && holdsReview), REVIEW_OWNER_REASON],
+  ];
 
   const gate = (action: GatedAction, ...checks: [boolean, string | undefined][]): ActionGate => ({
     shown: inGroups(roles, ACTION_GROUPS[action]),
@@ -233,23 +246,16 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
       H,
       Q,
       P,
+      C,
+      // A BDA reprocess keeps the sections a document already has.
+      [bdaMode, BDA_REGROUP_REASON],
       // The server refuses to regroup a legacy review in progress.
       [doc.objectStatus === 'HITL_IN_PROGRESS' && !hitl.queueManaged, LEGACY_REVIEW_REGROUP_REASON],
       [doc.sectionCount === 0, NO_SECTIONS_REASON],
     ),
-    reextract: gate('reextract', H, Q, P, C, B, [doc.sectionCount === 0, NO_SECTIONS_REASON]),
-    'page-text': gate('page-text', H, Q, P, C, B, [doc.pagesWithText === 0, NO_PAGE_TEXT_REASON]),
-    'reset-class': gate(
-      'reset-class',
-      H,
-      Q,
-      P,
-      C,
-      B,
-      [reviewerUnclaimed, REVIEWER_UNCLAIMED_REASON],
-      [reviewerFinished, REVIEWER_FINISHED_REASON],
-      [doc.pageCount === 0, NO_PAGES_REASON],
-    ),
+    reextract: gate('reextract', H, Q, P, C, B, ...O, [doc.sectionCount === 0, NO_SECTIONS_REASON]),
+    'page-text': gate('page-text', H, Q, P, C, B, ...O, [doc.pagesWithText === 0, NO_PAGE_TEXT_REASON]),
+    'reset-class': gate('reset-class', H, Q, P, C, B, ...O, [doc.pageCount === 0, NO_PAGES_REASON]),
     baseline: gate(
       'baseline',
       H,
@@ -281,6 +287,6 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
     },
     editInQueue,
     canChangeClass: !(roles.isReviewerOnly && ((!!doc.hitlTriggered && !hasOwner) || processing || finished)),
-    reextractBlockedReason: first(C, B),
+    reextractBlockedReason: first(C, B, ...O),
   };
 };

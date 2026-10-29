@@ -98,7 +98,8 @@ vi.mock('../../document-panel/TroubleshootModal', () => ({
 import DocumentPanel from '../../document-panel/DocumentPanel';
 import { detailBar } from './detail-bar';
 import { inReviewQueueEditReason } from '../../common/review-status';
-import { BDA_REPROCESS_REASON, REEXTRACT_ORDER_ONLY_REASON, reextractNoClassReason } from '../action-reasons';
+import { BDA_REGROUP_REASON } from '../../edit-screen/document-edit-status';
+import { REEXTRACT_ORDER_ONLY_REASON, reextractNoClassReason } from '../action-reasons';
 
 const ADMIN = {
   isAdmin: true,
@@ -335,10 +336,10 @@ describe('Edit Page Class › Save and Re-extract', () => {
     expect(board().secondarySave.disabledReason(withNew)).toBe(reextractNoClassReason(['3']));
   });
 
-  it('is unavailable in BDA mode', async () => {
-    state.config = { mergedConfig: { use_bda: true, classes: [] }, loading: false };
-    await openBoard();
-    expect(board().secondarySave.disabledReason(MOVED)).toBe(BDA_REPROCESS_REASON);
+  it('is not reachable in BDA mode: Edit Page Class itself is disabled there', () => {
+    state.config = { mergedConfig: { use_bda: 'true', classes: [] }, loading: false };
+    renderPanel();
+    expect(moreItem('Edit Page Class')).toEqual({ text: 'Edit Page Class', disabled: true, disabledReason: BDA_REGROUP_REASON });
   });
 });
 

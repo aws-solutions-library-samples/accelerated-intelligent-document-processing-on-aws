@@ -12,7 +12,11 @@ almost every classification setting sat directly under `classification:`, and on
 key, `classificationMethod`, chose between page-level and holistic
 classification. In v0.6.13 **every setting sits inside the model call that uses
 it**, and a new two-stage strategy adds calls of its own. The configuration format
-moves from `0.7` to `0.9`.
+moves from `0.7` to `0.10`. Format `0.10` also changes one value outside
+classification: the error analyzer's `parameters.max_log_events` takes effect with
+a default of `10`, and a stored `5` is read as `10` so the number of log events
+each search returns does not change. See
+[Advanced parameters](error-analyzer.md#advanced-parameters-config-file-only).
 
 **You do not need to edit anything to keep processing documents.** A stored
 profile, a preset, a configuration file you upload, and a pinned revision are all
