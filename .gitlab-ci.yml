@@ -1680,8 +1680,10 @@ nightly_notification:
       )
       MAX_LINE = 200
       MAX_CAUSE_LINES = 12
-      # The whole body is capped at 2000 characters, so a pipeline with many red
-      # jobs describes the first few in full rather than all of them in fragments.
+      # The whole body is capped at 2000 characters. Each described job gets an
+      # equal share of it, trimmed from its detail lines, so every job keeps its
+      # header and its totals rather than the last ones being cut off.
+      MAX_BODY = 2000
       MAX_JOBS = 4
 
 
@@ -1760,13 +1762,18 @@ nightly_notification:
           ]
 
 
-      def describe(job, cause_lines):
+      def describe(job, cause_lines, budget=MAX_BODY):
           reason = job.get("failure_reason") or ""
-          header = f"• {job['name']} ({job['stage']}) failed"
+          header = f"• {job.get('name', '?')} ({job.get('stage', '?')}) failed"
           if reason and reason != "script_failure":
               header += f" — {reason.replace('_', ' ')}"
           header += f": {job.get('web_url', '')}"
-          return "\n".join([header] + [f"    {line}" for line in cause_lines])
+          lines = [f"    {line}" for line in cause_lines]
+          # Drop detail from the middle, keeping the first line (the verdict, or
+          # the GATING header) and the last ones (the totals), until it fits.
+          while len(lines) > 2 and len("\n".join([header] + lines)) > budget:
+              del lines[len(lines) // 2]
+          return "\n".join([header] + lines)[:budget]
 
 
       def api_get(path, token):
@@ -1797,13 +1804,22 @@ nightly_notification:
                   )
               )
               failed = blocking_failures(jobs)
+              names = [str(job.get("name", "?")) for job in failed]
+              if len(jobs) >= 100:
+                  names.append("first page only")
+              shown = failed[:MAX_JOBS]
+              budget = (MAX_BODY - 400) // max(len(shown), 1)
               sections = []
-              for job in failed[:MAX_JOBS]:
-                  trace = api_get(f"/projects/{project}/jobs/{job['id']}/trace", token)
-                  sections.append(describe(job, failure_cause(trace)))
+              for job in shown:
+                  # One unreadable job must not cost the causes of the others.
+                  try:
+                      trace = api_get(f"/projects/{project}/jobs/{job['id']}/trace", token)
+                      cause = failure_cause(trace)
+                  except Exception as exc:  # noqa: BLE001 - degrade this job only
+                      cause = [f"(log not readable: {type(exc).__name__})"]
+                  sections.append(describe(job, cause, budget))
               if len(failed) > MAX_JOBS:
                   sections.append(f"… and {len(failed) - MAX_JOBS} more failed jobs")
-              names = [job["name"] for job in failed]
           except Exception as exc:  # noqa: BLE001 - see the warning above
               # The reason is posted to Slack, where GitLab's masking does not
               # apply, and a malformed token (a pasted trailing newline) makes
@@ -1878,8 +1894,8 @@ nightly_notification:
                   print(f"⚠️ Could not read the failed jobs ({causes}); posting the link")
               status, body = no_summary_message(names, causes)
 
-          if len(body) > 2000:
-              body = body[:2000] + "\n… (truncated — the rest is in the job logs)"
+          if len(body) > MAX_BODY:
+              body = body[:MAX_BODY] + "\n… (truncated — the rest is in the job logs)"
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and

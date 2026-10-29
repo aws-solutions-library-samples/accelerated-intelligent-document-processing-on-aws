@@ -383,3 +383,38 @@ def test_a_failure_reason_never_carries_the_token(notifier, monkeypatch):
     assert names is None
     assert "secretvalue" not in why
     assert "[token]" in why
+
+
+def test_every_described_job_keeps_its_header_and_totals(notifier, monkeypatch):
+    """Four verbose red jobs must each survive the body cap, not just the first."""
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "2")
+    jobs = [
+        {"id": n, "name": f"job_{n}", "stage": "fast_checks", "status": "failed",
+         "allow_failure": False, "web_url": f"https://j/{n}"}
+        for n in range(4)
+    ]
+    long = "x" * 190
+    trace = _trace(
+        *[f"FAILED tests/test_{n}.py::t - {long}" for n in range(30)],
+        "==== 30 failed in 1.00s =====",
+        "make: *** [Makefile:1: t] Error 1",
+    )
+
+    def fake_get(path, token):
+        if path.endswith("/trace"):
+            if "/jobs/2/" in path:
+                raise OSError("gone")
+            return trace
+        return __import__("json").dumps(jobs)
+
+    monkeypatch.setitem(notifier, "api_get", fake_get)
+    names, causes = notifier["read_causes"]()
+    assert names == ["job_0", "job_1", "job_2", "job_3"]
+    _, body = notifier["no_summary_message"](names, causes)
+    assert len(body) <= notifier["MAX_BODY"]
+    for n in (0, 1, 3):
+        assert f"• job_{n} (fast_checks) failed" in body
+    assert body.count("make: *** [Makefile:1: t] Error 1") == 3
+    assert "(log not readable: OSError)" in body, "one bad log must not cost the rest"
