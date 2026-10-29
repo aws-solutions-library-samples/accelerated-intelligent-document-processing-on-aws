@@ -1624,7 +1624,7 @@ nightly_notification:
       allow_failure: true
     - when: never
   # No checkout needed: the script is inline and everything it reads is an
-  # artifact. This also keeps the job to a few seconds.
+  # artifact or the GitLab API. This also keeps the job to a few seconds.
   variables:
     GIT_STRATEGY: none
   script:
@@ -1644,12 +1644,13 @@ nightly_notification:
       echo "⚠️ No Slack post was made by integration_tests — posting the fallback"
       python3 - "$CI_PIPELINE_URL" "$CI_COMMIT_SHA" "$SLACK_WEBHOOK_URL" <<'PY'
       import json
+      import os
       import pathlib
+      import re
       import sys
       import urllib.error
+      import urllib.parse
       import urllib.request
-
-      pipeline_url, sha, webhook = sys.argv[1:4]
 
       # Two distinct situations reach this job, and they need different words.
       #
@@ -1659,59 +1660,194 @@ nightly_notification:
       #     The summary is the valuable part, so send it.
       #   * absent — the pipeline never reached the deploy stage. Nothing was
       #     deployed and nothing was tested, and saying so plainly is the whole
-      #     job. Do NOT guess which upstream job failed: enumerating them needs
-      #     an API token this job has no reason to hold, and a wrong guess in a
-      #     channel is worse than a pipeline link.
-      summary_path = pathlib.Path("deployment_summary.txt")
-      if summary_path.is_file():
-          status = "⚠️ RESULT NOT DELIVERED"
-          body = (
-              "The deploy ran but its own Slack post did not succeed, so this is "
-              "a replacement carrying the summary it would have sent.\n\n"
-              + summary_path.read_text(errors="replace").strip()
-          )
-      else:
-          status = "❌ FAILED BEFORE THE DEPLOY"
-          body = (
-              "This nightly did not reach the deploy stage, so NOTHING was "
-              "deployed and no integration test ran. An earlier stage failed and "
-              "GitLab skipped the rest of the pipeline.\n\n"
-              "There is no deployment summary for this run. Open the pipeline to "
-              "see which job failed — a failure here is usually a check that is "
-              "independent of the deploy, including a dated expiry alarm that can "
-              "fire with no code change at all."
-          )
+      #     job. WHICH job failed, and why, is read from the GitLab API rather
+      #     than guessed: GITLAB_REVIEW_TOKEN (api scope, every environment)
+      #     already reaches this job, and the decisive lines of each failed job's
+      #     log are what make the post actionable from Slack. Without the token,
+      #     or when the API cannot be read, it falls back to the pipeline link.
+      #
+      # The extraction is functions with no side effects, so
+      # scripts/sdlc/tests/test_nightly_notification.py can run them against real
+      # job-log shapes; everything that touches the network is in main().
 
-      if len(body) > 2000:
-          body = body[:2000] + "\n… (truncated — the rest is in the job artifacts)"
-
-      # Same flat, all-string contract as the post in integration_tests: these
-      # four keys are declared on the Slack Workflow Builder trigger as Text, and
-      # renaming one here posts a blank variable rather than failing.
-      payload = json.dumps(
-          {
-              "status": status,
-              "commit": sha[:8],
-              "job_url": pipeline_url,
-              "summary": body,
-          }
-      ).encode()
-
-      request = urllib.request.Request(
-          webhook,
-          data=payload,
-          headers={"Content-Type": "application/json"},
-          method="POST",
+      ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+      # GitLab's timestamped trace prefix: "2026-10-29T03:29:51.498956Z 01O ".
+      STAMP = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z \d\d[OE]\+? ?")
+      # Where the script's own output ends and the runner's bookkeeping begins.
+      SCRIPT_END = re.compile(
+          r"^(section_end:\d+:step_script|Uploading artifacts|Running after_script"
+          r"|Cleaning up project directory|ERROR: Job failed)"
       )
-      try:
-          # nosec B310 - webhook is an https URL from a masked CI variable
+      MAX_LINE = 300
+      MAX_CAUSE_LINES = 12
+
+
+      def clean_trace(trace):
+          lines = []
+          for raw in trace.replace("\r\n", "\n").split("\n"):
+              line = STAMP.sub("", ANSI.sub("", raw.split("\r")[-1])).rstrip()
+              if line.startswith("section_start:"):
+                  continue
+              lines.append(line)
+          return lines
+
+
+      def failure_cause(trace):
+          """The few lines of a failed job's log that say why it failed."""
+          lines = clean_trace(trace)
+          end = next(
+              (i for i, line in enumerate(lines) if SCRIPT_END.match(line)), len(lines)
+          )
+          lines = lines[:end]
+          picked = []
+          # dep_audit: the gating block is the verdict, the rest is triage detail.
+          for i, line in enumerate(lines):
+              if line.startswith("GATING"):
+                  for follow in lines[i : i + MAX_CAUSE_LINES]:
+                      if follow.startswith(("ALLOWLISTED", "BELOW THRESHOLD")):
+                          break
+                      if follow.strip() and not set(follow.strip()) <= {"-", "="}:
+                          picked.append(follow)
+                  break
+          # pytest's short summary, then make's own error line.
+          picked += [
+              line
+              for line in lines
+              if line.startswith(("FAILED ", "ERROR "))
+              or re.match(r"^=+ .*\b(failed|errors?)\b.* in [\d.]+s", line)
+          ]
+          picked += [line for line in lines if line.startswith("make: *** ")]
+          if not picked:
+              picked = [line for line in lines if line.strip()][-MAX_CAUSE_LINES:]
+          seen = set()
+          unique = []
+          for line in picked:
+              if line not in seen:
+                  seen.add(line)
+                  unique.append(line[:MAX_LINE])
+          if len(unique) > MAX_CAUSE_LINES:
+              hidden = len(unique) - MAX_CAUSE_LINES
+              unique = unique[:MAX_CAUSE_LINES] + [f"… and {hidden} more lines"]
+          return unique
+
+
+      def blocking_failures(jobs):
+          """Failed jobs that stopped the pipeline; allow_failure ones did not."""
+          failed = [j for j in jobs if j.get("status") == "failed"]
+          return [j for j in failed if not j.get("allow_failure")] or failed
+
+
+      def describe(job, cause_lines):
+          reason = job.get("failure_reason") or ""
+          header = f"• {job['name']} ({job['stage']}) failed"
+          if reason and reason != "script_failure":
+              header += f" — {reason.replace('_', ' ')}"
+          header += f": {job.get('web_url', '')}"
+          return "\n".join([header] + [f"    {line}" for line in cause_lines])
+
+
+      def api_get(path, token):
+          base = os.environ["CI_API_V4_URL"]
+          request = urllib.request.Request(
+              f"{base}{path}", headers={"PRIVATE-TOKEN": token}
+          )
+          # nosec B310 - CI_API_V4_URL is the runner-provided https API base
           with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-              print(f"💬 Fallback nightly notification posted to Slack ({response.status})")
-      except (urllib.error.URLError, OSError) as exc:
-          # Never fail the job for this. The pipeline's own verdict is already
-          # red; adding a second red mark for the notification would only
-          # obscure which one matters.
-          print(f"⚠️ Fallback Slack post failed: {exc}")
+              return response.read().decode("utf-8", errors="replace")
+
+
+      def read_causes():
+          token = os.environ.get("GITLAB_REVIEW_TOKEN")
+          if not token:
+              return None, "GITLAB_REVIEW_TOKEN is not set"
+          project = urllib.parse.quote(os.environ["CI_PROJECT_ID"], safe="")
+          pipeline = os.environ["CI_PIPELINE_ID"]
+          try:
+              jobs = json.loads(
+                  api_get(
+                      f"/projects/{project}/pipelines/{pipeline}/jobs"
+                      "?scope[]=failed&per_page=100",
+                      token,
+                  )
+              )
+              sections = []
+              for job in blocking_failures(jobs):
+                  trace = api_get(f"/projects/{project}/jobs/{job['id']}/trace", token)
+                  sections.append(describe(job, failure_cause(trace)))
+          except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+              return None, f"{type(exc).__name__}: {exc}"
+          if not sections:
+              return None, "the API listed no failed job"
+          return [j["name"] for j in blocking_failures(jobs)], "\n\n".join(sections)
+
+
+      def main():
+          pipeline_url, sha, webhook = sys.argv[1:4]
+          summary_path = pathlib.Path("deployment_summary.txt")
+          if summary_path.is_file():
+              status = "⚠️ RESULT NOT DELIVERED"
+              body = (
+                  "The deploy ran but its own Slack post did not succeed, so this is "
+                  "a replacement carrying the summary it would have sent.\n\n"
+                  + summary_path.read_text(errors="replace").strip()
+              )
+          else:
+              status = "❌ FAILED BEFORE THE DEPLOY"
+              names, causes = read_causes()
+              if names:
+                  status += f" ({', '.join(names)})"
+                  body = (
+                      "This nightly did not reach the deploy stage, so NOTHING was "
+                      "deployed and no integration test ran. GitLab skipped the rest "
+                      "of the pipeline because of:\n\n" + causes
+                  )
+              else:
+                  print(f"ℹ️ Could not read the failed jobs ({causes}); posting the link")
+                  body = (
+                      "This nightly did not reach the deploy stage, so NOTHING was "
+                      "deployed and no integration test ran. An earlier stage failed "
+                      "and GitLab skipped the rest of the pipeline.\n\n"
+                      "The failed job could not be read from the GitLab API "
+                      f"({causes}). Open the pipeline to see which job failed — a "
+                      "failure here is usually a check that is independent of the "
+                      "deploy, including a dated expiry alarm or a newly published "
+                      "advisory that can fire with no code change at all."
+                  )
+
+          if len(body) > 2000:
+              body = body[:2000] + "\n… (truncated — the rest is in the job logs)"
+
+          # Same flat, all-string contract as the post in integration_tests: these
+          # four keys are declared on the Slack Workflow Builder trigger as Text, and
+          # renaming one here posts a blank variable rather than failing.
+          payload = json.dumps(
+              {
+                  "status": status,
+                  "commit": sha[:8],
+                  "job_url": pipeline_url,
+                  "summary": body,
+              }
+          ).encode()
+
+          request = urllib.request.Request(
+              webhook,
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              # nosec B310 - webhook is an https URL from a masked CI variable
+              with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                  print(f"💬 Fallback nightly notification posted to Slack ({response.status})")
+          except (urllib.error.URLError, OSError) as exc:
+              # Never fail the job for this. The pipeline's own verdict is already
+              # red; adding a second red mark for the notification would only
+              # obscure which one matters.
+              print(f"⚠️ Fallback Slack post failed: {exc}")
+
+
+      if __name__ == "__main__":
+          main()
       PY
 
 # ---------------------------------------------------------------------------

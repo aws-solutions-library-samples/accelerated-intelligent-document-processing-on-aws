@@ -192,3 +192,101 @@ def test_the_heredoc_terminator_is_unindented(script):
         "the heredoc terminator is indented after YAML's block-scalar dedent, so "
         "the shell never closes it and the job fails to parse at runtime."
     )
+
+
+# ---------------------------------------------------------------------------
+# The cause in the post. "Open the pipeline to see which job failed" made every
+# reader leave Slack to learn something the job could have said: on 2026-10-28
+# the scheduled run was red because a HIGH advisory had been published that day
+# against the UI's GraphQL tooling, and the post named neither the job nor the
+# advisory. These run the embedded functions against the log shapes those jobs
+# actually emit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def notifier(script):
+    body = textwrap.dedent(
+        re.search(r"<<'PY'\n(.*?)\n\s*PY\s*$", script, re.S).group(1)
+    )
+    namespace = {"__name__": "nightly_notification"}
+    exec(compile(body, "nightly_notification", "exec"), namespace)  # noqa: S102
+    return namespace
+
+
+def _trace(*lines):
+    """A GitLab job trace: timestamp prefixes, ANSI colour, runner sections."""
+    stamped = [
+        f"2026-10-29T00:10:0{i % 10}.000000Z 01O {line}" for i, line in enumerate(lines)
+    ]
+    return "\n".join(
+        stamped
+        + [
+            "2026-10-29T00:11:00.000000Z 00O section_end:1793244593:step_script",
+            "2026-10-29T00:11:00.000000Z 00O+\x1b[0K\x1b[36;1mUploading artifacts for failed job\x1b[0;m",
+            "2026-10-29T00:11:01.000000Z 01O lines after the script must not be quoted",
+            "2026-10-29T00:11:02.000000Z 00O \x1b[31;1mERROR: Job failed: exit code 1\x1b[0;m",
+        ]
+    )
+
+
+def test_a_dep_audit_failure_quotes_the_gating_advisory_only(notifier):
+    trace = _trace(
+        "Fetching severity for 22 advisories...",
+        "",
+        "GATING — at or above HIGH (1)",
+        "-" * 100,
+        "  HIGH           npm:@graphql-tools/executor-legacy-ws@1.1.35",
+        "    GHSA-434m-5hcj-pxf3  fixed in: 1.1.36",
+        "",
+        "ALLOWLISTED (triaged, not gating) (6)",
+        "  HIGH           PyPI:strands-agents@1.14.0",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert "  HIGH           npm:@graphql-tools/executor-legacy-ws@1.1.35" in cause
+    assert "    GHSA-434m-5hcj-pxf3  fixed in: 1.1.36" in cause
+    assert not any("strands-agents" in line for line in cause), (
+        "an allowlisted advisory is not why the job failed"
+    )
+    assert not any(set(line.strip()) <= {"-"} for line in cause)
+
+
+def test_a_pytest_failure_quotes_the_failed_test_and_the_tally(notifier):
+    trace = _trace(
+        "\x1b[32mtests/unit/ocr/test_x.py ....\x1b[0m",
+        "FAILED tests/unit/ocr/test_x.py::TestA::test_b - AssertionError: boom",
+        "==== 1 failed, 16657 passed, 17 skipped in 196.70s (0:03:16) =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert cause == [
+        "FAILED tests/unit/ocr/test_x.py::TestA::test_b - AssertionError: boom",
+        "==== 1 failed, 16657 passed, 17 skipped in 196.70s (0:03:16) =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    ]
+
+
+def test_an_unrecognised_failure_falls_back_to_the_script_tail(notifier):
+    trace = _trace(*[f"step {n}" for n in range(30)], "something broke")
+    cause = notifier["failure_cause"](trace)
+    assert cause[-1] == "something broke"
+    assert len(cause) == notifier["MAX_CAUSE_LINES"]
+    assert not any("must not be quoted" in line for line in cause), (
+        "the runner's after-script bookkeeping is not the job's failure"
+    )
+
+
+def test_allowed_failures_are_not_reported_as_the_cause(notifier):
+    jobs = [
+        {"name": "ai_mr_review", "status": "failed", "allow_failure": True},
+        {"name": "dep_audit", "status": "failed", "allow_failure": False},
+        {"name": "unit_tests", "status": "success", "allow_failure": False},
+    ]
+    assert [j["name"] for j in notifier["blocking_failures"](jobs)] == ["dep_audit"]
+
+
+def test_the_cause_falls_back_to_the_link_without_a_token(notifier, monkeypatch):
+    monkeypatch.delenv("GITLAB_REVIEW_TOKEN", raising=False)
+    names, why = notifier["read_causes"]()
+    assert names is None
+    assert "GITLAB_REVIEW_TOKEN" in why

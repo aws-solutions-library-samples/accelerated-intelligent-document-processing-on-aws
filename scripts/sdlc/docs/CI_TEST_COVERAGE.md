@@ -334,7 +334,13 @@ catches it.
     `integration_tests` already posted (it keys on a `slack_posted.txt` artifact
     written only on a *successful* post), and otherwise sends
     **❌ FAILED BEFORE THE DEPLOY**, which states plainly that nothing was
-    deployed and no integration test ran. If the deploy ran but its own post
+    deployed and no integration test ran, and names **why**: it lists the
+    pipeline's failed blocking jobs through the GitLab API (with
+    `GITLAB_REVIEW_TOKEN`, which already reaches every job) and quotes the
+    decisive lines of each one's log — the dep-audit `GATING` block, pytest's
+    `FAILED` lines and tally, `make: ***`, or else the end of the script output.
+    Without the token, or if the API cannot be read, it falls back to the
+    pipeline link and says why. If the deploy ran but its own post
     failed, the fallback sends the summary instead as
     **⚠️ RESULT NOT DELIVERED**. It declares **no `needs`** on purpose — GitLab
     skips a job whose needed job was skipped, which would reproduce the silence
