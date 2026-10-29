@@ -210,8 +210,7 @@ def notifier(script):
         re.search(r"<<'PY'\n(.*?)\n\s*PY\s*$", script, re.S).group(1)
     )
     namespace = {"__name__": "nightly_notification"}
-    # nosec B102 - executes this repo's own shipped CI script under test
-    exec(compile(body, "nightly_notification", "exec"), namespace)  # noqa: S102
+    exec(compile(body, "nightly_notification", "exec"), namespace)  # noqa: S102  # nosec B102 - executes this repo's own shipped CI script under test
     return namespace
 
 
@@ -223,12 +222,30 @@ def _trace(*lines):
     return "\n".join(
         stamped
         + [
-            "2026-10-29T00:11:00.000000Z 00O section_end:1793244593:step_script",
+            # GitLab's real marker shape: the erase sequence after a \r.
+            "2026-10-29T00:11:00.000000Z 00O section_end:1793244593:step_script\r\x1b[0K",
             "2026-10-29T00:11:00.000000Z 00O+\x1b[0K\x1b[36;1mUploading artifacts for failed job\x1b[0;m",
             "2026-10-29T00:11:01.000000Z 01O lines after the script must not be quoted",
             "2026-10-29T00:11:02.000000Z 00O \x1b[31;1mERROR: Job failed: exit code 1\x1b[0;m",
         ]
     )
+
+
+def test_section_markers_survive_the_carriage_return(notifier):
+    lines = notifier["clean_trace"](
+        "2026-10-29T00:11:00.000000Z 00O section_start:1:step_script\r\x1b[0K\n"
+        "2026-10-29T00:11:00.000000Z 01O real output\n"
+        "2026-10-29T00:11:00.000000Z 00O section_end:2:step_script\r\x1b[0K"
+    )
+    assert lines == ["real output", "section_end:2:step_script"]
+
+
+def test_main_runs_when_the_script_is_executed(script):
+    """The functions are exec'd under another name here, so main() never runs.
+
+    Without the guard and its call the job would exit 0 having posted nothing.
+    """
+    assert re.search(r'^\s*if __name__ == "__main__":\n\s+main\(\)\s*$', script, re.M)
 
 
 def test_a_dep_audit_failure_quotes_the_gating_advisory_only(notifier):

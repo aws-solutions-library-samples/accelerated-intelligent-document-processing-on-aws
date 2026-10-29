@@ -1688,7 +1688,13 @@ nightly_notification:
       def clean_trace(trace):
           lines = []
           for raw in trace.replace("\r\n", "\n").split("\n"):
-              line = STAMP.sub("", ANSI.sub("", raw.split("\r")[-1])).rstrip()
+              # A carriage return overwrites the line on a terminal, so the last
+              # non-empty segment is what a reader saw. GitLab ends every section
+              # marker with "\r\x1b[0K", whose last segment is empty: taking it
+              # blindly would erase the marker before it can be recognised.
+              segments = [ANSI.sub("", seg) for seg in raw.split("\r")]
+              shown = next((seg for seg in reversed(segments) if seg.strip()), "")
+              line = STAMP.sub("", shown).rstrip()
               if line.startswith("section_start:"):
                   continue
               lines.append(line)
@@ -1729,7 +1735,8 @@ nightly_notification:
 
           def unique(items):
               seen = set()
-              return [x[:MAX_LINE] for x in items if not (x in seen or seen.add(x))]
+              cut = [x[:MAX_LINE] for x in items]
+              return [x for x in cut if not (x in seen or seen.add(x))]
 
           totals = unique(totals)
           detail = [line for line in unique(detail) if line not in totals]
