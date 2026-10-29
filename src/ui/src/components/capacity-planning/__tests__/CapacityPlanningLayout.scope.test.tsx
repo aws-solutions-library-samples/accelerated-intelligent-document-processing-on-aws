@@ -250,7 +250,7 @@ describe('CapacityPlanningLayout — processing mode', () => {
   });
 
   it('shows neither alert for a pipeline-mode profile with a classification model', async () => {
-    await renderWithProfile({ use_bda: false, classification: { one_stage: { llm: { model: 'm' } } } });
+    await renderWithProfile({ use_bda: false, classification: { combined: { llm: { model: 'm' } } } });
 
     expect(screen.queryByText(/BDA mode is not supported/)).not.toBeInTheDocument();
     expect(screen.queryByText(/No classification model configured/)).not.toBeInTheDocument();
