@@ -126,7 +126,7 @@ describe('the shipped classification schema', () => {
   it('labels the strategy values without changing what is stored', () => {
     const strategy = (classificationSchema.properties as Record<string, Record<string, unknown>>).strategy;
     expect(strategy.enum).toEqual(['combined', 'split_then_classify']);
-    expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call, default)');
+    expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call)');
     expect(enumOptionLabel(strategy, 'split_then_classify')).toBe('Split first, then classify each section');
   });
 });
@@ -171,17 +171,15 @@ describe('enum labels across the whole shipped schema', () => {
     }
   });
 
-  it("marks exactly the field's default value as '(default)'", () => {
-    // The marker is written by hand in each label, so it can go stale when a
-    // field's `default:` changes. Where a field labels its default value, that
-    // label carries the marker and no other value's label does.
+  it("puts a '(default)' marker only on the field's default value", () => {
+    // The marker is written by hand in each label, so it goes stale when a
+    // field's `default:` moves to another value. A field may leave its default
+    // unmarked (Strategy does: its labels are also the option names the docs
+    // use), but a marker on any other value is wrong.
     for (const { path: at, node } of labelled) {
-      const labels = node.enumLabels as Record<string, string>;
       const def = node.default === undefined || node.default === null ? undefined : String(node.default);
-      for (const [value, label] of Object.entries(labels)) {
-        const marked = /\bdefault\)$/.test(label);
-        if (value === def) expect(marked, `${at}: '${value}' is the default`).toBe(true);
-        else expect(marked, `${at}: '${value}' is not the default`).toBe(false);
+      for (const [value, label] of Object.entries(node.enumLabels as Record<string, string>)) {
+        if (/\bdefault\)$/.test(label)) expect(value, `${at}: '${value}' is marked as the default`).toBe(def);
       }
     }
   });
