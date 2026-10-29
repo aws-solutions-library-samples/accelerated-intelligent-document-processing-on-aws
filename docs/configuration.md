@@ -1230,7 +1230,7 @@ Four notes on reading that:
   one list shared by every family (`none`, `minimal`, `low`, `medium`, `high`,
   `xhigh`, `max`): anything outside it is replaced with `medium` and logged as a
   warning rather than refused. A value on that list that the selected model does
-  not accept is not caught there, and surfaces as a Bedrock error at run time.
+  not accept is not sent: the request goes without it, with a line in the log.
 - **`validation` and `confidence` exist only on the two calls that assign a
   class** — `combined.llm` and `split_then_classify.section_classification.llm`.
   Their confidence prompts are spliced into the call's own task prompt.
