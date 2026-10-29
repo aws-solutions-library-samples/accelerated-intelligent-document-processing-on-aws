@@ -1678,8 +1678,11 @@ nightly_notification:
           r"^(section_end:\d+:step_script|Uploading artifacts|Running after_script"
           r"|Cleaning up project directory|ERROR: Job failed)"
       )
-      MAX_LINE = 300
+      MAX_LINE = 200
       MAX_CAUSE_LINES = 12
+      # The whole body is capped at 2000 characters, so a pipeline with many red
+      # jobs describes the first few in full rather than all of them in fragments.
+      MAX_JOBS = 4
 
 
       def clean_trace(trace):
@@ -1699,42 +1702,53 @@ nightly_notification:
               (i for i, line in enumerate(lines) if SCRIPT_END.match(line)), len(lines)
           )
           lines = lines[:end]
-          picked = []
+          detail = []
           # dep_audit: the gating block is the verdict, the rest is triage detail.
+          # Its header carries the advisory count, so it is kept with the totals.
+          totals = []
           for i, line in enumerate(lines):
               if line.startswith("GATING"):
-                  for follow in lines[i : i + MAX_CAUSE_LINES]:
+                  totals.append(line)
+                  for follow in lines[i + 1 :]:
                       if follow.startswith(("ALLOWLISTED", "BELOW THRESHOLD")):
                           break
                       if follow.strip() and not set(follow.strip()) <= {"-", "="}:
-                          picked.append(follow)
+                          detail.append(follow)
                   break
-          # pytest's short summary, then make's own error line.
-          picked += [
+          # pytest's failed tests are detail; its tally and make's own error line
+          # are the totals, which must survive truncation.
+          detail += [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+          totals += [
               line
               for line in lines
-              if line.startswith(("FAILED ", "ERROR "))
-              or re.match(r"^=+ .*\b(failed|errors?)\b.* in [\d.]+s", line)
+              if re.match(r"^=+ .*\b(failed|errors?)\b.* in [\d.]+s", line)
+              or line.startswith("make: *** ")
           ]
-          picked += [line for line in lines if line.startswith("make: *** ")]
-          if not picked:
-              picked = [line for line in lines if line.strip()][-MAX_CAUSE_LINES:]
-          seen = set()
-          unique = []
-          for line in picked:
-              if line not in seen:
-                  seen.add(line)
-                  unique.append(line[:MAX_LINE])
-          if len(unique) > MAX_CAUSE_LINES:
-              hidden = len(unique) - MAX_CAUSE_LINES
-              unique = unique[:MAX_CAUSE_LINES] + [f"… and {hidden} more lines"]
-          return unique
+          if not detail and not totals:
+              detail = [line for line in lines if line.strip()][-MAX_CAUSE_LINES:]
+
+          def unique(items):
+              seen = set()
+              return [x[:MAX_LINE] for x in items if not (x in seen or seen.add(x))]
+
+          totals = unique(totals)
+          detail = [line for line in unique(detail) if line not in totals]
+          room = max(MAX_CAUSE_LINES - len(totals), 1)
+          if len(detail) > room:
+              hidden = len(detail) - (room - 1)
+              detail = detail[: room - 1] + [f"… and {hidden} more lines"]
+          if totals and totals[0].startswith("GATING"):
+              return totals[:1] + detail + totals[1:]
+          return detail + totals
 
 
       def blocking_failures(jobs):
           """Failed jobs that stopped the pipeline; allow_failure ones did not."""
-          failed = [j for j in jobs if j.get("status") == "failed"]
-          return [j for j in failed if not j.get("allow_failure")] or failed
+          return [
+              j
+              for j in jobs
+              if j.get("status") == "failed" and not j.get("allow_failure")
+          ]
 
 
       def describe(job, cause_lines):
@@ -1760,9 +1774,12 @@ nightly_notification:
           token = os.environ.get("GITLAB_REVIEW_TOKEN")
           if not token:
               return None, "GITLAB_REVIEW_TOKEN is not set"
-          project = urllib.parse.quote(os.environ["CI_PROJECT_ID"], safe="")
-          pipeline = os.environ["CI_PIPELINE_ID"]
+          # ⚠️ Every failure here, of ANY type, degrades to the plain link. An
+          # uncaught error would end the script before the post, and silence is the
+          # one outcome this job exists to prevent.
           try:
+              project = urllib.parse.quote(os.environ["CI_PROJECT_ID"], safe="")
+              pipeline = os.environ["CI_PIPELINE_ID"]
               jobs = json.loads(
                   api_get(
                       f"/projects/{project}/pipelines/{pipeline}/jobs"
@@ -1770,15 +1787,59 @@ nightly_notification:
                       token,
                   )
               )
+              failed = blocking_failures(jobs)
               sections = []
-              for job in blocking_failures(jobs):
+              for job in failed[:MAX_JOBS]:
                   trace = api_get(f"/projects/{project}/jobs/{job['id']}/trace", token)
                   sections.append(describe(job, failure_cause(trace)))
-          except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+              if len(failed) > MAX_JOBS:
+                  sections.append(f"… and {len(failed) - MAX_JOBS} more failed jobs")
+              names = [job["name"] for job in failed]
+          except Exception as exc:  # noqa: BLE001 - see the warning above
               return None, f"{type(exc).__name__}: {exc}"
           if not sections:
-              return None, "the API listed no failed job"
-          return [j["name"] for j in blocking_failures(jobs)], "\n\n".join(sections)
+              return None, "the API listed no failed blocking job"
+          return names, "\n\n".join(sections)
+
+
+      def status_suffix(names):
+          shown = ", ".join(names[:3])
+          if len(names) > 3:
+              shown += f" +{len(names) - 3}"
+          return f" ({shown})"
+
+
+      def no_summary_message(names, causes):
+          """The status and body for a run that left no deployment summary."""
+          if names and "integration_tests" in names:
+              # The deploy job itself died before writing its summary, so a stack
+              # may have been created; "nothing was deployed" would be wrong in the
+              # costly direction.
+              return (
+                  "❌ DEPLOY FAILED WITHOUT A SUMMARY" + status_suffix(names),
+                  "The deploy job failed before it wrote its deployment summary, so "
+                  "there is no test result for this run, and a stack may have been "
+                  "left standing. Check the job log and the retained-stack markers.\n\n"
+                  + causes,
+              )
+          if names:
+              return (
+                  "❌ FAILED BEFORE THE DEPLOY" + status_suffix(names),
+                  "This nightly did not reach the deploy stage, so NOTHING was "
+                  "deployed and no integration test ran. GitLab skipped the rest "
+                  "of the pipeline because of:\n\n" + causes,
+              )
+          return (
+              "❌ FAILED BEFORE THE DEPLOY",
+              "This nightly did not reach the deploy stage, so NOTHING was "
+              "deployed and no integration test ran. An earlier stage failed "
+              "and GitLab skipped the rest of the pipeline.\n\n"
+              "The failed job could not be read from the GitLab API "
+              f"({causes}). Open the pipeline to see which job failed — a "
+              "failure here is usually a check that is independent of the "
+              "deploy, including a dated expiry alarm or a newly published "
+              "advisory that can fire with no code change at all.",
+          )
 
 
       def main():
@@ -1792,27 +1853,12 @@ nightly_notification:
                   + summary_path.read_text(errors="replace").strip()
               )
           else:
-              status = "❌ FAILED BEFORE THE DEPLOY"
               names, causes = read_causes()
-              if names:
-                  status += f" ({', '.join(names)})"
-                  body = (
-                      "This nightly did not reach the deploy stage, so NOTHING was "
-                      "deployed and no integration test ran. GitLab skipped the rest "
-                      "of the pipeline because of:\n\n" + causes
-                  )
-              else:
-                  print(f"ℹ️ Could not read the failed jobs ({causes}); posting the link")
-                  body = (
-                      "This nightly did not reach the deploy stage, so NOTHING was "
-                      "deployed and no integration test ran. An earlier stage failed "
-                      "and GitLab skipped the rest of the pipeline.\n\n"
-                      "The failed job could not be read from the GitLab API "
-                      f"({causes}). Open the pipeline to see which job failed — a "
-                      "failure here is usually a check that is independent of the "
-                      "deploy, including a dated expiry alarm or a newly published "
-                      "advisory that can fire with no code change at all."
-                  )
+              if not names:
+                  # ⚠️ Visible in the job log: if this line appears on every nightly,
+                  # the token cannot read job logs and the post is back to a link.
+                  print(f"⚠️ Could not read the failed jobs ({causes}); posting the link")
+              status, body = no_summary_message(names, causes)
 
           if len(body) > 2000:
               body = body[:2000] + "\n… (truncated — the rest is in the job logs)"

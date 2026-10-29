@@ -210,6 +210,7 @@ def notifier(script):
         re.search(r"<<'PY'\n(.*?)\n\s*PY\s*$", script, re.S).group(1)
     )
     namespace = {"__name__": "nightly_notification"}
+    # nosec B102 - executes this repo's own shipped CI script under test
     exec(compile(body, "nightly_notification", "exec"), namespace)  # noqa: S102
     return namespace
 
@@ -283,6 +284,62 @@ def test_allowed_failures_are_not_reported_as_the_cause(notifier):
         {"name": "unit_tests", "status": "success", "allow_failure": False},
     ]
     assert [j["name"] for j in notifier["blocking_failures"](jobs)] == ["dep_audit"]
+    # With only allowed failures there is no cause to name; the link is posted.
+    assert notifier["blocking_failures"](jobs[:1]) == []
+
+
+def test_many_failed_tests_do_not_push_out_the_tally(notifier):
+    trace = _trace(
+        *[f"FAILED tests/test_x.py::test_{n} - boom" for n in range(40)],
+        "==== 40 failed, 10 passed in 3.00s =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert len(cause) == notifier["MAX_CAUSE_LINES"]
+    assert cause[-2:] == [
+        "==== 40 failed, 10 passed in 3.00s =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    ]
+    assert cause[-3].startswith("… and ")
+
+
+def test_describe_names_the_job_and_only_an_unusual_failure_reason(notifier):
+    job = {"name": "unit_tests", "stage": "fast_checks", "web_url": "https://j/1"}
+    plain = notifier["describe"]({**job, "failure_reason": "script_failure"}, ["x"])
+    assert plain == "• unit_tests (fast_checks) failed: https://j/1\n    x"
+    timed_out = notifier["describe"](
+        {**job, "failure_reason": "job_execution_timeout"}, []
+    )
+    assert "job execution timeout" in timed_out
+
+
+def test_a_failed_deploy_job_is_not_described_as_never_deploying(notifier):
+    """integration_tests can die before writing deployment_summary.txt."""
+    status, body = notifier["no_summary_message"](["integration_tests"], "cause")
+    assert "BEFORE THE DEPLOY" not in status
+    assert "NOTHING was" not in body
+    assert "stack may have been" in body
+    status, body = notifier["no_summary_message"](["dep_audit"], "cause")
+    assert status == "❌ FAILED BEFORE THE DEPLOY (dep_audit)"
+    assert "NOTHING was" in body and body.endswith("cause")
+
+
+def test_the_status_stays_short_when_a_whole_stage_is_red(notifier):
+    names = [f"job_{n}" for n in range(7)]
+    status, _ = notifier["no_summary_message"](names, "cause")
+    assert status == "❌ FAILED BEFORE THE DEPLOY (job_0, job_1, job_2 +4)"
+
+
+@pytest.mark.parametrize("payload", ['{"message": "403 Forbidden"}', "42", "[1, 2]"])
+def test_an_unexpected_api_answer_degrades_to_the_link(notifier, monkeypatch, payload):
+    """Any error reading the cause must still leave a post to send."""
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "2")
+    monkeypatch.setitem(notifier, "api_get", lambda path, token: payload)
+    names, why = notifier["read_causes"]()
+    assert names is None
+    assert why
 
 
 def test_the_cause_falls_back_to_the_link_without_a_token(notifier, monkeypatch):
