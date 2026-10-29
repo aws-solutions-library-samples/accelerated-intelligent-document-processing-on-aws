@@ -391,8 +391,14 @@ def test_every_described_job_keeps_its_header_and_totals(notifier, monkeypatch):
     monkeypatch.setenv("CI_PROJECT_ID", "1")
     monkeypatch.setenv("CI_PIPELINE_ID", "2")
     jobs = [
-        {"id": n, "name": f"job_{n}", "stage": "fast_checks", "status": "failed",
-         "allow_failure": False, "web_url": f"https://j/{n}"}
+        {
+            "id": n,
+            "name": f"job_{n}",
+            "stage": "fast_checks",
+            "status": "failed",
+            "allow_failure": False,
+            "web_url": f"https://j/{n}",
+        }
         for n in range(4)
     ]
     long = "x" * 190
