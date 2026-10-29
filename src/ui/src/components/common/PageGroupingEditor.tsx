@@ -148,7 +148,7 @@ export interface PageGroupingEditorProps {
   /**
    * `inline` (the default) renders the board in place, with an Expand button that opens
    * it in a modal. `modal` opens it straight in the modal, with no Expand, and dismissing
-   * the modal cancels the edit (Edit Page Class on the edit page and the document page).
+   * the modal cancels the edit (Edit Page Grouping on the edit page and the document page).
    */
   presentation?: 'inline' | 'modal';
   /** The dialog's title. */
@@ -487,7 +487,7 @@ const PageGroupingEditor = ({
   secondarySave,
   onCancel,
   presentation = 'inline',
-  title = 'Edit Page Class',
+  title = 'Edit Page Grouping',
 }: PageGroupingEditorProps): React.JSX.Element => {
   const asModal = presentation === 'modal';
   // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note

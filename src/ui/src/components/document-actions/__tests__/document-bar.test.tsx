@@ -88,6 +88,7 @@ import DocumentPanel from '../../document-panel/DocumentPanel';
 import { BDA_REGROUP_REASON } from '../../edit-screen/document-edit-status';
 import {
   BDA_REPROCESS_REASON,
+  NO_COST_REASON,
   NO_EVALUATION_REPORT_REASON,
   NO_RULE_VALIDATION_REASON,
   REVIEWER_FINISHED_REASON,
@@ -187,7 +188,7 @@ describe('the document page header', () => {
     expect(detailBar.menuNames()).toEqual(['Reports', 'More Actions']);
     expect(detailBar.barButtonLabels()).toEqual(['Refresh', 'Troubleshoot', 'Start Review', 'Edit']);
     const edit = button('Edit')!;
-    expect(edit.getElement().getAttribute('href')).toBe(`#/documents/${encodeURIComponent('in/a.pdf')}/edit`);
+    expect(edit.getElement().getAttribute('href')).toBe(`#/documents/${encodeURIComponent('in/a.pdf')}/edit?from=document`);
     expect(edit.getElement().className).toMatch(/variant-primary/);
     const more = detailBar.findMenu('More Actions')!.getElement();
     expect(more.compareDocumentPosition(button('Refresh')!.getElement()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -195,14 +196,30 @@ describe('the document page header', () => {
 });
 
 describe('Reports', () => {
-  it('lists Summary, Evaluation Report, Rule Validation Summary and Processing Flow', () => {
-    renderPanel();
+  it('lists Summary, Evaluation Report, Rule Validation Summary, Estimated Cost and Processing Flow', () => {
+    renderPanel(doc({ metering: { 'OCR/textract/pages': { pages: 1 } } }));
     expect(detailBar.menuItems('Reports')).toEqual([
       { text: 'Summary', disabled: false, disabledReason: null },
       { text: 'Evaluation Report', disabled: false, disabledReason: null },
       { text: 'Rule Validation Summary', disabled: false, disabledReason: null },
+      { text: 'Estimated Cost', disabled: false, disabledReason: null },
       { text: 'Processing Flow', disabled: false, disabledReason: null },
     ]);
+  });
+
+  it('keeps Estimated Cost for a document with no metering yet, disabled with its reason', () => {
+    renderPanel();
+    expect(detailBar.menuItems('Reports').find((i) => i.text === 'Estimated Cost')).toEqual({
+      text: 'Estimated Cost',
+      disabled: true,
+      disabledReason: NO_COST_REASON,
+    });
+  });
+
+  it('offers Estimated Cost to the roles that may read the pricing, not to a Reviewer', () => {
+    state.role = { ...REVIEWER };
+    renderPanel(doc({ metering: { 'OCR/textract/pages': { pages: 1 } } }));
+    expect(detailBar.menuItems('Reports').map((i) => i.text)).not.toContain('Estimated Cost');
   });
 
   it('keeps a report that does not exist, disabled with its reason', () => {
@@ -266,7 +283,7 @@ describe('More Actions', () => {
     act(() => menu.openDropdown());
     const items = detailBar.menuItems('More Actions').map((i) => i.text);
     expect(items).toEqual([
-      'Edit Page Class',
+      'Edit Page Grouping',
       'Re-extract Sections',
       'Edit Page Text',
       'Reset Page Class',
@@ -394,7 +411,7 @@ describe('BDA mode, read from the document’s own configuration', () => {
     Object.fromEntries(
       detailBar
         .menuItems('More Actions')
-        .filter((i) => ['Edit Page Class', 'Re-extract Sections', 'Edit Page Text', 'Reset Page Class'].includes(i.text))
+        .filter((i) => ['Edit Page Grouping', 'Re-extract Sections', 'Edit Page Text', 'Reset Page Class'].includes(i.text))
         .map((i) => [i.text, i.disabledReason]),
     );
 
@@ -402,7 +419,7 @@ describe('BDA mode, read from the document’s own configuration', () => {
     state.config = { mergedConfig: { use_bda: useBda }, loading: false };
     renderPanel();
     expect(reasons()).toEqual({
-      'Edit Page Class': BDA_REGROUP_REASON,
+      'Edit Page Grouping': BDA_REGROUP_REASON,
       'Re-extract Sections': BDA_REPROCESS_REASON,
       'Edit Page Text': BDA_REPROCESS_REASON,
       'Reset Page Class': BDA_REPROCESS_REASON,

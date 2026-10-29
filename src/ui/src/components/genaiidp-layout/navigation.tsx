@@ -13,7 +13,7 @@ import useLatestVersion from '../../hooks/use-latest-version';
 import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
-import { buildHitlNavSection, buildHomeNavSection } from './review-queues-nav-items';
+import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
 import './navigation.css';
 
 const isQuickStartWidgetEnabled = (): boolean => {
@@ -371,7 +371,7 @@ const FullNavigation = ({
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
-  // assigned HITL work. HITL › Queue Management is Admin-only.
+  // assigned HITL work. Review Studio › Review Management is Admin-only.
   const showHitl = isAdmin;
   const { features: installedFeatures } = useInstalledFeatures();
   const { features: catalogFeatures } = useCatalogFeatures();
@@ -409,7 +409,7 @@ const FullNavigation = ({
     roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
-      const section = buildHitlNavSection() as unknown as Record<string, unknown>;
+      const section = buildReviewStudioNavSection() as unknown as Record<string, unknown>;
       const isSection = (i: Record<string, unknown>, text: string) => i.type === 'section' && i.text === text;
       const testStudioIdx = roleItems.findIndex((i) => isSection(i, 'Test Studio'));
       const resourcesIdx = roleItems.findIndex((i) => isSection(i, 'Resources'));

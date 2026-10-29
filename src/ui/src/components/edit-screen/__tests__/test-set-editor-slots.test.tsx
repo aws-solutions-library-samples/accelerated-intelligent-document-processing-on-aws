@@ -7,7 +7,7 @@
  * and the baseline stores 0-based `page_indices`, converted on the way in and on the
  * way out (getting it wrong would shift every section by one page and raise nothing);
  * a regroup names the sections whose pages moved and re-extracts nothing on its own;
- * a section whose class Edit Page Class changed offers Re-extract, which runs only when
+ * a section whose class Edit Page Grouping changed offers Re-extract, which runs only when
  * asked; there is no separate class dropdown; and a section with no field values says
  * which of three causes applies and what to do about it.
  */
@@ -84,9 +84,9 @@ const Harness = ({ sections = SECTIONS }: { sections?: TestSetDocumentSectionRef
   const board = usePageClassBoard(slots.board, openId, data);
   return (
     <>
-      {/* The edit page's More Actions › Edit Page Class, offered when the board has something to show. */}
+      {/* The edit page's More Actions › Edit Page Grouping, offered when the board has something to show. */}
       <button type="button" onClick={board.open} disabled={!slots.canRegroup}>
-        Edit Page Class
+        Edit Page Grouping
       </button>
       {board.dialog}
       <SectionEditor
@@ -143,7 +143,7 @@ describe('the Test Studio slots', () => {
     render(<Harness />);
     // [0, 1] on disk is "1, 2" on screen.
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Class' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     // Every section, from the payload; page 3 is index 2 on disk.
     expect(screen.getByText('Section 2')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /Select page 3/i })).toBeInTheDocument();
@@ -162,7 +162,7 @@ describe('the Test Studio slots', () => {
     answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
     render(<Harness />);
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Class' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     await mergeAndSave();
     expect(await screen.findByText('Fields still reflect the previous class')).toBeInTheDocument();
     expect(screen.getByText(/These fields were extracted as/)).toHaveTextContent('Invoice');
@@ -176,14 +176,14 @@ describe('regrouping in the Test Studio slots', () => {
   it('names the sections whose pages moved, and does not re-extract on its own', async () => {
     render(<Harness />);
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Class' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     await mergeAndSave();
     expect(await screen.findByText(/Pages moved in section 1/i)).toBeInTheDocument();
     expect(screen.getByText(/your field values are untouched/i)).toBeInTheDocument();
     expect(graphql.mock.calls.some((c) => c[0].query === 'reextractTestSetDocument')).toBe(false);
   });
 
-  it('has no Class label dropdown: a section is reclassified in Edit Page Class', async () => {
+  it('has no Class label dropdown: a section is reclassified in Edit Page Grouping', async () => {
     render(<Harness />);
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
     expect(screen.queryByText('Class label')).not.toBeInTheDocument();
@@ -192,7 +192,7 @@ describe('regrouping in the Test Studio slots', () => {
   it('states that field values and provenance survive, before anything is saved', async () => {
     render(<Harness />);
     await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Class' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
     expect(screen.getByText(/provenance and the edit history are all kept/)).toBeInTheDocument();
     expect(screen.getByText(/ground truth for how the packet splits/)).toBeInTheDocument();
   });
@@ -227,11 +227,11 @@ describe('a Test Studio section with no field values', () => {
     expect(screen.getByText(/can merge them/i)).toBeInTheDocument();
   });
 
-  it('points an unclassified section at Edit Page Class, which is offered', async () => {
+  it('points an unclassified section at Edit Page Grouping, which is offered', async () => {
     withBaseline({ split_document: { page_indices: [0] }, inference_result: {} });
     render(<Harness sections={ONE_SECTION} />);
-    expect(await screen.findByText(/Set its class in Edit Page Class first/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Edit Page Class' })).toBeEnabled();
+    expect(await screen.findByText(/Set its class in Edit Page Grouping first/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit Page Grouping' })).toBeEnabled();
     expect(screen.queryByText('Class label')).not.toBeInTheDocument();
   });
 

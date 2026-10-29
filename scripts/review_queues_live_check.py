@@ -8,7 +8,7 @@ NOTE: needs reworking. The flow below self-claims the item (``claimReviewItem``)
 and uses a per-profile ``default`` queue; queues are now system-wide and an Admin
 assigns queue items to Annotators, so steps 2 and 4 no longer match the product.
 A document is queued only when HITL is enabled in its configuration
-(``hitl.enabled``), the Default queue is enabled (HITL › Queue Management; it is
+(``hitl.enabled``), the Default queue is enabled (Review Studio › Review Management; it is
 seeded enabled), and the document raised confidence alerts (each field's own
 threshold, otherwise ``hitl.confidence_threshold``). Queues have no threshold of
 their own, so step 2 must turn HITL on in the profile and make sure a field scores

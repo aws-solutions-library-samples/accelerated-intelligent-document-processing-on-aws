@@ -8,7 +8,7 @@
  * with a confirmation saves unsaved edits first, asks, then runs and leaves; without one
  * it runs and leaves, dropping the finished work item from Tasks; a failure is shown
  * where the model says (inline notice or flash bar), or not at all when the model says
- * it is reported elsewhere; Edit Page Class opens only when the model's check allows it,
+ * it is reported elsewhere; Edit Page Grouping opens only when the model's check allows it,
  * and a save error stays inside the open board; Skip passes the reason and note; Claim
  * toasts the model's message.
  */
@@ -35,7 +35,18 @@ vi.mock('../SectionEditor', () => ({
   default: (props: Record<string, unknown>) => {
     editorProps = props;
     (props.controllerRef as { current: unknown }).current = controller;
-    return <div data-testid="editor" />;
+    const regroup = props.regroup as { disabledReason?: string; onClick: () => void } | undefined;
+    const regroupButton = regroup && (
+      <button
+        data-testid="editor-regroup"
+        disabled={!!regroup.disabledReason}
+        data-reason={regroup.disabledReason}
+        onClick={regroup.onClick}
+      >
+        Edit Page Grouping
+      </button>
+    );
+    return <div data-testid="editor">{regroupButton}</div>;
   },
 }));
 vi.mock('../../common/PageGroupingEditor', () => ({
@@ -47,9 +58,10 @@ vi.mock('../../common/PageGroupingEditor', () => ({
 
 import EditPage from '../EditPage';
 import type { EditModel, EditReady } from '../edit-model';
-import { barButtonLabels, chooseMenuItem, menuItems } from './edit-bar';
+import { barButtonLabels, menuItems } from './edit-bar';
+import { chooseRegroup } from './regroup-stand-in';
 
-const NAV = { root: undefined, crumbs: [] };
+const NAV = { trail: [] };
 
 const ready = (over: Partial<EditReady> = {}): EditModel => ({
   navigation: NAV,
@@ -199,7 +211,7 @@ describe('the edit page', () => {
     expect(setErrorMessage).toHaveBeenCalledTimes(1);
   });
 
-  describe('Edit Page Class', () => {
+  describe('Edit Page Grouping', () => {
     const board = (over: Record<string, unknown> = {}) => ({
       pages: { kind: 'rendered' as const, pages: [{ id: 1, imageUri: 'blob:1' }] },
       sections: () => [{ sectionId: '1', documentClass: 'W2', pageIds: [1] }],
@@ -212,22 +224,22 @@ describe('the edit page', () => {
     it('opens after the model’s check allows it, and stays closed when it does not', async () => {
       const beforeOpen = vi.fn().mockResolvedValue(false);
       const { unmount } = renderPage(ready({ board: board({ beforeOpen }) }));
-      chooseMenuItem('More Actions', 'Edit Page Class');
+      chooseRegroup();
       await waitFor(() => expect(beforeOpen).toHaveBeenCalled());
       expect(boardProps).toBeNull();
       unmount();
       beforeOpen.mockResolvedValue(true);
       renderPage(ready({ board: board({ beforeOpen }) }));
-      chooseMenuItem('More Actions', 'Edit Page Class');
+      chooseRegroup();
       await waitFor(() =>
-        expect(boardProps).toMatchObject({ presentation: 'modal', title: 'Edit Page Class', saveLabel: 'Save page grouping' }),
+        expect(boardProps).toMatchObject({ presentation: 'modal', title: 'Edit Page Grouping', saveLabel: 'Save page grouping' }),
       );
     });
 
     it('keeps the board open and shows a save error inside it', async () => {
       const save = vi.fn().mockRejectedValue(new Error('The page grouping could not be saved.'));
       renderPage(ready({ board: board({ save }) }));
-      chooseMenuItem('More Actions', 'Edit Page Class');
+      chooseRegroup();
       await act(async () => (boardProps!.onSave as (n: unknown[]) => Promise<void>)([]));
       const shown = document.querySelector('[data-testid="board"]');
       expect(shown).not.toBeNull();
@@ -237,7 +249,7 @@ describe('the edit page', () => {
 
     it('closes and toasts after a save', async () => {
       renderPage(ready({ board: board() }));
-      chooseMenuItem('More Actions', 'Edit Page Class');
+      chooseRegroup();
       await act(async () => (boardProps!.onSave as (n: unknown[]) => Promise<void>)([]));
       expect(document.querySelector('[data-testid="board"]')).toBeNull();
       expect(setSuccessMessage).toHaveBeenCalledWith('Saved the grouping.');

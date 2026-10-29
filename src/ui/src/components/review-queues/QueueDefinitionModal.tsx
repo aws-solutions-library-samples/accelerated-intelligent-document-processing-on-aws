@@ -1,12 +1,12 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// HITL › Queue Management: edit one system-wide production queue — its name,
+// Review Studio › Review Management: edit one system-wide production queue — its name,
 // priority, reminder time limit, enabled switch and eligible Annotators — or a Test
 // Studio queue's settings (the same, less the id, name and switch, which a test set
 // doesn't have: its documents come from the set, not from the pipeline). Queues have
 // no confidence threshold: documents are routed by their confidence alerts. Create
-// mode stays in the component for the API, but Queue Management doesn't open it. Every queue's skip reasons, which an Annotator
+// mode stays in the component for the API, but Review Management doesn't open it. Every queue's skip reasons, which an Annotator
 // picks from when giving an item back, are edited here one per line. A queue's stored
 // checklist and reject reasons are kept as they are; the dialog doesn't edit them.
 import React, { useEffect, useState } from 'react';

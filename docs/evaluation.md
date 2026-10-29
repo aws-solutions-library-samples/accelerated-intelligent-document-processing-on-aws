@@ -1036,7 +1036,7 @@ Class/Type value. Hovering it shows what ground truth expects, what this run
 assigned, and the page range involved. Nothing is added to a row that matches,
 and nothing at all is added for a document with no ground truth. The alert also
 appears on the edit page's section editor, next to the section's class. A class is
-corrected with **More Actions › Edit Page Class** on the document page.
+corrected with **More Actions › Edit Page Grouping** on the document page.
 
 A section's verdict is derived from **its pages**, not by pairing it with a
 ground-truth section. When the split itself is wrong there is no single

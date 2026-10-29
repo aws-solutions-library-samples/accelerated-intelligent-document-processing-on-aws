@@ -29,9 +29,8 @@ export interface EditExit {
 }
 
 export interface EditNavigation {
-  /** Crumb after Home. null = none (Home only); undefined = Queue Management. */
-  root: BreadcrumbGroupProps.Item | null | undefined;
-  crumbs: BreadcrumbGroupProps.Item[];
+  /** The breadcrumbs, by where the page was opened from (see review-queues/breadcrumbs.ts). */
+  trail: BreadcrumbGroupProps.Item[];
   /** Side-navigation entry to highlight. null = none; undefined = derived from the URL. */
   activeHref?: string | null;
 }

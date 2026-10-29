@@ -12,9 +12,10 @@ import { Link } from '@cloudscape-design/components';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { DOCUMENTS_PATH, MY_QUEUES_PATH, MY_TASKS_PATH } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { HOME_CRUMB } from '../review-queues/breadcrumbs';
 import type { EditFailure, EditLoading, EditModel, EditNavigation } from './edit-model';
 
-const NO_MODE: EditNavigation = { root: null, crumbs: [], activeHref: null };
+const NO_MODE: EditNavigation = { trail: [HOME_CRUMB], activeHref: null };
 
 /** Where a user goes back to: Documents, or Tasks for an Annotator-only user, who has no Documents. */
 const backLink = (annotatorOnly: boolean): React.ReactNode =>

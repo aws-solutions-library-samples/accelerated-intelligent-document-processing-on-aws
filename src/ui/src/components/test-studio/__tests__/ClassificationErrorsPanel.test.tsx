@@ -290,7 +290,7 @@ describe('ClassificationErrorsPanel', () => {
     const href = link.getAttribute('href') ?? '';
     expect(href.startsWith('#/'), `href must be a single-hash route, got ${href}`).toBe(true);
     expect(href).not.toMatch(/^##/);
-    expect(href).toBe('#/review-queues/test-sets/ts1/items/a%20b.pdf');
+    expect(href).toBe('#/review-queues/test-sets/ts1/items/a%20b.pdf?from=test-studio');
   });
 
   it('renders the document as plain text when there is no test set to link to', () => {

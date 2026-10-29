@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Edit Page Class's Reviewer-only class lock on the document page (replacing
+ * Edit Page Grouping's Reviewer-only class lock on the document page (replacing
  * SectionsPanel.reviewerFinished). What has to hold: a user who is only a Reviewer can't
  * change a section's class once the document's review has finished (a queue review that
  * ended complete or rejected, a legacy review completed, or the `COMPLETED` spelling an
@@ -151,8 +151,8 @@ const classIsChangeable = async (hitlStatus: string) => {
       pages: [{ Id: 1, ImageUri: 's3://out/1.jpg' }],
     }),
   );
-  detailBar.chooseMenuItem('More Actions', 'Edit Page Class');
-  const dialog = await waitFor(() => shown(modalTitled('Edit Page Class')));
+  detailBar.chooseMenuItem('More Actions', 'Edit Page Grouping');
+  const dialog = await waitFor(() => shown(modalTitled('Edit Page Grouping')));
   // A locked control still shows the class but offers no other.
   const trigger = [...dialog.getElement().querySelectorAll('button[aria-haspopup="listbox"]')].find((b) =>
     b.textContent?.includes('Invoice'),
@@ -162,7 +162,7 @@ const classIsChangeable = async (hitlStatus: string) => {
   return [...document.querySelectorAll('[role="option"]')].some((o) => o.textContent?.includes('W2'));
 };
 
-describe('Edit Page Class: the Reviewer-only lock on a finished review', () => {
+describe('Edit Page Grouping: the Reviewer-only lock on a finished review', () => {
   it.each([ReviewStatus.COMPLETE, ReviewStatus.REJECTED])('locks the class once a queue review ended %s', async (status) => {
     expect(await classIsChangeable(status)).toBe(false);
   });

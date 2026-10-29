@@ -8,7 +8,7 @@
 //
 // The bar is one row, left to right: Edit | View (the source document, where it can be
 // shown); the Reports menu (History, Summary, Processing Report); the More Actions menu
-// (Edit Page Class, Use As Evaluation Baseline); Refresh; then Skip, Cancel, Save and
+// (Use As Evaluation Baseline); Refresh; then Skip, Cancel, Save and
 // Process Changes, the primary action, last (or Claim, for an Annotator viewing an
 // unassigned item, with the view switch, Reports and Refresh only). A button that does not apply is left out;
 // a menu item the mode offers but that does not apply now is disabled, with the reason on
@@ -59,7 +59,10 @@ export interface EditActionsProps {
    * after which it can be worked. Shown with the view switch, Reports and Refresh only.
    */
   showClaim?: boolean;
-  /** Offer Edit Page Class (the pages and class of each section), in More Actions. */
+  /**
+   * Edit Page Grouping (the pages and class of each section) is offered on the Document
+   * Editor panel, not in this bar; EditPage passes these to it.
+   */
   showRegroup?: boolean;
   regroupDisabledReason?: string;
   /** Offer Refresh: re-read the document (asking first when there are unsaved edits). */
@@ -96,8 +99,6 @@ const EditActions = ({
   showBaseline = false,
   baselineDisabledReason,
   showClaim = false,
-  showRegroup = false,
-  regroupDisabledReason,
   showRefresh = false,
   refreshDisabledReason,
   showSkip = false,
@@ -178,18 +179,14 @@ const EditActions = ({
     );
   }
 
-  // More Actions: the occasional changes (the sections' pages and classes) and the admin
-  // action (the evaluation baseline).
+  // More Actions: the admin action (the evaluation baseline).
   const more: ActionBarControl = {
     kind: 'menu',
     id: 'more',
     text: 'More Actions',
-    items: [
-      ...(showRegroup ? [{ id: 'regroup', text: 'Edit Page Class', disabledReason: regroupDisabledReason }] : []),
-      ...(showBaseline ? [{ id: 'baseline', text: 'Use As Evaluation Baseline', disabledReason: baselineDisabledReason }] : []),
-    ],
+    items: [...(showBaseline ? [{ id: 'baseline', text: 'Use As Evaluation Baseline', disabledReason: baselineDisabledReason }] : [])],
     disabled: !!working,
-    loading: busy === 'regroup' || busy === 'baseline',
+    loading: busy === 'baseline',
     onItemClick: (id) => onAction(id as EditAction),
   };
 

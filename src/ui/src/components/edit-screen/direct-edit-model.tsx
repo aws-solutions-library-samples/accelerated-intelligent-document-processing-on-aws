@@ -6,7 +6,7 @@
 // Save writes the edits without reprocessing; Process Changes saves them, confirms,
 // then submits them through processChanges, so evaluation and summarization re-run on
 // them and OCR, classification and extraction are not repeated; Cancel leaves for the
-// document's page. Edit Page Class saves a new grouping.
+// document's page. Edit Page Grouping saves a new grouping.
 //
 // A document in a review queue opens here read-only (for a role that does not work
 // queues, or while the queue's mirror lags): it is edited from its queue item, and
@@ -16,13 +16,13 @@
 // open review. A document processed in BDA mode keeps its page grouping. The server
 // enforces all of these.
 import React, { useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
 import useUserRole from '../../hooks/use-user-role';
-import { DOCUMENTS_PATH, MY_TASKS_PATH, documentDetailHref, documentEditHref } from '../../routes/constants';
+import { DOCUMENTS_PATH, MY_TASKS_PATH, documentEditHref, parseEditOrigin } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { isBdaModeConfig } from '../../utils/processing-mode';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
@@ -30,6 +30,7 @@ import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
+import { HOME_CRUMB, editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { useDocumentEdit } from './document-edit-adapter';
 import type { DirectEditDocument } from './document-edit-adapter';
@@ -53,7 +54,7 @@ export const PROCESS_OWNER_REASON =
 export { BDA_REGROUP_REASON };
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 /** updateDocumentSections is Admin, Reviewer and Annotator; an Annotator regroups only test-set documents. */
-export const REGROUP_ROLE_REASON = 'Edit Page Class needs the Admin or Reviewer role.';
+export const REGROUP_ROLE_REASON = 'Edit Page Grouping needs the Admin or Reviewer role.';
 /** The tracking row says in review, but the review item is missing or has finished (the mirror lags). */
 export const MIRROR_LAG_REASON = "This document's review is being updated. Reload in a moment.";
 
@@ -87,14 +88,13 @@ export interface DirectEditOptions {
   seed?: { document: RawDocument; lock?: DirectLock; reviewActivity?: ReviewActivity };
 }
 
-const TASKS_CRUMB = { text: 'Tasks', href: `#${MY_TASKS_PATH}` };
-
 export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }: DirectEditOptions, session: EditorSession): EditModel => {
   const adapter = useDocumentEdit(objectKey, seed);
   const { document: doc, loading, loadError, reload } = adapter;
   const { user } = useAppContext();
   const { isAdmin, isReviewer, canWrite, isAnnotatorOnly } = useUserRole();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const focusField = searchParams.get('field');
   const { mergedConfig } = useConfiguration(doc?.configVersion || 'default');
   const selectedSection = adapter.sections.find((s) => s.sectionId === session.selectedSectionId) ?? null;
@@ -118,15 +118,11 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   // The document's page: where Cancel and Process Changes leave to; an Annotator-only
   // user, who has no Documents, goes back to Tasks.
   const leaveTo = isAnnotatorOnly ? MY_TASKS_PATH : `${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
-  const navigation: EditNavigation = isAnnotatorOnly
-    ? { root: TASKS_CRUMB, crumbs: [{ text: name, href: '#' }], activeHref: `#${MY_TASKS_PATH}` }
-    : {
-        root: { text: 'Documents', href: `#${DOCUMENTS_PATH}` },
-        crumbs: [{ text: name, href: documentDetailHref(objectKey) }],
-        activeHref: `#${DOCUMENTS_PATH}`,
-      };
+  // The trail the user came by; without one, Tasks for an Annotator-only user, the document's page otherwise.
+  const origin = parseEditOrigin(location.search) ?? (isAnnotatorOnly ? 'tasks' : 'document');
+  const navigation: EditNavigation = { trail: editTrail({ origin, objectKey, name }), activeHref: editActiveHref(origin) };
   // Home only until the document is known.
-  const unloaded: EditNavigation = { root: null, crumbs: [], activeHref: null };
+  const unloaded: EditNavigation = { trail: [HOME_CRUMB], activeHref: null };
 
   if (loading && !doc) return { navigation: unloaded, state: { kind: 'loading', text: 'Loading document…' } };
   if (!doc) {
@@ -274,7 +270,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
           <>
             Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the document
             is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document
-            page&apos;s <b>More Actions › Edit Page Class</b> and choose <b>Save and Re-extract</b>: this screen&apos;s{' '}
+            page&apos;s <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen&apos;s{' '}
             <b>Process Changes</b> re-runs evaluation and summarization only.
           </>
         ),

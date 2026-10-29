@@ -76,15 +76,21 @@ vi.mock('../production-item-edit-adapter', () => ({
     };
   },
 }));
-/** The breadcrumb root the page gives its layout. */
-let layoutRoot: unknown = null;
+/** The breadcrumbs the page gives its layout. */
+let layoutTrail: unknown = null;
 /** Every breadcrumb root the page gave, in order, and the navigation entry it highlights. */
-const layoutRoots: unknown[] = [];
+const layoutTrails: unknown[] = [];
 let layoutActiveHref: unknown;
+const ADMIN_TRAIL = [
+  { text: 'Review Studio', href: '#/review-queues' },
+  { text: 'Review Management', href: '#/review-queues' },
+  { text: 'Default', href: '#/review-queues/queues/default' },
+  { text: 'w2.pdf', href: '#' },
+];
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
-  default: ({ children, root, navActiveHref }: { children: React.ReactNode; root?: unknown; navActiveHref?: unknown }) => {
-    layoutRoot = root;
-    layoutRoots.push(root);
+  default: ({ children, trail, navActiveHref }: { children: React.ReactNode; trail?: unknown; navActiveHref?: unknown }) => {
+    layoutTrail = trail;
+    layoutTrails.push(trail);
     layoutActiveHref = navActiveHref;
     return <>{children}</>;
   },
@@ -93,7 +99,22 @@ vi.mock('../SectionEditor', () => ({
   default: (props: NonNullable<typeof editor>) => {
     editor = props;
     if (props.controllerRef) props.controllerRef.current = controller;
-    return <div data-testid="editor" data-readonly={String(props.isReadOnly)} />;
+    const regroup = (props as unknown as Record<string, unknown>).regroup as { disabledReason?: string; onClick: () => void } | undefined;
+    const regroupButton = regroup && (
+      <button
+        data-testid="editor-regroup"
+        disabled={!!regroup.disabledReason}
+        data-reason={regroup.disabledReason}
+        onClick={regroup.onClick}
+      >
+        Edit Page Grouping
+      </button>
+    );
+    return (
+      <div data-testid="editor" data-readonly={String(props.isReadOnly)}>
+        {regroupButton}
+      </div>
+    );
   },
 }));
 vi.mock('../../review-queues/review-api', async (importOriginal) => ({
@@ -136,6 +157,7 @@ vi.mock('../../common/PageGroupingEditor', () => ({
 import ProductionItemEdit from '../ProductionItemEdit';
 import { QUEUE_REGROUP_ROLE_REASON } from '../production-item-edit-model';
 import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
+import { chooseRegroup, regroupItem } from './regroup-stand-in';
 
 const ADMIN = 'admin@example.com';
 const ANN = 'ann@example.com';
@@ -400,7 +422,7 @@ describe('the actions', () => {
   it('let the holder regroup the whole document during review, then re-read it', async () => {
     server.detail = mine();
     renderScreen();
-    chooseMenuItem('More Actions', 'Edit Page Class');
+    chooseRegroup();
     await waitFor(() => expect(board).not.toBeNull());
     // Every section of the document, not only the one under review.
     expect(board!.sections.map((s) => s.sectionId)).toEqual(['1', '2']);
@@ -414,7 +436,7 @@ describe('the actions', () => {
 
   it('claim an unassigned item for an Admin before regrouping it', async () => {
     renderScreen();
-    chooseMenuItem('More Actions', 'Edit Page Class');
+    chooseRegroup();
     await waitFor(() => expect(board).not.toBeNull());
     expect(claimItem).toHaveBeenCalledTimes(1);
   });
@@ -423,18 +445,18 @@ describe('the actions', () => {
     server.detail = mine();
     saveDocumentGrouping.mockResolvedValue({ success: false, message: 'NOT_LEASE_HOLDER: this item is assigned to someone else' });
     renderScreen();
-    chooseMenuItem('More Actions', 'Edit Page Class');
+    chooseRegroup();
     await waitFor(() => expect(board).not.toBeNull());
     await act(async () => board!.onSave([]));
     expect(screen.getByTestId('grouping-board')).toBeTruthy();
     expect(refreshDocument).not.toHaveBeenCalled();
   });
 
-  it('disable Edit Page Class for an Annotator holding the item, saying why', () => {
+  it('disable Edit Page Grouping for an Annotator holding the item, saying why', () => {
     Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false });
     server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ANN, isMine: true });
     renderScreen();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+    expect(regroupItem()).toMatchObject({
       disabled: true,
       disabledReason: QUEUE_REGROUP_ROLE_REASON,
     });
@@ -443,7 +465,7 @@ describe('the actions', () => {
   it('disable Edit Page Grouping on an item assigned to someone else, saying why', () => {
     server.detail = annotators();
     renderScreen();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+    expect(regroupItem()).toMatchObject({
       disabled: true,
       disabledReason: `Assigned to ${ANN}`,
     });
@@ -532,9 +554,9 @@ describe('the actions', () => {
 });
 
 describe('the breadcrumbs', () => {
-  it('are told the item’s queue id and name', () => {
+  it('are told the item’s queue id and name, under Review Management for an Admin', () => {
     renderScreen();
-    expect(layoutRoot).toEqual({ text: 'Default', href: '#/review-queues/queues/default' });
+    expect(layoutTrail).toEqual(ADMIN_TRAIL);
   });
 });
 
@@ -550,13 +572,13 @@ describe('the edit page’s URL and navigation', () => {
 
   it('names the queue in the breadcrumbs from the first render, never another root first', () => {
     server.detail = mine();
-    layoutRoots.length = 0;
+    layoutTrails.length = 0;
     renderScreen();
-    expect(layoutRoots[0]).toEqual({ text: 'Default', href: '#/review-queues/queues/default' });
-    expect(new Set(layoutRoots.map((r) => JSON.stringify(r))).size).toBe(1);
+    expect(layoutTrails[0]).toEqual(ADMIN_TRAIL);
+    expect(new Set(layoutTrails.map((r) => JSON.stringify(r))).size).toBe(1);
   });
 
-  it('highlights Queue Management for an Admin and Tasks for an Annotator', () => {
+  it('highlights Review Management for an Admin and Tasks for an Annotator', () => {
     server.detail = mine();
     renderScreen();
     expect(layoutActiveHref).toBe('#/review-queues');
@@ -571,7 +593,7 @@ describe('the edit page’s URL and navigation', () => {
     ['HOLDING', 'This item is being prepared for review. It can be edited once it reaches its queue.'],
     [
       'FINALIZE_FAILED',
-      "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Queue Management.",
+      "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Review Management.",
     ],
   ])('says what happens next on a %s item', (state, notice) => {
     server.detail = detailFor({ state });

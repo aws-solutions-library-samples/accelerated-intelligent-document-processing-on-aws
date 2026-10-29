@@ -71,7 +71,7 @@ describe('PageGroupingEditor', () => {
     const { onCancel } = renderEditor({ presentation: 'modal' });
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Edit Page Class')).toBeInTheDocument();
+    expect(within(dialog).getByText('Edit Page Grouping')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Expand' })).not.toBeInTheDocument();
     createWrapper(document.body).findModal()!.findDismissButton().click();
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -365,7 +365,7 @@ describe('PageGroupingEditor expand', () => {
 
     // The in-progress grouping survives the switch — it would be lost if expanding
     // remounted the board.
-    expect(screen.getByRole('heading', { name: /Edit Page Class/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Edit Page Grouping/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Save grouping/i })).toBeEnabled();
   });
 

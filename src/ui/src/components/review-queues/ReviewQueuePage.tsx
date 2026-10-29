@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // One production queue: its progress and every item in it, with the Annotator each
-// one is assigned to. An Admin (HITL › Queue Management) selects items to assign,
+// one is assigned to. An Admin (Review Studio › Review Management) selects items to assign,
 // unassign or move several at once, or uses ⋮ on a row. An Annotator listed on the
 // queue (Home › Queues) claims items — one, the selected ones, or the next one —
 // which assigns them to the caller in Home › Tasks. Edit opens an item's
@@ -100,7 +100,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
     if (roleLoading) return;
     try {
       const [page] = await Promise.all([fetchQueueItems({ queueName: queueId, claimable: false, limit: PAGE }), loadContext()]);
-      const loaded = page.items.map(fromReviewItem);
+      const loaded = page.items.map(fromReviewItem(isAdmin ? 'review' : 'queues'));
       setItems(loaded);
       setSelected((prev) => prev.filter((s) => loaded.some((i) => i.id === s.id)));
       setNextToken(page.nextToken ?? null);
@@ -227,7 +227,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
     setLoadingMore(true);
     try {
       const page = await fetchQueueItems({ queueName: queueId, claimable: false, limit: PAGE, nextToken });
-      setItems((prev) => [...(prev ?? []), ...page.items.map(fromReviewItem)]);
+      setItems((prev) => [...(prev ?? []), ...page.items.map(fromReviewItem(isAdmin ? 'review' : 'queues'))]);
       setNextToken(page.nextToken ?? null);
     } catch (err) {
       setErrorMessage(describeApiError(err, 'load more items'));
@@ -333,7 +333,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
               ]}
             />
           ) : (
-            <Box color="text-body-secondary">{items ? 'This queue is not defined in Queue Management.' : 'Loading…'}</Box>
+            <Box color="text-body-secondary">{items ? 'This queue is not defined in Review Management.' : 'Loading…'}</Box>
           )}
         </Container>
         {isAdmin && <QueueAnnotatorsTable rows={annotatorRows} loading={definition == null && health == null && error == null} />}

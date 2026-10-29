@@ -3,9 +3,9 @@
 //
 // The document page's action bar and the dialogs it opens. Left to right: the Details |
 // Source switch; Reports (Summary, Evaluation Report, Rule Validation Summary,
-// Processing Flow); More Actions (the changes; then the downloads, as a group; then
+// Estimated Cost, Processing Flow); More Actions (the changes; then the downloads, as a group; then
 // Reprocess, Abort and Delete as a group, Delete last); Refresh; Troubleshoot; Start
-// Review, where it applies; and Edit, the primary action. More Actions opens Edit Page Class (the edit
+// Review, where it applies; and Edit, the primary action. More Actions opens Edit Page Grouping (the edit
 // page's board, with Save and Re-extract), Re-extract Sections, Edit Page Text and Reset
 // Page Class. Which actions are offered and why one is
 // disabled come from documentActionGates (document-action-gates.ts).
@@ -32,6 +32,7 @@ import type { EditorNotice } from '../edit-screen/EditorNotices';
 import usePageClassBoard from '../edit-screen/use-page-class-board';
 import { documentName } from '../review-queues/review-api';
 import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
+import EstimatedCostModal from '../document-panel/EstimatedCostModal';
 import DocumentReportDialog from './DocumentReportDialog';
 import EditPageTextDialog, { reprocessPageText } from './EditPageTextDialog';
 import ReextractSectionsDialog from './ReextractSectionsDialog';
@@ -121,6 +122,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
   const [baselineRequestInFlight, setBaselineRequestInFlight] = useState(false);
   const [report, setReport] = useState<DocumentReport | null>(null);
   const [flowOpen, setFlowOpen] = useState(false);
+  const [costOpen, setCostOpen] = useState(false);
   const [troubleshootOpen, setTroubleshootOpen] = useState(false);
   // The last Troubleshoot job per document, for this page visit: reopening shows it.
   const [troubleshootJobs, setTroubleshootJobs] = useState<Record<string, TroubleshootJob>>({});
@@ -144,6 +146,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
   }, [item.evaluationStatus]);
 
   const pages = item.pages ?? [];
+  const displayedMetering = displayed.metering as Record<string, Record<string, unknown>> | null | undefined;
   const gates = documentActionGates({
     roles: {
       isAdmin: !!roles.isAdmin,
@@ -160,7 +163,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
       pageCount: pages.length,
       pagesWithText: pages.filter((p) => !!p.TextUri).length,
     },
-    displayed,
+    displayed: { ...displayed, hasCost: !!displayedMetering && Object.keys(displayedMetering).length > 0 },
     isHistorical,
     holdsReview:
       (!!item.hitlReviewOwner && item.hitlReviewOwner === user?.username) ||
@@ -308,10 +311,12 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         ...offered(gates.summary, 'summary', 'Summary'),
         ...offered(gates.evaluation, 'evaluation', 'Evaluation Report'),
         ...offered(gates['rule-validation'], 'rule-validation', 'Rule Validation Summary'),
+        ...offered(gates.cost, 'cost', 'Estimated Cost'),
         ...offered(gates.flow, 'flow', 'Processing Flow'),
       ],
       onItemClick: (id) => {
         if (id === 'flow') setFlowOpen(true);
+        else if (id === 'cost') setCostOpen(true);
         else setReport(id as DocumentReport);
       },
     },
@@ -320,7 +325,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
       id: 'more',
       text: 'More Actions',
       items: [
-        ...offered(gates.regroup, 'regroup', 'Edit Page Class'),
+        ...offered(gates.regroup, 'regroup', 'Edit Page Grouping'),
         ...offered(gates.reextract, 'reextract', 'Re-extract Sections'),
         ...offered(gates['page-text'], 'page-text', 'Edit Page Text'),
         ...offered(gates['reset-class'], 'reset-class', 'Reset Page Class'),
@@ -368,7 +373,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
       text: 'Edit',
       variant: 'primary',
       iconName: 'edit',
-      href: documentEditHref(key),
+      href: documentEditHref(key, { from: 'document' }),
       ariaLabel: gates.editInQueue ? 'Edit this document in its review queue' : undefined,
       disabledReason: gates.edit.disabledReason,
     },
@@ -390,6 +395,13 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     <>
       {/* Mounted only while open, so their content is read only then. */}
       {report && <DocumentReportDialog report={report} displayed={displayed} onDismiss={() => setReport(null)} />}
+      {costOpen && displayedMetering && (
+        <EstimatedCostModal
+          meteringData={displayedMetering}
+          pageCount={displayed.pageCount as number | undefined}
+          onDismiss={() => setCostOpen(false)}
+        />
+      )}
       {item.executionArn && (
         <StepFunctionFlowViewer
           executionArn={item.executionArn}

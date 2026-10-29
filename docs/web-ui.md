@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **HITL** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in HITL › Queue Management; every document edit opens one edit page (see [HITL](#hitl))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -129,12 +129,14 @@ beside it, left to right:
 - **Details | Source** — Source shows the original file in place of the page's panels;
   Details brings them back, as you left them.
 - **Reports** — read-only views, each in a dialog: **Summary**, **Evaluation Report**
-  (see [Evaluation report](#evaluation-report)), **Rule Validation Summary** and
+  (see [Evaluation report](#evaluation-report)), **Rule Validation Summary**,
+  **Estimated Cost** (the document's metering, priced, with the cost per page in the
+  dialog's title; for the roles that may read the pricing, Admin, Author and Viewer) and
   **Processing Flow** (see
   [Document Process Flow Visualization](#document-process-flow-visualization)).
 - **More Actions** — the changes, then the downloads, then Reprocess, Abort and Delete,
   each group set apart by a separator:
-  - **Edit Page Class** — move pages between sections and change a section's class
+  - **Edit Page Grouping** — move pages between sections and change a section's class
     (see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages)).
   - **Re-extract Sections** — extract chosen sections again (see
     [Re-extract Sections](#re-extract-sections)).
@@ -152,7 +154,7 @@ beside it, left to right:
 - **Troubleshoot** — an AI analysis of what went wrong with the document. Reopened on
   the same document it shows the last result; **Run again** starts a new analysis.
 - **Start Review** — claim a pending review, where a document has one nobody holds yet.
-- **Edit** — the primary action: the document's edit page (see [HITL](#hitl)), or its
+- **Edit** — the primary action: the document's edit page (see [Review Studio](#review-studio)), or its
   queue item while it is in a review queue and you work queues.
 
 An action your role can never perform is not shown. One your role may perform but that
@@ -162,23 +164,28 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 
 | Action | Roles |
 |---|---|
-| Reports, the downloads, Refresh, Details \| Source | every role |
-| Edit Page Class, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Reports (except Estimated Cost), the downloads, Refresh, Details \| Source | every role |
+| Estimated Cost | Admin, Author, Viewer (it reads the stack's pricing) |
+| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
 | Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
 | Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
 | Troubleshoot | Admin, Author, Viewer |
 | Edit | Admin, Author, Reviewer; and Admins and Annotators on a document in a review queue |
 
 A Reviewer, or any caller who isn't an Admin, may run Re-extract Sections, Reset Page
-Class and Edit Page Class's **Save and Re-extract** only while holding the document's
+Class and Edit Page Grouping's **Save and Re-extract** only while holding the document's
 open review: they are disabled on a finished review, on one not yet started (choose
 **Start Review** first), and on one someone else holds.
 
 The server enforces the same rules; see [RBAC](rbac.md).
 
 Below the bar, **Document Details** lists the document's fields in four aligned columns,
-fewer on a narrow screen, and **Estimated Cost** is in its own panel beneath it. Then come
-**Document Sections** and **Document Pages**, each row with a **⋮** menu for that row:
+fewer on a narrow screen. Then come **Document Sections** (Section ID, Class/Type, Page
+IDs, Low Confidence Fields, Status) and **Document Pages** (Page ID, Class/Type, Class
+Confidence, Thumbnail). Both tables share one format: the data columns share the
+table's width evenly, and the **Actions** column is fixed at the right. The **⚙** icon
+on each table chooses which data columns are shown, and the choice is remembered in the
+browser. Each row has a **⋮** menu for that row:
 a section's **Edit Data** (**View Data** for a role that can't edit), **Download Data**
 and **Download Baseline**; a page's **View Page Text** and, for Admins, **Edit Page
 Text**. **Version History** and **Chat with Document** follow.
@@ -278,8 +285,8 @@ set, see
 
 ## Re-grouping a processed document's pages
 
-**More Actions › Edit Page Class** on the document page, or **More Actions › Edit Page
-Class** on the edit page (**Edit** on the document page), opens a board with every section
+**More Actions › Edit Page Grouping** on the document page, or **Edit Page Grouping** on
+the edit page's **Document Editor** panel (**Edit** on the document page), opens a board with every section
 side by side and each page as a thumbnail. Drag pages between sections, or use a page's
 **Move to section** menu — the keyboard and screen-reader route to the same operation.
 Shift-click selects a run of pages so they move together, which is usually what a wrong
@@ -323,11 +330,11 @@ evaluation and summarization only, so it keeps the values too.
 
 **Refused while the document is processing, in a review queue, or under a review in
 progress.** A grouping save writes the document directly, so it would race a run in
-progress; on the document page Edit Page Class is disabled with the reason, and if the
+progress; on the document page Edit Page Grouping is disabled with the reason, and if the
 server refuses a save anyway, the arrangement you made stays on the board with the
 message.
 
-In BDA mode Edit Page Class is disabled with the reason; see [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
+In BDA mode Edit Page Grouping is disabled with the reason; see [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
 
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
@@ -370,9 +377,9 @@ offer or withhold an edit that the server decides the other way for a document p
 an earlier revision. For a BDA-mode document the Web UI disables, with the reason, the
 edits that change its structure or text:
 
-- **Edit Page Class**, on the document page's **More Actions** and on the edit page.
+- **Edit Page Grouping**, on the document page's **More Actions** and on the edit page.
 - **Re-extract Sections**, **Edit Page Text** and **Reset Page Class**, and **Save and
-  Re-extract** on the Edit Page Class board.
+  Re-extract** on the Edit Page Grouping board.
 
 Field values stay editable everywhere: **Edit Data** on a section row, and the edit
 page's **Save** and **Process Changes**.
@@ -640,9 +647,9 @@ For unattended or very large extractions, use the CLI instead — `idp-cli downl
 
 The Document Details page includes a **Version History** panel listing every retained processing run of the document, newest first (with the current run badged). Re-uploading a document under the same key — or reprocessing it — no longer discards the prior results; each successful run is kept as an immutable version whose exact output bytes are pinned by S3 object version.
 
-From the panel you can:
+From the panel you can, using each row's **⋮** menu:
 
-- **View** any past version's outputs read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. While you view a past version, every action that changes the document is disabled with the reason, as are **Refresh** and **Edit**, and **Rule Validation Summary** is unavailable because rule validation isn't kept for past versions; a banner offers **Return to current version**.
+- **View** any past version's outputs (the version shown reads **Viewing**) read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. While you view a past version, every action that changes the document is disabled with the reason, as are **Refresh** and **Edit**, and **Rule Validation Summary** is unavailable because rule validation isn't kept for past versions; a banner offers **Return to current version**.
 - **Compare** any two versions — a section-by-section, field-level diff of their extraction results.
 - **Delete** a version (Admin only) — permanently removes that run's pinned object versions; the current version cannot be deleted, and versions still referenced by another retained run are preserved.
 
@@ -694,9 +701,9 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 1. Navigate to a document's detail page and scroll to the bottom
 2. In the text area, type in your question and you'll see an answer pop up after the document is analyzed with the Nova Pro model
 
-## HITL
+## Review Studio
 
-**HITL** (human-in-the-loop) brings every kind of human review work into one place:
+**Review Studio** (human-in-the-loop, or HITL, review) brings every kind of human review work into one place:
 production documents held in review queues, and test sets that need ground truth.
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
@@ -704,9 +711,10 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   (**Inbox**, **Tasks**, **Queues**). Other users have **Home** with the **Inbox**
   only, then the usual sections their roles
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
-  **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
-- **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
-  Queues** (one per test set), each listing Queue, Items, Pending, Assigned and
+  **Extensions** and **Resources**. Admins also see **Review Studio › Review Management**.
+- **Review Management** (Admins) has two tables, **Production Queues** and **Test Studio
+  Queues** (one per test set), one at a time: the **Production | Test Studio** switch
+  beside **Refresh** chooses which. Each lists Queue, Items, Pending, Assigned and
   Annotators with an actions menu. Admins edit and delete Production queues here,
   setting each one's name, priority, time limit, eligible Annotators (who works the
   queue) and **Enabled** switch in its **Settings**; there is no **Create queue**.
@@ -727,7 +735,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   to its queue, unassigned and not finished), and work assigned to you by an Admin
   appears within about 30 seconds.
 - **The edit page** is the same for every edit, whether you open a queue item from
-  Tasks, an Inbox message or Queue Management, or edit a document directly.
+  Tasks, an Inbox message or Review Management, or edit a document directly.
   - A document's edit page is `#/documents/<document>/edit`. It opens the
     document's review-queue item while the document is in review and you are an
     Admin or an Annotator; for anyone else, and for a document that is not in review,
@@ -743,17 +751,28 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
     same query, and an older Test Studio document link,
     `#/test-studio/sets/<id>/doc/<document>`, opens its Test Studio item.
 
-  The breadcrumb is **Home › {queue, test set, Documents or Tasks} › {document}**,
-  from the mode: the queue for a queue item, Documents for a direct edit (Tasks for
-  an Annotator-only user), and Home alone while the page is still loading. The title is the document's name with its status in parentheses, over the
-  full object key; a queue item's **Review Reason** follows, then the **Document
-  Editor** panel, which holds the editor with a **Section** dropdown at its top left.
-  The actions are in one bar at the top, left to right: **Edit | View** (the original
+  The breadcrumbs follow where the page was opened from:
+  **Document Processing › Documents › {document} › Edit** from the document page or the
+  Document List; **Review Studio › Review Management › {queue or test set} ›
+  {document}** from Review Management; **Home › Queues › {queue} › {document}** from an
+  Annotator's Queues; **Home › Tasks › {document}** from Tasks; **Test Studio › {test
+  set} › {document}** from Test Studio; and **Home › Inbox › {document}** from an Inbox
+  message. A link that doesn't say where it came from, such as a bookmark or a copied
+  field link, gets the role's usual trail: Review Management for an Admin's queue item,
+  Tasks for an Annotator, Test Studio for an Author's test set item, and the document
+  page for a direct edit. The title is the document's name with its status in
+  parentheses, over the full object key; a queue item's **Review Reason** follows, then
+  the **Document Editor** panel. Its own buttons are right of its title: **Show
+  Evaluation** (where the document has an evaluation baseline), the **Section**
+  dropdown, **Show Fields** (all fields, confidence alerts only, or evaluation mismatches
+  only; for the Visual Editor, so disabled on the JSON tab) and **Edit Page Grouping**
+  (each section's pages and class, for the roles that may change them: an Admin or a
+  Reviewer on a direct edit, an Admin on a queue item; disabled with the reason
+  otherwise). They are hidden while the original file is shown.
+  The page's actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
-  activity; **Summary**; **Processing Report**); **More Actions** (**Edit Page Class**,
-  each section's pages and class, for the roles that may change them: an Admin or a
-  Reviewer on a direct edit, an Admin on a queue item; **Use As Evaluation Baseline**,
-  for Admins and Authors); **Refresh** (read the document again, asking first when there
+  activity; **Summary**; **Processing Report**); **More Actions** (**Use As Evaluation
+  Baseline**, for Admins and Authors); **Refresh** (read the document again, asking first when there
   are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
   (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
   menu item that doesn't apply yet, such as Summary before a document is finished, is
@@ -824,7 +843,7 @@ Annotator concerned, for production items and Test Studio documents alike:
 
 Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
 **Review claim expired**. This release does not send them: arrivals in a queue are
-announced to nobody (Admins see waiting work in Queue Management), and assignments do
+announced to nobody (Admins see waiting work in Review Management), and assignments do
 not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
 posting messages should read the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).

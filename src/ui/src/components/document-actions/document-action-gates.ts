@@ -35,6 +35,7 @@ import {
   HISTORICAL_REASON,
   LEGACY_REVIEW_REGROUP_REASON,
   NOT_ABORTABLE_REASON,
+  NO_COST_REASON,
   NO_EVALUATION_REPORT_REASON,
   NO_EXECUTION_REASON,
   NO_PAGES_REASON,
@@ -51,6 +52,7 @@ export type DocumentActionId =
   | 'summary'
   | 'evaluation'
   | 'rule-validation'
+  | 'cost'
   | 'flow'
   | 'regroup'
   | 'reextract'
@@ -77,6 +79,8 @@ export const ACTION_OPERATIONS: Record<GatedAction, { operations: string[] }> = 
   summary: { operations: ['getFileContents'] },
   evaluation: { operations: ['getFileContents'] },
   'rule-validation': { operations: ['getFileContents'] },
+  // The metering comes with the document; pricing it reads the stack's pricing.
+  cost: { operations: ['getPricing'] },
   flow: { operations: ['getStepFunctionExecution'] },
   regroup: { operations: ['updateDocumentSections'] },
   reextract: { operations: ['processChanges'] },
@@ -105,6 +109,7 @@ export const ACTION_GROUPS: Record<GatedAction, readonly AppGroup[]> = {
   summary: ALL_GROUPS,
   evaluation: ALL_GROUPS,
   'rule-validation': ALL_GROUPS,
+  cost: ['Admin', 'Author', 'Viewer'],
   flow: ALL_GROUPS,
   regroup: ADMIN_REVIEWER,
   reextract: ADMIN_REVIEWER,
@@ -145,6 +150,8 @@ export interface GatedDocument {
   summaryReportUri?: string | null;
   evaluationReportUri?: string | null;
   ruleValidationResultUri?: string | null;
+  /** The document's metering has entries, so it has a cost to estimate. */
+  hasCost?: boolean;
   executionArn?: string | null;
   sectionCount: number;
   pageCount: number;
@@ -156,7 +163,7 @@ export interface GateInput {
   /** The live document. */
   doc: GatedDocument;
   /** What the page shows: the live document, or a past version's reports. */
-  displayed: Pick<GatedDocument, 'summaryReportUri' | 'evaluationReportUri' | 'ruleValidationResultUri'>;
+  displayed: Pick<GatedDocument, 'summaryReportUri' | 'evaluationReportUri' | 'ruleValidationResultUri' | 'hasCost'>;
   isHistorical: boolean;
   /** The caller holds the document's review (its owner, by username or email). */
   holdsReview: boolean;
@@ -173,7 +180,7 @@ export interface ActionGate {
 export type DocumentActionGates = Record<DocumentActionId, ActionGate> & {
   /** Edit opens the document's queue item. */
   editInQueue: boolean;
-  /** Whether Edit Page Class may change a section's class (a Reviewer-only user's lock). */
+  /** Whether Edit Page Grouping may change a section's class (a Reviewer-only user's lock). */
   canChangeClass: boolean;
   /** Why Save and Re-extract can't run now (configuration, BDA mode, the review owner rule), for the board. */
   reextractBlockedReason?: string;
@@ -239,6 +246,8 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
       [isHistorical, RULE_VALIDATION_HISTORICAL_REASON],
       [!displayed.ruleValidationResultUri, NO_RULE_VALIDATION_REASON],
     ),
+    // About the document as shown: a past version's cost is its own.
+    cost: gate('cost', [!displayed.hasCost, NO_COST_REASON]),
     flow: gate('flow', [!doc.executionArn, NO_EXECUTION_REASON]),
     // More Actions.
     regroup: gate(
