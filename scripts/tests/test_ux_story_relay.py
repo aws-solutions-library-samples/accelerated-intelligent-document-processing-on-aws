@@ -3235,7 +3235,7 @@ def _editor(*extra: str) -> dict[str, Any]:
         '    uid=1_5 tab "Visual Editor" selected',
         '    uid=1_6 textbox "Employer name" value="Acme" focusable focused',
         '    uid=1_7 checkbox "Signed"',
-        '    uid=1_8 link "Queue Management" url="http://localhost:3000/#/review-queues"',
+        '    uid=1_8 link "Review Management" url="http://localhost:3000/#/review-queues"',
         *extra,
     )
 

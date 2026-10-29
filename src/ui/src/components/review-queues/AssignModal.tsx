@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// HITL › Queue Management: assign the selected items (production or Test Studio) to
+// Review Studio › Review Management: assign the selected items (production or Test Studio) to
 // one of the Annotators listed on their queue.
 import React, { useEffect, useState } from 'react';
 import type { SelectProps } from '@cloudscape-design/components';

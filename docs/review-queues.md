@@ -12,7 +12,7 @@ SPDX-License-Identifier: MIT-0
 - [Overview](#overview)
 - [How a document reaches a queue](#how-a-document-reaches-a-queue)
 - [Annotator guide](#annotator-guide)
-- [Admin guide: Queue Management](#admin-guide-queue-management)
+- [Admin guide: Review Management](#admin-guide-review-management)
 - [Reviewing from the document page](#reviewing-from-the-document-page)
 - [Turning review queues on](#turning-review-queues-on)
 - [Review status for downstream consumers](#review-status-for-downstream-consumers)
@@ -38,7 +38,7 @@ the document's final outputs. For a Test Studio document, they become the set's
 reviewed labels.
 
 Queues are **system-wide**, and they are managed only by Admins in
-**HITL › Queue Management**; they aren't part of any Configuration Profile.
+**Review Studio › Review Management**; they aren't part of any Configuration Profile.
 Production documents go to the **Default** queue. A document is routed there when
 HITL is enabled in its configuration (`hitl.enabled`), the Default queue is enabled,
 and the document raised confidence alerts. Queues have no confidence threshold of
@@ -70,7 +70,7 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
    the extraction results again. A document with no alerts isn't queued.
 
    Its status becomes `HITL_IN_PROGRESS`, and the machine output is
-   kept as the run's manifest. Admins see it waiting in HITL › Queue Management.
+   kept as the run's manifest. Admins see it waiting in Review Studio › Review Management.
 3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
    and the assignee finishes it.
@@ -104,7 +104,7 @@ notifications bell, and opens a document only through its edit page
   when an Admin assigns you work.
 - Select an item to open it in the **edit page**. Production items, Test
   Studio items and direct edits of a document all use the same edit page, whether
-  you open them from Tasks, an Inbox message or Queue Management. A Production item
+  you open them from Tasks, an Inbox message or Review Management. A Production item
   opens at its document's edit page, `#/documents/<document>/edit`, which shows the
   item while the document is in review; a Test Studio item is at
   `#/review-queues/test-sets/<id>/items/<document>`. `?section=`, `?field=` and
@@ -112,7 +112,7 @@ notifications bell, and opens a document only through its edit page
   opens the document's edit page with the same query.
   - The actions are in one bar at the top, left to right: **Edit | View**, the
     **Reports** menu (**History**, **Summary**, **Processing Report**), the **More
-    Actions** menu (**Edit Page Class**, **Use As Evaluation Baseline**), then **Skip**,
+    Actions** menu (**Use As Evaluation Baseline**), then **Skip**,
     **Cancel**, **Save** and **Process Changes** last (or **Reports** and **Claim**, for
     an Annotator viewing an unassigned item). A button that doesn't apply is left out.
     A menu item that doesn't apply yet stays in its menu, disabled, with the reason on
@@ -145,8 +145,9 @@ notifications bell, and opens a document only through its edit page
     lists the rest and **Show fewer** collapses them again. Hover a reason chip to
     see the field, the score and the threshold. Your edits are saved as a draft as
     you type, or straight away with **Save**. **Process Changes** saves
-    your latest edits and applies your corrections. The editor opens with **Fields
-    to show** set to **Confidence alerts only** when the item has review reasons. **Edit Page Class** corrects
+    your latest edits and applies your corrections. The editor opens with **Show
+    Fields** set to **Confidence alerts only** when the item has review reasons. **Edit
+    Page Grouping**, on the **Document Editor** panel, corrects
     how the document is split into sections as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
     (a section you remove takes its draft with it). Only an Admin holding the item
@@ -162,7 +163,7 @@ notifications bell, and opens a document only through its edit page
     opens the document with it. **Process Changes** applies the drafts and marks the
     sections reviewed, and leaves once the server counts the document reviewed.
     Switching sections with unsaved changes asks first.
-    **Edit Page Class** opens the page-grouping board in a dialog, where each section's
+    **Edit Page Grouping** opens the page-grouping board in a dialog, where each section's
     pages and class are changed; there is no separate class dropdown. After a class
     change, the section offers **Re-extract**, so its fields match the new class. Versioning works exactly
     as in Test Studio.
@@ -184,15 +185,18 @@ notifications bell, and opens a document only through its edit page
 Changing a section's class isn't available for Production documents in review.
 Regrouping pages is, from the queue item.
 
-## Admin guide: Queue Management
+## Admin guide: Review Management
 
-**HITL › Queue Management** is visible to Admins only. It has two tables,
-**Production Queues** and **Test Studio Queues**, with the same columns: **Queue**,
+**Review Studio › Review Management** is visible to Admins only. It has two tables,
+**Production Queues** and **Test Studio Queues**, shown one at a time: the **Production
+| Test Studio** switch beside **Refresh** chooses which, and only the table shown is
+kept up to date. A queue's breadcrumbs (**Review Studio › Review Management › {queue}**)
+lead back to the table it is in. Both tables have the same columns: **Queue**,
 **Items**, **Pending**, **Assigned**, **Annotators** and an actions menu. A queue's
 other settings, such as its priority and Enabled switch, are in its **Settings**. The
 info icon opens a panel describing the page.
 
-![Queue Management page with the Default production queue and one Test Studio queue per test set](../images/review-queues-queue-management.png)
+![Review Management page with the Default production queue and one Test Studio queue per test set](../images/review-queues-queue-management.png)
 
 **Who the Annotators are.** Work can be assigned only to members of the Cognito
 **Annotator** group, the same group that authorizes the Annotator's API calls. A user
@@ -222,7 +226,7 @@ any other queue that already exists stays listed and usable. Each queue has:
 | Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Empty means none (only Admins) | empty |
 | Enabled | When off, no documents are added to the queue | on |
 
-A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Queue Management.
+A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Review Management.
 | Skip reasons | The reasons an Annotator chooses from to give an item back unfinished, one per line (up to 20) | Needs expert review; Document unclear or incomplete; Conflict of interest; Out of time; Other (see note) |
 
 The **Default** queue is created automatically, enabled and with nobody listed, and
@@ -234,7 +238,7 @@ queue is stored but not used for routing; items reach other queues when an Admin
 moves them there.
 
 **Upgrading.** A stack that already has a Default queue keeps its Enabled setting:
-if it was off, turn it on in Queue Management. Documents from profiles with HITL
+if it was off, turn it on in Review Management. Documents from profiles with HITL
 off are no longer queued.
 
 Deleting a queue that still holds items moves them to the Default queue first, and
@@ -306,7 +310,7 @@ reasons and Eligible Annotators. They are kept with the test set.
 A Test Studio queue loads quickly because each document's summary (label source,
 alert count, lowest confidence, classes, sections, assignee, reviewed) is kept in
 DynamoDB, in the stack's `HITLTable`, while the labels and documents stay in S3. The
-queue page reads only the summaries; it never reads a set's labels. Queue Management
+queue page reads only the summaries; it never reads a set's labels. Review Management
 lists every test set in one call from the counts stored with each set (documents,
 reviewed, assigned), refreshed every 20 seconds; a set still being summarized shows
 **Preparing…** in its counts.
@@ -316,7 +320,7 @@ into a test set:
 
 - when documents are copied into a set, at the end of the copy;
 - when a set has none yet, or its labels were cleared, reset or removed as a whole.
-  Opening Queue Management or the queue page requests the build.
+  Opening Review Management or the queue page requests the build.
 
 While a build runs, the queue page says **Preparing this queue** and refreshes
 itself until it finishes. A large set takes a few minutes once. A single
@@ -350,7 +354,7 @@ its queue item:
   edit page, which shows the queue item for Admins and Annotators, the roles that can
   open queue items. For other roles it opens the direct edit, read-only, saying the
   document is edited in its queue.
-- The document page's change actions (**More Actions** › **Edit Page Class**,
+- The document page's change actions (**More Actions** › **Edit Page Grouping**,
   **Re-extract Sections**, **Edit Page Text**, **Reset Page Class**, **Use As Evaluation
   Baseline**) are disabled, with the reason that the document is in a review queue;
   correct and regroup the document from its queue item. The server refuses the same
@@ -376,7 +380,7 @@ doesn't mark the review completed again or replace the reviewer the queue record
 2. **Turn on HITL** in each Configuration Profile whose documents should be
    reviewed (`hitl.enabled`), and set `hitl.confidence_threshold`, the threshold for
    fields with none of their own.
-3. **Check the Default queue.** In **HITL › Queue Management**, open the Default
+3. **Check the Default queue.** In **Review Studio › Review Management**, open the Default
    queue's **Settings**, make sure **Enabled** is on, and list the **Eligible
    Annotators**. A change applies to documents processed after it (definitions are
    cached for about 30 seconds).

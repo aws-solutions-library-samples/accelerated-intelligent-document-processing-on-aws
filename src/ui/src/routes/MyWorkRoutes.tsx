@@ -12,10 +12,8 @@ import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
 import MyTasksPage from '../components/review-queues/MyTasksPage';
 import MyQueuesPage from '../components/review-queues/MyQueuesPage';
 import RequireRole from './RequireRole';
-import { MY_QUEUES_PATH, MY_TASKS_PATH } from './constants';
-
-const TASKS = { text: 'Tasks', href: `#${MY_TASKS_PATH}` };
-const QUEUES = { text: 'Queues', href: `#${MY_QUEUES_PATH}` };
+import { HOME_CRUMB, MY_QUEUES_CRUMB, TASKS_CRUMB } from '../components/review-queues/breadcrumbs';
+import { MY_TASKS_PATH } from './constants';
 
 const MyWorkRoutes = (): React.JSX.Element => (
   <div>
@@ -25,7 +23,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
         <Route
           path="tasks"
           element={
-            <ReviewQueuesLayout root={TASKS}>
+            <ReviewQueuesLayout trail={[HOME_CRUMB, TASKS_CRUMB]}>
               <MyTasksPage />
             </ReviewQueuesLayout>
           }
@@ -33,7 +31,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
         <Route
           path="queues"
           element={
-            <ReviewQueuesLayout root={QUEUES}>
+            <ReviewQueuesLayout trail={[HOME_CRUMB, MY_QUEUES_CRUMB]}>
               <MyQueuesPage />
             </ReviewQueuesLayout>
           }

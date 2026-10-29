@@ -4,7 +4,7 @@
 /**
  * The edit screen's action bar and title. What has to hold: the bar is one row, Edit |
  * View (where the mode offers it), the Reports menu (History, Summary, Processing
- * Report), the More Actions menu (Edit Page Class, Use As Evaluation Baseline), then Skip,
+ * Report), the More Actions menu (Edit Page Grouping, Use As Evaluation Baseline), then Skip,
  * Cancel, Save and Process Changes, the primary action, last; a button that does not
  * apply is left out, while a menu item the mode offers but that does not apply now is
  * disabled with its reason; Claim mode shows the view switch, Reports and Claim only;
@@ -65,10 +65,11 @@ describe('the edit screen action bar', () => {
     expect(guard).toContain(`"${CANCEL_ACCESSIBLE_NAME.toLowerCase()}"`);
   });
 
-  it('puts the read-only views in Reports and the occasional changes in More Actions, in Title Case', () => {
+  it('puts the read-only views in Reports and the evaluation baseline in More Actions, in Title Case', () => {
     renderScreen({ ...ALL, showBaseline: true });
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History']);
-    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class', 'Use As Evaluation Baseline']);
+    // Edit Page Grouping is on the Document Editor panel, not in the bar.
+    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Use As Evaluation Baseline']);
   });
 
   it('shows only Reports and Process Changes by default', () => {
@@ -104,10 +105,7 @@ describe('the edit screen action bar', () => {
     ]);
   });
 
-  it.each([
-    ['Edit Page Class', 'regroup'],
-    ['Use As Evaluation Baseline', 'baseline'],
-  ])('More Actions › %s reports %s', (text, action) => {
+  it.each([['Use As Evaluation Baseline', 'baseline']])('More Actions › %s reports %s', (text, action) => {
     const { onAction } = renderScreen({ ...ALL, showBaseline: true });
     chooseMenuItem('More Actions', text);
     expect(onAction).toHaveBeenCalledWith(action);

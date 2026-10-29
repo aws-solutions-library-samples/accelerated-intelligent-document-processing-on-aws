@@ -5,7 +5,7 @@
  * The document page's actions are given the document's own configuration profile.
  *
  * useDocumentActions decides BDA mode from that profile's `use_bda`, and without it reads
- * every document as pipeline mode — so Edit Page Class and the re-extraction actions would
+ * every document as pipeline mode — so Edit Page Grouping and the re-extraction actions would
  * be offered on a BDA-mode document again, with every document-bar test still green,
  * since those mock the configuration directly. Asserted against the source: rendering
  * DocumentPanel with two configurations means mocking most of the application.

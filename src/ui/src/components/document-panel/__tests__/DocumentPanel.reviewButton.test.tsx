@@ -72,7 +72,7 @@ describe('DocumentPanel Edit button on a queued document', () => {
     render(<DocumentPanel item={QUEUED as never} />);
     const button = edit()!;
     expect(button).toBeDefined();
-    expect(button.getElement().getAttribute('href')).toBe(documentEditHref(QUEUED.objectKey));
+    expect(button.getElement().getAttribute('href')).toBe(documentEditHref(QUEUED.objectKey, { from: 'document' }));
     expect(button.getElement().getAttribute('aria-label')).toBe('Edit this document in its review queue');
   });
 

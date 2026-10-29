@@ -5,14 +5,15 @@
  * Component tests for DocumentVersionsPanel.
  *
  * The GraphQL client and RBAC hook are mocked at the module boundary so the
- * test runs in jsdom with no AWS/Cognito. Covers: listing, the per-row View
- * action (all users), admin-only delete gating, and the "cannot delete
- * current version" affordance.
+ * test runs in jsdom with no AWS/Cognito. Covers: listing, the per-row ⋮ menu
+ * (View for all users, Viewing on the version shown), admin-only delete gating,
+ * and the "cannot delete current version" affordance.
  */
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 // Mock the GraphQL client used by the panel. vi.mock is hoisted above module
 // init, and the panel calls generateClient() at import time, so the mock fn
@@ -59,6 +60,40 @@ const routeGraphql = ({ query }: { query: string }) => {
   return Promise.resolve({ data: {} });
 };
 
+const NEWER = '20250707T141530Z-b';
+const OLDER = '20250101T090000Z-a';
+
+/** A version row's ⋮ menu. */
+const rowMenu = (runId: string) =>
+  createWrapper(document.body)
+    .findAllButtonDropdowns()
+    .find((d) => d.findNativeButton().getElement().getAttribute('aria-label') === `Actions for version ${runId}`)!;
+/** The row menu's items, by label, with whether each is disabled. */
+const menuItems = (runId: string) => {
+  const menu = rowMenu(runId);
+  act(() => menu.openDropdown());
+  const items = ['view', 'delete']
+    .map((id) => menu.findItemById(id))
+    .filter((i) => !!i)
+    .map((i) => {
+      const el = i!.getElement().querySelector('[role="menuitem"]') ?? i!.getElement();
+      const describedBy = el.getAttribute('aria-describedby');
+      const reason = describedBy ? (document.getElementById(describedBy)?.textContent ?? '') : '';
+      const text = i!.getElement().textContent ?? '';
+      return {
+        text: reason && text.endsWith(reason) ? text.slice(0, -reason.length) : text,
+        disabled: el.getAttribute('aria-disabled') === 'true',
+      };
+    });
+  act(() => menu.openDropdown());
+  return items;
+};
+const choose = (runId: string, id: string) => {
+  const menu = rowMenu(runId);
+  act(() => menu.openDropdown());
+  act(() => menu.findItemById(id)!.click());
+};
+
 describe('DocumentVersionsPanel', () => {
   beforeEach(() => {
     roleState.isAdmin = false;
@@ -81,11 +116,12 @@ describe('DocumentVersionsPanel', () => {
     expect(screen.queryByText('Files')).not.toBeInTheDocument();
   });
 
-  it('shows a View action for non-admins (read-only access)', async () => {
-    render(<DocumentVersionsPanel objectKey="doc.pdf" />);
+  it('keeps every action in the row’s ⋮ menu, with no text in the Actions column', async () => {
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
-    // View buttons are present even for a non-admin viewer.
-    expect(screen.getAllByText(/^View$/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^View$/)).not.toBeInTheDocument();
+    // A non-admin viewer has View only.
+    expect(menuItems(OLDER)).toEqual([{ text: 'View', disabled: false }]);
   });
 
   it('calls onViewVersion with the run detail when View is clicked', async () => {
@@ -93,9 +129,8 @@ describe('DocumentVersionsPanel', () => {
     render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={onViewVersion} />);
     await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
 
-    // Click "View" on the older (non-current) row.
-    const viewButtons = screen.getAllByText(/^View$/i);
-    fireEvent.click(viewButtons[viewButtons.length - 1]);
+    // View on the older (non-current) row.
+    choose(OLDER, 'view');
 
     await waitFor(() => expect(onViewVersion).toHaveBeenCalled());
     expect(onViewVersion).toHaveBeenCalledWith('20250101T090000Z-a', expect.objectContaining({ RunId: '20250101T090000Z-a' }));
@@ -106,8 +141,7 @@ describe('DocumentVersionsPanel', () => {
     render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={onViewVersion} />);
     await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
 
-    const viewButtons = screen.getAllByText(/^View$/i);
-    fireEvent.click(viewButtons[viewButtons.length - 1]);
+    choose(OLDER, 'view');
     await waitFor(() => expect(onViewVersion).toHaveBeenCalled());
 
     // The document page derives the section's "Low Confidence Fields" count and
@@ -126,7 +160,7 @@ describe('DocumentVersionsPanel', () => {
     render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
 
-    fireEvent.click(screen.getAllByText(/^View$/i).slice(-1)[0]);
+    choose(OLDER, 'view');
     await waitFor(() => expect(mockGraphql).toHaveBeenCalledTimes(2));
 
     const { query } = mockGraphql.mock.calls.find((c) => String(c[0].query).includes('getDocumentVersion'))![0];
@@ -141,15 +175,15 @@ describe('DocumentVersionsPanel', () => {
     // Viewing the newest run means its row shows "Viewing"; the older shows "View".
     render(<DocumentVersionsPanel objectKey="doc.pdf" viewingRunId="20250101T090000Z-a" onViewVersion={onViewVersion} />);
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
-    // The viewed row is labelled "Viewing" (disabled), so at least one exists.
-    expect(screen.getByText('Viewing')).toBeInTheDocument();
+    // The viewed row's item reads "Viewing", disabled; the other row's reads "View".
+    expect(menuItems(OLDER)).toEqual([{ text: 'Viewing', disabled: true }]);
+    expect(menuItems(NEWER)).toEqual([{ text: 'View', disabled: false }]);
   });
 
   it('hides delete for non-admins', async () => {
-    render(<DocumentVersionsPanel objectKey="doc.pdf" />);
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
-    // The admin action dropdown (aria-label "Actions for version ...") is absent.
-    expect(screen.queryByLabelText(/Actions for version/i)).not.toBeInTheDocument();
+    expect(menuItems(OLDER).map((i) => i.text)).not.toContain('Delete version');
   });
 
   it('shows the admin delete dropdown for admins', async () => {
@@ -161,6 +195,17 @@ describe('DocumentVersionsPanel', () => {
     expect(screen.getAllByLabelText(/Actions for version/i).length).toBeGreaterThanOrEqual(VERSIONS.length);
     // Both run ids are addressable.
     expect(screen.getAllByLabelText(/20250707T141530Z-b/).length).toBeGreaterThan(0);
+  });
+
+  it('offers an admin View and Delete version, Delete disabled on the current version', async () => {
+    roleState.isAdmin = true;
+    render(<DocumentVersionsPanel objectKey="doc.pdf" onViewVersion={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+    expect(menuItems(OLDER)).toEqual([
+      { text: 'View', disabled: false },
+      { text: 'Delete version', disabled: false },
+    ]);
+    expect(menuItems(NEWER).find((i) => i.text === 'Delete version')).toEqual({ text: 'Delete version', disabled: true });
   });
 
   // A run becomes a version when it completes. The list loaded once per document, so

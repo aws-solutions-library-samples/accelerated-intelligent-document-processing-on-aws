@@ -378,7 +378,7 @@ Optimize performance through proper resource sizing:
    - Use the load simulation scripts to test capacity
    - Monitor queue depth and processing latency
 
-## Queue Management
+## Review Management
 
 ### Dead Letter Queue (DLQ) Processing
 

@@ -1196,9 +1196,10 @@ The queue page shows:
 Per-document actions sit in one bar at the top of the edit screen (the same screen as
 production review items), so finishing a long document does not mean scrolling past
 every field to reach them: **Edit | View**, **Reports** (**History**, **Processing
-Report**), **More Actions** (**Edit Page Class**), **Skip**, **Cancel**, **Save** and
-**Process Changes**, or the view switch, **Reports** and **Claim** for an Annotator
-viewing an unassigned document. **Save** keeps the open section's changes as a
+Report**), **Skip**, **Cancel**, **Save** and **Process Changes**, or the view switch,
+**Reports** and **Claim** for an Annotator viewing an unassigned document. **Edit Page
+Grouping** is on the **Document Editor** panel, beside its **Section** and **Show Fields**
+dropdowns. **Save** keeps the open section's changes as a
 draft, which is not reviewed: you, a later session or the next assignee after a
 **Skip** open the document with it, and switching sections with unsaved changes asks
 first. **Process Changes** saves the open section's changes, applies every section's
@@ -1266,7 +1267,7 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-A section's class is changed in **Edit Page Class**, whose class list holds the classes defined by the config
+A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the config
 version that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
 names which config the class list came from, and says so explicitly when it is a
@@ -1277,7 +1278,7 @@ The order is: the config stamped on the baseline; failing that the test set's ow
 declared version; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
-preset. After a section's class is changed and saved in **Edit Page Class**, the
+preset. After a section's class is changed and saved in **Edit Page Grouping**, the
 section says **Fields still reflect the previous class** and offers **Re-extract**,
 which re-runs that one document and waits for the new labels before returning, so you
 are never left looking at fields from the previous class.
@@ -1315,7 +1316,7 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Edit Page Class** opens a board with every section side by side and each page as a
+**Edit Page Grouping** opens a board with every section side by side and each page as a
 thumbnail, where a section's pages and its class are changed. On the queue's edit screen it is in the action bar at the top and opens
 the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
 section selector at the top of the document. Either way it is kept away from the
@@ -1390,11 +1391,11 @@ A section can legitimately have nothing extracted, and the editor says which of 
 things happened rather than showing an empty form:
 
 - **No document class.** With no class there is no schema, so extraction had nothing to
-  extract against. This is the actionable one: set the class in **Edit Page Class** first —
+  extract against. This is the actionable one: set the class in **Edit Page Grouping** first —
   re-extracting before that produces nothing. A section in this state is marked **(no
   class)** in the **Section** list. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
-  which **Edit Page Class** can merge.
+  which **Edit Page Grouping** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
 - **A section added by re-grouping**, which starts with no values because nothing has
   extracted those pages as a group yet.

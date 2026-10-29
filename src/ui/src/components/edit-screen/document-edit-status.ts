@@ -18,11 +18,11 @@ export const IN_REVIEW_SHORT_REASON = 'This document is in a review queue';
 /** Summary, for a document with no summary report. */
 export const NO_SUMMARY_REASON = 'This document has no summary';
 
-/** Edit Page Class, for a document with no sections. */
+/** Edit Page Grouping, for a document with no sections. */
 export const NO_SECTIONS_REASON = 'This document has no sections';
 
 /**
- * Why Edit Page Class is not offered in BDA mode. A BDA reprocess keeps the sections a
+ * Why Edit Page Grouping is not offered in BDA mode. A BDA reprocess keeps the sections a
  * document already has, so a structural change is not carried through it.
  */
 export const BDA_REGROUP_REASON =

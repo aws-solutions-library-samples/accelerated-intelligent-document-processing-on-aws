@@ -20,6 +20,7 @@ export const NOT_ABORTABLE_REASON = 'Only a document that is still processing ca
 export const NO_EVALUATION_REPORT_REASON = 'This document has no evaluation report';
 export const NO_RULE_VALIDATION_REASON = 'This document has no rule validation summary';
 export const RULE_VALIDATION_HISTORICAL_REASON = "Rule validation isn't kept for past versions";
+export const NO_COST_REASON = 'This document has no cost data yet';
 export const NO_EXECUTION_REASON = 'This document has no processing run to show';
 export const REEXTRACT_ORDER_ONLY_REASON = 'Only the page order changed, so nothing needs re-extracting. Choose Save page grouping.';
 export const reextractNoClassReason = (ids: string[]): string =>

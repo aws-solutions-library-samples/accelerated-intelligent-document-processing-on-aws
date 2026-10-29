@@ -458,7 +458,7 @@ extraction**, configured under `extraction.confidence.*` and
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
 `hitl.*` block. See [Extraction & Confidence](./extraction-and-confidence.md) for
 the full reference. Production [review queues](./review-queues.md) are not part of
-the configuration: Admins manage them in HITL › Queue Management.
+the configuration: Admins manage them in Review Studio › Review Management.
 
 ### Enable/Disable Confidence
 
@@ -1025,7 +1025,7 @@ invocation and the released concurrency slot, not a retry.
 
 - **Workflow Limits**: Maximum concurrent Step Function executions, controlled by `MaxConcurrentWorkflows` parameter
 - **Lambda Concurrency**: Per-function concurrent execution limits
-- **Queue Management**: SQS visibility timeout (30 seconds) and message batching
+- **Review Management**: SQS visibility timeout (30 seconds) and message batching
 - **Dynamic Scaling**: Automatic adjustment based on queue depth and in-flight workflows
 
 ## Document Status Tracking
