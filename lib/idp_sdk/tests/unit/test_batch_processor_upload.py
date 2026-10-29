@@ -626,6 +626,16 @@ class TestS3SourceScanAndCopy:
             "config-revision": "7",
         }
 
+    def test_number_of_files_caps_an_s3_uri_batch(self, processor, s3):
+        for name in ("a", "b", "c"):
+            s3.put_object(Bucket=SOURCE_BUCKET, Key=f"in/{name}.pdf", Body=b"x")
+
+        result = processor.process_batch(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/", batch_id="b", number_of_files=2
+        )
+
+        assert len(result["document_ids"]) == 2
+
     def test_a_copy_without_a_profile_keeps_the_source_metadata(self, processor, s3):
         s3.put_object(
             Bucket=SOURCE_BUCKET,

@@ -358,6 +358,16 @@ class TestProcessConfigPinning:
             "config-revision": "4",
         }
 
+    def test_an_s3_uri_batch_honours_number_of_files(self, client, s3):
+        for name in ("a", "b", "c"):
+            s3.put_object(Bucket=SOURCE_BUCKET, Key=f"in/{name}.pdf", Body=b"x")
+
+        result = client.batch.process(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/", batch_id="b", number_of_files=2
+        )
+
+        assert result.documents_queued == 2
+
     def test_an_s3_uri_batch_keeps_both_profile_and_revision(self, client, s3):
         """An S3-sourced batch honours a pinned profile and revision. ``process``
         forwards them only when the target method accepts them, so this also
