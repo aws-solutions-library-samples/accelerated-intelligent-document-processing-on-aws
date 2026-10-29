@@ -131,12 +131,6 @@ global_settings:
         of micromatch (build and lint tooling); the browser bundle does not include
         it, and the patterns it expands come from this repository's configuration.
         No fixed release exists yet.
-    - rule_id: 'GHSA-ch52-4w7c-c8xp'
-      path: 'docs-site/**'
-      reason: >-
-        http-cache-semantics: not reachable. It reaches the repository only through
-        astro in docs-site, which CI builds into static files; no deployed component
-        runs astro or a shared HTTP cache on it. No fixed release exists yet.
     - rule_id: 'GHSA-c4qx-w738-7hr3'
       path: 'src/ui/**'
       reason: >-

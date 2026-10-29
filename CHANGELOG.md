@@ -72,6 +72,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **JavaScript dependency advisories resolved.** The web UI no longer depends on `mammoth`, which nothing in it imported and which carried a critical advisory. The documentation site now uses `postcss-selector-parser` 6.1.5 and `http-cache-semantics` 4.3.0, and the triage entries for `http-cache-semantics` are removed from `scripts/security/dep_audit_allowlist.json` and `.ash/.ash.yaml`. **Action:** none.
+
 - **The reprocess dialog reminds BDA-mode users to run Sync To BDA.** The reminder was shown only when the stack setting named Pattern 1, which no stack does since the unified pattern, so it never appeared. It now follows the selected configuration profile's `use_bda` flag ([#1645](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1645)). **Action:** none.
 
 - **Release Review on the document list sends only documents it can release, and shows a refusal.** With several documents selected, **Release Review** releases only the claimed documents whose review has not finished, rather than sending every selected document and leaving the unclaimed or finished ones to fail with nothing shown. When the server refuses a release, its message appears above the table, as it does for **Start Review**. See [human-review.md](docs/human-review.md#2-review-process).
