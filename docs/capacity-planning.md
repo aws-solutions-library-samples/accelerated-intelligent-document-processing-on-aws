@@ -18,9 +18,9 @@ https://github.com/user-attachments/assets/6e668c2f-c6dc-490e-a4ce-10c533cd330e
 **The arithmetic assumes the Textract-plus-Bedrock pipeline**, whose well-defined
 processing steps (OCR, Classification, Extraction, Assessment, Summarization) carry
 predictable Bedrock model quota requirements. A deployment running documents through
-BDA mode (`use_bda: true`) has a different step set and a different quota profile, so
-set the pattern manually on the Capacity Planning screen before reading the numbers —
-see [Pattern detection and the manual override](#pattern-detection-and-the-manual-override).
+BDA mode (`use_bda: true`) has a different step set and a different quota profile, and
+capacity planning does not support it — see
+[Pipeline mode only](#pipeline-mode-only).
 
 ## Key Benefits
 
@@ -251,7 +251,7 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - `VITE_DEFAULT_MAX_LATENCY`: Default maximum latency setting in **seconds** (default: 60)
 - `VITE_DEFAULT_TOKENS_BY_STEP`: JSON object with default token limits per processing step
 - `VITE_DEFAULT_MAX_TOKENS_PER_REQUEST`: Default maximum tokens per API request (4000)
-- `VITE_BDA_TOKENS_PER_PAGE`: Estimated tokens per page for BDA pattern processing (2000)
+- `VITE_BDA_TOKENS_PER_PAGE`: Estimated tokens per page for BDA-mode documents (2000)
 - `VITE_AWS_REGION`: AWS region for console URL generation (required)
 - `VITE_BEDROCK_MODEL_QUOTA_CODES`: Optional JSON mapping for direct quota code links
 
@@ -265,26 +265,23 @@ is present in every deployment.
 1. **Prerequisites**:
    - Process some documents first to populate metering data
    - Documents must be single-class and classified with configured document types
-2. **Configuration**: Visit "View/Edit Configuration" tab to load your pattern configuration
+2. **Configuration**: Visit "View/Edit Configuration" tab to load your configuration profile
 3. **Navigation**: Click on "Capacity Planning" in the main navigation, under Configuration
-4. **Pattern**: The screen sizes the Textract-plus-Bedrock pipeline unless you override
-   it — see below
+4. **Processing mode**: The screen sizes pipeline mode only — see below
 
-#### Pattern detection and the manual override
+#### Pipeline mode only
 
-The screen plans against the Textract-plus-Bedrock pipeline by default, which is the
-right basis for a deployment whose documents run in pipeline mode (`use_bda: false`).
-It does not read `use_bda`, so **a BDA-mode deployment needs the override**: the quota
-requirements it would otherwise report are for steps those documents never call.
+Capacity planning calculates quota requirements for the pipeline mode steps (OCR,
+Classification, Extraction, Assessment, Summarization), which is the right basis for a
+configuration profile whose documents run in pipeline mode (`use_bda: false`). It does
+not support BDA mode. When the selected profile sets `use_bda: true`, the screen shows a
+**⚠️ BDA mode is not supported** alert and disables **Calculate Capacity
+Requirements**, because the quota requirements it would report are for steps those
+documents never call.
 
-The override lives behind the **⚠️ Pattern Detection Used Fallback** alert, which
-appears when the selected configuration profile names no classification model. A
-`use_bda: true` profile is merged onto the BDA defaults, which carry no `classification`
-block at all, so the alert is present in exactly the case that needs the override.
-Under **Manual Override Available** it offers three buttons — **Pattern 1 (BDA)**,
-**Pattern 2 (Bedrock)** and **Pattern 3 (SageMaker)**. Choose **Pattern 1 (BDA)** for a
-BDA-mode deployment. An active override is confirmed by a **⚠️ Manual Pattern Override
-Active** alert carrying a **Reset to Automatic Detection** link.
+For a pipeline-mode profile that names no classification model, the screen shows a
+**⚠️ No classification model configured** alert. Set the model in **View/Edit
+Configuration** before reading the numbers.
 
 ![Capacity Planning page with the configuration profile selected and the Expected Token Usage by Document Type table](../images/capacity-planning-token-usage.png)
 
@@ -344,7 +341,7 @@ detected and the splitting call never runs.
 
 **Page Count Extraction Priority**:
 1. OCR Bedrock requests count (`metrics.requests`)
-2. BDA pattern pages (`BDAProject/bda/*.pages`)
+2. BDA page counts (`BDAProject/bda/*.pages`)
 3. Metering fields (`pages`, `pageCount`, `PageCount`)
 4. Document-level fields (`doc.PageCount`, `doc.pageCount`, `doc.Pages`)
 5. Sections EndPage field as fallback
@@ -591,7 +588,7 @@ part of the report.
 
 **Configuration Not Loaded**:
 - **Symptom**: Warning message "Configuration not loaded"
-- **Solution**: Visit "View/Edit Configuration" tab first to load pattern configuration
+- **Solution**: Visit "View/Edit Configuration" tab first to load the configuration profile
 
 **No Documents Available for Token Population**:
 - **Symptom**: Alert "No documents available" saying the documents are still loading, or that none were found in the Document List period
@@ -628,7 +625,7 @@ part of the report.
 
 **Capacity Planning Workflow**:
 1. **Process Sample Documents**: Run real documents through the full workflow first
-2. **Load Configuration**: Visit View/Edit Configuration to load pattern settings
+2. **Load Configuration**: Visit View/Edit Configuration to load the configuration profile
 3. **Populate from Documents**: Use "Populate tokens from Documents" for accurate data
 4. **Configure Schedule**: Define realistic processing schedules
 5. **Calculate**: Run capacity calculations to identify quota requirements
