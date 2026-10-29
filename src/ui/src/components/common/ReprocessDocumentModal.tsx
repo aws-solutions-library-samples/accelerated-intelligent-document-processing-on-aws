@@ -6,7 +6,8 @@ import { Box, Modal, SpaceBetween, Button, Select, FormField, Alert } from '@clo
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import ConfigRevisionSelector from './ConfigRevisionSelector';
-import useSettingsContext from '../../contexts/settings';
+import useConfiguration from '../../hooks/use-configuration';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 
 const logger = new ConsoleLogger('ReprocessDocumentModal');
 
@@ -32,10 +33,10 @@ const ReprocessDocumentModal = ({
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const { versions, getVersionOptions } = useConfigurationVersions();
-  const { settings } = useSettingsContext();
-
-  // Helper function to check if Pattern-1 is selected
-  const isPattern1 = ((settings as Record<string, unknown>)?.IDPPattern as string)?.includes('Pattern1');
+  // BDA mode is a property of the selected configuration profile (`use_bda`), not of
+  // the stack: every stack deploys the unified pattern.
+  const { mergedConfig: selectedConfig } = useConfiguration(visible ? ((selectedVersion?.value as string | undefined) ?? null) : null);
+  const isBdaProfile = isBdaModeConfig(selectedConfig);
 
   // Reset selected version when modal closes so it picks up the correct version next time
   useEffect(() => {
@@ -114,7 +115,7 @@ const ReprocessDocumentModal = ({
       <SpaceBetween size="m">
         <p>{message}</p>
 
-        {isPattern1 && (
+        {isBdaProfile && (
           <Alert type="info">
             <strong>NOTE:</strong> To ensure that BDA project blueprints are aligned with your selected configuration profile, be sure to
             execute &quot;Sync To BDA&quot; for your configuration profile from the View/Edit Configuration page.
