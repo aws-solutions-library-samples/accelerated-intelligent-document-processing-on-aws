@@ -1277,7 +1277,7 @@ Resources:
                           text:
                             type: string
                             title: Send page text
-                            description: "Sends each page's OCR text. Infer sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                            description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
                             enum: ["", "true", "false"]
                             enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                             default: ""
@@ -1285,7 +1285,7 @@ Resources:
                           images:
                             type: string
                             title: Send page images
-                            description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
+                            description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
                             enum: ["", "true", "false"]
                             enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                             default: ""
@@ -1386,7 +1386,7 @@ Resources:
                           mode:
                             type: string
                             title: Class confidence mode
-                            description: "Top-K asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the page could have been. Verbalized is the cheapest and the most overconfident. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                            description: "Top-K (`topk`) asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the page could have been. Verbalized (`verbalized`) is the cheapest and the most overconfident; Off (`off`) asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
                             enum: ["topk", "verbalized", "off"]
                             enumLabels: { "topk": "Top-K — ranked candidate classes (default)", "verbalized": "Verbalized — one 0–1 score", "off": "Off — no score" }
                             default: "topk"
@@ -1472,7 +1472,7 @@ Resources:
                           boundary_hints:
                             type: string
                             title: Boundary hints
-                            description: "Whether the splitting calls are told the class names. Sending none is the saving; class names are worth it when a section's first page is titled like one of your classes."
+                            description: "Whether the splitting calls are told the class names. None (`none`) is the saving; Class names (`class_names`) are worth it when a section's first page is titled like one of your classes."
                             enum: ["none", "class_names"]
                             enumLabels: { "none": "None — no class vocabulary (default)", "class_names": "Class names — names only, as a hint" }
                             default: "none"
@@ -1655,7 +1655,7 @@ Resources:
                               text:
                                 type: string
                                 title: Send page text
-                                description: "Sends each page's OCR text. Infer sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
                                 enum: ["", "true", "false"]
                                 enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
@@ -1663,7 +1663,7 @@ Resources:
                               images:
                                 type: string
                                 title: Send page images
-                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
                                 enum: ["", "true", "false"]
                                 enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
@@ -1896,7 +1896,7 @@ Resources:
                               text:
                                 type: string
                                 title: Send page text
-                                description: "Sends each page's OCR text. Infer sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
                                 enum: ["", "true", "false"]
                                 enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
@@ -1904,7 +1904,7 @@ Resources:
                               images:
                                 type: string
                                 title: Send page images
-                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
                                 enum: ["", "true", "false"]
                                 enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
@@ -2005,7 +2005,7 @@ Resources:
                               mode:
                                 type: string
                                 title: Class confidence mode
-                                description: "Top-K asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the section could have been. Verbalized is the cheapest and the most overconfident. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                                description: "Top-K (`topk`) asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the section could have been. Verbalized (`verbalized`) is the cheapest and the most overconfident; Off (`off`) asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
                                 enum: ["topk", "verbalized", "off"]
                                 enumLabels: { "topk": "Top-K — ranked candidate classes (default)", "verbalized": "Verbalized — one 0–1 score", "off": "Off — no score" }
                                 default: "topk"
