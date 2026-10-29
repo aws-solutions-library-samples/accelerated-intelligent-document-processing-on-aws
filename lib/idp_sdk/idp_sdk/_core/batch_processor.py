@@ -245,6 +245,7 @@ class BatchProcessor:
             output_prefix,
             dir_path,
             config_version,
+            config_revision,
             base_dir=dir_path,
         )
 
@@ -255,6 +256,8 @@ class BatchProcessor:
         recursive: bool = True,
         output_prefix: str = "cli-batch",
         batch_id: Optional[str] = None,
+        config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
     ) -> Dict:
         """
         Process batch of documents from S3 URI
@@ -265,6 +268,8 @@ class BatchProcessor:
             recursive: Include sub-prefixes
             output_prefix: Prefix for output organization
             batch_id: Optional custom batch ID (auto-generated if not provided)
+            config_version: Configuration profile to process the documents under
+            config_revision: Revision of that profile to pin
 
         Returns:
             Dictionary with batch processing results
@@ -301,6 +306,8 @@ class BatchProcessor:
             batch_id,
             output_prefix,
             s3_uri,
+            config_version,
+            config_revision,
         )
 
     def _process_documents(
