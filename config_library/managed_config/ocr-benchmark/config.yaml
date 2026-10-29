@@ -841,7 +841,7 @@ ocr:
     dpi:
     preprocessing:
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-2-lite-v1:0
       temperature: '0.0'
@@ -877,12 +877,12 @@ classification:
         <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
         <document-image> {DOCUMENT_IMAGE} </document-image>
         <final-instructions> Analyze the document above by: 1. Applying the <classification-instructions> to examine both visual and textual features 2. Selecting ONLY from document types in <document-types> 3. Providing clear reasoning with specific evidence 4. Outputting in the exact JSON format specified in <output-format> </final-instructions>
-  # The two-stage calls list only what differs from the system defaults: the
-  # other settings this preset sets for one stage equal the defaults there.
-  # This preset runs one stage; the block keeps a switch to two stage on the
-  # same model settings.
-  two_stage:
-    boundary_detection:
+  # The split-then-classify calls list only what differs from the system
+  # defaults: the other settings this preset sets for the combined call equal
+  # the defaults there. This preset runs the combined strategy; the block keeps
+  # a switch to split-then-classify on the same model settings.
+  split_then_classify:
+    splitting:
       llm:
         max_tokens: '4096'
     section_classification:

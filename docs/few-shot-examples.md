@@ -249,23 +249,24 @@ When classifying documents:
 
 ⚠️ **Which classification prompt carries the examples depends on
 `classification.strategy`.** Every prompt example on this page edits
-`classification.one_stage.page.task_prompt`, which is the right place under
-`strategy: single_pass` (*One stage* in the configuration editor) — the default.
-Under `strategy: two_stage`:
+`classification.combined.page.task_prompt`, which is the right place under
+`strategy: combined` (*Split and classify together (one call)* in the configuration
+editor) — the default.
+Under `strategy: split_then_classify`:
 
 - `{FEW_SHOT_EXAMPLES}` belongs in
-  `classification.two_stage.section_classification.llm.task_prompt`, the call
+  `classification.split_then_classify.section_classification.llm.task_prompt`, the call
   that assigns the class. The shipped prompt there carries the placeholder, so
   defining examples is enough.
-- The **boundary detection** prompts
-  (`classification.two_stage.boundary_detection.llm.page.task_prompt` and
+- The **splitting** prompts
+  (`classification.split_then_classify.splitting.llm.page.task_prompt` and
   `…llm.packet.task_prompt`) deliberately carry no class vocabulary and no
   examples — they carry `{BOUNDARY_HINTS}` instead. Withholding the class list
-  and the examples from the boundary pass is where two stage's prefix saving
-  comes from, so adding `{FEW_SHOT_EXAMPLES}` to a boundary detection prompt spends
+  and the examples from the splitting call is where split-then-classify's prefix
+  saving comes from, so adding `{FEW_SHOT_EXAMPLES}` to a splitting prompt spends
   exactly the tokens the strategy exists to avoid, on a call that is only being
   asked where sections start.
-- Editing `one_stage.page.task_prompt` under `two_stage` changes nothing and
+- Editing `combined.page.task_prompt` under `split_then_classify` changes nothing and
   raises no error, because that block is not read.
 
 ### Extraction Process
@@ -412,7 +413,7 @@ Ensure your classification and extraction task prompts include the `{FEW_SHOT_EX
 **Standard Few-Shot Configuration:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document into exactly one of these categories:
@@ -448,7 +449,7 @@ extraction:
 **Enhanced Configuration with Image Placement:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document into exactly one of these categories:
@@ -879,7 +880,7 @@ classes:
         # No x-aws-idp-image-path - text-only example
 
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document: {CLASS_NAMES_AND_DESCRIPTIONS}
@@ -901,7 +902,7 @@ For production use with optimal caching:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         You are a document classification expert. Classify the document into exactly one category.

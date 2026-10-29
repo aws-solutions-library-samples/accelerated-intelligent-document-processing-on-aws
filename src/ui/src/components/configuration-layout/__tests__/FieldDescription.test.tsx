@@ -95,9 +95,9 @@ describe('stripInlineMarkdown', () => {
   });
 
   it('does not eat an underscore inside an identifier', () => {
-    // `single_pass` and `task_prompt` appear throughout these descriptions, and
+    // `combined` and `task_prompt` appear throughout these descriptions, and
     // a naive italics rule turns them into `singlepass`.
-    expect(stripInlineMarkdown("'single_pass' reads task_prompt")).toBe("'single_pass' reads task_prompt");
+    expect(stripInlineMarkdown("'combined' reads task_prompt")).toBe("'combined' reads task_prompt");
   });
 
   it('does not eat an asterisk that is not emphasis', () => {

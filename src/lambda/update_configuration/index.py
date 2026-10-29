@@ -466,9 +466,9 @@ def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) 
     """Write the stack's custom/fine-tuned model ARNs into a merged config.
 
     ``CustomClassificationModelARN`` replaces the model of the call that assigns
-    the class under the active strategy — ``one_stage.llm`` for a single pass,
-    ``two_stage.section_classification.llm`` for two stages. Boundary detection keeps
-    its own model: it only finds boundaries, which is not what a classification
+    the class under the active strategy — ``combined.llm`` for the combined
+    strategy, ``split_then_classify.section_classification.llm`` for
+    split-then-classify. The splitting call keeps its own model: it only finds boundaries, which is not what a classification
     model was trained to do. ``CustomExtractionModelARN`` replaces
     ``extraction.model``. An empty or absent ARN changes nothing.
     """

@@ -60,7 +60,7 @@ from typing_extensions import Self
 # configuration also has its hand-written flat prompts copied into
 # `classification.packet`, which is where packet granularity reads them. v0.9
 # nested every classification setting inside the call that uses it
-# (`one_stage`, `two_stage.boundary_detection`, `two_stage.section_classification`),
+# (`combined`, `split_then_classify.splitting`, `split_then_classify.section_classification`),
 # moved the file-shape assertions under `document_shape`, and replaced
 # `invalidClassFallback` with `fallback_class`. v0.10 made the error analyzer's
 # `parameters.max_log_events` take effect with a default of 10, and raises a stored
@@ -1568,8 +1568,8 @@ class ClassificationClassConfidenceConfig(BaseModel):
     """How a classification call reports confidence in the CLASS it chose.
 
     Carried by each call that assigns a class:
-    ``classification.one_stage.llm.confidence`` and
-    ``classification.two_stage.section_classification.llm.confidence``. Deliberately NOT the same thing as
+    ``classification.combined.llm.confidence`` and
+    ``classification.split_then_classify.section_classification.llm.confidence``. Deliberately NOT the same thing as
     ``extraction.confidence``: that block configures a whole confidence-scoring
     *inference* over extracted fields, whereas this one only decides what the
     classification prompt asks the model to return alongside the class. There is
@@ -2095,8 +2095,8 @@ class ClassificationModelSettings(BaseModel):
 class ClassificationValidationConfig(BaseModel):
     """Re-prompt when a call returns a class outside the configured vocabulary.
 
-    Only on calls that decide a class: one stage, and two-stage section
-    classification. Never boundary detection, which returns no class.
+    Only on calls that decide a class: the combined call, and split-then-classify's
+    section classification. Never the splitting call, which returns no class.
     """
 
     enforceValidClasses: bool = Field(
@@ -2164,8 +2164,8 @@ class ClassificationPageInputConfig(BaseModel):
         return _parse_int_param(v, 0)
 
 
-class OneStageConfig(BaseModel):
-    """``strategy: single_pass`` — boundaries and classes from the same call."""
+class CombinedConfig(BaseModel):
+    """``strategy: combined`` — boundaries and classes from the same call."""
 
     granularity: str = Field(
         default="page",
@@ -2188,14 +2188,14 @@ class OneStageConfig(BaseModel):
     @field_validator("granularity", mode="before")
     @classmethod
     def validate_granularity(cls, v: Any) -> str:
-        return _normalise_granularity(v, "classification.one_stage.granularity")
+        return _normalise_granularity(v, "classification.combined.granularity")
 
 
-class BoundaryDetectionLLMConfig(ClassificationModelSettings):
-    """Two-stage boundary detection by an LLM: boundaries only, no class vocabulary.
+class SplittingLLMConfig(ClassificationModelSettings):
+    """The splitting call, made by an LLM: boundaries only, no class vocabulary.
 
     Model settings only — no validation and no class confidence — because this
-    call returns page ranges and never a class. The saving over one stage is the
+    call returns page ranges and never a class. The saving over combined is the
     prefix: no class list, descriptions or few-shot examples on any call.
     """
 
@@ -2222,7 +2222,7 @@ class BoundaryDetectionLLMConfig(ClassificationModelSettings):
     @classmethod
     def validate_granularity(cls, v: Any) -> str:
         return _normalise_granularity(
-            v, "classification.two_stage.boundary_detection.llm.granularity"
+            v, "classification.split_then_classify.splitting.llm.granularity"
         )
 
     @field_validator("boundary_hints", mode="before")
@@ -2233,7 +2233,7 @@ class BoundaryDetectionLLMConfig(ClassificationModelSettings):
         v_str = str(v).strip().lower()
         if v_str not in ("none", "class_names"):
             raise ValueError(
-                "classification.two_stage.boundary_detection.llm.boundary_hints must be "
+                "classification.split_then_classify.splitting.llm.boundary_hints must be "
                 f"'none' or 'class_names', got {v!r}"
             )
         return v_str
@@ -2242,7 +2242,7 @@ class BoundaryDetectionLLMConfig(ClassificationModelSettings):
 class ExternalModelConfig(BaseModel):
     """An external model behind a stable contract. **Declared, not yet implemented.**
 
-    Shared by the boundary model (boundary detection) and the decision model (section
+    Shared by the boundary model (splitting) and the decision model (section
     classification), so both methods land without a configuration migration.
     """
 
@@ -2259,26 +2259,26 @@ class ExternalModelConfig(BaseModel):
     )
 
 
-class BoundaryDetectionConfig(BaseModel):
-    """Two-stage boundary detection: where each section starts and ends."""
+class SplittingConfig(BaseModel):
+    """Split-then-classify's splitting call: where each section starts and ends."""
 
     method: str = Field(
         default="llm",
         description="'llm' (the only value today). 'boundary_model' is declared.",
     )
-    llm: BoundaryDetectionLLMConfig = Field(default_factory=BoundaryDetectionLLMConfig)
+    llm: SplittingLLMConfig = Field(default_factory=SplittingLLMConfig)
     boundary_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
 
     @field_validator("method", mode="before")
     @classmethod
     def validate_method(cls, v: Any) -> str:
         return _single_value_method(
-            v, "classification.two_stage.boundary_detection.method", "'boundary_model'"
+            v, "classification.split_then_classify.splitting.method", "'boundary_model'"
         )
 
 
 class SectionClassificationLLMConfig(ClassificationClassAssigningSettings):
-    """Two-stage section classification by an LLM: one call per section."""
+    """Split-then-classify's section classification by an LLM: one call per section."""
 
     system_prompt: str = Field(default="", description="System prompt.")
     task_prompt: str = Field(
@@ -2325,7 +2325,7 @@ class LowConfidenceConfig(BaseModel):
 
 
 class SectionClassificationConfig(BaseModel):
-    """Two-stage section classification: one class per section, not per page."""
+    """Split-then-classify's section classification: one class per section."""
 
     method: str = Field(
         default="llm",
@@ -2353,7 +2353,7 @@ class SectionClassificationConfig(BaseModel):
     def validate_method(cls, v: Any) -> str:
         return _single_value_method(
             v,
-            "classification.two_stage.section_classification.method",
+            "classification.split_then_classify.section_classification.method",
             "'embeddings' / 'decision_model'",
         )
 
@@ -2365,7 +2365,7 @@ class SectionClassificationConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in ("first", "first_k", "all"):
             raise ValueError(
-                "classification.two_stage.section_classification.pages must be "
+                "classification.split_then_classify.section_classification.pages must be "
                 f"'first', 'first_k', or 'all', got {v!r}"
             )
         return v_str
@@ -2376,12 +2376,10 @@ class SectionClassificationConfig(BaseModel):
         return _parse_int_param(v, 2) or 1
 
 
-class TwoStageConfig(BaseModel):
-    """``strategy: two_stage`` — segment first, then classify each section."""
+class SplitThenClassifyConfig(BaseModel):
+    """``strategy: split_then_classify`` — split first, then classify each section."""
 
-    boundary_detection: BoundaryDetectionConfig = Field(
-        default_factory=BoundaryDetectionConfig
-    )
+    splitting: SplittingConfig = Field(default_factory=SplittingConfig)
     section_classification: SectionClassificationConfig = Field(
         default_factory=SectionClassificationConfig
     )
@@ -2554,8 +2552,8 @@ class ClassificationConfig(BaseModel):
     """Document classification configuration (config format 0.9).
 
     ``strategy`` decides how many calls are made and what each does. Every
-    model setting lives inside the call that uses it — ``one_stage``, or
-    ``two_stage.boundary_detection`` and ``two_stage.section_classification`` — so no
+    model setting lives inside the call that uses it — ``combined``, or
+    ``split_then_classify.splitting`` and ``split_then_classify.section_classification`` — so no
     setting at this level is silently ignored by one strategy. The flat keys of
     earlier formats are converted on read by ``migrations.v08_to_v09``.
     """
@@ -2565,11 +2563,12 @@ class ClassificationConfig(BaseModel):
         description="Pipeline hooks invoked after classification (Feature Platform)",
     )
     strategy: str = Field(
-        default="single_pass",
+        default="combined",
         description=(
-            "'single_pass' (One stage): one call returns both the boundaries and "
-            "the classes. 'two_stage': boundaries first with no class vocabulary, "
-            "then one call per section to classify it."
+            "'combined' (Split and classify together (one call)): one call returns "
+            "both the boundaries and the classes. 'split_then_classify' (Split first, "
+            "then classify each section): a splitting call finds the boundaries with "
+            "no class vocabulary, then one call per section classifies it."
         ),
     )
     fallback_class: str = Field(
@@ -2580,8 +2579,10 @@ class ClassificationConfig(BaseModel):
             "configured classes, or the built-in 'unclassified'."
         ),
     )
-    one_stage: OneStageConfig = Field(default_factory=OneStageConfig)
-    two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
+    combined: CombinedConfig = Field(default_factory=CombinedConfig)
+    split_then_classify: SplitThenClassifyConfig = Field(
+        default_factory=SplitThenClassifyConfig
+    )
     document_shape: DocumentShapeConfig = Field(default_factory=DocumentShapeConfig)
 
     @model_validator(mode="before")
@@ -2616,11 +2617,11 @@ class ClassificationConfig(BaseModel):
     @classmethod
     def validate_strategy(cls, v: Any) -> str:
         if v is None or (isinstance(v, str) and not v.strip()):
-            return "single_pass"
+            return "combined"
         v_str = str(v).strip().lower()
-        if v_str not in ("single_pass", "two_stage"):
+        if v_str not in ("combined", "split_then_classify"):
             raise ValueError(
-                "classification.strategy must be 'single_pass' or 'two_stage', "
+                "classification.strategy must be 'combined' or 'split_then_classify', "
                 f"got {v!r}"
             )
         return v_str
@@ -2635,27 +2636,27 @@ class ClassificationConfig(BaseModel):
     # ── Resolved views. Every reader goes through these rather than walking the
     # tree, so the strategy-dependent choice of block is made in one place.
 
-    def page_input_call(self) -> Union[OneStageConfig, BoundaryDetectionLLMConfig]:
+    def page_input_call(self) -> Union[CombinedConfig, SplittingLLMConfig]:
         """The block whose granularity / page / packet settings are in force."""
-        if self.strategy == "two_stage":
-            return self.two_stage.boundary_detection.llm
-        return self.one_stage
+        if self.strategy == "split_then_classify":
+            return self.split_then_classify.splitting.llm
+        return self.combined
 
     def class_assigning_llm(
         self,
     ) -> Union[ClassificationClassAssigningSettings, SectionClassificationLLMConfig]:
         """The block that decides the class under the active strategy."""
-        if self.strategy == "two_stage":
-            return self.two_stage.section_classification.llm
-        return self.one_stage.llm
+        if self.strategy == "split_then_classify":
+            return self.split_then_classify.section_classification.llm
+        return self.combined.llm
 
 
 #: Where the class-assigning call's settings live, per strategy. A tool writing
 #: "the classification model" — a custom or fine-tuned model ARN, say — writes
 #: here, because that is the call whose model decides the class.
 CLASS_ASSIGNING_LLM_PATHS: Dict[str, Tuple[str, ...]] = {
-    "single_pass": ("one_stage", "llm"),
-    "two_stage": ("two_stage", "section_classification", "llm"),
+    "combined": ("combined", "llm"),
+    "split_then_classify": ("split_then_classify", "section_classification", "llm"),
 }
 
 
@@ -2663,7 +2664,7 @@ def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
     """The path, under ``classification``, of the active class-assigning call.
 
     Reads the raw dict so a writer can use it before validation. An absent or
-    unrecognised strategy is ``single_pass``, the default.
+    unrecognised strategy is ``combined``, the default.
     """
     strategy = (
         str(classification.get("strategy") or "").strip().lower()
@@ -2671,7 +2672,7 @@ def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
         else ""
     )
     return CLASS_ASSIGNING_LLM_PATHS.get(
-        strategy, CLASS_ASSIGNING_LLM_PATHS["single_pass"]
+        strategy, CLASS_ASSIGNING_LLM_PATHS["combined"]
     )
 
 
@@ -4312,7 +4313,7 @@ MAX_REPORTED_IGNORED_KEYS = 20
 _SUGGESTION_CUTOFF = 0.8
 
 #: The block that holds a classification call's model parameters. A call setting
-#: written directly in the call's own block (``two_stage.section_classification.
+#: written directly in the call's own block (``split_then_classify.section_classification.
 #: model``) belongs one level down in this block, and a same-depth tie with another
 #: sub-block declaring the same name (``section_classification.embeddings.model``,
 #: a different model for a method that is declared but not selectable) is settled
@@ -4456,7 +4457,7 @@ def _suggest_path(
        One tie is settled rather than declined: a key one level too shallow inside
        the block it was written in, where exactly one tied candidate sits in that
        block's ``llm`` sub-block (``_CALL_SETTINGS_BLOCK``) —
-       ``two_stage.section_classification.model`` →
+       ``split_then_classify.section_classification.model`` →
        ``...section_classification.llm.model`` rather than nothing, because
        ``...embeddings.model`` ties with it at the same depth.
 
@@ -5192,15 +5193,15 @@ class IDPConfig(BaseModel):
         # Only the calls the active strategy makes: an inactive block with images
         # off can send nothing to anyone, and refusing it would stop an operator
         # saving a configuration whose live calls are fine.
-        if cls.strategy == "two_stage":
+        if cls.strategy == "split_then_classify":
             calls = {
-                "two_stage.boundary_detection.llm": cls.two_stage.boundary_detection.llm,
-                "two_stage.section_classification.llm": (
-                    cls.two_stage.section_classification.llm
+                "split_then_classify.splitting.llm": cls.split_then_classify.splitting.llm,
+                "split_then_classify.section_classification.llm": (
+                    cls.split_then_classify.section_classification.llm
                 ),
             }
         else:
-            calls = {"one_stage.llm": cls.one_stage.llm}
+            calls = {"combined.llm": cls.combined.llm}
         for path, call in calls.items():
             if call.modality.images is False:
                 raise ValueError(

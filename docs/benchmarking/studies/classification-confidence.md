@@ -14,7 +14,7 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 **Region:** us-west-2 · **Stack:** `IDPBench066`
 **Test set:** `docsplit` (DocSplit-Poly-Seq — RVL-CDIP-derived packets, 13 classes)
 · first **20 packets**, **298 pages** per model per mode, one run each, no failures
-**Config:** `config_library/unified/docsplit/config.yaml`, `classification.one_stage.llm.confidence.mode`
+**Config:** `config_library/unified/docsplit/config.yaml`, `classification.combined.llm.confidence.mode`
 ∈ {`topk` (`top_k_candidates: 3`), `off`}, everything else at system defaults;
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
@@ -185,17 +185,17 @@ cost of an Anthropic classifier. The 6.4× figure above is what you actually pay
 
 ## 6. Guidance
 
-⚠️ **Every path on this page is the `single_pass` one, and under `two_stage` the
+⚠️ **Every path on this page is the `combined` one, and under `split_then_classify` the
 block you must edit is a different one.** This study ran
-`classification.strategy: single_pass`, so `mode` and the threshold below mean
-`classification.one_stage.llm.confidence.…`. Under `classification.strategy:
-two_stage` the call that assigns a class is section classification, so the same
+`classification.strategy: combined`, so `mode` and the threshold below mean
+`classification.combined.llm.confidence.…`. Under `classification.strategy:
+split_then_classify` the call that assigns a class is section classification, so the same
 settings live at
-`classification.two_stage.section_classification.llm.confidence.…` and the
-`one_stage` block is not read at all — editing it there changes nothing and
-produces no error. The boundary detection call has no confidence block, because it
-assigns no class. The cost figures also assume single-pass metering: a two-stage
-run's classification spend is reported under `BoundaryDetection/` and
+`classification.split_then_classify.section_classification.llm.confidence.…` and the
+`combined` block is not read at all — editing it there changes nothing and
+produces no error. The splitting call has no confidence block, because it
+assigns no class. The cost figures also assume combined metering: a split-then-classify
+run's classification spend is reported under `Splitting/` and
 `SectionClassification/` rather than `Classification/`.
 
 1. **`topk` is on by default, and that is the right default** — ~0.5 % of the bill

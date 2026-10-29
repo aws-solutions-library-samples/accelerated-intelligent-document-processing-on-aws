@@ -50,9 +50,9 @@ from idp_common.config.models import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CALLS = (
-    "one_stage.llm",
-    "two_stage.boundary_detection.llm",
-    "two_stage.section_classification.llm",
+    "combined.llm",
+    "split_then_classify.splitting.llm",
+    "split_then_classify.section_classification.llm",
 )
 CLASSES = [
     {"$id": "invoice", "description": "An invoice"},
@@ -97,20 +97,20 @@ class TestTheShippedDefaultsAreEquivalent:
 
     def test_the_0_6_12_defaults_send_what_0_6_12_sent(self):
         """The last release's defaults, read now, send its prompts, its model and
-        its parameters from the call single pass makes."""
+        its parameters from the combined call."""
         old = _fixture("base-classification-0.6.12.yaml")["classification"]
         cls = IDPConfig(classification=copy.deepcopy(old)).classification
-        assert cls.strategy == "single_pass"
-        assert cls.one_stage.granularity == "page"
-        assert cls.one_stage.page.task_prompt == old["task_prompt"]
-        assert cls.one_stage.page.system_prompt == old["system_prompt"]
-        assert cls.one_stage.llm.model == old["model"]
-        assert cls.one_stage.llm.temperature == float(old["temperature"])
-        assert cls.one_stage.llm.validation.maxValidationRetries == int(
+        assert cls.strategy == "combined"
+        assert cls.combined.granularity == "page"
+        assert cls.combined.page.task_prompt == old["task_prompt"]
+        assert cls.combined.page.system_prompt == old["system_prompt"]
+        assert cls.combined.llm.model == old["model"]
+        assert cls.combined.llm.temperature == float(old["temperature"])
+        assert cls.combined.llm.validation.maxValidationRetries == int(
             old["maxValidationRetries"]
         )
         assert cls.fallback_class == old["invalidClassFallback"]
-        assert cls.one_stage.llm.confidence.mode == old["confidence"]["mode"]
+        assert cls.combined.llm.confidence.mode == old["confidence"]["mode"]
         assert cls.document_shape.sectionSplitting == old["sectionSplitting"]
 
     def test_a_0_6_12_profile_builds_the_same_request(self):
@@ -156,16 +156,19 @@ class TestASparseDelta:
         cls = IDPConfig(**merged).classification
         defaults = IDPConfig(**merge_config_with_defaults({}, validate=False))
         assert {c.temperature for c in _calls(cls).values()} == {0.4}
-        assert cls.one_stage.page == defaults.classification.one_stage.page
-        assert cls.two_stage == defaults.classification.two_stage.model_copy(
-            update={
-                "boundary_detection": cls.two_stage.boundary_detection,
-                "section_classification": cls.two_stage.section_classification,
-            }
+        assert cls.combined.page == defaults.classification.combined.page
+        assert (
+            cls.split_then_classify
+            == defaults.classification.split_then_classify.model_copy(
+                update={
+                    "splitting": cls.split_then_classify.splitting,
+                    "section_classification": cls.split_then_classify.section_classification,
+                }
+            )
         )
         assert (
-            cls.two_stage.section_classification.llm.task_prompt
-            == defaults.classification.two_stage.section_classification.llm.task_prompt
+            cls.split_then_classify.section_classification.llm.task_prompt
+            == defaults.classification.split_then_classify.section_classification.llm.task_prompt
         )
 
     def test_merging_first_gives_the_same_answer_as_migrating_first(self):
@@ -188,7 +191,7 @@ class TestASparseDelta:
         merged_first = IDPConfig(**hybrid).classification
         assert merged_first.model_dump() == migrated_first.model_dump()
         assert merged_first.fallback_class == "receipt"
-        assert merged_first.one_stage.granularity == "packet"
+        assert merged_first.combined.granularity == "packet"
 
 
 # --------------------------------------------------------------------------
@@ -203,14 +206,14 @@ class TestAHybrid:
             {
                 "classification": {
                     "model": "flat-model",
-                    "one_stage": {"llm": {"model": "nested-model", "temperature": 0.3}},
+                    "combined": {"llm": {"model": "nested-model", "temperature": 0.3}},
                 }
             }
         )
         cls = out["classification"]
-        assert cls["one_stage"]["llm"]["model"] == "flat-model"
+        assert cls["combined"]["llm"]["model"] == "flat-model"
         # A nested key the flat side does not mention is kept.
-        assert cls["one_stage"]["llm"]["temperature"] == 0.3
+        assert cls["combined"]["llm"]["temperature"] == 0.3
         assert not FLAT_KEYS & cls.keys()
 
     def test_a_flat_sub_block_overrides_key_by_key(self):
@@ -218,13 +221,13 @@ class TestAHybrid:
             {
                 "classification": {
                     "confidence": {"mode": "off"},
-                    "one_stage": {
+                    "combined": {
                         "llm": {"confidence": {"mode": "topk", "top_k_candidates": 4}}
                     },
                 }
             }
         )
-        conf = out["classification"]["one_stage"]["llm"]["confidence"]
+        conf = out["classification"]["combined"]["llm"]["confidence"]
         assert conf == {"mode": "off", "top_k_candidates": 4}
 
 
@@ -235,7 +238,7 @@ class TestAHybrid:
 
 @pytest.mark.unit
 class TestTheWholeChain:
-    def test_a_0_7_holistic_profile_reads_as_one_stage_packet(self):
+    def test_a_0_7_holistic_profile_reads_as_combined_packet(self):
         prompt = "return segments with ordinal_start_page {DOCUMENT_TEXT}"
         cls = IDPConfig(
             classification={
@@ -244,9 +247,9 @@ class TestTheWholeChain:
                 "system_prompt": "holistic system",
             }
         ).classification
-        assert cls.one_stage.granularity == "packet"
-        assert cls.one_stage.packet.task_prompt == prompt
-        assert cls.one_stage.packet.system_prompt == "holistic system"
+        assert cls.combined.granularity == "packet"
+        assert cls.combined.packet.task_prompt == prompt
+        assert cls.combined.packet.system_prompt == "holistic system"
 
     def test_the_chain_ends_at_the_current_format(self):
         out = migrate_config({"classification": {"model": "m"}})
@@ -254,12 +257,28 @@ class TestTheWholeChain:
 
 
 # --------------------------------------------------------------------------
-# 6. Two-stage stage models and parameters (A7)
+# 6. Split-then-classify call models and parameters (A7)
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestTwoStageStages:
+class TestTheV08StrategySpellings:
+    """v0.8 spelled the strategies ``single_pass`` and ``two_stage``; v0.9 names
+    them ``combined`` and ``split_then_classify``. A v0.8 value left unconverted
+    would fail the strategy validator, so each one is pinned here."""
+
+    @pytest.mark.parametrize(
+        ("v08", "v09"),
+        [("single_pass", "combined"), ("two_stage", "split_then_classify")],
+    )
+    def test_each_v08_strategy_value_converts(self, v08, v09):
+        out = migrate_v08_to_v09({"classification": {"strategy": v08, "model": "m"}})
+        assert out["classification"]["strategy"] == v09
+        assert IDPConfig(**out).classification.strategy == v09
+
+
+@pytest.mark.unit
+class TestSplitThenClassifyStages:
     def test_an_empty_stage_model_inherits_and_an_explicit_one_is_kept(self):
         cls = IDPConfig(
             classification={
@@ -270,19 +289,19 @@ class TestTwoStageStages:
                 "labeling": {"model": "label-model"},
             }
         ).classification
-        assert cls.two_stage.boundary_detection.llm.model == "shared"
-        assert cls.two_stage.section_classification.llm.model == "label-model"
+        assert cls.split_then_classify.splitting.llm.model == "shared"
+        assert cls.split_then_classify.section_classification.llm.model == "label-model"
         # The parameters reached both stages, including the one with its own model.
-        assert cls.two_stage.boundary_detection.llm.temperature == 0.2
-        assert cls.two_stage.section_classification.llm.temperature == 0.2
+        assert cls.split_then_classify.splitting.llm.temperature == 0.2
+        assert cls.split_then_classify.section_classification.llm.temperature == 0.2
 
-    def test_the_packet_window_reaches_boundary_detection_too(self):
+    def test_the_packet_window_reaches_splitting_too(self):
         cls = IDPConfig(
             classification={"packet": {"window_pages": 7, "overlap_pages": 1}}
         ).classification
-        assert cls.one_stage.packet.window_pages == 7
-        assert cls.two_stage.boundary_detection.llm.packet.window_pages == 7
-        assert cls.two_stage.boundary_detection.llm.packet.overlap_pages == 1
+        assert cls.combined.packet.window_pages == 7
+        assert cls.split_then_classify.splitting.llm.packet.window_pages == 7
+        assert cls.split_then_classify.splitting.llm.packet.overlap_pages == 1
 
     def test_stage_prompts_land_in_their_own_blocks(self):
         cls = IDPConfig(
@@ -295,19 +314,22 @@ class TestTwoStageStages:
                 "labeling": {"task_prompt": "label", "pages": "all"},
             }
         ).classification
-        seg = cls.two_stage.boundary_detection.llm
+        seg = cls.split_then_classify.splitting.llm
         assert seg.page.task_prompt == "seg page"
         assert seg.packet.task_prompt == "seg packet"
         assert seg.boundary_hints == "class_names"
-        assert cls.two_stage.section_classification.llm.task_prompt == "label"
-        assert cls.two_stage.section_classification.pages == "all"
+        assert cls.split_then_classify.section_classification.llm.task_prompt == "label"
+        assert cls.split_then_classify.section_classification.pages == "all"
 
     def test_confidence_reaches_the_class_assigning_calls_only(self):
         cls = IDPConfig(classification={"confidence": {"mode": "verbalized"}})
         c = cls.classification
-        assert c.one_stage.llm.confidence.mode == "verbalized"
-        assert c.two_stage.section_classification.llm.confidence.mode == "verbalized"
-        assert not hasattr(c.two_stage.boundary_detection.llm, "confidence")
+        assert c.combined.llm.confidence.mode == "verbalized"
+        assert (
+            c.split_then_classify.section_classification.llm.confidence.mode
+            == "verbalized"
+        )
+        assert not hasattr(c.split_then_classify.splitting.llm, "confidence")
 
 
 # --------------------------------------------------------------------------
@@ -325,8 +347,8 @@ class TestModality:
         )
         assert service._resolve_modality() == (True, False)
 
-    def test_a_two_stage_profile_keeps_what_its_stages_inferred(self):
-        """In 0.8 every call inferred from the single-pass prompt; in 0.9 each
+    def test_a_split_then_classify_profile_keeps_what_its_stages_inferred(self):
+        """In 0.8 every call inferred from the flat (combined) prompt; in 0.9 each
         infers from its own. The migration writes the old answer down so the
         stages, whose shipped prompts carry both placeholders, keep text-only."""
         service = _service(
@@ -339,7 +361,7 @@ class TestModality:
             }
         )
         for stage in (
-            service.STAGE_BOUNDARY_DETECTION,
+            service.STAGE_SPLITTING,
             service.STAGE_SECTION_CLASSIFICATION,
         ):
             assert service._resolve_modality(stage=stage) == (True, False), stage
@@ -352,7 +374,7 @@ class TestModality:
                 "modality": {"images": True},
             }
         ).classification
-        assert cls.two_stage.boundary_detection.llm.modality.images is True
+        assert cls.split_then_classify.splitting.llm.modality.images is True
 
 
 # --------------------------------------------------------------------------
@@ -362,7 +384,7 @@ class TestModality:
 
 @pytest.mark.unit
 class TestThePageLimit:
-    def test_a_limit_with_boundary_detection_becomes_one_document(self, caplog):
+    def test_a_limit_with_splitting_becomes_one_document(self, caplog):
         with caplog.at_level(logging.WARNING):
             out = migrate_v08_to_v09(
                 {
@@ -527,11 +549,11 @@ class TestThePageLimit:
 class TestAbsentIsNotCleared:
     def test_a_deliberately_empty_prompt_stays_empty(self):
         out = migrate_v08_to_v09({"classification": {"task_prompt": ""}})
-        assert out["classification"]["one_stage"]["page"]["task_prompt"] == ""
+        assert out["classification"]["combined"]["page"]["task_prompt"] == ""
 
     def test_an_absent_key_writes_nothing(self):
         out = migrate_v08_to_v09({"classification": {"model": "m"}})
-        assert "page" not in out["classification"].get("one_stage", {})
+        assert "page" not in out["classification"].get("combined", {})
         assert "document_shape" not in out["classification"]
 
 
@@ -582,9 +604,9 @@ class TestAPinnedRevision:
 
         config = manager.get_merged_configuration("p", revision=1)
 
-        assert config.classification.one_stage.llm.model == "us.amazon.nova-lite-v1:0"
+        assert config.classification.combined.llm.model == "us.amazon.nova-lite-v1:0"
         assert (
-            config.classification.one_stage.page.task_prompt
+            config.classification.combined.page.task_prompt
             == old["classification"]["task_prompt"]
         )
         assert s3.get_object(Bucket=BUCKET, Key=key)["Body"].read() == before
@@ -607,7 +629,7 @@ class TestIdempotence:
     def test_a_current_config_is_returned_as_is(self):
         current = {
             "config_format_version": TARGET_VERSION,
-            "classification": {"one_stage": {"llm": {"model": "m"}}},
+            "classification": {"combined": {"llm": {"model": "m"}}},
         }
         assert migrate_v08_to_v09(current) is current
 
@@ -616,7 +638,7 @@ class TestIdempotence:
             {"config_format_version": "0.10", "classification": {"model": "m"}}
         )
         assert out["config_format_version"] == "0.10"
-        assert out["classification"]["one_stage"]["llm"]["model"] == "m"
+        assert out["classification"]["combined"]["llm"]["model"] == "m"
 
 
 # --------------------------------------------------------------------------
@@ -752,8 +774,8 @@ class TestASaveAfterTheUpgrade:
 
         delta = {
             "classification": {
-                "strategy": "two_stage",
-                "two_stage": {
+                "strategy": "split_then_classify",
+                "split_then_classify": {
                     "section_classification": {
                         "llm": {"model": "us.amazon.nova-pro-v1:0"}
                     }
@@ -770,14 +792,15 @@ class TestASaveAfterTheUpgrade:
         assert not FLAT_KEYS & stored["classification"].keys()
 
         cls = manager.get_merged_configuration("p").classification
-        assert cls.strategy == "two_stage"
+        assert cls.strategy == "split_then_classify"
         assert (
-            cls.two_stage.section_classification.llm.model == "us.amazon.nova-pro-v1:0"
+            cls.split_then_classify.section_classification.llm.model
+            == "us.amazon.nova-pro-v1:0"
         )
         # The 0.6.12 settings the edit did not touch are still the profile's.
-        assert cls.one_stage.llm.model == "us.amazon.nova-lite-v1:0"
-        assert cls.two_stage.boundary_detection.llm.model == "us.amazon.nova-lite-v1:0"
-        assert cls.two_stage.boundary_detection.llm.temperature == 0.3
+        assert cls.combined.llm.model == "us.amazon.nova-lite-v1:0"
+        assert cls.split_then_classify.splitting.llm.model == "us.amazon.nova-lite-v1:0"
+        assert cls.split_then_classify.splitting.llm.temperature == 0.3
 
     def test_an_old_flat_upload_lands_in_every_call(self, monkeypatch):
         """An `idp-cli config-upload` of a file written for 0.6.12."""
@@ -800,8 +823,8 @@ class TestASaveAfterTheUpgrade:
 
 @pytest.mark.unit
 class TestAMisplacedSettingIsReported:
-    """One stage keeps granularity, page and packet on its own block, while
-    boundary detection keeps them on its ``llm`` block. A hand-written config that
+    """The combined strategy keeps granularity, page and packet on its own block,
+    while the splitting call keeps them on its ``llm`` block. A hand-written config that
     mirrors one spelling in the other place is not read, so the unknown-key
     report (what ``idp-cli config-validate`` prints) must name it and say where
     it belongs."""
@@ -810,12 +833,12 @@ class TestAMisplacedSettingIsReported:
         ("written", "belongs"),
         [
             (
-                {"two_stage": {"boundary_detection": {"granularity": "packet"}}},
-                "classification.two_stage.boundary_detection.llm.granularity",
+                {"split_then_classify": {"splitting": {"granularity": "packet"}}},
+                "classification.split_then_classify.splitting.llm.granularity",
             ),
             (
-                {"one_stage": {"llm": {"granularity": "packet"}}},
-                "classification.one_stage.granularity",
+                {"combined": {"llm": {"granularity": "packet"}}},
+                "classification.combined.granularity",
             ),
         ],
     )
@@ -827,17 +850,17 @@ class TestAMisplacedSettingIsReported:
 
 
 @pytest.mark.unit
-class TestAFlatModelOnANestedTwoStageProfile:
+class TestAFlatModelOnANestedSplitThenClassifyProfile:
     """An old script setting `classification.model` on a v0.9 profile."""
 
-    def _hybrid(self, boundary_detection_model, section_model):
+    def _hybrid(self, splitting_model, section_model):
         return {
             "classification": {
                 "model": "flat-model",
-                "strategy": "two_stage",
-                "one_stage": {"llm": {"model": "old-model"}},
-                "two_stage": {
-                    "boundary_detection": {"llm": {"model": boundary_detection_model}},
+                "strategy": "split_then_classify",
+                "combined": {"llm": {"model": "old-model"}},
+                "split_then_classify": {
+                    "splitting": {"llm": {"model": splitting_model}},
                     "section_classification": {"llm": {"model": section_model}},
                 },
             }
@@ -847,48 +870,47 @@ class TestAFlatModelOnANestedTwoStageProfile:
         cls = migrate_v08_to_v09(self._hybrid("seg-model", "section-model"))[
             "classification"
         ]
-        assert cls["one_stage"]["llm"]["model"] == "flat-model"
-        assert cls["two_stage"]["boundary_detection"]["llm"]["model"] == "seg-model"
+        assert cls["combined"]["llm"]["model"] == "flat-model"
+        assert cls["split_then_classify"]["splitting"]["llm"]["model"] == "seg-model"
         assert (
-            cls["two_stage"]["section_classification"]["llm"]["model"]
+            cls["split_then_classify"]["section_classification"]["llm"]["model"]
             == "section-model"
         )
 
-    def test_a_stage_following_the_one_stage_model_follows_the_flat_one(self):
+    def test_a_stage_following_the_combined_model_follows_the_flat_one(self):
         cls = migrate_v08_to_v09(self._hybrid("old-model", ""))["classification"]
-        assert cls["two_stage"]["boundary_detection"]["llm"]["model"] == "flat-model"
+        assert cls["split_then_classify"]["splitting"]["llm"]["model"] == "flat-model"
         assert (
-            cls["two_stage"]["section_classification"]["llm"]["model"] == "flat-model"
+            cls["split_then_classify"]["section_classification"]["llm"]["model"]
+            == "flat-model"
         )
 
 
 @pytest.mark.unit
-class TestAFlatParameterOnANestedTwoStageProfile:
+class TestAFlatParameterOnANestedSplitThenClassifyProfile:
     """The sibling of the class above, for the rest of ``_PER_CALL_SETTINGS``.
 
     A chosen stage **model** has been protected since `dcbbb8040`; `temperature`,
     `top_p`, `top_k`, `reasoning_effort`, `max_tokens`, `image`, `modality` and
     `model_lambda_hook_arn` were copied over unconditionally. Measured on a
-    0.9-stamped two-stage profile with a flat `temperature` written across it: both
+    0.9-stamped split-then-classify profile with a flat `temperature` written across it: both
     stage models were kept and both stage temperatures were replaced.
 
     The justification for the unconditional copy is true of a **pure flat** v0.8
     configuration — its stages had no parameters at all, so there was nothing to
     protect and nothing to lose — and false of a hybrid, which by definition has
     nested stage blocks. So the condition is on the setting rather than on the
-    config: absent, blank, or equal to the one-stage value the profile already had.
+    config: absent, blank, or equal to the combined value the profile already had.
     """
 
-    def _hybrid(
-        self, boundary_detection: Dict[str, Any], section: Dict[str, Any], **flat
-    ):
+    def _hybrid(self, splitting: Dict[str, Any], section: Dict[str, Any], **flat):
         return {
             "config_format_version": "0.9",
             "classification": {
-                "strategy": "two_stage",
-                "one_stage": {"llm": {"temperature": 0.0, "top_k": 5}},
-                "two_stage": {
-                    "boundary_detection": {"llm": boundary_detection},
+                "strategy": "split_then_classify",
+                "combined": {"llm": {"temperature": 0.0, "top_k": 5}},
+                "split_then_classify": {
+                    "splitting": {"llm": splitting},
                     "section_classification": {"llm": section},
                 },
                 **flat,
@@ -899,23 +921,29 @@ class TestAFlatParameterOnANestedTwoStageProfile:
         cls = migrate_v08_to_v09(
             self._hybrid({"temperature": 0.7}, {"temperature": 0.9}, temperature="0.0")
         )["classification"]
-        assert cls["one_stage"]["llm"]["temperature"] == "0.0"
-        assert cls["two_stage"]["boundary_detection"]["llm"]["temperature"] == 0.7
-        assert cls["two_stage"]["section_classification"]["llm"]["temperature"] == 0.9
+        assert cls["combined"]["llm"]["temperature"] == "0.0"
+        assert cls["split_then_classify"]["splitting"]["llm"]["temperature"] == 0.7
+        assert (
+            cls["split_then_classify"]["section_classification"]["llm"]["temperature"]
+            == 0.9
+        )
 
-    def test_a_stage_following_the_one_stage_value_follows_the_flat_one(self):
+    def test_a_stage_following_the_combined_value_follows_the_flat_one(self):
         """The case that makes the rule usable rather than merely safe.
 
         The shipped defaults give all three calls the same parameters, so a hybrid
-        built on them has stages that are *equal* to the one-stage value — following
+        built on them has stages that are *equal* to the combined value — following
         it, not choosing it. A flat parameter must still reach them, or setting one
-        on a two-stage profile would do nothing to two of the three calls.
+        on a split-then-classify profile would do nothing to two of the three calls.
         """
         cls = migrate_v08_to_v09(
             self._hybrid({"temperature": 0.0}, {}, temperature="0.4")
         )["classification"]
-        assert cls["two_stage"]["boundary_detection"]["llm"]["temperature"] == "0.4"
-        assert cls["two_stage"]["section_classification"]["llm"]["temperature"] == "0.4"
+        assert cls["split_then_classify"]["splitting"]["llm"]["temperature"] == "0.4"
+        assert (
+            cls["split_then_classify"]["section_classification"]["llm"]["temperature"]
+            == "0.4"
+        )
 
     @pytest.mark.parametrize("blank", ["", "   ", None])
     def test_a_blank_stage_value_is_not_a_choice(self, blank):
@@ -923,7 +951,7 @@ class TestAFlatParameterOnANestedTwoStageProfile:
             self._hybrid({"reasoning_effort": blank}, {}, reasoning_effort="high")
         )["classification"]
         assert (
-            cls["two_stage"]["boundary_detection"]["llm"]["reasoning_effort"] == "high"
+            cls["split_then_classify"]["splitting"]["llm"]["reasoning_effort"] == "high"
         )
 
     def test_a_sub_block_is_protected_key_by_key(self):
@@ -939,19 +967,17 @@ class TestAFlatParameterOnANestedTwoStageProfile:
                 image={"target_width": 1000},
             )
         )["classification"]
-        boundary_detection_image = cls["two_stage"]["boundary_detection"]["llm"][
-            "image"
-        ]
-        assert boundary_detection_image["target_width"] == 800
-        assert boundary_detection_image["target_height"] == 1200
-        assert cls["one_stage"]["llm"]["image"]["target_width"] == 1000
+        splitting_image = cls["split_then_classify"]["splitting"]["llm"]["image"]
+        assert splitting_image["target_width"] == 800
+        assert splitting_image["target_height"] == 1200
+        assert cls["combined"]["llm"]["image"]["target_width"] == 1000
 
     def test_a_pure_flat_config_is_converted_exactly_as_before(self):
         """The property the unconditional copy existed for, kept.
 
         A v0.8 configuration has no nested stage blocks, so every stage value is
-        absent and takes the flat one. If this regressed, every two-stage profile
-        converted from v0.8 would silently run its stages on code defaults — which is
+        absent and takes the flat one. If this regressed, every split-then-classify
+        profile converted from v0.8 would silently run its stages on code defaults — which is
         the harm the original comment describes.
         """
         cls = migrate_v08_to_v09(
@@ -967,8 +993,8 @@ class TestAFlatParameterOnANestedTwoStageProfile:
             }
         )["classification"]
         for path in (
-            cls["two_stage"]["boundary_detection"]["llm"],
-            cls["two_stage"]["section_classification"]["llm"],
+            cls["split_then_classify"]["splitting"]["llm"],
+            cls["split_then_classify"]["section_classification"]["llm"],
         ):
             assert path["temperature"] == "0.3"
             assert path["top_p"] == "0.2"
@@ -977,7 +1003,8 @@ class TestAFlatParameterOnANestedTwoStageProfile:
 
 @pytest.mark.unit
 class TestTheUnreadablePacketConfidenceBlocksAreNotCarriedOver:
-    """Stage B is one call per section, so it can never read the per-segment block.
+    """Section classification is one call per section, so it can never read the
+    per-segment block.
 
     The flat `confidence` block was merged wholesale into both class-assigning calls,
     which put roughly a kilobyte of prompt text into every converted profile at a
@@ -1000,23 +1027,24 @@ class TestTheUnreadablePacketConfidenceBlocksAreNotCarriedOver:
         )["classification"]
 
     def test_section_classification_does_not_receive_them(self):
-        confidence = self._migrated()["two_stage"]["section_classification"]["llm"][
-            "confidence"
-        ]
+        confidence = self._migrated()["split_then_classify"]["section_classification"][
+            "llm"
+        ]["confidence"]
         assert "task_prompt_topk_packet" not in confidence
         assert "task_prompt_verbalized_packet" not in confidence
 
-    def test_one_stage_still_receives_them(self):
-        """The control: one stage CAN run at packet granularity, so it needs both."""
-        confidence = self._migrated()["one_stage"]["llm"]["confidence"]
+    def test_combined_still_receives_them(self):
+        """The control: the combined call CAN run at packet granularity, so it needs
+        both."""
+        confidence = self._migrated()["combined"]["llm"]["confidence"]
         assert confidence["task_prompt_topk_packet"] == "PER SEGMENT"
         assert confidence["task_prompt_verbalized_packet"] == "PER SEGMENT VERBALIZED"
 
     def test_the_keys_both_calls_do_read_are_still_copied(self):
         """The other control: this is a two-key carve-out, not a narrower merge."""
         for path in (
-            ("one_stage", "llm"),
-            ("two_stage", "section_classification", "llm"),
+            ("combined", "llm"),
+            ("split_then_classify", "section_classification", "llm"),
         ):
             node = self._migrated()
             for key in path:
@@ -1064,8 +1092,8 @@ class TestAStoredTypoDoesNotWedgeAProfile:
         cls = copy.deepcopy(
             merge_config_with_defaults({}, validate=False)["classification"]
         )
-        cls["one_stage"]["llm"]["reasoning_effort"] = self.TYPO
-        cls["two_stage"]["boundary_detection"]["llm"]["reasoning_effort"] = self.TYPO
+        cls["combined"]["llm"]["reasoning_effort"] = self.TYPO
+        cls["split_then_classify"]["splitting"]["llm"]["reasoning_effort"] = self.TYPO
         return cls
 
     def test_a_nested_profile_holding_a_typo_still_reads(self, monkeypatch):
@@ -1080,9 +1108,9 @@ class TestAStoredTypoDoesNotWedgeAProfile:
             "the stored profile no longer validates, so the read path has nothing to "
             "fall back to and every document fails at config load"
         )
-        assert resolved.classification.one_stage.llm.reasoning_effort == "medium"
+        assert resolved.classification.combined.llm.reasoning_effort == "medium"
         assert (
-            resolved.classification.two_stage.boundary_detection.llm.reasoning_effort
+            resolved.classification.split_then_classify.splitting.llm.reasoning_effort
             == "medium"
         )
 
@@ -1101,9 +1129,9 @@ class TestAStoredTypoDoesNotWedgeAProfile:
             }
         )["classification"]
         for path in (
-            ("one_stage", "llm"),
-            ("two_stage", "boundary_detection", "llm"),
-            ("two_stage", "section_classification", "llm"),
+            ("combined", "llm"),
+            ("split_then_classify", "splitting", "llm"),
+            ("split_then_classify", "section_classification", "llm"),
         ):
             node = converted
             for key in path:
@@ -1118,5 +1146,5 @@ class TestAStoredTypoDoesNotWedgeAProfile:
         self._plant(manager, "p", self._nested_with_typo())
 
         cls = manager.get_merged_configuration("p").classification
-        assert cls.one_stage.page.task_prompt, "the profile's prompts did not survive"
-        assert cls.one_stage.llm.model
+        assert cls.combined.page.task_prompt, "the profile's prompts did not survive"
+        assert cls.combined.llm.model

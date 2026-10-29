@@ -167,9 +167,9 @@ class Segment:
     which is how the two paths came to disagree about what
     ``sectionSplitting: disabled`` means.
 
-    ``doc_class`` is **optional on purpose**. A boundary-detection-only stage (the
-    first half of two-stage classification) emits segments with no class, and a
-    labeling stage fills them in. Nothing downstream of section forming needs to
+    ``doc_class`` is **optional on purpose**. A splitting-only stage (the first
+    call of split-then-classify) emits segments with no class, and a labeling
+    stage fills them in. Nothing downstream of section forming needs to
     know which produced it.
 
     Page identity is carried as ``page_ids``, not as an integer range, because

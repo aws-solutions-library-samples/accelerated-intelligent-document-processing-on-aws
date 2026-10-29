@@ -59,15 +59,15 @@ The configuration defines 6 specialized lending document classes, each with comp
 
 ### Classification Settings
 
-- **Strategy**: One stage (`classification.strategy: single_pass`) — a single call
+- **Strategy**: Combined (`classification.strategy: combined`) — a single call
   returns both the section boundaries and the classes
-- **Granularity**: page (`classification.one_stage.granularity`) — one classification
+- **Granularity**: page (`classification.combined.granularity`) — one classification
   per page rather than per packet
 - **Model**: Amazon Nova Pro (`amazon.nova-pro-v1:0`) — pinned by this preset, with no
   region prefix so it resolves in GovCloud
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
-- **Max Tokens**: 4096 (`classification.one_stage.llm.max_tokens`)
+- **Max Tokens**: 4096 (`classification.combined.llm.max_tokens`)
 - **Modality**: `modality.text` and `modality.images` are both empty, so each is
   inferred from the placeholders the call's task prompt uses
 - **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features

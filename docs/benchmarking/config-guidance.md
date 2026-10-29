@@ -261,9 +261,9 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
 ⚠️ **Classification granularity, modality and strategy are not measured in this
 edition.** Granularity (`page` | `packet`), each call's
 `modality.text` / `.images` and `classification.strategy`
-(`single_pass` | `two_stage`) shipped after this edition's runs, and no cell here
+(`combined` | `split_then_classify`) shipped after this edition's runs, and no cell here
 varies them — every classification cell above is `granularity: page` with text
-and images, single-pass, which is the shipped default. So this page recommends a
+and images, combined, which is the shipped default. So this page recommends a
 classification **model** and says nothing about which granularity, modality or
 strategy to pick.
 
@@ -2074,7 +2074,7 @@ above the `on` arm. So the risk of turning it off is not a slightly chattier age
 every time; it is a roughly one-in-three chance of a run that emits half again as much.
 Measured on one model and one document shape.
 
-### `classification.one_stage.llm.model` — see §5.3
+### `classification.combined.llm.model` — see §5.3
 
 Re-measured on the full grid with the #817 prompt: Nova 2 Lite, Sonnet 5 and Haiku 4.5 are
 compared in §5.3. The v0.6.7 recommendation to switch the classifier to Haiku 4.5 for #726 is

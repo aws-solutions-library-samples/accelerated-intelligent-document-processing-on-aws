@@ -2,8 +2,8 @@
 """Add the pre-0.9 flat classification keys to a benchmark config.
 
 Why this exists: config format 0.9 nests every classification setting inside the
-model call that uses it (``one_stage.*``, ``two_stage.*``, ``document_shape.*``,
-``strategy``, ``fallback_class``). The release benchmark A/B uploads the SAME
+model call that uses it (``combined.*``, ``split_then_classify.*``,
+``document_shape.*``, ``strategy``, ``fallback_class``). The release benchmark A/B uploads the SAME
 generated file to the previous published release and to develop, and a release
 that predates the nesting (v0.6.12 reads config format 0.7) does not know any of
 those blocks. Its ``IDPConfig`` drops unknown keys without a word, so every
@@ -22,18 +22,18 @@ flat keys written alongside the nested blocks:
   into the same nested values. So one file still serves both sides of the A/B.
 
 What the current reader resolves from the copy is identical to the original for
-everything a single-pass run reads. Two subtrees a single-pass run does not read do
+everything a combined run reads. Two subtrees a combined run does not read do
 change, because the migration copies a flat setting into every call that had it in
-v0.8: the ``two_stage`` blocks take the one-stage model, parameters, granularity and
-confidence, and at packet granularity ``one_stage.page`` takes the packet prompts
-(the old release's holistic method read its prompt from the flat ``task_prompt``,
-which the current reader files under ``one_stage.page``). The benchmark tests pin
+v0.8: the ``split_then_classify`` blocks take the combined call's model, parameters,
+granularity and confidence, and at packet granularity ``combined.page`` takes the
+packet prompts (the old release's holistic method read its prompt from the flat ``task_prompt``,
+which the current reader files under ``combined.page``). The benchmark tests pin
 that boundary exactly, so a change to either side of it is noticed.
 
 Refused, because the old release cannot express them and the run would measure
-something else: a two-stage strategy (there is no two-stage classification before
-0.9), and an explicit ``one_stage.llm.modality`` flag that disagrees with the
-selected prompt's placeholders (the old release decides modality from the
+something else: the split-then-classify strategy (there is no split-then-classify
+classification before 0.9), and an explicit ``combined.llm.modality`` flag that
+disagrees with the selected prompt's placeholders (the old release decides modality from the
 placeholders alone). Reported as notes, because whether they matter depends on the
 documents: a packet window (the old holistic method sends the whole file in one
 call), and packet-granularity class confidence (the old release composes the
@@ -47,16 +47,22 @@ from typing import Any, Dict, List, Tuple
 
 #: The v0.9 classification blocks. A release that predates the nesting reads none
 #: of them; :func:`with_flat_classification` carries their content in flat keys.
-V09_BLOCKS = ("strategy", "one_stage", "two_stage", "document_shape", "fallback_class")
+V09_BLOCKS = (
+    "strategy",
+    "combined",
+    "split_then_classify",
+    "document_shape",
+    "fallback_class",
+)
 
-#: ``one_stage.granularity`` -> the pre-0.8 ``classificationMethod`` that made the
+#: ``combined.granularity`` -> the pre-0.8 ``classificationMethod`` that made the
 #: same number of calls.
 METHOD_FOR_GRANULARITY = {
     "page": "multimodalPageLevelClassification",
     "packet": "textbasedHolisticClassification",
 }
 
-#: Model parameters copied verbatim from ``one_stage.llm`` to the flat block.
+#: Model parameters copied verbatim from ``combined.llm`` to the flat block.
 _LLM_PARAMETERS = (
     "model",
     "model_lambda_hook_arn",
@@ -97,25 +103,25 @@ def _flag(value: Any) -> Any:
 
 
 def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]]:
-    """The pre-0.9 flat keys equivalent to a v0.9 single-pass ``classification``.
+    """The pre-0.9 flat keys equivalent to a v0.9 combined ``classification``.
 
     Returns ``(flat_keys, notes)``. Raises :class:`CompatError` for a setting the
     old release cannot express. Only keys the cell's nested blocks actually hold
     are written, so nothing is invented from code defaults.
     """
-    strategy = str(classification.get("strategy") or "single_pass").strip().lower()
-    if strategy != "single_pass":
+    strategy = str(classification.get("strategy") or "combined").strip().lower()
+    if strategy != "combined":
         raise CompatError(
             f"classification.strategy is {strategy!r}: a release that predates "
-            f"config format 0.9 has no two-stage classification, so this cell "
-            f"cannot run there. Leave it out of the cross-release A/B."
+            f"config format 0.9 has no split-then-classify classification, so this "
+            f"cell cannot run there. Leave it out of the cross-release A/B."
         )
-    one = _dict(classification.get("one_stage"))
+    one = _dict(classification.get("combined"))
     llm = _dict(one.get("llm"))
     granularity = str(one.get("granularity") or "page").strip().lower()
     if granularity not in METHOD_FOR_GRANULARITY:
         raise CompatError(
-            f"classification.one_stage.granularity is {granularity!r}; expected "
+            f"classification.combined.granularity is {granularity!r}; expected "
             f"one of {sorted(METHOD_FOR_GRANULARITY)}"
         )
     flat: Dict[str, Any] = {"classificationMethod": METHOD_FOR_GRANULARITY[granularity]}
@@ -167,7 +173,7 @@ def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]
         explicit = _flag(modality.get(name))
         if explicit is not None and explicit != from_prompt:
             raise CompatError(
-                f"classification.one_stage.llm.modality.{name} is {explicit} but the "
+                f"classification.combined.llm.modality.{name} is {explicit} but the "
                 f"{granularity} task prompt implies {from_prompt}: a release that "
                 f"predates config format 0.9 decides modality from the prompt's "
                 f"placeholders alone, so it would not do what this cell asks."
@@ -177,7 +183,7 @@ def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]
         packet = _dict(one.get("packet"))
         if packet.get("window_pages") not in (None, ""):
             notes.append(
-                f"one_stage.packet.window_pages={packet.get('window_pages')} has no "
+                f"combined.packet.window_pages={packet.get('window_pages')} has no "
                 f"pre-0.9 equivalent: the old holistic method classifies the whole "
                 f"file in one call, so a document longer than the window is "
                 f"classified differently on the two sides."

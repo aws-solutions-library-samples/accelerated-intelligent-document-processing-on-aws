@@ -71,12 +71,12 @@ EXEMPT = {
 
 
 def _page_prompt(classification: dict):
-    """The one-stage page task prompt, in either config format.
+    """The combined call's page task prompt, in either config format.
 
-    Config format 0.9 keeps it at `one_stage.page.task_prompt`; a pre-0.9 file
+    Config format 0.9 keeps it at `combined.page.task_prompt`; a pre-0.9 file
     (a preset not yet converted, or a notebook config) keeps it flat.
     """
-    nested = ((classification.get("one_stage") or {}).get("page") or {}).get(
+    nested = ((classification.get("combined") or {}).get("page") or {}).get(
         "task_prompt"
     )
     return nested if nested is not None else classification.get("task_prompt")
@@ -171,7 +171,7 @@ def test_no_committed_copy_still_asks_the_unanswerable_question():
     )
 
 
-def _configs_doing_page_level_boundary_detection():
+def _configs_doing_page_level_splitting():
     """Pinned prompts that ask the model to emit `document_boundary`.
 
     That field is what the rules govern, so it is the precise scope. Two kinds of
@@ -200,9 +200,7 @@ def _configs_doing_page_level_boundary_detection():
             yield pytest.param(prompt, id=str(rel))
 
 
-@pytest.mark.parametrize(
-    "task_prompt", list(_configs_doing_page_level_boundary_detection())
-)
+@pytest.mark.parametrize("task_prompt", list(_configs_doing_page_level_splitting()))
 def test_every_boundary_prompt_carries_the_canonical_rules(task_prompt):
     """Byte-equality with the default's block, not just "has the tag".
 
@@ -215,7 +213,7 @@ def test_every_boundary_prompt_carries_the_canonical_rules(task_prompt):
 
 def test_the_guard_can_actually_see_the_configs_it_guards():
     """A path or prune-list mistake would make every test above vacuously pass."""
-    found = {p.id for p in _configs_doing_page_level_boundary_detection()}
+    found = {p.id for p in _configs_doing_page_level_splitting()}
     for expected in (
         "lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml",
         "config_library/managed_config/ocr-benchmark/config.yaml",

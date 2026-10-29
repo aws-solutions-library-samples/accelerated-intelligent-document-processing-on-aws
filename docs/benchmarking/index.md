@@ -351,17 +351,17 @@ Three things about reading the result:
   long packets and per-document flatters page granularity on short ones;
   whichever you quote alone will argue for the setting it favours.
 - **`classification_by_context`** carries the per-stage tokens, cost and Lambda
-  invocation count, so a two-stage cell shows whether the money went to
-  `BoundaryDetection` or `SectionClassification`.
+  invocation count, so a split-then-classify cell shows whether the money went to
+  `Splitting` or `SectionClassification`.
   ⚠️ **Two counts, and the obvious reading of the first one is wrong.**
   `lambda_invocations_per_document` counts Lambda invocations: a 6-page document
   at `page` granularity makes six Bedrock calls inside **one** invocation, so it
-  reads `1.0` for `page` and `packet` alike, and in a two-stage run the single
+  reads `1.0` for `page` and `packet` alike, and in a split-then-classify run the single
   invocation lands under `Classification` while the spend lands under
-  `BoundaryDetection`/`SectionClassification`, which therefore read `0.0`.
+  `Splitting`/`SectionClassification`, which therefore read `0.0`.
   **`bedrock_calls_per_document`** is the figure the N-calls-to-one claim is
-  about, and it is per stage — a two-stage page-granularity run over a 6-page
-  document measured 6 boundary detection calls and 6 section classification calls. ⚠️ It is `None` rather
+  about, and it is per stage — a split-then-classify page-granularity run over a 6-page
+  document measured 6 splitting calls and 6 section classification calls. ⚠️ It is `None` rather
   than `0` when nothing carried a request count, because not every metering entry
   does and "made no calls" is a different claim from "not metered".
   **`classification_output_tokens_per_page`** separates the granularities too,

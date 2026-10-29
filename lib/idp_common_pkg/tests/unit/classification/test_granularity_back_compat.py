@@ -103,10 +103,10 @@ def _document(page_count: int) -> Document:
 
 @pytest.mark.unit
 class TestAliasTable:
-    def test_the_shipped_defaults_resolve_to_page_granularity_single_pass(self):
+    def test_the_shipped_defaults_resolve_to_page_granularity_combined(self):
         service = _service(_shipped_classification())
         assert service.granularity == ClassificationService.GRANULARITY_PAGE
-        assert service.strategy == ClassificationService.STRATEGY_ONE_STAGE
+        assert service.strategy == ClassificationService.STRATEGY_COMBINED
 
     def test_multimodal_page_level_maps_to_page_with_text_and_images(self):
         config = _shipped_classification()
@@ -401,5 +401,5 @@ class TestTheRemovedAttributeRefuses:
         with pytest.raises(AttributeError) as excinfo:
             _ = service.classification_method
         message = str(excinfo.value)
-        assert "classification.one_stage.granularity" in message
+        assert "classification.combined.granularity" in message
         assert "service.granularity" in message

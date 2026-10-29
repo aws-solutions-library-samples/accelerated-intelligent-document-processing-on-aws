@@ -36,7 +36,7 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 | Step | Config Field | Description |
 |------|-------------|-------------|
 | **OCR** (Bedrock backend) | `ocr.model_id` | LLM-based OCR when `backend=bedrock` |
-| **Classification** | `classification.one_stage.llm.model` (or the `model` of either two-stage call) | Document type classification |
+| **Classification** | `classification.combined.llm.model` (or the `model` of either split-then-classify call) | Document type classification |
 | **Extraction** | `extraction.model` | Structured data extraction |
 | **Assessment** | `extraction.confidence.model` | Confidence scoring |
 | **Summarization** | `summarization.model` | Document summarization |
@@ -52,9 +52,10 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 5. Save the configuration
 
 For **Classification** there is one *Model* dropdown per model call, and which
-ones appear depends on **Strategy**: *One stage* (`strategy: single_pass` in the
-JSON and YAML views) shows one, and *Two stage* (`strategy: two_stage`) shows one
-under *Boundary detection* and one under *Section classification*. Hooking only one of
+ones appear depends on **Strategy**: *Split and classify together (one call)*
+(`strategy: combined` in the JSON and YAML views) shows one, and *Split first, then
+classify each section* (`strategy: split_then_classify`) shows one under *Splitting*
+and one under *Section classification*. Hooking only one of
 the two leaves the other on its Bedrock model, which is a supported
 configuration — the hook receives a different `context` for each, so one Lambda
 can serve both.
@@ -132,14 +133,14 @@ Your Lambda function receives a **Converse API-compatible** payload:
 2. **`<<CACHEPOINT>>` tags are stripped** — These Bedrock-specific tags are removed from text content before sending to your Lambda.
 
 3. **`context` field is added** — Indicates which stage is calling: `OCR`,
-   `Classification`, `BoundaryDetection`, `SectionClassification`, `Extraction`,
+   `Classification`, `Splitting`, `SectionClassification`, `Extraction`,
    `Assessment` or `Summarization`. ⚠️ Classification contributes **three**
    possible values, because the context names the stage rather than the step. A
-   `single_pass` configuration calls your hook with `Classification`; a
-   `two_stage` configuration calls it with `BoundaryDetection` for the boundary pass
-   and `SectionClassification` for the class pass, and never with
+   `combined` configuration calls your hook with `Classification`; a
+   `split_then_classify` configuration calls it with `Splitting` for the splitting call
+   and `SectionClassification` for section classification, and never with
    `Classification`. A hook that branches on `context == "Classification"` falls
-   through under two stage — match all three.
+   through under split-then-classify — match all three.
 
 ## Expected Response
 

@@ -986,7 +986,7 @@ class TestAModelRefusingImagesNamesTheSetting:
     ⚠️ **These drive `_invoke_bedrock_model` with `bedrock.invoke_model` patched,
     not the other way round**, because that is where the annotation lives — and it
     lives there because it is the one choke point every classification request
-    goes through: page-level, packet, Stage A and Stage B. An earlier version
+    goes through: page-level, packet, splitting and section classification. An earlier version
     annotated only the packet call site, which would have missed page
     granularity, the default. Stubbing `_invoke_bedrock_model` instead, as these
     tests first did, bypasses the code under test entirely.
@@ -1066,28 +1066,28 @@ class TestAModelRefusingImagesNamesTheSetting:
         raised = self._invoke(monkeypatch, err, [{"image": {}}])
         message = str(raised)
         assert self.REFUSAL in message, "the original error must survive"
-        assert "classification.one_stage.llm.modality.images" in message
+        assert "classification.combined.llm.modality.images" in message
         assert "nova-micro" in message
         assert isinstance(raised, ClientError), "the class must be preserved"
 
     @pytest.mark.parametrize(
         ("stage", "setting"),
         [
-            ("classification", "classification.one_stage.llm.modality.images"),
+            ("classification", "classification.combined.llm.modality.images"),
             (
-                "boundary_detection",
-                "classification.two_stage.boundary_detection.llm.modality.images",
+                "splitting",
+                "classification.split_then_classify.splitting.llm.modality.images",
             ),
             (
                 "section_classification",
-                "classification.two_stage.section_classification.llm.modality.images",
+                "classification.split_then_classify.section_classification.llm.modality.images",
             ),
         ],
     )
     def test_the_hint_names_the_setting_of_the_call_that_failed(self, stage, setting):
         """Each call has its own modality (config format 0.9), so the hint must
-        name the one that sent the images — pointing a two-stage user at the
-        one-stage setting would send them to a block their strategy never runs."""
+        name the one that sent the images — pointing a split-then-classify user
+        at the combined setting would send them to a block their strategy never runs."""
         from idp_common.classification.service import _annotate_image_refusal
 
         exc = ValueError(self.REFUSAL)
@@ -1150,7 +1150,7 @@ class TestAModelRefusingImagesNamesTheSetting:
             service._invoke_bedrock_model(
                 content=[{"image": {}}], config=dict(self.CONFIG)
             )
-        assert "classification.one_stage.llm.modality.images" in str(excinfo.value)
+        assert "classification.combined.llm.modality.images" in str(excinfo.value)
 
 
 def _segments_reply(*segments: Dict[str, Any]) -> Dict[str, Any]:
@@ -1169,8 +1169,8 @@ def _segments_reply(*segments: Dict[str, Any]) -> Dict[str, Any]:
 @pytest.mark.unit
 class TestPacketGranularityHonoursClassValidation:
     """⚠️ `enforceValidClasses`, `maxValidationRetries` and the fallback class now
-    apply on single-pass PACKET granularity, as they already did on page
-    granularity and on Stage B.
+    apply on combined PACKET granularity, as they already did on page
+    granularity and on section classification.
 
     They used not to. An out-of-vocabulary segment class was logged "using
     anyway" and kept, so the three settings were silently inert on one of the

@@ -2514,7 +2514,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - The task prompt of each classification call the strategy makes (for example `classification.one_stage.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
@@ -3009,7 +3009,7 @@ idp-cli test-compare \
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs
-- Shows nested config paths (e.g., `classification.one_stage.llm.model`, `extraction.temperature`)
+- Shows nested config paths (e.g., `classification.combined.llm.model`, `extraction.temperature`)
 - Highlights values that differ across test runs
 
 **Requirements:**

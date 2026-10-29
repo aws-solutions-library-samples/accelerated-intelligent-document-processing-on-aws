@@ -6,7 +6,8 @@
 The custom-resource handler merges the shipped preset with the system defaults
 (which migrates it to the nested shape) and then writes the ARN. The ARN is a
 model trained to assign a class, so it goes to the call that assigns the class
-under the active strategy and nowhere else — boundary detection keeps its own model.
+under the active strategy and nowhere else — the splitting call keeps its own
+model.
 """
 
 import copy
@@ -45,25 +46,27 @@ def _merged(classification):
 
 @pytest.mark.unit
 class TestCustomClassificationModelArn:
-    def test_single_pass_writes_the_one_stage_call(self, update_config_module):
-        config = _merged({"strategy": "single_pass"})
+    def test_combined_writes_the_combined_call(self, update_config_module):
+        config = _merged({"strategy": "combined"})
         update_config_module.apply_custom_model_arns(
             config, {"CustomClassificationModelARN": ARN}
         )
         resolved = IDPConfig(**config).classification
-        assert resolved.one_stage.llm.model == ARN
-        assert resolved.two_stage.boundary_detection.llm.model != ARN
-        assert resolved.two_stage.section_classification.llm.model != ARN
+        assert resolved.combined.llm.model == ARN
+        assert resolved.split_then_classify.splitting.llm.model != ARN
+        assert resolved.split_then_classify.section_classification.llm.model != ARN
 
-    def test_two_stage_writes_section_classification_only(self, update_config_module):
-        config = _merged({"strategy": "two_stage"})
+    def test_split_then_classify_writes_section_classification_only(
+        self, update_config_module
+    ):
+        config = _merged({"strategy": "split_then_classify"})
         update_config_module.apply_custom_model_arns(
             config, {"CustomClassificationModelARN": ARN}
         )
         resolved = IDPConfig(**config).classification
-        assert resolved.two_stage.section_classification.llm.model == ARN
-        assert resolved.two_stage.boundary_detection.llm.model != ARN
-        assert resolved.one_stage.llm.model != ARN
+        assert resolved.split_then_classify.section_classification.llm.model == ARN
+        assert resolved.split_then_classify.splitting.llm.model != ARN
+        assert resolved.combined.llm.model != ARN
 
     def test_a_flat_preset_lands_in_the_migrated_call(self, update_config_module):
         """A 0.6.12-shaped preset (flat keys) is migrated by the merge, so the ARN
@@ -73,7 +76,7 @@ class TestCustomClassificationModelArn:
             config, {"CustomClassificationModelARN": ARN}
         )
         assert "model" not in config["classification"]
-        assert IDPConfig(**config).classification.one_stage.llm.model == ARN
+        assert IDPConfig(**config).classification.combined.llm.model == ARN
 
     @pytest.mark.parametrize("value", ["", "   ", None])
     def test_an_empty_arn_changes_nothing(self, update_config_module, value):
@@ -97,7 +100,7 @@ class TestMergeFallbackMigrates:
     """When the merge with defaults fails, the unmerged config is still migrated.
 
     Returned raw, a flat preset keeps ``classification.model``; the ARN writer
-    then adds ``one_stage.llm.model`` beside it, and on the next read the flat
+    then adds ``combined.llm.model`` beside it, and on the next read the flat
     key wins the hybrid, so the deployed custom model is silently dropped.
     """
 
@@ -125,6 +128,6 @@ class TestMergeFallbackMigrates:
 
         assert "model" not in config["classification"]
         reread = migrate_config(copy.deepcopy(config))
-        assert reread["classification"]["one_stage"]["llm"]["model"] == ARN
+        assert reread["classification"]["combined"]["llm"]["model"] == ARN
         # The caller's dict is not mutated by the fallback.
         assert custom["classification"] == {"model": "us.amazon.nova-lite-v1:0"}

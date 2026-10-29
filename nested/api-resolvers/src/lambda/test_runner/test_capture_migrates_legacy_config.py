@@ -61,7 +61,7 @@ def test_a_pinned_legacy_revision_is_captured_nested(module, monkeypatch):
 
     classification = captured["Config"]["classification"]
     assert "model" not in classification
-    assert classification["one_stage"]["llm"]["model"] == "flat-model"
+    assert classification["combined"]["llm"]["model"] == "flat-model"
     assert captured["Config"]["config_format_version"] == CONFIG_FORMAT_VERSION
     # The revision body the manager returned is not rewritten.
     assert stored == _flat_body()
@@ -80,7 +80,7 @@ def test_a_legacy_profile_head_is_captured_nested(module):
 
     classification = captured["Config"]["classification"]
     assert "model" not in classification
-    assert classification["one_stage"]["llm"]["model"] == "flat-model"
+    assert classification["combined"]["llm"]["model"] == "flat-model"
     assert item["classification"] == {
         "model": "flat-model",
         "temperature": Decimal("0"),
@@ -118,7 +118,7 @@ def test_an_unstamped_configuration_is_captured_the_same_way_either_route(
     """
     unstamped = {
         "notes": "x",
-        "classification": {"one_stage": {"llm": {"model": "M"}}},
+        "classification": {"combined": {"llm": {"model": "M"}}},
     }
     module.dynamodb.Table.return_value.get_item.return_value = {
         "Item": {"Configuration": "Config#lending", **unstamped}
@@ -161,7 +161,7 @@ def test_an_unstamped_revision_is_captured_in_the_current_format(module, monkeyp
     captured = module._capture_config("config-table", "lending", 5)["Config"]
 
     assert captured["config_format_version"] == CONFIG_FORMAT_VERSION
-    assert captured["classification"]["one_stage"]["llm"]["model"] == "flat-model"
+    assert captured["classification"]["combined"]["llm"]["model"] == "flat-model"
     assert "model" not in captured["classification"]
     # The body the manager returned is not rewritten.
     assert stored == {"notes": "x", "classification": {"model": "flat-model"}}
