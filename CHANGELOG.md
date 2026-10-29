@@ -72,6 +72,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **The reprocess dialog reminds BDA-mode users to run Sync To BDA.** The reminder was shown only when the stack setting named Pattern 1, which no stack does since the unified pattern, so it never appeared. It now follows the selected configuration profile's `use_bda` flag ([#1645](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1645)). **Action:** none.
+
 - **Release Review on the document list sends only documents it can release, and shows a refusal.** With several documents selected, **Release Review** releases only the claimed documents whose review has not finished, rather than sending every selected document and leaving the unclaimed or finished ones to fail with nothing shown. When the server refuses a release, its message appears above the table, as it does for **Start Review**. See [human-review.md](docs/human-review.md#2-review-process).
 - **Start Review claims only a document a review was raised on.** `claimReview` is refused with `NO_REVIEW_PENDING`, for every user, Admins included, on a document no review was raised on, so it can no longer put a document nobody routed for review into **Review In Progress**. A review that is waiting, including an unclaimed **Review Pending** document from an earlier version, is claimed as before. The document list sends a claim only for the selected documents that can be claimed, and shows the server's message when one is refused. See [human-review.md](docs/human-review.md#2-review-process). ([#1586](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1586))
 
