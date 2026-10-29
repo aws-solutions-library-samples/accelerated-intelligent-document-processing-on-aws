@@ -468,8 +468,8 @@ def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) 
     ``CustomClassificationModelARN`` replaces the model of the call that assigns
     the class under the active strategy — ``combined.llm`` for the combined
     strategy, ``split_then_classify.section_classification.llm`` for
-    split-then-classify. The splitting call keeps its own model: it only finds boundaries, which is not what a classification
-    model was trained to do. ``CustomExtractionModelARN`` replaces
+    split-then-classify. The splitting call keeps its own model: it only finds
+    boundaries, which is not what a classification model was trained to do. ``CustomExtractionModelARN`` replaces
     ``extraction.model``. An empty or absent ARN changes nothing.
     """
     from idp_common.config.models import class_assigning_llm_path

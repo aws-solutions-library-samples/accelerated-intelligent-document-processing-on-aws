@@ -74,7 +74,7 @@ def _is_flat_classification_config(path: Path) -> bool:
     """Whether ``path`` is a pre-0.9 flat configuration the migration converts.
 
     Such a file is read through ``v08_to_v09``, which maps the v0.8 spellings of
-    ``strategy`` (``V08_STRATEGY_VALUES``) to the v0.9 values, so a v0.8 spelling
+    ``strategy`` (``EARLIER_STRATEGY_VALUES``) to the v0.9 values, so a v0.8 spelling
     in it is the format's own spelling rather than a stale one. A nested file is
     written in the current layout, so the same spelling there is still a finding:
     the reader would convert it, but a file in this tree that needs converting is
@@ -117,11 +117,13 @@ def _tracked_text_files() -> list[Path]:
     ]
 
 
-def _findings() -> list[tuple[str, int, str, str]]:
-    from idp_common.config.migrations.v08_to_v09 import V08_STRATEGY_VALUES
+def _findings(
+    paths: list[Path] | None = None, root: Path = REPO
+) -> list[tuple[str, int, str, str]]:
+    from idp_common.config.migrations.v08_to_v09 import EARLIER_STRATEGY_VALUES
 
     bad: list[tuple[str, int, str, str]] = []
-    for path in _tracked_text_files():
+    for path in _tracked_text_files() if paths is None else paths:
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
@@ -134,12 +136,12 @@ def _findings() -> list[tuple[str, int, str, str]]:
                 value = quoted or bare
                 if value == "" or value in _VALID[key]:
                     continue
-                if key == "strategy" and value in V08_STRATEGY_VALUES:
+                if key == "strategy" and value in EARLIER_STRATEGY_VALUES:
                     if flat is None:
                         flat = _is_flat_classification_config(path)
                     if flat:
                         continue
-                bad.append((str(path.relative_to(REPO)), lineno, key, value))
+                bad.append((str(path.relative_to(root)), lineno, key, value))
     return bad
 
 
@@ -195,8 +197,8 @@ def test_a_v08_strategy_spelling_is_accepted_only_in_a_flat_file(tmp_path):
     flat.write_text("classification:\n  model: m\n  strategy: single_pass\n")
     nested = tmp_path / "nested.yaml"
     nested.write_text("classification:\n  combined: {}\n  strategy: single_pass\n")
-    assert _is_flat_classification_config(flat)
-    assert not _is_flat_classification_config(nested)
+    found = _findings([flat, nested], root=tmp_path)
+    assert found == [("nested.yaml", 3, "strategy", "single_pass")]
 
 
 @pytest.mark.unit

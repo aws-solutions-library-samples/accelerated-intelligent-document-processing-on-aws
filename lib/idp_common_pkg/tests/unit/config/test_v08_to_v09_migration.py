@@ -333,12 +333,31 @@ class TestADevelopmentBuildsNamesAreRead:
         assert llm == {"model": "chosen", "temperature": "0.0"}
 
     def test_a_classification_config_built_directly_converts_too(self):
-        cls = ClassificationConfig(
-            strategy="two_stage",
-            two_stage={"boundary_detection": {"llm": {"model": "splitting-model"}}},
+        cls = ClassificationConfig.model_validate(
+            {
+                "strategy": "two_stage",
+                "two_stage": {
+                    "boundary_detection": {"llm": {"model": "splitting-model"}}
+                },
+            }
         )
         assert cls.strategy == "split_then_classify"
         assert cls.split_then_classify.splitting.llm.model == "splitting-model"
+
+    def test_the_earlier_splitting_and_document_shape_names_are_read(self):
+        """Earlier in the same cycle the splitting block was ``segmentation`` and
+        ``document_shape`` was ``file_shape``; a revision pinned then is read too."""
+        profile = {
+            "config_format_version": "0.10",
+            "classification": {
+                "strategy": "two_stage",
+                "two_stage": {"segmentation": {"llm": {"model": "splitting-model"}}},
+                "file_shape": {"sectionSplitting": "page"},
+            },
+        }
+        cls = IDPConfig(**migrate_config(profile)).classification
+        assert cls.split_then_classify.splitting.llm.model == "splitting-model"
+        assert cls.document_shape.sectionSplitting == "page"
 
     def test_a_current_configuration_is_left_alone(self):
         current = {

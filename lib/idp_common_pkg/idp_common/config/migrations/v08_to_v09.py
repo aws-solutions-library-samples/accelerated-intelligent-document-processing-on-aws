@@ -64,10 +64,11 @@ nested value win would discard it silently. Migration removes the flat keys, so
 running it again is still a no-op.
 
 **Development builds' names are read too.** Builds of this layout made before its
-blocks were named after their strategies wrote ``strategy: single_pass`` or
-``two_stage`` with ``one_stage`` / ``two_stage.boundary_detection`` blocks and no
-flat key. Those are renamed first, whatever the stamp, so such a profile or pinned
-revision loads with its settings instead of being refused (``PRERELEASE_BLOCK_NAMES``).
+blocks took their current names wrote ``strategy: single_pass`` or ``two_stage``,
+``one_stage``, ``two_stage.segmentation`` or ``two_stage.boundary_detection``, and
+``file_shape``, with no flat key. Those are renamed first, whatever the stamp, so
+such a profile or pinned revision loads with its settings instead of being refused
+or losing them (``PRERELEASE_BLOCK_NAMES``, ``PRERELEASE_SPLITTING_BLOCKS``).
 """
 
 from __future__ import annotations
@@ -135,19 +136,28 @@ SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS = frozenset(
     {"task_prompt_topk_packet", "task_prompt_verbalized_packet"}
 )
 
-#: The v0.8 spellings of ``classification.strategy`` (``single_pass`` and
-#: ``two_stage``), mapped to the v0.9 values. v0.9 names each strategy after what
-#: it does, and names its settings block the same way.
-V08_STRATEGY_VALUES = {"single_pass": "combined", "two_stage": "split_then_classify"}
+#: The earlier spellings of ``classification.strategy`` (``single_pass`` and
+#: ``two_stage``), written by v0.8 and by development builds of the v0.9 layout,
+#: mapped to the current values. The current names say what each strategy does,
+#: and each strategy's settings block carries the same name.
+EARLIER_STRATEGY_VALUES = {
+    "single_pass": "combined",
+    "two_stage": "split_then_classify",
+}
 
-#: Block names that development builds of the v0.9 layout wrote before the blocks
-#: were named after their strategies, mapped to the current names. A profile or a
+#: Block names that development builds of the v0.9 layout wrote, mapped to the
+#: current names. A profile or a
 #: pinned revision such a build saved is otherwise refused (its ``strategy`` is
 #: spelled the v0.8 way) or loses every setting in these blocks, and a pinned
 #: revision cannot be re-saved, so they are read rather than dropped. Never written.
-PRERELEASE_BLOCK_NAMES = {"one_stage": "combined", "two_stage": "split_then_classify"}
-#: The same, for the first call inside ``split_then_classify``.
-PRERELEASE_SPLITTING_BLOCK = "boundary_detection"
+PRERELEASE_BLOCK_NAMES = {
+    "one_stage": "combined",
+    "two_stage": "split_then_classify",
+    "file_shape": "document_shape",
+}
+#: The same, for the first call inside ``split_then_classify``. Development builds
+#: named it ``segmentation`` and then ``boundary_detection``.
+PRERELEASE_SPLITTING_BLOCKS = ("segmentation", "boundary_detection")
 
 COMBINED_LLM = ("combined", "llm")
 SPLITTING_LLM = ("split_then_classify", "splitting", "llm")
@@ -166,12 +176,14 @@ def _has_prerelease_names(config: Dict[str, Any]) -> bool:
     if not isinstance(classification, dict):
         return False
     strategy = str(classification.get("strategy") or "").strip().lower()
-    if strategy in V08_STRATEGY_VALUES or PRERELEASE_BLOCK_NAMES.keys() & set(
+    if strategy in EARLIER_STRATEGY_VALUES or PRERELEASE_BLOCK_NAMES.keys() & set(
         classification
     ):
         return True
     split = classification.get("split_then_classify")
-    return isinstance(split, dict) and PRERELEASE_SPLITTING_BLOCK in split
+    return isinstance(split, dict) and any(
+        name in split for name in PRERELEASE_SPLITTING_BLOCKS
+    )
 
 
 def _overlay(base: Any, top: Any) -> Any:
@@ -201,13 +213,14 @@ def _rename_block(parent: Dict[str, Any], old: str, new: str) -> None:
 def _rename_prerelease_names(classification: Dict[str, Any]) -> None:
     """Rewrite a v0.9 development build's names to the current ones, in place."""
     strategy = str(classification.get("strategy") or "").strip().lower()
-    if strategy in V08_STRATEGY_VALUES:
-        classification["strategy"] = V08_STRATEGY_VALUES[strategy]
+    if strategy in EARLIER_STRATEGY_VALUES:
+        classification["strategy"] = EARLIER_STRATEGY_VALUES[strategy]
     for old, new in PRERELEASE_BLOCK_NAMES.items():
         _rename_block(classification, old, new)
     split = classification.get("split_then_classify")
     if isinstance(split, dict):
-        _rename_block(split, PRERELEASE_SPLITTING_BLOCK, "splitting")
+        for old in PRERELEASE_SPLITTING_BLOCKS:
+            _rename_block(split, old, "splitting")
 
 
 def _node(root: Dict[str, Any], path: Iterable[str]) -> Dict[str, Any]:
@@ -419,7 +432,8 @@ def migrate_v08_to_v09(config: Any) -> Any:
         _rename_prerelease_names(config["classification"])
         logger.info(
             "Read classification strategy and block names written by a v0.9 "
-            "development build as combined / split_then_classify / splitting"
+            "development build under their current names (combined, "
+            "split_then_classify, splitting, document_shape)"
         )
     if not _has_flat_keys(config):
         if is_at_or_after(config.get("config_format_version"), TARGET_VERSION):
