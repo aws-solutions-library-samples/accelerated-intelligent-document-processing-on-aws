@@ -1734,8 +1734,12 @@ nightly_notification:
           ]
           # The fallback quotes unfiltered job output into the Slack channel. Masked
           # variables are masked in the trace; anything a job echoes unmasked is not.
-          if not detail and not totals:
-              detail = [line for line in lines if line.strip()][-MAX_CAUSE_LINES:]
+          # A bare "make: *** ... Error 1" says which target failed, not why, so
+          # with no recognised detail the end of the script output is quoted too.
+          if not detail:
+              detail = [
+                  line for line in lines if line.strip() and line not in totals
+              ][-MAX_CAUSE_LINES:]
 
           def unique(items):
               seen = set()

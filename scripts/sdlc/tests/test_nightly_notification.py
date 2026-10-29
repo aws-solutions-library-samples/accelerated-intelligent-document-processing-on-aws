@@ -424,3 +424,16 @@ def test_every_described_job_keeps_its_header_and_totals(notifier, monkeypatch):
         assert f"• job_{n} (fast_checks) failed" in body
     assert body.count("make: *** [Makefile:1: t] Error 1") == 3
     assert "(log not readable: OSError)" in body, "one bad log must not cost the rest"
+
+
+def test_a_lint_failure_quotes_why_not_only_which_target(notifier):
+    """Every gate runs through make, so make's line alone names no cause."""
+    trace = _trace(
+        "All checks passed!",
+        "Would reformat: scripts/sdlc/tests/test_x.py",
+        "1 file would be reformatted, 1686 files already formatted",
+        "make: *** [Makefile:209: lint-cicd] Error 1",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert "Would reformat: scripts/sdlc/tests/test_x.py" in cause
+    assert cause[-1] == "make: *** [Makefile:209: lint-cicd] Error 1"
