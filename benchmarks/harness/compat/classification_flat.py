@@ -113,7 +113,7 @@ def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]
     if strategy != "combined":
         raise CompatError(
             f"classification.strategy is {strategy!r}: a release that predates "
-            f"config format 0.9 has no split-then-classify classification, so this "
+            f"config format 0.9 has no split-then-classify strategy, so this "
             f"cell cannot run there. Leave it out of the cross-release A/B."
         )
     one = _dict(classification.get("combined"))

@@ -75,8 +75,10 @@ def _is_flat_classification_config(path: Path) -> bool:
 
     Such a file is read through ``v08_to_v09``, which maps the v0.8 spellings of
     ``strategy`` (``V08_STRATEGY_VALUES``) to the v0.9 values, so a v0.8 spelling
-    in it is a value the reader accepts rather than one it rejects. A nested file
-    is not converted, and the same spelling there is still a finding.
+    in it is the format's own spelling rather than a stale one. A nested file is
+    written in the current layout, so the same spelling there is still a finding:
+    the reader would convert it, but a file in this tree that needs converting is
+    one nobody updated.
     """
     from idp_common.config.migrations.v08_to_v09 import _has_flat_keys
 
@@ -188,7 +190,7 @@ def test_the_scan_would_catch_the_defect_it_was_written_for():
 @pytest.mark.unit
 def test_a_v08_strategy_spelling_is_accepted_only_in_a_flat_file(tmp_path):
     """The v0.8 spelling is accepted where the migration reads it, and nowhere
-    else: the same line in a nested v0.9 file is a value the model rejects."""
+    else: the same line in a nested file is a stale spelling."""
     flat = tmp_path / "flat.yaml"
     flat.write_text("classification:\n  model: m\n  strategy: single_pass\n")
     nested = tmp_path / "nested.yaml"

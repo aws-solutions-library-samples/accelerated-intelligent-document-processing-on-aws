@@ -2607,9 +2607,11 @@ class ClassificationConfig(BaseModel):
             return data
         from .migrations import migrate_config
         from .migrations.v07_to_v08 import LEGACY_METHOD_KEY
-        from .migrations.v08_to_v09 import FLAT_KEYS
+        from .migrations.v08_to_v09 import FLAT_KEYS, _has_prerelease_names
 
-        if not (FLAT_KEYS | {LEGACY_METHOD_KEY}) & data.keys():
+        if not (FLAT_KEYS | {LEGACY_METHOD_KEY}) & data.keys() and not (
+            _has_prerelease_names({"classification": data})
+        ):
             return data
         return migrate_config({"classification": data})["classification"]
 

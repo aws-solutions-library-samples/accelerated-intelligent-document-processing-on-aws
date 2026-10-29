@@ -429,7 +429,7 @@ class ClassificationService:
                 self.config.classification.split_then_classify.section_classification
             )
             logger.info(
-                "Using SPLIT-THEN-CLASSIFY classification: the splitting call finds "
+                "Using the split-then-classify strategy: the splitting call finds "
                 "boundaries at %s granularity (boundary_hints=%s), section "
                 "classification labels each segment with one %s call over its %s "
                 "page(s). Metered separately as "
@@ -5645,7 +5645,7 @@ class ClassificationService:
             )
 
         except Exception as e:
-            error_msg = f"Error in split-then-classify classification: {str(e)}"
+            error_msg = f"Error in split-then-classify: {str(e)}"
             document = self._update_document_status(
                 document, success=False, error_message=error_msg
             )

@@ -125,7 +125,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   });
 
   // Sort contexts in pipeline order. 'Splitting' and 'SectionClassification' are the two
-  // halves of split-then-classify classification (classification.strategy: split_then_classify) and
+  // halves of the split-then-classify strategy (classification.strategy: split_then_classify) and
   // appear in place of 'Classification', never alongside it — they sit where it
   // sits so the cost table reads in pipeline order either way.
   const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Splitting', 'SectionClassification', 'Extraction', 'Summarization'];

@@ -37,7 +37,7 @@ import { parseMetering } from '../../graphql/awsjson-parsers';
 import { chooseOpeningProfile, isProfileReadable } from '../../utils/readable-profile';
 import { classificationModelOf } from '../../utils/classification-config';
 
-// Split-then-classify classification meters its halves as Splitting and
+// The split-then-classify strategy meters its halves as Splitting and
 // SectionClassification instead of Classification; all three are the
 // classification step.
 

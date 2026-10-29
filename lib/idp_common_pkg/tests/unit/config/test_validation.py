@@ -1171,7 +1171,7 @@ class TestValidateMultiDocDiscoveryForcedTool:
 
 
 def _split_then_classify(**overrides):
-    """A nested (0.9) split-then-classify classification block."""
+    """A nested (0.9) split-then-classify block."""
     section = {
         "model": "us.amazon.nova-lite-v1:0",
         "task_prompt": "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}",

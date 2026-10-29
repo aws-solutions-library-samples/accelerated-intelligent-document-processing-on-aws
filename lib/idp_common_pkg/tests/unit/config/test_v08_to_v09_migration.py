@@ -278,6 +278,77 @@ class TestTheV08StrategySpellings:
 
 
 @pytest.mark.unit
+class TestADevelopmentBuildsNamesAreRead:
+    """A v0.9 development build saved nested profiles and pinned revisions under
+    ``one_stage`` / ``two_stage.boundary_detection`` with ``strategy: single_pass``
+    or ``two_stage`` and no flat key. Unconverted, the strategy is refused and the
+    blocks are dropped as unknown keys, and a pinned revision cannot be re-saved."""
+
+    def _dev_profile(self) -> Dict[str, Any]:
+        return {
+            "config_format_version": "0.10",
+            "classification": {
+                "strategy": "two_stage",
+                "one_stage": {"llm": {"model": "combined-model"}},
+                "two_stage": {
+                    "boundary_detection": {"llm": {"model": "splitting-model"}},
+                    "section_classification": {"llm": {"model": "label-model"}},
+                },
+            },
+        }
+
+    def test_a_nested_profile_keeps_its_strategy_and_every_block(self):
+        cls = IDPConfig(**migrate_config(self._dev_profile())).classification
+        assert cls.strategy == "split_then_classify"
+        assert cls.combined.llm.model == "combined-model"
+        assert cls.split_then_classify.splitting.llm.model == "splitting-model"
+        assert cls.split_then_classify.section_classification.llm.model == (
+            "label-model"
+        )
+
+    def test_the_old_names_are_gone_after_conversion(self):
+        out = migrate_v08_to_v09(self._dev_profile())["classification"]
+        assert "one_stage" not in out and "two_stage" not in out
+        assert "boundary_detection" not in out["split_then_classify"]
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [("single_pass", "combined"), ("two_stage", "split_then_classify")],
+    )
+    def test_a_sparse_delta_holding_only_the_strategy_converts(self, old, new):
+        out = migrate_config({"classification": {"strategy": old}})
+        assert IDPConfig(**out).classification.strategy == new
+
+    def test_in_a_hybrid_the_old_name_wins(self):
+        """A delta saved under the old name, merged onto current defaults, holds
+        what the operator chose; the current-name block holds only defaults."""
+        merged = {
+            "classification": {
+                "strategy": "combined",
+                "combined": {"llm": {"model": "default", "temperature": "0.0"}},
+                "one_stage": {"llm": {"model": "chosen"}},
+            }
+        }
+        llm = migrate_v08_to_v09(merged)["classification"]["combined"]["llm"]
+        assert llm == {"model": "chosen", "temperature": "0.0"}
+
+    def test_a_classification_config_built_directly_converts_too(self):
+        cls = ClassificationConfig(
+            strategy="two_stage",
+            two_stage={"boundary_detection": {"llm": {"model": "splitting-model"}}},
+        )
+        assert cls.strategy == "split_then_classify"
+        assert cls.split_then_classify.splitting.llm.model == "splitting-model"
+
+    def test_a_current_configuration_is_left_alone(self):
+        current = {
+            "config_format_version": "0.10",
+            "classification": {"strategy": "combined", "combined": {}},
+        }
+        assert migrate_v08_to_v09(current) is current
+
+
+@pytest.mark.unit
 class TestSplitThenClassifyStages:
     def test_an_empty_stage_model_inherits_and_an_explicit_one_is_kept(self):
         cls = IDPConfig(

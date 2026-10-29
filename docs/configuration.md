@@ -1266,7 +1266,7 @@ Pipeline mode supports configurable strategies for how classified pages are grou
 - **`llm_determined`** (default): Uses whatever boundary signal the active call
   produces — a per-page `start`/`continue` verdict at page granularity, and a
   `segments` array of page ranges at packet granularity or from the
-  split-then-classify splitting call. Best for complex scenarios where section boundaries are not
+  splitting call of the split-then-classify strategy. Best for complex scenarios where section boundaries are not
   obvious.
 
 ⚠️ **`disabled` and `page` are assertions, not preferences.** They replace

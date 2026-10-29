@@ -62,6 +62,12 @@ setting ``classification.model`` on a full v0.9 configuration. In every one of
 those the flat key is the more recent, more deliberate value, and letting the
 nested value win would discard it silently. Migration removes the flat keys, so
 running it again is still a no-op.
+
+**Development builds' names are read too.** Builds of this layout made before its
+blocks were named after their strategies wrote ``strategy: single_pass`` or
+``two_stage`` with ``one_stage`` / ``two_stage.boundary_detection`` blocks and no
+flat key. Those are renamed first, whatever the stamp, so such a profile or pinned
+revision loads with its settings instead of being refused (``PRERELEASE_BLOCK_NAMES``).
 """
 
 from __future__ import annotations
@@ -134,6 +140,15 @@ SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS = frozenset(
 #: it does, and names its settings block the same way.
 V08_STRATEGY_VALUES = {"single_pass": "combined", "two_stage": "split_then_classify"}
 
+#: Block names that development builds of the v0.9 layout wrote before the blocks
+#: were named after their strategies, mapped to the current names. A profile or a
+#: pinned revision such a build saved is otherwise refused (its ``strategy`` is
+#: spelled the v0.8 way) or loses every setting in these blocks, and a pinned
+#: revision cannot be re-saved, so they are read rather than dropped. Never written.
+PRERELEASE_BLOCK_NAMES = {"one_stage": "combined", "two_stage": "split_then_classify"}
+#: The same, for the first call inside ``split_then_classify``.
+PRERELEASE_SPLITTING_BLOCK = "boundary_detection"
+
 COMBINED_LLM = ("combined", "llm")
 SPLITTING_LLM = ("split_then_classify", "splitting", "llm")
 SECTION_CLASSIFICATION = ("split_then_classify", "section_classification")
@@ -143,6 +158,56 @@ SECTION_CLASSIFICATION_LLM = SECTION_CLASSIFICATION + ("llm",)
 def _has_flat_keys(config: Dict[str, Any]) -> bool:
     classification = config.get("classification")
     return isinstance(classification, dict) and bool(FLAT_KEYS & classification.keys())
+
+
+def _has_prerelease_names(config: Dict[str, Any]) -> bool:
+    """Whether ``config`` uses a strategy or block name of a v0.9 development build."""
+    classification = config.get("classification")
+    if not isinstance(classification, dict):
+        return False
+    strategy = str(classification.get("strategy") or "").strip().lower()
+    if strategy in V08_STRATEGY_VALUES or PRERELEASE_BLOCK_NAMES.keys() & set(
+        classification
+    ):
+        return True
+    split = classification.get("split_then_classify")
+    return isinstance(split, dict) and PRERELEASE_SPLITTING_BLOCK in split
+
+
+def _overlay(base: Any, top: Any) -> Any:
+    """``top`` deep-merged over ``base``; a non-dict on either side means ``top``."""
+    if not isinstance(base, dict) or not isinstance(top, dict):
+        return copy.deepcopy(top)
+    merged = copy.deepcopy(base)
+    for key, value in top.items():
+        merged[key] = _overlay(merged.get(key), value)
+    return merged
+
+
+def _rename_block(parent: Dict[str, Any], old: str, new: str) -> None:
+    """Move ``parent[old]`` to ``parent[new]``. In a hybrid, the old name wins.
+
+    A hybrid arises when a delta saved under the old name is merged onto current
+    defaults, which carry the new name: the old block holds what the operator
+    chose and the new one only defaults, which is the reason the flat-key rule in
+    this module gives the flat key precedence too.
+    """
+    if old not in parent:
+        return
+    block = parent.pop(old)
+    parent[new] = _overlay(parent[new], block) if new in parent else block
+
+
+def _rename_prerelease_names(classification: Dict[str, Any]) -> None:
+    """Rewrite a v0.9 development build's names to the current ones, in place."""
+    strategy = str(classification.get("strategy") or "").strip().lower()
+    if strategy in V08_STRATEGY_VALUES:
+        classification["strategy"] = V08_STRATEGY_VALUES[strategy]
+    for old, new in PRERELEASE_BLOCK_NAMES.items():
+        _rename_block(classification, old, new)
+    split = classification.get("split_then_classify")
+    if isinstance(split, dict):
+        _rename_block(split, PRERELEASE_SPLITTING_BLOCK, "splitting")
 
 
 def _node(root: Dict[str, Any], path: Iterable[str]) -> Dict[str, Any]:
@@ -349,6 +414,13 @@ def migrate_v08_to_v09(config: Any) -> Any:
     """Convert a v0.8 (flat) classification block to the v0.9 nested shape."""
     if not isinstance(config, dict):
         return config
+    if _has_prerelease_names(config):
+        config = copy.deepcopy(config)
+        _rename_prerelease_names(config["classification"])
+        logger.info(
+            "Read classification strategy and block names written by a v0.9 "
+            "development build as combined / split_then_classify / splitting"
+        )
     if not _has_flat_keys(config):
         if is_at_or_after(config.get("config_format_version"), TARGET_VERSION):
             # Preserve object identity for the pure no-op case, matching the
@@ -361,9 +433,6 @@ def migrate_v08_to_v09(config: Any) -> Any:
     result = copy.deepcopy(config)
     flat: Dict[str, Any] = result["classification"]
     out: Dict[str, Any] = {k: v for k, v in flat.items() if k not in FLAT_KEYS}
-    v08_strategy = str(flat.get("strategy") or "").strip().lower()
-    if v08_strategy in V08_STRATEGY_VALUES:
-        out["strategy"] = V08_STRATEGY_VALUES[v08_strategy]
 
     segmentation = _dict_or_empty(flat.get("segmentation"))
     labeling = _dict_or_empty(flat.get("labeling"))
@@ -534,7 +603,7 @@ def migrate_v08_to_v09(config: Any) -> Any:
     # ── Modality inference moves with the prompt. For a split-then-classify config,
     # write the flags the stages inferred in v0.8 — from the flat prompt — onto
     # the stage blocks, so they keep seeing what they saw.
-    if out.get("strategy") == "split_then_classify":
+    if str(out.get("strategy") or "").strip().lower() == "split_then_classify":
         granularity = str(flat.get("granularity") or "page").strip().lower()
         legacy_prompt = (
             packet.get("task_prompt")
