@@ -171,6 +171,21 @@ describe('enum labels across the whole shipped schema', () => {
     }
   });
 
+  it("marks exactly the field's default value as '(default)'", () => {
+    // The marker is written by hand in each label, so it can go stale when a
+    // field's `default:` changes. Where a field labels its default value, that
+    // label carries the marker and no other value's label does.
+    for (const { path: at, node } of labelled) {
+      const labels = node.enumLabels as Record<string, string>;
+      const def = node.default === undefined || node.default === null ? undefined : String(node.default);
+      for (const [value, label] of Object.entries(labels)) {
+        const marked = /\bdefault\)$/.test(label);
+        if (value === def) expect(marked, `${at}: '${value}' is the default`).toBe(true);
+        else expect(marked, `${at}: '${value}' is not the default`).toBe(false);
+      }
+    }
+  });
+
   it("shows the empty modality value as 'Infer from the task prompt'", () => {
     const modality = (
       (classificationSchema.properties as Record<string, Record<string, unknown>>).combined.properties as Record<
