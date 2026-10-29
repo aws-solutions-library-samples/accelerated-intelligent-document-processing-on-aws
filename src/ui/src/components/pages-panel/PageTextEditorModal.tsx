@@ -67,8 +67,31 @@ interface PageTextEditorModalProps {
   /** The page the modal was opened on. */
   initialPageId?: string | number;
   isReadOnly?: boolean;
-  onSave?: (pageId: string | number | undefined, newTextUri: string | null, newConfidenceUri: string | null) => void;
+  /**
+   * After the page's text is uploaded: what the save then does (the document page's Edit
+   * Page Text reprocesses the document). Awaited; a throw keeps the dialog open, saying
+   * the text was saved but the rest was not, with Retry reprocess (this call again, with
+   * no new upload) and Restore original text.
+   */
+  onSave?: (page: { pageId: string; textUri: string }) => void | Promise<void>;
+  /** The save button's label. */
+  saveLabel?: string;
+  /** Why the save button is unavailable now, if it is. */
+  saveDisabledReason?: string;
+  /** What saving does, shown above the editor in edit mode. */
+  saveNotice?: React.ReactNode;
+  /** Closed after the text was saved but `onSave` failed, without retrying or restoring. */
+  onUnfinished?: (page: { pageId: string; textUri: string }) => void;
   onClose?: () => void;
+}
+
+/** A save whose text upload worked and whose `onSave` failed: until it is retried or the text restored. */
+interface Unfinished {
+  page: { pageId: string; textUri: string };
+  /** The text as the dialog opened it, for Restore original text. */
+  originalText: string;
+  message: string;
+  restoreError?: string;
 }
 
 /**
@@ -111,6 +134,10 @@ const PageTextEditorModal = ({
   initialPageId,
   isReadOnly = true,
   onSave,
+  saveLabel = 'Save',
+  saveDisabledReason,
+  saveNotice,
+  onUnfinished,
   onClose,
 }: PageTextEditorModalProps): React.JSX.Element => {
   // Which page is currently shown; navigation (arrows / Next-Previous) moves it.
@@ -153,6 +180,9 @@ const PageTextEditorModal = ({
   const [error, setError] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showCloseWarning, setShowCloseWarning] = useState(false);
+  const [unfinished, setUnfinished] = useState<Unfinished | null>(null);
+  const [restored, setRestored] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const geometryAvailable = Boolean(pageData?.geometryAvailable);
   const lines = useMemo(() => pageData?.lines ?? [], [pageData]);
@@ -278,32 +308,64 @@ const PageTextEditorModal = ({
   const handleSave = async () => {
     setIsSaving(true);
     setError(null);
+    setRestored(null);
+    const id = String(pageId);
+    const originalText = originalTextContent;
 
+    let savedUri: string;
     try {
-      let newTextUri = null;
-
-      // Save text content if changed
-      if (textContent !== originalTextContent) {
-        newTextUri = await saveToS3(textUri!, wrapInJson(textContent), 'application/json');
-        logger.info('Saved text content to:', newTextUri);
-      }
-
-      // Update original content to mark as saved
-      setOriginalTextContent(textContent);
-
-      // Notify parent of save. Confidence is no longer edited here, so the
-      // confidence URI is always passed through unchanged (null).
-      if (onSave) {
-        onSave(pageId, newTextUri, null);
-      }
-
-      // Close modal after successful save
-      handleCloseModal();
+      savedUri = await saveToS3(textUri!, wrapInJson(textContent), 'application/json');
+      logger.info('Saved text content to:', savedUri);
     } catch (err) {
       logger.error('Error saving content:', err);
-      setError(`Failed to save changes: ${(err as Error).message}`);
-    } finally {
+      setError(`Could not save page ${id}'s text: ${(err as Error).message}. Nothing was changed.`);
       setIsSaving(false);
+      return;
+    }
+    // The text is saved: it is what the page holds now.
+    setOriginalTextContent(textContent);
+
+    try {
+      await onSave?.({ pageId: id, textUri: savedUri });
+    } catch (err) {
+      logger.error('Saved the page text, but the follow-up failed:', err);
+      setUnfinished({ page: { pageId: id, textUri: savedUri }, originalText, message: (err as Error).message });
+      setIsSaving(false);
+      return;
+    }
+    setIsSaving(false);
+    handleCloseModal();
+  };
+
+  /** Retry reprocess: `onSave` again, with no new upload. */
+  const retryUnfinished = async () => {
+    if (!unfinished) return;
+    setIsRetrying(true);
+    try {
+      await onSave?.(unfinished.page);
+      setUnfinished(null);
+      handleCloseModal();
+    } catch (err) {
+      setUnfinished({ ...unfinished, message: (err as Error).message, restoreError: undefined });
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  /** Restore original text: upload the text as the dialog opened it. Nothing is reprocessed. */
+  const restoreOriginal = async () => {
+    if (!unfinished) return;
+    setIsRetrying(true);
+    try {
+      await saveToS3(unfinished.page.textUri, wrapInJson(unfinished.originalText), 'application/json');
+      setTextContent(unfinished.originalText);
+      setOriginalTextContent(unfinished.originalText);
+      setRestored(`Page ${unfinished.page.pageId}'s original text is restored. Nothing was reprocessed.`);
+      setUnfinished(null);
+    } catch (err) {
+      setUnfinished({ ...unfinished, restoreError: `Could not restore the original text: ${(err as Error).message}` });
+    } finally {
+      setIsRetrying(false);
     }
   };
 
@@ -364,6 +426,12 @@ const PageTextEditorModal = ({
   };
 
   const handleCloseClick = () => {
+    if (unfinished) {
+      // Closed with the text saved but not reprocessed: the page says so, with Retry reprocess.
+      onUnfinished?.(unfinished.page);
+      handleCloseModal();
+      return;
+    }
     if (hasUnsavedChanges && !isReadOnly) {
       setShowCloseWarning(true);
     } else {
@@ -380,6 +448,8 @@ const PageTextEditorModal = ({
     setSelectedSignatureIndex(null);
     setError(null);
     setHasUnsavedChanges(false);
+    setUnfinished(null);
+    setRestored(null);
     if (onClose) {
       onClose();
     }
@@ -394,11 +464,15 @@ const PageTextEditorModal = ({
   const canGoPrevious = currentPageIndex > 0;
   const canGoNext = currentPageIndex >= 0 && currentPageIndex < pageIds.length - 1;
 
+  // Moving to another page would lose unsaved edits, or leave a saved text unreprocessed.
+  const navigationReason = unfinished
+    ? 'Reprocess or restore this page first'
+    : hasUnsavedChanges && !isReadOnly
+      ? 'Save or discard your changes first'
+      : undefined;
+
   const goToPage = (targetIndex: number) => {
-    if (hasUnsavedChanges && !isReadOnly) {
-      alert('Please save or discard your changes before navigating to another page.');
-      return;
-    }
+    if (navigationReason) return;
     if (targetIndex >= 0 && targetIndex < pageIds.length) {
       setCurrentPageId(pageIds[targetIndex]);
     }
@@ -421,7 +495,8 @@ const PageTextEditorModal = ({
                     iconName="angle-left"
                     variant="normal"
                     onClick={() => goToPage(currentPageIndex - 1)}
-                    disabled={!canGoPrevious || isSaving}
+                    disabled={!canGoPrevious || isSaving || !!navigationReason}
+                    disabledReason={canGoPrevious ? navigationReason : undefined}
                   >
                     Previous Page
                   </Button>
@@ -430,18 +505,25 @@ const PageTextEditorModal = ({
                     iconName="angle-right"
                     variant="normal"
                     onClick={() => goToPage(currentPageIndex + 1)}
-                    disabled={!canGoNext || isSaving}
+                    disabled={!canGoNext || isSaving || !!navigationReason}
+                    disabledReason={canGoNext ? navigationReason : undefined}
                   >
                     Next Page
                   </Button>
                 </>
               )}
-              <Button onClick={handleCloseClick} disabled={isSaving}>
+              <Button onClick={handleCloseClick} disabled={isSaving || isRetrying}>
                 {hasUnsavedChanges ? 'Cancel' : 'Close'}
               </Button>
               {!isReadOnly && (
-                <Button variant="primary" onClick={handleSave} disabled={!hasUnsavedChanges || isSaving} loading={isSaving}>
-                  Save
+                <Button
+                  variant="primary"
+                  onClick={handleSave}
+                  disabled={!hasUnsavedChanges || isSaving || !!unfinished || !!saveDisabledReason}
+                  disabledReason={saveDisabledReason}
+                  loading={isSaving}
+                >
+                  {saveLabel}
                 </Button>
               )}
             </SpaceBetween>
@@ -449,11 +531,41 @@ const PageTextEditorModal = ({
         }
       >
         <Box>
+          {!isReadOnly && saveNotice && (
+            <Box margin={{ bottom: 's' }}>
+              <Alert type="info">{saveNotice}</Alert>
+            </Box>
+          )}
           {error && (
             <Box margin={{ bottom: 's' }}>
               <Alert type="error" header="Error">
                 {error}
               </Alert>
+            </Box>
+          )}
+          {unfinished && (
+            <Box margin={{ bottom: 's' }}>
+              <Alert
+                type="error"
+                action={
+                  <SpaceBetween direction="horizontal" size="xs">
+                    <Button loading={isRetrying} onClick={() => void retryUnfinished()}>
+                      Retry reprocess
+                    </Button>
+                    <Button disabled={isRetrying} onClick={() => void restoreOriginal()}>
+                      Restore original text
+                    </Button>
+                  </SpaceBetween>
+                }
+              >
+                The page text was saved, but the document was not reprocessed: {unfinished.message}
+                {unfinished.restoreError && <Box color="text-status-error">{unfinished.restoreError}</Box>}
+              </Alert>
+            </Box>
+          )}
+          {restored && (
+            <Box margin={{ bottom: 's' }}>
+              <Alert type="success">{restored}</Alert>
             </Box>
           )}
 

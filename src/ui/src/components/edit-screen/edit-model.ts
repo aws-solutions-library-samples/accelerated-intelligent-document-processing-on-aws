@@ -66,6 +66,8 @@ export type EditBar = Pick<
   | 'baselineDisabledReason'
   | 'primaryDisabledReason'
   | 'primaryHint'
+  | 'showRefresh'
+  | 'refreshDisabledReason'
 > & { offerHistory: boolean };
 
 export interface EditEditor {
@@ -107,6 +109,15 @@ export interface EditBoard {
   beforeOpen?: () => Promise<boolean>;
   /** Persist. Resolves the success toast (or null); throws with the message shown inside the board. */
   save: (next: GroupedSection[]) => Promise<string | null>;
+  /**
+   * Offer Save and Re-extract (the document page): why it can't run for the sections a
+   * draft changes, and the re-extract of those sections once the grouping is saved, which
+   * resolves the success toast and throws with the reason it failed.
+   */
+  reextract?: {
+    disabledReason: (changed: GroupedSection[]) => string | undefined;
+    run: (changed: GroupedSection[]) => Promise<string>;
+  };
 }
 
 export interface EditSkip {
@@ -149,6 +160,8 @@ export interface EditReady {
   baseline?: () => Promise<string>;
   /** Toast after Save. */
   savedMessage?: string;
+  /** Refresh: re-read the document (and item); throws when the read fails. */
+  refresh?: () => Promise<void>;
   cancelTo: string;
   failures: EditFailures;
 }

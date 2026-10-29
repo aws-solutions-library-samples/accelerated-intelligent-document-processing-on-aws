@@ -83,6 +83,7 @@ const FAILED_ACTION: Record<EditAction, string> = {
   regroup: 'edit the page grouping',
   baseline: 'use this document as the evaluation baseline',
   cancel: 'leave this document',
+  refresh: 'reload this document',
 };
 
 export const useTestSetItemEditModel = (testSetId: string, objectKey: string, session: EditorSession): EditModel => {
@@ -289,6 +290,8 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         // Save keeps a draft; only Process Changes marks the labels reviewed.
         showSave: !editorReadOnly,
         saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined,
+        showRefresh: true,
+        refreshDisabledReason: saving ? 'Saving your changes…' : loading ? 'Loading…' : undefined,
         showRegroup: true,
         regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
         showClaim: canClaim,
@@ -360,6 +363,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         return `Claimed ${name}. It is in Home › Tasks.`;
       },
       savedMessage: savedDraftMessage(name),
+      refresh: adapter.refresh,
       cancelTo: leavePath(queuePath),
       failures: {
         surface: 'flash',

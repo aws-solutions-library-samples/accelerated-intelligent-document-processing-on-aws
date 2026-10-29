@@ -46,7 +46,6 @@ vi.mock('../../../contexts/app', async (importOriginal) => ({
 }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 
-vi.mock('../../document-viewers/DocumentViewers', () => ({ default: () => null }));
 vi.mock('../../sections-panel', () => ({
   default: (props: { mergedConfig?: unknown }) => {
     state.sectionsConfig.push(props.mergedConfig);

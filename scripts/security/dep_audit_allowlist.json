@@ -42,6 +42,13 @@
     "triagedOn": "2026-10-22"
   },
   {
+    "id": "GHSA-434m-5hcj-pxf3",
+    "package": "@graphql-tools/executor-legacy-ws",
+    "severity": "HIGH",
+    "reason": "Not reachable. Per-request WebSocket connection parameters persisting into later authentications in the legacy WebSocket executor. In src/ui the package is reached only through @graphql-codegen/cli -> @graphql-tools/url-loader (npm ls @graphql-tools/executor-legacy-ws), dev tooling that never ships in the built bundle; nothing under src/ui/src imports @graphql-tools, and codegen.config.mjs loads the schema from the local nested/api-resolvers/src/api/schema.graphql file, so no WebSocket executor is ever constructed. The fix (1.1.36) requires @graphql-tools/utils ^12.0.2, which is blocked by the Node 22.14.0 pin for the same reason as GHSA-c4qx-w738-7hr3. Revisit when the Node pin moves to 22.15 or later.",
+    "triagedOn": "2026-10-28"
+  },
+  {
     "id": "GHSA-4v6f-7vjh-6x4m",
     "package": "strands-agents",
     "severity": "HIGH",
