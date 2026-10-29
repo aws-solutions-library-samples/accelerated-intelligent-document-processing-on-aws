@@ -1447,7 +1447,7 @@ Resources:
                         order: 0
                       llm:
                         type: object
-                        sectionLabel: LLM splitting
+                        sectionLabel: Inference settings
                         collapsible: false
                         description: "The splitting calls: how many are made, their prompts, and the model they use."
                         order: 1
@@ -1752,7 +1752,7 @@ Resources:
                         dependsOn: { field: "pages", value: "first_k" }
                       llm:
                         type: object
-                        sectionLabel: LLM section classification
+                        sectionLabel: Inference settings
                         collapsible: false
                         description: "The call that names each section: its prompts, its model, and how its class is checked and scored."
                         order: 3
