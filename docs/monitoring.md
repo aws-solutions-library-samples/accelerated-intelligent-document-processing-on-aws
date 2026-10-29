@@ -1069,7 +1069,7 @@ report normal operation as a problem. Because it is an average, one slow documen
 in a busy 5-minute window will not trip it — this is a "the whole pipeline is
 slow" signal, not a per-document one.
 
-### The queue alarms — the gap both of the above leave
+### Queue alarms
 
 Both alarms above read the **state machine**, so neither can see a document that
 never got an execution ([#761](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/761)):

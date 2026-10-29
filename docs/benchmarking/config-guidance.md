@@ -44,7 +44,7 @@ Every other arm in the sweep has a single flat rate and its cost figure is a tru
 measurement. See each model's row in
 [Benchmarking](index.md#which-models-are-actually-measured).
 
-### What this edition re-measured, and what it did not
+### Scope of this edition
 
 Every number below is either re-measured on v0.6.12 or explicitly marked as carried over. Read
 this table before citing a figure.
@@ -287,7 +287,7 @@ show a granularity winning on one half while losing on the other.
 
 ---
 
-## 2. Configuration matrix (19 cells × 7 synthetic list docs, exact GT)
+## 2. Configuration matrix (19 configurations, 7 synthetic documents with exact ground truth)
 
 Mean over 7 bank-statement (transaction-list) documents spanning 5 → 800 rows and varying
 row width, list count and description length (`tiny_form`, `small_narrow`, `med_narrow`,
@@ -305,7 +305,7 @@ one statement in two.
 figure below sits inside that result, so the grid separates the configurations on **cost,
 wall-clock and value fidelity** rather than on completeness.
 
-### 2a. The decision space: OCR × mode × assessment
+### 2a. OCR backend, extraction mode and confidence mode
 
 `leaves < 0.9` is a **count** of confidence leaves below the 0.9 alert threshold, not a
 percentage, over the per-cell leaf total in the next column — on this grid the fractions are
@@ -335,7 +335,7 @@ a cell is **0.71–1.02** because the 7 documents differ 160× in row count; tha
 *between-document* spread and tells you nothing about reproducibility. §4 measures cost
 variance properly, with repeats on one document.
 
-### 2b. The v0.7 feature arms
+### 2b. Configurations testing v0.7 features
 
 All are Textract TABLES + `separate`; `restate-*` are advanced, the rest simple. `sections`
 is the total across the 7 documents, where the ground truth is **7** (one per document) —
@@ -495,7 +495,7 @@ python3 benchmarks/harness/aggregate.py \
     --reference-tables benchmarks/results/v0.6.12/core/summary.json
 ```
 
-#### ⚠️ On a real labelled corpus, simple mode beats advanced — at half the cost
+#### ⚠️ Simple mode is more accurate than advanced mode on real documents, at half the cost
 
 This is the finding the synthetic grid **cannot** produce, and the reason running these
 corpora matters more than the row count suggests. §2's 19 cells score 1.000 on recall and
@@ -707,7 +707,7 @@ python3 benchmarks/harness/aggregate.py \
 
 ---
 
-## 2.1 The `integrated` + simple hazard — closed at v0.6.8
+## 2.1 Integrated confidence with simple mode: list truncation fixed in v0.6.8
 
 **What v0.6.12 measures.** On the 7-document grid, `simple/integrated` recall is **1.000 on
 every document** at cell accuracy 1.000 over 4,410 `cells_compared`, including
@@ -748,7 +748,7 @@ tracked (#666/#668), and it did not recur.
 
 ---
 
-## 3. Scaling: where extraction hits limits (synthetic, exact GT)
+## 3. Scaling limits by document size
 
 Simple vs advanced, Textract TABLES + separate confidence, one transaction list of N rows
 (~48 rows/page), and exactly one section in every run that produced one at all — 13 of the
@@ -785,7 +785,7 @@ reached.
 Per-row **cell accuracy is 1.000 in every run of both modes that returned rows at all** — at
 no size does either mode return a row with a *wrong* value.
 
-### Simple mode has three regimes, and only the third is a size limit
+### How simple mode behaves as documents grow
 
 The simple-mode column above is not a gradient. It is three distinct behaviours with two
 sharp boundaries, and they want different responses from a deployment:
@@ -843,7 +843,7 @@ prints `status` first.
 > the note in `idp_common/utils/bedrock_utils.py`). The clamp cuts pixel area, so it
 > relieves both.
 
-### The row-shortfall control, and why this table does not exercise it
+### The row-shortfall setting (not exercised by this table)
 
 `extraction.row_shortfall_action` is the knob that lets an observed row shortfall decide the
 outcome, added at 0.6.10 for the truncated-but-`COMPLETED` shape — a run that returns a
@@ -883,7 +883,7 @@ prefix. What none of this establishes is the **false-failure** rate against real
 65 are all runs that genuinely lost more than half their rows, and the group-shaped-array
 problem above was found by reading the shipped schemas, **not measured** on a document set.
 
-### Where the simple-mode envelope is, and what to do above it
+### Simple-mode size limit, and what to do beyond it
 
 On v0.6.7 simple mode reported "complete" at 1,200 rows and recovered 0.72–0.79 of the rows
 at 3,200 — and that completeness was an artefact of a different behaviour: the classifier
@@ -914,7 +914,7 @@ nothing like it. Three things follow, each measured in the table above:
    and scored before the document failed. Read `status` **and** `completeness_recall`
    **and** `cells_compared` together, or the same table supports two opposite conclusions.
 
-### Advanced mode: completeness holds; cost and wall-clock are the limits
+### Advanced mode: cost and processing time as documents grow
 
 Advanced (agentic sharding) holds **recall 1.000 and cell accuracy 1.000 from 25 through
 3,200 rows / 66 pages** at the control model, on denominators from 50 to 6,400
@@ -944,7 +944,7 @@ the control is modestly the cheaper and modestly the slower of the two there.
 
 ---
 
-## 4. Cost: level AND variance (n=5 repeats, same 400-row doc)
+## 4. Cost and its run-to-run variation (5 repeats of one 400-row document)
 
 Agentic-advanced cost is **non-deterministic run-to-run** (the agent's turn count varies),
 so a single sample cannot resolve a cost difference between configs. The suite measures cost
@@ -1042,7 +1042,7 @@ complete, one section each):
 
 ---
 
-## 5. Which model, for which documents — the model axis, measured
+## 5. Choosing models by document type
 
 Everything above holds the extraction model at the shipped default. This section varies it —
 and the classification and confidence models — on the **same 19-cell × 7-document grid**
@@ -1264,7 +1264,7 @@ Choose it for accuracy parity on the rows it does return, never on a quoted savi
 > finding as a v0.6.8 observation of a behaviour this release does not reproduce, not as a
 > standing property of the model.
 
-#### Carried over from v0.6.8 — the full seven-model grid
+#### Seven-model grid from v0.6.8
 
 | extraction model | runs | fails | recall (a failure counts 0) | cell acc (completed runs) | cost/doc | wall/doc | mean conf |
 |---|---|---|---|---|---|---|---|
@@ -1373,7 +1373,7 @@ The two core cells, which are what a customer actually chooses between:
    8 cells here and 5 of 5 repeats in §5.2. Its larger window is exactly what lets that
    request be *accepted*; Sonnet 5 refuses it or truncates it.
 
-### 5.2 Is a premium model worth it? (`astravalue`, `astracap`, `opus55value`)
+### 5.2 Is a premium model worth it?
 
 Three premium questions, one method: hold everything but `extraction.model` fixed, choose
 the documents by **page count** — page images, not OCR text, are what fill a request
@@ -1411,7 +1411,7 @@ they carry the ceiling answer: every default-shard run returned 3,200 of 3,200 r
 three of the four runs on the wider shard setting came back short, which the ceiling table
 below singles out.
 
-#### Opus 5.5 against Opus 5 — measured for the first time
+#### Opus 5.5 compared with Opus 5
 
 The comparator is Opus 5 rather than the shipped default because the claim under test names
 Opus 5: cheaper input and output ($4/$20 per 1M against $5/$25), a cache read at 0.05×
@@ -1453,7 +1453,7 @@ Both arms resolve to the same `reasoning_effort` in the committed cell configura
 on all four cells), so the pair is matched on that axis as it ran. To compare the two models
 at high effort instead, re-run with `--set reasoning_effort=high` on both arms.
 
-#### Sonnet 5 against GPT-6 Astra — does the larger window buy data?
+#### Sonnet 5 compared with GPT-6 Astra: does the larger context window extract more?
 
 Four documents chosen so that the window is the variable. `small_narrow` (3 pp) and
 `med_narrow` (9 pp) fit both models; `large_narrow` (17 pp, ~203K tokens) is the first
@@ -1509,7 +1509,7 @@ over the same 13,000 cells), and implicit prompt caching with no `<<CACHEPOINT>>
 What it is not, on this evidence, is a reason to pay for extraction that advanced mode
 already gets right at a fraction of the price.
 
-#### The ceiling (`astracap`) — 66 pages, 3,200 rows, 6 cells × 2 repeats
+#### Largest document tested: 66 pages, 3,200 rows
 
 | cell | repeat 0 | repeat 1 | `cells_compared` | $/doc |
 |---|---|---|---:|---|
@@ -1549,7 +1549,7 @@ while the data goes missing. **Leave `shard_pages` at its default at this size**
 it trades completeness for a cost that is not even lower on Sonnet 5 ($8.31 and $7.98
 against $5.80 and $5.82).
 
-### 5.3 Classification model — the shipped default is enough now
+### 5.3 Classification model
 
 The v0.6.7 edition recommended Claude Haiku 4.5 for classification because Nova 2 Lite
 over-split every document 2–3×. That was a prompt defect, fixed in #817, and the axis has
@@ -1600,7 +1600,7 @@ longer in the sweep; `--set classification_model=haiku45` reproduces it on deman
 figures would not be comparable with the rows above (different release, different
 `pricing.yaml`, and the `stickler-eval` comparator change described in the header).
 
-### 5.4 Confidence model — Nova Lite is enough, and the alternatives are not measurably better
+### 5.4 Confidence model
 
 Re-measured in full on v0.6.12 — the whole 19-cell × 7-document `coresynth` grid, 133 runs
 per model, extraction held at the control (Sonnet 4.6):
@@ -1878,13 +1878,13 @@ ordered by how much data they can cost a customer.
 
 ---
 
-## 7. Configuration options — feature A/Bs on one stack, one build (measured 2026-09-12)
+## 7. Individual configuration options, A/B tested (2026-09-12)
 
 Each pair below differs on exactly one config key, on the same deployed stack with identical
 code, `repeats: 3` or more. Extraction model Sonnet 4.6 (the matrix's control) unless stated;
 the point of each is the *delta*, not the absolute.
 
-### `extraction.validation` / `extraction.coercion` (`enforcement`) — free, and clean
+### `extraction.validation` and `extraction.coercion`
 
 | arm | corpus | n | recall | cell acc | typed acc | coercions | validation errors | valid rate | cost/doc |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1900,7 +1900,7 @@ document, whose values carry deliberate OCR noise, drew **0 coercions** at eithe
 Sonnet 4.6 emits typed values that pass the schema without repair. `escalate` (§2b) is
 priced only when validation fails, and on a clean corpus it never does.
 
-### `extraction.forced_tool.enabled` (`forcing`) — honoured, neutral, still not a default
+### `extraction.forced_tool.enabled`
 
 ⚠️ **Claude Opus 5.5 rejects a forced `toolChoice`, so this axis has no measurement for
 it.** Bedrock returns `tool_choice: type "tool" and "any" are not supported for this model.
@@ -1935,7 +1935,7 @@ response does appear to carry a different output-length budget than prose, but o
 evidence it is not the shorter one, and neither arm is safe at that size in simple mode.
 Measure on your own long lists before forcing them.
 
-### `classification.document_shape.sectionSplitting` and the boundary prompt (`boundaryab`) — #817 confirmed, #750 open
+### `classification.document_shape.sectionSplitting` and the boundary prompt
 
 Boundary detection judged on `sections_correct` (1.0/0.0 per run; the mean over 5 repeats
 is the pass rate). Classification model Nova 2 Lite (the shipped default).
@@ -1978,9 +1978,9 @@ also been measured against **`granularity: packet`** rather than against
 packet granularity where page granularity returned 3, with the mirror-image cost
 that two 3-page statements in one file merged into 1 where page granularity got 2.
 That is a separate axis from this cell and not part of this matrix; see
-[Classification](../classification.md#neither-granularity-dominates-and-the-failure-modes-are-opposite).
+[Classification](../classification.md#page-versus-packet-granularity-opposite-failure-modes).
 
-### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection` — one new failure
+### `x-aws-idp-multi-instance` and `extraction.multi_instance_detection`
 
 Same design as the v0.6.7 study: `twodocs_2x20` is two complete 20-row statements in one
 forced section with globally unique `SEQ` tags; `small_narrow` is one 100-row statement.
@@ -2016,7 +2016,7 @@ and migrate baselines — **but not on a class that carries a list of more than 
 rows until #894 is fixed**, or the document will fail at assessment. Use
 `x-aws-idp-instance-array` when the records are already inside a declared array.
 
-### `extraction.confidence.list_batch_size` (`sizerab`) — the shipped default now equals the tuned one
+### `extraction.confidence.list_batch_size`
 
 At v0.6.8-dev2 the shipped sizing paid one truncated Nova Lite call per 100-row section and a
 pinned batch of 8 removed it (−29% assessment cost). #861 shipped a ceiling of 12 and a
@@ -2034,7 +2034,7 @@ value and the truncation penalty is gone; pinning 8 is marginally *more* expensi
 calls). The dev2 measurement is retained in [releases/v0.6.8.md](releases/v0.6.8.md) as the
 before picture.
 
-### `extraction.agentic.restate_schema_in_system_prompt` — free on quality, saves input tokens, costs a few percent in dollars
+### `extraction.agentic.restate_schema_in_system_prompt`
 
 From the §2 grid (advanced, Sonnet 5, 7 documents): `restate-on` $1.523, `restate-off`
 $1.548, recall and cell accuracy 1.000 both.

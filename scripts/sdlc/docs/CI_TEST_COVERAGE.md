@@ -1994,7 +1994,7 @@ is written.
 
 ```bash
 # Deploy stack
-idp-cli deploy --stack-name <stack> --pattern pattern-2 --admin-email <email> --wait
+idp-cli deploy --stack-name <stack> --admin-email <email> --wait
 
 # Run inference tests
 idp-cli run-inference --stack-name <stack> --dir samples/ --file-pattern <pattern>

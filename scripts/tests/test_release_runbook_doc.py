@@ -3,19 +3,16 @@
 
 """Keep ``docs/release-runbook.md`` honest about ``scripts/aws-release.sh``.
 
-The runbook documents the one irreversible step this project has: publishing
-artifacts to the four public release buckets. It is read under pressure,
-by someone who may be doing it for the first time, and it is trusted literally. A
-runbook that describes a release the script no longer performs is worse than none.
+The runbook is a public guide to the release mechanism, written for anyone
+publishing releases to buckets in an account they own. It describes the mechanism
+with placeholders and deliberately names none of the project's own release
+buckets, so this asserts both halves against the script and the Makefile rather
+than against a copy of the facts:
 
-The script is six lines and changes rarely, which is exactly why drift would go
-unnoticed — nobody re-reads a page they believe is settled. So this asserts against
-the script and the Makefile rather than against a copy of the facts:
-
-* the runbook quotes the script **verbatim**, so editing the script forces a
-  decision about the prose around the quote;
-* the set of published regions in the runbook is the set in the script — adding a
-  region cannot land undocumented;
+* every option the script passes to ``idp-cli publish`` is documented, so a new
+  flag in the release cannot land unexplained;
+* no bucket basename, bucket name or key prefix the script publishes to appears
+  on the page;
 * every ``make <target>`` the page cites still exists;
 * the artifact keys it names are the keys the publisher writes;
 * the number of files ``make version`` stamps is the number the page claims;
@@ -112,29 +109,11 @@ def test_the_ordered_procedure_keeps_its_shape() -> None:
     )
 
 
-@pytest.mark.unit
-def test_the_runbook_quotes_the_release_script_verbatim() -> None:
-    """A stale quote is how a reader ends up running a command that no longer exists."""
-    quoted = "\n".join(
-        line.rstrip()
-        for line in _doc_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
-    body = _script_body()
-    assert body in quoted, (
-        f"{DOC.relative_to(REPO_ROOT)} must quote the executable lines of "
-        f"{SCRIPT.relative_to(REPO_ROOT)} verbatim. The script now reads:\n\n{body}\n\n"
-        "Update the quoted block *and* the prose that explains it."
-    )
-
-
 def _script_buckets() -> dict[str, str]:
     """Region -> ``<basename>-<region>``, read off each publish line.
 
-    The basename is per line rather than global — three regions publish to
-    ``aws-ml-blog`` and ``ca-central-1`` to ``aws-bigdata-blog-replica`` — so a
-    single ``--bucket-basename`` search over the whole script, or a bucket name
-    built from the region alone, is wrong for Canada.
+    The basename is per line rather than global, so a bucket name built from one
+    basename and every region would miss a region that publishes elsewhere.
     """
     buckets: dict[str, str] = {}
     for line in _script_body().splitlines():
@@ -146,50 +125,43 @@ def _script_buckets() -> dict[str, str]:
 
 
 @pytest.mark.unit
-def test_published_regions_match_the_script() -> None:
-    """A region published but undocumented is a region nobody verifies after release."""
-    buckets = _script_buckets()
-    assert buckets, "no publish lines with --region and --bucket-basename in the script"
+def test_the_publish_options_the_script_uses_are_documented() -> None:
+    """A flag added to the release is a change to the mechanism the page explains."""
+    body = _script_body()
+    assert "idp-cli publish" in body, "release script no longer runs idp-cli publish"
+    options = set(re.findall(r"(--[a-z][a-z-]*)", body))
+    assert options, "no idp-cli publish options parsed out of the release script"
 
     text = _doc_text()
-    # Each region's own bucket must appear by name. Concrete names only;
-    # placeholders like <basename>-<region> do not match.
-    missing = {r: b for r, b in buckets.items() if b not in text}
+    assert "scripts/aws-release.sh" in text, (
+        f"{DOC.relative_to(REPO_ROOT)} must name scripts/aws-release.sh"
+    )
+    missing = sorted(o for o in options if f"`{o}`" not in text)
     assert not missing, (
-        f"{DOC.relative_to(REPO_ROOT)} does not name the bucket for every published "
-        f"region: {sorted(missing.items())}"
-    )
-
-    # And no bucket is claimed for a region the script does not publish to.
-    documented = set(
-        re.findall(r"aws(?:-ml-blog|-bigdata-blog-replica)-([a-z]{2}-[a-z]+-\d)", text)
-    )
-    assert documented <= set(buckets), (
-        f"{DOC.relative_to(REPO_ROOT)} names buckets for regions the script does not "
-        f"publish: {sorted(documented - set(buckets))}"
+        f"{DOC.relative_to(REPO_ROOT)} does not explain the publish options the "
+        f"release script passes: {missing}"
     )
 
 
 @pytest.mark.unit
-def test_bucket_basename_and_prefix_match_the_script() -> None:
+def test_the_page_names_no_release_bucket_or_prefix() -> None:
+    """The page is a public guide; the project's own buckets stay out of it."""
+    buckets = _script_buckets()
+    assert buckets, "no publish lines with --region and --bucket-basename in the script"
     body = _script_body()
-    basenames = set(re.findall(r"--bucket-basename\s+(\S+)", body))
-    prefix = re.search(r"--prefix\s+(\S+)", body)
-    assert basenames and prefix, (
-        "release script must pass --bucket-basename and --prefix"
-    )
+    names = set(buckets.values())
+    names |= set(re.findall(r"--bucket-basename\s+(\S+)", body))
+    names |= set(re.findall(r"--prefix\s+(\S+)", body))
 
     text = _doc_text()
-    # Every basename, not just the first: a second one added for one region is
-    # exactly the case a single search would miss.
-    unmentioned = sorted(b for b in basenames if b not in text)
-    assert not unmentioned, (
-        f"bucket basenames {unmentioned} are not mentioned in "
-        f"{DOC.relative_to(REPO_ROOT)}"
+    named = sorted(n for n in names if n in text)
+    assert not named, (
+        f"{DOC.relative_to(REPO_ROOT)} names release buckets or prefixes {named}; "
+        "describe them with placeholders such as <basename>-<region> and <prefix>"
     )
-    assert prefix.group(1) in text, (
-        f"published prefix {prefix.group(1)!r} is not mentioned in "
-        f"{DOC.relative_to(REPO_ROOT)}"
+    assert not re.search(r"(?<!\d)\d{12}(?!\d)", text), (
+        f"{DOC.relative_to(REPO_ROOT)} contains a 12-digit number that may be an AWS "
+        "account id"
     )
 
 

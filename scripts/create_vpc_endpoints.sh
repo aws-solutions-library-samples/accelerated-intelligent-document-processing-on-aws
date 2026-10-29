@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates all VPC endpoints required for GenAI IDP VPC-only deployment (Pattern 2).
+# Creates all VPC endpoints required for GenAI IDP VPC-only deployment (pipeline mode: Textract + Bedrock).
 # Usage: ./create_vpc_endpoints.sh --vpc-id vpc-xxx --subnet-ids subnet-a,subnet-b --security-group-id sg-xxx --region us-gov-west-1
 set -euo pipefail
 
@@ -40,7 +40,7 @@ GATEWAY_ENDPOINTS=(
   "dynamodb"
 )
 
-# Interface endpoints for Pattern 2 (Textract + Bedrock)
+# Interface endpoints for pipeline mode (Textract + Bedrock)
 INTERFACE_ENDPOINTS=(
   "sqs"
   "states"
