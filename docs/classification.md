@@ -74,7 +74,7 @@ request or is silently ignored by a model family that has no effort control.
 | `strategy` | `combined` (default; *Split and classify together (one call)* in the editor) \| `split_then_classify` (*Split first, then classify each section*) | **Whether splitting and classifying are one call or two.** `split_then_classify` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
 | `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. The combined call and the splitting call each have their own. |
 | `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty means "infer from this call's task prompt placeholders". |
-| `document_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
+| `document_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting](#section-splitting). |
 | `document_shape.maxPagesForClassification` | `ALL` (default) \| a positive number of pages | **How much of a single-section document is classified.** Only with `sectionSplitting: disabled`: the first N pages are classified and the whole document takes their majority class. See [Page limit configuration](#page-limit-configuration) below, which carries the spelling hazards. |
 
 The settings combine freely. Split-then-classify with splitting at `packet` granularity
@@ -731,11 +731,11 @@ the library directly, with an endpoint it supplies itself.
 
 Everything else on this page describes the Bedrock path.
 
-## Section Splitting Strategies
+## Section Splitting
 
 `classification.document_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One section* and *One per page*. It has three values:
 
-### Available Strategies
+### Available Values
 
 #### 1. `disabled` - No Splitting (Entire Document = One Section)
 
@@ -767,7 +767,7 @@ classification:
 
 **Voting Behavior:**
 
-The `disabled` strategy votes on the document classification, which provides
+The `disabled` value votes on the document classification, which provides
 robust handling of edge cases. The same rule runs at **both** granularities and
 under both strategies — what differs is only how the segments it counts were
 produced:
@@ -833,7 +833,7 @@ classification:
 - Each page maintains its individual classification
 
 **GitHub Issue Reference:**
-This strategy directly addresses [Issue #146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/146) where long documents with multiple same-type forms were being incorrectly joined together.
+This value directly addresses [Issue #146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/146) where long documents with multiple same-type forms were being incorrectly joined together.
 
 #### 3. `llm_determined` - LLM Boundary Detection (Default)
 
@@ -858,9 +858,9 @@ classification:
 - Document with 10 pages → Variable number of sections based on LLM boundary detection
 - Pages grouped according to section boundaries and class changes
 
-### Strategy Comparison Table
+### Value Comparison Table
 
-| Strategy | Sections Created | Boundary Detection | Same-Type Handling | Deterministic | Performance |
+| Value | Sections Created | Boundary Detection | Same-Type Handling | Deterministic | Performance |
 |----------|-----------------|-------------------|-------------------|---------------|-------------|
 | `disabled` | 1 section always | None — asserted | All joined | Yes | Fastest |
 | `page` | N sections (N pages) | None — asserted | Never joined | Yes | Fast |
@@ -888,13 +888,14 @@ So the choice is really a question about your input, not about accuracy:
 
 Three further properties worth knowing:
 
-- **`disabled` and `page` are the only values that let classification skip the
-  model entirely.** With a single-class configuration, or a document-name regex
-  match that already fixes the class, there is nothing left to decide and no
-  call is made. Under `llm_determined` the model is still called in both of those
-  cases, on purpose: the class may be known but the boundaries are not, and
-  silently skipping the call would collapse every packet into one
-  section.
+- **`disabled` and `page` are the only values that let a multi-page document
+  skip the model entirely.** With a single-class configuration, or a
+  document-name regex match that already fixes the class, there is nothing left
+  to decide and no call is made. Under `llm_determined` the model is still called
+  in both of those cases when the document has more than one page, on purpose:
+  the class may be known but the boundaries are not, and silently skipping the
+  call would collapse every packet into one section. A single-page document
+  skips the call under `llm_determined` too, because one page cannot be split.
 - **`document_shape` applies identically under both strategies.** Under `split_then_classify`
   a declared shape skips the splitting call outright, leaving one section
   classification call per asserted section.
@@ -1402,7 +1403,7 @@ If neither error is acceptable, assert the shape instead of detecting it:
 `document_shape.sectionSplitting: disabled` gives a document known to hold a single section
 exactly one section, and `page` gives a document of one-page sections exactly one
 section each. Both are assertions, so they are only right when you know the
-shape — see [Section Splitting Strategies](#section-splitting-strategies).
+shape — see [Section Splitting](#section-splitting).
 
 ### Strategy
 
@@ -2394,20 +2395,18 @@ classes:
 ```
 
 **Benefits:**
-- **Instant Classification**: Entire document classified without any LLM calls
-- **Massive Performance Gains**: ~100-1000x faster than LLM classification
-- **Zero Token Usage**: Complete elimination of API costs for matched documents
-- **Deterministic Results**: Consistent classification for known patterns
+- **Deterministic class**: every page of a matched document gets the matching class, and the model's own class output is never used for it
+- **No inference when no boundary decision is needed**: a single-page document, or any document under `sectionSplitting: disabled` or `page`, is classified without any model call and uses no tokens
 
 **When document ID matches the pattern:**
-- All pages are immediately classified as the matching class
-- Single section is created containing all pages
-- No backend service calls are made
-- Info logging confirms regex match
+- All pages are classified as the matching class
+- Sections follow `sectionSplitting`: `disabled` creates one section over all pages, `page` creates one section per page, and `llm_determined` (the default) on a single-page document creates one section — in all three cases no backend call is made
+- Under `llm_determined`, a **multi-page** document still calls the model, because the name says what the document is but not where each section starts. With the `combined` strategy the model supplies the boundaries and its class output is replaced by the matched class; with `split_then_classify` only the splitting call runs and section classification is skipped. Set `sectionSplitting: disabled` to keep multi-page matches at zero inference when one file is always one document
+- Info logging confirms the regex match
 
-### Page Content Regex (Multi-Modal Page-Level Classification)
+### Page Content Regex (Page Granularity)
 
-For multi-class configurations using page-level classification, you can use page content regex to classify individual pages based on text patterns:
+For multi-class configurations using the `combined` strategy at page granularity (`classification.combined.granularity: page`), you can use page content regex to classify individual pages based on text patterns:
 
 ```yaml
 classification:
@@ -2454,7 +2453,7 @@ classes:
 - Each page's text content is checked against all class regex patterns
 - First matching pattern wins and classifies the page instantly
 - Pages with no matches use standard LLM classification
-- Results are seamlessly integrated into document sections
+- A matched page is recorded with a `continue` boundary, so under `sectionSplitting: llm_determined` it joins the preceding section whenever that section has the same class: consecutive pages of one class form a single section, whether each was matched by the regex or classified by the model
 
 ### Regex Pattern Best Practices
 

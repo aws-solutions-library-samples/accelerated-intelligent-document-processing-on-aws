@@ -142,7 +142,7 @@ After deploying your Lambda hook:
 1. Go to the IDP **Configuration** page
 2. Select the step (e.g., Extraction)
 3. Set **Model** to `LambdaHook`
-4. Set **Model Lambda Hook ARN** to your function's ARN
+4. Set **Model Lambda hook ARN** to your function's ARN
 5. Save
 
 Or in config YAML:

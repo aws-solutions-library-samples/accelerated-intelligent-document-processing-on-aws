@@ -12,7 +12,7 @@ This module provides document classification capabilities for the IDP Accelerato
   - SageMaker UDOP models
 - **Optional regex-based classification for enhanced performance**
   - Document name regex matching when all pages should be classified as the same class
-  - Page content regex matching for multi-modal page-level classification
+  - Page content regex matching for the `combined` strategy at page granularity
 - **Valid-class enforcement with re-prompt/retry** on every call that assigns a
   class — the combined call at page *and* packet granularity, and
   split-then-classify's section classification — rejects out-of-vocabulary predictions and re-prompts the model
@@ -394,7 +394,7 @@ report's `doc_split_metrics.page_details` with `predicted_confidence`, next to t
 Near-zero separation means the model is equally confident right and wrong — do not
 route work on it.
 
-### Section splitting strategies
+### Section splitting values
 
 `classification.document_shape.sectionSplitting` controls how classified pages become sections:
 
@@ -430,7 +430,7 @@ on each.
 
 ### Single-class configurations
 
-When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured strategy genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
+When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured `sectionSplitting` value genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
 
 | `sectionSplitting` | Single-class behavior | Backend call? |
 |--------------------|-----------------------|---------------|
@@ -506,7 +506,7 @@ classification:
 
 ### Page Content Regex Classification
 
-For multi-modal page-level classification, page content regex patterns can classify individual pages based on text content:
+Under the `combined` strategy at page granularity, page content regex patterns can classify individual pages based on text content:
 
 ```yaml
 classes:
@@ -543,7 +543,7 @@ whose name is the empty string and whose regexes are `None`. Nothing matches, an
 the only signal is that classification silently never takes the regex path.
 
 **How it works:**
-- Only applies to multi-modal page-level classification method
+- Only applies to the `combined` strategy at page granularity (`classification.combined.granularity: page`)
 - Each page's text content is checked against all class regex patterns
 - First matching pattern wins and classifies the page instantly
 - Falls back to LLM classification when no patterns match
@@ -835,12 +835,16 @@ for section in document.sections:
 ### Using with SageMaker UDOP Models
 
 ```python
+import os
+
 from idp_common import classification, get_config
 from idp_common.models import Document
 
-# Load configuration and add SageMaker endpoint
+# The SageMaker backend reads its endpoint name from the SAGEMAKER_ENDPOINT_NAME
+# environment variable, not from the configuration, and raises ValueError at
+# construction when it is unset.
+os.environ["SAGEMAKER_ENDPOINT_NAME"] = "udop-classification-endpoint"
 config = get_config()
-config["sagemaker_endpoint_name"] = "udop-classification-endpoint"
 
 # Initialize classification service with SageMaker backend
 service = classification.ClassificationService(
@@ -907,20 +911,30 @@ api_response = result.to_dict()
 
 ## Configuration
 
-The classification service uses the following configuration structure:
+The classification service uses the following configuration structure. Each class
+is a JSON Schema whose `x-aws-idp-document-type` is the class name. The Bedrock
+model is set per call (here `classification.combined.llm.model`); there is no
+top-level model key. The SageMaker backend takes its endpoint name from the
+`SAGEMAKER_ENDPOINT_NAME` environment variable rather than from the configuration.
 
 ```json
 {
-  "model_id": "anthropic.claude-3-sonnet-20240229-v1:0", // Top-level model_id for Bedrock (optional)
-  "sagemaker_endpoint_name": "udop-classification-endpoint", // SageMaker endpoint name (optional)
   "classes": [
     {
-      "name": "invoice",
-      "description": "An invoice that specifies an amount of money to be paid."
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "invoice",
+      "x-aws-idp-document-type": "invoice",
+      "type": "object",
+      "description": "An invoice that specifies an amount of money to be paid.",
+      "properties": {}
     },
     {
-      "name": "financial_statement",
-      "description": "Documents that summarize financial performance, such as income statements, balance sheets, or cash flow statements."
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "financial_statement",
+      "x-aws-idp-document-type": "financial_statement",
+      "type": "object",
+      "description": "Documents that summarize financial performance, such as income statements, balance sheets, or cash flow statements.",
+      "properties": {}
     }
   ],
   "classification": {
@@ -938,7 +952,7 @@ The classification service uses the following configuration structure:
       }
     },
     "document_shape": {
-      "sectionSplitting": "llm_determined" // "llm_determined" (default) | "page" | "disabled" - see "Section splitting strategies"
+      "sectionSplitting": "llm_determined" // "llm_determined" (default) | "page" | "disabled" - see "Section splitting values"
     }
   }
 }
@@ -974,15 +988,14 @@ def handler(event, context):
 ```python
 from idp_common import classification, get_config
 from idp_common.models import Document, Status
-import os
 
 def handler(event, context):
     # Extract document from event
     document = Document.from_dict(event["OCRResult"]["document"])
     
-    # Configure SageMaker endpoint
-    config = get_config() or {}
-    config["sagemaker_endpoint_name"] = os.environ["SAGEMAKER_ENDPOINT_NAME"]
+    # The SageMaker backend reads the endpoint name from the
+    # SAGEMAKER_ENDPOINT_NAME environment variable set on the function.
+    config = get_config()
     
     # Initialize classification service with SageMaker backend
     service = classification.ClassificationService(
