@@ -1146,10 +1146,10 @@ the first thing to settle is which calls you are making. That is
 
 | `classification.strategy` | Web UI label | Calls it makes |
 |---|---|---|
-| `combined` (the default) | **Split and classify together (one call)** | One call per page, or per packet, returning the section boundaries and the classes together |
-| `split_then_classify` | **Split first, then classify each section** | A *splitting* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
+| `combined` (the default) | **Combined section detection and classification** | One call per page, or per packet, returning the section boundaries and the classes together |
+| `split_then_classify` | **Separate section detection and classification** | A *splitting* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
 
-*Split and classify together (one call)* and *Split first, then classify each section*
+*Combined section detection and classification* and *Separate section detection and classification*
 are the labels the configuration editor's form view shows. The stored value is `combined` or `split_then_classify` — write that in the
 editor's YAML or JSON view and in any file you upload, because the form labels
 are not accepted as values and a save using one is refused.

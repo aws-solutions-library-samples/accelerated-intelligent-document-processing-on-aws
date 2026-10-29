@@ -19,7 +19,7 @@ no effect.
 
 ```yaml
 classification:
-  strategy: combined   # "Split and classify together (one call)" | split_then_classify ("Split first, then classify each section")
+  strategy: combined   # "Combined section detection and classification" | split_then_classify ("Separate section detection and classification")
   fallback_class: unclassified   # assigned when no class can be decided
 
   combined:                      # strategy: combined
@@ -50,7 +50,7 @@ classification:
         model settings + validation + confidence
 
   document_shape:                # Advanced — what you already know about a document
-    sectionSplitting: llm_determined   # detect boundaries | disabled | page
+    sectionSplitting: llm_determined   # detect sections | disabled | page
     maxPagesForClassification: ALL     # only with sectionSplitting: disabled
 ```
 
@@ -71,7 +71,7 @@ request or is silently ignored by a model family that has no effort control.
 
 | Setting | Values | What it decides |
 |---|---|---|
-| `strategy` | `combined` (default; *Split and classify together (one call)* in the editor) \| `split_then_classify` (*Split first, then classify each section*) | **Whether splitting and classifying are one call or two.** `split_then_classify` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
+| `strategy` | `combined` (default; *Combined section detection and classification* in the editor) \| `split_then_classify` (*Separate section detection and classification*) | **Whether splitting and classifying are one call or two.** `split_then_classify` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
 | `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. The combined call and the splitting call each have their own. |
 | `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty means "infer from this call's task prompt placeholders". |
 | `document_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
@@ -86,6 +86,29 @@ directly under `classification:`, is converted to this layout automatically when
 it is read; nothing needs editing.
 [Migrating from v0.6.12 to v0.6.13](migration-v0612-to-v0613.md) lists what each
 old setting becomes and the cases where the conversion is not a pure move.
+
+### Configuration keys and their labels in the editor
+
+The configuration editor's form view names settings by what they do. The JSON and
+YAML views, uploaded files, and the cost table use the configuration keys.
+
+| Configuration key | Label in the form view |
+|---|---|
+| `strategy: combined` | *Combined section detection and classification* |
+| `strategy: split_then_classify` | *Separate section detection and classification* |
+| `split_then_classify.splitting` | *Section detection* |
+| `split_then_classify.section_classification` | *Section classification* |
+| `…llm` | *Inference settings* |
+| `…llm.model` | *Model ID* |
+| `…page`, `…packet` | *Page settings*, *Packet settings* |
+| `fallback_class` | *Fallback class* |
+| `document_shape` | *Advanced: known document shape* |
+| `document_shape.sectionSplitting` | *Document shape*: `llm_determined` is *Detect sections*, `disabled` is *One section*, `page` is *One per page* |
+| `document_shape.maxPagesForClassification` | *Pages to classify* |
+
+In the cost table, section detection is metered as `Splitting/…` and section
+classification as `SectionClassification/…`. The combined strategy stays under
+`Classification/…`.
 
 ### What each setting costs
 
@@ -733,7 +756,7 @@ Everything else on this page describes the Bedrock path.
 
 ## Section Splitting Strategies
 
-`classification.document_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One section* and *One per page*. It has three values:
+`classification.document_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it as *Document shape* under *Advanced: known document shape*, with the labels *Detect sections*, *One section* and *One per page*. It has three values:
 
 ### Available Strategies
 
@@ -1158,7 +1181,7 @@ ships at
 
 ## The split-then-classify strategy
 
-`strategy: split_then_classify` (*Split first, then classify each section* in the editor)
+`strategy: split_then_classify` (*Separate section detection and classification* in the editor)
 splits the two jobs into two calls: a splitting call, then section classification.
 `combined` stays the default.
 

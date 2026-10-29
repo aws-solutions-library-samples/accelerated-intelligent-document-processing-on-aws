@@ -1216,11 +1216,11 @@ other classification setting has to go in:
 
 | `classification.strategy` | Configuration editor label | What it does |
 |---|---|---|
-| `combined` (default) | **Split and classify together (one call)** | One call per page, or per packet, returns the section boundaries and the classes together |
-| `split_then_classify` | **Split first, then classify each section** | A splitting call that is sent no class vocabulary, then one call per detected section to classify that section |
+| `combined` (default) | **Combined section detection and classification** | One call per page, or per packet, returns the section boundaries and the classes together |
+| `split_then_classify` | **Separate section detection and classification** | A splitting call that is sent no class vocabulary, then one call per detected section to classify that section |
 
-The stored value is `combined` or `split_then_classify`. *Split and classify together
-(one call)* and *Split first, then classify each section* are the labels the
+The stored value is `combined` or `split_then_classify`. *Combined section detection and classification*
+and *Separate section detection and classification* are the labels the
 configuration editor's form view shows; in its YAML or JSON view, and in a file you
 upload, write the stored value — the form labels are not accepted as values.
 [Classification](./classification.md#choosing-granularity-modality-and-strategy)

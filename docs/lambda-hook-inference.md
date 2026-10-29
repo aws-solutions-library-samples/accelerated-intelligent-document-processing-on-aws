@@ -51,10 +51,10 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 4. Enter your Lambda function ARN in the **Model Lambda Hook ARN** field
 5. Save the configuration
 
-For **Classification** there is one *Model* dropdown per model call, and which
-ones appear depends on **Strategy**: *Split and classify together (one call)*
-(`strategy: combined` in the JSON and YAML views) shows one, and *Split first, then
-classify each section* (`strategy: split_then_classify`) shows one under *Splitting*
+For **Classification** there is one *Model ID* dropdown per model call, and which
+ones appear depends on **Strategy**: *Combined section detection and classification*
+(`strategy: combined` in the JSON and YAML views) shows one, and *Separate section detection and classification*
+(`strategy: split_then_classify`) shows one under *Section detection*
 and one under *Section classification*. Hooking only one of
 the two leaves the other on its Bedrock model, which is a supported
 configuration — the hook receives a different `context` for each, so one Lambda

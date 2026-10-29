@@ -250,7 +250,7 @@ When classifying documents:
 ⚠️ **Which classification prompt carries the examples depends on
 `classification.strategy`.** Every prompt example on this page edits
 `classification.combined.page.task_prompt`, which is the right place under
-`strategy: combined` (*Split and classify together (one call)* in the configuration
+`strategy: combined` (*Combined section detection and classification* in the configuration
 editor) — the default.
 Under `strategy: split_then_classify`:
 
@@ -258,7 +258,7 @@ Under `strategy: split_then_classify`:
   `classification.split_then_classify.section_classification.llm.task_prompt`, the call
   that assigns the class. The shipped prompt there carries the placeholder, so
   defining examples is enough.
-- The **splitting** prompts
+- The **section detection** prompts
   (`classification.split_then_classify.splitting.llm.page.task_prompt` and
   `…llm.packet.task_prompt`) deliberately carry no class vocabulary and no
   examples — they carry `{BOUNDARY_HINTS}` instead. Withholding the class list

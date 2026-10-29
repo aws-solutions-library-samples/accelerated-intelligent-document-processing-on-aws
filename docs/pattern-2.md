@@ -50,7 +50,7 @@ The workflow consists of three main processing steps with an optional assessment
 2. Document classification using Amazon Bedrock. `classification.strategy`
    chooses between two strategies, and the page-reading call then works at one of
    two granularities:
-   - `combined` (*Split and classify together (one call)* in the configuration
+   - `combined` (*Combined section detection and classification* in the configuration
      editor): one call returns a
      page's or packet's section boundaries and classes together
    - `split_then_classify`: boundaries first, with no class vocabulary in the prompt, then

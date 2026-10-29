@@ -349,8 +349,8 @@ const CreateConfigVersionModal = ({
               <strong>Extraction</strong> — Set <code>extraction.model</code> to the custom model deployment ARN
             </Checkbox>
             <Checkbox checked={useForClassification} onChange={({ detail }) => setUseForClassification(detail.checked)}>
-              <strong>Classification</strong> — Use the custom model deployment ARN for the call that assigns the class (Split and classify
-              together, or Split first, then classify each section &rarr; Section classification)
+              <strong>Classification</strong> — Use the custom model deployment ARN for the invocation that assigns the class (Combined
+              section detection and classification, or Separate section detection and classification &rarr; Section classification)
             </Checkbox>
           </SpaceBetween>
         </FormField>

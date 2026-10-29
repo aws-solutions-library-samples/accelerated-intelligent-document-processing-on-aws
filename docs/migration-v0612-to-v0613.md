@@ -248,22 +248,22 @@ nothing.
 
 ## What you will see in the configuration editor
 
-The Classification panel starts with **Strategy** (*Split and classify together (one call)*,
-stored as `strategy: combined`, or *Split first, then classify each section*, stored as
+The Classification panel starts with **Strategy** (*Combined section detection and classification*,
+stored as `strategy: combined`, or *Separate section detection and classification*, stored as
 `strategy: split_then_classify`) and
 **Fallback class**, then shows only the calls the selected strategy makes. The
 form view shows the labels; the editor's JSON and YAML views, and any file you
 upload, use the stored values. Each strategy's settings sit in a block of the same
 name, `combined` or `split_then_classify`.
 
-- **Split and classify together** (`strategy: combined`) — granularity, the page or packet
+- **Combined section detection and classification** (`strategy: combined`) — granularity, the page or packet
   settings for that granularity, and the model block (`combined.…`).
-- **Split first, then classify each section** (`strategy: split_then_classify`) — **Splitting**
+- **Separate section detection and classification** (`strategy: split_then_classify`) — **Section detection**
   (`split_then_classify.splitting`: method, granularity, boundary hints, page or packet
   settings, model block) and **Section classification**
   (`split_then_classify.section_classification`: method, *pages per section* with its `k`,
   prompts, model block).
-- **Advanced — known document shape** (`document_shape`), collapsed: *Section splitting*
+- **Advanced: known document shape** (`document_shape`), collapsed: *Document shape*
   (`sectionSplitting`: `llm_determined`, `disabled` or `page`) and *Pages to
   classify* (`maxPagesForClassification`), which appears only for *One section*
   — the label for `sectionSplitting: disabled`.

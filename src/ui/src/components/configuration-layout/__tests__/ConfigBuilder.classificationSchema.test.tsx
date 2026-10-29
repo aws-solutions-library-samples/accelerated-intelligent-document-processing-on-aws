@@ -26,7 +26,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../../../hooks/use-synthetic-data-generator', () => ({ default: () => ({ available: false }) }));
 
-import ConfigBuilder, { enumOptionLabel } from '../ConfigBuilder';
+import ConfigBuilder, { enumOptionDescription, enumOptionLabel } from '../ConfigBuilder';
 
 // vitest runs from src/ui.
 const TEMPLATE = path.resolve(process.cwd(), '../../patterns/unified/template.yaml');
@@ -75,15 +75,15 @@ const visible = (text: string) => screen.queryAllByText(text).length > 0;
 describe('the shipped classification schema', () => {
   it('shows the combined block, and not the split-then-classify one, for combined', () => {
     renderClassification({ strategy: 'combined', combined: { granularity: 'page' } });
-    expect(visible('Split and classify together')).toBe(true);
-    expect(visible('Splitting')).toBe(false);
+    expect(visible('Combined section detection and classification')).toBe(true);
+    expect(visible('Section detection')).toBe(false);
     expect(visible('Section classification')).toBe(false);
   });
 
   it('shows the combined block when no strategy is stored, which is the default', () => {
     renderClassification({});
-    expect(visible('Split and classify together')).toBe(true);
-    expect(visible('Splitting')).toBe(false);
+    expect(visible('Combined section detection and classification')).toBe(true);
+    expect(visible('Section detection')).toBe(false);
   });
 
   it('shows both split-then-classify calls, and not the combined block, for split_then_classify', () => {
@@ -91,10 +91,10 @@ describe('the shipped classification schema', () => {
       strategy: 'split_then_classify',
       split_then_classify: { splitting: { method: 'llm' }, section_classification: { method: 'llm' } },
     });
-    expect(visible('Splitting')).toBe(true);
+    expect(visible('Section detection')).toBe(true);
     // Each split-then-classify call carries its own Inference settings group.
     expect(screen.queryAllByText('Inference settings')).toHaveLength(2);
-    expect(visible('Split and classify together')).toBe(false);
+    expect(visible('Combined section detection and classification')).toBe(false);
   });
 
   it('gates page and packet settings on the granularity of their own call', () => {
@@ -112,7 +112,7 @@ describe('the shipped classification schema', () => {
     expect(screen.getAllByText('Class validation')).toHaveLength(1);
     expect(screen.getAllByText('Class confidence')).toHaveLength(1);
     // But a model picker on both calls.
-    expect(screen.getAllByText('Model', { exact: true }).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('Model ID', { exact: true }).length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows Pages to classify only for a one-document file', () => {
@@ -126,8 +126,16 @@ describe('the shipped classification schema', () => {
   it('labels the strategy values without changing what is stored', () => {
     const strategy = (classificationSchema.properties as Record<string, Record<string, unknown>>).strategy;
     expect(strategy.enum).toEqual(['combined', 'split_then_classify']);
-    expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call)');
-    expect(enumOptionLabel(strategy, 'split_then_classify')).toBe('Split first, then classify each section');
+    expect(enumOptionLabel(strategy, 'combined')).toBe('Combined section detection and classification');
+    expect(enumOptionLabel(strategy, 'split_then_classify')).toBe('Separate section detection and classification');
+    expect(enumOptionDescription(strategy, 'combined')).toBeTruthy();
+    expect(enumOptionDescription(strategy, 'split_then_classify')).toBeTruthy();
+  });
+
+  it('shows the selected strategy option description under its label', () => {
+    const strategy = (classificationSchema.properties as Record<string, Record<string, unknown>>).strategy;
+    renderClassification({ strategy: 'split_then_classify' });
+    expect(visible(enumOptionDescription(strategy, 'split_then_classify') as string)).toBe(true);
   });
 });
 
@@ -135,5 +143,17 @@ describe('enumOptionLabel', () => {
   it('falls back to the value itself', () => {
     expect(enumOptionLabel({}, 'page')).toBe('page');
     expect(enumOptionLabel({ enumLabels: { other: 'Other' } }, 'page')).toBe('page');
+  });
+});
+
+describe('enumOptionDescription', () => {
+  it('is absent when the value has no description', () => {
+    expect(enumOptionDescription({}, 'page')).toBeUndefined();
+    expect(enumOptionDescription({ enumDescriptions: { other: 'Other' } }, 'page')).toBeUndefined();
+    expect(enumOptionDescription({ enumDescriptions: { page: '' } }, 'page')).toBeUndefined();
+  });
+
+  it('returns the description keyed by the stored value', () => {
+    expect(enumOptionDescription({ enumDescriptions: { page: 'One per page.' } }, 'page')).toBe('One per page.');
   });
 });

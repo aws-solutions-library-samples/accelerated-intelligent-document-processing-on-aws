@@ -128,10 +128,10 @@ When you specify a model ID with a service tier suffix:
 
 1. Navigate to the Configuration page
 2. In each operation section (Classification, Extraction, Assessment, Summarization):
-   - Find the "Model" dropdown. Classification shows **one dropdown per model
-     call**: one under *Split and classify together*, or — when **Strategy** is
-     *Split first, then classify each section* (`strategy: split_then_classify` in
-     the JSON and YAML views) — one under *Splitting* and one under *Section
+   - Find the "Model ID" dropdown. Classification shows **one dropdown per model
+     call**: one under *Combined section detection and classification*, or — when **Strategy** is
+     *Separate section detection and classification* (`strategy: split_then_classify` in
+     the JSON and YAML views) — one under *Section detection* and one under *Section
      classification*. Set the tier on each
      call you want it on
    - Select a model with the desired tier suffix:

@@ -65,13 +65,13 @@ const ToolsPanel = (): React.JSX.Element => (
 
       <h3>Classification</h3>
       <p>
-        Classification settings are grouped by the model call that uses them. <strong>Strategy</strong> picks{' '}
-        <strong>Split and classify together (one call)</strong> (one call finds the section boundaries and the classes) or{' '}
-        <strong>Split first, then classify each section</strong> (a splitting call finds the boundaries, then section classification
-        classifies each section), and only the calls that strategy makes are shown. Those two labels are stored as{' '}
-        <code>strategy: combined</code> and <code>strategy: split_then_classify</code>, which is what the JSON and YAML views show and what
-        an uploaded file must use. A profile saved before v0.6.13 is converted when it is read; its model and parameters are copied into
-        every call, so each can then be changed on its own.
+        Packet splitting: documents are split into sections and the sections classified. Settings are grouped by the invocation that uses
+        them. <strong>Strategy</strong> options: <strong>Combined section detection and classification</strong> (one stage: the same
+        invocations return section boundaries and classes) or <strong>Separate section detection and classification</strong> (two stages:
+        section detection returns section boundaries, then section classification returns classes). Only the selected strategy&apos;s
+        settings are shown. In the JSON and YAML views and in uploaded files, the strategies are <code>strategy: combined</code> and{' '}
+        <code>strategy: split_then_classify</code>. A profile saved before v0.6.13 is converted on read, with its model and parameters
+        copied into all invocation settings.
       </p>
 
       <h3>Editing</h3>

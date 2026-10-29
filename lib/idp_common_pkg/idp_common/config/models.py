@@ -2565,10 +2565,12 @@ class ClassificationConfig(BaseModel):
     strategy: str = Field(
         default="combined",
         description=(
-            "'combined' (Split and classify together (one call)): one call returns "
-            "both the boundaries and the classes. 'split_then_classify' (Split first, "
-            "then classify each section): a splitting call finds the boundaries with "
-            "no class vocabulary, then one call per section classifies it."
+            "'combined' (Combined section detection and classification): one "
+            "stage; the same invocations return section boundaries and classes. "
+            "'split_then_classify' (Separate section detection and "
+            "classification): two stages; section detection returns section "
+            "boundaries, with no class list, then section classification returns "
+            "classes."
         ),
     )
     fallback_class: str = Field(

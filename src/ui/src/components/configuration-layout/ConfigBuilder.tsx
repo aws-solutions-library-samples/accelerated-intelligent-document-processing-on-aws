@@ -171,9 +171,12 @@ interface SchemaProperty {
   sectionLabel?: string;
   // Display text for enum values, keyed by the stored value. The stored value
   // never changes; only what the dropdown shows does (e.g. `combined` reads
-  // "Split and classify together (one call)"). A value with no entry shows as
+  // "Combined section detection and classification"). A value with no entry shows as
   // itself.
   enumLabels?: Record<string, string>;
+  // Secondary text shown under an enum option's label, keyed by stored value,
+  // so the label can stay a short name for the choice.
+  enumDescriptions?: Record<string, string>;
   // Only Admins may change this object: other users see its fields read-only.
   adminOnly?: boolean | string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
@@ -441,6 +444,12 @@ const getConstraintText = (property: Record<string, unknown>): string => {
 export const enumOptionLabel = (property: { enumLabels?: Record<string, string> }, value: string): string => {
   const label = property.enumLabels?.[value];
   return typeof label === 'string' && label ? label : value;
+};
+
+/** The secondary text shown under an enum option's label (see `enumDescriptions`). */
+export const enumOptionDescription = (property: { enumDescriptions?: Record<string, string> }, value: string): string | undefined => {
+  const description = property.enumDescriptions?.[value];
+  return typeof description === 'string' && description ? description : undefined;
 };
 
 interface ResizableColumnsProps {
@@ -1813,12 +1822,17 @@ const ConfigBuilder = ({
         </ExtBox>
       );
     } else if (property.enum) {
-      const labelFor = (opt: string): string => enumOptionLabel(property, opt);
+      const optionFor = (opt: string) => ({
+        value: opt,
+        label: enumOptionLabel(property, opt),
+        description: enumOptionDescription(property, opt),
+      });
       input = (
         <Select
-          selectedOption={{ value: String(displayValue || ''), label: labelFor(String(displayValue || '')) }}
+          selectedOption={optionFor(String(displayValue || ''))}
+          triggerVariant={property.enumDescriptions ? 'option' : 'label'}
           onChange={({ detail }) => updateValue(path, detail.selectedOption.value)}
-          options={(property.enum as string[]).map((opt: string) => ({ value: opt, label: labelFor(opt) }))}
+          options={(property.enum as string[]).map(optionFor)}
         />
       );
     } else if (
