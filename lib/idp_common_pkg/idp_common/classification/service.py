@@ -1118,7 +1118,7 @@ class ClassificationService:
                     f"All {len(cached_page_classifications)} page classifications found in cache"
                 )
 
-            # Apply configured section splitting strategy
+            # Apply configured section splitting value
             document = self._apply_section_splitting_strategy(
                 document, all_page_results
             )
@@ -3722,7 +3722,7 @@ class ClassificationService:
         self, document: Document, page_results: List[PageClassification]
     ) -> Document:
         """
-        Apply configured section splitting strategy.
+        Apply configured section splitting value.
 
         Args:
             document: Document with classified pages
