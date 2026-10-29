@@ -1,36 +1,17 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect } from 'react';
-import {
-  Box,
-  Container,
-  SpaceBetween,
-  Table,
-  Button,
-  Header,
-  FormField,
-  StatusIndicator,
-  Modal,
-  Alert,
-} from '@cloudscape-design/components';
+import React, { useState } from 'react';
+import { Alert, Box, ButtonDropdown, Container, Header, SpaceBetween, Table } from '@cloudscape-design/components';
+import type { ButtonDropdownProps } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
-import { generateClient } from '../../api/client-shim';
-import { ConsoleLogger } from 'aws-amplify/utils';
-import { isBdaModeConfig } from '../../utils/processing-mode';
-import useUserRole from '../../hooks/use-user-role';
 import { PageClassMismatch } from '../common/ClassMismatchIndicator';
 import ClassNameText from '../common/ClassNameText';
 import ClassConfidence, { compareClassConfidence } from '../common/ClassConfidence';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import PageTextEditorModal from './PageTextEditorModal';
-import { processChanges } from '../../graphql/generated';
-import { useDocumentVersion } from '../../contexts/document-version';
 import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
-import { inReviewQueueEditReason, isHitlReviewFinished, isInReviewQueue } from '../common/review-status';
-
-const client = generateClient();
-const logger = new ConsoleLogger('PagesPanel');
+import { PAGE_NO_TEXT_REASON } from '../document-actions/action-reasons';
 
 interface PageItem {
   Id: string;
@@ -45,25 +26,10 @@ interface PageItem {
   TextUri?: string;
   TextConfidenceUri?: string;
   OcrPageDataUri?: string;
-  classReset?: boolean;
-  textModified?: boolean;
-  newTextUri?: string | null;
-  newConfidenceUri?: string | null;
-}
-
-interface DocumentItem {
-  hitlReviewOwner?: string;
-  hitlReviewOwnerEmail?: string;
-  hitlTriggered?: boolean;
-  hitlStatus?: string;
-  objectStatus?: string;
-  ObjectKey?: string;
-  objectKey?: string;
 }
 
 interface PagesPanelProps {
   pages?: PageItem[];
-  documentItem?: DocumentItem;
   /**
    * Ground-truth-vs-predicted classification for this document, loaded once by
    * the document page. Empty (the default) when there is no ground truth, in
@@ -71,10 +37,10 @@ interface PagesPanelProps {
    */
   classificationIndex?: ClassificationIndex;
   /**
-   * The configuration profile the document was processed with. Its `use_bda` decides
-   * whether page edits are offered: in BDA mode they are not.
+   * Edit Page Text, for a row's ⋮ menu: offered (with the reason it can't be used now),
+   * or null when the user isn't offered it. The document page's actions own the dialog.
    */
-  mergedConfig?: Record<string, unknown> | null;
+  pageTextEdit?: { disabledReason?: string; open: (pageId: string) => void } | null;
 }
 
 // Cell renderer components
@@ -118,69 +84,59 @@ const ThumbnailCell = ({ imageUrl }: { imageUrl?: string | null }): React.JSX.El
   </div>
 );
 
+/** A page row's ⋮ menu: View Page Text, and Edit Page Text where the user is offered it. */
 const ActionsCell = ({
   item,
-  isEditMode,
-  onViewEditClick,
+  onView,
+  pageTextEdit,
 }: {
   item: PageItem;
-  isEditMode: boolean;
-  onViewEditClick: (item: PageItem) => void;
-}): React.JSX.Element =>
-  item.TextUri ? (
-    <Button onClick={() => onViewEditClick(item)}>{isEditMode ? 'Edit Page Text' : 'View Page Text'}</Button>
-  ) : (
-    <Box color="text-status-inactive">No text available</Box>
+  onView: (item: PageItem) => void;
+  pageTextEdit?: PagesPanelProps['pageTextEdit'];
+}): React.JSX.Element => {
+  const noText = item.TextUri ? undefined : PAGE_NO_TEXT_REASON;
+  const editReason = pageTextEdit?.disabledReason ?? noText;
+  const items: ButtonDropdownProps.Item[] = [
+    { id: 'view-text', text: 'View Page Text', disabled: !!noText, disabledReason: noText },
+    ...(pageTextEdit ? [{ id: 'edit-text', text: 'Edit Page Text', disabled: !!editReason, disabledReason: editReason }] : []),
+  ];
+  return (
+    <ButtonDropdown
+      items={items}
+      variant="inline-icon"
+      expandToViewport
+      ariaLabel={`Actions for page ${item.Id}`}
+      onItemClick={({ detail }) => {
+        if (detail.id === 'view-text') onView(item);
+        else if (detail.id === 'edit-text') pageTextEdit?.open(String(item.Id));
+      }}
+    />
   );
+};
 
-// Edit mode: Class/Type column
-const EditableClassCell = ({
-  item,
-  onResetClass,
-  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
-}: {
-  item: PageItem;
-  onResetClass: (id: string) => void;
-  classificationIndex?: ClassificationIndex;
-}): React.JSX.Element => (
-  <FormField>
-    {item.Class ? (
-      <SpaceBetween direction="horizontal" size="xs">
-        <StatusIndicator>
-          <ClassNameText>{item.Class}</ClassNameText>
-        </StatusIndicator>
-        <PageClassMismatch index={classificationIndex} pageNumber={Number(item.Id)} predictedClass={item.Class} />
-        <Button iconName="close" variant="icon" ariaLabel="Reset classification" onClick={() => onResetClass(item.Id)} />
-      </SpaceBetween>
-    ) : (
-      <StatusIndicator type="info">Unclassified</StatusIndicator>
-    )}
-  </FormField>
-);
-
-// Column definitions for view mode
-const createViewColumnDefinitions = (
+/**
+ * The pages table's columns: narrow data columns, resizable, and the ⋮ Actions column
+ * last, taking the rest of the table's width.
+ */
+export const pageColumnDefinitions = (
   thumbnailUrls: Record<string, string | null>,
-  onViewEditClick: (item: PageItem) => void,
+  onView: (item: PageItem) => void,
   classificationIndex: ClassificationIndex,
+  pageTextEdit?: PagesPanelProps['pageTextEdit'],
 ) => [
   {
     id: 'id',
     header: 'Page ID',
     cell: (item: PageItem) => <IdCell item={item} />,
     sortingField: 'Id',
-    minWidth: 160,
-    width: 160,
-    isResizable: true,
+    width: 90,
   },
   {
     id: 'class',
     header: 'Class/Type',
     cell: (item: PageItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
     sortingField: 'Class',
-    minWidth: 200,
-    width: 200,
-    isResizable: true,
+    width: 180,
   },
   {
     id: 'classConfidence',
@@ -193,415 +149,42 @@ const createViewColumnDefinitions = (
       <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
     ),
     sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
-    minWidth: 140,
-    width: 140,
-    isResizable: true,
+    width: 110,
   },
   {
     id: 'thumbnail',
     header: 'Thumbnail',
     cell: (item: PageItem) => <ThumbnailCell imageUrl={thumbnailUrls[item.Id]} />,
-    minWidth: 240,
-    width: 240,
-    isResizable: true,
+    width: 130,
   },
   {
     id: 'actions',
     header: 'Actions',
-    cell: (item: PageItem) => <ActionsCell item={item} isEditMode={false} onViewEditClick={onViewEditClick} />,
-    minWidth: 200,
-    width: 200,
-    isResizable: true,
-  },
-];
-
-// Column definitions for edit mode
-const createEditColumnDefinitions = (
-  thumbnailUrls: Record<string, string | null>,
-  onResetClass: (id: string) => void,
-  onViewEditClick: (item: PageItem) => void,
-  classificationIndex: ClassificationIndex,
-) => [
-  {
-    id: 'id',
-    header: 'Page ID',
-    cell: (item: PageItem) => <IdCell item={item} />,
-    sortingField: 'Id',
-    minWidth: 160,
-    width: 160,
-    isResizable: true,
-  },
-  {
-    id: 'class',
-    header: 'Class/Type',
-    cell: (item: PageItem) => <EditableClassCell item={item} onResetClass={onResetClass} classificationIndex={classificationIndex} />,
-    minWidth: 250,
-    width: 250,
-    isResizable: true,
-  },
-  {
-    id: 'classConfidence',
-    header: 'Class conf.',
-    // The classifier's confidence in Class, and the affordance for its reasoning
-    // and ranked alternatives. Its own column rather than more text in
-    // Class/Type: it aligns down the column, and it sorts — least-confident-first
-    // is how a reviewer finds the pages worth a second look.
-    cell: (item: PageItem) => (
-      <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
-    ),
-    sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
-    minWidth: 140,
-    width: 140,
-    isResizable: true,
-  },
-  {
-    id: 'thumbnail',
-    header: 'Thumbnail',
-    cell: (item: PageItem) => <ThumbnailCell imageUrl={thumbnailUrls[item.Id]} />,
-    minWidth: 240,
-    width: 240,
-    isResizable: true,
-  },
-  {
-    id: 'actions',
-    header: 'Actions',
-    cell: (item: PageItem) => <ActionsCell item={item} isEditMode={true} onViewEditClick={onViewEditClick} />,
-    minWidth: 200,
-    width: 200,
-    isResizable: true,
+    cell: (item: PageItem) => <ActionsCell item={item} onView={onView} pageTextEdit={pageTextEdit} />,
+    // Fills the rest of the table, so its header stays on one line.
+    minWidth: 100,
   },
 ];
 
 const PagesPanel = ({
   pages,
-  documentItem,
   classificationIndex = EMPTY_CLASSIFICATION_INDEX,
-  mergedConfig,
+  pageTextEdit = null,
 }: PagesPanelProps): React.JSX.Element => {
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [editedPages, setEditedPages] = useState<PageItem[]>([]);
-  const [modifiedPageIds, setModifiedPageIds] = useState<Set<string>>(new Set());
-  const [selectedPage, setSelectedPage] = useState<PageItem | null>(null);
-  const [showModalEditor, setShowModalEditor] = useState(false);
-  const [showBdaModeModal, setShowBdaModeModal] = useState(false);
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  const { isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
-  // When viewing a past version, pin page images to that run's object versions
-  // and disable editing (edits write to the current objects, not the snapshot).
-  const { isHistorical } = useDocumentVersion();
-  // Shared with the page-regrouping board, which needs the same signed thumbnails.
+  const [viewing, setViewing] = useState<PageItem | null>(null);
   const { urls: thumbnailUrls, failure: thumbnailFailure } = usePageThumbnails(pages);
-
-  // Edit Mode should be disabled for reviewers until they click Start Review (claim the document)
-  const hasReviewOwner = !!(documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail);
-  const hitlTriggered = !!documentItem?.hitlTriggered;
-
-  // Finished: a legacy review completed or skipped, or a queue review that ended
-  // complete or rejected.
-  const isHitlFinished = isHitlReviewFinished(documentItem?.hitlStatus);
-
-  // Check if document is currently processing
-  const processingStatuses = ['queued', 'running', 'processing', 'postprocessing', 'summarizing', 'evaluating'];
-  const docStatus = documentItem?.objectStatus?.toLowerCase() || '';
-  const isDocumentProcessing = processingStatuses.includes(docStatus);
-
-  // Disable edit mode if:
-  // - User has no write or review permissions (Viewer role), OR
-  // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL finished
-  // Admins and Authors can always edit
-  // - Viewing a historical version (read-only snapshot)
-  // - In a review queue, for every role: it is reviewed from its queue item
-  const inReviewQueue = isInReviewQueue(documentItem?.hitlStatus);
-  const isEditModeDisabled =
-    isHistorical ||
-    inReviewQueue ||
-    (!canWrite && !canReview) ||
-    (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlFinished));
-  const editModeDisabledReason = inReviewQueue ? inReviewQueueEditReason(canWorkReviewQueues) : undefined;
-
-  // Auto-exit edit mode when switching to a historical version, or (for
-  // reviewers) when the document starts processing or HITL has finished.
-  useEffect(() => {
-    if ((isHistorical || inReviewQueue) && isEditMode) {
-      setIsEditMode(false);
-      return;
-    }
-    if (isReviewerOnly && isEditMode && (isDocumentProcessing || isHitlFinished)) {
-      setIsEditMode(false);
-    }
-  }, [isHistorical, inReviewQueue, isReviewerOnly, isDocumentProcessing, isHitlFinished, isEditMode]);
-
-  // Initialize edited pages when entering edit mode
-  useEffect(() => {
-    if (isEditMode && pages) {
-      const pagesWithEditableFormat: PageItem[] = pages.map((page) => ({
-        ...page,
-        classReset: false,
-        textModified: false,
-        newTextUri: null as string | null,
-        newConfidenceUri: null as string | null,
-      }));
-      setEditedPages(pagesWithEditableFormat);
-      setModifiedPageIds(new Set());
-    }
-  }, [isEditMode, pages]);
-
-  // BDA mode, from the document's own configuration (`use_bda`) — not from the
-  // stack's `IDPPattern`, which names the one unified pattern for every document.
-  // Page edits (class reset, text edits) are structural and not offered there.
-  const isBdaMode = () => isBdaModeConfig(mergedConfig);
-
-  // Handle Edit Pages button click
-  const handleEditPagesClick = () => {
-    if (isBdaMode()) {
-      setShowBdaModeModal(true);
-    } else {
-      setIsEditMode(true);
-    }
-  };
-
-  // Handle reset class
-  const handleResetClass = (pageId: string): void => {
-    const updatedPages = editedPages.map((page) => {
-      if (page.Id === pageId) {
-        // Mark as modified
-        setModifiedPageIds((prev) => new Set([...prev, pageId]));
-        return {
-          ...page,
-          Class: null,
-          classReset: true,
-        };
-      }
-      return page;
-    });
-    setEditedPages(updatedPages);
-  };
-
-  // Handle view/edit page text
-  const handleViewEditClick = (page: PageItem): void => {
-    setSelectedPage(page);
-    setShowModalEditor(true);
-  };
-
-  // Handle modal save
-  const handleModalSave = (pageId: string | number | undefined, newTextUri: string | null, newConfidenceUri: string | null): void => {
-    logger.info(`handleModalSave called: pageId=${pageId}, newTextUri=${newTextUri}, newConfidenceUri=${newConfidenceUri}`);
-
-    // Mark page as text modified using functional update
-    setModifiedPageIds((prev) => {
-      const updated = new Set([...prev, String(pageId)]);
-      logger.info(`Updated modifiedPageIds:`, Array.from(updated));
-      return updated;
-    });
-
-    // Use functional update to ensure we have latest state
-    setEditedPages((prevPages) => {
-      logger.info(`Current editedPages length: ${prevPages.length}`);
-
-      const updatedPages = prevPages.map((page) => {
-        if (page.Id === pageId) {
-          const updated = {
-            ...page,
-            textModified: true,
-            newTextUri: newTextUri || page.TextUri,
-            newConfidenceUri: newConfidenceUri || page.TextConfidenceUri,
-          };
-          logger.info(`Updated page ${pageId}:`, updated);
-          return updated;
-        }
-        return page;
-      });
-
-      return updatedPages;
-    });
-
-    logger.info(`Page ${pageId} marked as modified`);
-  };
-
-  // Calculate impact of changes
-  const calculateImpact = () => {
-    let classResetCount = 0;
-    let textModifiedCount = 0;
-
-    modifiedPageIds.forEach((pageId) => {
-      const page = editedPages.find((p) => p.Id === pageId);
-      if (page) {
-        if (page.classReset) classResetCount++;
-        if (page.textModified) textModifiedCount++;
-      }
-    });
-
-    return { classResetCount, textModifiedCount };
-  };
-
-  // Build modified pages payload
-  const buildModifiedPagesPayload = () => {
-    logger.info('Building modified pages payload...');
-    logger.info(`modifiedPageIds (${modifiedPageIds.size} items):`, Array.from(modifiedPageIds));
-    logger.info(`editedPages (${editedPages.length} items):`, editedPages);
-
-    const payload = Array.from(modifiedPageIds)
-      .map((pageId) => {
-        const page = editedPages.find((p) => p.Id === pageId);
-        logger.info(`Looking for page ${pageId}, found:`, page);
-
-        if (!page) {
-          logger.warn(`Page ${pageId} not found in editedPages`);
-          return null;
-        }
-
-        const result = {
-          pageId: parseInt(pageId, 10),
-          textModified: page.textModified || false,
-          classReset: page.classReset || false,
-          newTextUri: page.newTextUri,
-          newConfidenceUri: page.newConfidenceUri,
-        };
-
-        logger.info(`Built payload for page ${pageId}:`, result);
-        logger.info(`Will include? textModified=${result.textModified}, classReset=${result.classReset}`);
-
-        return result;
-      })
-      .filter((p): p is NonNullable<typeof p> => {
-        const include = p != null && (p.textModified || p.classReset);
-        if (p != null && !include) {
-          logger.warn(`Filtering out page ${p.pageId} - no modifications detected`);
-        }
-        return !!include;
-      });
-
-    logger.info(`Final payload (${payload.length} pages):`, payload);
-    return payload;
-  };
-
-  // Handle save and process changes
-  const handleSaveChanges = async () => {
-    if (modifiedPageIds.size === 0) {
-      return;
-    }
-
-    setShowConfirmModal(true);
-  };
-
-  // Confirm and process changes
-  const confirmSaveChanges = async () => {
-    setIsProcessing(true);
-    setShowConfirmModal(false);
-
-    try {
-      const objectKey = documentItem?.ObjectKey || documentItem?.objectKey;
-
-      if (!objectKey) {
-        throw new Error('Document object key is missing');
-      }
-
-      const modifiedPages = buildModifiedPagesPayload();
-
-      logger.info(`Processing ${modifiedPages.length} modified pages`);
-      logger.info('Modified pages payload:', JSON.stringify(modifiedPages));
-
-      // Validate that we have changes to process
-      if (!modifiedPages || modifiedPages.length === 0) {
-        throw new Error('No valid page modifications to process');
-      }
-
-      const result = await client.graphql({
-        query: processChanges,
-        variables: {
-          objectKey,
-          modifiedSections: [], // Empty for page-only changes
-          modifiedPages,
-        },
-      });
-
-      const response = (result as { data: Record<string, unknown> }).data?.processChanges as
-        | { success: boolean; message?: string }
-        | undefined;
-
-      if (!response?.success) {
-        throw new Error(response?.message || 'Failed to process changes');
-      }
-
-      // Exit edit mode
-      setIsEditMode(false);
-      setEditedPages([]);
-      setModifiedPageIds(new Set());
-
-      alert('Page changes submitted for reprocessing!');
-    } catch (error) {
-      logger.error('Error processing changes:', error);
-      alert(`Error processing changes: ${(error as Error).message}`);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // Cancel edit mode
-  const cancelEdit = () => {
-    setIsEditMode(false);
-    setEditedPages([]);
-    setModifiedPageIds(new Set());
-  };
-
-  // Determine which columns and data to use
-  const columnDefinitions = isEditMode
-    ? createEditColumnDefinitions(thumbnailUrls, handleResetClass, handleViewEditClick, classificationIndex)
-    : createViewColumnDefinitions(thumbnailUrls, handleViewEditClick, classificationIndex);
-
-  const tableItems = isEditMode ? editedPages : pages || [];
+  const tableItems = pages || [];
 
   // Sorting via the design system's own collection hook rather than a hand-rolled
   // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
   // the direction, so every column that declares a sort works. Starts unsorted,
   // so the default view keeps its existing order. `sortedItems` feeds the table
-  // ONLY — `tableItems` still feeds everything else, which must stay in document
-  // order however the table is sorted.
+  // ONLY — `tableItems` still feeds the text viewer, which pages in document order.
   const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
 
   return (
     <SpaceBetween size="l">
-      <Container
-        header={
-          <Header
-            variant="h2"
-            actions={
-              <SpaceBetween direction="horizontal" size="xs">
-                {!isEditMode ? (
-                  <Button
-                    variant="primary"
-                    iconName="edit"
-                    onClick={handleEditPagesClick}
-                    disabled={isEditModeDisabled}
-                    disabledReason={editModeDisabledReason}
-                  >
-                    Edit Mode
-                  </Button>
-                ) : (
-                  <>
-                    <Button variant="link" onClick={cancelEdit} disabled={isProcessing}>
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      iconName="external"
-                      onClick={handleSaveChanges}
-                      disabled={modifiedPageIds.size === 0 || isProcessing}
-                      loading={isProcessing}
-                    >
-                      Process Changes
-                    </Button>
-                  </>
-                )}
-              </SpaceBetween>
-            }
-          >
-            Document Pages
-          </Header>
-        }
-      >
+      <Container header={<Header variant="h2">Document Pages</Header>}>
         <SpaceBetween size="s">
           {/* Signing page thumbnails is a server call now, and a refusal fails the
               whole batch — so without this the Thumbnail column is simply empty and
@@ -612,7 +195,7 @@ const PagesPanel = ({
             </Alert>
           )}
           <Table
-            columnDefinitions={columnDefinitions}
+            columnDefinitions={pageColumnDefinitions(thumbnailUrls, setViewing, classificationIndex, pageTextEdit)}
             items={sortedItems}
             {...collectionProps}
             variant="embedded"
@@ -631,102 +214,8 @@ const PagesPanel = ({
         </SpaceBetween>
       </Container>
 
-      {/* Page Text Editor Modal */}
-      <PageTextEditorModal
-        visible={showModalEditor}
-        pages={tableItems}
-        initialPageId={selectedPage?.Id}
-        isReadOnly={!isEditMode}
-        onSave={handleModalSave}
-        onClose={() => {
-          setShowModalEditor(false);
-          setSelectedPage(null);
-        }}
-      />
-
-      {/* BDA mode: page edits are not offered */}
-      <Modal
-        visible={showBdaModeModal}
-        onDismiss={() => setShowBdaModeModal(false)}
-        header="Page edits are not available in BDA mode"
-        footer={
-          <Box float="right">
-            <Button variant="primary" onClick={() => setShowBdaModeModal(false)}>
-              Got it
-            </Button>
-          </Box>
-        }
-      >
-        <SpaceBetween size="m">
-          <Alert type="info">
-            This document was processed with <strong>Bedrock Data Automation (BDA)</strong>, so its page classes and page text cannot be
-            edited.
-          </Alert>
-          <Box>
-            When a BDA document is reprocessed, BDA keeps the sections the document already has. A page edit clears the extracted values of
-            the sections it touches, and nothing would regenerate them.
-          </Box>
-          <Box>
-            <strong>What you can still do:</strong>
-          </Box>
-          <ul>
-            <li>
-              <strong>Edit field values</strong> in the Sections panel or the document editor, then process the changes to re-run evaluation
-              and summarization
-            </li>
-            <li>
-              <strong>View page text</strong> with the &quot;View Page Text&quot; button
-            </li>
-            <li>
-              <strong>Reprocess</strong> the document to run it through BDA again from the original file
-            </li>
-          </ul>
-        </SpaceBetween>
-      </Modal>
-
-      {/* Confirmation Modal */}
-      <Modal
-        visible={showConfirmModal}
-        onDismiss={() => setShowConfirmModal(false)}
-        header="Confirm Page Changes"
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button variant="link" onClick={() => setShowConfirmModal(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={confirmSaveChanges}>
-                Confirm & Process
-              </Button>
-            </SpaceBetween>
-          </Box>
-        }
-      >
-        <SpaceBetween size="s">
-          <Box>You are about to save changes to document pages and trigger selective reprocessing. This will:</Box>
-
-          {(() => {
-            const { classResetCount, textModifiedCount } = calculateImpact();
-            return (
-              <ul>
-                {classResetCount > 0 && (
-                  <li>
-                    <strong>{classResetCount}</strong> page(s) will have their classification reset, triggering reclassification and
-                    removing affected sections
-                  </li>
-                )}
-                {textModifiedCount > 0 && (
-                  <li>
-                    <strong>{textModifiedCount}</strong> page(s) had text modifications, triggering re-extraction for affected sections
-                  </li>
-                )}
-              </ul>
-            );
-          })()}
-
-          <Box>The document will be reprocessed based on these changes.</Box>
-        </SpaceBetween>
-      </Modal>
+      {/* View Page Text: read-only. Editing is the document page's Edit Page Text. */}
+      <PageTextEditorModal visible={!!viewing} pages={tableItems} initialPageId={viewing?.Id} onClose={() => setViewing(null)} />
     </SpaceBetween>
   );
 };

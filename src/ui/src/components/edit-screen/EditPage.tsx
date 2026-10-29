@@ -3,15 +3,15 @@
 //
 // The edit page, the same for every mode: it renders one EditModel (see edit-model.ts).
 // The layout and breadcrumbs, the load and error states, the bar (EditScreen), the
-// shared SectionEditor, the Edit | View switch, History, Skip's reason, Cancel, the
+// shared SectionEditor, the Edit | View switch, History, Skip's reason, Cancel, Refresh, the
 // Process Changes confirmation, Edit Page Class and the exit once the work is done are
 // all here, once. What applies, what each action does and what it says come from the
 // model, so this file holds no mode-specific code (pinned by
 // edit-page.no-mode-branching.test.ts).
 import React, { useState } from 'react';
-import { Alert, Box, Button, Spinner } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
+import LoadState from '../common/LoadState';
 import ProcessChangesConfirmModal from '../common/ProcessChangesConfirmModal';
 import ReasonModal from '../common/ReasonModal';
 import FileViewer from '../document-viewer/FileViewer';
@@ -23,6 +23,7 @@ import EditorNotices from './EditorNotices';
 import type { EditExit, EditModel, EditReady } from './edit-model';
 import SectionEditor from './SectionEditor';
 import EditScreenToolsPanel from './tools-panel';
+import useDiscardConfirm from './use-discard-confirm';
 import useEditCancel from './use-edit-cancel';
 import useEditExit from './use-edit-exit';
 import useEditorSession from './use-editor-session';
@@ -46,6 +47,10 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
   const [askSkipReason, setAskSkipReason] = useState(false);
   const [confirmProcess, setConfirmProcess] = useState(false);
   const { cancel, dialog: cancelDialog } = useEditCancel(session.controllerRef, ready?.cancelTo ?? '');
+  const discard = useDiscardConfirm();
+  // Bumped by Refresh, so the open section is read again; the section open then stays open.
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [keepSectionId, setKeepSectionId] = useState<string | null>(null);
   const board = usePageClassBoard(ready?.board ?? null, session.selectedSectionId, session.sectionData);
   const { navigation } = model;
 
@@ -60,21 +65,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
     </ReviewQueuesLayout>
   );
 
-  if (model.state.kind === 'loading') {
-    return page(
-      <Box textAlign="center" padding="xxl">
-        <Spinner size="large" /> {model.state.text}
-      </Box>,
-    );
-  }
-  if (model.state.kind === 'failure') {
-    const { type, header, body, retry } = model.state;
-    return page(
-      <Alert type={type} header={header} action={retry && <Button onClick={retry}>Retry</Button>}>
-        {body}
-      </Alert>,
-    );
-  }
+  if (model.state.kind !== 'ready') return page(<LoadState state={model.state} />);
 
   const r = model.state;
   const controller = () => session.controllerRef.current;
@@ -146,6 +137,27 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
         },
         failed(action),
       );
+      return;
+    }
+    if (action === 'refresh') {
+      const { refresh } = r;
+      if (!refresh) return;
+      const go = async () => {
+        setKeepSectionId(session.selectedSectionId);
+        const ok = await session.run(
+          'refresh',
+          async () => {
+            controller()?.discard();
+            await refresh();
+          },
+          failed('refresh'),
+        );
+        if (ok) setRefreshToken((t) => t + 1);
+      };
+      // Unsaved edits are lost by a reload: ask first.
+      if (controller()?.isDirty())
+        discard.ask({ header: 'Discard your changes and reload?', confirmLabel: 'Discard and reload', onConfirm: () => void go() });
+      else void go();
       return;
     }
     if (action === 'regroup') {
@@ -221,10 +233,10 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             />
           )}
           {cancelDialog}
+          {discard.dialog}
           {r.process.confirm && (
             <ProcessChangesConfirmModal
               visible={confirmProcess}
-              structuralChanges={false}
               bdaMode={r.process.confirm.bdaMode}
               busy={session.busy === 'process'}
               onConfirm={() => void runProcess()}
@@ -263,8 +275,8 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             onSave={editor.saveSection}
             onSaved={editor.onSaved}
             onLoaded={editor.onLoaded}
-            reloadToken={editor.reloadToken}
-            initialSectionId={editor.initialSectionId}
+            reloadToken={(editor.reloadToken ?? 0) + refreshToken}
+            initialSectionId={keepSectionId ?? editor.initialSectionId}
             focusFieldPath={editor.focusFieldPath}
             buildFieldLink={editor.buildFieldLink}
             autosaveMs={editor.autosaveMs}

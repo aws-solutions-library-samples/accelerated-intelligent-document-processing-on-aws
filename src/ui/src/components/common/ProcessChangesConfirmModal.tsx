@@ -1,16 +1,16 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The "Confirm Reprocessing" dialog before processChanges: what reprocessing will do,
-// with section structure changes or without them. Shared by the document page's
-// Sections panel and the unified editor's Process Changes on a direct edit.
+// The "Confirm Reprocessing" dialog before processChanges: what reprocessing will do.
+// Shared by the edit page's Process Changes on a direct edit and the document page's
+// Edit Page Class › Save and Re-extract, which lists the sections it re-extracts.
 import React from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
 
 interface ProcessChangesConfirmModalProps {
   visible: boolean;
-  /** Sections were added, removed, reclassified or regrouped. */
-  structuralChanges: boolean;
+  /** Save and Re-extract: the sections saved, then extracted again. */
+  reextractSections?: { sectionId: string; documentClass?: string | null; pageIds: number[] }[];
   /** BDA mode, whose processing is skipped rather than the Pipeline mode steps. */
   bdaMode?: boolean;
   busy?: boolean;
@@ -20,7 +20,7 @@ interface ProcessChangesConfirmModalProps {
 
 const ProcessChangesConfirmModal = ({
   visible,
-  structuralChanges,
+  reextractSections,
   bdaMode = false,
   busy = false,
   onConfirm,
@@ -44,13 +44,23 @@ const ProcessChangesConfirmModal = ({
     header="Confirm Reprocessing"
   >
     <SpaceBetween size="s">
-      {structuralChanges ? (
+      {reextractSections ? (
         <>
-          <Box>You are about to save changes to document sections and trigger selective reprocessing. This will:</Box>
+          <Box>You are about to save the new page grouping, then extract these sections again:</Box>
           <ul>
-            <li>Update section classifications and page assignments</li>
-            <li>Remove extraction data for modified sections</li>
-            <li>Reprocess only the changed sections (skipping OCR and classification steps)</li>
+            {reextractSections.map((s) => (
+              <li key={s.sectionId}>
+                Section {s.sectionId}: {s.documentClass}, pages {s.pageIds.join(', ')}
+              </li>
+            ))}
+          </ul>
+          <Box>This will:</Box>
+          <ul>
+            <li>Replace their extracted values, including any corrected by hand</li>
+            <li>Record their classes as confirmed (class confidence 1.0)</li>
+            <li>Mark this document&apos;s pending review as completed, if it has one</li>
+            <li>Clear the document&apos;s rule validation results</li>
+            <li>Leave the other sections&apos; values as they are; OCR and classification are not repeated</li>
           </ul>
         </>
       ) : (

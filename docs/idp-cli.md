@@ -1413,7 +1413,7 @@ idp-cli download-results \
 ### `use-as-baseline`
 
 Promote a processed document's output to the evaluation baseline — the
-scriptable equivalent of the web UI's **Use as Evaluation Baseline** button.
+scriptable equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies every output object for the document into the evaluation baseline bucket
 and sets the document's `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs
 synchronously (returns once the copy is complete).

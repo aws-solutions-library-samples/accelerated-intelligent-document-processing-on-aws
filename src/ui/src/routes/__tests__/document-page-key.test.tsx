@@ -52,7 +52,7 @@ describe('the document page’s key', () => {
     ['100%25off.pdf', '/documents/100%2525off.pdf'],
   ])('opens %s as stored', async (key, path) => {
     expect(() => renderAt(path)).not.toThrow();
-    await waitFor(() => expect(getDocumentDetailsFromIds).toHaveBeenCalledWith([key]));
+    await waitFor(() => expect(getDocumentDetailsFromIds).toHaveBeenCalledWith([key], expect.objectContaining({ reportErrors: false })));
     const crumbs = createWrapper(document.body).findBreadcrumbGroup()!.findBreadcrumbLinks();
     expect(crumbs[crumbs.length - 1].getElement().textContent).toBe(key);
   });

@@ -8,22 +8,26 @@
 //
 // The bar is one row, left to right: Edit | View (the source document, where it can be
 // shown); the Reports menu (History, Summary, Processing Report); the More Actions menu
-// (Edit Page Class, Use As Evaluation Baseline); then Skip, Cancel, Save and Process
-// Changes, the primary action, last (or Claim, for an Annotator viewing an unassigned
-// item, with the view switch and Reports only). A button that does not apply is left out;
+// (Edit Page Class, Use As Evaluation Baseline); Refresh; then Skip, Cancel, Save and
+// Process Changes, the primary action, last (or Claim, for an Annotator viewing an
+// unassigned item, with the view switch, Reports and Refresh only). A button that does not apply is left out;
 // a menu item the mode offers but that does not apply now is disabled, with the reason on
 // hover. The model decides which actions apply (see edit-model.ts and EditPage); the
-// layout is decided here.
+// layout is decided here, and rendered through the shared ActionBar
+// (common/ActionBar.tsx), which the document page's bar uses too. The labels stay in
+// this file.
 import React, { useState } from 'react';
-import { Box, Button, ButtonDropdown, Container, Header, Modal, SegmentedControl, SpaceBetween } from '@cloudscape-design/components';
-import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { Box, Container, Header, SpaceBetween } from '@cloudscape-design/components';
 
+import ActionBar from '../common/ActionBar';
+import type { ActionBarControl } from '../common/ActionBar';
+import DocumentPageHeader from '../common/DocumentPageHeader';
+import { ReportModal, SummaryReportModal } from '../common/ReportModal';
 import EditScreenLayout from './EditScreenLayout';
-import { MarkdownReport } from '../document-viewer/MarkdownViewer';
 import ProcessingReportContent from './ProcessingReportContent';
 import type { EditView } from './use-edit-view';
 
-export type EditAction = 'process' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup' | 'baseline';
+export type EditAction = 'process' | 'skip' | 'claim' | 'cancel' | 'save' | 'regroup' | 'baseline' | 'refresh';
 
 /**
  * Accessible name of Cancel. It says what Cancel does to unsaved edits, and it is the
@@ -52,12 +56,15 @@ export interface EditActionsProps {
   baselineDisabledReason?: string;
   /**
    * Offer Claim (an Annotator viewing an unassigned item): assigns the item to them,
-   * after which it can be worked. Shown with the view switch and Reports only.
+   * after which it can be worked. Shown with the view switch, Reports and Refresh only.
    */
   showClaim?: boolean;
   /** Offer Edit Page Class (the pages and class of each section), in More Actions. */
   showRegroup?: boolean;
   regroupDisabledReason?: string;
+  /** Offer Refresh: re-read the document (asking first when there are unsaved edits). */
+  showRefresh?: boolean;
+  refreshDisabledReason?: string;
   /** Offer Skip: give the item back to its queue, unassigned and not finished. */
   showSkip?: boolean;
   skipDisabledReason?: string;
@@ -79,14 +86,6 @@ export interface EditActionsProps {
   onViewChange?: (view: EditView) => void;
 }
 
-/** A menu item: available, or disabled with the reason on hover. */
-const menuItem = (id: string, text: string, disabledReason?: string): ButtonDropdownProps.Item => ({
-  id,
-  text,
-  disabled: !!disabledReason,
-  disabledReason,
-});
-
 const EditActions = ({
   busy,
   onAction,
@@ -99,6 +98,8 @@ const EditActions = ({
   showClaim = false,
   showRegroup = false,
   regroupDisabledReason,
+  showRefresh = false,
+  refreshDisabledReason,
   showSkip = false,
   skipDisabledReason,
   showCancel = false,
@@ -111,115 +112,136 @@ const EditActions = ({
   onViewChange,
 }: EditActionsProps): React.JSX.Element => {
   const working = busy !== null ? 'Working…' : undefined;
-  const viewSwitch = view && onViewChange && (
-    <SegmentedControl
-      label="Edit the document or view its source"
-      selectedId={view}
-      onChange={({ detail }) => onViewChange(detail.selectedId as EditView)}
-      options={[
+  const viewSwitch: ActionBarControl | false = !!view &&
+    !!onViewChange && {
+      kind: 'switch',
+      id: 'view',
+      label: 'Edit the document or view its source',
+      selectedId: view,
+      onChange: (id) => onViewChange(id as EditView),
+      options: [
         { id: 'edit', text: 'Edit' },
         { id: 'source', text: 'View' },
-      ]}
-    />
-  );
+      ],
+    };
 
   // Reports: the read-only views of the document. An item the mode offers but that does
   // not apply now stays in the menu, disabled with its reason.
-  const reportItems: ButtonDropdownProps.Item[] = [
-    ...(onShowHistory ? [menuItem('history', 'History')] : []),
-    ...(onShowSummary || summaryDisabledReason ? [menuItem('summary', 'Summary', onShowSummary ? undefined : summaryDisabledReason)] : []),
-    ...(onShowReport ? [menuItem('report', 'Processing Report')] : []),
-  ];
-  const reports = reportItems.length > 0 && (
-    <ButtonDropdown
-      items={reportItems}
-      disabled={!!working}
-      onItemClick={({ detail }) => {
-        if (detail.id === 'history') onShowHistory?.();
-        else if (detail.id === 'summary') onShowSummary?.();
-        else if (detail.id === 'report') onShowReport?.();
-      }}
-    >
-      Reports
-    </ButtonDropdown>
-  );
+  const reports: ActionBarControl = {
+    kind: 'menu',
+    id: 'reports',
+    text: 'Reports',
+    items: [
+      ...(onShowHistory ? [{ id: 'history', text: 'History' }] : []),
+      ...(onShowSummary || summaryDisabledReason
+        ? [{ id: 'summary', text: 'Summary', disabledReason: onShowSummary ? undefined : summaryDisabledReason }]
+        : []),
+      ...(onShowReport ? [{ id: 'report', text: 'Processing Report' }] : []),
+    ],
+    disabled: !!working,
+    onItemClick: (id) => {
+      if (id === 'history') onShowHistory?.();
+      else if (id === 'summary') onShowSummary?.();
+      else if (id === 'report') onShowReport?.();
+    },
+  };
+
+  const refresh: ActionBarControl | false = showRefresh && {
+    kind: 'button',
+    id: 'refresh',
+    text: 'Refresh',
+    iconName: 'refresh',
+    disabledReason: working ?? refreshDisabledReason,
+    loading: busy === 'refresh',
+    onClick: () => onAction('refresh'),
+  };
 
   if (showClaim) {
     return (
-      <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-        {viewSwitch}
-        {reports}
-        <span title={working ? undefined : 'Assign this item to you, then work it here or from Home › Tasks'}>
-          <Button variant="primary" disabled={!!working && busy !== 'claim'} loading={busy === 'claim'} onClick={() => onAction('claim')}>
-            Claim
-          </Button>
-        </span>
-      </SpaceBetween>
+      <ActionBar
+        controls={[
+          viewSwitch,
+          reports,
+          refresh,
+          {
+            kind: 'button',
+            id: 'claim',
+            text: 'Claim',
+            variant: 'primary',
+            disabled: !!working && busy !== 'claim',
+            loading: busy === 'claim',
+            hint: { title: working ? undefined : 'Assign this item to you, then work it here or from Home › Tasks' },
+            onClick: () => onAction('claim'),
+          },
+        ]}
+      />
     );
   }
 
   // More Actions: the occasional changes (the sections' pages and classes) and the admin
   // action (the evaluation baseline).
-  const moreItems: ButtonDropdownProps.Item[] = [
-    ...(showRegroup ? [menuItem('regroup', 'Edit Page Class', regroupDisabledReason)] : []),
-    ...(showBaseline ? [menuItem('baseline', 'Use As Evaluation Baseline', baselineDisabledReason)] : []),
-  ];
-  const more = moreItems.length > 0 && (
-    <ButtonDropdown
-      items={moreItems}
-      disabled={!!working}
-      loading={busy === 'regroup' || busy === 'baseline'}
-      onItemClick={({ detail }) => onAction(detail.id as EditAction)}
-    >
-      More Actions
-    </ButtonDropdown>
-  );
+  const more: ActionBarControl = {
+    kind: 'menu',
+    id: 'more',
+    text: 'More Actions',
+    items: [
+      ...(showRegroup ? [{ id: 'regroup', text: 'Edit Page Class', disabledReason: regroupDisabledReason }] : []),
+      ...(showBaseline ? [{ id: 'baseline', text: 'Use As Evaluation Baseline', disabledReason: baselineDisabledReason }] : []),
+    ],
+    disabled: !!working,
+    loading: busy === 'regroup' || busy === 'baseline',
+    onItemClick: (id) => onAction(id as EditAction),
+  };
 
   const skipReason = working ?? skipDisabledReason;
   const cancelReason = working ?? cancelDisabledReason;
   const saveReason = working ?? saveDisabledReason;
   const primaryReason = working ?? primaryDisabledReason;
   return (
-    <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-      {viewSwitch}
-      {reports}
-      {more}
-      {showSkip && (
-        <span title={skipReason ? undefined : SKIP_HINT}>
-          <Button disabled={!!skipReason} disabledReason={skipReason} loading={busy === 'skip'} onClick={() => onAction('skip')}>
-            Skip
-          </Button>
-        </span>
-      )}
-      {showCancel && (
-        <span title={cancelReason ? undefined : 'Discard your unsaved changes and leave'}>
-          <Button
-            ariaLabel={CANCEL_ACCESSIBLE_NAME}
-            disabled={!!cancelReason}
-            disabledReason={cancelReason}
-            onClick={() => onAction('cancel')}
-          >
-            Cancel
-          </Button>
-        </span>
-      )}
-      {showSave && (
-        <Button disabled={!!saveReason} disabledReason={saveReason} loading={busy === 'save'} onClick={() => onAction('save')}>
-          Save
-        </Button>
-      )}
-      <span title={primaryReason ? undefined : primaryHint}>
-        <Button
-          variant="primary"
-          disabled={!!primaryReason}
-          disabledReason={primaryReason}
-          loading={busy === 'process'}
-          onClick={() => onAction('process')}
-        >
-          Process Changes
-        </Button>
-      </span>
-    </SpaceBetween>
+    <ActionBar
+      controls={[
+        viewSwitch,
+        reports,
+        more,
+        refresh,
+        showSkip && {
+          kind: 'button',
+          id: 'skip',
+          text: 'Skip',
+          disabledReason: skipReason,
+          loading: busy === 'skip',
+          hint: { title: skipReason ? undefined : SKIP_HINT },
+          onClick: () => onAction('skip'),
+        },
+        showCancel && {
+          kind: 'button',
+          id: 'cancel',
+          text: 'Cancel',
+          ariaLabel: CANCEL_ACCESSIBLE_NAME,
+          disabledReason: cancelReason,
+          hint: { title: cancelReason ? undefined : 'Discard your unsaved changes and leave' },
+          onClick: () => onAction('cancel'),
+        },
+        showSave && {
+          kind: 'button',
+          id: 'save',
+          text: 'Save',
+          disabledReason: saveReason,
+          loading: busy === 'save',
+          onClick: () => onAction('save'),
+        },
+        {
+          kind: 'button',
+          id: 'process',
+          text: 'Process Changes',
+          variant: 'primary',
+          disabledReason: primaryReason,
+          loading: busy === 'process',
+          hint: { title: primaryReason ? undefined : primaryHint },
+          onClick: () => onAction('process'),
+        },
+      ]}
+    />
   );
 };
 
@@ -264,25 +286,6 @@ interface EditScreenProps {
   children: React.ReactNode;
 }
 
-/** A report opened from the bar: Summary, Processing Report. */
-const ReportModal = ({ header, onDismiss, children }: { header: string; onDismiss: () => void; children: React.ReactNode }) => (
-  <Modal
-    visible
-    size="large"
-    onDismiss={onDismiss}
-    header={header}
-    footer={
-      <Box float="right">
-        <Button variant="primary" onClick={onDismiss}>
-          Close
-        </Button>
-      </Box>
-    }
-  >
-    {children}
-  </Modal>
-);
-
 const EditScreen = ({
   title,
   status,
@@ -303,9 +306,10 @@ const EditScreen = ({
     <EditScreenLayout
       header={
         <SpaceBetween size="s">
-          <Header
-            variant="h1"
-            description={<span title={objectKey}>{objectKey}</span>}
+          <DocumentPageHeader
+            title={title}
+            status={status}
+            objectKey={objectKey}
             actions={
               <EditActions
                 {...actions}
@@ -314,18 +318,7 @@ const EditScreen = ({
                 summaryDisabledReason={summaryReportUri ? undefined : summaryUnavailableReason}
               />
             }
-          >
-            {title}
-            {status && (
-              <>
-                {' '}
-                {/* The status reads as the subtitle does (font, size and colour), not as the title. */}
-                <Box variant="span" fontSize="body-m" fontWeight="normal" color="text-body-secondary">
-                  ({status})
-                </Box>
-              </>
-            )}
-          </Header>
+          />
           {notices}
         </SpaceBetween>
       }
@@ -340,14 +333,7 @@ const EditScreen = ({
         </ReportModal>
       )}
       {showSummary && summaryReportUri && (
-        <ReportModal header="Document Summary" onDismiss={() => setShowSummary(false)}>
-          <MarkdownReport
-            reportUri={summaryReportUri}
-            documentId={objectKey}
-            title="Document Summary"
-            emptyMessage="Summary report not available for this document"
-          />
-        </ReportModal>
+        <SummaryReportModal reportUri={summaryReportUri} objectKey={objectKey} onDismiss={() => setShowSummary(false)} />
       )}
     </EditScreenLayout>
   );

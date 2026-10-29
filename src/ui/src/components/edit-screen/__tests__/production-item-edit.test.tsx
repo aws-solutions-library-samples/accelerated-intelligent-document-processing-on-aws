@@ -108,7 +108,22 @@ vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => 
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage, setSuccessMessage }) }));
 vi.mock('../use-edit-exit', () => ({ default: () => exit, useLeavePath: () => (queuePath: string) => queuePath }));
 vi.mock('../../../hooks/use-page-thumbnails', () => ({ default: () => ({ urls: {}, failure: null }) }));
-vi.mock('../../common/document-grouping', () => ({ saveDocumentGrouping: (...a: unknown[]) => saveDocumentGrouping(...a) }));
+// The model saves through saveDocumentGroupingOrThrow, which reads saveDocumentGrouping's
+// result the same way: a refusal throws with the server's message, a transport failure
+// with the model's own wording.
+vi.mock('../../common/document-grouping', () => ({
+  saveDocumentGrouping: (...a: unknown[]) => saveDocumentGrouping(...a),
+  saveDocumentGroupingOrThrow: async (objectKey: string, sections: unknown, describeError: (err: unknown) => string) => {
+    let result: { success: boolean; message: string | null };
+    try {
+      result = await saveDocumentGrouping(objectKey, sections);
+    } catch (err) {
+      throw new Error(describeError(err));
+    }
+    if (!result.success) throw new Error(result.message ?? 'The page grouping could not be saved.');
+    return result.message;
+  },
+}));
 /** The grouping board's props, while it is open. */
 let board: { sections: { sectionId: string }[]; onSave: (next: unknown[]) => Promise<void> } | null = null;
 vi.mock('../../common/PageGroupingEditor', () => ({
@@ -465,12 +480,12 @@ describe('the actions', () => {
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(complete.mock.invocationCallOrder[0]);
   });
 
-  it('offer History beside Claim to an Annotator viewing an unassigned item', () => {
+  it('offer History and Refresh beside Claim to an Annotator viewing an unassigned item', () => {
     role.isAdmin = false;
     role.isAnnotator = true;
     renderScreen();
     expect(menuNames()).toEqual(['Reports']);
-    expect(barButtonLabels()).toEqual(['Claim']);
+    expect(barButtonLabels()).toEqual(['Refresh', 'Claim']);
     expect(menuItems('Reports').map((i) => i.text)).toContain('History');
   });
 
