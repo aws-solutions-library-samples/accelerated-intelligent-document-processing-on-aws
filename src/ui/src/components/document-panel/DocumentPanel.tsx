@@ -212,13 +212,12 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
 );
 
 /**
- * Document Details: six aligned columns, fewer on a narrow screen (`minColumnWidth`;
- * without it ColumnLayout lays out at most four, and wider counts wrap unevenly).
+ * Document Details: four aligned columns, fewer on a narrow screen (`minColumnWidth`).
  */
 export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentAttributesProps): React.JSX.Element => {
   const skipAll = isHitlSkippedStatus(item.hitlStatus) ? lastSkipAllReason(item.hitlReviewHistory) : null;
   return (
-    <ColumnLayout columns={6} minColumnWidth={160} variant="text-grid">
+    <ColumnLayout columns={4} minColumnWidth={160} variant="text-grid">
       <Field label="Document ID">{item.objectKey}</Field>
       <Field label="Status">{renderObjectStatus(item.objectStatus)}</Field>
       <Field label="Submitted">{item.initialEventTime}</Field>

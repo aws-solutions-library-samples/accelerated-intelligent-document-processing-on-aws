@@ -6,8 +6,8 @@
  * Process Changes or Confirm & Process control (editing is the page's More Actions);
  * each row has one ⋮ menu named for its page, holding View Page Text, which opens the
  * text read-only, and Edit Page Text only where the page offers it, with the reason it
- * is disabled passed through; and the data columns have no width while Actions is last
- * and narrow.
+ * is disabled passed through; and the data columns have a narrow fixed width while
+ * Actions is last and takes the rest of the table, its header on one line.
  */
 
 import React from 'react';
@@ -115,12 +115,16 @@ describe('the Document Pages table', () => {
     expect(document.body.textContent).toContain(PAGE_NO_TEXT_REASON);
   });
 
-  it('starts the data columns even and puts a narrow Actions column last', () => {
+  it('gives the data columns narrow fixed widths and puts Actions last, filling the rest', () => {
     const columns = pageColumnDefinitions({}, vi.fn(), EMPTY_CLASSIFICATION_INDEX);
-    expect(columns[columns.length - 1]).toMatchObject({ id: 'actions', header: 'Actions', width: 60 });
-    for (const c of columns.slice(0, -1)) {
-      expect(c, c.id).not.toHaveProperty('width');
-      expect(c, c.id).not.toHaveProperty('minWidth');
-    }
+    const last = columns[columns.length - 1];
+    expect(last).toMatchObject({ id: 'actions', header: 'Actions', minWidth: 100 });
+    expect(last).not.toHaveProperty('width');
+    expect(Object.fromEntries(columns.slice(0, -1).map((c) => [c.id, (c as { width?: number }).width]))).toEqual({
+      id: 90,
+      class: 180,
+      classConfidence: 110,
+      thumbnail: 130,
+    });
   });
 });

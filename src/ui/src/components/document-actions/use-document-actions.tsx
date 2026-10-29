@@ -3,9 +3,9 @@
 //
 // The document page's action bar and the dialogs it opens. Left to right: the Details |
 // Source switch; Reports (Summary, Evaluation Report, Rule Validation Summary,
-// Processing Flow); More Actions (the changes, with Reprocess, Abort and Delete in their
-// own group, Delete last); Download; Troubleshoot; Refresh; Start Review, where it
-// applies; and Edit, the primary action. More Actions opens Edit Page Class (the edit
+// Processing Flow); More Actions (the changes; then the downloads, as a group; then
+// Reprocess, Abort and Delete as a group, Delete last); Refresh; Troubleshoot; Start
+// Review, where it applies; and Edit, the primary action. More Actions opens Edit Page Class (the edit
 // page's board, with Save and Re-extract), Re-extract Sections, Edit Page Text and Reset
 // Page Class. Which actions are offered and why one is
 // disabled come from documentActionGates (document-action-gates.ts).
@@ -88,7 +88,7 @@ export interface DocumentActionsInput {
   refresh: () => Promise<unknown>;
   /** Apply a change to the page's copy of the document at once (a server response). */
   onDocumentUpdate: (update: (prev: ActionDocument) => ActionDocument) => void;
-  /** The Download menu (useDocumentDownload). */
+  /** The downloads (useDocumentDownload), a group in More Actions. */
   download: ActionBarMenu;
   onReprocess: () => void;
   onAbort: () => void;
@@ -272,9 +272,12 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     else if (id === 'reprocess') input.onReprocess();
     else if (id === 'abort') input.onAbort();
     else if (id === 'delete') input.onDelete();
+    else download.onItemClick(id);
   };
 
   const working = busy !== null;
+  // The downloads' items are plain items (useDocumentDownload builds no groups).
+  const downloads = download.items as ActionBarMenuItem[];
   const lifecycle = [
     ...offered(gates.reprocess, 'reprocess', 'Reprocess'),
     ...offered(gates.abort, 'abort', 'Abort'),
@@ -319,19 +322,13 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         ...offered(gates['reset-class'], 'reset-class', 'Reset Page Class'),
         ...offered(gates.baseline, 'baseline', 'Use As Evaluation Baseline'),
         ...offered(gates['skip-all'], 'skip-all', 'Skip All Reviews'),
+        ...(downloads.length > 0 ? [{ kind: 'group' as const, items: downloads }] : []),
         ...(lifecycle.length > 0 ? [{ kind: 'group' as const, items: lifecycle }] : []),
       ],
-      disabled: working,
-      loading: busy === 'baseline' || busy === 'skip-all',
+      disabled: working || !!download.disabled,
+      loading: busy === 'baseline' || busy === 'skip-all' || !!download.loading,
+      expandToViewport: true,
       onItemClick: onMoreAction,
-    },
-    download,
-    gates.troubleshoot.shown && {
-      kind: 'button',
-      id: 'troubleshoot',
-      text: 'Troubleshoot',
-      iconName: 'gen-ai',
-      onClick: () => setTroubleshootOpen(true),
     },
     {
       kind: 'button',
@@ -344,6 +341,13 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         void run('refresh', async () => {
           await refresh();
         }),
+    },
+    gates.troubleshoot.shown && {
+      kind: 'button',
+      id: 'troubleshoot',
+      text: 'Troubleshoot',
+      iconName: 'gen-ai',
+      onClick: () => setTroubleshootOpen(true),
     },
     gates['start-review'].shown && {
       kind: 'button',

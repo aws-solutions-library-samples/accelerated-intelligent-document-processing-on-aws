@@ -115,8 +115,8 @@ const ActionsCell = ({
 };
 
 /**
- * The pages table's columns. The data columns have no width, so they start even and stay
- * resizable; the ⋮ Actions column is last and narrow.
+ * The pages table's columns: narrow data columns, resizable, and the ⋮ Actions column
+ * last, taking the rest of the table's width.
  */
 export const pageColumnDefinitions = (
   thumbnailUrls: Record<string, string | null>,
@@ -129,12 +129,14 @@ export const pageColumnDefinitions = (
     header: 'Page ID',
     cell: (item: PageItem) => <IdCell item={item} />,
     sortingField: 'Id',
+    width: 90,
   },
   {
     id: 'class',
     header: 'Class/Type',
     cell: (item: PageItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
     sortingField: 'Class',
+    width: 180,
   },
   {
     id: 'classConfidence',
@@ -147,17 +149,20 @@ export const pageColumnDefinitions = (
       <ClassConfidence confidence={item.ClassConfidence} reason={item.ClassReason} candidates={item.ClassCandidates} />
     ),
     sortingComparator: (a: PageItem, b: PageItem) => compareClassConfidence(a.ClassConfidence, b.ClassConfidence),
+    width: 110,
   },
   {
     id: 'thumbnail',
     header: 'Thumbnail',
     cell: (item: PageItem) => <ThumbnailCell imageUrl={thumbnailUrls[item.Id]} />,
+    width: 130,
   },
   {
     id: 'actions',
     header: 'Actions',
     cell: (item: PageItem) => <ActionsCell item={item} onView={onView} pageTextEdit={pageTextEdit} />,
-    width: 60,
+    // Fills the rest of the table, so its header stays on one line.
+    minWidth: 100,
   },
 ];
 

@@ -1,8 +1,9 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The document page's Download menu: the whole document, its predictions or its
-// baselines as a ZIP, with the options dialog (Download All) and the progress dialog.
+// The document page's downloads, a group in More Actions: the whole document, its
+// predictions or its baselines as a ZIP, with the options dialog (Download All) and the
+// progress dialog.
 import React, { useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -14,7 +15,7 @@ import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-
 const logger = new ConsoleLogger('DocumentDownload');
 
 interface DocumentDownload {
-  /** The bar's Download menu. */
+  /** The downloads, as a menu: More Actions takes its items as a group, and its onItemClick for them. */
   menu: ActionBarMenu;
   /** The options and progress dialogs; render them with the page's dialogs. */
   dialogs: React.ReactNode;

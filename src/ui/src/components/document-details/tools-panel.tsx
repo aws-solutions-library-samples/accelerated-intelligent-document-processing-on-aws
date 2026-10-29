@@ -55,11 +55,10 @@ const ToolsPanel = (): React.JSX.Element => (
         </li>
         <li>
           <b>More Actions</b>: Edit Page Class, Re-extract Sections, Edit Page Text, Reset Page Class, Use As Evaluation Baseline, Skip All
-          Reviews, then Reprocess, Abort and Delete.
+          Reviews; then the downloads (the document&apos;s outputs as a ZIP); then Reprocess, Abort and Delete.
         </li>
         <li>
-          <b>Download</b> the document&apos;s outputs as a ZIP, <b>Troubleshoot</b> what went wrong, <b>Refresh</b> the page, and{' '}
-          <b>Edit</b> the document&apos;s extracted values.
+          <b>Refresh</b> the page, <b>Troubleshoot</b> what went wrong, and <b>Edit</b> the document&apos;s extracted values.
         </li>
       </ul>
       <p>

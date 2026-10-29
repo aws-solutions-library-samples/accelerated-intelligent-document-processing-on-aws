@@ -132,7 +132,8 @@ beside it, left to right:
   (see [Evaluation report](#evaluation-report)), **Rule Validation Summary** and
   **Processing Flow** (see
   [Document Process Flow Visualization](#document-process-flow-visualization)).
-- **More Actions** — the changes:
+- **More Actions** — the changes, then the downloads, then Reprocess, Abort and Delete,
+  each group set apart by a separator:
   - **Edit Page Class** — move pages between sections and change a section's class
     (see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages)).
   - **Re-extract Sections** — extract chosen sections again (see
@@ -143,12 +144,13 @@ beside it, left to right:
     or has failed, and a failed copy is reported.
   - **Skip All Reviews** — finish a pending review without checking it, with a reason
     (see [Human review](human-review.md)).
-  - **Reprocess**, **Abort** and **Delete**, in their own group.
-- **Download** — the document's outputs as a ZIP (see
-  [Download Document Data](#download-document-data)).
+  - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
+    (ZIP)** — the document's outputs as a ZIP (see
+    [Download Document Data](#download-document-data)).
+  - **Reprocess**, **Abort** and **Delete**, Delete last.
+- **Refresh** — read the document again.
 - **Troubleshoot** — an AI analysis of what went wrong with the document. Reopened on
   the same document it shows the last result; **Run again** starts a new analysis.
-- **Refresh** — read the document again.
 - **Start Review** — claim a pending review, where a document has one nobody holds yet.
 - **Edit** — the primary action: the document's edit page (see [HITL](#hitl)), or its
   queue item while it is in a review queue and you work queues.
@@ -160,7 +162,7 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 
 | Action | Roles |
 |---|---|
-| Reports, Download, Refresh, Details \| Source | every role |
+| Reports, the downloads, Refresh, Details \| Source | every role |
 | Edit Page Class, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
 | Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
 | Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
@@ -169,7 +171,7 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 
 The server enforces the same rules; see [RBAC](rbac.md).
 
-Below the bar, **Document Details** lists the document's fields in six aligned columns,
+Below the bar, **Document Details** lists the document's fields in four aligned columns,
 fewer on a narrow screen, and **Estimated Cost** is in its own panel beneath it. Then come
 **Document Sections** and **Document Pages**, each row with a **⋮** menu for that row:
 a section's **Edit Data** (**View Data** for a role that can't edit), **Download Data**
@@ -537,7 +539,7 @@ The Document Process Flow visualization is particularly useful for troubleshooti
 
 ## Download Document Data
 
-The Document Details page exposes a **Download** dropdown in the page header that packages the document's outputs into a single ZIP archive, suitable for sharing, archival, or downstream analysis outside the IDP console. The same three scopes are available in bulk from the document list — see [Bulk download from the document list](#bulk-download-from-the-document-list) below.
+The Document Details page's **More Actions** menu has a group of downloads that packages the document's outputs into a single ZIP archive, suitable for sharing, archival, or downstream analysis outside the IDP console. The same three scopes are available in bulk from the document list — see [Bulk download from the document list](#bulk-download-from-the-document-list) below.
 
 ### Folder layout
 

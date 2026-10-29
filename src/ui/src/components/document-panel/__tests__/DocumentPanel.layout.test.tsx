@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Document Details' layout. What has to hold: the fields sit in an aligned six-column
- * grid that narrows on a narrow screen (ColumnLayout columns={6} with minColumnWidth,
+ * Document Details' layout. What has to hold: the fields sit in an aligned four-column
+ * grid that narrows on a narrow screen (ColumnLayout columns={4} with minColumnWidth,
  * text-grid), in the same order as before, each a key label over its value; the status
  * is the shared status indicator; and Estimated Cost is its own container below Document
  * Details, not inside it.
@@ -108,9 +108,9 @@ beforeEach(() => {
 });
 
 describe('Document Details', () => {
-  it('lays the fields out in six aligned columns that narrow on a narrow screen', () => {
+  it('lays the fields out in four aligned columns that narrow on a narrow screen', () => {
     render(<DocumentAttributes item={ITEM as never} versions={[]} />);
-    expect(state.columnLayouts.at(-1)).toMatchObject({ columns: 6, minColumnWidth: 160, variant: 'text-grid' });
+    expect(state.columnLayouts.at(-1)).toMatchObject({ columns: 4, minColumnWidth: 160, variant: 'text-grid' });
   });
 
   it('keeps the fields in their order, each a key label over its value', () => {

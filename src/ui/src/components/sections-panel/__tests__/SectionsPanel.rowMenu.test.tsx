@@ -8,7 +8,7 @@
  * (or View Data, for a role that can't edit) at the section's edit page, Download Data,
  * and Download Baseline only when the document has a baseline; a failed download is
  * reported through the shared notifications, not `alert`; and the data columns have no
- * width (they start even, and stay resizable) while Actions is last and narrow.
+ * a narrow fixed width while Actions is last and takes the rest of the table, its header on one line.
  */
 
 import React from 'react';
@@ -112,13 +112,17 @@ describe('the Document Sections table', () => {
     expect(alert).not.toHaveBeenCalled();
   });
 
-  it('starts the data columns even and puts a narrow Actions column last', () => {
+  it('gives the data columns narrow fixed widths and puts Actions last, filling the rest', () => {
     const columns = sectionColumnDefinitions(DOC as never, {}, EMPTY_CLASSIFICATION_INDEX);
     const last = columns[columns.length - 1];
-    expect(last).toMatchObject({ id: 'actions', header: 'Actions', width: 60 });
-    for (const c of columns.slice(0, -1)) {
-      expect(c, c.id).not.toHaveProperty('width');
-      expect(c, c.id).not.toHaveProperty('minWidth');
-    }
+    expect(last).toMatchObject({ id: 'actions', header: 'Actions', minWidth: 100 });
+    expect(last).not.toHaveProperty('width');
+    expect(Object.fromEntries(columns.slice(0, -1).map((c) => [c.id, (c as { width?: number }).width]))).toEqual({
+      id: 110,
+      class: 180,
+      pageIds: 100,
+      confidenceAlerts: 130,
+      status: 130,
+    });
   });
 });

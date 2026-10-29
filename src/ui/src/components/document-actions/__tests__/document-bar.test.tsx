@@ -4,11 +4,11 @@
 /**
  * The document page's header and action bar. What has to hold: the page opens on one
  * h1, "<document> (<status>)" over the object key, whose bar reads, left to right, the
- * Details | Source switch, Reports, More Actions, Download, Troubleshoot, Refresh, Start
- * Review (where it applies) and Edit, the primary action; Reports lists Summary,
- * Evaluation Report, Rule Validation Summary and Processing Flow, each disabled with its
- * reason when it doesn't apply, and each opens its dialog; More Actions ends with
- * Reprocess, Abort and Delete in their own group, Delete last; Source shows the source
+ * Details | Source switch, Reports, More Actions, Refresh, Troubleshoot, Start Review
+ * (where it applies) and Edit, the primary action; Reports lists Summary, Evaluation
+ * Report, Rule Validation Summary and Processing Flow, each disabled with its reason when
+ * it doesn't apply, and each opens its dialog; More Actions holds the changes, then the
+ * downloads as one group, then Reprocess, Abort and Delete as another, Delete last; Source shows the source
  * document in place of the page's widgets, which stay mounted; Refresh re-reads the
  * document; a role is offered only what the server lets it do; Use As Evaluation
  * Baseline sends copyToBaseline, says so, re-reads, shows the copy in the Evaluation
@@ -162,20 +162,20 @@ describe('the document page header', () => {
     expect(header().findDescription()!.getElement().textContent).toBe('in/a.pdf');
   });
 
-  it('reads Details | Source, Reports, More Actions, Download, Troubleshoot, Refresh, Start Review, then Edit, the primary action', () => {
+  it('reads Details | Source, Reports, More Actions, Refresh, Troubleshoot, Start Review, then Edit, the primary action', () => {
     renderPanel();
     const control = header().findActions()!.findSegmentedControl()!;
     expect(control.findSegments().map((s) => s.getElement().textContent)).toEqual(['Details', 'Source']);
     expect(
       control.getElement().compareDocumentPosition(detailBar.findMenu('Reports')!.getElement()) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(detailBar.menuNames()).toEqual(['Reports', 'More Actions', 'Download']);
-    expect(detailBar.barButtonLabels()).toEqual(['Troubleshoot', 'Refresh', 'Start Review', 'Edit']);
+    expect(detailBar.menuNames()).toEqual(['Reports', 'More Actions']);
+    expect(detailBar.barButtonLabels()).toEqual(['Refresh', 'Troubleshoot', 'Start Review', 'Edit']);
     const edit = button('Edit')!;
     expect(edit.getElement().getAttribute('href')).toBe(`#/documents/${encodeURIComponent('in/a.pdf')}/edit`);
     expect(edit.getElement().className).toMatch(/variant-primary/);
-    const download = detailBar.findMenu('Download')!.getElement();
-    expect(download.compareDocumentPosition(button('Troubleshoot')!.getElement()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const more = detailBar.findMenu('More Actions')!.getElement();
+    expect(more.compareDocumentPosition(button('Refresh')!.getElement()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
@@ -233,20 +233,37 @@ describe('Reports', () => {
 });
 
 describe('More Actions', () => {
-  it('ends with Reprocess, Abort and Delete in one group, Delete last', () => {
+  it('holds the changes, then the downloads as one group, then Reprocess, Abort and Delete as another, Delete last', () => {
     renderPanel(doc({ objectStatus: 'RUNNING' }));
     const menu = detailBar.findMenu('More Actions')!;
     act(() => menu.openDropdown());
-    const groups = menu.findAll('[role="group"]');
-    expect(groups).toHaveLength(1);
-    const ids = groups[0]
-      .findAll('[data-testid]')
-      .map((e) => e.getElement().getAttribute('data-testid'))
-      .filter((id) => ['reprocess', 'abort', 'delete'].includes(id ?? ''));
-    expect(ids).toEqual(['reprocess', 'abort', 'delete']);
+    // More Actions expands to the viewport, so its open menu is rendered outside the trigger.
+    const open = menu.findOpenDropdown()!;
+    const idsIn = (group: ReturnType<typeof open.findAll>[number]) =>
+      group
+        .findAll('[data-testid]')
+        .map((e) => e.getElement().getAttribute('data-testid'))
+        .filter((id) => ['all', 'predictions', 'baselines', 'reprocess', 'abort', 'delete'].includes(id ?? ''));
+    const groups = open.findAll('[role="group"]');
+    expect(groups).toHaveLength(2);
+    expect(idsIn(groups[0])).toEqual(['all', 'predictions', 'baselines']);
+    expect(idsIn(groups[1])).toEqual(['reprocess', 'abort', 'delete']);
     act(() => menu.openDropdown());
     const items = detailBar.menuItems('More Actions').map((i) => i.text);
-    expect(items[items.length - 1]).toBe('Delete');
+    expect(items).toEqual([
+      'Edit Page Class',
+      'Re-extract Sections',
+      'Edit Page Text',
+      'Reset Page Class',
+      'Use As Evaluation Baseline',
+      'Skip All Reviews',
+      'Download All (ZIP)',
+      'Download Predictions (ZIP)',
+      'Download Baselines (ZIP)',
+      'Reprocess',
+      'Abort',
+      'Delete',
+    ]);
   });
 });
 
@@ -276,11 +293,16 @@ describe('Refresh', () => {
 });
 
 describe('by role', () => {
-  it('offers a Viewer no changes, but Troubleshoot', () => {
+  it('offers a Viewer no changes, only the downloads in More Actions, and Troubleshoot', () => {
     state.role = { ...VIEWER };
     renderPanel();
-    expect(detailBar.menuNames()).toEqual(['Reports', 'Download']);
-    expect(detailBar.barButtonLabels()).toEqual(['Troubleshoot', 'Refresh']);
+    expect(detailBar.menuNames()).toEqual(['Reports', 'More Actions']);
+    expect(detailBar.menuItems('More Actions').map((i) => i.text)).toEqual([
+      'Download All (ZIP)',
+      'Download Predictions (ZIP)',
+      'Download Baselines (ZIP)',
+    ]);
+    expect(detailBar.barButtonLabels()).toEqual(['Refresh', 'Troubleshoot']);
   });
 
   it('offers a Reviewer no Troubleshoot', () => {

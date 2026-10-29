@@ -351,6 +351,6 @@ describe('Edit Page Class availability', () => {
   it('is not offered to a Viewer', () => {
     state.role = { ...ADMIN, isAdmin: false, isViewer: true, canWorkReviewQueues: false };
     renderPanel();
-    expect(detailBar.menuNames()).not.toContain('More Actions');
+    expect(moreItem('Edit Page Class')).toBeUndefined();
   });
 });

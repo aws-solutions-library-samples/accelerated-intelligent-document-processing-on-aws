@@ -425,8 +425,8 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
 };
 
 /**
- * The sections table's columns. The data columns have no width, so they start even and
- * stay resizable; the ⋮ Actions column is last and narrow.
+ * The sections table's columns: narrow data columns, resizable, and the ⋮ Actions column
+ * last, taking the rest of the table's width.
  */
 export const sectionColumnDefinitions = (
   documentItem: DocumentItem | undefined,
@@ -439,33 +439,39 @@ export const sectionColumnDefinitions = (
       header: 'Section ID',
       cell: (item: SectionItem) => <IdCell item={item} />,
       sortingField: 'Id',
+      width: 110,
     },
     {
       id: 'class',
       header: 'Class/Type',
       cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
       sortingField: 'Class',
+      width: 180,
     },
     {
       id: 'pageIds',
       header: 'Page IDs',
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
+      width: 100,
     },
     {
       id: 'confidenceAlerts',
       header: 'Low-conf. fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
+      width: 130,
     },
     {
       id: 'status',
       header: 'Status',
       cell: (item: SectionItem) => <StatusCell item={item} />,
+      width: 130,
     },
     {
       id: 'actions',
       header: 'Actions',
       cell: (item: SectionItem) => <ActionsCell item={item} documentItem={documentItem} />,
-      width: 60,
+      // Fills the rest of the table, so its header stays on one line.
+      minWidth: 100,
     },
   ];
 };
