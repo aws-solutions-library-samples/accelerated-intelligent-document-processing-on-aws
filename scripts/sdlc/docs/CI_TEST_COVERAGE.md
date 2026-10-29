@@ -334,7 +334,15 @@ catches it.
     `integration_tests` already posted (it keys on a `slack_posted.txt` artifact
     written only on a *successful* post), and otherwise sends
     **❌ FAILED BEFORE THE DEPLOY**, which states plainly that nothing was
-    deployed and no integration test ran. If the deploy ran but its own post
+    deployed and no integration test ran, and names **why**: it lists the
+    pipeline's failed blocking jobs through the GitLab API (with
+    `GITLAB_REVIEW_TOKEN`, which already reaches every job) and quotes the
+    decisive lines of each one's log — the dep-audit `GATING` block, pytest's
+    `FAILED` lines and tally, `make: ***`, or else the end of the script output.
+    Without the token, or if the API cannot be read, it falls back to the
+    pipeline link and says why. When the failed job is `integration_tests`
+    itself, dying before it wrote a summary, it posts **❌ DEPLOY FAILED
+    WITHOUT A SUMMARY** instead, since a stack may have been left standing. If the deploy ran but its own post
     failed, the fallback sends the summary instead as
     **⚠️ RESULT NOT DELIVERED**. It declares **no `needs`** on purpose — GitLab
     skips a job whose needed job was skipped, which would reproduce the silence
@@ -735,7 +743,7 @@ the first time a pipeline holds such a job, and creates no deployment for a
 | `UX_TEST_UI_ENV` | `ux-review` and `ux-review-build`, one copy at each, with the same value | base64 of the review stack's `WebUITestEnvFile` output, plus an optional `UX_TEST_BUCKETS=` line of its exact bucket names; the build is made against it, the egress rules come from it, and unless its `VITE_SETTINGS_PARAMETER` is `idp-ux-nightly-Settings` no video is rendered |
 | `UX_TEST_PERSONAS` | `ux-review` | base64 of `{"<group>": {"username": …, "password": …}}`, from `scripts/ux_test_session.py setup idp-ux-nightly --group Admin --long-lived` |
 | `UX_TEST_AWS_ACCOUNT_ID` | `ux-review` | the account the job's credentials must reach; only ever printed as its last four digits. Not a credential, and scoped so that nothing else reads it |
-| `GITLAB_REVIEW_TOKEN` | All (`*`) | shared with `ai_mr_review`, which declares no environment: a project access token with the least role that can create a note |
+| `GITLAB_REVIEW_TOKEN` | All (`*`) | shared with `ai_mr_review`, which declares no environment, and read by `nightly_notification` for the failed jobs' logs: a project access token with the least role that can create a note and read job logs |
 
 ⚠️ **What an unscoped variable exposes.** A variable at the default scope, All (`*`),
 reaches every job of every pipeline in the project, and an MR pipeline holds other
@@ -769,7 +777,10 @@ evaluates `rules` at pipeline creation.
    left at **All (default)**. GitLab keeps a key once per scope, so an unscoped copy
    beside a scoped one still reaches every job whatever the scoped one says: delete
    it.
-4. Leave `GITLAB_REVIEW_TOKEN` at **All (default)**.
+4. Leave `GITLAB_REVIEW_TOKEN` at **All (default)**. `nightly_notification` reads
+   the failed jobs' logs with it, which needs a role that can read job logs
+   (Reporter); with less, the nightly post falls back to the pipeline link and the
+   job log says `⚠️ Could not read the failed jobs`.
 5. If `UX_TEST_PERSONAS` was ever saved at **All (default)**, or at any scope
    `ux-review-build` matches, its password has been in a job that runs the MR's
    code: rotate it with
