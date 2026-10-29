@@ -72,7 +72,11 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
-- **The web UI no longer depends on `mammoth`.** Nothing in the UI imported it. The documentation site now uses `postcss-selector-parser` 6.1.5, which fixes a moderate advisory, and `http-cache-semantics` 4.3.0, and its lockfile again includes the two `@emnapi` entries `npm ci` requires. The `http-cache-semantics` triage entries are removed from `scripts/security/dep_audit_allowlist.json` and `.ash/.ash.yaml`, because the advisory they covered has been withdrawn. **Action:** none.
+- **The documentation site builds again.** Its lockfile was missing the `@emnapi/core` and `@emnapi/wasi-threads` entries, so `npm ci` in `docs-site` failed with `Missing: ... from lock file`. Both are now present. **Action:** none.
+
+- **The web UI no longer depends on `mammoth`.** Nothing in the UI imported it. **Action:** none.
+
+- **Documentation-site dependencies.** `postcss-selector-parser` moves to 6.1.5, which fixes GHSA-rj75-hqrm-r3gf (moderate), and `http-cache-semantics` moves to 4.3.0. The GHSA-ch52-4w7c-c8xp triage entries for `http-cache-semantics` are removed from `scripts/security/dep_audit_allowlist.json` and `.ash/.ash.yaml` because GitHub withdrew that advisory; the version bump is incidental to their removal. **Action:** none.
 
 - **The reprocess dialog reminds BDA-mode users to run Sync To BDA.** The reminder was shown only when the stack setting named Pattern 1, which no stack does since the unified pattern, so it never appeared. It now follows the selected configuration profile's `use_bda` flag ([#1645](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1645)). **Action:** none.
 
