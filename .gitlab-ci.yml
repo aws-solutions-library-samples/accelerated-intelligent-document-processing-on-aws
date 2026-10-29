@@ -1730,6 +1730,8 @@ nightly_notification:
               if re.match(r"^=+ .*\b(failed|errors?)\b.* in [\d.]+s", line)
               or line.startswith("make: *** ")
           ]
+          # The fallback quotes unfiltered job output into the Slack channel. Masked
+          # variables are masked in the trace; anything a job echoes unmasked is not.
           if not detail and not totals:
               detail = [line for line in lines if line.strip()][-MAX_CAUSE_LINES:]
 
@@ -1803,7 +1805,16 @@ nightly_notification:
                   sections.append(f"… and {len(failed) - MAX_JOBS} more failed jobs")
               names = [job["name"] for job in failed]
           except Exception as exc:  # noqa: BLE001 - see the warning above
-              return None, f"{type(exc).__name__}: {exc}"
+              # The reason is posted to Slack, where GitLab's masking does not
+              # apply, and a malformed token (a pasted trailing newline) makes
+              # http.client raise with the header value in the message.
+              # Scrubbed in every form it can appear: raw, repr()-escaped, stripped.
+              detail = str(exc)
+              for form in sorted({token, repr(token)[1:-1], token.strip()}, key=len)[::-1]:
+                  if form:
+                      detail = detail.replace(form, "[token]")
+              detail = detail[:MAX_LINE]
+              return None, f"{type(exc).__name__}: {detail}"
           if not sections:
               return None, "the API listed no failed blocking job"
           return names, "\n\n".join(sections)

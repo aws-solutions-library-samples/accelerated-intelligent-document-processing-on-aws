@@ -364,3 +364,22 @@ def test_the_cause_falls_back_to_the_link_without_a_token(notifier, monkeypatch)
     names, why = notifier["read_causes"]()
     assert names is None
     assert "GITLAB_REVIEW_TOKEN" in why
+
+
+def test_a_failure_reason_never_carries_the_token(notifier, monkeypatch):
+    """The reason reaches Slack, where GitLab's variable masking does not apply."""
+    token = "glpat-secretvalue\n"
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", token)
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "2")
+    monkeypatch.setenv("CI_API_V4_URL", "https://gitlab.invalid/api/v4")
+
+    def refuse(request, timeout):
+        # What http.client raises for a header value holding a newline.
+        raise ValueError(f"Invalid header value {token!r}")
+
+    monkeypatch.setattr(notifier["urllib"].request, "urlopen", refuse)
+    names, why = notifier["read_causes"]()
+    assert names is None
+    assert "secretvalue" not in why
+    assert "[token]" in why
