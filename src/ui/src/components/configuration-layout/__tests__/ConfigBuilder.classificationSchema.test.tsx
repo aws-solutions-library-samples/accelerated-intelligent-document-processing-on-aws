@@ -92,8 +92,8 @@ describe('the shipped classification schema', () => {
       split_then_classify: { splitting: { method: 'llm' }, section_classification: { method: 'llm' } },
     });
     expect(visible('Splitting')).toBe(true);
-    expect(visible('LLM splitting')).toBe(true);
-    expect(visible('LLM section classification')).toBe(true);
+    // Each split-then-classify call carries its own Inference settings group.
+    expect(screen.queryAllByText('Inference settings')).toHaveLength(2);
     expect(visible('Split and classify together')).toBe(false);
   });
 
