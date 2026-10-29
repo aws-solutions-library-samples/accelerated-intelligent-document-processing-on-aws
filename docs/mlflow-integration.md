@@ -103,6 +103,8 @@ Numeric values logged as MLflow metrics. These are searchable and chartable in t
 
 Metric key sanitization: `/`, `:`, and `-` are replaced with `_`, and all keys are lowercased.
 
+The cost breakdown keys are `cost.<context>.<service_api>_<unit>`, where the context is the metering context the step recorded. Under `classification.strategy: combined` classification is metered as `Classification`, so its keys start with `cost.classification.`. Under `split_then_classify` the two calls are metered separately, as `Splitting` and `SectionClassification`, so their keys start with `cost.splitting.` and `cost.sectionclassification.` (for example `cost.splitting.bedrock_us.amazon.nova_2_lite_v1_0_inputtokens`).
+
 ### Parameters
 
 Short key-value strings logged as MLflow params. These are filterable in the MLflow UI — useful for comparing runs across different model configurations.
@@ -151,7 +153,7 @@ Complex data structures logged as JSON files under the `metrics/` artifact path.
 | Artifact | Description |
 |----------|-------------|
 | `full_config.json` | Complete IDP configuration snapshot for the test run |
-| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `combined`, the `classification.combined.page` or `classification.combined.packet` prompts for the active granularity; under `split_then_classify`, `classification.split_then_classify.section_classification.llm`'s, with the boundary call's prompts as `classification.splitting.system_prompt` and `classification.splitting.task_prompt` |
+| `prompts.json` | System and task prompts for each stage (classification, extraction, assessment, summarization). The classification prompts are those of the class-assigning call: under `combined`, the `classification.combined.page` or `classification.combined.packet` prompts for the active granularity; under `split_then_classify`, `classification.split_then_classify.section_classification.llm`'s, with the splitting call's prompts as `classification.splitting.system_prompt` and `classification.splitting.task_prompt` |
 | `class_definitions.json` | Document class schemas with field definitions and evaluation methods |
 | `weighted_overall_scores.json` | Weighted accuracy scores per document class |
 | `field_metrics.json` | Full per-field evaluation metrics |

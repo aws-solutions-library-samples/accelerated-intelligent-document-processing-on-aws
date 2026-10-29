@@ -2201,7 +2201,7 @@ class SplittingLLMConfig(ClassificationModelSettings):
 
     granularity: str = Field(
         default="page",
-        description="'page': one boundary call per page. 'packet': per packet or window.",
+        description="'page': one splitting call per page. 'packet': per packet or window.",
     )
     page: ClassificationPageInputConfig = Field(
         default_factory=ClassificationPageInputConfig

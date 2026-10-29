@@ -28,30 +28,38 @@ check if you maintain tooling that reads the configuration directly.
 
 | v0.6.12 (`classification.…`) | v0.6.13 (`classification.…`) |
 |---|---|
-| `classificationMethod: multimodalPageLevelClassification` | `combined.granularity: page` |
-| `classificationMethod: textbasedHolisticClassification` | `combined.granularity: packet` — see [A holistic configuration](#a-holistic-configuration) |
-| `granularity` (if written directly) | **both** `combined.granularity` and `split_then_classify.splitting.llm.granularity` |
-| `system_prompt`, `task_prompt` | `combined.page.system_prompt`, `combined.page.task_prompt` |
-| `packet.system_prompt`, `packet.task_prompt` | `combined.packet.system_prompt`, `combined.packet.task_prompt` |
-| `packet.window_pages`, `packet.overlap_pages` | **both** `combined.packet.…` and `split_then_classify.splitting.llm.packet.…` |
+| `classificationMethod: multimodalPageLevelClassification` | `combined.granularity: page`, and the same value on `split_then_classify.splitting.llm.granularity` |
+| `classificationMethod: textbasedHolisticClassification` | `combined.granularity: packet`, and the same value on `split_then_classify.splitting.llm.granularity` — see [A holistic configuration](#a-holistic-configuration) |
+| `system_prompt`, `task_prompt` | `combined.page.system_prompt`, `combined.page.task_prompt` (a holistic configuration's packet-shaped prompts are also copied to `combined.packet.…`) |
 | `contextPagesCount` | `combined.page.contextPagesCount` and `split_then_classify.splitting.llm.page.contextPagesCount` |
-| `model`, `model_lambda_hook_arn`, `temperature`, `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image`, `modality` | `combined.llm.…`, and copied into `split_then_classify.splitting.llm.…` and `split_then_classify.section_classification.llm.…` — see [Model settings are copied into every call](#model-settings-are-copied-into-every-call) |
-| `segmentation.system_prompt`, `segmentation.task_prompt` | `split_then_classify.splitting.llm.page.…` (and `segmentation.packet.…` to `…llm.packet.…`) |
-| `segmentation.boundary_hints` | `split_then_classify.splitting.llm.boundary_hints` |
-| `segmentation.model`, `labeling.model` | the matching call's `…llm.model` (`split_then_classify.splitting.llm.model` or `split_then_classify.section_classification.llm.model`), and a non-empty value here wins over a flat `model` |
-| `labeling.method`, `labeling.pages`, `labeling.k` | `split_then_classify.section_classification.…` — the block is named `section_classification` in v0.6.13 |
-| `labeling.system_prompt`, `labeling.task_prompt` | `split_then_classify.section_classification.llm.…` |
+| `model`, `model_lambda_hook_arn`, `temperature`, `top_p`, `top_k`, `max_tokens`, `reasoning_effort`, `image` | `combined.llm.…`, and copied into `split_then_classify.splitting.llm.…` and `split_then_classify.section_classification.llm.…` — see [Model settings are copied into every call](#model-settings-are-copied-into-every-call) |
 | `enforceValidClasses`, `maxValidationRetries` | `combined.llm.validation.…` and `split_then_classify.section_classification.llm.validation.…` |
 | `invalidClassFallback` | `fallback_class` |
-| `confidence` | `combined.llm.confidence` and `split_then_classify.section_classification.llm.confidence` |
+| `confidence` | `combined.llm.confidence` and `split_then_classify.section_classification.llm.confidence` (without the `_packet` prompt variants, which section classification never reads) |
 | `sectionSplitting` | `document_shape.sectionSplitting` |
 | `maxPagesForClassification` | `document_shape.maxPagesForClassification` — see [A page limit](#a-page-limit-with-boundary-detection) |
 
 Rows naming **both** destinations are what makes the conversion exact in either
 strategy: those settings describe the call that reads pages, and under
 `strategy: split_then_classify` that call is the splitting call rather than the combined call, so a
-converted profile behaves the same whichever strategy it selects. Any other key
-inside a v0.6.12 `segmentation` or `labeling` block is not carried over.
+converted profile behaves the same whichever strategy you later select.
+
+**Configurations saved by a development build of this release are converted
+too.** Development builds wrote an intermediate layout (configuration format
+`0.8`) with flat keys v0.6.12 never had: `granularity`, `packet.*`, `modality`,
+`segmentation.*` and `labeling.*`. Each goes to the call that reads it —
+`granularity` and the `packet` window to both the combined call and the splitting
+call, `modality` into all three calls, `segmentation` to
+`split_then_classify.splitting.llm`, and `labeling` to
+`split_then_classify.section_classification` — and a non-empty
+`segmentation.model` or `labeling.model` wins over a flat `model` for its own
+call. Any other key inside a `segmentation` or `labeling` block is not carried
+over. The strategy and block names those builds used are read as well:
+`strategy: single_pass` and `two_stage` become `combined` and
+`split_then_classify`, the `one_stage`, `two_stage` and `file_shape` blocks become
+`combined`, `split_then_classify` and `document_shape`, and a
+`two_stage.segmentation` or `two_stage.boundary_detection` block becomes
+`split_then_classify.splitting`.
 
 `classification.strategy` is new in v0.6.13 and has no v0.6.12 equivalent; a
 converted profile gets the default, `combined`. The resulting layout is
@@ -104,14 +112,18 @@ the call that reads it — `{DOCUMENT_TEXT}` present means text is sent,
 text-only classification, deleting `{DOCUMENT_IMAGE}` from the task prompt, keeps
 working unchanged.
 
-Two things the conversion does write:
+A v0.6.12 configuration has no `modality` setting and only one call, so the
+conversion writes no modality flags for it: the combined call keeps inferring
+them from the same prompt. Two things the conversion does write apply only to a
+configuration saved by a development build, which could already carry a flat
+`modality` block and select split-then-classify:
 
 - **A flat `modality` block is copied into all three calls**, merged flag by
   flag, alongside the model parameters below. Setting `modality.images: false`
   in the flat layout therefore turns images off for the combined call, the splitting call
   and section classification alike.
 - **A split-then-classify configuration gets its per-call flags written explicitly.** In
-  v0.6.12 every call inferred an unset flag from the flat prompt; in
+  the flat layout every call inferred an unset flag from the flat prompt; in
   v0.6.13 each call infers from its own, and the split-then-classify prompts are not that
   prompt. So when the configuration being converted already selects `split_then_classify`
   and carries a flat task prompt to infer from, the flags inferred from
@@ -123,8 +135,8 @@ Two things the conversion does write:
 ### Model settings are copied into every call
 
 The model parameters (`temperature`, `top_p`, `top_k`, `max_tokens`,
-`reasoning_effort`), the image settings, the modality flags and
-`model_lambda_hook_arn` are copied into all three calls — the combined call, the
+`reasoning_effort`), the image settings, `model_lambda_hook_arn` and, in a
+development-build configuration, the modality flags are copied into all three calls — the combined call, the
 splitting call and section classification — not only into the combined call your
 configuration uses today. Switching a converted profile to split-then-classify therefore starts every
 call on the parameters it already had, and you change each one from there.
@@ -133,8 +145,8 @@ call on the parameters it already had, and you change each one from there.
 chose is kept.** A flat `model` always sets the combined call. It reaches a
 split-then-classify call only when that call names no model, or names the same model as the
 combined call — so a model you picked yourself for one of those calls survives the
-conversion. A v0.6.12 `segmentation.model` or `labeling.model` sub-block wins outright
-for its own call. [If you read the configuration from your own
+conversion. In a development-build configuration, a `segmentation.model` or
+`labeling.model` sub-block wins outright for its own call. [If you read the configuration from your own
 code](#if-you-read-the-configuration-from-your-own-code) states the same rule for
 a flat key written onto an already-converted configuration.
 
@@ -275,7 +287,7 @@ calls that assign a class add class validation and class confidence.
 ## If you read the configuration from your own code
 
 Code that reads `config["classification"]["model"]`, `["task_prompt"]`,
-`["granularity"]` or any other flat key finds nothing in a v0.6.13
+`["classificationMethod"]` or any other flat key finds nothing in a v0.6.13
 configuration. Read the call you mean instead, for example
 `config["classification"]["combined"]["llm"]["model"]` or
 `config["classification"]["combined"]["page"]["task_prompt"]`. With

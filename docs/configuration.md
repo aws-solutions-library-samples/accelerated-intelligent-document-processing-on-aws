@@ -1220,19 +1220,25 @@ Four notes on reading that:
   twice: `combined.granularity` is the one in force under `combined`, and
   `split_then_classify.splitting.llm.granularity` under `split_then_classify`.
 - **`reasoning_effort` and `model_lambda_hook_arn` are per call**, in each
-  `llm` block, like the model and its parameters. Neither appears in
-  `base-classification.yaml`, so classification runs them at their field
-  defaults — `medium` and unset — until you write them; the configuration editor
-  offers both on each call. `reasoning_effort` is read only by models that have
-  an effort control (Claude Sonnet/Opus/Fable, OpenAI GPT-5.x and GPT-6, xAI
-  Grok — the legal tokens differ per family) and is ignored by the Nova family,
-  including the shipped default model. It is not validated at save time, so a
-  value the model does not accept surfaces as a Bedrock error at run time.
+  `llm` block, like the model and its parameters. `base-classification.yaml`
+  writes both in all three `llm` blocks, at `medium` and `null`, and the
+  configuration editor offers both on each call. `model_lambda_hook_arn` is used
+  only when that call's `model` is `LambdaHook`. `reasoning_effort` is read only
+  by models that have an effort control (Claude Sonnet/Opus/Fable, OpenAI GPT-5.x
+  and GPT-6, xAI Grok — the legal tokens differ per family) and is ignored by the
+  Nova family, including the shipped default model. The value is checked against
+  one list shared by every family (`none`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`): anything outside it is replaced with `medium` and logged as a
+  warning rather than refused. A value on that list that the selected model does
+  not accept is not sent: the request goes without it, with a line in the log.
 - **`validation` and `confidence` exist only on the two calls that assign a
-  class** — `combined.llm` and `split_then_classify.section_classification.llm`. Each
-  carries four editable confidence prompts (`task_prompt_topk`,
-  `task_prompt_verbalized`, and the `_packet` variants used at packet
-  granularity), spliced into the call's own task prompt.
+  class** — `combined.llm` and `split_then_classify.section_classification.llm`.
+  Their confidence prompts are spliced into the call's own task prompt.
+  `combined.llm` carries four (`task_prompt_topk`, `task_prompt_verbalized`, and
+  the `_packet` variants used at packet granularity). Section classification
+  carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
+  call per section that always returns one class, so the per-segment `_packet`
+  variants would never be read.
 - **`fallback_class` is not validated against your class list.** It accepts any
   string; the built-in value is `unclassified`. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
@@ -1247,11 +1253,11 @@ The authoritative list of every key with its shipped default and an inline
 rationale is
 `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
 
-## Section Splitting Strategies
+## Section Splitting
 
-Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.document_shape.sectionSplitting` configuration field, and applies identically under both strategies:
+Pipeline mode offers three values for how classified pages are grouped into document sections. They are set with the `classification.document_shape.sectionSplitting` configuration field, which applies identically under both classification strategies:
 
-### Available Strategies
+### Available Values
 
 - **`disabled`**: Treats the entire document as a single section. At **either**
   granularity its class comes from a page-weighted vote across the segments that
@@ -1274,9 +1280,10 @@ boundary detection with a claim about the document rather than nudging the model
 nothing downstream recovers if the claim is wrong: a packet of eight forms
 declared `disabled` becomes one section with one extraction over all of it. They
 are also the only two values that let a single-class configuration, or a
-document-name regex match, skip the model call entirely — under `llm_determined`
-that call still runs, because the class may be known while the boundaries are
-not. See
+document-name regex match, skip the model call entirely on a multi-page
+document — under `llm_determined` that call still runs, because the class may be
+known while the boundaries are not. A single-page document skips the call under
+`llm_determined` as well, since one page cannot be split. See
 [Classification](./classification.md#what-decides-the-choice) for which to pick.
 
 ### Configuration Example
