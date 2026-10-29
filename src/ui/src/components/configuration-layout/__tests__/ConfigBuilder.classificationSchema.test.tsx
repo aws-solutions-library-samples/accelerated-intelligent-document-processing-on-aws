@@ -126,7 +126,7 @@ describe('the shipped classification schema', () => {
   it('labels the strategy values without changing what is stored', () => {
     const strategy = (classificationSchema.properties as Record<string, Record<string, unknown>>).strategy;
     expect(strategy.enum).toEqual(['combined', 'split_then_classify']);
-    expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call)');
+    expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call, default)');
     expect(enumOptionLabel(strategy, 'split_then_classify')).toBe('Split first, then classify each section');
   });
 });

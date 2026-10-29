@@ -1067,7 +1067,7 @@ Resources:
                 title: Strategy
                 description: "'Split and classify together' (stored as strategy: combined): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Split first, then classify each section' (stored as strategy: split_then_classify): a splitting call first finds the boundaries with no class list in the prompt, then one classification call is made per section — cheaper on long documents with few sections, lets each call use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
                 enum: ["combined", "split_then_classify"]
-                enumLabels: { combined: "Split and classify together (one call)", split_then_classify: "Split first, then classify each section" }
+                enumLabels: { combined: "Split and classify together (one call, default)", split_then_classify: "Split first, then classify each section" }
                 default: "combined"
                 order: 0
               fallback_class:
