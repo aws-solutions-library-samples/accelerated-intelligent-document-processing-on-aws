@@ -1,4 +1,4 @@
-cfnresponse
+# cfnresponse is vendored as cfnresponse.py beside index.py, not installed.
 bedrock_agentcore_starter_toolkit
 # Prevent C extension that requires compilation
 ruamel-yaml>=0.17.0,<0.19.0
