@@ -376,7 +376,8 @@ doesn't mark the review completed again or replace the reviewer the queue record
    Cognito Annotator group. With an external identity provider, you can map a group
    instead with `ExternalIdPAnnotatorGroupName` (see [external-idp.md](./external-idp.md)).
    An Annotator's `allowedConfigVersions` limits which profiles' Production items they
-   can work.
+   can see and work: a queue holds items of several profiles, and each item's own
+   profile decides, in the queue lists as when it is opened or claimed.
 2. **Turn on HITL** in each Configuration Profile whose documents should be
    reviewed (`hitl.enabled`), and set `hitl.confidence_threshold`, the threshold for
    fields with none of their own.

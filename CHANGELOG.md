@@ -76,6 +76,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Review-queue listings apply per-item profile scope, and page through every queue.** A queue holds items of several configuration profiles, so a caller with `allowedConfigVersions` is now shown, in every queue listing, in **Tasks** and by **Claim next**, only the items whose own profile is in that scope, as when an item is opened or claimed; an item with no profile is shown to no scoped caller. Listing all of the caller's queues now pages through every queue, where a later page could leave out a lower-priority queue. See [Review queues](docs/review-queues.md#turning-review-queues-on). **Action:** none.
+
 - **The documentation site builds again.** Its lockfile was missing the `@emnapi/core` and `@emnapi/wasi-threads` entries, so `npm ci` in `docs-site` failed with `Missing: ... from lock file`. Both are now present. **Action:** none.
 
 - **The web UI no longer depends on `mammoth`, which carried a critical and a high advisory.** `mammoth` 1.12.0 is affected by CVE-2026-97151 (prototype pollution from a crafted .docx) and CVE-2026-105219 (a ReDoS in its style-map parser). Nothing in the UI imported it, so it is removed rather than upgraded. **Action:** none.
