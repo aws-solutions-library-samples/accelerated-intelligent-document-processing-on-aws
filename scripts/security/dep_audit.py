@@ -106,6 +106,10 @@ RANK = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "MEDIUM": 2, "LOW": 1, "": 0}
 # 330 paged requests. One day per worker keeps the pass under half a minute.
 UNMAPPED_DAYS = 60
 UNMAPPED_WORKERS = 8
+# Wall-clock budget for the whole pass. A rate limit on every day would otherwise
+# cost 60 days x 3 retries x up to a minute, spread over 8 workers, before the
+# pass gave up; past this budget the remaining days are listed as unread.
+UNMAPPED_BUDGET_SECONDS = 180
 
 
 def _http_post_json(
@@ -345,12 +349,15 @@ def fetch_unreviewed(
     costs that day and not the other fifty-nine.
     """
     today = today or dt.datetime.now(dt.timezone.utc).date()
+    deadline = time.monotonic() + UNMAPPED_BUDGET_SECONDS
 
     def one_day(day: dt.date) -> Tuple[List[Dict[str, Any]], bool]:
         out: List[Dict[str, Any]] = []
         url = f"{GHSA_URL}?type=unreviewed&published={day.isoformat()}&per_page=100"
         try:
             while url:
+                if time.monotonic() > deadline:
+                    return out, False
                 page, url = _ghsa_page(url, token)
                 out.extend(page)
         except RuntimeError:
@@ -434,7 +441,12 @@ def match_unmapped(
         m = _UNMAPPED_HEAD.match(adv.get("summary") or "")
         if not m:
             continue
-        for eco, name, version in by_name.get(_norm(m.group("name")), []):
+        # The pattern strips a trailing ".js" from the name, so look the name up
+        # both with and without it: "Mammoth.js" is pinned as "mammoth", but
+        # "Chart.js" is pinned as "chart.js".
+        bare = m.group("name")
+        candidates = by_name.get(_norm(bare), []) + by_name.get(_norm(bare + ".js"), [])
+        for eco, name, version in candidates:
             ours, hi = _version_tuple(version), _version_tuple(m.group("hi"))
             lo = _version_tuple(m.group("lo")) if m.group("lo") else None
             if ours is not None and hi is not None:
@@ -696,8 +708,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         for e in stale:
             print(f"  {e['key']}")
         print(
-            "    Usually the advisory was withdrawn or the package moved past it.\n"
-            "    Confirm that on the advisory page, then delete the entry from\n"
+            "    Usually the advisory was withdrawn or the package moved past it;\n"
+            "    it can also mean the package dropped out of the generated manifest.\n"
+            "    Confirm which on the advisory page, then delete the entry from\n"
             f"    {ALLOWLIST.relative_to(REPO_ROOT)} and its twin in .ash/.ash.yaml."
         )
     show("ALLOWLISTED (triaged, not gating)", suppressed)

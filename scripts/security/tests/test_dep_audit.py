@@ -1245,3 +1245,35 @@ class TestUnmappedPassResilience:
             [("PyPI", "pillow-heif", "1.1.0")],
         )
         assert len(found) == 1
+
+
+@pytest.mark.unit
+class TestDotJsNamesAndTheBudget:
+    def test_a_package_pinned_with_dot_js_in_its_name_matches(self):
+        """The pattern strips ".js", so "chart.js" must be looked up with it too."""
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("Chart.js before 4.5.0 contains a prototype pollution")],
+            [("npm", "chart.js", "4.4.1")],
+        )
+        assert [f["package"] for f in found] == ["chart.js"]
+
+    def test_a_package_pinned_without_dot_js_still_matches_the_dot_js_spelling(self):
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("Mammoth.js before 1.12.2 is vulnerable")], MAMMOTH
+        )
+        assert [f["package"] for f in found] == ["mammoth"]
+
+    def test_days_past_the_budget_are_listed_as_unread(self, monkeypatch):
+        monkeypatch.undo()
+        import datetime as dt
+
+        monkeypatch.setattr(dep_audit, "UNMAPPED_BUDGET_SECONDS", -1)
+        monkeypatch.setattr(
+            dep_audit,
+            "_ghsa_page",
+            lambda url, token: pytest.fail("no request once the budget is spent"),
+        )
+        got, unread = dep_audit.fetch_unreviewed(
+            "t", days=2, today=dt.date(2026, 10, 30)
+        )
+        assert got == [] and unread == ["2026-10-29", "2026-10-30"]
