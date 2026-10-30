@@ -162,10 +162,15 @@ def clear_scope_cache() -> None:
 
 
 def _config_scope():
-    """The configuration-profile scope module: ``idp_common.config_scope``, or the
-    byte-identical copy a resolver without the ``idp_common`` layer vendors."""
+    """The configuration-profile scope module: the package sibling when this module
+    runs as part of the library, or the byte-identical top-level copy a resolver
+    without the library layer vendors beside this one.
+
+    Relative on purpose: in a layer-free bundle there is no parent package, so the
+    relative import raises ImportError and the vendored sibling is used, and the
+    bundle never names the library it does not carry."""
     try:
-        from idp_common import config_scope
+        from . import config_scope
     except ImportError:
         import config_scope  # type: ignore[no-redef]
     return config_scope
