@@ -428,7 +428,7 @@ graph LR
     E --> F[Discovered Classes + Schemas]
 ```
 
-1. **Embed** — Each document's first page is rendered to an image and embedded as a vector using Amazon Bedrock (`us.cohere.embed-v4:0` by default)
+1. **Embed** — Each document's first page is rendered to an image and embedded as a vector using Amazon Bedrock (`us.cohere.embed-v4:0` by default; a stack deployed in an EU Region uses `eu.cohere.embed-v4:0` and one in Canada `global.cohere.embed-v4:0`, because the `us.` profile cannot be called from either — see [EU Region Model Support](eu-region-model-support.md))
 2. **Cluster** — Embeddings are clustered using KMeans with automatic K selection via silhouette analysis (scikit-learn). Clusters with fewer than `min_cluster_size` (default: 2) documents are filtered as noise.
 3. **Analyze** — For each cluster, a Strands agent with Claude (`us.anthropic.claude-sonnet-4-6`) examines sample document images and generates a classification name + JSON Schema definition
 4. **Reflect** — The agent produces a Markdown reflection report reviewing all discovered classes, their relationships, and potential overlaps

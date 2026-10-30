@@ -231,6 +231,8 @@ discovery:
 
   # Batch discovery over a document collection (embedding clustering)
   multi_document:
+    # Rewritten at deploy time by update_configuration: eu.cohere.embed-v4:0
+    # in EU Regions, global.cohere.embed-v4:0 in Canada.
     embedding_model_id: us.cohere.embed-v4:0
     analysis_model_id: us.anthropic.claude-sonnet-4-6
 

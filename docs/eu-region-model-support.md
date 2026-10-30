@@ -18,6 +18,7 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.amazon.nova-pro-v1:0` | `eu.amazon.nova-pro-v1:0` | Direct mapping |
 | `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Nova Premier reached end of life on 2026-09-14 and cannot be selected any more; the row remains so that a configuration stored before its removal is rewritten onto a working model when the stack is deployed in an EU region |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
+| `us.cohere.embed-v4:0` | `eu.cohere.embed-v4:0` | Direct mapping. The multi-document discovery embedding default (`discovery.multi_document.embedding_model_id`). Both produce 1024-dimension vectors |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | **Fallback mapping.** Claude 3 Haiku is end-of-life in both regions, so the row exists to move a configuration stored before its removal onto the current Haiku-class model |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
 | `us.anthropic.claude-haiku-5-5` | `eu.anthropic.claude-haiku-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
@@ -114,6 +115,11 @@ Based on the mappings above, the following EU models are supported:
 - `eu.amazon.nova-2-lite-v1:0`
 - `eu.amazon.nova-lite-v1:0`
 - `eu.amazon.nova-pro-v1:0`
+
+#### Cohere Embedding Models
+- `eu.cohere.embed-v4:0` — multi-document discovery embeddings. Verified live in
+  `eu-central-1`, `eu-west-1`, `eu-west-2`, `eu-west-3` and `eu-north-1` through
+  the solution's own embedding path, returning 1024-dimension image embeddings
 
 #### Anthropic Claude Models
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`

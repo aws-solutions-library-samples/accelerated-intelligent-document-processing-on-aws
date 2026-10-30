@@ -76,6 +76,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Multi-document discovery works in EU Regions.** Its default embedding model, `us.cohere.embed-v4:0`, had no row in the EU model mapping, so a stack deployed in an EU Region kept a model id Bedrock rejects there as invalid and the embed step failed. EU deployments now use `eu.cohere.embed-v4:0`, the EU profile of the same model, which produces the same 1024-dimension vectors. Canada already used `global.cohere.embed-v4:0`. **Action:** update an EU stack to pick up the mapping. A stored configuration is rewritten only where it names `us.cohere.embed-v4:0`. See [EU Region Model Support](docs/eu-region-model-support.md#complete-model-mappings).
+
 - **The dependency audit passes again after a new `joserfc` advisory.** GHSA-jpxq-7h8p-2q76 (high), published 2026-10-30, affects `joserfc` below 1.7.5; `lib/idp_common_pkg/uv.lock` now locks 1.7.7. `joserfc` reaches the repository only through `moto`, a test dependency, so no deployed component ran it. **Action:** none.
 
 - **Review-queue listings apply per-item profile scope, and page through every queue.** A queue holds items of several configuration profiles, so a caller with `allowedConfigVersions` is now shown, in every queue listing, in **Tasks** and by **Claim next**, only the items whose own profile is in that scope, as when an item is opened or claimed; an item with no profile is shown to no scoped caller. Listing all of the caller's queues now pages through every queue, where a later page could leave out a lower-priority queue. See [Review queues](docs/review-queues.md#turning-review-queues-on). **Action:** none.
