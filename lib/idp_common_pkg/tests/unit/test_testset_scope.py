@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Tests for per-user test-set scope (``allowedTestSets``).
+"""Tests for per-user test-set scope (``allowedTestSets``, and a Reviewer's profile scope).
 
 This is a security boundary: sharing an annotation-queue link is only safe because
 the server refuses out-of-scope access on every operation. These tests are written
@@ -150,13 +150,14 @@ class TestAnnotatorScope:
 
 
 class TestOtherRoles:
-    def test_reviewer_gets_no_test_set_access(self, users_table):
-        """Production HITL review is a different axis and grants nothing here.
-
-        A Reviewer can review production documents; that must not imply access to
-        ground-truth test sets.
-        """
-        with pytest.raises(TestSetAccessDenied, match="requires Admin, Author"):
+    def test_a_reviewer_whose_profile_scope_cannot_be_resolved_is_refused(
+        self, users_table
+    ):
+        """Fail closed: with no users table configured the Reviewer's
+        `allowedConfigVersions` cannot be read, so no test set is admitted."""
+        with pytest.raises(
+            TestSetAccessDenied, match="outside your allowed configuration scope"
+        ):
             assert_can_access_test_set(
                 _event(["Reviewer"], "rev@example.com"), "ts-alpha", users_table
             )
@@ -279,3 +280,106 @@ class TestScopeCacheAsymmetry:
         # Still cached — a populated scope is not re-read on the short TTL.
         assert testset_scope.get_allowed_test_sets("b@example.com", table) == ["set-a"]
         assert table.query.call_count == calls_after_first
+
+
+class TestReviewerProfileScope:
+    """A Reviewer works every test set whose configuration profile their
+    `allowedConfigVersions` admits, every set when they have no restriction, and is
+    refused whenever the scope or the set's profile cannot be answered."""
+
+    @pytest.fixture
+    def scope(self, monkeypatch):
+        """Set the Reviewer's resolved `allowedConfigVersions` (None = unrestricted)."""
+        from idp_common import config_scope
+
+        state = {"scope": None, "raises": None}
+
+        def resolve(*_a, **_k):
+            if state["raises"]:
+                raise state["raises"]
+            return state["scope"]
+
+        monkeypatch.setattr(config_scope, "resolve_allowed_config_versions", resolve)
+        return state
+
+    @staticmethod
+    def _reviewer(groups=("Reviewer",)):
+        return _event(list(groups), "rev@example.com")
+
+    def test_with_no_restriction_every_set_is_admitted_without_reading_its_profile(
+        self, scope
+    ):
+        profile = MagicMock(side_effect=AssertionError("must not be read"))
+        assert_can_access_test_set(self._reviewer(), "ts-any", set_profile=profile)
+
+    @pytest.mark.parametrize("set_profile", ["lending", "lending-v2"])
+    def test_a_set_whose_profile_is_in_scope_is_admitted(self, scope, set_profile):
+        scope["scope"] = ["lending", "lending-*"]
+        assert_can_access_test_set(
+            self._reviewer(), "ts-a", set_profile=lambda _id: set_profile
+        )
+
+    @pytest.mark.parametrize(
+        "set_profile",
+        ["claims", "", None],
+        ids=["other-profile", "no-single-profile", "none-recorded"],
+    )
+    def test_a_set_outside_scope_or_without_a_profile_is_refused(
+        self, scope, set_profile
+    ):
+        scope["scope"] = ["lending"]
+        with pytest.raises(
+            TestSetAccessDenied, match="outside your allowed configuration scope"
+        ):
+            assert_can_access_test_set(
+                self._reviewer(), "ts-a", set_profile=lambda _id: set_profile
+            )
+
+    def test_a_profile_that_cannot_be_read_is_refused(self, scope):
+        scope["scope"] = ["lending"]
+        with pytest.raises(TestSetAccessDenied):
+            assert_can_access_test_set(
+                self._reviewer(),
+                "ts-a",
+                set_profile=MagicMock(side_effect=RuntimeError("down")),
+            )
+
+    def test_a_scope_lookup_failure_is_refused(self, scope):
+        from idp_common.config_scope import ScopeLookupError
+
+        scope["raises"] = ScopeLookupError("users table unavailable")
+        with pytest.raises(TestSetAccessDenied):
+            assert_can_access_test_set(
+                self._reviewer(), "ts-a", set_profile=lambda _id: "lending"
+            )
+
+    def test_without_a_resolver_the_recorded_profile_is_read(self, scope, monkeypatch):
+        scope["scope"] = ["lending"]
+        reads = []
+        monkeypatch.setattr(
+            testset_scope,
+            "_stored_scope_profile",
+            lambda tid: reads.append(tid) or "lending",
+        )
+        assert_can_access_test_set(self._reviewer(), "ts-a")
+        assert reads == ["ts-a"]
+
+    def test_a_reviewer_who_is_also_an_annotator_falls_back_to_allowed_test_sets(
+        self, scope, users_table
+    ):
+        scope["scope"] = ["lending"]
+        _seed_user(users_table, "rev@example.com", allowed=["ts-a"])
+        # Outside the profile scope, but named in allowedTestSets.
+        assert_can_access_test_set(
+            self._reviewer(("Reviewer", "Annotator")),
+            "ts-a",
+            users_table,
+            set_profile=lambda _id: "claims",
+        )
+        with pytest.raises(TestSetAccessDenied):
+            assert_can_access_test_set(
+                self._reviewer(("Reviewer", "Annotator")),
+                "ts-b",
+                users_table,
+                set_profile=lambda _id: "claims",
+            )

@@ -12,7 +12,6 @@ import { generateClient } from '../api/client-shim';
 import { listMyReviewWork as listMyReviewWorkQuery } from '../graphql/generated';
 import type { ReviewItem } from '../graphql/generated/operation-types';
 import usePolling from '../hooks/use-polling';
-import useUserRole from '../hooks/use-user-role';
 import { listMyTestSetTasks } from '../components/review-queues/reviewer-assignment';
 import { fromTestSetTask } from '../components/review-queues/work-items';
 import type { WorkItem } from '../components/review-queues/work-items';
@@ -79,10 +78,6 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
   const epochRef = useRef(0);
   // Finished work item ids, with when they stop being hidden.
   const settledRef = useRef<Map<string, number>>(new Map());
-  // Read by the poll, which is created once.
-  const { isAnnotator } = useUserRole();
-  const isAnnotatorRef = useRef(isAnnotator);
-  isAnnotatorRef.current = isAnnotator;
 
   /**
    * Settled ids still to hide. Forgets one once it expires, or once a successful
@@ -102,10 +97,9 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
     const epoch = epochRef.current;
     const request = (async () => {
       try {
-        // Test Studio documents are Annotators' work; a Reviewer works Production only.
         const [production, testSets] = await Promise.allSettled([
           client.graphql({ query: listMyReviewWorkQuery, variables: { limit: 100 } }),
-          isAnnotatorRef.current ? listMyTestSetTasks() : Promise.resolve([]),
+          listMyTestSetTasks(),
         ]);
         if (epoch !== epochRef.current) return;
         setState((prev) => {

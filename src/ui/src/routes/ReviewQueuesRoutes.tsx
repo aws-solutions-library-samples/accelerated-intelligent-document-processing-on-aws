@@ -116,7 +116,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId/items/:objectKey"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author', 'Reviewer']}>
             <TestSetItemPage />
           </RequireRole>
         }
@@ -141,7 +141,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author', 'Reviewer']}>
             <TestSetQueuePage />
           </RequireRole>
         }

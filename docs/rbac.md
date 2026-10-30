@@ -26,7 +26,7 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; not Test Studio queues |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
 | **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
@@ -60,9 +60,15 @@ owner's decision, not an annotator's.
 
 **Two-layer enforcement.** Group membership only reaches the operation; every one
 of the above additionally asserts the target test set is in the caller's
-`allowedTestSets`. The check is centralized in
+`allowedTestSets`, or, for a Reviewer, that the set's configuration profile is in
+their `allowedConfigVersions`. The check is centralized in
 `idp_common/testset_scope.py::assert_can_access_test_set` and **fails closed** — an
-unreadable users record, a missing attribute, or an empty list all deny. Reaching a
+unreadable users record, a missing attribute, or an empty list all deny an Annotator,
+and a Reviewer whose scope or set profile cannot be read is denied. A set's profile is
+resolved once by the Test Studio resolver (declared, bound, or from its drafting run),
+recorded on the set as `ScopeProfile` so every check reads the same value, and
+resolved again after a new drafting run; a set with no single profile is admitted only
+to Reviewers with no profile restriction. Reaching a
 test-set operation is never the same as being allowed to see a given set.
 
 For the HITL operations the scope is resolved from the document rather than an
@@ -93,8 +99,10 @@ assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
 Production review-queue operations as an Annotator (`getMyReviewQueues`,
 `listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
 `claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
-`rejectReviewItem`), within their `allowedConfigVersions`, and none of the Test Studio
-ones.
+`rejectReviewItem`), within their `allowedConfigVersions`, and the Test Studio
+operations an Annotator has, for every test set whose configuration profile their
+`allowedConfigVersions` admits (every set when they have none), without being listed
+on its queue (`testset_scope.reviewer_may_access_test_set`).
 
 - **What an Annotator can call.**
   - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,

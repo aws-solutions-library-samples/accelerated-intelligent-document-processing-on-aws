@@ -90,7 +90,8 @@ An Annotator-only user sees only **Home** (**Inbox**, **Tasks** and **Queues**) 
 notifications bell, and opens a document only through its edit page
 (`#/documents/<document>/edit`), from Tasks or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
 **Queues** are there for Annotators and Reviewers. A Reviewer works every Production
-queue, with no Admin assignment needed, and no Test Studio queue.
+queue, and every Test Studio queue whose test set's configuration profile is in their
+profile scope, with no Admin assignment needed.
 
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
   **Eligible Annotators**), or, for a Reviewer, every Production queue. Open one to see its items. You can open any item

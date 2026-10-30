@@ -145,7 +145,7 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const requestedVersion = searchParams.get('v');
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
-  const { canAnnotate, isAdmin, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const { canAnnotate, isAdmin, isAnnotatorOnly, isQueueWorker, loading: roleLoading } = useUserRole();
   // An item opened from here keeps this page in its breadcrumbs: under Review Management for an Admin, Queues otherwise.
   const itemOrigin = isAdmin ? 'review' : 'queues';
   const reviewWork = useOptionalReviewWork();
@@ -161,8 +161,8 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
         setEligibleAnnotators([]);
       });
   }, [isAdmin, testSetId]);
-  // A non-Admin Annotator claims documents rather than assigning them.
-  const claimsWork = isAnnotator && !isAdmin;
+  // A non-Admin Annotator or Reviewer claims documents rather than assigning them.
+  const claimsWork = isQueueWorker && !isAdmin;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);

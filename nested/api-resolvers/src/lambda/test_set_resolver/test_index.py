@@ -270,13 +270,19 @@ def _claim_event(groups, entry):
 
 @pytest.fixture
 def scoped_resolver(resolver, monkeypatch):
-    """The resolver with the probe's test set in every Annotator's scope."""
+    """The resolver with the probe's test set in every Annotator's scope, and every
+    Reviewer unrestricted by profile."""
+    from idp_common import config_scope
+
     index, _ = resolver
     entry = _claim_entry()
     monkeypatch.setattr(
         testset_scope,
         "get_allowed_test_sets",
         lambda email, users_table=None: [entry["args"]["testSetId"]],
+    )
+    monkeypatch.setattr(
+        config_scope, "resolve_allowed_config_versions", lambda *a, **k: None
     )
     return index
 
@@ -482,6 +488,126 @@ def test_an_annotator_lists_only_the_queues_that_name_them(queues):
     assert by_id["other-set"]["name"] == "other-set"
 
 
+REVIEWER = "rev@example.com"
+
+
+@pytest.fixture
+def reviewer_scope(monkeypatch):
+    """Set a Reviewer's resolved `allowedConfigVersions` (None = unrestricted)."""
+    from idp_common import config_scope
+
+    state = {"scope": None}
+    monkeypatch.setattr(
+        config_scope, "resolve_allowed_config_versions", lambda *a, **k: state["scope"]
+    )
+    return state
+
+
+def _as_reviewer(field="listTestSetQueues"):
+    return {
+        "identity": _caller(["Reviewer"], REVIEWER),
+        "info": {"fieldName": field},
+        "arguments": {},
+    }
+
+
+@pytest.mark.unit
+def test_a_reviewer_lists_every_set_their_profile_scope_admits_listed_or_not(
+    queues, reviewer_scope
+):
+    index, _, tracking = queues
+    tracking.update_item(
+        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
+        UpdateExpression="SET configVersion = :c",
+        ExpressionAttributeValues={":c": "lending"},
+    )
+    for set_id, profile in (("claims-set", "claims"), ("undeclared-set", None)):
+        item = {
+            "PK": f"testset#{set_id}",
+            "SK": "metadata",
+            "id": set_id,
+            "status": "COMPLETED",
+        }
+        if profile:
+            item["configVersion"] = profile
+        tracking.put_item(Item=item)
+
+    reviewer_scope["scope"] = ["lending"]
+    assert [q["id"] for q in index.handler(_as_reviewer(), None)] == [TEST_SET_ID]
+
+    # With no profile restriction, a Reviewer sees every set, including one with no profile.
+    reviewer_scope["scope"] = None
+    testset_scope.clear_scope_cache()
+    assert {q["id"] for q in index.handler(_as_reviewer(), None)} == {
+        TEST_SET_ID,
+        "claims-set",
+        "undeclared-set",
+    }
+
+
+@pytest.mark.unit
+def test_the_resolved_profile_is_recorded_once_and_dropped_by_a_new_drafting_run(
+    queues, reviewer_scope
+):
+    index, _, tracking = queues
+    tracking.update_item(
+        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
+        UpdateExpression="SET configVersion = :c",
+        ExpressionAttributeValues={":c": "lending"},
+    )
+    assert index._scope_profile(TEST_SET_ID) == "lending"
+    meta = tracking.get_item(Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"})[
+        "Item"
+    ]
+    assert meta["ScopeProfile"] == "lending"
+    # The recorded value is what is read next, so a vendored reader agrees.
+    tracking.update_item(
+        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
+        UpdateExpression="SET configVersion = :c",
+        ExpressionAttributeValues={":c": "claims"},
+    )
+    assert index._scope_profile(TEST_SET_ID) == "lending"
+    source = open(index.__file__, encoding="utf-8").read()
+    assert (
+        "SET labelJobId = :j, labelJobStatus = :s REMOVE {SCOPE_PROFILE_ATTRIBUTE}"
+        in source
+    )
+
+
+@pytest.mark.unit
+def test_a_reviewer_claims_a_document_without_being_listed(queues, reviewer_scope):
+    index, hitl, _ = queues
+    _put_doc_item(hitl, "r.pdf")
+    claimed = index.claim_test_set_document(
+        {"testSetId": TEST_SET_ID, "objectKey": "r.pdf"},
+        {"identity": _caller(["Reviewer"], REVIEWER)},
+    )
+    assert claimed["assignedTo"] == REVIEWER
+
+
+@pytest.mark.unit
+def test_a_scoped_reviewer_is_refused_a_set_outside_their_profile_scope(
+    queues, reviewer_scope
+):
+    index, hitl, tracking = queues
+    tracking.update_item(
+        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
+        UpdateExpression="SET configVersion = :c",
+        ExpressionAttributeValues={":c": "claims"},
+    )
+    reviewer_scope["scope"] = ["lending"]
+    _put_doc_item(hitl, "x.pdf")
+    event = {
+        "identity": _caller(["Reviewer"], REVIEWER),
+        "info": {"fieldName": "claimTestSetDocument"},
+        "arguments": {"testSetId": TEST_SET_ID, "objectKey": "x.pdf"},
+    }
+    with pytest.raises(index.TestSetAccessDenied):
+        index.handler(event, None)
+    item = hitl.get_item(Key={"PK": f"TSDOC#{TEST_SET_ID}", "SK": "D#x.pdf"})["Item"]
+    assert not item.get("AssignedTo")
+
+
 @pytest.mark.unit
 def test_an_annotator_listed_on_the_queue_claims_an_open_document(queues):
     index, hitl, tracking = queues
@@ -639,7 +765,7 @@ def test_my_tasks_lists_only_sets_the_caller_may_still_open(queues, monkeypatch)
 
     checked = []
 
-    def scope(event, test_set_id):
+    def scope(event, test_set_id, **_kwargs):
         checked.append(test_set_id)
         if test_set_id == "revoked-set":
             raise index.TestSetAccessDenied("no longer in scope")

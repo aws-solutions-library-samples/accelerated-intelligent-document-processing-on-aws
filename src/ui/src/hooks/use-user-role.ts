@@ -306,7 +306,8 @@ const useUserRole = (): UserRoleReturn => {
   const canManageUsers = isAdmin;
   const canDeleteConfig = isAdmin;
   const canReview = isAdmin || isReviewer;
-  const canAnnotate = isAdmin || isAuthor || isAnnotator;
+  // Reviewers annotate the test sets their profile scope admits, as Annotators their assigned sets.
+  const canAnnotate = isAdmin || isAuthor || isAnnotator || isReviewer;
   // Who can open a production review-queue item (the routes' RequireRole set).
   const isQueueWorker = isAnnotator || isReviewer;
   const canWorkReviewQueues = isAdmin || isQueueWorker;
