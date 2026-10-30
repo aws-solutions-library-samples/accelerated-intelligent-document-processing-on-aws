@@ -155,7 +155,7 @@ vi.mock('../../common/PageGroupingEditor', () => ({
 }));
 
 import ProductionItemEdit from '../ProductionItemEdit';
-import { QUEUE_REGROUP_ROLE_REASON } from '../production-item-edit-model';
+import { CLAIM_TO_REGROUP_REASON } from '../production-item-edit-model';
 import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
 import { chooseRegroup, regroupItem } from './regroup-stand-in';
 
@@ -452,14 +452,25 @@ describe('the actions', () => {
     expect(refreshDocument).not.toHaveBeenCalled();
   });
 
-  it('disable Edit Page Grouping for an Annotator holding the item, saying why', () => {
+  it('let an Annotator holding the item regroup it, as the server allows its holder', async () => {
     Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false });
     server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ANN, isMine: true });
     renderScreen();
-    expect(regroupItem()).toMatchObject({
-      disabled: true,
-      disabledReason: QUEUE_REGROUP_ROLE_REASON,
-    });
+    expect(regroupItem()).toMatchObject({ disabled: false });
+    chooseRegroup();
+    await waitFor(() => expect(board).not.toBeNull());
+    const next = [{ sectionId: '1', documentClass: 'W2', pageIds: [1, 2] }];
+    await act(async () => board!.onSave(next));
+    expect(saveDocumentGrouping).toHaveBeenCalledWith('in/w2.pdf', next);
+    // Already theirs: nothing is claimed on the way.
+    expect(claimItem).not.toHaveBeenCalled();
+  });
+
+  it('ask an Annotator to claim an unassigned item before regrouping it', () => {
+    Object.assign(role, { isAdmin: false, isAnnotator: true, canWrite: false });
+    server.detail = detailFor({ state: 'OPEN', ownerEmail: null, isMine: false });
+    renderScreen();
+    expect(regroupItem()).toMatchObject({ disabled: true, disabledReason: CLAIM_TO_REGROUP_REASON });
   });
 
   it('disable Edit Page Grouping on an item assigned to someone else, saying why', () => {

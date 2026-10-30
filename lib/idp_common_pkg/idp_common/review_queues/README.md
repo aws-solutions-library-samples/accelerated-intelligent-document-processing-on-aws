@@ -133,8 +133,11 @@ when the finalize run ends.
 Correcting a document's split is part of review. `updateDocumentSections` accepts a
 document that is `HITL_IN_PROGRESS` and queue-managed `in_review` when the caller holds
 its `CLAIMED` item (`regroup_refusal`); an `OPEN` item must be claimed first, a
-`FINALIZING` one is refused, and anyone but the holder gets `NOT_LEASE_HOLDER`. The
-legacy HITL flow is unchanged. Section ids are kept across a regroup, so drafts stay
+`FINALIZING` one is refused, and anyone but the holder gets `NOT_LEASE_HOLDER`. An
+Annotator is admitted to a production document only as the holder of its `CLAIMED`
+item, within their `allowedConfigVersions` (`_assert_holds_review_item` in
+`process_changes_resolver`); a test-set document is decided by their
+`allowedTestSets`. The legacy HITL flow is unchanged. Section ids are kept across a regroup, so drafts stay
 with their sections; `get_item_detail` no longer lists a section the regroup removed,
 and `apply_corrections` skips its draft. The finalize run reprocesses the tracked
 document, so it finishes with the new grouping.

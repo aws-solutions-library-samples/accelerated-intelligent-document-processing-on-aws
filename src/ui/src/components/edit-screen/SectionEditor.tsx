@@ -20,11 +20,11 @@ import {
   Alert,
   Box,
   Button,
+  ButtonDropdown,
   Container,
   CopyToClipboard,
   FormField,
   Header,
-  Select,
   SpaceBetween,
   Spinner,
   Tabs,
@@ -137,6 +137,7 @@ export interface SectionEditorProps {
 
 const FILTER_ALL: SelectProps.Option = { label: 'All fields', value: 'none' };
 const FILTER_ALERTS: SelectProps.Option = { label: 'Confidence alerts only', value: 'confidence-alerts' };
+const FILTER_EVAL_MISMATCHES: SelectProps.Option = { label: 'Evaluation mismatches only', value: 'eval-mismatches' };
 /** The widget's panes fill the viewport below the screen's header, but never shrink below a usable height. */
 const WIDGET_PANE_HEIGHT = 'max(480px, calc(100vh - 260px))';
 
@@ -498,9 +499,13 @@ const SectionEditor = ({
   // The widget's buttons, right-aligned in its header: Show Evaluation (where the document
   // has a baseline), the section, the fields to show, then Edit Page Grouping. They act
   // on the editor, so they are hidden while `body` (the source document) is shown.
-  // The dropdown holds any number of sections in one line, and is shown for one too.
+  // The section and the fields to show are dropdown buttons, as More Actions is, each
+  // reading the current choice, which the open menu marks; the section one holds any
+  // number of sections, and is shown for one too.
   const sectionOptions = sections.map((s) => ({ value: s.sectionId, label: sectionLabel(s) }));
+  const currentSection = sectionOptions.find((o) => o.value === selectedSectionId) ?? sectionOptions[0];
   const fieldsShown = activeTabId === 'visual' && !isLoading && hasFieldValues;
+  const filterOptions = [FILTER_ALL, FILTER_ALERTS, ...(evaluation?.available ? [FILTER_EVAL_MISMATCHES] : [])];
   const widgetButtons = (
     <SpaceBetween direction="horizontal" size="xs" alignItems="center">
       {evaluation?.available && (
@@ -515,25 +520,41 @@ const SectionEditor = ({
           {evaluation.loading && <Spinner />}
         </SpaceBetween>
       )}
-      <Select
-        inlineLabelText="Section"
-        selectedOption={sectionOptions.find((o) => o.value === selectedSectionId) ?? null}
-        onChange={({ detail }) => void handleSectionChange(detail.selectedOption.value ?? selectedSectionId)}
-        options={sectionOptions}
+      <ButtonDropdown
+        ariaLabel={`Section: ${currentSection?.label ?? ''}`}
         disabled={sections.length < 2}
-      />
+        expandToViewport
+        items={sectionOptions.map((o) => ({
+          id: o.value,
+          text: o.label,
+          itemType: 'checkbox' as const,
+          checked: o.value === currentSection?.value,
+        }))}
+        onItemClick={({ detail }) => {
+          if (detail.id !== currentSection?.value) void handleSectionChange(detail.id);
+        }}
+      >
+        {currentSection?.label ?? 'Section'}
+      </ButtonDropdown>
       {/* The filter applies to the Visual Editor's fields, so it is disabled on the JSON tab. */}
-      <Select
-        inlineLabelText="Show Fields"
-        selectedOption={filterMode}
-        onChange={({ detail }) => setFilterMode(detail.selectedOption)}
+      <ButtonDropdown
+        ariaLabel={`Show fields: ${filterMode.label ?? ''}`}
         disabled={!fieldsShown}
-        options={[
-          FILTER_ALL,
-          FILTER_ALERTS,
-          ...(evaluation?.available ? [{ label: 'Evaluation mismatches only', value: 'eval-mismatches', disabled: !showEvaluation }] : []),
-        ]}
-      />
+        expandToViewport
+        items={filterOptions.map((o) => ({
+          id: o.value ?? '',
+          text: o.label ?? '',
+          itemType: 'checkbox' as const,
+          checked: o.value === filterMode.value,
+          ...(o === FILTER_EVAL_MISMATCHES && !showEvaluation ? { disabled: true, disabledReason: 'Turn on Show Evaluation first' } : {}),
+        }))}
+        onItemClick={({ detail }) => {
+          const next = filterOptions.find((o) => o.value === detail.id);
+          if (next) setFilterMode(next);
+        }}
+      >
+        {filterMode.label}
+      </ButtonDropdown>
       {regroup && (
         <Button
           disabled={!!regroup.disabledReason}

@@ -767,8 +767,8 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   dropdown, **Show Fields** (all fields, confidence alerts only, or evaluation mismatches
   only; for the Visual Editor, so disabled on the JSON tab) and **Edit Page Grouping**
   (each section's pages and class, for the roles that may change them: an Admin or a
-  Reviewer on a direct edit, an Admin on a queue item; disabled with the reason
-  otherwise). They are hidden while the original file is shown.
+  Reviewer on a direct edit, the item's holder on a queue item, Annotator or Admin;
+  disabled with the reason otherwise, for example "Claim this item first"). They are hidden while the original file is shown.
   The page's actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
   activity; **Summary**; **Processing Report**); **More Actions** (**Use As Evaluation

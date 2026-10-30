@@ -37,8 +37,11 @@ import type { EditorSession } from './use-editor-session';
 /** Why Summary and Use As Evaluation Baseline wait: they are about the reviewed document. */
 const REVIEW_NOT_COMPLETE = 'Available once the review is complete';
 
-/** On a Production item only an Admin holding it may regroup: an Annotator regroups only test-set documents. */
-export const QUEUE_REGROUP_ROLE_REASON = 'Edit Page Grouping needs the Admin role on a review queue item.';
+/**
+ * Why an Annotator who may claim the item can't regroup it yet: only the item's holder
+ * may change its page grouping (the server's rule), so the Annotator claims it first.
+ */
+export const CLAIM_TO_REGROUP_REASON = 'Claim this item first to change its page grouping';
 
 /** Notices for the in-review states that are not open for editing, each saying what happens next. */
 export const HOLDING_NOTICE = 'This item is being prepared for review. It can be edited once it reaches its queue.';
@@ -288,9 +291,8 @@ export const useProductionItemEditModel = (
         refreshDisabledReason: saving ? 'Saving your latest edits…' : undefined,
         showRegroup: true,
         regroupDisabledReason:
-          lockedReason ??
-          (canEdit && !isAdmin ? QUEUE_REGROUP_ROLE_REASON : undefined) ??
-          (dirty ? 'Saving your latest edits…' : undefined),
+          // The item's holder regroups, Annotator or Admin, as the server allows.
+          (!terminal && canClaim ? CLAIM_TO_REGROUP_REASON : lockedReason) ?? (dirty ? 'Saving your latest edits…' : undefined),
         // copyToBaseline is Admin and Author (canWrite), as on the document page.
         showBaseline: canWrite,
         baselineDisabledReason: finished ? baselineCopyBlockedReason(adapter.evaluationStatus) : REVIEW_NOT_COMPLETE,
