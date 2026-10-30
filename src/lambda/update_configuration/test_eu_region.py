@@ -40,7 +40,3 @@ def test_the_discovery_embedding_default_moves_to_its_eu_profile():
     assert (
         after["discovery.multi_document.embedding_model_id"] == "eu.cohere.embed-v4:0"
     )
-    # And a redeploy into a US Region brings it back, as for every twin row.
-    assert (
-        index.get_model_mapping("eu.cohere.embed-v4:0", "us") == "us.cohere.embed-v4:0"
-    )

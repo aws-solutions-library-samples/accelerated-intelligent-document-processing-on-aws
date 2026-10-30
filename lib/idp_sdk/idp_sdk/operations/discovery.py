@@ -721,7 +721,8 @@ class DiscoveryOperation:
             document_paths: Explicit list of document file paths. Provide either
                 ``document_dir`` or ``document_paths``, not both.
             embedding_model_id: Bedrock embedding model for document similarity.
-                Default: ``us.cohere.embed-v4:0``.
+                Default: ``us.cohere.embed-v4:0``; ``eu.cohere.embed-v4:0`` in an
+                EU Region and ``global.cohere.embed-v4:0`` in Canada.
             analysis_model_id: Bedrock LLM for cluster analysis and schema
                 generation. Default: ``us.anthropic.claude-sonnet-4-6``.
             save_to_config: If True, save discovered schemas to the stack's

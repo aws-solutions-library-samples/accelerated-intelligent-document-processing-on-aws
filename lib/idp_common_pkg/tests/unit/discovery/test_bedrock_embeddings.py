@@ -260,3 +260,37 @@ class TestGenerateEmbeddingsBatch:
         """Test empty batch returns empty results."""
         results = client.generate_embeddings_batch(items=[])
         assert results == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", "us.cohere.embed-v4:0"),
+        ("us-west-2", "us.cohere.embed-v4:0"),
+        ("eu-central-1", "eu.cohere.embed-v4:0"),
+        ("eu-west-1", "eu.cohere.embed-v4:0"),
+        ("ca-central-1", "global.cohere.embed-v4:0"),
+        ("ap-southeast-2", "us.cohere.embed-v4:0"),
+    ],
+)
+def test_the_default_embedding_model_follows_the_region(region, expected):
+    from idp_common.discovery.embedding_service import default_embedding_model_id
+
+    assert default_embedding_model_id(region) == expected
+
+
+@pytest.mark.unit
+def test_multi_document_discovery_falls_back_to_the_regional_default():
+    from unittest.mock import MagicMock
+
+    from idp_common.discovery.multi_document_discovery import MultiDocumentDiscovery
+
+    eu = MultiDocumentDiscovery(region="eu-central-1", bedrock_client=MagicMock())
+    assert eu.embedding_model_id == "eu.cohere.embed-v4:0"
+    pinned = MultiDocumentDiscovery(
+        region="eu-central-1",
+        config={"embedding_model_id": "amazon.titan-embed-image-v1"},
+        bedrock_client=MagicMock(),
+    )
+    assert pinned.embedding_model_id == "amazon.titan-embed-image-v1"

@@ -27,7 +27,11 @@ from idp_common.bedrock.client import BedrockClient
 from idp_common.config.class_names import sanitize_class_name
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
 from idp_common.discovery.discovery_agent import DiscoveredClass, DiscoveryAgent
-from idp_common.discovery.embedding_service import EmbeddingResult, EmbeddingService
+from idp_common.discovery.embedding_service import (
+    EmbeddingResult,
+    EmbeddingService,
+    default_embedding_model_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +127,11 @@ class MultiDocumentDiscovery:
         self.bedrock_client = bedrock_client or BedrockClient(region=self.region)
 
         # Extract config values with defaults
+        # The fallback follows the Region: this path (the SDK's local pipeline)
+        # never runs the deploy-time model swap.
         self.embedding_model_id = self.config.get(
-            "embedding_model_id", "us.cohere.embed-v4:0"
-        )
+            "embedding_model_id"
+        ) or default_embedding_model_id(self.region)
         self.analysis_model_id = self.config.get(
             "analysis_model_id", "us.anthropic.claude-sonnet-4-6"
         )

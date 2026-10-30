@@ -117,9 +117,12 @@ Based on the mappings above, the following EU models are supported:
 - `eu.amazon.nova-pro-v1:0`
 
 #### Cohere Embedding Models
-- `eu.cohere.embed-v4:0` — multi-document discovery embeddings. Verified live in
-  `eu-central-1`, `eu-west-1`, `eu-west-2`, `eu-west-3` and `eu-north-1` through
-  the solution's own embedding path, returning 1024-dimension image embeddings
+- `eu.cohere.embed-v4:0` — multi-document discovery embeddings. Checked live on
+  2026-10-30 in `eu-central-1`, `eu-west-1`, `eu-west-2`, `eu-west-3` and
+  `eu-north-1` by calling `BedrockClient.generate_embedding` with a page image,
+  which returned 1024-dimension embeddings in each; `us.cohere.embed-v4:0` was
+  rejected as an invalid model identifier in `eu-central-1`. Verify your own
+  Region with `aws bedrock list-inference-profiles --region <region>`
 
 #### Anthropic Claude Models
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
