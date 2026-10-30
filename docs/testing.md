@@ -428,7 +428,10 @@ section lists each unreviewed advisory from the last 60 days whose summary opens
 with a pinned package's name and a range that includes the pinned version. It is a
 list to review, not a gate: it is read from prose, and it never changes the exit
 code. It needs a GitHub token (`GITHUB_TOKEN`, `GH_TOKEN` or a `gh` login), and
-says "not checked" without one. GitLab's `dep_audit` job runs it; GitHub's does
+says "not checked" without one. An advisory in that list is not allowlisted:
+there is no OSV finding for the entry to suppress, so it would fail the audit as
+stale. Once reviewed it needs no record; it leaves the list when it is 60 days old
+or when GitHub maps it to a package, at which point OSV reports it normally. GitLab's `dep_audit` job runs it; GitHub's does
 not, because the Actions token's hourly request limit is shared by every job in
 the repository and one run of this report uses about a third of it. Procedures:
 [`srt-security-scan`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/srt-security-scan.md).

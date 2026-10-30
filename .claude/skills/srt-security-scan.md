@@ -39,7 +39,8 @@ make dep-audit-fast   # reuse existing dist/manifests (skip regeneration)
   unreviewed GitHub advisories with no package mapping whose summary names a pinned
   package and a range including its version — the class a commercial scanner
   reports and OSV cannot. Confirm each one by hand before acting. "not checked"
-  means no GitHub token was available.
+  means no GitHub token was available. Do not allowlist an unmapped advisory: with
+  no OSV finding to suppress, the entry would fail the audit as stale.
 - Two gotchas worth knowing before you chase a finding:
   - An advisory with **no `fixed` event** and an open-ended range matches *every*
     version. Check the reported `last known affected range` — the fix may have
