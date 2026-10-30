@@ -95,6 +95,7 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 
 ### Security
 - [ ] No credentials, API keys, or secrets in code or templates
+- [ ] Fake AWS credentials in tests use the `…EXAMPLE` placeholder shape, and no 40-character literal sits in a file beside a key ID (testing-qa.md, "Fake credentials in fixtures")
 - [ ] No full JWT tokens logged in plaintext (Talos finding #10)
 - [ ] S3 access properly scoped (no wildcard resource ARNs without justification)
 - [ ] Input validation on all API endpoints

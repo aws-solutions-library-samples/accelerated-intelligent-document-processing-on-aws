@@ -1093,6 +1093,13 @@ Custom configurations override the selected preset when specified.
 - Tests located in `lib/idp_common_pkg/tests/` and `lib/idp_cli_pkg/tests/`
 - Use pytest markers: `@pytest.mark.unit` and `@pytest.mark.integration`
 - Integration tests require AWS resources
+- Fake AWS credentials use AWS's documented placeholder shape: a key ID ends in
+  `EXAMPLE` (`AKIAIOSFODNN7EXAMPLE`, `ASIASCOPEDKEYEXAMPLE`), and a file holding
+  one quotes no 40-character value without `EXAMPLE` in it — build a SHA fixture
+  as `"1234abcd" * 5`.
+  Secret scanners report anything else as a hardcoded credential. Details in
+  `.claude/skills/testing-qa.md`; enforced by
+  `scripts/tests/test_fake_aws_credentials.py`
 
 ### Git Workflow
 

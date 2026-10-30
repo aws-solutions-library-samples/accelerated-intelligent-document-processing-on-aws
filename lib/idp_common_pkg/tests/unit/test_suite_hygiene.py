@@ -474,7 +474,7 @@ def test_chain_resolved_credentials_are_not_frozen_into_the_environment():
     conftest = importlib.import_module("tests.conftest")
 
     class _FakeFrozen:
-        access_key = "AKIAFAKECHAINKEY"  # pragma: allowlist secret
+        access_key = "AKIAIOSFODNN7EXAMPLE"  # pragma: allowlist secret
         secret_key = "fake-chain-secret"  # pragma: allowlist secret
         token = "fake-chain-token"  # noqa: S105 # pragma: allowlist secret
 
