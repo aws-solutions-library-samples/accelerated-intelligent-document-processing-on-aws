@@ -491,3 +491,30 @@ def test_a_variable_the_rule_ignores_says_so(itd, monkeypatch, tmp_path, capsys)
     assert "idp-run-probes" not in metadata
     out = capsys.readouterr().out
     assert "IDP_RUN_PROBES is set, but this is a web pipeline" in out
+
+
+def test_the_inline_buildspec_parses_and_every_command_is_a_string():
+    """CodeBuild rejects a buildspec whose command list holds a mapping.
+
+    An unquoted `- echo "probes: $X"` is exactly that, because `: ` makes the item a
+    YAML key, and the build then fails at DOWNLOAD_SOURCE before any command runs.
+    validate-buildspec reads buildspec files, not the one embedded in this template,
+    so it is parsed here as CodeBuild parses it.
+    """
+    from test_codebuild_cognito_grants import CfnLoader
+
+    template = yaml.load(  # nosec B506 - SafeLoader subclass, see CfnLoader
+        BUILDSPEC_TEMPLATE.read_text(encoding="utf-8"), Loader=CfnLoader
+    )
+    buildspec = template["Resources"]["IdkInstallCodeBuild"]["Properties"]["Source"][
+        "BuildSpec"
+    ]
+    assert isinstance(buildspec, str), "BuildSpec is expected to be a literal block"
+    spec = yaml.safe_load(buildspec)
+    bad = [
+        (phase, i, command)
+        for phase, body in spec["phases"].items()
+        for i, command in enumerate((body or {}).get("commands", []))
+        if not isinstance(command, str)
+    ]
+    assert not bad, f"buildspec commands that are not strings (quote them): {bad}"
