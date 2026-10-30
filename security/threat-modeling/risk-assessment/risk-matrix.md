@@ -8,7 +8,7 @@
 | **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 103 |
+| **Total Threats Identified** | 104 |
 
 ## 1. Risk Scoring Methodology
 
@@ -175,11 +175,11 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (103 Threats)
+pie title Risk Distribution (104 Threats)
     "Critical (8-9)" : 9
     "High (6-7)" : 31
     "Medium (3-5)" : 47
-    "Low (1-2)" : 16
+    "Low (1-2)" : 17
 ```
 
 ### By Component
@@ -198,11 +198,11 @@ pie title Risk Distribution (103 Threats)
 | PII Anonymization | 0 | 2 | 3 | 0 | 5 |
 | Pipeline Mode | 2 | 1 | 5 | 1 | 9 |
 | Reporting/Analytics | 0 | 3 | 3 | 2 | 8 |
-| Review Queues | 0 | 0 | 2 | 1 | 3 |
+| Review Queues | 0 | 0 | 2 | 2 | 4 |
 | SDK/CLI | 1 | 2 | 2 | 0 | 5 |
 | Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **9** | **31** | **47** | **16** | **103** |
+| **Total** | **9** | **31** | **47** | **17** | **104** |
 
 ### By STRIDE Category
 
@@ -214,7 +214,7 @@ than the threat total.
 | **Spoofing** | 16 | Critical |
 | **Tampering** | 40 | Critical |
 | **Repudiation** | 5 | High |
-| **Information Disclosure** | 39 | Critical |
+| **Information Disclosure** | 40 | Critical |
 | **Denial of Service** | 18 | High |
 | **Elevation of Privilege** | 34 | Critical |
 
@@ -222,7 +222,7 @@ than the threat total.
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 63 | Controls implemented and verified |
+| **Mitigated** | 64 | Controls implemented and verified |
 | **Partially Mitigated** | 33 | Some controls in place, additional measures recommended |
 | **Open** | 3 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |

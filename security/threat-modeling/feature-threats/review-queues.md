@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 1.0 |
-| **Last Updated** | 2026-10-29 |
+| **Document Version** | 1.1 |
+| **Last Updated** | 2026-10-30 |
 | **Applies to release** | v0.6.13 |
 | **Feature** | HITL review queues (Production and Test Studio), the per-user Inbox, the review finalize execution |
 | **Classification** | Internal |
@@ -84,6 +84,21 @@ flowchart TD
 
 ## 3. Threat Analysis
 
+### HITL.T01: Queue Listings Show Items Outside the Caller's Profile Scope
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | HITL.T01 |
+| **Category** | STRIDE: Information Disclosure |
+| **Description** | Queues are system-wide, so one queue holds items of several configuration profiles, and an Annotator's access to an item is bounded by two things: queue eligibility and profile scope (`allowedConfigVersions`). A queue reference carries no profile, so a check made at the queue level cannot apply profile scope; it has to be made against each item's own profile. A listing that applies only eligibility shows a scoped Annotator the items of every profile in the queues they work. A listed item carries the document's object key, its profile, the fields that raised confidence alerts with their scores, and the holder's email. |
+| **Attack Vector** | An Annotator with `allowedConfigVersions` set, eligible for a queue that also holds other profiles' items, calls `listReviewQueueItems`, `getMyReviewQueues`, `listMyReviewWork` or `claimNextReviewItem`. |
+| **Impact** | Disclosure of review-item metadata — document names, profile names, alert fields and scores, holder identity — across the profile boundary. Not document content, drafts or the work itself, which the per-item operations refuse. |
+| **Likelihood** | Low |
+| **Severity** | Medium |
+| **Affected Components** | `review_queues_resolver`, `idp_common/review_queues/` (`service.py`, `directory.py`) |
+| **Mitigations** | Every per-item operation and every listing decides profile scope by the **item's own profile**: `ReviewQueueService._sees`, which uses `idp_common.config_scope.scope_allows` — the same comparison the rest of the API uses (AUTH.T07) — and so admits an item with no profile to no scoped caller. It applies to `listReviewQueueItems` (one queue or all of the caller's), `getMyReviewQueues`, `listMyReviewWork` and `claimNextReviewItem`; a listing that leaves items out still pages forward, and Claim next reads past them up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope`, which admits an empty profile, is used only for a queue reference, never for an item. `lib/idp_common_pkg/tests/unit/review_queues/test_listing_profile_scope.py` covers each listing for a scoped caller, an unscoped caller and an Admin. Admins and unscoped Annotators see every profile by design. |
+| **Residual risk / recommendation** | A queue's counts (depth, unclaimed) are the queue's and are not filtered by scope, so a scoped Annotator can see how many items a queue holds beyond the ones they are shown, though not what they are. The static RBAC rule (`make api-test-static`) checks that a scope lookup is reachable from a `scope_filtered` operation, not that its result is applied to each returned item, so a regression of this class is caught by the unit tests above rather than by that gate. The behaviour has not been exercised against a live deployment. |
+
 ### HITL.T02: Reviewer-Controlled Drafts Become the Document's Final Output
 
 | Attribute | Value |
@@ -134,6 +149,7 @@ flowchart TD
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
 | **Group floor and default deny** | Dispatcher `authz.py`; queue administration and supervisor operations `Admin` only; item operations `Admin` + `Annotator` | HITL.T02, HITL.T04 |
+| **Per-item profile scope** | `ReviewQueueService._sees` (`scope_allows` on the item's own profile) in every per-item operation and every listing | HITL.T01 |
 | **Conditional writes** | Version plus `Status`/`OwnerKey`/lease conditions on every item write | HITL.T02 |
 | **Server-built finalize** | Message body from the tracking row; token validated by shape and used as the execution name | HITL.T02, HITL.T04 |
 | **Single write path in review** | Legacy review operations, `uploadDocument` and `processChanges` refuse a document a queue manages | HITL.T02 |
@@ -145,6 +161,7 @@ flowchart TD
 
 | Item | Threat | Status |
 |------|--------|--------|
+| Queue counts (depth, unclaimed) are not filtered by profile scope | HITL.T01 | **Open** — residual, counts only |
 | Waiting-work announcements reach every Annotator, not the queue's eligible ones | HITL.T03 | **Open** |
 | Drafts are not validated against the section schema | HITL.T02 | **Open** — recommendation |
 | UsersTable write on a role Annotators reach | HITL.T04 | **Open** — recommendation |

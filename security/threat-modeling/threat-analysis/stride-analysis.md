@@ -20,7 +20,7 @@ data storage/analytics.
 
 > **How to read this document.** It is deliberately **category-level**: rows are
 > phrased as threat *classes* rather than as the numbered threat entries, so a
-> reader can scan a STRIDE category without holding 103 identifiers in their head.
+> reader can scan a STRIDE category without holding 104 identifiers in their head.
 > The authoritative per-threat record — identifier, score, status, and whether a
 > mitigation is present or pending — is the
 > [risk register](../risk-assessment/risk-matrix.md), which is derived from the
@@ -113,6 +113,7 @@ Information disclosure threats involve exposure of sensitive data to unauthorize
 | **Data exfiltration via post-processing hooks** — full results sent externally | Lambda Hooks | Critical | Customer-managed VPC, security review, monitoring |
 | **OpenSearch vector store exposure** — KB embeddings accessible | Knowledge Base | Medium | Encryption, IAM/network policies, no public access |
 | **Client-side config exposure** — backend endpoints visible in JS | Web UI | Low | All endpoints require auth, security through access control |
+| **Review items outside the caller's profile scope** — a system-wide queue holds several profiles' items, so a listing must filter each item by its own profile | Review Queues | Low | Every per-item operation and listing applies `scope_allows` to the item's profile; queue counts are not scope-filtered. See HITL.T01 |
 | **Review metadata beyond the queue's audience** — group-addressed Inbox announcements, `status.json`, Output-bucket EventBridge events | Review Queues, Inbox | Low | Self-scoped Inbox reads, no posting operation, in-app links only, sanitized rendering; announcements address whole groups. See HITL.T03 |
 | **Credential-shaped values in resolver logs** — a name-based redaction denylist | API resolver Lambdas, CloudWatch Logs | Medium | Every resolver applies the one canonical denylist (issue #921 closed, held by a test), so the exposure is a credential under a key the list does not name or in free text; log groups are retention-bounded and 113 of the 115 in the core templates use the stack KMS customer-managed key. See AUTH.T15 |
 
