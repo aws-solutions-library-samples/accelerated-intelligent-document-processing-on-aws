@@ -12,9 +12,11 @@ them.
 
 ⚠️ **The risk this guards is a spelling difference, and it is the kind review is
 bad at.** The reporting bucket holds Athena output under **two** prefixes:
-`athena-results/`, where five consumers write via `ATHENA_OUTPUT_LOCATION`, and
-`athena_query_results/` — *underscores* — where `DataMartRollupFunction` writes
-via `ATHENA_QUERY_OUTPUT_LOCATION`. A lifecycle rule for one does not cover the
+`athena-results/`, where every consumer but one writes via
+`ATHENA_OUTPUT_LOCATION`, and `athena_query_results/` — *underscores* — where
+`DataMartRollupFunction` writes via `ATHENA_QUERY_OUTPUT_LOCATION`. How many
+sites each has is not written down here: this gate enumerates them, so read
+`_LOCATIONS` or the parametrised case ids for the current set. A lifecycle rule for one does not cover the
 other, and the underscore prefix is the one it would hurt most to leave
 uncovered: three EventBridge schedules fire the rollup, so it is the only Athena
 output that accrues with nobody logged in.
@@ -371,12 +373,12 @@ def test_every_athena_output_prefix_is_covered_by_a_lifecycle_rule(
 def test_coverage_requires_a_scoped_prefix(rule_prefix, location_prefix, covered):
     """The predicate both assertions share, tested directly.
 
-    An earlier form of this test inspected the tree instead — it looked for a
-    bucket whose *only* rule was the catch-all, and fired `pytest.fail` if an
-    Athena prefix depended on it. That condition is unreachable while
-    `ReportingBucket` carries any scoped rule, so the test could not fail for
-    the reason its name gave, and dropping the empty-prefix guard from the
-    matcher left the whole suite green. Asserting the predicate's own table
-    removes the dependence on tree state.
+    Asserting the predicate's own table rather than the tree means this test
+    fails when `_covers` stops refusing an empty prefix, regardless of what
+    rules `ReportingBucket` happens to carry. A tree-shaped version of this
+    check cannot do that: while the bucket has any scoped rule, no Athena
+    prefix depends on the catch-all, so the condition the test name describes
+    is unreachable and dropping the empty-prefix guard from the matcher leaves
+    the suite green.
     """
     assert _covers(rule_prefix, location_prefix) is covered

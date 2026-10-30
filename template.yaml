@@ -4689,10 +4689,13 @@ Resources:
           #
           # ⚠️ THERE ARE TWO PREFIXES, spelled differently, and a rule for one
           # does not cover the other. Every consumer except one writes to
-          # `athena-results/` (ATHENA_OUTPUT_LOCATION, five sites across this
-          # template and nested/api-resolvers); DataMartRollupFunction writes to
+          # `athena-results/` via ATHENA_OUTPUT_LOCATION, across this template
+          # and nested/api-resolvers; DataMartRollupFunction writes to
           # `athena_query_results/` with UNDERSCORES
-          # (ATHENA_QUERY_OUTPUT_LOCATION). Both resolve to this bucket. The
+          # (ATHENA_QUERY_OUTPUT_LOCATION). Both resolve to this bucket. Grep
+          # ATHENA_.*OUTPUT_LOCATION for the current set rather than trusting a
+          # number here — the test below enumerates it, so it is not written
+          # down. The
           # underscore prefix is also the only one that accrues with nobody
           # logged in — three EventBridge schedules fire the rollup, and each
           # run leaves an idempotency-probe result, its .metadata and a
@@ -4704,12 +4707,16 @@ Resources:
           # 30 days rather than something shorter because deleting a result
           # object silently disables Athena's result reuse for that query — a
           # subsequent identical query re-scans instead of being served from
-          # cache. Athena caps a reuse age at 7 days, so 30 leaves four times
-          # that margin. Nothing in THIS repo asks for reuse; the idp-monitor
-          # extension does, at that 7-day maximum, and it reads
-          # `athena-results/` in this bucket — so the margin is headroom for a
-          # live cache rather than a theoretical one, and that is the consumer
-          # to re-check before shortening it.
+          # cache. Athena caps `MaxAgeInMinutes` at 7 days, so any consumer
+          # that enables reuse needs its results to survive that window, and
+          # 30 days leaves four times it. That ceiling is the Athena limit, so
+          # it holds whether or not a given consumer opts in today — reuse is
+          # off by default and per-query (docs/reporting-sql-layer.md §2.2).
+          # ⚠️ Before shortening this, check the CONSUMERS rather than this
+          # template: a consumer that enables reuse is not visible from here,
+          # and at least one out-of-tree one does (the IDP Monitor extension,
+          # in the marketplace-features repository, reading `athena-results/`
+          # in this bucket).
           - Id: DeleteAthenaQueryResults
             Status: Enabled
             Prefix: athena-results/
