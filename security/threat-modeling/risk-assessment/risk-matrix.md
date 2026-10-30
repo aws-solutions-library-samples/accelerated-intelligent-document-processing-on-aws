@@ -8,7 +8,7 @@
 | **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 99 |
+| **Total Threats Identified** | 103 |
 
 ## 1. Risk Scoring Methodology
 
@@ -74,7 +74,7 @@
 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | **6** | Authentication/RBAC | Partially Mitigated |
 | AUTH.T08 | Silently-Ignored Schema Authorization Directives | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T09 | Insecure Direct Object Reference (IDOR / BOLA) | **6** | Authentication/RBAC | Mitigated |
-| AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | **6** | Authentication/RBAC | Partially Mitigated (fix pending, #928) |
+| AUTH.T16 | Per-Object Authorization Is Opt-In Per Resolver (Default Deny Covers the Group Floor Only) | **6** | Authentication/RBAC | Partially Mitigated (#928 closed; per-object checks remain opt-in) |
 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Open** (fix pending, #920) |
 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | **6** | Feature Platform | Partially Mitigated |
 | HOOK.T06 | Preprocessing Hook Operates on the Raw Source Document and Can Halt or Replace It | **6** | Lambda Hooks | Mitigated |
@@ -107,7 +107,7 @@
 | AGT.T03 | Agent Routing Manipulation | **4** | Agent Analysis | Mitigated |
 | AUTH.T01 | Privilege Escalation via Group Manipulation | **4** | Authentication/RBAC | Mitigated |
 | AUTH.T13 | Group Assignment From a User-Writable Attribute (External IdP Mapping) | **4** | Authentication/RBAC | Partially Mitigated |
-| AUTH.T15 | Authentication Material in Resolver Logs (Divergent Redaction Denylists) | **4** | Authentication/RBAC | Partially Mitigated (fix pending, #921) |
+| AUTH.T15 | Authentication Material in Resolver Logs (Name-Based Redaction Denylist) | **4** | Authentication/RBAC | Partially Mitigated (#921 closed; the denylist is name-based) |
 | BDA.T01 | BDA Service Opacity | **4** | BDA Mode | Partially Mitigated |
 | BDA.T04 | BDA Service Availability | **4** | BDA Mode | Mitigated |
 | CHAT.T05 | Streaming Response Denial of Service | **4** | Companion Chat | Partially Mitigated |
@@ -135,6 +135,8 @@
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
 | CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Open** — #920 closed, but the body value is still the effective identity on the deployed transport |
 | FEAT.T04 | Stale or Downgraded Feature Bundle Served to Users | **3** | Feature Platform | Partially Mitigated |
+| HITL.T02 | Reviewer-Controlled Drafts Become the Document's Final Output | **3** | Review Queues | Partially Mitigated |
+| HITL.T04 | Resolvers Serving Annotator Operations Hold Write Grants on Authorization and Workflow State | **3** | Review Queues | Partially Mitigated |
 | HOOK.T03 | Inference Hook Result Tampering | **3** | Lambda Hooks | Mitigated |
 | HOOK.T05 | Privilege Escalation via Hook IAM Role | **3** | Lambda Hooks | Mitigated |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | **3** | Jobs API | **Open** |
@@ -143,6 +145,7 @@
 | PII.T02 | Redaction Loop / Re-Entrancy via Input-Bucket Writeback | **3** | PII Anonymization | Partially Mitigated |
 | PII.T05 | Companion Config-Version Pairing Misconfiguration | **3** | PII Anonymization | Partially Mitigated |
 | PM.T04 | Cross-Step Data Poisoning | **3** | Pipeline Mode | Mitigated |
+| PM.T09 | Weaponized Document Exploits a File Parser on the Processing Path | **3** | Pipeline Mode | Partially Mitigated |
 | RPT.T04 | Evaluation Data Manipulation | **3** | Reporting/Analytics | Mitigated |
 | RPT.T08 | Extended Data Retention via Document Version History | **3** | Reporting/Analytics | Partially Mitigated |
 | SDK.T03 | SDK Supply Chain Attack | **3** | SDK/CLI | Mitigated |
@@ -157,6 +160,7 @@
 | BDA.T02 | BDA Output Format Mapping Errors | **2** | BDA Mode | Mitigated |
 | BDA.T05 | S3 Cross-Access via BDA | **2** | BDA Mode | Mitigated |
 | FEAT.T02 | Feature Registry Enumeration by Any Authenticated User | **2** | Feature Platform | Accepted |
+| HITL.T03 | Review Metadata Reaches Readers Beyond the Queue's Audience | **2** | Review Queues | Partially Mitigated |
 | KB.T03 | OpenSearch Serverless Data Exposure | **2** | Knowledge Base | Mitigated |
 | KB.T04 | Excessive RAG Retrieval | **2** | Knowledge Base | Mitigated |
 | MCP.T06 | AgentCore Gateway Lifecycle Attacks | **2** | MCP Integration | Mitigated |
@@ -171,11 +175,11 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (99 Threats)
+pie title Risk Distribution (103 Threats)
     "Critical (8-9)" : 9
     "High (6-7)" : 31
-    "Medium (3-5)" : 44
-    "Low (1-2)" : 15
+    "Medium (3-5)" : 47
+    "Low (1-2)" : 16
 ```
 
 ### By Component
@@ -192,12 +196,13 @@ pie title Risk Distribution (99 Threats)
 | Lambda Hooks | 1 | 2 | 4 | 0 | 7 |
 | MCP Integration | 1 | 2 | 2 | 1 | 6 |
 | PII Anonymization | 0 | 2 | 3 | 0 | 5 |
-| Pipeline Mode | 2 | 1 | 4 | 1 | 8 |
+| Pipeline Mode | 2 | 1 | 5 | 1 | 9 |
 | Reporting/Analytics | 0 | 3 | 3 | 2 | 8 |
+| Review Queues | 0 | 0 | 2 | 1 | 3 |
 | SDK/CLI | 1 | 2 | 2 | 0 | 5 |
 | Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **9** | **31** | **44** | **15** | **99** |
+| **Total** | **9** | **31** | **47** | **16** | **103** |
 
 ### By STRIDE Category
 
@@ -207,18 +212,18 @@ than the threat total.
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
 | **Spoofing** | 16 | Critical |
-| **Tampering** | 39 | Critical |
-| **Repudiation** | 4 | High |
-| **Information Disclosure** | 38 | Critical |
-| **Denial of Service** | 17 | High |
-| **Elevation of Privilege** | 32 | Critical |
+| **Tampering** | 40 | Critical |
+| **Repudiation** | 5 | High |
+| **Information Disclosure** | 39 | Critical |
+| **Denial of Service** | 18 | High |
+| **Elevation of Privilege** | 34 | Critical |
 
 ### Mitigation Status
 
 | Status | Count | Description |
 |--------|-------|-------------|
 | **Mitigated** | 63 | Controls implemented and verified |
-| **Partially Mitigated** | 29 | Some controls in place, additional measures recommended |
+| **Partially Mitigated** | 33 | Some controls in place, additional measures recommended |
 | **Open** | 3 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
@@ -260,7 +265,7 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Mitigated** (#919 closed) |
 | 12 | UI.T06 | Object Reads Carry No Document Ownership Axis | 6 | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
 | 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
-| 14 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
+| 14 | AUTH.T16 | Per-Object Authorization Is Opt-In Per Resolver (Default Deny Covers the Group Floor Only) | 6 | Partially Mitigated (#928 closed; per-object checks remain opt-in) |
 | 15 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
 
 ## 5. Recommendations
@@ -300,19 +305,18 @@ effort-to-value:
 3. **Jobs API scope-negative test (JOB.T02)** — add a `jobs.read`-only-token
    write attempt and an unauthenticated request to the Jobs API stack test, so
    the gate asymmetry with the UI API closes.
-4. **Hook failure containment (HOOK.T07)** — make `onError: fail` terminal at all
-   seven hook points, so a hook cannot be relied on as a gate at six of them.
-   Tracked in **issue #919**; until it merges the documented behaviour and the
-   state machine's `Catch` blocks disagree.
-5. **Deployment service role (SDK.T05)** — remove the permissions-boundary
-   manipulation actions, narrow the service wildcards to the resources the stack
-   creates, and add trust-policy conditions, so the role is a delegation rather
-   than an administrator alias. Tracked in **issue #927**.
-6. **Default deny at the dispatcher (AUTH.T16)** — reject a field with no recorded
-   authorization expectation instead of forwarding it, and stop keying the 403
-   mapping on error-message prefixes. Tracked in **issue #928**. This is the
-   structural fix behind items 1–3: each of those is an instance of a check that
-   was simply not written.
+4. **Deployment service role (SDK.T05)** — **issue #927** attached a permissions
+   boundary and constrained the roles the service role may create; the role's own
+   `iam:*` grant and its service wildcards are unchanged, so narrowing those to the
+   resources the stack creates is what remains before the role is a delegation
+   rather than an administrator alias.
+5. **Per-object authorization by construction (AUTH.T16)** — the dispatcher's
+   default deny (**issue #928**, closed) covers the group floor; the checks narrower
+   than it (scope, ownership, review-queue eligibility) are still hand-written per
+   resolver, and the 403 mapping still keys partly on error-message prefixes. A
+   shared per-object primitive, or an `object_scoped_roles` cell for every operation
+   whose group list admits a scoped role, is the structural fix behind items 1–3:
+   each of those is an instance of a check that was simply not written.
 
 ### Next Actions (Critical/High Risk, Partially Mitigated)
 
@@ -331,20 +335,19 @@ effort-to-value:
    source (and `style-src`'s `https:`) as well
 7. **Ground-truth change visibility (RPT.T07)**: surface/alert on baseline
    `_editHistory` mutations for high-value test sets
-8. **Log redaction consistency (AUTH.T15)**: converge the divergent redaction
-   denylists so a token-bearing field cannot be logged by one copy of the code
-   after being suppressed in another. Tracked in **issue #921** — pending, so the
-   weaker denylist is what applies today
-9. **Config-version scope fail-open (AUTH.T07)**: converge the **five**
-   scope-aware resolvers (`configuration_resolver`,
-   `get_stepfunction_execution_resolver`, `reprocess_document_resolver`,
-   `sync_bda_idp_resolver`, `list_documents_*_resolver`) on the fail-closed
-   contract the pii-anonymizer feature API and `chat_with_document_processor`
-   already use, so a lookup that cannot be evaluated denies instead of reading as
-   "unrestricted". Apply the same rule at `idp_common.api_adapter`, which decides
-   which identifier the scope is resolved *by*. Key the scope on the immutable
-   Cognito `sub` rather than the email it can diverge from (see
-   [`docs/external-idp.md`](../../../docs/external-idp.md)). Separately,
+8. **Log redaction (AUTH.T15)**: every resolver now applies the one canonical
+   denylist (**issue #921**, closed). What remains is that it matches key names,
+   so a credential under an unlisted key or in free text is logged; value-shaped
+   detection for the highest-risk patterns (bearer tokens, JWTs, access-key ids)
+   would cover that, and the two custom-resource log groups could take the stack
+   key
+9. **Config-version scope residuals (AUTH.T07)**: every REST consumer now uses the
+   one fail-closed lookup in `idp_common/config_scope.py`, which prefers the
+   immutable Cognito `sub` over the email it can diverge from (see
+   [`docs/external-idp.md`](../../../docs/external-idp.md)). What remains is to
+   reach the rows the `sub` back-fill cannot match, to give the class gate a rule
+   about the matcher, and to bring `idp_common/testset_scope.py` (the
+   `allowedTestSets` axis) onto the same `sub` join. Separately,
    Chat-with-Document is unrestricted on the streaming transport because a Lambda
    Function URL forwards no verified per-user caller — that half closes with
    GAP-07 / **issue #920**, the same ID-token verification CHAT.T03 needs

@@ -374,6 +374,7 @@ Resources:
               on_unscannable:
                 type: string
                 enum: ["block", "allow"]
+                enumLabels: { "block": "Block — stop the document (default)", "allow": "Allow — also needs the stack parameter" }
                 default: block
                 title: When a document cannot be scanned
                 description: >-
@@ -423,6 +424,7 @@ Resources:
                 # config stores it (it falls through to the continue path).
                 type: string
                 enum: ["continue", "fail"]
+                enumLabels: { "continue": "Continue with the original document (default)", "fail": "Fail the document" }
                 default: continue
                 description: >-
                   Behavior when the hook errors. `fail` STOPS the execution in a
@@ -521,6 +523,7 @@ Resources:
                   predictable pricing without composing Textract features.
                   'bedrock': LLM-based OCR. 'none': image-only, no OCR.
                 enum: ["textract", "bedrock", "bda", "none"]
+                enumLabels: { "textract": "Amazon Textract (default)", "bedrock": "Bedrock LLM", "bda": "Bedrock Data Automation", "none": "None — images only" }
                 default: "textract"
                 order: 1
               model_id:
@@ -710,6 +713,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -1061,7 +1065,7 @@ Resources:
               strategy:
                 type: string
                 title: Strategy
-                description: "'Split and classify together' (stored as strategy: combined): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Split first, then classify each section' (stored as strategy: split_then_classify): a splitting call first finds the boundaries with no class list in the prompt, then one classification call is made per section — cheaper on long documents with few sections, lets each call use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
+                description: "'Split and classify together' (stored as strategy: combined, the default): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Split first, then classify each section' (stored as strategy: split_then_classify): a splitting call first finds the boundaries with no class list in the prompt, then one classification call is made per section — cheaper on long documents with few sections, lets each call use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy) · [How split then classify works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#the-split-then-classify-strategy)"
                 enum: ["combined", "split_then_classify"]
                 enumLabels: { combined: "Split and classify together (one call)", split_then_classify: "Split first, then classify each section" }
                 default: "combined"
@@ -1069,7 +1073,7 @@ Resources:
               fallback_class:
                 type: string
                 title: Fallback class
-                description: "The class assigned when a class cannot be decided — for example once validation retries run out. One of your classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction. Extraction reads it too."
+                description: "The class assigned when a class cannot be decided — for example once validation retries run out. One of your classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction. Extraction reads it too. [Pages classification could not classify](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#pages-classification-could-not-classify)"
                 default: "unclassified"
                 order: 0.5
               combined:
@@ -1083,8 +1087,9 @@ Resources:
                   granularity:
                     type: string
                     title: Granularity
-                    description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new section; pages run in parallel and each gets its own confidence score. 'packet': one call for the whole document, paying the class list and examples once instead of per page and letting the model see the whole packet when placing boundaries. Image tokens are the same either way."
+                    description: "How many calls are made. Page gives each page its own verdict and confidence score. Packet pays the class list and examples once instead of per page, and lets the model see the whole packet when placing boundaries. Image tokens are the same either way. [Page versus packet](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#page-versus-packet-granularity-opposite-failure-modes)"
                     enum: ["page", "packet"]
+                    enumLabels: { "page": "Page — one call per page, in parallel (default)", "packet": "Packet — one call for the whole document" }
                     default: "page"
                     order: 0
                   page:
@@ -1098,7 +1103,7 @@ Resources:
                       contextPagesCount:
                         type: integer
                         title: Context pages
-                        description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens."
+                        description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens. [What each setting costs](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#what-each-setting-costs)"
                         minimum: 0
                         maximum: 5
                         default: 0
@@ -1107,13 +1112,13 @@ Resources:
                         type: string
                         title: System prompt (page)
                         format: textarea
-                        description: "System prompt for page calls."
+                        description: "System prompt for page calls. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.system_prompt`)"
                         order: 1
                       task_prompt:
                         type: string
                         title: Task prompt (page)
                         format: textarea
-                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off."
+                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.task_prompt`)"
                         order: 2
                   packet:
                     type: object
@@ -1126,7 +1131,7 @@ Resources:
                       window_pages:
                         type: integer
                         title: Window size (pages)
-                        description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution."
+                        description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution. [Packet windowing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#packet-granularity-images-few-shot-examples-and-windowing)"
                         minimum: 0
                         maximum: 200
                         default: 20
@@ -1143,13 +1148,13 @@ Resources:
                         type: string
                         title: System prompt (packet)
                         format: textarea
-                        description: "System prompt for packet calls. Empty uses the shipped default."
+                        description: "System prompt for packet calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.system_prompt`)"
                         order: 2
                       task_prompt:
                         type: string
                         title: Task prompt (packet)
                         format: textarea
-                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching."
+                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.task_prompt`)"
                         order: 3
                   llm:
                     type: object
@@ -1160,7 +1165,7 @@ Resources:
                     properties:
                       model:
                         type: string
-                        title: Model
+                        title: "Model ID"
                         description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                         enum:
                           - "LambdaHook"
@@ -1266,38 +1271,42 @@ Resources:
                         type: object
                         sectionLabel: Modality
                         collapsible: false
-                        description: "What each classification call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                        description: "What each classification call is sent. Both on is the recommended start. Leave a flag on Infer to decide it from this call's task prompt placeholders. Both off is refused when you save. [Modality](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#modality)"
                         order: 1
                         properties:
                           text:
                             type: string
                             title: Send page text
-                            description: "Sends each page's OCR text. Empty infers it from whether this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                            description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
                             enum: ["", "true", "false"]
+                            enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                             default: ""
                             order: 0
                           images:
                             type: string
                             title: Send page images
-                            description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether this call's task prompt contains {DOCUMENT_IMAGE}."
+                            description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
                             enum: ["", "true", "false"]
+                            enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                             default: ""
                             order: 1
                       image:
                         type: object
                         sectionLabel: Image settings
-                        description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
+                        description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger. [Image sizing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#image-processing-configuration)"
                         order: 2
                         showWhen: [{ field: "modality.images", notValues: ["false"] }]
                         properties:
                           target_width:
                             type: number
+                            title: "Target width (px)"
                             description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                             minimum: 100
                             maximum: 3500
                             order: 0
                           target_height:
                             type: number
+                            title: "Target height (px)"
                             description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                             minimum: 100
                             maximum: 3500
@@ -1379,8 +1388,9 @@ Resources:
                           mode:
                             type: string
                             title: Class confidence mode
-                            description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the page could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                            description: "Top-K (`topk`) asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the page could have been. Verbalized (`verbalized`) is the cheapest and the most overconfident; Off (`off`) asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
                             enum: ["topk", "verbalized", "off"]
+                            enumLabels: { "topk": "Top-K — ranked candidate classes (default)", "verbalized": "Verbalized — one 0–1 score", "off": "Off — no score" }
                             default: "topk"
                             order: 0
                           top_k_candidates:
@@ -1443,11 +1453,12 @@ Resources:
                         title: Splitting method
                         description: "How boundaries are found. 'llm' is the only method today; a boundary-model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
                         enum: ["llm"]
+                        enumLabels: { "llm": "LLM" }
                         default: "llm"
                         order: 0
                       llm:
                         type: object
-                        sectionLabel: LLM splitting
+                        sectionLabel: Inference settings
                         collapsible: false
                         description: "The splitting calls: how many are made, their prompts, and the model they use."
                         order: 1
@@ -1456,15 +1467,17 @@ Resources:
                           granularity:
                             type: string
                             title: Granularity
-                            description: "How many splitting calls are made. 'page': one per page, each saying whether that page starts a new section; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
+                            description: "How many splitting calls are made. Page decides for each page whether it starts a new section. Packet returns page ranges, with the whole packet in view when placing boundaries. [Page versus packet](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#page-versus-packet-granularity-opposite-failure-modes)"
                             enum: ["page", "packet"]
+                            enumLabels: { "page": "Page — one call per page, in parallel (default)", "packet": "Packet — one call for the whole document" }
                             default: "page"
                             order: 0
                           boundary_hints:
                             type: string
                             title: Boundary hints
-                            description: "Whether the splitting calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a section's first page is titled like one of your classes."
+                            description: "Whether the splitting calls are told the class names. None (`none`) is the saving; Class names (`class_names`) are worth it when a section's first page is titled like one of your classes."
                             enum: ["none", "class_names"]
+                            enumLabels: { "none": "None — no class vocabulary (default)", "class_names": "Class names — names only, as a hint" }
                             default: "none"
                             order: 0.5
                           page:
@@ -1478,7 +1491,7 @@ Resources:
                               contextPagesCount:
                                 type: integer
                                 title: Context pages
-                                description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens."
+                                description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens. [What each setting costs](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#what-each-setting-costs)"
                                 minimum: 0
                                 maximum: 5
                                 default: 0
@@ -1487,13 +1500,13 @@ Resources:
                                 type: string
                                 title: System prompt (page)
                                 format: textarea
-                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default."
+                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.system_prompt`)"
                                 order: 1
                               task_prompt:
                                 type: string
                                 title: Task prompt (page)
                                 format: textarea
-                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here."
+                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.task_prompt`)"
                                 order: 2
                           packet:
                             type: object
@@ -1506,7 +1519,7 @@ Resources:
                               window_pages:
                                 type: integer
                                 title: Window size (pages)
-                                description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution."
+                                description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution. [Packet windowing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#packet-granularity-images-few-shot-examples-and-windowing)"
                                 minimum: 0
                                 maximum: 200
                                 default: 20
@@ -1523,17 +1536,17 @@ Resources:
                                 type: string
                                 title: System prompt (packet)
                                 format: textarea
-                                description: "System prompt for the packet splitting calls. Empty uses the shipped default."
+                                description: "System prompt for the packet splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.system_prompt`)"
                                 order: 2
                               task_prompt:
                                 type: string
                                 title: Task prompt (packet)
                                 format: textarea
-                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown."
+                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.task_prompt`)"
                                 order: 3
                           model:
                             type: string
-                            title: Model
+                            title: "Model ID"
                             description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
@@ -1639,38 +1652,42 @@ Resources:
                             type: object
                             sectionLabel: Modality
                             collapsible: false
-                            description: "What each splitting call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            description: "What each splitting call is sent. Both on is the recommended start. Leave a flag on Infer to decide it from this call's task prompt placeholders. Both off is refused when you save. [Modality](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#modality)"
                             order: 3
                             properties:
                               text:
                                 type: string
                                 title: Send page text
-                                description: "Sends each page's OCR text. Empty infers it from whether this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
                                 enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
                                 order: 0
                               images:
                                 type: string
                                 title: Send page images
-                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether this call's task prompt contains {DOCUMENT_IMAGE}."
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
                                 enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
                                 order: 1
                           image:
                             type: object
                             sectionLabel: Image settings
-                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
+                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger. [Image sizing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#image-processing-configuration)"
                             order: 4
                             showWhen: [{ field: "modality.images", notValues: ["false"] }]
                             properties:
                               target_width:
                                 type: number
+                                title: "Target width (px)"
                                 description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                                 minimum: 100
                                 maximum: 3500
                                 order: 0
                               target_height:
                                 type: number
+                                title: "Target height (px)"
                                 description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                                 minimum: 100
                                 maximum: 3500
@@ -1731,6 +1748,7 @@ Resources:
                         title: Section classification method
                         description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show 'embeddings', 'decision_model' and 'low_confidence' blocks with defaults: they belong to those planned methods and are ignored today."
                         enum: ["llm"]
+                        enumLabels: { "llm": "LLM" }
                         default: "llm"
                         order: 0
                       pages:
@@ -1752,7 +1770,7 @@ Resources:
                         dependsOn: { field: "pages", value: "first_k" }
                       llm:
                         type: object
-                        sectionLabel: LLM section classification
+                        sectionLabel: Inference settings
                         collapsible: false
                         description: "The call that names each section: its prompts, its model, and how its class is checked and scored."
                         order: 3
@@ -1762,17 +1780,17 @@ Resources:
                             type: string
                             title: System prompt
                             format: textarea
-                            description: "System prompt for the section classification calls. Empty uses the shipped default."
+                            description: "System prompt for the section classification calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.system_prompt`)"
                             order: 6
                           task_prompt:
                             type: string
                             title: Task prompt
                             format: textarea
-                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default."
+                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.task_prompt`)"
                             order: 7
                           model:
                             type: string
-                            title: Model
+                            title: "Model ID"
                             description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
@@ -1878,38 +1896,42 @@ Resources:
                             type: object
                             sectionLabel: Modality
                             collapsible: false
-                            description: "What each section classification call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            description: "What each section classification call is sent. Both on is the recommended start. Leave a flag on Infer to decide it from this call's task prompt placeholders. Both off is refused when you save. [Modality](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#modality)"
                             order: 1
                             properties:
                               text:
                                 type: string
                                 title: Send page text
-                                description: "Sends each page's OCR text. Empty infers it from whether this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
                                 enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
                                 order: 0
                               images:
                                 type: string
                                 title: Send page images
-                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether this call's task prompt contains {DOCUMENT_IMAGE}."
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
                                 enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
                                 default: ""
                                 order: 1
                           image:
                             type: object
                             sectionLabel: Image settings
-                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
+                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger. [Image sizing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#image-processing-configuration)"
                             order: 2
                             showWhen: [{ field: "modality.images", notValues: ["false"] }]
                             properties:
                               target_width:
                                 type: number
+                                title: "Target width (px)"
                                 description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                                 minimum: 100
                                 maximum: 3500
                                 order: 0
                               target_height:
                                 type: number
+                                title: "Target height (px)"
                                 description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
                                 minimum: 100
                                 maximum: 3500
@@ -1991,8 +2013,9 @@ Resources:
                               mode:
                                 type: string
                                 title: Class confidence mode
-                                description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the section could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                                description: "Top-K (`topk`) asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the section could have been. Verbalized (`verbalized`) is the cheapest and the most overconfident; Off (`off`) asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
                                 enum: ["topk", "verbalized", "off"]
+                                enumLabels: { "topk": "Top-K — ranked candidate classes (default)", "verbalized": "Verbalized — one 0–1 score", "off": "Off — no score" }
                                 default: "topk"
                                 order: 0
                               top_k_candidates:
@@ -2029,7 +2052,7 @@ Resources:
                   sectionSplitting:
                     type: string
                     title: Section splitting
-                    description: "'Detect boundaries': one section per boundary found. 'One section': the whole document is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent one-page sections of the same class being merged into one. Applies to both strategies."
+                    description: "'Detect boundaries': one section per boundary found. 'One section': the whole document is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent one-page sections of the same class being merged into one. Applies to both strategies. [Section splitting](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#section-splitting)"
                     enum: ["llm_determined", "disabled", "page"]
                     enumLabels: { llm_determined: "Detect boundaries (default)", disabled: "One section", page: "One per page" }
                     default: "llm_determined"
@@ -2039,6 +2062,7 @@ Resources:
                     title: Pages to classify
                     description: "Classify only the first N pages and give the whole document their majority class. Applies only to 'One section'."
                     enum: ["ALL", "1", "2", "3", "5", "10"]
+                    enumLabels: { "ALL": "All pages (default)" }
                     default: "ALL"
                     order: 1
                     showWhen: [{ field: "sectionSplitting", value: "disabled" }]
@@ -2088,6 +2112,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -2117,13 +2142,15 @@ Resources:
                 type: string
                 title: Extraction mode
                 enum: ["simple", "advanced"]
+                enumLabels: { "simple": "Simple — single pass (default)", "advanced": "Advanced — sharded, for large documents" }
                 default: "simple"
                 order: 1
-                description: "'simple' (default): single-pass extraction — fast and cheap, best for short documents. 'advanced': the robust, sharded extraction engine for large documents, big tables, and completeness (exposes the Advanced extraction settings below). Recommended with Anthropic Claude models."
+                description: "Simple is fast and cheap, best for short documents. Advanced is the robust engine for large documents, big tables and completeness, and shows the Advanced extraction settings below; recommended with Anthropic Claude models."
               prompt_cache:
                 type: string
                 title: Prompt caching
                 enum: ["auto", "off"]
+                enumLabels: { "auto": "Auto — use cache points (default)", "off": "Off — no cache points" }
                 default: "auto"
                 order: 1.05
                 description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
@@ -2131,6 +2158,7 @@ Resources:
                 type: string
                 title: Truncated list outcome
                 enum: ["warn", "fail"]
+                enumLabels: { "warn": "Warn — report success (default)", "fail": "Fail — mark the section failed" }
                 default: "warn"
                 order: 1.06
                 description: "What the outcome MEANS when extraction returns fewer than half the table rows the section's own OCR text evidences for a list field. 'warn' (default): record the issue and report success. 'fail': the rows that were extracted and the diagnosis are saved, then the section is marked failed - so a document carrying a fraction of a long table cannot be reported as COMPLETED, which is the only signal most consumers read. This does not change WHEN the shortfall is detected, only what it costs, and it applies to both Simple and Advanced extraction. IMPORTANT before choosing 'fail': the check's evidence is OCR tables whose column count equals the list item's property count, summed over the whole section, and a 2- or 3-property array that models an entity GROUP rather than table rows looks identical to one that models rows. A statement's 31-row two-column Daily Balance table is therefore counted as evidence about a 5-row 2-property account summary, and a fully correct extraction scores 0.13. Choose 'fail' for a corpus whose narrow arrays really are table rows - long transaction lists are the case it was built for - after checking your classes for group-shaped arrays."
@@ -2268,6 +2296,7 @@ Resources:
                     type: string
                     description: "How to read an all-numeric date whose day/month order is ambiguous, e.g. '01/02/2024'. 'auto' (default) refuses to guess and leaves such values untouched, so nothing is silently mis-dated. Choose MDY or DMY only for a corpus whose convention you know - it never overrides a value that is already unambiguous (a 15 cannot be a month whatever this is set to)."
                     enum: ["auto", "MDY", "DMY"]
+                    enumLabels: { "auto": "Auto — leave ambiguous dates (default)", "MDY": "MDY — month/day/year", "DMY": "DMY — day/month/year" }
                     order: 1
                     default: "auto"
                     dependsOn: { field: "enabled", value: true }
@@ -2292,6 +2321,7 @@ Resources:
                     type: string
                     description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': record the result as not parsed, which makes the section's Processing Report read FAILED and raises the issue at error severity; the extracted values are still stored and the document's status is unchanged, so this is a visibility setting rather than a way to reject a section. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
                     enum: ["warn", "escalate", "reject"]
+                    enumLabels: { "warn": "Warn — record and proceed (default)", "escalate": "Escalate — re-extract failing fields", "reject": "Reject — mark as not parsed" }
                     order: 2
                     default: "warn"
                     dependsOn: { field: "enabled", value: true }
@@ -2439,6 +2469,7 @@ Resources:
                     title: Missing field representation
                     description: "Only used when enabled. How a MISSING field appears in the output. 'omit': drop the key entirely. 'null_with_metadata': keep the key as null and list it under a sibling 'missing_fields' array. Default: omit."
                     enum: ["omit", "null_with_metadata"]
+                    enumLabels: { "omit": "Omit the key (default)", "null_with_metadata": "Null, listed in missing_fields" }
                     default: "omit"
                     order: 1
                     dependsOn: { field: "enabled", value: true }
@@ -2627,6 +2658,7 @@ Resources:
                     type: string
                     title: Geometry mode
                     enum: ["ocr_only", "llm_grounded", "llm", "off"]
+                    enumLabels: { "ocr_only": "OCR only — match OCR lines (default)", "llm_grounded": "LLM boxes, corrected by OCR", "llm": "LLM boxes as-is (discouraged)", "off": "Off — no geometry" }
                     default: "ocr_only"
                     description: "A box locates an extracted VALUE on the page, so a field the model returned nothing for is never located under any mode. 'ocr_only' (default): the model is not asked for boxes — each extracted value is matched to real OCR lines. No added prompt tokens, and more accurate than LLM-estimated boxes. 'llm_grounded': the model emits boxes and OCR grounding corrects them; use this when values are not present verbatim in the OCR text (reformatted dates, figures read off a chart). 'llm': the model's boxes as-is — DISCOURAGED, retained for compatibility: same prompt and cost as 'llm_grounded' then skips the correction, so never the better of the two. 'off': no geometry; the viewers stop offering to show fields on the page."
                     order: 0
@@ -2648,6 +2680,7 @@ Resources:
                     type: string
                     title: Confidence scoring mode
                     enum: ["off", "separate", "integrated"]
+                    enumLabels: { "off": "Off — no confidence", "separate": "Separate — its own pass (default)", "integrated": "Integrated — same call as extraction" }
                     default: "separate"
                     description: "How per-field confidence is produced. 'off': no confidence scoring (no extra model pass, no confidence data). 'separate' (default): scored in a distinct inference — a per-shard second pass in Advanced extraction mode, or the standalone Assessment step in Simple mode. 'integrated': the extraction inference emits each value's confidence in one pass (saves a model call). In Simple extraction a class that declares list fields is automatically scored in a separate pass even when integrated is selected, because Simple + integrated loses list rows silently; set x-aws-idp-allow-integrated-lists: true on a class to opt it back in. Confidence drives HITL review and the UI confidence display."
                     order: 0
@@ -2880,6 +2913,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -3150,6 +3184,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -3352,6 +3387,7 @@ Resources:
               onError:
                 type: string
                 enum: ["continue", "fail"]
+                enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document" }
                 default: continue
                 description: >-
                   Behavior when the hook errors. `fail` marks the document FAILED
@@ -4608,6 +4644,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3

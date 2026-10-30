@@ -92,8 +92,8 @@ describe('the shipped classification schema', () => {
       split_then_classify: { splitting: { method: 'llm' }, section_classification: { method: 'llm' } },
     });
     expect(visible('Splitting')).toBe(true);
-    expect(visible('LLM splitting')).toBe(true);
-    expect(visible('LLM section classification')).toBe(true);
+    // Each split-then-classify call carries its own Inference settings group.
+    expect(screen.queryAllByText('Inference settings')).toHaveLength(2);
     expect(visible('Split and classify together')).toBe(false);
   });
 
@@ -112,7 +112,7 @@ describe('the shipped classification schema', () => {
     expect(screen.getAllByText('Class validation')).toHaveLength(1);
     expect(screen.getAllByText('Class confidence')).toHaveLength(1);
     // But a model picker on both calls.
-    expect(screen.getAllByText('Model', { exact: true }).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('Model ID', { exact: true }).length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows Pages to classify only for a one-document file', () => {
@@ -128,6 +128,71 @@ describe('the shipped classification schema', () => {
     expect(strategy.enum).toEqual(['combined', 'split_then_classify']);
     expect(enumOptionLabel(strategy, 'combined')).toBe('Split and classify together (one call)');
     expect(enumOptionLabel(strategy, 'split_then_classify')).toBe('Split first, then classify each section');
+  });
+});
+
+describe('enum labels across the whole shipped schema', () => {
+  const fullSchema = (
+    yaml.load(fs.readFileSync(TEMPLATE, 'utf8'), { schema: CFN_SCHEMA }) as {
+      Resources: { UpdateSchemaConfig: { Properties: { Schema: Record<string, unknown> } } };
+    }
+  ).Resources.UpdateSchemaConfig.Properties.Schema;
+
+  const labelled: { path: string; node: Record<string, unknown> }[] = [];
+  const walk = (node: unknown, at: string): void => {
+    if (!node || typeof node !== 'object') return;
+    const n = node as Record<string, unknown>;
+    if (n.enumLabels) labelled.push({ path: at, node: n });
+    for (const [key, child] of Object.entries((n.properties as Record<string, unknown>) || {})) walk(child, `${at}.${key}`);
+    if (n.items) walk(n.items, `${at}[]`);
+  };
+  walk(fullSchema, 'schema');
+
+  it('labels only values the field can hold, each with non-empty text', () => {
+    // A label keyed by a value the enum does not have is never shown: the
+    // dropdown falls back to the raw value with nothing saying why.
+    // The walk follows `properties` and `items`, which is how the form renders
+    // fields. Count every `enumLabels` anywhere in the schema independently, so a
+    // label placed where the walk (and the form) never reaches fails here rather
+    // than being silently unchecked.
+    const everywhere = (node: unknown): number => {
+      if (Array.isArray(node)) return node.reduce((n: number, child) => n + everywhere(child), 0);
+      if (!node || typeof node !== 'object') return 0;
+      return Object.entries(node).reduce((n, [key, child]) => n + (key === 'enumLabels' ? 1 : 0) + everywhere(child), 0);
+    };
+    expect(labelled.length).toBeGreaterThan(0);
+    expect(labelled.length).toBe(everywhere(fullSchema));
+    for (const { path: at, node } of labelled) {
+      const values = ((node.enum as unknown[]) || []).map(String);
+      for (const [value, label] of Object.entries(node.enumLabels as Record<string, unknown>)) {
+        expect(values, `${at}: label for '${value}'`).toContain(value);
+        expect(typeof label === 'string' && label.trim().length > 0, `${at}: '${value}'`).toBe(true);
+      }
+    }
+  });
+
+  it("puts a '(default)' marker only on the field's default value", () => {
+    // The marker is written by hand in each label, so it goes stale when a
+    // field's `default:` moves to another value. A field may leave its default
+    // unmarked (Strategy does: its labels are also the option names the docs
+    // use), but a marker on any other value is wrong.
+    for (const { path: at, node } of labelled) {
+      const def = node.default === undefined || node.default === null ? undefined : String(node.default);
+      for (const [value, label] of Object.entries(node.enumLabels as Record<string, string>)) {
+        if (/\bdefault\)$/.test(label)) expect(value, `${at}: '${value}' is marked as the default`).toBe(def);
+      }
+    }
+  });
+
+  it("shows the empty modality value as 'Infer from the task prompt'", () => {
+    const modality = (
+      (classificationSchema.properties as Record<string, Record<string, unknown>>).combined.properties as Record<
+        string,
+        Record<string, unknown>
+      >
+    ).llm.properties as Record<string, Record<string, unknown>>;
+    const text = (modality.modality.properties as Record<string, Record<string, unknown>>).text;
+    expect(enumOptionLabel(text, '')).toBe('Infer from the task prompt (default)');
   });
 });
 

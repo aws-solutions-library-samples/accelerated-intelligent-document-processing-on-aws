@@ -339,22 +339,11 @@ class TestProcessConfigPinning:
             "config-revision": "4",
         }
 
-    def test_a_directory_batch_forwards_the_revision_and_still_loses_it(
+    def test_a_directory_batch_keeps_both_profile_and_revision(
         self, client, s3, tmp_path
     ):
-        """DEFECT, pinned as-is: ``batch_processor.py:242`` seen from the public API.
-
-        ``process`` does its part — ``process_batch_from_directory`` accepts
-        ``config_revision``, so the signature check passes and the value is
-        forwarded. The processor then calls ``_process_documents`` positionally and
-        never passes it on, so the uploaded object carries the profile without the
-        revision, and the batch runs under whatever revision the profile currently
-        holds. Compare the manifest case directly above, which keeps both.
-
-        The failure is silent by construction: nothing raises, the counts are
-        right, and only the object's user metadata shows it. When the processor is
-        fixed, this test fails and the expectation becomes the two-key dict.
-        """
+        """The revision reaches the uploaded object on the directory path, as it
+        does for a manifest, so the batch runs the revision asked for."""
         _write_pdf(tmp_path, "a.pdf")
 
         client.batch.process(
@@ -364,18 +353,25 @@ class TestProcessConfigPinning:
             config_revision=4,
         )
 
-        assert _metadata(s3, "b/a.pdf") == {"config-version": "tuned"}
+        assert _metadata(s3, "b/a.pdf") == {
+            "config-version": "tuned",
+            "config-revision": "4",
+        }
 
-    def test_an_s3_uri_batch_silently_ignores_the_pinned_profile(self, client, s3):
-        """Pinned as current behaviour, and it is a trap.
+    def test_an_s3_uri_batch_honours_number_of_files(self, client, s3):
+        for name in ("a", "b", "c"):
+            s3.put_object(Bucket=SOURCE_BUCKET, Key=f"in/{name}.pdf", Body=b"x")
 
-        ``process`` passes ``config_version`` only if the target method's
-        signature accepts it, and ``process_batch_from_s3_uri`` takes neither
-        ``config_version`` nor ``config_revision``. So a caller who pins a profile
-        for an S3-sourced batch gets no error and no metadata: the batch runs
-        under whatever the default configuration is. If that method gains the
-        parameters, this test fails and the expectation becomes the pinned values.
-        """
+        result = client.batch.process(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/", batch_id="b", number_of_files=2
+        )
+
+        assert result.documents_queued == 2
+
+    def test_an_s3_uri_batch_keeps_both_profile_and_revision(self, client, s3):
+        """An S3-sourced batch honours a pinned profile and revision. ``process``
+        forwards them only when the target method accepts them, so this also
+        guards against ``process_batch_from_s3_uri`` losing the parameters."""
         s3.put_object(Bucket=SOURCE_BUCKET, Key="in/a.pdf", Body=b"x")
 
         client.batch.process(
@@ -385,7 +381,10 @@ class TestProcessConfigPinning:
             config_revision=4,
         )
 
-        assert _metadata(s3, "b/a.pdf") == {}
+        assert _metadata(s3, "b/a.pdf") == {
+            "config-version": "tuned",
+            "config-revision": "4",
+        }
 
 
 @pytest.mark.unit

@@ -501,8 +501,8 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 
 ### Key Capabilities
 
-- **Step Selection**: Preview prompts for Classification, Extraction, Assessment, or Summarization
-- **Class Selection**: For Extraction and Assessment, select a specific document class to see how its JSON Schema appears in the prompt
+- **Step Selection**: Preview prompts for each classification call, Extraction, Confidence Assessment, or Summarization. The classification steps follow `classification.strategy`: under `combined` there is one, *Classification: split and classify together*; under `split_then_classify` there are two, *Classification: splitting (split then classify)* and *Classification: section classification (split then classify)*
+- **Class Selection**: For Extraction and Confidence Assessment, select a specific document class to see how its JSON Schema appears in the prompt
 - **Filled Placeholders**: Config-derived values (`{CLASS_NAMES_AND_DESCRIPTIONS}`, `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`, `{DOCUMENT_CLASS}`) are replaced with actual values from your configuration
 - **Runtime Markers**: Document-specific placeholders (`{DOCUMENT_TEXT}`, `{DOCUMENT_IMAGE}`, etc.) are shown as highlighted yellow markers indicating where document content will be inserted at processing time
 - **Token Estimates**: Approximate token counts for the system prompt, task prompt and — when Schema Enforcement is on — the tool schema, so the total reflects everything your configuration puts on the wire
@@ -515,8 +515,8 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 
 1. Navigate to the Configuration page
 2. Click the **Prompt Preview** tab (alongside Configuration, Document Schema, Rule Schema)
-3. Select a **Processing Step** from the dropdown (Classification, Extraction, Assessment, Summarization)
-4. For Extraction or Assessment, select a **Document Class** to preview its schema in the prompt
+3. Select a **Processing Step** from the dropdown: the classification step or steps your configured strategy makes (see above), Extraction, Confidence Assessment, or Summarization
+4. For Extraction or Confidence Assessment, select a **Document Class** to preview its schema in the prompt
 5. View the rendered prompts in the Task Prompt and System Prompt sub-tabs
 6. Use the Raw Task Template and Raw System Template sub-tabs to see the unprocessed templates with placeholder syntax
 

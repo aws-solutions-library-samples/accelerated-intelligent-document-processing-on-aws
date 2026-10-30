@@ -28,13 +28,6 @@
     "triagedOn": "2026-10-05"
   },
   {
-    "id": "GHSA-ch52-4w7c-c8xp",
-    "package": "http-cache-semantics",
-    "severity": "HIGH",
-    "reason": "Not reachable. It reaches this repository only through astro in docs-site, the documentation site, which CI builds into static files. The advisory concerns a shared HTTP cache returning one user's cached response to another, and no deployed component of the solution runs astro or a shared cache on it. No fixed release exists yet; upgrade and remove this entry once one is published.",
-    "triagedOn": "2026-10-05"
-  },
-  {
     "id": "GHSA-c4qx-w738-7hr3",
     "package": "@graphql-tools/utils",
     "severity": "HIGH",
