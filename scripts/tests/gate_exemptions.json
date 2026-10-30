@@ -415,7 +415,7 @@
       ],
       "ratchet": "universe-closure",
       "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py",
-      "reason": "Eight fields, no subtree: a field is the smallest thing that will do here, so no entry answers for a sibling it has not examined -- which matters most for image, where target_width and target_height ARE shipped on every classification call and only dpi and preprocessing are not. Two kinds, each with its premise computed per member. Six are ImageConfig's dpi and preprocessing on the three classification calls: ImageConfig is shared by every stage's image panel, but both govern the PDF-to-raster render that happens once during OCR, so the gate requires base-ocr.yaml to ship ocr.image.<field> -- if OCR stops shipping it the setting has no default anywhere and the recorded reason is false. Two are the per-segment confidence prompt blocks on the section-classification call, which is one call per section and returns one class: the gate composes the real Stage B prompt with a marker in the key and requires the marker not to appear, with a control that the page-shaped key's marker DOES appear, because 'the key is not read' and 'nothing was read' are indistinguishable from one assertion. Both kinds also carry the two per-member staleness checks and sit inside the same universe closure as the sibling entry. The same six image fields and the same two confidence keys are carved out of the model-to-UI parity gate for the same reasons, which is why that constant is cross-referenced: auditing one has to reach the other.",
+      "reason": "Eight fields, no subtree: a field is the smallest thing that will do here, so no entry answers for a sibling it has not examined -- which matters most for image, where target_width and target_height ARE shipped on every classification call and only dpi and preprocessing are not. Two kinds, each with its premise computed per member. Six are ImageConfig's dpi and preprocessing on the three classification calls: ImageConfig is shared by every stage's image panel, but both govern the PDF-to-raster render that happens once during OCR, so the gate requires base-ocr.yaml to ship ocr.image.<field> -- if OCR stops shipping it the setting has no default anywhere and the recorded reason is false. Two are the per-segment confidence prompt blocks on the section-classification call, which is one call per section and returns one class: the gate composes the real section classification prompt with a marker in the key and requires the marker not to appear, with a control that the page-shaped key's marker DOES appear, because 'the key is not read' and 'nothing was read' are indistinguishable from one assertion. Both kinds also carry the two per-member staleness checks and sit inside the same universe closure as the sibling entry. The same six image fields and the same two confidence keys are carved out of the model-to-UI parity gate for the same reasons, which is why that constant is cross-referenced: auditing one has to reach the other.",
       "crossReferences": [
         "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES",
         "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE"
@@ -1843,6 +1843,27 @@
       "ratchetEvidence": "scripts/tests/test_gate_exemption_registry.py",
       "ratchetGap": "Closure runs one way only: nothing fails for a DEAD member. This table can therefore carry a predicate no registry entry names, and file_absent_or_untracked is in that state today -- nothing in this registry rests on it. (That is a weaker statement than 'nothing calls it': the CLAUDE.md rule about an uncalled predicate bites on one an ENTRY names -- enforced by test_a_computable_premise_is_actually_computed -- not on an unnamed table member.) No premise distribution is quoted here on purpose: the figure that was written down went stale inside one release cycle, so derive it from this file if you need it. Note also that the ratchetEvidence above is the meta-test itself, and the marker the evidence check greps for is in that file's own RATCHET_EVIDENCE_MARKERS table, so for THIS entry the marker is self-satisfying: read the named test, not the marker."
     },
+    "scripts/tests/nested_parameter_defaults_baseline.json::nested_parameter_defaults_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "nested stack logical id + parameter name",
+      "turnsOff": "the report of a parameter of a nested stack that declares a Default which the parent template never overrides, per (logical id, parameter) pair. An `accepted` member stops being reported because the nested default is the value this solution intends; a `knownDefects` member stops being reported while staying labelled a defect, which is what let the check ship before the fixes for issues 1553 and 1558 did; that section is empty while no unfixed defect of this shape is known.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered as a JSON registry (the `*_baseline.json` glob) and it is one: every member is a finding the gate agrees not to fail on. Whether a given default is the intended value is the judgement, and it is not computable -- a verified defect and a deliberate knob are structurally identical, both being a declared Default no caller overrides. What is computable, and is computed per member, is the FINDING: scripts/tests/nested_parameter_defaults.py derives the set from the templates on every run, so a member cannot be recorded that the tree does not exhibit. The one-reason-per-set failure this registry exists to prevent is addressed inside the file rather than here, because that is where a member lives: each entry carries its own sentence about what reads the parameter and what the default means to it, and test_each_baseline_entry_answers_for_itself fails on an empty one, so every name sharing one sentence about defaults usually being deliberate is a test failure rather than a review question. The file is also not a laundering step: --write refuses to add a member, or to record one whose template has started reading it, without --allow-new-unpassed \"<reason>\", which is stored in the file -- without that refusal the gate would redden on a newly self-disabled feature, print 'record it or pass it', and --write would record it with nothing attached.",
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "It answers the opposite question and would hold for no member here. Every member belongs to a template that template.yaml deploys as an AWS::CloudFormation::Stack -- which is the precondition for being a finding at all, since the scan derives its universe from gate_premises.nested_stack_sources(). A member for which this predicate held could not be in the file."
+      },
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_nested_stack_parameters.py",
+        "scripts/tests/nested_parameter_defaults.py"
+      ],
+      "ratchetGap": "Closure and staleness are both enforced -- a finding in neither section fails, and a recorded member the scan no longer produces fails -- but nothing can check that a member is in the RIGHT section. Recording a real defect in `accepted` with a plausible sentence passes every test here; what it costs is a visible diff on a reasoned entry, which is the control, and it is a review control rather than a gate. The scan is also one level deep: it reads the AWS::CloudFormation::Stack resources of template.yaml, and a nested template declaring one of its own would not be followed. Measured on this tree, none does, so the gap is forward-looking rather than live.",
+      "issues": [
+        "1553"
+      ]
+    },
     "scripts/tests/repo_files.py::FALLBACK_PRUNE_DIRS": {
       "kind": "prune",
       "memberKind": "path",
@@ -2531,7 +2552,7 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
+      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml, and the root parameter template.yaml passes to it, which the test derives from the wiring rather than by name), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
       "ratchet": "staleness",
       "ratchetEvidence": [
         "scripts/tests/test_model_surface_consistency.py"
@@ -2798,7 +2819,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Live tiers that drive real stacks. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
+      "reason": "Each row carries its own reason. The live tiers drive real stacks; ux-test-stories.md is Claude Code only, because its pair mode starts a claude --mcp-config session and its unattended runs go through run_in_background. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_repo_quality_review_skill.py"
     },
@@ -3060,6 +3081,17 @@
         "983"
       ]
     },
+    "scripts/tests/test_ux_story_relay.py::MUTATIONS_WITHOUT_A_GUARDED_CONTROL": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that the story relay's commit guard refuses the shipped control that sends the mutation, for a GraphQL mutation src/ui declares and no component or hook sends",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
+      "reason": "The suite derives every mutation src/ui/src declares and fails on one that is in neither MUTATION_CONTROLS, which names the shipped controls that send it and checks that each is still in its file and refused by the guard, nor this list, so a mutation the UI gains reaches the relay's owners as an unaccounted one. Three members, RejectReviewItem, RenewReviewLease and UpdateChatSessionTitle, each of which the UI declares among its operations and sends from no component or hook; the same suite checks per member that no file outside src/ui/src/graphql calls it, so a caller added later fails there and the mutation has to move to MUTATION_CONTROLS with its control.",
+      "memberKind": "GraphQL mutation name"
+    },
     "scripts/ux_runner/agent.py::CHILD_ENV_ALLOWLIST": {
       "kind": "capability",
       "turnsOff": "nothing in any gate; it names the only variables copied from the job's environment into the UX session's claude process, which otherwise receives the harness's fixed settings and a Bedrock-scoped AWS session",
@@ -3098,6 +3130,17 @@
       "crossReferences": [
         "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS"
       ]
+    },
+    "scripts/ux_runner/tool_profiles.py::STORY_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox a first-time-user story flow's Claude Code session runs inside, granting the twelve browser tools the ux-story server relays from the pinned chrome-devtools-mcp and the seven tools of the ux-story server itself, all under mcp__ux-story__",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
+      "reason": "A capability grant, not a gate exemption: it is what a story session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, which the suite also checks against the server's own recorded tools/list under default flags: every one of those tools is either granted under mcp__ux-story__ or denied there by name in STORY_DISALLOWED_TOOLS, and every mcp__chrome-devtools__ name is denied because that server is never registered in a story flow, so a tool added by a version bump fails the closure until somebody decides which. The relay serves only STORY_BROWSER_TOOLS whatever the lists say, a second layer the same suite pins against the recorded server. Same shape as EXPERT_ALLOWED_TOOLS.",
+      "memberKind": "tool name"
     },
     "scripts/ux_test_proxy.py::EGRESS_ALLOWED_STATIC_HOSTS": {
       "kind": "capability",
@@ -3174,13 +3217,38 @@
     "scripts/tests/test_classification_flat_keys_ui_parity.py::_NON_FINITE_PAGE_LIMITS": {
       "kind": "enforced-universe",
       "memberKind": "a non-finite float spelling of maxPagesForClassification",
-      "turnsOff": "nothing. It is the universe the two parametrised tests beside it are driven over, so a member being in it is what makes that member asserted about rather than what excuses it. Both tests require the value to be ANSWERED rather than to raise -- _is_page_limit truncates, and int(inf) raises OverflowError while int(nan) raises ValueError -- and the second requires FileShapeConfig to normalise the same value to 'ALL', so the two predicates are pinned to agree about it.",
+      "turnsOff": "nothing. It is the universe the two parametrised tests beside it are driven over, so a member being in it is what makes that member asserted about rather than what excuses it. Both tests require the value to be ANSWERED rather than to raise -- _is_page_limit truncates, and int(inf) raises OverflowError while int(nan) raises ValueError -- and the second requires DocumentShapeConfig to normalise the same value to 'ALL', so the two predicates are pinned to agree about it.",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_classification_flat_keys_ui_parity.py",
       "reason": "Discovered through the name route, on the NON_ fragment, and it is not a carve-out: these three values are the cases the shared parity table in src/ui/src/utils/__tests__/page-limit.fixtures.json cannot carry, because JSON has no spelling for Infinity or NaN. Registered rather than renamed, since renaming a constant to slip past discovery is the failure this registry exists to prevent and 'not an exemption at all' is a decision it is built to record. The closure is what makes the split safe and it is asserted rather than assumed, in test_no_float_spelling_is_unaccounted_for_by_both_case_sets: every member here is non-finite so none belongs in the table, nothing in the table is non-finite so none belongs here, and math.isfinite partitions float on exactly inf, -inf and nan, which is why three is all of them. No per-member fact is computed because there is none to compute -- which float spellings Python calls non-finite is a property of the language. What a reviewer should check instead is that the assertions are real: remove the math.isfinite guard from _is_page_limit and all three cases go red, which is how the guard was verified when it was written."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/error_analyzer/test_prompt_tool_names.py::NON_TOOL_IDENTIFIERS": {
+      "kind": "exemption",
+      "memberKind": "a snake_case identifier a shipped error-analyzer system prompt quotes as data rather than as a tool",
+      "turnsOff": "test_prompt_names_no_unregistered_tool for one named identifier. Without the entry that test fails on it, because it is neither a registered error-analyzer tool nor a parameter of one.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/error_analyzer/test_prompt_tool_names.py",
+      "issues": [
+        1555
+      ],
+      "reason": "Four members, each with its own reason beside it in the constant. status_reason is a Document attribute the summarization Lambda sets when the stage fails, which the prompt names as where the generic wrapper message shows up; assessment_incomplete is a ProcessingIssue code the prompt names as a non-fatal example; log_group and log_stream are keys of search_cloudwatch_logs results that the evidence template asks the model to quote in full. Whether an identifier in prose is data or a tool reference is a reading of the sentence, not a property of the tree, so it is JUDGEMENT. test_no_non_tool_identifier_is_stale fails on a member no shipped prompt contains, and test_no_non_tool_identifier_is_a_tool fails if a member collides with a registered tool or parameter name."
+    },
+    "scripts/tests/test_test_set_label_writers.py::ALLOWED": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that no handler, resolver or library module sets labelSource to reviewed-human itself -- for each named file, whose match is not a label write",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Each member carries its own reason in the dict: testset_labels.py is the one writer the scan exists to make the only one, and testset_summaries.py derives a document summary from labels rather than writing a label. Whether a match is a label write is a reading of what the line does, which the regex cannot compute. test_every_allowed_file_still_matches fails on a stale entry whose file no longer matches, so an entry cannot outlive its reason and pre-approve a future writer at that path.",
+      "memberKind": "path",
+      "ratchetEvidence": "scripts/tests/test_test_set_label_writers.py"
     }
   }
 }

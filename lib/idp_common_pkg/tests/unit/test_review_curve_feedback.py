@@ -22,6 +22,13 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from idp_common.review_queues.testset_labels import (
+    MAX_EDIT_HISTORY_ENTRIES,
+    LabelEditor,
+    TestSetLabels,
+    append_edit_history,
+)
+
 pytestmark = pytest.mark.unit
 
 
@@ -220,7 +227,7 @@ class TestCurveFeedback:
         _seed_review_doc(table, s3)
 
         with patch.object(
-            module, "record_curve_observations", side_effect=RuntimeError("boom")
+            TestSetLabels, "record_curve_observations", side_effect=RuntimeError("boom")
         ):
             # The exception is caught by write_correction's own handler, so the
             # call returns rather than propagating to the reviewer.
@@ -246,7 +253,13 @@ class TestClaimExclusivity:
     """The collaborative queue depends on a claim being exclusive, not advisory."""
 
     def _seed(self, table, s3):
+        # Claiming needs a review to have been raised; this is one waiting, unowned.
         _seed_review_doc(table, s3)
+        table.update_item(
+            Key={"PK": "doc#run1/a.pdf", "SK": "none"},
+            UpdateExpression="SET HITLStatus = :pending",
+            ExpressionAttributeValues={":pending": "Review Pending"},
+        )
 
     def test_second_claimant_loses(self, review_env):
         """Regression: claim_review read the owner then wrote unconditionally, so
@@ -521,11 +534,11 @@ class TestRevisionHistory:
 
         saved = {"inference_result": {"vendor": "Acme"}}
         saved["_editHistory"] = [
-            {"editedBy": f"old{i}"} for i in range(module.MAX_EDIT_HISTORY_ENTRIES + 10)
+            {"editedBy": f"old{i}"} for i in range(MAX_EDIT_HISTORY_ENTRIES + 10)
         ]
-        module.append_edit_history(DRAFTED_LABEL, saved, "newest", "")
+        append_edit_history(DRAFTED_LABEL, saved, LabelEditor(name="newest"), "")
 
-        assert len(saved["_editHistory"]) == module.MAX_EDIT_HISTORY_ENTRIES
+        assert len(saved["_editHistory"]) == MAX_EDIT_HISTORY_ENTRIES
         # The most recent entries are the ones anyone reads, so the cap drops the
         # oldest rather than refusing the newest.
         assert saved["_editHistory"][-1]["editedBy"] == "newest"
@@ -555,22 +568,27 @@ class TestRevisionHistory:
 
 class TestRecordCurveObservations:
     def test_missing_previous_is_a_no_op(self, review_env):
-        module, table, _ = review_env
-        module.record_curve_observations("ts1", None, {"inference_result": {}})
+        _, table, s3 = review_env
+        labels = TestSetLabels(s3, "test-set-bucket", curve_table=table)
+        assert (
+            labels.record_curve_observations("ts1", None, {"inference_result": {}}) == 0
+        )
         from idp_common.evaluation.curve_store import CurveStore
 
         assert CurveStore(table).get_curve("ts1").total_observations == 0
 
     def test_swallows_store_errors(self, review_env):
         """A DynamoDB hiccup on the curve must not surface to the reviewer."""
-        module, _, _ = review_env
+        _, table, s3 = review_env
+        labels = TestSetLabels(s3, "test-set-bucket", curve_table=table)
         with patch(
             "idp_common.evaluation.curve_store.CurveStore.add_observations",
             side_effect=RuntimeError("throttled"),
         ):
-            module.record_curve_observations(
+            recorded = labels.record_curve_observations(
                 "ts1", DRAFTED_LABEL, {"inference_result": {"vendor": "Acme"}}
             )
+        assert recorded == 0
 
 
 class TestAnnotatorReviewScope:

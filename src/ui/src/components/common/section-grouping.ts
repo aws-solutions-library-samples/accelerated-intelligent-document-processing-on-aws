@@ -235,3 +235,19 @@ export const sortSectionsByFirstPage = <T extends { pageIds: number[] }>(section
     const firstB = b.pageIds.length > 0 ? Math.min(...b.pageIds) : Number.POSITIVE_INFINITY;
     return firstA - firstB;
   });
+
+/**
+ * The sections of `after` that re-extraction has to redo: new ones, and those whose
+ * class or set of pages differs from `before`. A section whose pages were only reordered
+ * is not changed, since extraction sorts its page ids; a deleted section is absent from
+ * `after`, so it is not listed.
+ */
+export const changedSections = (before: GroupedSection[], after: GroupedSection[]): GroupedSection[] => {
+  const byId = new Map(before.map((s) => [s.sectionId, s]));
+  const pageSet = (ids: number[]) => JSON.stringify(sortPageIds(ids));
+  return after.filter((s) => {
+    const old = byId.get(s.sectionId);
+    if (!old) return true;
+    return (old.documentClass ?? null) !== (s.documentClass ?? null) || pageSet(old.pageIds) !== pageSet(s.pageIds);
+  });
+};

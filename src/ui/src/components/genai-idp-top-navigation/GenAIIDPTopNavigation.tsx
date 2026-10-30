@@ -122,9 +122,9 @@ const GenAIIDPTopNavigation = (): React.JSX.Element => {
           identity={{ href: '#', title: consoleTitle }}
           i18nStrings={{ overflowMenuTriggerText: 'More' }}
           utilities={[
-            // The notifications bell belongs to the Inbox, which only Annotators have.
-            ...(isAnnotator ? [inboxUtility] : []),
-            // An Annotator-only user's shell is My Work and the notifications bell.
+            // The notifications bell belongs to the Inbox, which every user has.
+            inboxUtility,
+            // An Annotator-only user's shell is Home and the notifications bell.
             ...(isAnnotatorOnly ? [] : [feedbackUtility]),
             {
               type: 'menu-dropdown',

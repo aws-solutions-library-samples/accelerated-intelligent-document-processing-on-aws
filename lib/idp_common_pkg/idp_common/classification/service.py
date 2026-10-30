@@ -80,29 +80,24 @@ UNCLASSIFIED_FAILED = "failed"
 UNCLASSIFIED_NO_CONTENT = "no_content"
 
 # Which call's configuration is being resolved. These are not three
-# classification *methods* — they are the one single-pass call, and the two
-# halves of the two-stage strategy, which need different prompts, may use
-# different models, and are metered separately so that a two-stage deployment's
-# cost table shows where the money went instead of summing both under one line.
+# classification *methods* — they are the one call of the combined strategy, and
+# the two calls of the split-then-classify strategy, which need different prompts,
+# may use different models, and are metered separately so that a
+# split-then-classify deployment's cost table shows where the money went instead
+# of summing both under one line.
 #
-# ⚠️ Do not spell either of the single-pass names with a `_PASS` suffix. Bandit's
-# B105 matches an identifier's NAME against a password wordlist, "pass" is in it,
-# and SRT promotes B105 to HIGH unconditionally — so `STAGE_SINGLE_PASS` fails
-# the security gate as a hardcoded credential. The carve-out SRT makes for that
-# name shape covers test code only, deliberately, since a name in shipping code
-# reaches a deployment artifact. A per-line `# nosec` is the accretion that scope
-# decision exists to replace, so the identifier is named around it instead; the
-# configuration VALUE stays `single_pass`, which is the vocabulary #1328 chose.
+# ⚠️ Do not end an identifier here in a password-wordlist word such as `_PASS`:
+# Bandit's B105 matches the NAME, and SRT promotes B105 to HIGH unconditionally.
 STAGE_CLASSIFICATION = "classification"
-STAGE_SEGMENTATION = "segmentation"
-STAGE_LABELING = "labeling"
+STAGE_SPLITTING = "splitting"
+STAGE_SECTION_CLASSIFICATION = "section_classification"
 
 #: Where each call's settings live under ``classification`` (config format 0.9),
 #: for messages that have to name the setting to change.
 STAGE_CALL_PATH = {
-    STAGE_CLASSIFICATION: "one_stage.llm",
-    STAGE_SEGMENTATION: "two_stage.segmentation.llm",
-    STAGE_LABELING: "two_stage.section_classification.llm",
+    STAGE_CLASSIFICATION: "combined.llm",
+    STAGE_SPLITTING: "split_then_classify.splitting.llm",
+    STAGE_SECTION_CLASSIFICATION: "split_then_classify.section_classification.llm",
 }
 
 # Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
@@ -146,8 +141,8 @@ def aggregate_page_confidence(values: List[Optional[float]]) -> Optional[float]:
 
 _CLASSIFICATION_METHOD_REMOVED = (
     "ClassificationService.classification_method was removed in config format "
-    "0.8. Set `classification.one_stage.granularity` ('page' or 'packet') and, if "
-    "you want it explicit, `classification.one_stage.llm.modality.text` / "
+    "0.8. Set `classification.combined.granularity` ('page' or 'packet') and, if "
+    "you want it explicit, `classification.combined.llm.modality.text` / "
     "`.images` in the config instead; a stored config carrying the old key is "
     "converted on read. The resolved value is readable as `service.granularity`."
 )
@@ -241,7 +236,7 @@ def _annotate_image_refusal(
         return
     model = config.get("model_id") or "this model"
     setting = (
-        f"classification.{STAGE_CALL_PATH.get(str(config.get('stage')), 'one_stage.llm')}"
+        f"classification.{STAGE_CALL_PATH.get(str(config.get('stage')), 'combined.llm')}"
         ".modality.images"
     )
     hint = (
@@ -287,26 +282,24 @@ class ClassificationService:
         raise AttributeError(_CLASSIFICATION_METHOD_REMOVED)
 
     # Strategy: whether boundaries and classes come from one call or two.
-    # The identifier deliberately does not echo its value — see the note on
-    # STAGE_CLASSIFICATION above for why no name here carries a `_PASS` suffix.
-    # `ONE_STAGE` also pairs readably with TWO_STAGE below.
-    STRATEGY_ONE_STAGE = "single_pass"
-    STRATEGY_TWO_STAGE = "two_stage"
+    # See the note on STAGE_CLASSIFICATION above for why no name here ends in
+    # a password-wordlist word such as `_PASS`.
+    STRATEGY_COMBINED = "combined"
+    STRATEGY_SPLIT_THEN_CLASSIFY = "split_then_classify"
 
     # Stage names, re-exported on the class for callers and tests.
     STAGE_CLASSIFICATION = STAGE_CLASSIFICATION
-    STAGE_SEGMENTATION = STAGE_SEGMENTATION
-    STAGE_LABELING = STAGE_LABELING
+    STAGE_SPLITTING = STAGE_SPLITTING
+    STAGE_SECTION_CLASSIFICATION = STAGE_SECTION_CLASSIFICATION
 
-    # The metering context each stage's tokens are billed under. Single-pass
-    # stays `Classification` with unchanged units, so a cost comparison across
-    # this change is a straight read; two-stage splits into two lines, which is
-    # what makes "is Stage B actually cheaper than labeling every page?"
-    # answerable from the cost table.
+    # The metering context each stage's tokens are billed under. The combined
+    # call is billed under `Classification`; split-then-classify splits into two
+    # lines, which is what makes "is section classification actually cheaper
+    # than labeling every page?" answerable from the cost table.
     STAGE_METERING_CONTEXT = {
         STAGE_CLASSIFICATION: "Classification",
-        STAGE_SEGMENTATION: "Segmentation",
-        STAGE_LABELING: "SectionClassification",
+        STAGE_SPLITTING: "Splitting",
+        STAGE_SECTION_CLASSIFICATION: "SectionClassification",
     }
 
     # Soft cap on the number of schema attribute names emitted per class
@@ -409,36 +402,40 @@ class ClassificationService:
         # when the file is one document. With boundary detection on, it would
         # collapse only files longer than N and section shorter ones normally —
         # a different answer per file in one run — so it is not applied.
-        file_shape = self.config.classification.file_shape
-        self.max_pages_for_classification = file_shape.maxPagesForClassification
+        document_shape = self.config.classification.document_shape
+        self.max_pages_for_classification = document_shape.maxPagesForClassification
         if (
             str(self.max_pages_for_classification).upper() != "ALL"
-            and file_shape.sectionSplitting != "disabled"
+            and document_shape.sectionSplitting != "disabled"
         ):
             logger.warning(
-                "classification.file_shape.maxPagesForClassification is %r but "
+                "classification.document_shape.maxPagesForClassification is %r but "
                 "sectionSplitting is %r; the page limit applies only to 'disabled' "
-                "(one document per file) and is ignored.",
+                "(one section per document) and is ignored.",
                 self.max_pages_for_classification,
-                file_shape.sectionSplitting,
+                document_shape.sectionSplitting,
             )
             self.max_pages_for_classification = "ALL"
 
-        # The page-reading call's granularity: one_stage's under single_pass,
-        # segmentation's under two_stage. Section classification has none.
+        # The page-reading call's granularity: the combined call's under
+        # combined, the splitting call's under split_then_classify. Section
+        # classification has none.
         self.strategy = self.config.classification.strategy
         self.granularity = self._page_input().granularity
 
         send_text, send_images = self._resolve_modality()
-        if self.strategy == self.STRATEGY_TWO_STAGE:
-            labeling = self.config.classification.two_stage.section_classification
+        if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
+            labeling = (
+                self.config.classification.split_then_classify.section_classification
+            )
             logger.info(
-                "Using TWO-STAGE classification: Stage A finds boundaries at %s "
-                "granularity (boundary_hints=%s), Stage B labels each segment "
-                "with one %s call over its %s page(s). Metered separately as "
-                "Segmentation and SectionClassification.",
+                "Using the split-then-classify strategy: the splitting call finds "
+                "boundaries at %s granularity (boundary_hints=%s), section "
+                "classification labels each segment with one %s call over its %s "
+                "page(s). Metered separately as "
+                "Splitting and SectionClassification.",
                 self.granularity,
-                self.config.classification.two_stage.segmentation.llm.boundary_hints,
+                self.config.classification.split_then_classify.splitting.llm.boundary_hints,
                 labeling.method,
                 labeling.k if labeling.pages == "first_k" else labeling.pages,
             )
@@ -1121,7 +1118,7 @@ class ClassificationService:
                     f"All {len(cached_page_classifications)} page classifications found in cache"
                 )
 
-            # Apply configured section splitting strategy
+            # Apply configured section splitting value
             document = self._apply_section_splitting_strategy(
                 document, all_page_results
             )
@@ -1428,13 +1425,14 @@ class ClassificationService:
 
         Args:
             stage: Which call's configuration to resolve —
-                :data:`STAGE_CLASSIFICATION` (the default: one call returns both
-                boundaries and classes), :data:`STAGE_SEGMENTATION` (two-stage
-                Stage A) or :data:`STAGE_LABELING` (two-stage Stage B). The
-                stage decides which prompts are used, which model, and the
-                **metering context** the call is billed under, so that a
-                two-stage deployment's cost table separates the two halves
-                instead of adding them together under one line.
+                :data:`STAGE_CLASSIFICATION` (the default: the combined call returns
+                both boundaries and classes), :data:`STAGE_SPLITTING` (the
+                splitting call of split-then-classify) or
+                :data:`STAGE_SECTION_CLASSIFICATION` (its section classification
+                call). The stage decides which prompts are used, which model, and
+                the **metering context** the call is billed under, so that a
+                split-then-classify deployment's cost table separates the two
+                calls instead of adding them together under one line.
 
         Returns:
             Dict with validated classification configuration parameters
@@ -1483,10 +1481,10 @@ class ClassificationService:
     def _stage_model(self, stage: str) -> str:
         """The model for one call: each call's block names its own.
 
-        Naming a model per call is most of the point of two-stage: boundary
-        detection may want a capable multimodal model looking at a whole packet,
-        while classifying a clean section is often a much easier problem that a
-        cheaper model answers just as well.
+        Naming a model per call is most of the point of split-then-classify:
+        the splitting call may want a capable multimodal model looking at a
+        whole packet, while classifying a clean section is often a much easier
+        problem that a cheaper model answers just as well.
         """
         return self._call(stage).model
 
@@ -1501,27 +1499,29 @@ class ClassificationService:
         the mode composes the *instruction*, it does not gate the *parsing*.
         """
         confidence_cfg = self._call(
-            self.STAGE_LABELING
-            if stage == self.STAGE_LABELING
+            self.STAGE_SECTION_CLASSIFICATION
+            if stage == self.STAGE_SECTION_CLASSIFICATION
             else self.STAGE_CLASSIFICATION
         ).confidence
         mode = confidence_cfg.mode
         if mode == "off":
             return task_prompt
 
-        if stage == self.STAGE_SEGMENTATION:
-            # Stage A reports no class, so there is no class to be confident
-            # about. Scoring belongs to Stage B, which is where the class is
+        if stage == self.STAGE_SPLITTING:
+            # The splitting call reports no class, so there is no class to be
+            # confident about. Scoring belongs to section classification, which
+            # is where the class is
             # decided — and spending output tokens here would buy a number
             # describing nothing.
             return task_prompt
 
-        # Stage B is always one call about one segment, so it takes the PAGE
-        # block shape (one class, one score) regardless of how the boundaries
-        # were found. The packet block describes a `segments` array Stage B
-        # does not return.
+        # Section classification is always one call about one segment, so it
+        # takes the PAGE block shape (one class, one score) regardless of how
+        # the boundaries were found. The packet block describes a `segments`
+        # array section classification does not return.
         packet = (
-            self.granularity == self.GRANULARITY_PACKET and stage != self.STAGE_LABELING
+            self.granularity == self.GRANULARITY_PACKET
+            and stage != self.STAGE_SECTION_CLASSIFICATION
         )
 
         if mode == "topk":
@@ -1553,9 +1553,9 @@ class ClassificationService:
                 "classification.%s.confidence.mode=%s but its prompt block is "
                 "empty; no confidence will be requested. Restore it from the "
                 "system defaults (base-classification.yaml).",
-                "two_stage.section_classification.llm"
-                if stage == self.STAGE_LABELING
-                else "one_stage.llm",
+                "split_then_classify.section_classification.llm"
+                if stage == self.STAGE_SECTION_CLASSIFICATION
+                else "combined.llm",
                 mode,
             )
             return task_prompt
@@ -1630,7 +1630,7 @@ class ClassificationService:
         the reason it exists is that the alternative fallback CANNOT WORK. A
         profile saved before `classification.packet` / `.segmentation` /
         `.labeling` existed reads those prompts back empty, and falling back to
-        the single-pass page prompt makes the model answer in page shape — which
+        the combined page prompt makes the model answer in page shape — which
         the segments parser cannot read, so every document fails with "No
         segments found". A fallback that always fails is not a fallback.
 
@@ -1653,42 +1653,44 @@ class ClassificationService:
     # made once rather than at fifty read sites.
     #
     # ⚠️ The page-reading code — the page and packet builders, the image loaders,
-    # the context-page preloader — is SHARED by single-pass and two-stage Stage A.
-    # So those paths ask for "the active strategy's page-reading call", while the
-    # Stage B paths name their own block. Exactly one strategy is ever active, so
-    # there is never a second page reader to confuse it with.
+    # the context-page preloader — is SHARED by the combined call and the
+    # splitting call. So those paths ask for "the active strategy's page-reading
+    # call", while the section classification paths name their own block.
+    # Exactly one strategy is ever active, so there is never a second page
+    # reader to confuse it with.
 
     def _reader_stage(self) -> str:
         """The stage that reads pages under the active strategy."""
-        if self.config.classification.strategy == self.STRATEGY_TWO_STAGE:
-            return self.STAGE_SEGMENTATION
+        if self.config.classification.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
+            return self.STAGE_SPLITTING
         return self.STAGE_CLASSIFICATION
 
     def _call(self, stage: Optional[str] = None):
         """The model-settings block for ``stage``; ``None`` is the page reader."""
         cls = self.config.classification
         stage = stage or self._reader_stage()
-        if stage == self.STAGE_LABELING:
-            return cls.two_stage.section_classification.llm
-        if stage == self.STAGE_SEGMENTATION:
-            return cls.two_stage.segmentation.llm
-        return cls.one_stage.llm
+        if stage == self.STAGE_SECTION_CLASSIFICATION:
+            return cls.split_then_classify.section_classification.llm
+        if stage == self.STAGE_SPLITTING:
+            return cls.split_then_classify.splitting.llm
+        return cls.combined.llm
 
     def _page_input(self):
         """granularity / page / packet of the active page-reading call."""
         return self.config.classification.page_input_call()
 
-    def _file_shape(self):
-        return self.config.classification.file_shape
+    def _document_shape(self):
+        return self.config.classification.document_shape
 
     # ── What a stage is allowed to put in its prefix ────────────────────────
-    # The prefix saving is the whole justification for two-stage, and it is a
-    # property of the STAGE rather than of the builder that happens to render
-    # the prompt: the page builders, the context builder and the packet builder
-    # are all shared between single-pass, Stage A and Stage B. So every one of
-    # them asks these two questions instead of each deciding for itself —
-    # which is how the guarantee came to be stated everywhere and delivered on
-    # no path at all, each builder withholding a different subset.
+    # The prefix saving is the whole justification for split-then-classify, and
+    # it is a property of the STAGE rather than of the builder that happens to
+    # render the prompt: the page builders, the context builder and the packet
+    # builder are all shared between the combined call, the splitting call and
+    # section classification. So every one of them asks these two questions
+    # instead of each deciding for itself — which is how the guarantee came to
+    # be stated everywhere and delivered on no path at all, each builder
+    # withholding a different subset.
     #
     # ⚠️ Every content builder therefore takes `stage` as a KEYWORD-ONLY
     # parameter with NO default. A default would let a new call site reinstate
@@ -1698,30 +1700,32 @@ class ClassificationService:
     def _stage_withholds_class_vocabulary(self, stage: str) -> bool:
         """Whether ``stage`` must send no class vocabulary and no examples.
 
-        True for two-stage Stage A only. Finding where a document starts does
-        not depend on the class list, the descriptions, the schema attributes
-        or the few-shot examples, and at page granularity that prefix would be
-        paid once per page — which is the cost two-stage exists to remove.
-        ``boundary_hints: class_names`` stays the one supported way to put
-        class *names* into Stage A, and it is rendered separately.
+        True for the splitting call of split-then-classify only. Finding where a
+        document starts does not depend on the class list, the descriptions, the
+        schema attributes or the few-shot examples, and at page granularity that
+        prefix would be paid once per page — which is the cost split-then-classify
+        exists to remove. ``boundary_hints: class_names`` stays the one supported
+        way to put class *names* into the splitting call, and it is rendered
+        separately.
         """
-        return stage == self.STAGE_SEGMENTATION
+        return stage == self.STAGE_SPLITTING
 
     def _few_shot_examples_content(self, stage: str) -> List[Dict[str, Any]]:
         """The ``{FEW_SHOT_EXAMPLES}`` blocks for ``stage``.
 
-        Empty for Stage A. An example is a page shown together with its class,
-        so it is class vocabulary in the most expensive form there is — the
-        examples are usually the bulk of the prefix, and they carry images.
+        Empty for the splitting call. An example is a page shown together with
+        its class, so it is class vocabulary in the most expensive form there
+        is — the examples are usually the bulk of the prefix, and they carry
+        images.
         """
         if self._stage_withholds_class_vocabulary(stage):
             return []
         return build_few_shot_examples_content(self.config)
 
     # ── Class validation, one source for every class-assigning path ─────────
-    # Single-pass page, single-pass packet and Stage B all decide a class, and
-    # all three read validation through these, so the settings cannot mean
-    # different things on different paths again.
+    # Combined page, combined packet and section classification all decide a
+    # class, and all three read validation through these, so the settings
+    # cannot mean different things on different paths again.
 
     def _class_validation_enforced(self) -> bool:
         return bool(
@@ -1742,8 +1746,8 @@ class ClassificationService:
 
         Section classification is **not** granularity-dependent: it is always one
         call about one section's pages, whichever way the boundaries were found.
-        One stage and segmentation both are, because both are asked either about
-        one page or about a whole packet — so their prompts live in the
+        The combined call and the splitting call both are, because both are asked
+        either about one page or about a whole packet — so their prompts live in the
         ``page`` / ``packet`` sub-block of their own call.
 
         An empty prompt resolves to the SHIPPED prompt for the same field, never
@@ -1751,32 +1755,32 @@ class ClassificationService:
         wrong shape always fails, which makes it no fallback at all.
         """
         cls = self.config.classification
-        if stage == self.STAGE_LABELING:
-            path = ("two_stage", "section_classification", "llm", field)
-            value = getattr(cls.two_stage.section_classification.llm, field)
+        if stage == self.STAGE_SECTION_CLASSIFICATION:
+            path = ("split_then_classify", "section_classification", "llm", field)
+            value = getattr(cls.split_then_classify.section_classification.llm, field)
         else:
             block = (
-                cls.two_stage.segmentation.llm
-                if stage == self.STAGE_SEGMENTATION
-                else cls.one_stage
+                cls.split_then_classify.splitting.llm
+                if stage == self.STAGE_SPLITTING
+                else cls.combined
             )
             root = (
-                ("two_stage", "segmentation", "llm")
-                if stage == self.STAGE_SEGMENTATION
-                else ("one_stage",)
+                ("split_then_classify", "splitting", "llm")
+                if stage == self.STAGE_SPLITTING
+                else ("combined",)
             )
             sub = "packet" if block.granularity == self.GRANULARITY_PACKET else "page"
             path = root + (sub, field)
             value = getattr(getattr(block, sub), field)
         if value:
             return value
-        # ⚠️ The single-pass PAGE prompt gets no shipped fallback, unlike every
+        # ⚠️ The combined PAGE prompt gets no shipped fallback, unlike every
         # other prompt here. The fallback exists for prompts added after a
         # profile could have been saved, which read back empty through no choice
         # of the operator's (#1522). The page prompt has always existed, so an
         # empty one is a broken configuration — and the caller refuses it with a
         # message naming the stage, which is the right outcome.
-        if path[:2] == ("one_stage", "page"):
+        if path[:2] == ("combined", "page"):
             return ""
         shipped = self._shipped_prompt(*path)
         if shipped:
@@ -1943,12 +1947,13 @@ class ClassificationService:
         while giving the dict two shapes.
 
         **Every vocabulary placeholder is rendered here and nowhere else**, so
-        that "Stage A carries no class vocabulary" is decided once. Each of the
-        three content builders used to answer it separately and they answered
-        it differently: the page path with no context pages withheld the plain
-        class listing and nothing else, while the attribute listing and every
-        configured few-shot example reached Stage A on all three. So the
-        guarantee held on no path, and the page/no-context one came closest.
+        that "the splitting call carries no class vocabulary" is decided once.
+        Each of the three content builders used to answer it separately and
+        they answered it differently: the page path with no context pages
+        withheld the plain class listing and nothing else, while the attribute
+        listing and every configured few-shot example reached the splitting call
+        on all three. So the guarantee held on no path, and the page/no-context
+        one came closest.
         ``stage`` is keyword-only and has no default for the same reason: a
         caller that omitted it would get the full vocabulary with no type error
         and no failing test, which is exactly the symptomless failure this
@@ -1959,9 +1964,10 @@ class ClassificationService:
             class_names_and_descriptions: The pre-formatted class listing
                 (either flat list or markdown table, depending on caller).
             stage: Which call this prompt belongs to. Under
-                :data:`STAGE_SEGMENTATION` the class listing, the schema
+                :data:`STAGE_SPLITTING` the class listing, the schema
                 attribute listing and the few-shot examples all render empty;
-                ``boundary_hints`` is the only vocabulary Stage A can carry.
+                ``boundary_hints`` is the only vocabulary the splitting call
+                can carry.
             attributes_as_table: Render the optional attribute listing as a
                 markdown table rather than the XML list, so the packet path
                 matches the class table it sits beside.
@@ -1980,12 +1986,13 @@ class ClassificationService:
             "CLASS_NAMES_AND_DESCRIPTIONS": (
                 "" if withhold else class_names_and_descriptions
             ),
-            # Two-stage Stage A only, and empty for every other stage — the
+            # The splitting call only, and empty for every other stage — the
             # block tells the model to report boundaries and NOT a type, which
-            # is the one thing a single-pass or Stage B call must do. Renders
-            # empty for Stage A too under the default `boundary_hints: none`,
-            # which is the point: a boundary call that carries no class
-            # vocabulary is the prefix saving two-stage exists for. Included
+            # is the one thing a combined or section classification call must
+            # do. Renders empty for the splitting call too under the default
+            # `boundary_hints: none`, which is the point: a splitting call that
+            # carries no class vocabulary is the prefix saving
+            # split-then-classify exists for. Included
             # unconditionally because format_prompt substitutes only
             # placeholders the template actually references.
             "BOUNDARY_HINTS": self._format_boundary_hints(stage),
@@ -1994,7 +2001,7 @@ class ClassificationService:
             # placeholders that actually appear in the template, so this
             # is cost-neutral for users who don't reference it. It renders the
             # class names AND descriptions AND their schema attributes, so it
-            # is withheld from Stage A for the same reason the plain class
+            # is withheld from the splitting call for the same reason the plain class
             # listing is — more vocabulary, not less.
             "CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS": (
                 "" if withhold else attributes
@@ -2315,7 +2322,7 @@ class ClassificationService:
         # Add the part before examples
         content.extend(before_examples_content)
 
-        # Add few-shot examples from config (none for Stage A)
+        # Add few-shot examples from config (none for the splitting call)
         examples_content = self._few_shot_examples_content(stage)
         content.extend(examples_content)
 
@@ -2361,9 +2368,10 @@ class ClassificationService:
         than the single current-page image.
 
         ``stage`` is threaded through for the same reason it is on
-        :meth:`_build_content`: this builder serves single-pass page
-        classification **and** two-stage Stage A at page granularity with
-        ``contextPagesCount > 0``, and only Stage A withholds the vocabulary.
+        :meth:`_build_content`: this builder serves combined page
+        classification **and** the splitting call at page granularity with
+        ``contextPagesCount > 0``, and only the splitting call withholds the
+        vocabulary.
         """
         parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
 
@@ -2546,7 +2554,7 @@ class ClassificationService:
                 logger.warning(f"Failed to load image content from {image_uri}: {e}")
                 # Continue without image content
 
-        # Check for page content regex match (multi-modal page-level classification only)
+        # Check for page content regex match (combined strategy, page granularity only)
         if text_content:
             regex_matched_class = self._check_page_content_regex(text_content)
             if regex_matched_class:
@@ -3069,9 +3077,8 @@ class ClassificationService:
                 top_k=config["top_k"],
                 top_p=config["top_p"],
                 max_tokens=config["max_tokens"],
-                # Single-pass keeps "Classification" with unchanged units, so a
-                # cost comparison across this change is a straight read.
-                # Two-stage bills its halves under "Segmentation" and
+                # The combined call bills under "Classification".
+                # Split-then-classify bills its two calls under "Splitting" and
                 # "SectionClassification".
                 context=config.get("metering_context", "Classification"),
                 model_lambda_hook_arn=config.get(
@@ -3082,7 +3089,7 @@ class ClassificationService:
         except Exception as exc:
             # ⚠️ Enriched HERE rather than at a call site, because this is the one
             # choke point every classification request goes through — page-level,
-            # packet, Stage A segmentation and Stage B labeling. The same
+            # packet, the splitting call and section classification. The same
             # per-call `modality.images` setting attaches images on the
             # first three, and page granularity is the DEFAULT, so a hint added
             # only to the packet path would miss the common case. Fixing the
@@ -3517,9 +3524,10 @@ class ClassificationService:
         Uses the configured backend (Bedrock or SageMaker).
 
         Dispatch reads ``strategy`` first, then ``granularity``:
-        - ``strategy: two_stage`` — boundaries first with no class vocabulary in
-          the prompt, then one labeling call per segment. Honours ``granularity``
-          inside Stage A, so the two settings compose rather than nest.
+        - ``strategy: split_then_classify`` — boundaries first with no class
+          vocabulary in the prompt, then one labeling call per segment.
+          Honours ``granularity`` inside the splitting call, so the two
+          settings compose rather than nest.
         - ``granularity: page`` (the default) — one call per page, with sequence
           segmentation similar to BIO (Begin-Inside-Outside) tagging. Each page
           receives a document type and a boundary indicator, ``"start"`` for the
@@ -3628,8 +3636,8 @@ class ClassificationService:
                 # Classify the limited document. A page limit is only in force
                 # under sectionSplitting "disabled" (see __init__), so collapsing
                 # the result into one all-pages section is what that setting asks.
-                if self.strategy == self.STRATEGY_TWO_STAGE:
-                    classified_limited = self.two_stage_classify_document(
+                if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
+                    classified_limited = self.split_then_classify_document(
                         limited_document, forced_class=forced_class
                     )
                 elif self.granularity == self.GRANULARITY_PACKET:
@@ -3652,11 +3660,13 @@ class ClassificationService:
                 )
                 return document
 
-        # Dispatch on strategy first, then on granularity. Two-stage honours
-        # granularity inside Stage A, so the two settings compose rather than
-        # nest.
-        if self.strategy == self.STRATEGY_TWO_STAGE:
-            return self.two_stage_classify_document(document, forced_class=forced_class)
+        # Dispatch on strategy first, then on granularity. Split-then-classify
+        # honours granularity inside the splitting call, so the two settings
+        # compose rather than nest.
+        if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
+            return self.split_then_classify_document(
+                document, forced_class=forced_class
+            )
 
         if self.granularity == self.GRANULARITY_PACKET:
             return self.packet_classify_document(document, forced_class=forced_class)
@@ -3712,7 +3722,7 @@ class ClassificationService:
         self, document: Document, page_results: List[PageClassification]
     ) -> Document:
         """
-        Apply configured section splitting strategy.
+        Apply configured section splitting value.
 
         Args:
             document: Document with classified pages
@@ -3858,7 +3868,7 @@ class ClassificationService:
                 worst one). A packet-level call has no per-page signal to pass,
                 and then the segment's score is the best available.
         """
-        strategy = self._file_shape().sectionSplitting.lower()
+        strategy = self._document_shape().sectionSplitting.lower()
 
         if not segments:
             logger.warning(
@@ -4119,7 +4129,7 @@ class ClassificationService:
                 ordered.append((page_id, segment))
         return ordered
 
-    def _needs_boundary_detection(self, document: Document) -> bool:
+    def _needs_splitting(self, document: Document) -> bool:
         """True when the configured ``sectionSplitting`` needs a model signal.
 
         Shared by both short-circuits — the single-class one (GitHub issue #686)
@@ -4136,7 +4146,7 @@ class ClassificationService:
         it as "nothing to detect" is what collapses every multi-document packet
         into one section by construction — the bug both issues report.
         """
-        strategy = self._file_shape().sectionSplitting.lower()
+        strategy = self._document_shape().sectionSplitting.lower()
         if strategy in ("disabled", "page"):
             return False
 
@@ -4158,7 +4168,7 @@ class ClassificationService:
         ``sectionSplitting: page`` was silently ignored.
 
         The same three-way rule as the single-class short-circuit applies (see
-        ``_needs_boundary_detection``). Note that "the class came from the
+        ``_needs_splitting``). Note that "the class came from the
         filename" does not make boundary detection unnecessary: knowing *what* a
         packet contains says nothing about *where* one record ends and the next
         begins. So for a multi-page ``llm_determined`` document this returns
@@ -4175,7 +4185,7 @@ class ClassificationService:
         zero-inference path, and ``sectionSplitting: disabled`` is the explicit
         opt-out for multi-page files that are always one document.
         """
-        if self._needs_boundary_detection(document):
+        if self._needs_splitting(document):
             logger.info(
                 "Document name regex matched class '%s' but sectionSplitting='%s' "
                 "needs boundary detection across %d pages: running classification "
@@ -4183,7 +4193,7 @@ class ClassificationService:
                 "Set sectionSplitting: disabled (or page) to skip inference "
                 "entirely.",
                 class_name,
-                self._file_shape().sectionSplitting.lower(),
+                self._document_shape().sectionSplitting.lower(),
                 len(document.pages),
                 class_name,
             )
@@ -4206,7 +4216,7 @@ class ClassificationService:
         - **any strategy on a single-page document** — there is no boundary
           decision to make on one page, so the result is identical either way and
           an inference call would be pure waste. This keeps the common
-          "one document per file" single-class deployment at zero classification
+          "one section per document" single-class deployment at zero classification
           cost, which is what the original short-circuit was really protecting.
 
         ``llm_determined`` on a multi-page document is NOT skippable. It asks for
@@ -4224,7 +4234,7 @@ class ClassificationService:
         if not self.has_single_class:
             return False
 
-        if not self._needs_boundary_detection(document):
+        if not self._needs_splitting(document):
             return True
 
         logger.info(
@@ -4233,7 +4243,7 @@ class ClassificationService:
             "sectionSplitting: disabled to skip it when one file is always one "
             "document.",
             self.single_class_name,
-            self._file_shape().sectionSplitting.lower(),
+            self._document_shape().sectionSplitting.lower(),
             len(document.pages),
         )
         return False
@@ -4637,7 +4647,7 @@ class ClassificationService:
                 was shown them. ``None`` for a call that saw the whole document
                 with its own page IDs.
             require_class: Whether a segment must carry a ``type``. False for
-                two-stage Stage A, which is asked for page ranges only and
+                the splitting call, which is asked for page ranges only and
                 whose segments are deliberately unlabeled — the whole reason
                 ``Segment.doc_class`` is optional.
 
@@ -4916,8 +4926,9 @@ class ClassificationService:
         images, and ``{FEW_SHOT_EXAMPLES}`` left in the prompt as a literal
         string, which is the same defect the context path had.
 
-        This one builder serves all three stages — single-pass packet
-        classification, two-stage Stage A at packet granularity and Stage B —
+        This one builder serves all three stages — combined packet
+        classification, the splitting call at packet granularity and section
+        classification —
         so ``stage`` is what decides whether the class vocabulary and the
         examples render.
         """
@@ -5095,7 +5106,7 @@ class ClassificationService:
     ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
         """Run every packet window and merge the result into one segment list.
 
-        Shared by single-pass packet classification and by two-stage Stage A at
+        Shared by combined packet classification and by the splitting call at
         packet granularity: the two differ only in which prompt and model the
         stage resolves and whether a class comes back, both of which are
         properties of ``stage``.
@@ -5294,8 +5305,8 @@ class ClassificationService:
             config["task_prompt"],
             paged_text,
             page_images,
-            # This path is single-pass packet classification AND two-stage
-            # Stage A at packet granularity; the stage on the config dict is
+            # This path is combined packet classification AND the splitting
+            # call at packet granularity; the stage on the config dict is
             # the same one that chose the prompt and the model.
             stage=config["stage"],
         )
@@ -5308,14 +5319,15 @@ class ClassificationService:
             len(page_images),
         )
         # ⚠️ The class-validation settings apply here exactly as on the page and
-        # Stage B paths. They used not to: an out-of-vocabulary segment class was
-        # logged ("using anyway") and kept, so enforceValidClasses,
-        # maxValidationRetries and the fallback class were silently inert on one
-        # of the class-assigning paths while the panel showed them as in force.
-        # Stage A is excluded because it returns no class; a regex-forced class
-        # is excluded because the operator's match already decided it.
+        # section classification paths. They used not to: an out-of-vocabulary
+        # segment class was logged ("using anyway") and kept, so
+        # enforceValidClasses, maxValidationRetries and the fallback class were
+        # silently inert on one of the class-assigning paths while the panel
+        # showed them as in force. The splitting call is excluded because it
+        # returns no class; a regex-forced class is excluded because the
+        # operator's match already decided it.
         validates = (
-            config.get("stage") != self.STAGE_SEGMENTATION
+            config.get("stage") != self.STAGE_SPLITTING
             and not forced_class
             and self._class_validation_enforced()
         )
@@ -5439,9 +5451,9 @@ class ClassificationService:
             document,
             forced_class=forced_class,
             window_page_ids=window_page_ids,
-            # Stage A is asked for ranges only — requiring a type here would
-            # reject every segment it correctly returns.
-            require_class=config.get("stage") != self.STAGE_SEGMENTATION,
+            # The splitting call is asked for ranges only — requiring a type
+            # here would reject every segment it correctly returns.
+            require_class=config.get("stage") != self.STAGE_SPLITTING,
         )
         if not segments:
             raise ValueError(
@@ -5462,28 +5474,30 @@ class ClassificationService:
         return self.packet_classify_document(document, forced_class=forced_class)
 
     def _format_boundary_hints(self, stage: str) -> str:
-        """Render ``{BOUNDARY_HINTS}`` for two-stage Stage A.
+        """Render ``{BOUNDARY_HINTS}`` for the splitting call.
 
         Empty under the default ``boundary_hints: none``, and that is the point:
-        a boundary call carrying no class vocabulary at all is the prefix saving
-        two-stage exists for. ``class_names`` sends the **names only** — not the
-        descriptions and not the few-shot examples, which are the bulk of the
-        prefix — for the case where a boundary is marked by a form number or
+        a splitting call carrying no class vocabulary at all is the prefix saving
+        split-then-classify exists for. ``class_names`` sends the **names
+        only** — not the descriptions and not the few-shot examples, which are
+        the bulk of the prefix — for the case where a boundary is marked by a
+        form number or
         title the class names happen to mention.
 
-        ⚠️ **Empty for every stage other than segmentation, whatever the
+        ⚠️ **Empty for every stage other than the splitting call, whatever the
         setting says**, which is why ``stage`` has no default: the block ends
         "do NOT report a type, only where each document starts and ends", and
-        that is the one thing a single-pass or Stage B call must do. The
-        setting lives in the ``two_stage`` subtree and so is inert under
-        ``strategy: single_pass`` — but the subtree is readable either way, so
-        a single-pass prompt referencing ``{BOUNDARY_HINTS}`` used to be given
+        that is the one thing a combined or section classification call must do.
+        The
+        setting lives in the ``split_then_classify`` subtree and so is inert under
+        ``strategy: combined`` — but the subtree is readable either way, so
+        a combined prompt referencing ``{BOUNDARY_HINTS}`` used to be given
         the block from a subtree nothing else in that run reads.
         """
-        if stage != self.STAGE_SEGMENTATION:
+        if stage != self.STAGE_SPLITTING:
             return ""
         if (
-            self.config.classification.two_stage.segmentation.llm.boundary_hints
+            self.config.classification.split_then_classify.splitting.llm.boundary_hints
             != "class_names"
             or not self.document_types
         ):
@@ -5498,15 +5512,15 @@ class ClassificationService:
             "</document-type-hints>"
         )
 
-    def two_stage_classify_document(
+    def split_then_classify_document(
         self, document: Document, forced_class: Optional[str] = None
     ) -> Document:
         """Classify by finding boundaries first, then labeling each segment.
 
-        Opt in with ``classification.strategy: two_stage``. Single-pass stays
-        the default.
+        Opt in with ``classification.strategy: split_then_classify``. The
+        combined strategy stays the default.
 
-        A single-pass call does two different jobs at once, and pays for it in
+        A combined call does two different jobs at once, and pays for it in
         two ways. **Every boundary decision carries the whole class vocabulary**
         — the class list, every description and every few-shot example — even
         though finding a boundary does not depend on any of it; at page
@@ -5514,24 +5528,25 @@ class ClassificationService:
         pages rather than documents**: a 40-page statement is labeled forty
         times to produce one answer.
 
-        Two-stage splits them. Stage A reuses the granularity, modality,
-        windowing and context-page settings, with a prompt that asks only where
-        documents start and returns segments with no class. Stage B makes one
-        call per segment, carrying the vocabulary and the examples, over the
-        pages ``two_stage.section_classification.pages`` selects.
+        Split-then-classify separates them. The splitting call reuses the
+        granularity, modality, windowing and context-page settings, with a prompt
+        that asks only where documents start and returns segments with no class.
+        Section classification makes one call per segment, carrying the
+        vocabulary and the examples, over the pages
+        ``split_then_classify.section_classification.pages`` selects.
 
-        The two halves are metered separately, under ``Segmentation`` and
-        ``SectionClassification``, which is what makes "is this actually cheaper on my
-        documents?" answerable from the cost table rather than from arithmetic.
+        The two calls are metered separately, under ``Splitting`` and
+        ``SectionClassification``, which is what makes "is this actually cheaper
+        on my documents?" answerable from the cost table rather than from arithmetic.
         It also separates a wrong boundary from a wrong label, which one
         section-level outcome cannot.
 
         Args:
             document: Document object to classify
-            forced_class: When set, Stage B is **skipped entirely** — the class
-                is already known from the document-name regex match, so there is
-                nothing to label and the only question was where the documents
-                start.
+            forced_class: When set, section classification is **skipped
+                entirely** — the class is already known from the document-name
+                regex match, so there is nothing to label and the only
+                question was where the documents start.
 
         Returns:
             Document: Updated Document object with classifications and sections
@@ -5544,7 +5559,7 @@ class ClassificationService:
                 error_message="Document has no pages to classify",
             )
 
-        # Identical reasoning to both single-pass paths: a predetermined class
+        # Identical reasoning to both combined paths: a predetermined class
         # still needs real boundaries unless sectionSplitting asks for none
         # (GitHub issues #686 and #705).
         if self._can_skip_backend_for_single_class(document):
@@ -5558,61 +5573,60 @@ class ClassificationService:
 
         t0 = time.time()
         logger.info(
-            "Classifying document with %d pages using two-stage classification "
+            "Classifying document with %d pages using split-then-classify "
             "(%s granularity)",
             len(document.pages),
             self.granularity,
         )
 
         try:
-            known = self._segments_from_file_shape(document)
+            known = self._segments_from_document_shape(document)
             if known is not None:
-                # The file's shape is asserted, so segmentation has nothing to
-                # find: under "one document" or "one per page" its output would
-                # be discarded by section forming anyway. Section classification
-                # still runs, once per known segment.
+                # The document's shape is asserted, so the splitting call has
+                # nothing to find: under "one document" or "one per page" its
+                # output would be discarded by section forming anyway. Section
+                # classification still runs, once per known segment.
                 logger.info(
-                    "Skipping segmentation: sectionSplitting is %r, which fixes "
+                    "Skipping the splitting call: sectionSplitting is %r, which fixes "
                     "the segments (%d) without a model call.",
-                    self._file_shape().sectionSplitting,
+                    self._document_shape().sectionSplitting,
                     len(known),
                 )
                 segments, metering, errors = known, {}, []
             else:
-                segments, metering, errors = self._segment_document(document)
+                segments, metering, errors = self._detect_boundaries(document)
             document.metering = utils.merge_metering_data(document.metering, metering)
             document.errors.extend(errors)
 
             if not segments:
-                error_msg = (
-                    "Two-stage segmentation (Stage A) produced no segments: "
-                    + ("; ".join(errors) if errors else "the model returned none")
+                error_msg = "The splitting call produced no segments: " + (
+                    "; ".join(errors) if errors else "the model returned none"
                 )
                 return self._update_document_status(
                     document, success=False, error_message=error_msg
                 )
 
             logger.info(
-                "Stage A found %d segment(s) across %d pages",
+                "The splitting call found %d segment(s) across %d pages",
                 len(segments),
                 len(document.pages),
             )
 
             if forced_class:
                 # The document's NAME asserts the class, so there is nothing for
-                # Stage B to decide. Skipping it is the whole saving on this
-                # path: a name-matched 40-page packet costs its boundary calls
-                # and no labeling calls at all.
+                # section classification to decide. Skipping it is the whole
+                # saving on this path: a name-matched 40-page packet costs its
+                # splitting calls and no labeling calls at all.
                 logger.info(
-                    "Skipping Stage B: the document name regex already asserts "
-                    "the class '%s' for every segment.",
+                    "Skipping section classification: the document name regex "
+                    "already asserts the class '%s' for every segment.",
                     forced_class,
                 )
                 for segment in segments:
                     segment.doc_class = forced_class
                     segment.confidence = None
             else:
-                segments, label_metering, label_errors = self._label_segments(
+                segments, label_metering, label_errors = self._classify_segments(
                     document, segments
                 )
                 document.metering = utils.merge_metering_data(
@@ -5624,14 +5638,14 @@ class ClassificationService:
             document = self._update_document_status(document)
 
             logger.info(
-                "Document classified into %d sections using two-stage "
+                "Document classified into %d sections using split-then-classify "
                 "classification in %.2f seconds",
                 len(document.sections),
                 time.time() - t0,
             )
 
         except Exception as e:
-            error_msg = f"Error in two-stage classification: {str(e)}"
+            error_msg = f"Error in split-then-classify: {str(e)}"
             document = self._update_document_status(
                 document, success=False, error_message=error_msg
             )
@@ -5639,14 +5653,16 @@ class ClassificationService:
 
         return document
 
-    def _segments_from_file_shape(self, document: Document) -> Optional[List[Segment]]:
-        """The segments a declared file shape fixes, or None to detect them.
+    def _segments_from_document_shape(
+        self, document: Document
+    ) -> Optional[List[Segment]]:
+        """The segments a declared document shape fixes, or None to detect them.
 
         ``disabled`` is one segment over every page; ``page`` is one segment per
         page. ``llm_determined`` — the default — returns None, because there the
-        boundaries are exactly what segmentation exists to find.
+        boundaries are exactly what the splitting call exists to find.
         """
-        splitting = self._file_shape().sectionSplitting.lower()
+        splitting = self._document_shape().sectionSplitting.lower()
         if splitting not in ("disabled", "page"):
             return None
         page_ids = sorted(
@@ -5657,13 +5673,14 @@ class ClassificationService:
             return [Segment(page_ids=page_ids)]
         return [Segment(page_ids=[page_id]) for page_id in page_ids]
 
-    def _segment_document(
+    def _detect_boundaries(
         self, document: Document
     ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
-        """Stage A: find where each document starts, with no class vocabulary.
+        """The splitting call: find where each document starts, with no class
+        vocabulary.
 
-        Honours ``granularity``: a packet-granularity Stage A is one call (or
-        one per window) asking for page ranges, and a page-granularity Stage A
+        Honours ``granularity``: a packet-granularity splitting call is one call
+        (or one per window) asking for page ranges, and a page-granularity one
         is one call per page asking only ``start`` or ``continue``. The page
         form still makes N calls, but each one drops the class list, the
         descriptions and the few-shot examples, which is the dominant per-call
@@ -5675,15 +5692,15 @@ class ClassificationService:
             )
             if no_text_error:
                 return [], {}, [no_text_error]
-            return self._packet_segments(document, stage=self.STAGE_SEGMENTATION)
-        return self._segment_pages(document)
+            return self._packet_segments(document, stage=self.STAGE_SPLITTING)
+        return self._detect_page_boundaries(document)
 
-    def _segment_pages(
+    def _detect_page_boundaries(
         self, document: Document
     ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
-        """Stage A at page granularity: one boundary-only call per page."""
-        config = self._get_classification_config(self.STAGE_SEGMENTATION)
-        send_text, send_images = self._resolve_modality(stage=self.STAGE_SEGMENTATION)
+        """The splitting call at page granularity: one boundary-only call per page."""
+        config = self._get_classification_config(self.STAGE_SPLITTING)
+        send_text, send_images = self._resolve_modality(stage=self.STAGE_SPLITTING)
         context_size = self._page_input().page.contextPagesCount
 
         page_content_cache = self._preload_page_content(document, context_size)
@@ -5738,13 +5755,14 @@ class ClassificationService:
                 content = self._build_content(
                     config["task_prompt"],
                     text_content or "",
-                    # Stage A sends no vocabulary unless boundary_hints asks
-                    # for the names, so the class listing is deliberately
-                    # empty here. Passing the stage is what actually enforces
-                    # that — on this path and on the other two, which are
-                    # shared with single-pass and Stage B — so a Stage A
-                    # prompt referencing {CLASS_NAMES_AND_DESCRIPTIONS} or
-                    # {FEW_SHOT_EXAMPLES} gets nothing rather than silently
+                    # The splitting call sends no vocabulary unless
+                    # boundary_hints asks for the names, so the class listing
+                    # is deliberately empty here. Passing the stage is what
+                    # actually enforces that — on this path and on the other
+                    # two, which are shared with the combined call and section
+                    # classification — so a splitting prompt referencing
+                    # {CLASS_NAMES_AND_DESCRIPTIONS} or {FEW_SHOT_EXAMPLES} gets
+                    # nothing rather than silently
                     # reintroducing the prefix.
                     "",
                     image_content,
@@ -5769,8 +5787,9 @@ class ClassificationService:
             with lock:
                 verdicts[page_id] = PageClassification(
                     page_id=page_id,
-                    # Stage A reports no class. The placeholder is not a
-                    # classification: Stage B overwrites it, and a segment whose
+                    # The splitting call reports no class. The placeholder is
+                    # not a classification: section classification overwrites
+                    # it, and a segment whose
                     # labeling fails keeps it so the failure is visible rather
                     # than appearing as a confident class.
                     classification=DocumentClassification(
@@ -5796,7 +5815,7 @@ class ClassificationService:
                 try:
                     future.result()
                 except Exception as e:
-                    error_msg = f"Stage A failed for page {page_id}: {e}"
+                    error_msg = f"Splitting call failed for page {page_id}: {e}"
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
@@ -5807,21 +5826,23 @@ class ClassificationService:
         segments = self._fold_page_verdicts_to_segments(
             [verdicts[pid] for pid in sorted_page_ids if pid in verdicts]
         )
-        # The fold carries each page's class through, which for Stage A is the
-        # unclassified placeholder. Clear it so the segments really are
-        # unlabeled: a Segment with doc_class set is one Stage B would be
+        # The fold carries each page's class through, which for the splitting
+        # call is the unclassified placeholder. Clear it so the segments really
+        # are unlabeled: a Segment with doc_class set is one section
+        # classification would be
         # entitled to leave alone.
         for segment in segments:
             segment.doc_class = None
             segment.confidence = None
         return segments, metering, errors
 
-    def _label_segments(
+    def _classify_segments(
         self, document: Document, segments: List[Segment]
     ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
-        """Stage B: one call per segment to decide its class.
+        """Section classification: one call per segment to decide its class.
 
-        **Per segment, not per page** — the other half of the two-stage saving.
+        **Per segment, not per page** — the other half of the split-then-classify
+        saving.
         Which pages represent the segment is ``labeling.pages``; the default
         ``first_k`` sends the opening two, because a document's identity is
         almost always on its opening pages while ``all`` makes labeling a long
@@ -5832,8 +5853,8 @@ class ClassificationService:
         the segment's boundaries are still good, and an invented class would
         propagate into extraction as though it had been decided.
         """
-        config = self._get_classification_config(self.STAGE_LABELING)
-        _, send_images = self._resolve_modality(stage=self.STAGE_LABELING)
+        config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
+        _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
         pages_content, _ = self._format_pages_with_coverage(document)
 
         metering: Dict[str, Any] = {}
@@ -5842,11 +5863,11 @@ class ClassificationService:
 
         def label(index: int) -> None:
             segment = segments[index]
-            page_ids = self._labeling_pages(segment)
+            page_ids = self._section_classification_pages(segment)
             paged_text = self._format_paged_text(pages_content, page_ids)
             page_images = (
                 self._load_packet_page_images(
-                    document, page_ids, stage=self.STAGE_LABELING
+                    document, page_ids, stage=self.STAGE_SECTION_CLASSIFICATION
                 )
                 if send_images
                 else []
@@ -5886,7 +5907,7 @@ class ClassificationService:
                 except Exception as e:
                     segment = segments[index]
                     error_msg = (
-                        f"Stage B failed for segment {index + 1} "
+                        f"Section classification failed for segment {index + 1} "
                         f"(pages {segment.start_page}-{segment.end_page}): {e}"
                     )
                     logger.error(error_msg)
@@ -5894,15 +5915,16 @@ class ClassificationService:
                         errors.append(error_msg)
 
         logger.info(
-            "Stage B labeled %d/%d segment(s)",
+            "Section classification labeled %d/%d segment(s)",
             sum(1 for s in segments if s.doc_class),
             len(segments),
         )
         return segments, metering, errors
 
-    def _labeling_pages(self, segment: Segment) -> List[str]:
-        """Which of a segment's pages Stage B sends, per ``labeling.pages``."""
-        labeling = self.config.classification.two_stage.section_classification
+    def _section_classification_pages(self, segment: Segment) -> List[str]:
+        """Which of a segment's pages section classification sends, per
+        ``labeling.pages``."""
+        labeling = self.config.classification.split_then_classify.section_classification
         if labeling.pages == "first":
             return segment.page_ids[:1]
         if labeling.pages == "all":

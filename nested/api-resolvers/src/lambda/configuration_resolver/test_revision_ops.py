@@ -23,6 +23,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.config.models import CONFIG_FORMAT_VERSION
+
 os.environ.setdefault("CONFIGURATION_TABLE_NAME", "test-config-table")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
@@ -94,9 +96,9 @@ class TestHappyPath:
         )
         assert result["success"] is True
         config = json.loads(result["config"])
-        assert config["config_format_version"] == "0.9"
+        assert config["config_format_version"] == CONFIG_FORMAT_VERSION
         assert "model" not in config["classification"]
-        assert config["classification"]["one_stage"]["llm"]["model"] == "flat-model"
+        assert config["classification"]["combined"]["llm"]["model"] == "flat-model"
         # The stored body itself is not rewritten.
         assert stored["classification"] == {"model": "flat-model", "temperature": 0.0}
         manager.restore_revision.assert_not_called()

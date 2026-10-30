@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// HITL › Queue Management: the system-wide queue definitions, the Annotators work is
+// Review Studio › Review Management: the system-wide queue definitions, the Annotators work is
 // assigned to, and assigning Test Studio documents. Production items are assigned
 // with reassignReviewItem and unassigned with forceReleaseReviewItem (review-api.ts).
 // A queue is worked by the Annotators listed on it; Annotators claim its documents.
@@ -93,7 +93,7 @@ export const unassignTestSetDocuments = async (testSetId: string, objectKeys: st
 
 /**
  * Claim one unassigned, unreviewed Test Studio document: it is assigned to the caller
- * (no expiry) and shows in My Work › Tasks. Only an Annotator listed on the set's queue may.
+ * (no expiry) and shows in Home › Tasks. Only an Annotator listed on the set's queue may.
  */
 export const claimTestSetDocument = async (testSetId: string, objectKey: string): Promise<TestSetDocumentAssignment> => {
   const r = await client.graphql({ query: claimTestSetDocumentMutation, variables: { testSetId, objectKey } });

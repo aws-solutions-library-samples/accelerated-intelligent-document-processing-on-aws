@@ -129,25 +129,25 @@ harness — verify they still hold when the schema evolves:
   disables summarization (unscored; its default model hits the temperature bug).
 - **`compat/native_upload.py`** writes configs verbatim (bypasses idp-cli migration).
 - **Classification back-compat copy (`compat/classification_flat.py`).** Config format
-  0.9 nests classification by model call (`one_stage.*`, `two_stage.*`, `file_shape.*`,
+  0.9 nests classification by model call (`combined.*`, `split_then_classify.*`, `document_shape.*`,
   `strategy`, `fallback_class`). A release that predates it (v0.6.12 reads format 0.7:
   flat keys plus `classificationMethod`) drops those blocks without an error and runs
   classification on its code defaults — a `split-disabled` cell would run
   `llm_determined`, on the code-default model, with an empty task prompt. So
   `--native-upload` uploads a copy carrying the equivalent flat keys as well, derived
-  from the one-stage block: model and parameters, the selected granularity's prompts,
+  from the combined block: model and parameters, the selected granularity's prompts,
   `classificationMethod` (`page` → `multimodalPageLevelClassification`, `packet` →
   `textbasedHolisticClassification` with the packet prompts as the flat prompts),
   `contextPagesCount`, validation, `invalidClassFallback` from `fallback_class`, the
   page-level confidence keys, `image`, `sectionSplitting` and
   `maxPagesForClassification`. The current reader treats the copy as a hybrid in which
-  the flat key wins, and resolves it to the same single-pass classification as the
-  nested original, so one file serves both sides. Two subtrees a single-pass run does
-  not read do change on the current reader — the `two_stage` blocks take the one-stage
-  model, parameters and confidence, and at packet granularity `one_stage.page` takes
+  the flat key wins, and resolves it to the same combined classification as the
+  nested original, so one file serves both sides. Two subtrees a combined run does
+  not read do change on the current reader — the `split_then_classify` blocks take the combined
+  model, parameters and confidence, and at packet granularity `combined.page` takes
   the packet prompts — and `benchmarks/tests/test_release_compat_classification.py`
-  pins that boundary exactly. A `two_stage` cell is **refused** (there is no two-stage
-  classification before 0.9), as is an explicit `one_stage.llm.modality` flag that
+  pins that boundary exactly. A `split_then_classify` cell is **refused** (there is no split-then-classify
+  strategy before 0.9), as is an explicit `combined.llm.modality` flag that
   disagrees with the prompt's placeholders. At packet granularity the run prints a
   `!!` note for the packet window (the old holistic method sends the whole file in one
   call) and for class confidence (the old release only composes it at page level);
@@ -162,7 +162,7 @@ harness — verify they still hold when the schema evolves:
   that release's own migration and `IDPConfig`, and fails the run before any test set
   is registered or config uploaded if the release rejects a config, drops any
   `classification` key, or resolves a flat classification setting to a value other
-  than the one the file's nested one-stage blocks ask for. The v0.9 blocks themselves
+  than the one the file's nested combined blocks ask for. The v0.9 blocks themselves
   are expected to be dropped in a file that carries the flat keys; every other dropped
   key is an error. The same check runs standalone:
   `python3 benchmarks/harness/compat/release_model_check.py --release v<PREV>
@@ -319,7 +319,7 @@ Two calibration separations are tracked, on the same −0.03 threshold:
 (the CLASSIFICATION, from the eval report's per-page `predicted_confidence` vs
 `correct`). Both are `mean(conf | right) − mean(conf | wrong)`; both are `None`
 when that dimension was not scored — for classification, when the run sets
-`classification.one_stage.llm.confidence.mode: off` (the shipped default is
+`classification.combined.llm.confidence.mode: off` (the shipped default is
 `topk`) — and a `None` there means "not measured", not "perfect". Keep the mode on
 for any run whose point is to judge whether classification confidence is worth
 acting on, and report `class_accuracy` and

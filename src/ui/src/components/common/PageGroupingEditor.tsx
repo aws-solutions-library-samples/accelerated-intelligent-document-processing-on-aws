@@ -134,20 +134,38 @@ export interface PageGroupingEditorProps {
   saveLabel?: string;
   isSaving?: boolean;
   onSave: (sections: GroupedSection[]) => void | Promise<void>;
+  /**
+   * A second way to save, beside the primary one (the document page's Save and
+   * Re-extract). Disabled like the primary save while the grouping is invalid or
+   * unchanged, and also while `disabledReason` gives a reason for the draft.
+   */
+  secondarySave?: {
+    label: string;
+    disabledReason?: (draft: GroupedSection[]) => string | undefined;
+    onSave: (sections: GroupedSection[]) => void | Promise<void>;
+  };
   onCancel: () => void;
   /**
    * `inline` (the default) renders the board in place, with an Expand button that opens
    * it in a modal. `modal` opens it straight in the modal, with no Expand, and dismissing
-   * the modal cancels the edit (the unified editor's Edit Page Grouping).
+   * the modal cancels the edit (Edit Page Grouping on the edit page and the document page).
    */
   presentation?: 'inline' | 'modal';
+  /** The dialog's title. */
+  title?: string;
 }
 
-/** Column page-strip height. Taller in the modal, which is the point of expanding. */
+/**
+ * Column page-strip height. The dialog trades height for width: its columns are about
+ * 40% shorter than a full-height board, so the dialog fits a laptop screen with its
+ * footer in view, and the dialog is about 40% wider, so more sections sit side by side.
+ */
 const INLINE_COLUMN_HEIGHT = 320;
-const EXPANDED_COLUMN_HEIGHT = 620;
-/** The dialog's minimum width: two 260px section columns and the gap between them. */
-const MODAL_MIN_WIDTH = 560;
+const EXPANDED_COLUMN_HEIGHT = 340;
+/** The dialog's width: 40% wider than a Cloudscape `large` modal (820px); capped to the viewport. */
+const MODAL_WIDTH = 1150;
+/** The dialog body's minimum width: three 260px section columns and the gaps between them. */
+const MODAL_MIN_WIDTH = 784;
 
 const nextSectionId = (sections: GroupedSection[]): string => {
   const numeric = sections.map((s) => Number.parseInt(s.sectionId, 10)).filter((n) => Number.isFinite(n));
@@ -466,8 +484,10 @@ const PageGroupingEditor = ({
   saveLabel = 'Save grouping',
   isSaving = false,
   onSave,
+  secondarySave,
   onCancel,
   presentation = 'inline',
+  title = 'Edit Page Grouping',
 }: PageGroupingEditorProps): React.JSX.Element => {
   const asModal = presentation === 'modal';
   // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note
@@ -681,12 +701,22 @@ const PageGroupingEditor = ({
     </SpaceBetween>
   );
 
+  const secondaryReason = secondarySave?.disabledReason?.(sortSectionsByFirstPage(draft));
   const footer = (
     <Box float="right">
       <SpaceBetween direction="horizontal" size="xs">
         <Button variant="link" onClick={onCancel} disabled={isSaving}>
           Cancel
         </Button>
+        {secondarySave && (
+          <Button
+            disabled={isSaving || !validation.isValid || !isChanged || !!secondaryReason}
+            disabledReason={secondaryReason}
+            onClick={() => void secondarySave.onSave(sortSectionsByFirstPage(draft))}
+          >
+            {secondarySave.label}
+          </Button>
+        )}
         <Button
           variant="primary"
           loading={isSaving}
@@ -738,8 +768,8 @@ const PageGroupingEditor = ({
   if (isExpanded) {
     return (
       <>
-        <Modal visible size="large" header="Edit Page Grouping" onDismiss={asModal ? onCancel : () => setIsExpanded(false)} footer={footer}>
-          {/* Wide enough for two section columns side by side; more scroll sideways. */}
+        <Modal visible width={MODAL_WIDTH} header={title} onDismiss={asModal ? onCancel : () => setIsExpanded(false)} footer={footer}>
+          {/* Wide enough for three section columns side by side; more scroll sideways. */}
           <div style={{ minWidth: `${MODAL_MIN_WIDTH}px` }}>{body}</div>
         </Modal>
         {preview}

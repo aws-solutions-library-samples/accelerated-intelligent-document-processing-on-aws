@@ -346,21 +346,21 @@ class TestNewerStampIsNotDowngraded:
     """
 
     def test_newer_stamp_survives_a_pure_read(self):
-        cfg = {"config_format_version": "0.9", "extraction": {"mode": "simple"}}
+        cfg = {"config_format_version": "1.0", "extraction": {"mode": "simple"}}
         out = migrate_config(cfg)
-        assert out["config_format_version"] == "0.9"
+        assert out["config_format_version"] == "1.0"
 
     def test_newer_stamp_survives_even_when_legacy_markers_force_a_run(self):
         """The hybrid case: current-stamped dict carrying a legacy delta."""
         cfg = {
-            "config_format_version": "0.9",
+            "config_format_version": "1.0",
             "extraction": {"agentic": {"validation": {"fail_action": "reject"}}},
         }
         out = migrate_config(cfg)
         # The relocation still happens -- that is what the marker check is for.
         assert out["extraction"]["validation"] == {"fail_action": "reject"}
         # ...but the stamp is left alone.
-        assert out["config_format_version"] == "0.9"
+        assert out["config_format_version"] == "1.0"
 
     def test_older_stamp_is_still_advanced(self):
         # CONFIG_FORMAT_VERSION, not this step's TARGET_VERSION: these drive the
@@ -418,7 +418,7 @@ class TestVersionComparatorIsShared:
         spec = importlib.util.spec_from_file_location("_uc_index", path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
-        # cfnresponse ships with the Lambda runtime, not with the test env, so it
+        # cfnresponse (vendored beside index.py) would PUT to a real URL, so it
         # is stubbed for the exec. Scoped rather than left in sys.modules: a
         # global stub made this test pass only when some earlier test in the same
         # worker happened to install one.

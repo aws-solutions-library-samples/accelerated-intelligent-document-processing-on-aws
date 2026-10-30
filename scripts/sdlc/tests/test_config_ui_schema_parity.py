@@ -109,20 +109,20 @@ EXEMPT_SUBTREES: dict[str, str] = {
         "translator_config.yaml via handle_generate_rule_json (see the field's "
         "own description)."
     ),
-    "classification.two_stage.segmentation.boundary_model": (
-        "Declared for a boundary-detection model (#1329), not implemented: "
-        "segmentation.method offers only 'llm', so a control would edit a setting "
+    "classification.split_then_classify.splitting.boundary_model": (
+        "Declared for a dedicated splitting model (#1329), not implemented: "
+        "splitting.method offers only 'llm', so a control would edit a setting "
         "nothing reads."
     ),
-    "classification.two_stage.section_classification.embeddings": (
+    "classification.split_then_classify.section_classification.embeddings": (
         "Declared for embeddings classification (#1329), not implemented: "
         "section_classification.method offers only 'llm'."
     ),
-    "classification.two_stage.section_classification.decision_model": (
+    "classification.split_then_classify.section_classification.decision_model": (
         "Declared for an external classifier endpoint (#1329), not implemented: "
         "section_classification.method offers only 'llm'."
     ),
-    "classification.two_stage.section_classification.low_confidence": (
+    "classification.split_then_classify.section_classification.low_confidence": (
         "Applies only to a non-LLM section classification method, none of which "
         "is implemented yet (#1329)."
     ),
@@ -202,24 +202,24 @@ NOT_USER_SETTABLE: dict[str, str] = {
     # the only reader of dpi/preprocessing (they govern PDF->raster rendering,
     # which happens once, in OCR). The per-stage panels correctly expose just
     # target_width/target_height.
-    "classification.one_stage.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
-    "classification.one_stage.llm.image.preprocessing": (
+    "classification.combined.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.combined.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
     ),
-    "classification.two_stage.segmentation.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
-    "classification.two_stage.segmentation.llm.image.preprocessing": (
+    "classification.split_then_classify.splitting.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.split_then_classify.splitting.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
     ),
-    "classification.two_stage.section_classification.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
-    "classification.two_stage.section_classification.llm.image.preprocessing": (
+    "classification.split_then_classify.section_classification.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.split_then_classify.section_classification.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
     ),
     # --- shared confidence block, packet keys unread on section classification
-    "classification.two_stage.section_classification.llm.confidence.task_prompt_topk_packet": (
+    "classification.split_then_classify.section_classification.llm.confidence.task_prompt_topk_packet": (
         "Never read: section classification is one call per section, so it always "
         "takes the page-shaped block (classification/service.py)."
     ),
-    "classification.two_stage.section_classification.llm.confidence.task_prompt_verbalized_packet": (
+    "classification.split_then_classify.section_classification.llm.confidence.task_prompt_verbalized_packet": (
         "Never read, for the same reason as the packet Top-K block above."
     ),
     "extraction.image.dpi": "PDF-rendering knob; only read from ocr.image.",
@@ -467,7 +467,7 @@ def test_ghost_groups_are_flattened_not_dropped():
     paths = _ui_paths()
     for flattened in (
         "extraction.temperature",
-        "classification.one_stage.llm.max_tokens",
+        "classification.combined.llm.max_tokens",
         "summarization.reasoning_effort",
         "chat.top_p",
         "evaluation.llm_method.top_k",

@@ -23,6 +23,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.config.models import CONFIG_FORMAT_VERSION
+
 
 def _flat_capture():
     """A capture in the pre-0.9 layout, as a release before the change wrote it.
@@ -85,8 +87,8 @@ def test_a_pre_0_9_run_is_read_back_nested(module, as_item):
     body = _read_back(module, item)["Config"]
 
     assert "model" not in body["classification"]
-    assert body["classification"]["one_stage"]["llm"]["model"] == "flat-model"
-    assert body["config_format_version"] == "0.9"
+    assert body["classification"]["combined"]["llm"]["model"] == "flat-model"
+    assert body["config_format_version"] == CONFIG_FORMAT_VERSION
     # The stored capture is not rewritten.
     assert capture == _flat_capture()
 
@@ -106,7 +108,7 @@ def test_an_unstamped_run_is_read_back_in_the_current_format(module, as_item):
 
     body = _read_back(module, as_item(capture))["Config"]
 
-    assert body["config_format_version"] == "0.9"
+    assert body["config_format_version"] == CONFIG_FORMAT_VERSION
     assert body["notes"] == "x"
 
 

@@ -6,7 +6,7 @@ import { Box, Button, ColumnLayout, Modal, SpaceBetween, StatusIndicator } from 
 import SafeMarkdown from '../common/SafeMarkdown';
 import useInbox from '../../hooks/use-inbox';
 import type { InboxMessage } from '../../graphql/generated/operation-types';
-import { isInternalRoute } from '../../routes/constants';
+import { isInternalRoute, withEditOrigin } from '../../routes/constants';
 import { formatDateTime } from '../../utils/date-time';
 import { severityLabel, severityStatusType } from './severity';
 
@@ -45,7 +45,7 @@ const InboxMessageModal = ({ message, onDismiss, onMarkedRead }: InboxMessageMod
               Close
             </Button>
             {isInternalRoute(link) && (
-              <Button variant="primary" href={`#${link}`} onClick={onDismiss}>
+              <Button variant="primary" href={`#${withEditOrigin(link, 'inbox')}`} onClick={onDismiss}>
                 Open related page
               </Button>
             )}

@@ -427,7 +427,7 @@ def merge_config_with_defaults(
 
     Example:
         user_config = {
-            "classification": {"one_stage": {"llm": {"model": "us.amazon.nova-lite-v1:0"}}},
+            "classification": {"combined": {"llm": {"model": "us.amazon.nova-lite-v1:0"}}},
             "classes": [...]
         }
         result = merge_config_with_defaults(user_config, "pattern-2")
@@ -1202,9 +1202,9 @@ def _nested_classification(merged_config: Dict[str, Any]) -> Dict[str, Any]:
     return migrate_v08_to_v09(merged_config)
 
 
-def _classification_is_two_stage(merged_config: Dict[str, Any]) -> bool:
+def _classification_is_split_then_classify(merged_config: Dict[str, Any]) -> bool:
     strategy = _dict_at(merged_config, "classification").get("strategy")
-    return str(strategy or "").strip().lower() == "two_stage"
+    return str(strategy or "").strip().lower() == "split_then_classify"
 
 
 def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
@@ -1217,13 +1217,13 @@ def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
     save over it would block an unrelated edit.
     """
     merged_config = _nested_classification(merged_config)
-    if _classification_is_two_stage(merged_config):
+    if _classification_is_split_then_classify(merged_config):
         paths = [
-            ("two_stage", "segmentation", "llm"),
-            ("two_stage", "section_classification", "llm"),
+            ("split_then_classify", "splitting", "llm"),
+            ("split_then_classify", "section_classification", "llm"),
         ]
     else:
-        paths = [("one_stage", "llm")]
+        paths = [("combined", "llm")]
     return [
         (
             "classification." + ".".join(path),
@@ -1251,7 +1251,8 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
         granularity = str(block.get("granularity") or "page").strip().lower()
         side = "packet" if granularity == "packet" else "page"
         # The prompt sits under page/packet; the modality is on the llm block, which
-        # for one stage is a sibling of them and for segmentation is `block` itself.
+        # for the combined call is a sibling of them and for the splitting call is
+        # `block` itself.
         llm = block if path[-1] == "llm" else _dict_at(block, "llm")
         return (
             "classification." + ".".join(path + (side, "task_prompt")),
@@ -1259,17 +1260,19 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
             _dict_at(llm, "modality"),
         )
 
-    if _classification_is_two_stage(merged_config):
-        section_llm = _dict_at(cls, "two_stage", "section_classification", "llm")
+    if _classification_is_split_then_classify(merged_config):
+        section_llm = _dict_at(
+            cls, "split_then_classify", "section_classification", "llm"
+        )
         return [
-            reader("two_stage", "segmentation", "llm"),
+            reader("split_then_classify", "splitting", "llm"),
             (
-                "classification.two_stage.section_classification.llm.task_prompt",
+                "classification.split_then_classify.section_classification.llm.task_prompt",
                 section_llm.get("task_prompt", ""),
                 _dict_at(section_llm, "modality"),
             ),
         ]
-    return [reader("one_stage")]
+    return [reader("combined")]
 
 
 def _modality_supplies_content(modality: Dict[str, Any]) -> bool:

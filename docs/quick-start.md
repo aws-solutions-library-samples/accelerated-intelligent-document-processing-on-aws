@@ -65,6 +65,8 @@ in two places:
 - **Floating Quick Start widget** — a chat launcher available from the Documents
   view, so you can open Quick Start at any time.
 
+![Quick Start panel with suggested starting prompts and a message box that accepts example documents](../images/quick-start-panel.png)
+
 ### A typical conversation
 
 1. **Describe your document.** For example: *"I process California driver's

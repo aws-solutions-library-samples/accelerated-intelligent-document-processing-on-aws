@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
+<!-- SPDX-License-Identifier: MIT-0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Document details</title>
+</head>
+<body>
+<main>
+  <h1>lending_package.pdf</h1>
+  <p>Status: COMPLETED</p>
+  <button type="button" id="discard">Discard changes</button>
+  <button type="button" id="summary">Show processing summary</button>
+  <button type="button" id="rename">Rename</button>
+  <p id="result" role="status"></p>
+</main>
+<script>
+  const result = document.getElementById("result");
+  document.getElementById("discard").addEventListener("click", () => {
+    result.textContent = confirm("Discard the changes you made to this document?") ? "discarded" : "kept";
+  });
+  document.getElementById("summary").addEventListener("click", () => {
+    alert("Processing finished in 4 steps.");
+    result.textContent = "summary shown";
+  });
+  document.getElementById("rename").addEventListener("click", () => {
+    const name = prompt("New name", "lending_package.pdf");
+    result.textContent = name === null ? "not renamed" : "renamed";
+  });
+</script>
+</body>
+</html>

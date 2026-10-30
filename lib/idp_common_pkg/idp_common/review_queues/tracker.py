@@ -194,7 +194,12 @@ def after_completion(
                 "ReviewCycleId": item.cycle_id,
                 "ReviewStatusUri": _status_uri(output_bucket, doc_key),
             },
-            remove_attrs=("HITLReviewedBy", "ReviewDisposedAt", "ReviewRejectReason"),
+            remove_attrs=(
+                "HITLReviewedBy",
+                "HITLReviewedByEmail",
+                "ReviewDisposedAt",
+                "ReviewRejectReason",
+            ),
         )
         machine_ref = run_ref
         status_object.publish(
@@ -298,7 +303,10 @@ def after_completion(
     document_service.update_review_attributes(
         doc_key,
         {
+            # `disposed_by` is the reviewer's email; the document page reads the email
+            # attribute first, as the legacy flow writes both.
             "HITLReviewedBy": item.disposed_by or "",
+            "HITLReviewedByEmail": item.disposed_by or "",
             "ReviewDisposedAt": item.disposed_at or _iso(now),
             **(
                 {}

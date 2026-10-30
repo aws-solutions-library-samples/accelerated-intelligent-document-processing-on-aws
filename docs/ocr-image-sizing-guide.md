@@ -82,9 +82,9 @@ DPI and read correctly at 98% confidence at 300 DPI.
 
 If you need to cut LLM cost, reduce the image sent to the *LLM* stages via
 each classification call's `image` block (for example
-`classification.one_stage.llm.image`, and under `strategy: two_stage`
-`classification.two_stage.segmentation.llm.image` and
-`classification.two_stage.section_classification.llm.image`) / `extraction.image`
+`classification.combined.llm.image`, and under `strategy: split_then_classify`
+`classification.split_then_classify.splitting.llm.image` and
+`classification.split_then_classify.section_classification.llm.image`) / `extraction.image`
 / `extraction.confidence.image` — those downscale the stored page image for the
 prompt only, leaving OCR at full fidelity.
 

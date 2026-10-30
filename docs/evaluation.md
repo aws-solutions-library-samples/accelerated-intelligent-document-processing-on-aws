@@ -413,7 +413,7 @@ The evaluation framework provides different comparison methods optimized for var
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
 | **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
 | **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
-| **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses document-level match threshold for item pairing |
+| **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses the class-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
 
 ### ⚠️ Do not use `LLM` on a field inside a list
@@ -467,7 +467,7 @@ Evaluation reports display thresholds **only for methods that use similarity-bas
 - `Fuzzy (threshold: 0.85)` - Using field-specific configuration
 - `Levenshtein (threshold: 0.70)` - Using default
 - `Semantic (threshold: 0.70)` - Using default
-- `Hungarian (threshold: 0.80)` - Using document-level match threshold
+- `Hungarian (threshold: 0.80)` - Using class-level match threshold
 
 **Methods WITHOUT Threshold Display:**
 - `Exact` - Binary comparison (no threshold concept)
@@ -657,6 +657,22 @@ evaluation:
 
 You can also configure evaluation methods for specific document classes and attributes through the solution's configuration. The framework supports three types of attributes with different evaluation approaches:
 
+The accepted values of `x-aws-idp-evaluation-method` are `EXACT`,
+`NUMERIC_EXACT`, `FUZZY`, `LEVENSHTEIN`, `SEMANTIC`, `DATE`, `LLM` and
+`HUNGARIAN`.
+
+> ⚠️ **The value is matched exactly, uppercase, and anything else selects
+> automatic inference without saying so.** `exact` and `Exact` do not match
+> `EXACT`, and a value that is not on the list at all — a typo, or a method name
+> from some other tool — is not reported anywhere: not by the configuration
+> models, not by `idp-cli config-validate`, and not in the Evaluation Lambda's
+> log. The field simply falls through to the comparator the framework infers from
+> its type and name, so the evaluation runs, produces scores, and uses a
+> comparator you did not choose. Unlike an *incompatible* method (see
+> [Method Compatibility Rules](#method-compatibility-rules)), which at least logs
+> an `ERROR`, an unrecognised value leaves no trace at all. Use the
+> configuration editor's dropdown, which can only emit the spellings above.
+
 ### Simple Attributes
 
 Basic single-value extractions evaluated as individual fields:
@@ -784,6 +800,15 @@ vendor_name:
   x-aws-idp-evaluation-threshold: 0.85  # 85% similarity required
 ```
 
+> **The 0.0–1.0 range is a convention, not a constraint.** Nothing validates the
+> number: `50` and `-1` are both accepted by the configuration models, by
+> `idp-cli config-validate`, and by the mapper, which passes the value straight
+> through to the comparator as a float. A threshold written as a percentage —
+> `50` where `0.5` was meant — is the realistic mistake, and its symptom is that
+> *every* comparison for that field falls below the bar, so the field scores 0 on
+> every document. That reads like an extraction failure rather than a
+> configuration error, so check the threshold before investigating extraction.
+
 #### For Structured Arrays (List[Object] with HUNGARIAN):
 Use `x-aws-idp-evaluation-match-threshold` to control item pairing:
 
@@ -804,33 +829,66 @@ CityTaxes:
 **Why the distinction?**
 - **Regular threshold**: Applied to individual field comparisons
 - **Match threshold**: Applied to Hungarian algorithm's optimal item pairing logic
-- Using the wrong threshold type will result in a validation error
+
+**Using the wrong threshold type is not caught when the config is saved**, and
+the two directions fail differently:
+
+- `x-aws-idp-evaluation-match-threshold` on a field that is *not* a structured
+  array is accepted and then **silently dropped**. No log line is emitted, and
+  the field's comparator runs at its own built-in threshold instead of yours.
+- `x-aws-idp-evaluation-threshold` on a structured array raises an error **when
+  the evaluation runs**, not when the configuration is saved, so the Evaluation
+  step for that document fails rather than the config being rejected.
 
 **UI Behavior**:
 - When you select an array field with object items in the configuration UI
 - And choose HUNGARIAN method
 - The UI automatically shows "Match Threshold" instead of "Evaluation Threshold"
-- The system prevents you from using incompatible method-field combinations
+- The dropdown offers only the methods that suit the selected field type, so the
+  editor cannot produce an incompatible method/field combination. A config
+  written by hand, or submitted through the API or CLI, can — see
+  [Method Compatibility Rules](#method-compatibility-rules) for what happens then.
 
 ### Method Compatibility Rules
 
 Different evaluation methods work with different field types:
 
-| Method | Compatible Types | Requires |
+| Method | Compatible Types | Threshold |
 |--------|-----------------|----------|
 | EXACT | String, Number, Integer, Boolean | `evaluation-threshold` (optional) |
-| NUMERIC_EXACT | Number, Integer, String | `evaluation-threshold` (tolerance) |
-| FUZZY | String | `evaluation-threshold` (required) |
-| LEVENSHTEIN | String | `evaluation-threshold` (required) |
-| SEMANTIC | String, Object | `evaluation-threshold` (required) |
-| LLM | String, Object, Array | `evaluation-threshold` (required) |
-| HUNGARIAN | Array[Object] ONLY | `evaluation-match-threshold` (required) |
+| NUMERIC_EXACT | Number, Integer, String | `evaluation-threshold` (optional; acts as a tolerance) |
+| FUZZY | String | `evaluation-threshold` (optional) |
+| LEVENSHTEIN | String | `evaluation-threshold` (optional) |
+| SEMANTIC | String, Object | `evaluation-threshold` (optional) |
+| DATE | String | `evaluation-threshold` (optional); tune with `evaluation-method-config` |
+| LLM | String, Object, Array | `evaluation-threshold` (optional) |
+| HUNGARIAN | Array[Object] ONLY | `evaluation-match-threshold` (optional; defaults to 0.8) |
 
-**Validation**:
-- Backend validates method-type compatibility and raises clear errors for mismatches
-- UI filters available methods based on the selected field type
-- Cannot select HUNGARIAN for non-array fields
-- Cannot select other methods for structured arrays (must use HUNGARIAN)
+Every threshold above is optional. Omitting one is accepted and the comparator
+falls back to its own default — it is not reported as a missing required value.
+
+**How a mismatch is handled**:
+
+- The **configuration editor** filters the method dropdown by the selected field
+  type, so it will not let you pick HUNGARIAN for a non-array field, or another
+  method for a structured array.
+- A **config written by hand, or submitted through the API or the CLI, is
+  accepted anyway.** The configuration models take it, and `idp-cli
+  config-validate` reports it as valid.
+- The incompatibility is detected only **when the evaluation runs**, and the
+  finding is not fatal: the mismatch is written to the Evaluation Lambda's
+  CloudWatch log at `ERROR` level, the method is removed from the field, and
+  evaluation then **continues** and picks a comparator by inferring one from the
+  field's type and name. So the document is scored, the scores are reported
+  normally, and the comparator that produced them is not the one you configured.
+  A single `ERROR` line in the Lambda log is the only signal.
+- An **unrecognised** method value never reaches that check at all — see
+  [Attribute-Specific Evaluation Methods](#attribute-specific-evaluation-methods)
+  above for how the value itself is matched.
+
+Because a mismatch degrades silently rather than failing, prefer the
+configuration editor when choosing methods, and if you edit the schema directly,
+check the Evaluation Lambda log for `ERROR` lines after the first document.
 
 ## Attribute Processing and Evaluation
 
@@ -952,7 +1010,7 @@ Result: 2/3 sections correct = 66.7% accuracy
 
 **Calculation**: Same as "Without Order" but the page indices list must match exactly (same pages, same order).
 
-**Use Case**: Verify that multi-page documents maintain correct page sequence.
+**Use Case**: Verify that multi-page sections maintain correct page sequence.
 
 **Example**:
 ```
@@ -976,20 +1034,21 @@ have to cross-reference.
 disagrees with ground truth carries a **Class mismatch** alert beside its
 Class/Type value. Hovering it shows what ground truth expects, what this run
 assigned, and the page range involved. Nothing is added to a row that matches,
-and nothing at all is added for a document with no ground truth — the tables
-look exactly as they did before. The alert also appears in **Edit mode**, next
-to the class dropdown, which is where the class can actually be corrected.
+and nothing at all is added for a document with no ground truth. The alert also
+appears on the edit page's section editor, next to the section's class. A class is
+corrected with **More Actions › Edit Page Grouping** on the document page.
 
 A section's verdict is derived from **its pages**, not by pairing it with a
 ground-truth section. When the split itself is wrong there is no single
 counterpart section to compare against, but every page still has a ground-truth
-class — so a section that merged two ground-truth documents reports *both*
+class — so a section that merged two ground-truth sections reports *both*
 classes it spans ("Section spans more than one ground-truth class") instead of
 an unhelpful "no match". A section is flagged even when one of the classes it
 spans equals its own, because in that case the boundary is what is wrong.
 
-**Visual Editor ("View Data").** The class comparison appears above the field
-list on any document that has an evaluation baseline — the class this run
+**The edit page's Visual Editor tab** (opened with **Edit Data** in a section row's **⋮**
+menu, or **View Data** for a read-only role). The class comparison appears above the field list on any
+document that has an evaluation baseline — the class this run
 assigned, the class ground truth expects, and a match/mismatch verdict. Both
 values are shown whether or not they agree.
 
@@ -1008,7 +1067,7 @@ Why this matters when reading scores: a misclassified page was extracted against
 the **wrong schema**, so its low extraction score is a symptom, not the cause.
 Fixing the classification first avoids tuning extraction prompts against a
 document the pipeline was never reading as the right type. Both the hover and the
-Visual Editor say so inline.
+edit page's Visual Editor tab say so inline.
 
 Page numbers shown are 1-based, matching the page viewer. (Internally
 `page_indices` in `results.json` are 0-based — computed as
@@ -1183,7 +1242,8 @@ baseline-bucket/
 Once documents are processed with baselines:
 
 1. In the Web UI, select a document from the Documents list
-2. Click "View Evaluation Report" button
+2. Choose **Reports › Evaluation Report** in the document page's action bar (it is
+   disabled, with the reason, when the document has no evaluation report)
 3. The report displays:
    - Section classification accuracy
    - Field-by-field comparison with visual indicators (✅/❌)

@@ -16,6 +16,7 @@ test skips when node is absent, except in CI, where it fails instead.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import os
 import re
@@ -262,6 +263,30 @@ def test_the_welcome_page_is_dismissed_and_then_the_page_is_reloaded_once() -> N
     assert reload_params == {"ignoreCache": True}
     assert page.storage[signin.WELCOME_DISMISSED_KEY] == "true"
     assert kinds[-1] == "state"
+
+
+@pytest.mark.unit
+def test_a_first_visit_keeps_the_welcome_page_and_still_reloads_once() -> None:
+    """A story about a first visit must land on the welcome page, so nothing marks
+    it dismissed; the reload that clears a cold sign-in's blank page still runs."""
+    page = FakeLoginPage()
+    fake = FakeTime()
+    signin.sign_in(
+        page,
+        _persona(),
+        dismiss_welcome=False,
+        timeout=5.0,
+        sleep=fake.sleep,
+        clock=fake.clock,
+    )
+    kinds = page.kinds()
+    assert "dismiss" not in kinds
+    assert kinds.count("Page.reload") == 1
+    assert signin.WELCOME_DISMISSED_KEY not in page.storage
+    assert kinds[-1] == "state"
+    parameter = inspect.signature(signin.sign_in).parameters["dismiss_welcome"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is True
 
 
 @pytest.mark.unit

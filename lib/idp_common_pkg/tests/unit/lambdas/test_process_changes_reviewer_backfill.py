@@ -44,11 +44,16 @@ def resolver():
 
 
 def _event():
+    """An Admin caller. The write shapes pinned here are reached on a finished
+    review only by an Admin — a Reviewer is refused one, as saving review edits
+    refuses it — and the document-service and table doubles below cannot answer
+    the ownership and scope reads a Reviewer's request makes. Those checks are
+    driven against moto in ``test_process_changes_caller_checks.py``."""
     return {
         "info": {"fieldName": "processChanges"},
         "identity": {
             "username": "rev",
-            "claims": {"email": "rev@example.com", "cognito:groups": ["Reviewer"]},
+            "claims": {"email": "rev@example.com", "cognito:groups": ["Admin"]},
         },
         "arguments": {"objectKey": "packet.pdf", "modifiedSections": []},
     }
@@ -84,13 +89,16 @@ def test_a_finished_review_gains_a_missing_reviewer_without_overwriting_one(
     backfills = [u for u in updates if "HITLReviewedBy" in u["UpdateExpression"]]
     assert len(backfills) == 1
     (backfill,) = backfills
-    # if_not_exists is what keeps a recorded reviewer: an unconditional SET would
-    # rename every finished review after whoever next reprocessed it.
-    assert "if_not_exists(HITLReviewedBy, :reviewedBy)" in backfill["UpdateExpression"]
-    assert (
-        "if_not_exists(HITLReviewedByEmail, :reviewedByEmail)"
-        in backfill["UpdateExpression"]
+    # The condition is what keeps a recorded reviewer: an unconditional SET would
+    # rename every finished review after whoever next reprocessed it. It is keyed on
+    # either half, so the name and email are written as one pair or not at all
+    # (a review queue records a name and no email, #1568).
+    assert backfill["ConditionExpression"] == (
+        "attribute_not_exists(HITLReviewedBy) AND "
+        "attribute_not_exists(HITLReviewedByEmail)"
     )
+    assert "HITLReviewedBy = :reviewedBy" in backfill["UpdateExpression"]
+    assert "HITLReviewedByEmail = :reviewedByEmail" in backfill["UpdateExpression"]
     assert "HITLStatus" not in backfill["UpdateExpression"]
     assert backfill["ExpressionAttributeValues"] == {
         ":reviewedBy": "rev",

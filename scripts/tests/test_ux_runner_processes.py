@@ -16,6 +16,7 @@ past it.
 
 from __future__ import annotations
 
+import math
 import os
 import signal
 import subprocess
@@ -145,6 +146,27 @@ def test_run_in_group_feeds_the_input_on_stdin_and_returns_it_on_stdout() -> Non
     assert completed.returncode == 0
     assert completed.timed_out is False
     assert completed.elapsed >= 0
+
+
+@pytest.mark.unit
+def test_run_in_group_with_no_time_limit_waits_for_the_child() -> None:
+    """``math.inf`` is no deadline: the capture waits on its pipes and the child
+    without a timeout, since ``select`` and ``wait`` take no infinite one. A
+    local story run has no deadline, and an infinite timeout once reached
+    ``select`` there and failed the run after its last flow."""
+    completed = processes.run_in_group(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; time.sleep(0.3); sys.stdout.write(sys.stdin.read())",
+        ],
+        input_text="read after a pause",
+        env=_env(),
+        cwd=None,
+        timeout=math.inf,
+    )
+    assert (completed.returncode, completed.timed_out) == (0, False)
+    assert completed.stdout == "read after a pause"
 
 
 @pytest.mark.unit

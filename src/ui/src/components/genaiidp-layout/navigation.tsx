@@ -13,7 +13,7 @@ import useLatestVersion from '../../hooks/use-latest-version';
 import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
-import { buildHitlNavSection, buildMyWorkNavSection } from './review-queues-nav-items';
+import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
 import './navigation.css';
 
 const isQuickStartWidgetEnabled = (): boolean => {
@@ -327,7 +327,16 @@ interface NavigationProps {
   header?: { text: string; href: string };
   items?: SideNavigationProps.Item[];
   onFollowHandler?: (ev: CustomEvent<SideNavigationProps.FollowDetail>) => void;
+  /**
+   * The entry to highlight, set by a page whose URL does not say (the edit page, from its
+   * mode). `null` highlights nothing; omitted, the entry is derived from the URL.
+   */
+  activeHref?: string | null;
 }
+
+/** The page's override, or the entry derived from the URL. */
+const resolveActiveHref = (override: string | null | undefined, computed: string): string | undefined =>
+  override === undefined ? computed : (override ?? undefined);
 
 /**
  * Build the AWS CloudFormation "Update stack" deep-link for the current
@@ -348,7 +357,12 @@ const buildCfnUpdateStackUrl = (region: string | undefined, stackName: string | 
   );
 };
 
-const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
+const FullNavigation = ({
+  header,
+  items,
+  onFollowHandler = defaultOnFollowHandler,
+  activeHref: pinned,
+}: NavigationProps): React.JSX.Element => {
   const location = useLocation();
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
@@ -356,9 +370,8 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
   const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isAnnotator } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
-  // My Work (Inbox, Tasks, Queues) is for Annotators, who are assigned HITL work;
-  // nobody else has an Inbox. HITL › Queue Management is Admin-only.
-  const showMyWork = isAnnotator;
+  // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
+  // assigned HITL work. Review Studio › Review Management is Admin-only.
   const showHitl = isAdmin;
   const { features: installedFeatures } = useInstalledFeatures();
   const { features: catalogFeatures } = useCatalogFeatures();
@@ -391,14 +404,12 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     else if (isReviewerOnly) roleItems = reviewerNavItems;
     else roleItems = viewerNavItems; // Default: if user has Viewer + Reviewer, show viewer nav (union)
 
-    // My Work (with the Inbox) comes first, and only for Annotators.
-    if (showMyWork) {
-      const myWork = buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewCount);
-      roleItems = [myWork as unknown as Record<string, unknown>, ...roleItems];
-    }
+    // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isAnnotator, taskCount: reviewCount });
+    roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
-      const section = buildHitlNavSection() as unknown as Record<string, unknown>;
+      const section = buildReviewStudioNavSection() as unknown as Record<string, unknown>;
       const isSection = (i: Record<string, unknown>, text: string) => i.type === 'section' && i.text === text;
       const testStudioIdx = roleItems.findIndex((i) => isSection(i, 'Test Studio'));
       const resourcesIdx = roleItems.findIndex((i) => isSection(i, 'Resources'));
@@ -413,7 +424,7 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, showMyWork, showHitl, reviewCount]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, isAnnotator, showHitl, reviewCount]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -628,30 +639,38 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
           </Hotspot>
         </div>
       )}
-      <SideNavigation items={withNavHotspots(navigationItems)} header={header} activeHref={activeHref} onFollow={onFollowHandler} />
+      <SideNavigation
+        items={withNavHotspots(navigationItems)}
+        header={header}
+        activeHref={resolveActiveHref(pinned, activeHref)}
+        onFollow={onFollowHandler}
+      />
     </div>
   );
 };
 
 /**
- * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Queues)
+ * Navigation for an Annotator-only user: Home (Inbox, Tasks, Queues)
  * and nothing else. Mounts no feature, catalog or version hooks.
  */
-const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
+const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
   const location = useLocation();
   const path = location.pathname;
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
-  const items: SideNavigationProps.Item[] = [buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewWork?.count ?? null)];
-  // The annotation screens (under /review-queues/.../items) are opened from Tasks; a
-  // queue's own page (under /review-queues) from Queues.
+  const items: SideNavigationProps.Item[] = [
+    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
+  ];
+  // The edit pages (a Test Studio item under /review-queues/.../items, or a document's
+  // edit page, which sets the entry itself) are opened from Tasks; a queue's own page
+  // (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
   if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
   else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
     activeHref = `#${MY_QUEUES_PATH}`;
   return (
     <div className="idp-side-nav">
-      <SideNavigation items={items} activeHref={activeHref} onFollow={onFollowHandler} />
+      <SideNavigation items={items} activeHref={resolveActiveHref(pinned, activeHref)} onFollow={onFollowHandler} />
     </div>
   );
 };

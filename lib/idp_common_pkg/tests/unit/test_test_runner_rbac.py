@@ -445,7 +445,7 @@ class TestTestRunnerRBAC:
         doc_a = {"ConfidenceAlertCount": 3, "HITLStatus": ""}  # should queue
         doc_b = {"ConfidenceAlertCount": 0, "HITLStatus": ""}  # no alerts -> skip
 
-        def _get_item(Key):
+        def _get_item(Key, **_read_options):
             sk_pk = Key["PK"]
             if sk_pk == "testrun#run-1":
                 return {"Item": run_item}
@@ -478,7 +478,7 @@ class TestTestRunnerRBAC:
         run_item = {"TestSetId": "ts1", "Files": ["done.pdf"]}
         doc = {"ConfidenceAlertCount": 5, "HITLStatus": "Review Completed"}
 
-        def _get_item(Key):
+        def _get_item(Key, **_read_options):
             if Key["PK"] == "testrun#run-2":
                 return {"Item": run_item}
             return {"Item": doc}

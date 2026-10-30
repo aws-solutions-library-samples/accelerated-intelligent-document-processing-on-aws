@@ -950,11 +950,11 @@ class TestTheOtherCallSites:
         another phase is not this function's business.
 
         ⚠️ "The classification step" is three metering contexts, not one:
-        `single_pass` bills under `Classification/` while `two_stage` bills under
-        `Segmentation/` and `SectionClassification/` (GitHub #1329). `Extraction/` is the
-        other-phase case this asserts about; the two-stage contexts are covered
-        in `test_classification_variants.py`, which also pins that a two-stage
-        run is not reported as free.
+        `combined` bills under `Classification/` while `split_then_classify` bills
+        under `Splitting/` and `SectionClassification/` (GitHub #1329).
+        `Extraction/` is the other-phase case this asserts about; the
+        split-then-classify contexts are covered in `test_classification_variants.py`,
+        which also pins that a split-then-classify run is not reported as free.
         """
         cost, _tokens, why, _by_context = run_classification_bench.classification_cost(
             {
@@ -965,15 +965,15 @@ class TestTheOtherCallSites:
         assert why is None
         assert cost is not None
 
-    def test_classification_cost_withholds_when_a_two_stage_half_is_unpriced(
+    def test_classification_cost_withholds_when_a_split_then_classify_half_is_unpriced(
         self, unpriced_model
     ):
-        """The same withholding rule across the new contexts. A `SectionClassification/` model
-        with no price would otherwise contribute nothing — arithmetically a zero
-        — and report a two-stage run as cheaper than it was."""
+        """The same withholding rule across the new contexts. A
+        `SectionClassification/` model with no price would otherwise contribute
+        nothing — arithmetically a zero — and report a split-then-classify run as cheaper than it was."""
         cost, tokens, why, by_context = run_classification_bench.classification_cost(
             {
-                f"Segmentation/{REAL_MODEL}": {"inputTokens": 100},
+                f"Splitting/{REAL_MODEL}": {"inputTokens": 100},
                 f"SectionClassification/bedrock/{unpriced_model}": {"inputTokens": 900},
             }
         )
@@ -982,7 +982,7 @@ class TestTheOtherCallSites:
         # Tokens were read, not priced, so they stay.
         assert tokens["inputTokens"] == 1000
         assert by_context["SectionClassification"]["cost"] is None
-        assert by_context["Segmentation"]["cost"] is not None
+        assert by_context["Splitting"]["cost"] is not None
 
     def test_score_run_reports_no_pooled_cost_when_one_document_is_unpriced(
         self, monkeypatch, unpriced_model, capsys

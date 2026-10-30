@@ -20,11 +20,11 @@ const statusCell = (canWorkReviewQueues: boolean, hitlStatus: string) => {
 };
 
 describe('Review Status column', () => {
-  it('links In Review to the queue item for a role that can open it', () => {
+  it('links In Review to the document’s edit page for a role that can open its queue item', () => {
     statusCell(true, 'in_review');
     expect(screen.getByRole('link', { name: /In Review/ })).toHaveAttribute(
       'href',
-      `#/review-queues/items/${encodeURIComponent('tenant/one/lending.pdf')}`,
+      `#/documents/${encodeURIComponent('tenant/one/lending.pdf')}/edit?from=document`,
     );
   });
 

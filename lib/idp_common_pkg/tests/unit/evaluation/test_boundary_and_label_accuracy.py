@@ -8,7 +8,7 @@ ground-truth one on **both** its page set and its class, so a wrong boundary and
 a wrong label are reported as the same failure. A report reading
 ``split_accuracy_without_order: 0.5`` cannot say whether the model is splitting
 the packet wrongly or naming the pieces wrongly, and those two call for
-different fixes — a different segmentation prompt, or a different labeling
+different fixes — a different boundary detection prompt, or a different labeling
 model.
 
 The decomposition is exact rather than an approximation, which is the property
@@ -117,8 +117,8 @@ class TestBoundaryAndLabelAccuracy:
         assert result["boundary_accuracy"] == 0.5
 
     def test_an_unlabeled_prediction_fails_the_label_half_only(self):
-        """The shape two-stage Stage A produces, and the shape a segment whose
-        Stage B call failed keeps: boundaries good, no class."""
+        """The shape the split-then-classify splitting call produces, and the
+        shape a segment whose section classification call failed keeps: boundaries good, no class."""
         gt = [_section([0, 1], "invoice")]
         pred = [_section([0, 1], None)]
         result = compute_boundary_and_label_accuracy(gt, pred)

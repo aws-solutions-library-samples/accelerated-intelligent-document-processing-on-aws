@@ -267,69 +267,94 @@ Features:
 
 ## Configuration
 
+Rule validation runs in two model steps, and each has its own settings block
+under `rule_validation`: `fact_extraction` gathers evidence from the document,
+and `rule_validation_orchestrator` turns that evidence into a recommendation.
+`model`, `temperature`, `top_k`, `top_p`, `max_tokens`, `system_prompt` and
+`task_prompt` belong inside one of those two blocks.
+
+⚠️ **Writing those seven at the top of `rule_validation` does not work and does
+not degrade gracefully.** They are not fields of `RuleValidationConfig`, so they
+are dropped on load (`IDPConfig` logs them as unknown nested fields) and
+`fact_extraction` stays `None` — and `RuleValidationService.__init__` then raises
+`ValueError: No fact_extraction configuration found in rule_validation`. The
+settings that *are* fields of `rule_validation` itself — `enabled`, `semaphore`,
+`max_chunk_size`, `token_size`, `overlap_percentage`, `response_prefix`,
+`recommendation_options`, `extraction_results`, `z3_timeout_ms` — stay at that
+level. See `config/system_defaults/base-rule-validation.yaml` for the shipped
+values.
+
 ### Rule Validation Configuration
 
 ```yaml
 rule_validation:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
-  temperature: "0.0"
-  top_k: "20"
-  top_p: "0.0"
-  max_tokens: "4096"
+  enabled: true
   semaphore: 5  # Concurrent API calls
-  
+
   # Customizable recommendation options
   recommendation_options: |-
     Pass: The requirement criteria are fully met.
     Fail: The requirement is partially met or requires additional information.
     Info Not Found: No relevant data exists in the user history.
-  
-  system_prompt: |
-    You are a specialized evaluator for medical coding compliance...
-  
-  task_prompt: |
-    <<CACHEPOINT>>
-    
-    <options>
-    {recommendation_options}
-    </options>
-    
-    <document-text>
-    {DOCUMENT_TEXT}
-    </document-text>
-    
-    <policy-type>{policy_type}</policy-type>
-    <rule>{rule}</rule>
+
+  # Step 1 - gather factual evidence relevant to the rule
+  fact_extraction:
+    model: us.anthropic.claude-sonnet-4-6
+    temperature: 0
+    top_k: 20
+    top_p: 0
+    max_tokens: ""    # empty = use the model's maximum output limit
+
+    system_prompt: |
+      You are a specialized evaluator for medical coding compliance...
+
+    task_prompt: |
+      <<CACHEPOINT>>
+
+      <options>
+      {recommendation_options}
+      </options>
+
+      <document-text>
+      {DOCUMENT_TEXT}
+      </document-text>
+
+      <policy-type>{policy_type}</policy-type>
+      <rule>{rule}</rule>
 ```
 
 ### Rule Validation Orchestrator Configuration
 
+Also nested under `rule_validation`:
+
 ```yaml
-rule_validation_orchestrator:
-  model: us.anthropic.claude-sonnet-4-6
-  temperature: "0.0"
-  top_k: "20"
-  top_p: "0.0"
-  max_tokens: "4096"
-  
-  system_prompt: |
-    You are a specialized evaluator that consolidates rule validation results...
-  
-  task_prompt: |
-    <initial_response>
-    {initial_responses}
-    </initial_response>
-    
-    <<CACHEPOINT>>
-    
-    <options>
-    {recommendation_options}
-    </options>
-    
-    <criteria>
-    <policy_type>{policy_type}</policy_type>
-    <rule>{rule}</rule>
-    </criteria>
+rule_validation:
+  # Step 2 - consolidate the extracted evidence into a recommendation
+  rule_validation_orchestrator:
+    model: us.anthropic.claude-sonnet-4-6
+    temperature: 0
+    top_k: 20
+    top_p: 0
+    max_tokens: ""
+
+    system_prompt: |
+      You are a specialized evaluator that consolidates rule validation results...
+
+    task_prompt: |
+      <initial_response>
+      {initial_responses}
+      </initial_response>
+
+      <<CACHEPOINT>>
+
+      <options>
+      {recommendation_options}
+      </options>
+
+      <criteria>
+      <policy_type>{policy_type}</policy_type>
+      <rule>{rule}</rule>
+      </criteria>
 ```
 
 ### Policy Classes Configuration

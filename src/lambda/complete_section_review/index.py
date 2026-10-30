@@ -108,7 +108,9 @@ def handler(event, context):
                 "reason is required and must be one of: " + ", ".join(SKIP_ALL_REASONS)
             )
         note = (arguments.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
-        return skip_all_sections_review(object_key, username, user_email, reason, note)
+        return skip_all_sections_review(
+            object_key, username, user_email, reason, note, is_admin=is_admin
+        )
 
     if field_name == "saveSectionReviewEdits":
         # Not available to Annotator, whose Test Studio saves complete the section
@@ -262,6 +264,141 @@ def _assert_not_queue_managed(object_key):
         )
 
 
+def _review_finished(hitl_status):
+    """Whether a stored ``HITLStatus`` says the document's review has finished.
+
+    The document lists' rule (``list_documents_gsi_resolver._review_finished``) and
+    the web UI's ``isHitlReviewFinished``: a legacy review completed or skipped, or
+    a queue review that ended complete or rejected. ``COMPLETED`` is the one
+    finished spelling a real writer stored that the exact-match normaliser does not
+    know: the earlier A2I flow wrote it, and retained rows may still carry it.
+    """
+    from idp_common.review_queues.statuses import normalize_hitl_status
+
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+def _finished_hitl_statuses():
+    """Every stored ``HITLStatus`` value :func:`_review_finished` accepts.
+
+    Derived from the declared vocabularies through the rule itself, so a
+    ``ConditionExpression`` can test it. Exact values: the normaliser also accepts
+    surrounding whitespace, which no writer stores, and which the consistent read
+    before each guarded write refuses through the rule.
+    """
+    from idp_common.review_queues.statuses import LegacyHitlStatus, ReviewStatus
+
+    return tuple(
+        sorted(
+            value
+            for value in {
+                *(s.value for s in ReviewStatus),
+                *(s.value for s in LegacyHitlStatus),
+                "COMPLETED",
+            }
+            if _review_finished(value)
+        )
+    )
+
+
+def _not_finished_condition():
+    """``(condition, values)`` refusing a write onto a finished review.
+
+    An absent ``HITLStatus`` makes ``IN`` false, so the condition holds for it.
+    """
+    statuses = _finished_hitl_statuses()
+    values = {f":finished{i}": value for i, value in enumerate(statuses)}
+    return f"NOT (HITLStatus IN ({', '.join(values)}))", values
+
+
+def _review_finished_error(action):
+    return ValueError(
+        f"REVIEW_FINISHED: this review is already finished, so there is nothing "
+        f"to {action}"
+    )
+
+
+#: ``HITLStatus`` values the web UI reads as completed or skipped when it decides
+#: whether to offer Skip All Reviews (``SectionsPanel.tsx``: lower-cased, all
+#: whitespace removed). Looser than :func:`_review_finished`, which matches exactly
+#: after ``strip()``; the server refuses wherever either one reads finished.
+_UI_SKIP_HIDDEN_STATUSES = frozenset(
+    {"completed", "reviewcompleted", "skipped", "reviewskipped"}
+)
+
+
+def _skip_all_offered(doc):
+    """``True`` where the web UI offers Skip All Reviews, else why it does not.
+
+    The rule behind ``showSkipAllButton``: a review was raised (``hitlTriggered`` in
+    ``map-document-attributes.ts``: ``HITLTriggered`` is true, or ``HITLStatus`` is
+    set and not ``N/A``) and it is not completed or skipped. Returns ``"finished"``
+    or ``"not raised"`` otherwise. A queue-managed row never reaches here
+    (``_assert_not_queue_managed``).
+    """
+    status = doc.get("HITLStatus")
+    compact = "".join(str(status or "").lower().split())
+    if _review_finished(status) or compact in _UI_SKIP_HIDDEN_STATUSES:
+        return "finished"
+    if _review_raised(doc):
+        return True
+    return "not raised"
+
+
+def _review_raised(doc):
+    """Whether a review was raised on a tracking row, finished or not.
+
+    The web UI's ``hitlTriggered`` (``map-document-attributes.ts``): ``HITLTriggered``
+    is true, or ``HITLStatus`` is set and not ``N/A``. An ownerless ``Review
+    Pending`` row written by an earlier version counts, by its status. "Set" means a
+    non-empty string, which is what every writer stores, so that
+    :func:`_review_raised_condition` can say the same thing at the write.
+    """
+    status = doc.get("HITLStatus")
+    return doc.get("HITLTriggered") is True or (
+        isinstance(status, str) and status not in ("", "N/A")
+    )
+
+
+def _review_raised_condition():
+    """``(condition, values)`` holding :func:`_review_raised` at the moment of a write.
+
+    ``attribute_type(..., S)`` rather than ``attribute_exists``, so a stored NULL or
+    any other non-string ``HITLStatus`` reads as unset here as it does in the rule.
+    """
+    return (
+        "(HITLTriggered = :raisedFlag OR (attribute_type(HITLStatus, :raisedType) "
+        "AND HITLStatus <> :raisedUnset AND HITLStatus <> :raisedNone))",
+        {
+            ":raisedFlag": True,
+            ":raisedType": "S",
+            ":raisedUnset": "",
+            ":raisedNone": "N/A",
+        },
+    )
+
+
+def _no_review_pending_error(action):
+    return ValueError(
+        f"NO_REVIEW_PENDING: this document has no review waiting, so there is "
+        f"nothing to {action}"
+    )
+
+
+def _read_review_row(object_key):
+    """The tracking row, read consistently so a review finished a moment ago shows."""
+    table = dynamodb.Table(TRACKING_TABLE_NAME)
+    return (
+        table.get_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+        ).get("Item")
+        or {}
+    )
+
+
 def _save_section_edits(document, object_key, section_id, edited_data):
     """Write a section's edited result JSON to its output URI, or raise."""
     section = next((s for s in document.sections if s.section_id == section_id), None)
@@ -287,8 +424,6 @@ def save_section_review_edits(
     processChanges or skipAllSectionsReview. Only the review owner, or an Admin,
     may save, and not once the review has finished.
     """
-    from idp_common.review_queues.statuses import normalize_hitl_status
-
     document_service = create_document_service(mode="dynamodb")
     document = document_service.get_document(object_key)
     if not document:
@@ -302,7 +437,8 @@ def save_section_review_edits(
         ).get("Item")
         or {}
     )
-    if normalize_hitl_status(doc.get("HITLStatus")).kind in ("complete", "skipped"):
+    # Queue statuses never reach here (_assert_not_queue_managed).
+    if _review_finished(doc.get("HITLStatus")):
         logger.warning(
             f"Rejecting save of review edits on finished review {object_key}"
         )
@@ -492,64 +628,75 @@ def save_edited_data_to_s3(s3_uri, edited_data):
         raise
 
 
+_test_set_labels = None
+
+
+def _labels():
+    """The one Test Studio label writer, built once per container."""
+    global _test_set_labels
+    if _test_set_labels is None:
+        from idp_common.review_queues.testset_labels import TestSetLabels
+
+        _test_set_labels = TestSetLabels(
+            s3_client,
+            TEST_SET_BUCKET,
+            doc_table=dynamodb.Table(HITL_TABLE_NAME) if HITL_TABLE_NAME else None,
+            curve_table=dynamodb.Table(TRACKING_TABLE_NAME),
+        )
+    return _test_set_labels
+
+
+def _test_set_document(object_key):
+    """``(table, tracking row, test set id, filename)`` for a test-set review document,
+    or None for any other document.
+
+    A test-set review document is keyed ``{test_run_id}/{filename}`` and carries
+    ``TestSetId``; its labels are the set's baseline for ``filename``.
+    """
+    table = dynamodb.Table(TRACKING_TABLE_NAME)
+    doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item", {})
+    test_set_id = doc.get("TestSetId")
+    if not test_set_id:
+        return None
+    filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
+    return table, doc, test_set_id, filename
+
+
 def write_correction_to_test_set_baseline(
     object_key, section_id, edited_data, username="", user_email=""
 ):
     """Persist a HITL correction to the owning test set's baseline (ground truth).
 
-    A test-set review document is keyed ``{test_run_id}/{filename}`` and carries
-    ``TestSetId``; the baseline it maps to is
-    ``{test_set_id}/baseline/{filename}/sections/{section_id}/result.json``. Writing
-    there, and not only to the document's own output, is what makes a review
-    reusable as versionable ground truth. Best-effort: a document outside a test
-    set, or a failed write, must not fail the review.
+    Writing to the set's baseline, and not only to the document's own output, is what
+    makes a review reusable as versionable ground truth. The label is written by
+    ``idp_common.review_queues.testset_labels`` (reviewed provenance, the edit
+    history, the curve observations, the section's draft deleted). Best-effort: a
+    document outside a test set, or a failed write, must not fail the review.
     """
     if not TEST_SET_BUCKET:
         return
     try:
-        table = dynamodb.Table(TRACKING_TABLE_NAME)
-        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get(
-            "Item", {}
-        )
-        test_set_id = doc.get("TestSetId")
-        if not test_set_id:
+        found = _test_set_document(object_key)
+        if not found:
             return  # Not a test-set review document — nothing to do.
-
-        # object_key is "{test_run_id}/{filename}"; the baseline is keyed by filename.
-        filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
-        baseline_key = (
-            f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
-        )
+        table, doc, test_set_id, filename = found
         data = json.loads(edited_data) if isinstance(edited_data, str) else edited_data
+        if not isinstance(data, dict):
+            logger.warning(f"Ignoring a non-object correction for {object_key}")
+            return
+        from idp_common.review_queues.testset_labels import LabelEditor
 
-        # Read the label being replaced before overwriting it: the diff against
-        # what the reviewer saved is the only evidence of whether the model was
-        # right, and the write destroys it.
-        previous = _read_json(TEST_SET_BUCKET, baseline_key)
-
-        # Marks the label human-reviewed so draft labeling leaves it alone; the
-        # harvester only replaces labels tagged draft-machine.
-        if isinstance(data, dict):
-            data["labelSource"] = "reviewed-human"
-            append_edit_history(previous, data, username, user_email)
-
-        s3_client.put_object(
-            Bucket=TEST_SET_BUCKET,
-            Key=baseline_key,
-            Body=json.dumps(data, indent=2),
-            ContentType="application/json",
+        written = _labels().write_reviewed(
+            test_set_id,
+            filename,
+            section_id,
+            data,
+            editor=LabelEditor(name=username or "unknown", email=user_email or ""),
+            source="annotation-review",
+            require_existing=False,
+            skip_if_reviewed=False,
         )
-        logger.info(
-            f"Wrote HITL correction to test-set baseline "
-            f"s3://{TEST_SET_BUCKET}/{baseline_key}"
-        )
-
-        record_curve_observations(test_set_id, previous, data)
-        was_reviewed = (
-            isinstance(previous, dict)
-            and previous.get("labelSource") == "reviewed-human"
-        )
-        if not was_reviewed:
+        if written and not written.was_reviewed:
             count_document_if_fully_reviewed(
                 table, test_set_id, filename, section_id, doc.get("Sections") or []
             )
@@ -602,109 +749,38 @@ def confirm_test_set_baseline_reviewed(
 ):
     """Tag a baseline human-reviewed when the reviewer changed nothing.
 
-    "The labels are correct" is a verdict, not the absence of one: every field
-    keeps its predicted value, and a human has asserted those values are right.
-    The baseline is rewritten in place so it carries ``reviewed-human``, gains a
-    revision entry, and feeds the curve observations that all say "the model was
-    correct" — the high-confidence evidence review otherwise never produces.
+    "The labels are correct" is a verdict, not the absence of one: every field keeps
+    its predicted value, and a human has asserted those values are right. The label
+    is rewritten as reviewed, with a revision entry and the curve observations that
+    all say "the model was correct". An already reviewed label is left alone.
 
     Best-effort, and a no-op outside a test set or when no baseline exists yet.
     """
     if not TEST_SET_BUCKET:
         return
     try:
-        table = dynamodb.Table(TRACKING_TABLE_NAME)
-        doc = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get(
-            "Item", {}
-        )
-        test_set_id = doc.get("TestSetId")
-        if not test_set_id:
+        found = _test_set_document(object_key)
+        if not found:
             return
+        table, doc, test_set_id, filename = found
+        from idp_common.review_queues.testset_labels import LabelEditor
 
-        filename = object_key.split("/", 1)[1] if "/" in object_key else object_key
-        baseline_key = (
-            f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
+        written = _labels().write_reviewed(
+            test_set_id,
+            filename,
+            section_id,
+            None,
+            editor=LabelEditor(name=username or "unknown", email=user_email or ""),
+            source="annotation-review",
+            require_existing=False,
+            skip_if_reviewed=True,
         )
-        existing = _read_json(TEST_SET_BUCKET, baseline_key)
-        if not isinstance(existing, dict):
-            logger.info(
-                f"No baseline to confirm at s3://{TEST_SET_BUCKET}/{baseline_key}"
+        if written and not written.was_reviewed:
+            count_document_if_fully_reviewed(
+                table, test_set_id, filename, section_id, doc.get("Sections") or []
             )
-            return
-        if existing.get("labelSource") == "reviewed-human":
-            return  # Already confirmed; nothing to record.
-
-        # Reuse the correction path with the values unchanged: confirming asserts
-        # the current values ARE the ground truth, so the same provenance stamp,
-        # revision entry and curve observations apply.
-        write_correction_to_test_set_baseline(
-            object_key, section_id, existing, username, user_email
-        )
     except Exception as e:  # noqa: BLE001 — must not break the review
         logger.error(f"Failed to confirm test-set baseline for {object_key}: {e}")
-
-
-# Caps the trail on a repeatedly reviewed label; the newest entries are kept.
-MAX_EDIT_HISTORY_ENTRIES = 50
-
-
-def append_edit_history(previous, saved, username, user_email):
-    """Record who changed what, in the label itself.
-
-    The ground-truth viewer reads provenance from ``_editHistory`` inside the
-    label JSON, so a review recorded only in DynamoDB (HITLReviewHistory) is
-    invisible to it. The field-level diff is taken against the label being
-    replaced, which is already in hand for the curve observation.
-    """
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "editedBy": username or "unknown",
-        "editedByEmail": user_email or "",
-        "source": "annotation-review",
-    }
-    diffs = _field_diffs(previous, saved)
-    if diffs:
-        entry["baselineEdits"] = {
-            "changedFields": list(diffs.keys()),
-            "changeCount": len(diffs),
-            "diffs": diffs,
-        }
-
-    # The trail is server-owned: seed it from the stored label, since a client that
-    # does not round-trip _editHistory would otherwise erase every prior entry.
-    # Taking the longer of the two also stops a client from truncating it.
-    stored = (previous or {}).get("_editHistory")
-    incoming = saved.get("_editHistory")
-    history = stored if isinstance(stored, list) else []
-    if isinstance(incoming, list) and len(incoming) > len(history):
-        history = incoming
-    saved["_editHistory"] = [*history, entry][-MAX_EDIT_HISTORY_ENTRIES:]
-
-
-def _field_diffs(previous, saved):
-    """Field path → {originalValue, newValue} for every value the review changed.
-
-    Uses the same flattening as the curve, so "changed" means the same thing to
-    the audit trail and to the calibration signal.
-    """
-    if not previous:
-        return {}
-    try:
-        from idp_common.evaluation.curve_store import flatten_values
-
-        before = flatten_values(previous.get("inference_result") or {})
-        after = flatten_values(saved.get("inference_result") or {})
-    except Exception as e:  # noqa: BLE001 — provenance must not fail the save
-        logger.warning(f"Could not diff review changes: {e}")
-        return {}
-
-    diffs = {}
-    for path in set(before) | set(after):
-        original = before.get(path)
-        new = after.get(path)
-        if original != new:
-            diffs[path] = {"originalValue": original, "newValue": new}
-    return diffs
 
 
 def _read_json(bucket, key):
@@ -714,54 +790,6 @@ def _read_json(bucket, key):
         return json.loads(body)
     except Exception:  # noqa: BLE001 — absence is normal (first review of a doc)
         return None
-
-
-def record_curve_observations(test_set_id, previous, saved):
-    """Record confidence→accuracy observations from this review.
-
-    A field the reviewer left alone was predicted correctly; a changed one was not.
-    Paired with the model's claimed confidence, that is the ``(confidence, correct)``
-    observation the review-effort estimator's curve is built from. Best-effort: the
-    curve is an optimization and must never fail a reviewer's save.
-    """
-    if not previous:
-        return  # No prior prediction, so there is no verdict to record.
-    try:
-        from idp_common.evaluation.curve_store import (
-            CurveStore,
-            observations_from_baseline_review,
-        )
-
-        observations = observations_from_baseline_review(previous, saved)
-        if not observations:
-            return
-
-        table = dynamodb.Table(TRACKING_TABLE_NAME)
-        # Key the curve by the config that produced these labels; a later config
-        # change must not inherit a curve measured under different confidence
-        # semantics.
-        label_meta = previous.get("metadata") or {}
-        config_version = label_meta.get("config_version")
-        # ...and by the revision family that drafted them (#698): the harvest
-        # copies the run's confidence fingerprint onto the label beside the
-        # config version, so a later model swap on the same profile starts a new
-        # curve instead of inheriting this one.
-        fingerprint = label_meta.get("confidence_fingerprint") or None
-        accepted = CurveStore(table).add_observations(
-            test_set_id,
-            observations,
-            config_version=config_version,
-            source="review",
-            fingerprint=fingerprint,
-        )
-        logger.info(
-            f"Recorded {accepted} confidence-curve observation(s) for test set "
-            f"{test_set_id} from review"
-        )
-    except Exception as e:  # noqa: BLE001 — never break a review over the curve
-        logger.warning(
-            f"Could not record confidence-curve observations for {test_set_id}: {e}"
-        )
 
 
 def trigger_reprocessing(object_key):
@@ -815,12 +843,13 @@ def trigger_reprocessing(object_key):
 
 
 def skip_all_sections_review(
-    object_key, username="", user_email="", reason=None, note=None
+    object_key, username="", user_email="", reason=None, note=None, is_admin=False
 ):
     """Skip all pending section reviews and mark the document complete.
 
     ``reason`` and ``note`` say why nobody checked it, and are kept with the skip in
-    ``HITLReviewHistory``.
+    ``HITLReviewHistory``. A caller who is not an Admin may skip only where the web
+    UI offers Skip All Reviews: a review was raised and has not finished.
     """
     logger.info(
         f"Skipping all sections review for document {object_key} by admin {username}"
@@ -835,11 +864,22 @@ def skip_all_sections_review(
 
     completed = set(document.hitl_sections_completed or [])
 
-    # Get skipped from DynamoDB (not in document model)
+    # Get skipped from DynamoDB (not in document model). Read consistently, so a
+    # review finished a moment ago is seen by the check below.
     table = dynamodb.Table(TRACKING_TABLE_NAME)
-    response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
-    doc = response.get("Item", {})
+    doc = _read_review_row(object_key)
     existing_skipped = set(doc.get("HITLSectionsSkipped", []) or [])
+
+    # Admins may skip any document. Anyone else only where the web UI offers the
+    # button; the write's condition below holds the finished part of that at the
+    # moment of the write.
+    if not is_admin:
+        offered = _skip_all_offered(doc)
+        if offered is not True:
+            logger.warning(f"Rejecting skip-all on {object_key}: {offered}")
+            if offered == "finished":
+                raise _review_finished_error("skip")
+            raise _no_review_pending_error("skip")
 
     # Get all section IDs from the document
     all_section_ids = {
@@ -886,9 +926,9 @@ def skip_all_sections_review(
     # unconditional whole-document write shared by the pipeline and several
     # resolvers. Guarding one caller of it in isolation is the change that looks
     # like a fix and is not. Reported in #1111 with the other sites on that path.
-    table.update_item(
-        Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression=(
+    update = {
+        "Key": {"PK": f"doc#{object_key}", "SK": "none"},
+        "UpdateExpression": (
             "SET HITLStatus = :status, HITLSectionsPending = :pending, "
             "HITLSectionsSkipped = :skipped, "
             "HITLReviewHistory = list_append("
@@ -896,7 +936,7 @@ def skip_all_sections_review(
             "HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, "
             "HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview"
         ),
-        ExpressionAttributeValues={
+        "ExpressionAttributeValues": {
             ":status": LegacyHitlStatus.REVIEW_SKIPPED.value,
             ":pending": [],
             ":skipped": all_skipped,
@@ -906,7 +946,18 @@ def skip_all_sections_review(
             ":reviewedBy": username or "unknown",
             ":reviewedByEmail": user_email or "",
         },
-    )
+    }
+    if not is_admin:
+        not_finished, finished_values = _not_finished_condition()
+        update["ConditionExpression"] = not_finished
+        update["ExpressionAttributeValues"].update(finished_values)
+    try:
+        table.update_item(**update)
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.warning(
+            f"Rejecting skip-all of a review finished during it {object_key}"
+        )
+        raise _review_finished_error("skip") from None
 
     logger.info(
         f"All sections skipped for document {object_key}. Skipped: {all_skipped}, Completed: {list(completed)}"
@@ -938,7 +989,26 @@ def claim_review(object_key, username="", user_email=""):
     if not document:
         raise ValueError(f"Document {object_key} not found")
 
+    # A finished review stays finished: claiming it would set it back to In
+    # Progress and reopen its edits. Read consistently, so a review finished a
+    # moment ago is refused; the write's condition below holds the same rule at the
+    # moment of the write.
+    #
+    # Claiming also needs a review to have been raised, or it would write Review In
+    # Progress onto a document nobody routed for review and list it as one. This is
+    # the rule the web UI offers Start Review by, and it holds for every caller,
+    # Admins included, like the finished check. The write's condition holds it too.
+    row = _read_review_row(object_key)
+    if _review_finished(row.get("HITLStatus")):
+        logger.warning(f"Rejecting claim of finished review {object_key}")
+        raise _review_finished_error("start")
+    if not _review_raised(row):
+        logger.warning(f"Rejecting claim of {object_key}: no review was raised")
+        raise _no_review_pending_error("start")
+
     table = dynamodb.Table(TRACKING_TABLE_NAME)
+    not_finished, finished_values = _not_finished_condition()
+    raised, raised_values = _review_raised_condition()
 
     # Conditional, so the claim is exclusive rather than advisory, and the condition
     # is the *only* ownership test here. A read-then-check before this write cannot
@@ -955,27 +1025,39 @@ def claim_review(object_key, username="", user_email=""):
             Key={"PK": f"doc#{object_key}", "SK": "none"},
             UpdateExpression="SET HITLStatus = :status, HITLReviewOwner = :owner, HITLReviewOwnerEmail = :email",
             ConditionExpression=(
-                "attribute_not_exists(HITLReviewOwner) OR HITLReviewOwner = :owner "
-                "OR HITLReviewOwner = :empty"
+                "(attribute_not_exists(HITLReviewOwner) OR HITLReviewOwner = :owner "
+                f"OR HITLReviewOwner = :empty) AND {not_finished} AND {raised}"
             ),
             ExpressionAttributeValues={
                 ":status": LegacyHitlStatus.IN_PROGRESS.value,
                 ":owner": username,
                 ":email": user_email,
                 ":empty": "",
+                **finished_values,
+                **raised_values,
             },
         )
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
         # Lost the race. Re-read so the message names the actual winner, and keep the
         # "already claimed" phrasing — the UI matches on it to skip to the next
-        # document instead of dead-ending. This re-read is eventually consistent like
-        # any other, so a winner it cannot yet see degrades the name to "another
-        # reviewer"; the phrase the UI keys on is there either way, which is why the
-        # fallback is worded as a reviewer rather than as an error.
+        # document instead of dead-ending. Read consistently, so a review that
+        # finished in the race is reported as finished rather than as claimed by its
+        # owner. A winner with no recorded name is reported as "another reviewer",
+        # which keeps the phrase the UI keys on.
         current = (
-            table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item")
+            table.get_item(
+                Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+            ).get("Item")
             or {}
         )
+        if _review_finished(current.get("HITLStatus")):
+            logger.warning(
+                f"Rejecting claim of a review finished during it {object_key}"
+            )
+            raise _review_finished_error("start") from None
+        if not _review_raised(current):
+            logger.warning(f"Rejecting claim of {object_key}: no review is raised now")
+            raise _no_review_pending_error("start") from None
         winner = current.get("HITLReviewOwner") or "another reviewer"
         logger.info(f"Claim race lost on {object_key}: already claimed by {winner}")
         raise ValueError(f"Document is already claimed by {winner}") from None
@@ -998,9 +1080,32 @@ def release_review(object_key, username="", user_email="", is_admin=False):
         raise ValueError(f"Document {object_key} not found")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
-    response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
+    # Consistent, so a release straight after a claim sees the claim's owner.
+    response = table.get_item(
+        Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
+    )
     doc = response.get("Item", {})
     current_owner = doc.get("HITLReviewOwner", "")
+
+    # Releasing gives up a claim, and writes Review Pending, which lists the
+    # document for every Reviewer. With no claim there is nothing to give up, and
+    # the row may be one no review was raised on or a finished review the list
+    # recognises only by its status; the web UI's bulk Release sends every selected
+    # row. So an unclaimed document is refused rather than put in every Reviewer's
+    # queue.
+    if not current_owner:
+        logger.warning("Rejecting release of a document nobody has claimed")
+        raise ValueError(
+            "NOT_CLAIMED: nobody has claimed this review, so there is nothing to release"
+        )
+
+    # A finished review keeps its owner (the reviewer who finished it), so the
+    # NOT_CLAIMED check above admits it; releasing it would write Review Pending and
+    # put a finished review back in every Reviewer's queue. Refused for every caller,
+    # as the web UI offers Release on no finished review.
+    if _review_finished(doc.get("HITLStatus")):
+        logger.warning(f"Rejecting release of finished review {object_key}")
+        raise _review_finished_error("release")
 
     if not is_admin and current_owner and current_owner != username:
         logger.warning("Forbidden: release of a review owned by another user")
@@ -1010,14 +1115,21 @@ def release_review(object_key, username="", user_email="", is_admin=False):
 
     # Update Review Status and remove review owner directly in DynamoDB
     # This avoids re-serializing metering data which could cause issues
-    table.update_item(
-        Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression="SET HITLStatus = :status, HITLPendingReview = :pending REMOVE HITLReviewOwner, HITLReviewOwnerEmail",
-        ExpressionAttributeValues={
-            ":status": LegacyHitlStatus.REVIEW_PENDING.value,
-            ":pending": "true",
-        },
-    )
+    not_finished, finished_values = _not_finished_condition()
+    try:
+        table.update_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"},
+            UpdateExpression="SET HITLStatus = :status, HITLPendingReview = :pending REMOVE HITLReviewOwner, HITLReviewOwnerEmail",
+            ConditionExpression=not_finished,
+            ExpressionAttributeValues={
+                ":status": LegacyHitlStatus.REVIEW_PENDING.value,
+                ":pending": "true",
+                **finished_values,
+            },
+        )
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        logger.warning(f"Rejecting release of a review finished during it {object_key}")
+        raise _review_finished_error("release") from None
 
     logger.info(
         f"Review released for document {object_key}, HITLStatus set to Review Pending"

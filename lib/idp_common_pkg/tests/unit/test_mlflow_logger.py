@@ -271,13 +271,13 @@ class TestExtractConfigParams:
         config = {
             "classification": {
                 "granularity": "packet",
-                "strategy": "two_stage",
+                "strategy": "split_then_classify",
                 "modality": {"text": True, "images": False},
             }
         }
         params, _, _ = mlflow_logger._extract_config_params(config)
         assert params["classification.granularity"] == "packet"
-        assert params["classification.strategy"] == "two_stage"
+        assert params["classification.strategy"] == "split_then_classify"
         assert params["classification.modality.text"] == "True"
         assert params["classification.modality.images"] == "False"
 
@@ -321,46 +321,46 @@ class TestExtractConfigParams:
         assert params["classification.modality.images"] == "infer"
         assert params["classification.granularity"] == "page"
 
-    def test_a_one_stage_config_logs_the_one_stage_call(self):
+    def test_a_combined_config_logs_the_combined_call(self):
         config = {
             "classification": {
-                "strategy": "single_pass",
-                "one_stage": {
+                "strategy": "combined",
+                "combined": {
                     "granularity": "packet",
                     "page": {"task_prompt": "PAGE"},
                     "packet": {"task_prompt": "PACKET", "system_prompt": "SYS"},
                     "llm": {
-                        "model": "one-stage-model",
+                        "model": "combined-model",
                         "temperature": 0.0,
                         "modality": {"text": True, "images": None},
                     },
                 },
-                "two_stage": {
+                "split_then_classify": {
                     "section_classification": {"llm": {"model": "unused-model"}}
                 },
             }
         }
         params, prompts, _ = mlflow_logger._extract_config_params(config)
-        assert params["classification.model"] == "one-stage-model"
+        assert params["classification.model"] == "combined-model"
         assert params["classification.temperature"] == "0.0"
         assert params["classification.granularity"] == "packet"
         assert params["classification.modality.text"] == "True"
         assert params["classification.modality.images"] == "infer"
-        assert "classification.segmentation.model" not in params
+        assert "classification.splitting.model" not in params
         # The prompt the active granularity sends, not the other one.
         assert prompts["classification.task_prompt"] == "PACKET"
         assert prompts["classification.system_prompt"] == "SYS"
 
-    def test_a_two_stage_config_logs_both_calls(self):
+    def test_a_split_then_classify_config_logs_both_calls(self):
         """`classification.model` is the call that assigns the class, so a run
-        is comparable with a one-stage run on that axis; the boundary call is
+        is comparable with a combined run on that axis; the splitting call is
         logged under its own name."""
         config = {
             "classification": {
-                "strategy": "two_stage",
-                "one_stage": {"llm": {"model": "unused-model"}},
-                "two_stage": {
-                    "segmentation": {
+                "strategy": "split_then_classify",
+                "combined": {"llm": {"model": "unused-model"}},
+                "split_then_classify": {
+                    "splitting": {
                         "llm": {
                             "model": "boundary-model",
                             "granularity": "page",
@@ -378,14 +378,14 @@ class TestExtractConfigParams:
             }
         }
         params, prompts, _ = mlflow_logger._extract_config_params(config)
-        assert params["classification.strategy"] == "two_stage"
+        assert params["classification.strategy"] == "split_then_classify"
         assert params["classification.model"] == "section-model"
-        assert params["classification.segmentation.model"] == "boundary-model"
+        assert params["classification.splitting.model"] == "boundary-model"
         assert params["classification.granularity"] == "page"
         assert params["classification.modality.text"] == "False"
         assert params["classification.modality.images"] == "True"
         assert prompts["classification.task_prompt"] == "LABEL"
-        assert prompts["classification.segmentation.task_prompt"] == "BOUNDARIES"
+        assert prompts["classification.splitting.task_prompt"] == "BOUNDARIES"
 
     def test_the_removed_key_logs_nothing(self):
         """A config still carrying `classificationMethod` reaches this function

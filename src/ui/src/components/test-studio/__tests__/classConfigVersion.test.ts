@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { describeClassConfigSource, resolveClassConfigVersion } from '../classConfigVersion';
+import { resolveClassConfigVersion } from '../classConfigVersion';
 
 describe('resolveClassConfigVersion', () => {
   it("prefers the baseline's own stamp over everything else", () => {
@@ -58,16 +58,5 @@ describe('resolveClassConfigVersion', () => {
       source: 'active',
     });
     expect(resolveClassConfigVersion(null, null, null)).toEqual({ version: 'default', source: 'default' });
-  });
-});
-
-describe('describeClassConfigSource', () => {
-  it('names a fallback as a fallback, so it cannot pass for the config in force', () => {
-    // The silence is half the bug: the badge used to be hidden whenever the
-    // version was 'default'.
-    expect(describeClassConfigSource({ version: 'v2', source: 'baseline' })).toBe('v2');
-    expect(describeClassConfigSource({ version: 'v2', source: 'testSet' })).toBe('v2 (test set)');
-    expect(describeClassConfigSource({ version: 'v2', source: 'active' })).toBe('v2 (active config)');
-    expect(describeClassConfigSource({ version: 'default', source: 'default' })).toBe('built-in default');
   });
 });

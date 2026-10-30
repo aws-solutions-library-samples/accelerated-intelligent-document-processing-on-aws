@@ -1,11 +1,11 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// My Work › Queues (Annotators): the queues that list the caller as an Annotator —
+// Home › Queues (Annotators): the queues that list the caller as an Annotator —
 // production review queues (getMyReviewQueues) and Test Studio queues
 // (listTestSetQueues, which returns an Annotator only the sets that list them).
 // Opening a queue lists its items; any item opens read-only, and Claim assigns one
-// to the caller so it shows in My Work › Tasks.
+// to the caller so it shows in Home › Tasks.
 import React, { useCallback, useMemo, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { useCollection } from '@cloudscape-design/collection-hooks';
@@ -144,7 +144,7 @@ const MyQueuesPage = (): React.JSX.Element => {
     filtering: {
       empty: (
         <Box textAlign="center" color="inherit" padding="s">
-          No queues list you yet. An Admin adds you to a queue&apos;s Eligible Annotators in Queue Management; its queue then appears here.
+          No queues list you yet. An Admin adds you to a queue&apos;s Eligible Annotators in Review Management; its queue then appears here.
         </Box>
       ),
       noMatch: <TableNoMatchState onClearFilter={() => collectionActions.setFiltering('')} />,

@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useEffect, useState, useMemo } from 'react';
-import { Table, Pagination, TextFilter, Box, Link, SpaceBetween } from '@cloudscape-design/components';
+import { Alert, Table, Pagination, TextFilter, Box, Link, SpaceBetween } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
@@ -27,11 +27,13 @@ import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import DateRangeModal from '../common/DateRangeModal';
-import { isQueueManaged } from '../common/review-status';
+import { isPendingForReviewer } from './reviewer-pending-filter';
 import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
 import { claimReview, releaseReview } from '../../graphql/generated';
+import { claimSelectedReviews, type ClaimedReview } from './claim-selected-reviews';
+import { releaseSelectedReviews, type ReleasedReview } from './release-selected-reviews';
 
 import type { MappedDocument } from './documents-table-config';
 import {
@@ -80,6 +82,8 @@ const DocumentList = (): React.JSX.Element => {
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
   const [currentUsername, setCurrentUsername] = useState('');
+  // Server refusals from the last Start Review or Release Review, shown above the table.
+  const [reviewRefusal, setReviewRefusal] = useState<{ header: string; messages: string[] } | null>(null);
   const { settings } = useSettingsContext();
   const { currentCredentials } = useAppContext();
   const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
@@ -147,23 +151,13 @@ const DocumentList = (): React.JSX.Element => {
     }
   }, []);
 
-  // Filter documents for reviewers - show only pending HITL reviews (not completed/skipped)
+  // Filter documents for reviewers - show only pending HITL reviews (not finished)
   // Note: Server-side RBAC filtering is now applied in the listDocuments resolver.
   // Reviewer-only users receive only HITL-pending + their own completed reviews from the API.
-  // This client-side filter is kept as a secondary safety net but is no longer the primary enforcement.
+  // This client-side filter is a secondary safety net (see isPendingForReviewer).
   const filteredDocumentList = useMemo(() => {
     if (isReviewerOnly) {
-      return documentList.filter((doc) => {
-        // Must have HITL triggered
-        if (!doc.hitlTriggered) return false;
-        // Exclude completed or skipped reviews
-        if (doc.hitlCompleted) return false;
-        const status = doc.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
-        if (status === 'skipped' || status === 'reviewskipped') return false;
-        if (status === 'completed' || status === 'reviewcompleted') return false;
-        // Show if unassigned or assigned to current user
-        return !doc.hitlReviewOwner || doc.hitlReviewOwner === currentUsername;
-      });
+      return documentList.filter((doc) => isPendingForReviewer(doc, currentUsername));
     }
     return documentList;
   }, [documentList, isReviewerOnly, currentUsername]);
@@ -294,82 +288,69 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleClaimReview = async () => {
     const client = generateClient();
-    // Queued documents are reviewed from their queue item; the server refuses them here.
-    const selectedItems = (collectionProps.selectedItems as MappedDocument[]).filter((item) => !isQueueManaged(item.hitlStatus));
-    const isSingleSelection = selectedItems.length === 1;
+    setReviewRefusal(null);
+    const { claimed, failures, navigateTo } = await claimSelectedReviews(
+      (collectionProps.selectedItems ?? []) as MappedDocument[],
+      async (objectKey) => {
+        const result = await client.graphql({ query: claimReview, variables: { objectKey } });
+        logger.debug('Claimed review for', objectKey, result);
+        return (result as { data: { claimReview: ClaimedReview } }).data.claimReview;
+      },
+    );
+    if (failures.length) logger.error('Error claiming review', failures);
 
-    // Claim reviews for all selected documents
-    for (const item of selectedItems) {
-      try {
-        const result = await client.graphql({
-          query: claimReview,
-          variables: { objectKey: item.objectKey },
-        });
-        const claimData = (
-          result as { data: { claimReview: { HITLReviewOwner: string; HITLReviewOwnerEmail: string; HITLStatus: string } } }
-        ).data.claimReview;
-        logger.debug('Claimed review for', item.objectKey, result);
-
-        // Update the document in the list immediately
-        setDocumentList((prevList) =>
-          prevList.map((doc) =>
-            doc.objectKey === item.objectKey
-              ? {
-                  ...doc,
-                  hitlReviewOwner: claimData.HITLReviewOwner,
-                  hitlReviewOwnerEmail: claimData.HITLReviewOwnerEmail,
-                  hitlStatus: claimData.HITLStatus,
-                }
-              : doc,
-          ),
-        );
-      } catch (e) {
-        logger.error('Error claiming review', e);
-      }
-    }
+    // Update the claimed documents in the list immediately
+    const byKey = new Map(claimed.map(({ objectKey, review }) => [objectKey, review]));
+    setDocumentList((prevList) =>
+      prevList.map((doc) => {
+        const review = byKey.get(doc.objectKey);
+        return review
+          ? {
+              ...doc,
+              hitlReviewOwner: review.HITLReviewOwner,
+              hitlReviewOwnerEmail: review.HITLReviewOwnerEmail,
+              hitlStatus: review.HITLStatus,
+            }
+          : doc;
+      }),
+    );
 
     // Clear selection
     actions.setSelectedItems([]);
+    if (failures.length) setReviewRefusal({ header: 'Start Review was refused', messages: failures });
 
-    // If single document selected, navigate to document details
-    if (isSingleSelection) {
-      const documentId = selectedItems[0].objectKey;
-      logger.debug('Navigating to document details:', documentId);
-      navigate(`/documents/${encodeURIComponent(documentId)}`);
+    // If the one selected document was claimed, navigate to its details
+    if (navigateTo) {
+      logger.debug('Navigating to document details:', navigateTo);
+      navigate(`/documents/${encodeURIComponent(navigateTo)}`);
     }
   };
 
   const handleReleaseReview = async () => {
     const client = generateClient();
-    for (const item of (collectionProps.selectedItems as MappedDocument[]).filter((doc) => !isQueueManaged(doc.hitlStatus))) {
-      try {
-        const result = await client.graphql({
-          query: releaseReview,
-          variables: { objectKey: item.objectKey },
-        });
-        const releaseData = (result as { data: { releaseReview: { HITLStatus: string } } }).data.releaseReview;
-        logger.debug('Released review for', item.objectKey, result);
+    setReviewRefusal(null);
+    const { released, failures } = await releaseSelectedReviews(
+      (collectionProps.selectedItems ?? []) as MappedDocument[],
+      async (objectKey) => {
+        const result = await client.graphql({ query: releaseReview, variables: { objectKey } });
+        logger.debug('Released review for', objectKey, result);
+        return (result as { data: { releaseReview: ReleasedReview } }).data.releaseReview;
+      },
+    );
+    if (failures.length) logger.error('Error releasing review', failures);
 
-        // Update the document in the list immediately
-        setDocumentList((prevList) =>
-          prevList.map((doc) =>
-            doc.objectKey === item.objectKey
-              ? {
-                  ...doc,
-                  hitlReviewOwner: '' as string,
-                  hitlReviewOwnerEmail: '' as string,
-                  hitlStatus: releaseData.HITLStatus,
-                }
-              : doc,
-          ),
-        );
-      } catch (e) {
-        logger.error('Error releasing review', e);
-      }
-    }
+    // Update the released documents in the list immediately
+    const byKey = new Map(released.map(({ objectKey, review }) => [objectKey, review]));
+    setDocumentList((prevList) =>
+      prevList.map((doc) => {
+        const review = byKey.get(doc.objectKey);
+        return review ? { ...doc, hitlReviewOwner: '', hitlReviewOwnerEmail: '', hitlStatus: review.HITLStatus } : doc;
+      }),
+    );
 
     // Clear selection
     actions.setSelectedItems([]);
+    if (failures.length) setReviewRefusal({ header: 'Release Review was refused', messages: failures });
   };
 
   /**
@@ -504,6 +485,13 @@ const DocumentList = (): React.JSX.Element => {
 
   return (
     <>
+      {reviewRefusal && (
+        <Alert type="error" dismissible onDismiss={() => setReviewRefusal(null)} header={reviewRefusal.header}>
+          {reviewRefusal.messages.map((message) => (
+            <div key={message}>{message}</div>
+          ))}
+        </Alert>
+      )}
       <Table
         {...collectionProps}
         header={

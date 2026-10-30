@@ -42,7 +42,6 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
 - [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
-- [Criteria Validation](./criteria-validation.md) - Document validation against dynamic business rules using LLMs
 - [OCR Image Sizing Guide](./ocr-image-sizing-guide.md) - Optimizing image sizes for OCR processing
 - [Languages](./languages.md) - Multi-language support
 
@@ -79,7 +78,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
-- [Release Runbook](./release-runbook.md) - Publishing a release to the four public S3 regions: preconditions, ordered steps, failure and recovery paths, what is not automated, post-release verification
+- [Release Runbook](./release-runbook.md) - How a release is built and published to S3, for publishing releases to buckets in your own account: preconditions, ordered steps, failure and recovery, post-release verification
 
 ## Planning & Security
 

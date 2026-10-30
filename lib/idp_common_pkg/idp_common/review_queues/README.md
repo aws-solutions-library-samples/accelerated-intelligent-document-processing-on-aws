@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT-0
 
 HITL review queues hold documents that raised confidence alerts until a person has
 reviewed them. Queues are system-wide definitions (`queue_defs.py`) that Admins
-manage in HITL › Queue Management, and they have no confidence threshold of their
+manage in Review Studio › Review Management, and they have no confidence threshold of their
 own. When HITL is enabled in a document's configuration (`hitl.enabled`) and the
 Default queue is enabled, a production document whose sections raised confidence
 alerts (each field's own threshold, otherwise `hitl.confidence_threshold`) waits in
@@ -40,6 +40,8 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `finalize.py` | The finalize token, `FinalizeSender` and `apply_corrections` |
 | `status_object.py` | Writing and deleting `<document>/review/status.json` |
 | `notify.py` | Inbox messages (`review.*` notification types); never raises |
+| `testset_labels.py` | `TestSetLabels`: the one writer of a reviewed Test Studio label (`write_reviewed`: `labelSource = reviewed-human`, the `_editHistory` entry with field diffs, capped at `MAX_EDIT_HISTORY_ENTRIES`, the confidence-curve observations, the section's draft deleted), and section drafts (save, list, delete, move). Used by `test_set_resolver` and `complete_section_review` |
+| `section_writes.py` | `assert_section_result_writable`: refuses (`QUEUE_MANAGED`) a direct write of `<document>/sections/<id>/result.json` to the Output bucket while the document is in review, reading its tracking row. Used by `uploadDocument` (`upload_resolver`) |
 | `sweeper.py` | `ReviewSweeper`: assignment reminders and self-healing, run every 5 minutes |
 | `api_models.py` | The camelCase API views and argument models |
 | `testset_summaries.py` | Computing a Test Studio document's summary from its labels in S3 (label source, alert and field counts, the weakest confidence and its threshold, classes, sections) for one document, one page, or a whole set (`summarize_test_set`, which lists `input/` and `baseline/` once each). Used by the test-set resolver and, for whole sets, by `TestSetFileCopierFunction` |
@@ -82,7 +84,15 @@ the stack has a `HITLTable`, and its Default queue is `enabled` (read through
 fresh run in that state never holds. Anything else is `"legacy"`, logged at DEBUG as
 `event=review_mode_legacy reason=<hitl_disabled|default_queue_disabled|no_store>`.
 In legacy mode routing writes nothing, and the HITL marking is reproduced by
-`legacy_section_triggers` and `bda_segment_triggers`. In queue mode:
+`legacy_section_triggers` and `bda_segment_triggers`. Both BDA modes read the
+blueprint confidence through `idp_common.utils.parse_blueprint_confidence`, which
+is `parse_confidence` except that a string is scored only when `float()` accepts
+it, so a percentage string (`"95%"`) is unscored rather than rescaled. An unscored
+blueprint confidence (null, non-finite, a bool, a string `float()` rejects, or a
+value outside 0 to 1 after a bare number in (1, 100] is rescaled, so `150` and
+`-0.2`) is reviewed at every threshold: legacy HITL marks the segment and queue
+mode holds it (below).
+In queue mode:
 
 - **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
   assessment or extraction in Pipeline mode, and by BDA processing in BDA mode, with
@@ -90,7 +100,13 @@ In legacy mode routing writes nothing, and the HITL marking is reproduced by
   `hitl.confidence_threshold`) is a `low_confidence` reason named by its path
   (`Address.City`, `Rows[0].Amount`), with the alert's confidence and threshold. In
   BDA mode a matched blueprint under `hitl.confidence_threshold` is a
-  `blueprint_confidence` reason. So routing agrees exactly with the alerts users
+  `blueprint_confidence` reason, and so is a matched blueprint whose confidence is
+  unscored: the BDA result processor sets `Section.blueprint_unscored`, and the
+  reason carries a score of 0.0. The flag is persisted in the document's own
+  serialization and in the tracking table (`BlueprintUnscored`, written only when
+  true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
+  unscored too but is not flagged, so it is not held, as legacy HITL does not mark
+  it. So routing agrees exactly with the alerts users
   see, and it reads nothing from S3. A malformed alert is skipped. The module must
   not import `idp_common.assessment`: the Pipeline ProcessResults Lambda installs
   only the `review_queues` extra. Up to 20 reasons are stored per item, worst gap
@@ -165,8 +181,18 @@ document, so it finishes with the new grouping.
 - An Annotator listed on a queue may open its items read-only (`getReviewItem`);
   saving, completing and rejecting need the claim. `getReviewItem` also returns
   `queueName`, the queue's display name, for the web UI's breadcrumbs. The holder keeps access to their
-  item even after being taken off the list. `allowedConfigVersions` still filters
-  items by profile.
+  item even after being taken off the list.
+- **Profile scope is per item.** A queue is system-wide, so it can hold items of
+  several profiles. A caller with `allowedConfigVersions` sees and works only the
+  items whose own profile that scope admits: `ReviewQueueService._sees`, which uses
+  `idp_common.config_scope.scope_allows` and so admits no item without a profile to a
+  scoped caller. It applies to the per-item operations and to every listing
+  (`list_queue_items` for one queue or all of the caller's, `get_my_queues`,
+  `list_my_work`, `claim_next`). A listing that leaves items out still pages
+  forward, so a page can be short; `claim_next` reads past the items it leaves out,
+  up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope` is for a
+  queue reference, which has no profile, never for an item. A queue's counts
+  (depth, unclaimed) are the queue's, not filtered by scope.
 - Admins also have `renewReviewLease`, which the web UI doesn't use.
 - **Test Studio** queues are the test sets. `testset_docs.TestSetDocStore` holds
   each document's summary and assignment (`assignTestSetDocuments`,
@@ -196,7 +222,7 @@ document, so it finishes with the new grouping.
   `getAnnotationQueue` returns the summaries written so far with
   `summaryStatus: BUILDING`.
 - **The Test Studio queue list** is `listTestSetQueues` (every set for an Admin in
-  Queue Management, only the sets listing the caller for an Annotator in My Work ›
+  Review Management, only the sets listing the caller for an Annotator in My Work ›
   Queues): one DynamoDB read
   of the sets' metadata items, with the counts the build, assignments and reviews
   keep there (`fileCount`, `QueueReviewedDocs`, `QueueAssignedDocs` via
@@ -210,6 +236,41 @@ bytes) and records it as `DRAFT#<cycle>#<section>` with the changed field paths.
 `baseRevision` makes concurrent saves fail with `STALE_DRAFT`. Drafts survive
 unassignment, reassignment, take-over and move. The `review/` segment is
 not part of any run manifest and is deleted by Reprocess.
+
+## Test Studio labels and drafts
+
+`testset_labels.TestSetLabels` writes a Test Studio document's labels. Both
+`saveTestSetDocumentSection` (authored ground truth) and `completeSectionReview` (a
+document with a review copy) call `write_reviewed`, so a reviewed label always carries
+the same provenance: `labelSource = reviewed-human`, an `_editHistory` entry naming the
+editor, the source and the changed fields (`field_diffs`, the flattening the curve
+uses; the trail keeps the newest `MAX_EDIT_HISTORY_ENTRIES`), and the curve
+observations (`record_curve_observations`, only when the replaced label carries
+confidences). The handlers keep the summary, count and HITL bookkeeping;
+`saveTestSetDocumentSection` also ends the assignment once every section is reviewed.
+
+A **section draft** is a section's saved edits that are not reviewed and start nothing
+(`saveTestSetDocumentSectionDraft`):
+
+- **Where:** `<testSetId>/drafts/<objectKey>/sections/<sectionId>/<revision:06d>-<suffix>.json`
+  in the TestSetBucket (each write has its own object), indexed by a top-level
+  `Draft#<sectionId>` map on the document's `TSDOC` item (`Revision`, `S3Key`,
+  `UpdatedAt`, `UpdatedBy`; `keys.tsdoc_draft_attr`). `TestSetDocStore.view` lists them
+  as `sectionDrafts`, and `getAnnotationQueue` returns them as `draftSections`.
+- **Writes:** `save_draft` writes the object, then a conditional `UpdateItem` on the
+  revision the editor last loaded (`baseRevision`); a stale write fails `STALE_DRAFT`
+  and its object is deleted, and a successful one deletes the previous revision's.
+  It refuses `BAD_ARGUMENT`, `DRAFT_TOO_LARGE` (over `MAX_SECTION_LABEL_BYTES`),
+  `NOT_IN_SET` and `NO_LABEL`. The label, the summary fields (`Reviewed`,
+  `LabelSource`, `ReviewedSections`, `UpdatedAt`), the queue counts and the curve are
+  untouched.
+- **Lifecycle:** `write_reviewed` deletes the section's draft; `move_drafts` makes
+  drafts follow their sections through a regroup, rewriting each draft's
+  `split_document.page_indices` and `document_class.type`, and drops a removed
+  section's; `delete_document_drafts` runs when a document is removed from the set.
+  Skip, Re-extract, Clear draft labels and Reset labels keep drafts. Publishing, the
+  version snapshot, test runs, the content signature and the summaries read
+  `baseline/` only.
 
 ## Dispositions and durable finalize
 
@@ -253,10 +314,12 @@ assignment). The producers `review.queue_items_waiting` (debounced per queue, 10
 minutes), `review.claim_expiring` and `review.claim_expired` exist but send nothing in
 this release: arrivals in a queue are announced to nobody (`QueueDirectory.members`
 returns no recipients) and assignments do not expire. Admins see waiting work in
-Queue Management, whose counts (pending, assigned, in progress, annotators) come from
+Review Management, whose counts (pending, assigned, in progress, annotators) come from
 `getReviewQueuesOverview` for production queues and from the test sets' metadata
-(`store_assigned_count`) for Test Studio queues. Links point at
-`#/review-queues/items/<encoded key>` (`review_item_link`).
+(`store_assigned_count`) for Test Studio queues. Links point at the document's edit
+page, `/documents/<encoded key>/edit` (`idp_common.notifications.links.document_edit_link`),
+which opens the item while the document is in review. The UI redirects an older
+`/review-queues/items/<encoded key>` link there, keeping its query.
 
 ## Review status contract
 
@@ -294,6 +357,22 @@ The tracking row mirrors the status in `HITLStatus` (the same three values), wit
 `ReviewQueue`, `ReviewCycleId`, `ReviewStatusUri`, `HITLReviewedBy`,
 `ReviewDisposedAt` and `ReviewRejectReason`. The SDK and CLI report it as
 `review_status`.
+
+It also carries who holds and who finished the review, so the document page's **Review
+Owner** and **Review Completed By** are filled for a queue document as for the legacy
+flow:
+
+- `HITLReviewOwnerEmail` is the item's assignee. `ReviewQueueService._write` mirrors it
+  after every write that changes who holds an item: a claim, an assignment, a
+  reassignment or a take over writes the new holder; a skip or an unassignment (back to
+  `OPEN`) clears it; a finish (`FINALIZING`, then `COMPLETE`, `REJECTED` or removed)
+  keeps the last holder. A withdrawal clears it with the other review attributes. The
+  mirror is best-effort: the queue item is the source of truth, and a tracking row that
+  cannot be written is logged (`event=review_owner_mirror_failed`) and never undoes the
+  write. Only the email is written; `HITLReviewOwner` is the legacy Reviewer flow's
+  Cognito username, and is only cleared.
+- `HITLReviewedBy` and `HITLReviewedByEmail` are both the email of whoever finished the
+  review, written by the tracker when the finalize run ends.
 
 ## Producer IAM
 

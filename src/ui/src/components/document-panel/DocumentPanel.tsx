@@ -2,59 +2,40 @@
 // SPDX-License-Identifier: MIT-0
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import {
-  Alert,
-  Box,
-  ButtonDropdown,
-  ColumnLayout,
-  Container,
-  SpaceBetween,
-  Button,
-  Header,
-  Table,
-  ExpandableSection,
-  StatusIndicator,
-} from '@cloudscape-design/components';
-import type { ButtonDropdownProps } from '@cloudscape-design/components';
-import { generateClient } from '../../api/client-shim';
+import { Alert, Box, ColumnLayout, Container, SpaceBetween, Header, StatusIndicator } from '@cloudscape-design/components';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import './DocumentPanel.css';
-import DocumentViewers from '../document-viewers/DocumentViewers';
 import SectionsPanel from '../sections-panel';
 import PagesPanel from '../pages-panel';
 import ChatPanel from '../chat-panel';
 import useConfiguration from '../../hooks/use-configuration';
-import usePricing from '../../hooks/use-pricing';
 import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-utils';
-import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheModel';
-import type { PromptCacheDescription } from '../common/promptCacheModel';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { getMalwareScanView } from '../common/malware-scan';
-import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
-import TroubleshootModal from './TroubleshootModal';
+import { renderObjectStatus } from '../common/object-status-renderer';
 import DocumentVersionsPanel from './DocumentVersionsPanel';
 import type { DocumentVersionDetail } from './DocumentVersionsPanel';
 import { DocumentVersionProvider } from '../../contexts/document-version';
-import { claimReview } from '../../graphql/generated';
 import usePolling from '../../hooks/use-polling';
 import useClassificationComparison from '../../hooks/use-classification-comparison';
-import { exportDocument, isBaselineAvailable, triggerBrowserDownload } from './document-export';
-import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
-import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
-import { calculateTotalCosts, priceMetering } from './metering-cost';
-import type { PricingLookup } from './pricing';
-import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
-import { documentEditHref, reviewItemHref } from '../../routes/constants';
-import { PROCESSING_REASON, isEditableStatus } from '../review-workspace/direct-edit-status';
-import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
+import { isProfileReadable } from '../../utils/readable-profile';
+import { lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
+import { SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
+import ActionBar from '../common/ActionBar';
+import DocumentPageHeader from '../common/DocumentPageHeader';
+import FileViewer from '../document-viewer/FileViewer';
+import EditorNotices from '../edit-screen/EditorNotices';
+import { documentName } from '../review-queues/review-api';
+import useDocumentActions from '../document-actions/use-document-actions';
+import type { DocumentView } from '../document-actions/use-document-actions';
+import useDocumentDownload from '../document-actions/use-document-download';
 // Uncomment the line below to enable debugging
-// import { debugDocumentStructure } from '../common/debug-utils';
 
 interface MappedDocument {
   objectKey: string;
@@ -98,74 +79,24 @@ interface MappedDocument {
   [key: string]: unknown;
 }
 
-interface MeteringRowItem {
-  context: string;
-  serviceApi: string;
-  unit: string;
-  value: string;
-  unitCost: string;
-  cost: string;
-  costValue: number;
-  isTotal: boolean;
-  isSubtotal: boolean;
-  note?: string;
-  // Per-phase prompt-cache verdict, shown on the phase's subtotal row (#780).
-  cacheNote?: PromptCacheDescription;
-}
-
-interface PricingUnit {
-  name: string;
-  price: number;
-}
-
-interface PricingItem {
-  name: string;
-  units: PricingUnit[];
-}
-
-interface PricingData {
-  pricing: PricingItem[];
-}
-
 interface ConfidenceAlertsSectionProps {
   sections: Record<string, unknown>[] | undefined;
   mergedConfig: Record<string, unknown> | undefined;
 }
 
-interface MeteringTableProps {
-  meteringData: Record<string, Record<string, unknown>> | null;
-  preCalculatedTotals?: { totalCost: number; costPerPage: number };
-}
-
-interface MeteringExpandableSectionProps {
-  meteringData: Record<string, Record<string, unknown>> | null;
-  documentItem: MappedDocument;
-}
-
 interface DocumentAttributesProps {
   item: MappedDocument;
   versions: ConfigVersion[];
-  setToolsOpen?: (open: boolean) => void;
-  getDocumentDetailsFromIds?: (ids: string[]) => Promise<unknown>;
+  /** The Evaluation field: the status, or the baseline copy's state. */
+  evaluationCell?: React.ReactNode;
 }
 
 interface DocumentPanelProps {
   item: MappedDocument;
-  setToolsOpen?: (open: boolean) => void;
   getDocumentDetailsFromIds?: (ids: string[]) => Promise<unknown>;
   onDelete?: (() => void) | null;
   onReprocess?: (() => void) | null;
   onAbort?: (() => void) | null;
-}
-
-interface TroubleshootJobData {
-  jobId: string;
-  status: string | null;
-  result: string | Record<string, unknown> | null;
-  agentMessages: unknown;
-  error: string | null;
-  timestamp: number;
-  documentKey: string | undefined;
 }
 
 /**
@@ -183,7 +114,6 @@ const CONFIG_SOURCE_LABELS: Record<string, string> = {
   rejected: 'Refused at ingest',
 };
 
-const client = generateClient();
 const logger = new ConsoleLogger('DocumentPanel');
 
 // Detail-view polling cadence under the HTTP API transport (no subscriptions).
@@ -210,408 +140,69 @@ const ConfidenceAlertsSection = ({ sections, mergedConfig }: ConfidenceAlertsSec
   return <StatusIndicator type="warning">{totalAlertCount}</StatusIndicator>;
 };
 
-// Helper function to format cost cells
-const formatCostCell = (rowItem: MeteringRowItem): React.JSX.Element | string => {
-  if (rowItem.isTotal) {
-    return <Box fontWeight="bold">{`${rowItem.note}: ${rowItem.cost}`}</Box>;
-  }
-  if (rowItem.isSubtotal) {
-    return <Box fontWeight="bold" color="text-body-secondary">{`${rowItem.note}: ${rowItem.cost}`}</Box>;
-  }
-  return rowItem.cost;
-};
-
-// Component to display metering information in a table
-const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps): React.JSX.Element | null => {
-  // Use usePricing hook to get pricing data from the new separate pricing config
-  const { pricing, nonChargeableUnits, loading } = usePricing();
-  const [pricingData, setPricingData] = useState<PricingLookup>({});
-  // We no longer use a default unit cost, showing "None" instead
-
-  useEffect(() => {
-    if (pricing && (pricing as PricingData).pricing) {
-      // Convert pricing array to lookup object for easier access
-      const pricingLookup: PricingLookup = {};
-      (pricing as PricingData).pricing.forEach((item) => {
-        if (item.name && item.units) {
-          pricingLookup[item.name] = {};
-          item.units.forEach((unitItem) => {
-            if (unitItem.name && unitItem.price !== undefined) {
-              // Ensure price is stored as a number
-              pricingLookup[item.name][unitItem.name] = Number(unitItem.price);
-            }
-          });
-        }
-      });
-      setPricingData(pricingLookup);
-      logger.debug('Pricing data initialized:', pricingLookup);
-    }
-  }, [pricing]);
-
-  if (!meteringData) {
-    return null;
-  }
-
-  if (loading) {
-    return <Box>Loading pricing data...</Box>;
-  }
-
-  // Transform metering data into table rows with context parsing
-  const { rows, contextTotals, totalCost } = priceMetering(meteringData, pricingData, nonChargeableUnits);
-  const rawTableItems: MeteringRowItem[] = rows.map(({ context, serviceApi, unit, value, unitPrice, cost }) => ({
-    context,
-    serviceApi,
-    unit,
-    value: String(value),
-    unitCost: unitPrice !== null ? `$${unitPrice}` : 'None',
-    cost: unitPrice !== null ? `$${cost.toFixed(4)}` : 'N/A',
-    costValue: cost,
-    isTotal: false,
-    isSubtotal: false,
-  }));
-
-  // Group items by context and add subtotals
-  const tableItems: MeteringRowItem[] = [];
-  const contextGroups: Record<string, MeteringRowItem[]> = {};
-
-  // Group raw items by context
-  rawTableItems.forEach((item) => {
-    if (!contextGroups[item.context]) {
-      contextGroups[item.context] = [];
-    }
-    contextGroups[item.context].push(item);
-  });
-
-  // Sort contexts in pipeline order. 'Segmentation' and 'SectionClassification' are the two
-  // halves of two-stage classification (classification.strategy: two_stage) and
-  // appear in place of 'Classification', never alongside it — they sit where it
-  // sits so the cost table reads in pipeline order either way.
-  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Segmentation', 'SectionClassification', 'Extraction', 'Summarization'];
-  const sortedContexts = Object.keys(contextGroups).sort((a, b) => {
-    const aIndex = contextOrder.indexOf(a);
-    const bIndex = contextOrder.indexOf(b);
-
-    // If both contexts are in the predefined order, sort by their position
-    if (aIndex !== -1 && bIndex !== -1) {
-      return aIndex - bIndex;
-    }
-
-    // If only one context is in the predefined order, it comes first
-    if (aIndex !== -1) return -1;
-    if (bIndex !== -1) return 1;
-
-    // If neither context is in the predefined order, sort alphabetically
-    return a.localeCompare(b);
-  });
-
-  sortedContexts.forEach((context) => {
-    // Add all items for this context
-    tableItems.push(...contextGroups[context]);
-
-    // Add subtotal row for this context, carrying the phase's prompt-cache
-    // verdict: the cache units are priced above, but a row of numbers does not
-    // say whether the cache point did anything (#780).
-    const contextTotal = contextTotals[context] || 0;
-    const cacheSummary = context ? summarizeCacheUsage(meteringData as Record<string, unknown>, context, { exact: true }) : null;
-    tableItems.push({
-      context: '',
-      serviceApi: '',
-      unit: '',
-      value: '',
-      unitCost: '',
-      cost: `$${contextTotal.toFixed(4)}`,
-      costValue: contextTotal,
-      isTotal: false,
-      isSubtotal: true,
-      note: `${context} Subtotal`,
-      cacheNote:
-        cacheSummary && cacheSummary.state !== 'no-cache-data'
-          ? describePromptCache(cacheSummary, { phaseOnly: true, context })
-          : undefined,
-    });
-  });
-
-  // Use preCalculatedTotals if provided, otherwise calculate locally
-  const finalTotalCost = preCalculatedTotals ? preCalculatedTotals.totalCost : totalCost;
-
-  // Add overall total row
-  tableItems.push({
-    context: '',
-    serviceApi: '',
-    unit: '',
-    value: '',
-    unitCost: '',
-    cost: `$${finalTotalCost.toFixed(4)}`,
-    costValue: finalTotalCost,
-    isTotal: true,
-    isSubtotal: false,
-    note: 'Total',
-  });
-
-  return (
-    <Table
-      columnDefinitions={[
-        {
-          id: 'context',
-          header: 'Context',
-          cell: (rowItem: MeteringRowItem) => rowItem.context,
-        },
-        {
-          id: 'serviceApi',
-          header: 'Service/Api',
-          cell: (rowItem: MeteringRowItem) =>
-            rowItem.cacheNote ? (
-              <Box fontSize="body-s">
-                <StatusIndicator type={rowItem.cacheNote.indicator}>{rowItem.cacheNote.headline}</StatusIndicator>
-                <Box fontSize="body-s" color="text-body-secondary">
-                  {rowItem.cacheNote.detail}
-                </Box>
-              </Box>
-            ) : (
-              rowItem.serviceApi
-            ),
-        },
-        {
-          id: 'unit',
-          header: 'Unit',
-          cell: (rowItem: MeteringRowItem) => rowItem.unit,
-        },
-        {
-          id: 'value',
-          header: 'Value',
-          cell: (rowItem: MeteringRowItem) => rowItem.value,
-        },
-        {
-          id: 'unitCost',
-          header: 'Unit Cost',
-          cell: (rowItem: MeteringRowItem) => rowItem.unitCost,
-        },
-        {
-          id: 'cost',
-          header: 'Estimated Cost',
-          cell: formatCostCell,
-        },
-      ]}
-      items={tableItems}
-      loadingText="Loading resources"
-      sortingDisabled
-      wrapLines
-      stripedRows
-      empty={
-        <Box textAlign="center" color="inherit">
-          <b>No metering data</b>
-          <Box padding={{ bottom: 's' }} variant="p" color="inherit">
-            No metering data is available for this document.
-          </Box>
-        </Box>
-      }
-    />
-  );
-};
-
-// Expandable section containing the metering table
-const MeteringExpandableSection = ({ meteringData, documentItem }: MeteringExpandableSectionProps): React.JSX.Element => {
-  const [expanded, setExpanded] = useState(false);
-  const { pricing } = usePricing();
-  const [pricingData, setPricingData] = useState<PricingLookup | null>(null);
-
-  // Convert pricing data to lookup format
-  useEffect(() => {
-    if (pricing && (pricing as PricingData).pricing) {
-      const pricingLookup: PricingLookup = {};
-      (pricing as PricingData).pricing.forEach((item) => {
-        if (item.name && item.units) {
-          pricingLookup[item.name] = {};
-          item.units.forEach((unitItem) => {
-            if (unitItem.name && unitItem.price !== undefined) {
-              pricingLookup[item.name][unitItem.name] = Number(unitItem.price);
-            }
-          });
-        }
-      });
-      setPricingData(pricingLookup);
-    }
-  }, [pricing]);
-
-  // Calculate the cost per page for the header
-  const { totalCost, costPerPage } = calculateTotalCosts(meteringData, documentItem?.pageCount, pricingData);
-
-  return (
-    <Box margin={{ top: 'l', bottom: 'm' }}>
-      <ExpandableSection
-        variant="container"
-        headerText={`Estimated Cost (per page: $${costPerPage.toFixed(4)})`}
-        expanded={expanded}
-        onChange={({ detail }) => setExpanded(detail.expanded)}
-      >
-        <div style={{ width: '100%' }}>
-          <MeteringTable meteringData={meteringData} preCalculatedTotals={{ totalCost, costPerPage }} />
-        </div>
-      </ExpandableSection>
-    </Box>
-  );
-};
-
 const isHitlSkippedStatus = (raw: string | null | undefined): boolean => normalizeHitlStatus(raw).kind === 'skipped';
 
-const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.JSX.Element => {
+/** One field of the Document Details grid: its label over its value. */
+const Field = ({ label, children }: { label: string; children: React.ReactNode }): React.JSX.Element => (
+  <div>
+    <Box variant="awsui-key-label">{label}</Box>
+    <div>{children}</div>
+  </div>
+);
+
+/**
+ * Document Details: four aligned columns, fewer on a narrow screen (`minColumnWidth`).
+ */
+export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentAttributesProps): React.JSX.Element => {
   const skipAll = isHitlSkippedStatus(item.hitlStatus) ? lastSkipAllReason(item.hitlReviewHistory) : null;
   return (
-    <Container>
-      <ColumnLayout columns={8} variant="text-grid">
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Document ID</strong>
-            </Box>
-            <div>{item.objectKey}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Status</strong>
-            </Box>
-            <div>{item.objectStatus}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Submitted</strong>
-            </Box>
-            <div>{item.initialEventTime}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Completed</strong>
-            </Box>
-            <div>{item.completionTime}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Duration</strong>
-            </Box>
-            <div>{item.duration}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Config Profile</strong>
-            </Box>
-            <div>{formatConfigVersionLink(item.configVersion, versions)}</div>
-            {/*
-              WHERE that profile came from. There are several possible sources and
-              the name alone does not say which applied, so a profile that
-              surprises someone is otherwise unexplainable without correlating
-              logs across two Lambdas.
-            */}
-            {item.configSource && (
-              <Box fontSize="body-s" color="text-body-secondary">
-                {CONFIG_SOURCE_LABELS[item.configSource] ?? item.configSource}
-                {item.configMappingPrefix ? ` (${item.configMappingPrefix})` : ''}
-              </Box>
-            )}
-            {item.configAssignmentError && (
-              <Box fontSize="body-s" color="text-status-error">
-                {item.configAssignmentError}
-              </Box>
-            )}
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Page Count</strong>
-            </Box>
-            <div>{item.pageCount || 0}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Evaluation</strong>
-            </Box>
-            <div>{item.evaluationStatus || 'N/A'}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Review Status</strong>
-            </Box>
-            <div>{renderHitlStatus(item)}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Review Owner</strong>
-            </Box>
-            <div>{item.hitlReviewOwnerEmail || item.hitlReviewOwner || '-'}</div>
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Review Completed By</strong>
-            </Box>
-            <div>{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</div>
-          </div>
-        </SpaceBetween>
-
-        {skipAll && (
-          <SpaceBetween size="xs">
-            <div>
-              <Box margin={{ bottom: 'xxxs' }} color="text-label">
-                <strong>Skip Reason</strong>
-              </Box>
-              <div>{skipAll.reason}</div>
-              {skipAll.note && (
-                <Box variant="small" color="text-body-secondary">
-                  {skipAll.note}
-                </Box>
-              )}
-            </div>
-          </SpaceBetween>
+    <ColumnLayout columns={4} minColumnWidth={160} variant="text-grid">
+      <Field label="Document ID">{item.objectKey}</Field>
+      <Field label="Status">{renderObjectStatus(item.objectStatus)}</Field>
+      <Field label="Submitted">{item.initialEventTime}</Field>
+      <Field label="Completed">{item.completionTime}</Field>
+      <Field label="Duration">{item.duration}</Field>
+      <Field label="Config Profile">
+        {formatConfigVersionLink(item.configVersion, versions)}
+        {/*
+          WHERE that profile came from. There are several possible sources and
+          the name alone does not say which applied, so a profile that
+          surprises someone is otherwise unexplainable without correlating
+          logs across two Lambdas.
+        */}
+        {item.configSource && (
+          <Box fontSize="body-s" color="text-body-secondary">
+            {CONFIG_SOURCE_LABELS[item.configSource] ?? item.configSource}
+            {item.configMappingPrefix ? ` (${item.configMappingPrefix})` : ''}
+          </Box>
         )}
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Confidence Alerts</strong>
+        {item.configAssignmentError && (
+          <Box fontSize="body-s" color="text-status-error">
+            {item.configAssignmentError}
+          </Box>
+        )}
+      </Field>
+      <Field label="Page Count">{item.pageCount || 0}</Field>
+      <Field label="Evaluation">{evaluationCell ?? (item.evaluationStatus || 'N/A')}</Field>
+      <Field label="Review Status">{renderHitlStatus(item)}</Field>
+      <Field label="Review Owner">{item.hitlReviewOwnerEmail || item.hitlReviewOwner || '-'}</Field>
+      <Field label="Review Completed By">{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</Field>
+      {skipAll && (
+        <Field label="Skip Reason">
+          {skipAll.reason}
+          {skipAll.note && (
+            <Box variant="small" color="text-body-secondary">
+              {skipAll.note}
             </Box>
-            <ConfidenceAlertsSection sections={item.sections} mergedConfig={item.mergedConfig} />
-          </div>
-        </SpaceBetween>
-
-        <SpaceBetween size="xs">
-          <div>
-            <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Summary</strong>
-            </Box>
-            <div>{item.summaryReportUri ? 'Available' : 'N/A'}</div>
-          </div>
-        </SpaceBetween>
-
-        <MalwareScanAttribute item={item} />
-      </ColumnLayout>
-    </Container>
+          )}
+        </Field>
+      )}
+      <Field label="Confidence Alerts">
+        <ConfidenceAlertsSection sections={item.sections} mergedConfig={item.mergedConfig} />
+      </Field>
+      <Field label="Summary">{item.summaryReportUri ? 'Available' : 'N/A'}</Field>
+      <MalwareScanAttribute item={item} />
+    </ColumnLayout>
   );
 };
 
@@ -639,19 +230,14 @@ const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Ele
   }[scan.outcome];
 
   return (
-    <SpaceBetween size="xs">
-      <div>
-        <Box margin={{ bottom: 'xxxs' }} color="text-label">
-          <strong>Malware scan</strong>
+    <Field label="Malware scan">
+      <StatusIndicator type={statusType}>{scan.label}</StatusIndicator>
+      {scan.time ? (
+        <Box fontSize="body-s" color="text-status-inactive">
+          {new Date(scan.time).toLocaleString()}
         </Box>
-        <StatusIndicator type={statusType}>{scan.label}</StatusIndicator>
-        {scan.time ? (
-          <Box fontSize="body-s" color="text-status-inactive">
-            {new Date(scan.time).toLocaleString()}
-          </Box>
-        ) : null}
-      </div>
-    </SpaceBetween>
+      ) : null}
+    </Field>
   );
 };
 
@@ -679,7 +265,6 @@ const MalwareScanAlert = ({ item }: { item: MappedDocument }): React.JSX.Element
 
 export const DocumentPanel = ({
   item,
-  setToolsOpen,
   getDocumentDetailsFromIds,
   onDelete,
   onReprocess,
@@ -688,28 +273,12 @@ export const DocumentPanel = ({
   const { versions } = useConfigurationVersions();
   logger.debug('DocumentPanel item', item);
 
-  // State for Step Function flow viewer
-  const [isFlowViewerVisible, setIsFlowViewerVisible] = useState(false);
-  // State for Troubleshoot modal
-  const [isTroubleshootModalVisible, setIsTroubleshootModalVisible] = useState(false);
-  // State for tracking troubleshoot jobs per document
-  const [troubleshootJobs, setTroubleshootJobs] = useState<Record<string, TroubleshootJobData>>({});
-  // State for Start Review button
-  const [isClaimingReview, setIsClaimingReview] = useState(false);
-  // State for document-level download
-  const [downloadScope, setDownloadScope] = useState<ExportScope | null>(null);
-  const [isDownloadOptionsOpen, setIsDownloadOptionsOpen] = useState(false);
-  const [includePageImages, setIncludePageImages] = useState(false);
-  const [includeSourceDocument, setIncludeSourceDocument] = useState(false);
-  const [isDownloadInProgress, setIsDownloadInProgress] = useState(false);
-  const [isDownloadFinished, setIsDownloadFinished] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<ExportProgress | null>(null);
-  const [downloadErrors, setDownloadErrors] = useState<ExportErrorEntry[]>([]);
-  const [downloadAbortController, setDownloadAbortController] = useState<AbortController | null>(null);
   const { settings } = useSettingsContext();
   const { currentCredentials, setErrorMessage } = useAppContext();
   // Local state for document item to enable real-time updates
   const [localItem, setLocalItem] = useState(item);
+  // Details shows the page's widgets; Source shows the source document in their place.
+  const [view, setView] = useState<DocumentView>('details');
 
   // Document version viewing: when set, the page renders a past run's snapshot
   // (read-only). versionFiles maps each output S3 key -> pinned VersionId so
@@ -740,19 +309,21 @@ export const DocumentPanel = ({
   // With the HTTP API there are no subscriptions, so while the open document is
   // still processing we re-fetch its rich detail (getDocument via the parent's
   // getDocumentDetailsFromIds, which merges into shared list state and flows back
-  // as the `item` prop). Stops once the document reaches a terminal status.
+  // as the `item` prop). Stops once the document reaches a terminal status, unless a
+  // copy to the evaluation baseline is still running, so its outcome shows.
   const detailStatus = (localItem?.objectStatus || '').toUpperCase();
   const isTerminalStatus = TERMINAL_STATUSES.includes(detailStatus);
+  const keepPolling = !isTerminalStatus || localItem?.evaluationStatus === 'BASELINE_COPYING';
   const pollDetail = useCallback(() => {
     if (!localItem?.objectKey || !getDocumentDetailsFromIds) return;
-    if (isTerminalStatus) return;
+    if (!keepPolling) return;
     void getDocumentDetailsFromIds([localItem.objectKey]);
-  }, [localItem?.objectKey, isTerminalStatus, getDocumentDetailsFromIds]);
+  }, [localItem?.objectKey, keepPolling, getDocumentDetailsFromIds]);
 
   usePolling(pollDetail, {
     // Suspend live polling while viewing a historical version so the snapshot
     // isn't overwritten by a live re-fetch.
-    enabled: USE_POLLING && !!localItem?.objectKey && !isTerminalStatus && viewingRunId === null,
+    enabled: USE_POLLING && !!localItem?.objectKey && keepPolling && viewingRunId === null,
     intervalMs: SLOW_POLL_STATUSES.includes(detailStatus) ? DOCUMENT_REVIEW_POLL_INTERVAL_MS : DOCUMENT_DETAIL_POLL_INTERVAL_MS,
   });
 
@@ -769,138 +340,20 @@ export const DocumentPanel = ({
     wasTerminalRef.current = isTerminalStatus;
   }, [isTerminalStatus, objectKey, getDocumentDetailsFromIds]);
 
+  const { allowedConfigVersions, loading: roleLoading } = useUserRole();
   // Fetch active configuration for dynamic confidence threshold (used by sections panel, etc.)
-  const { mergedConfig } = useConfiguration();
+  const { mergedConfig, loading: defaultConfigLoading } = useConfiguration(
+    isProfileReadable('default', versions, { allowedConfigVersions, loading: roleLoading }) ? 'default' : null,
+  );
   // Fetch the specific configuration profile that was used to process this document (for flow viewer).
-  // Optimization: skip the extra API call when the document version is 'default' or unset,
-  // since useConfiguration() above already fetches the default config.
   const docConfigVersion = localItem?.configVersion || 'default';
   const needsSeparateVersionFetch = docConfigVersion !== 'default';
-  const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : 'default');
+  const { mergedConfig: separateVersionConfig, loading: versionConfigLoading } = useConfiguration(
+    needsSeparateVersionFetch ? docConfigVersion : null,
+  );
   // Use the separate fetch result only when the version differs; otherwise reuse the default config
   const documentVersionConfig = needsSeparateVersionFetch ? separateVersionConfig : mergedConfig;
-  const { isReviewer, canWorkReviewQueues, canWrite, canReview } = useUserRole();
-
-  // Check if document can be aborted
-  const canAbort = ABORTABLE_STATUSES.includes(localItem?.objectStatus);
-
-  // Check if Start Review button should be shown
-  const hasReviewOwner = localItem?.hitlReviewOwner || localItem?.hitlReviewOwnerEmail;
-  const hitlStatusLower = localItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
-  const isHitlSkipped = hitlStatusLower === 'skipped' || hitlStatusLower === 'reviewskipped';
-  const isHitlCompleted = hitlStatusLower === 'completed' || hitlStatusLower === 'reviewcompleted';
-  // A document in a review queue is reviewed from its queue item, not from here.
-  const hitlView = normalizeHitlStatus(localItem?.hitlStatus);
-  const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !hitlView.queueManaged;
-  const showStartReview = isReviewer && hasPendingHITL && !hasReviewOwner;
-  // One way in for a queued document: Edit opens its queue item, for everyone who can
-  // work queue items; anyone else gets the direct edit, which opens it read-only.
-  const editInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
-
-  // Handle Start Review button click
-  const handleStartReview = async () => {
-    setIsClaimingReview(true);
-    try {
-      const result = await client.graphql({
-        query: claimReview,
-        variables: { objectKey: localItem.objectKey },
-      });
-
-      logger.info('Review claimed successfully:', result);
-
-      // Update local item immediately with the response data
-      const claimedData = (result as unknown as Record<string, Record<string, Record<string, unknown>>>).data.claimReview;
-      setLocalItem((prev) => ({
-        ...prev,
-        hitlReviewOwner: claimedData.HITLReviewOwner as string,
-        hitlReviewOwnerEmail: claimedData.HITLReviewOwnerEmail as string,
-        hitlStatus: claimedData.HITLStatus as string,
-      }));
-
-      // Also refresh document details in the background
-      if (getDocumentDetailsFromIds) {
-        await getDocumentDetailsFromIds([localItem.objectKey]);
-      }
-    } catch (error) {
-      logger.error('Failed to claim review:', error);
-      setErrorMessage(`Failed to start review: ${(error as Error).message || 'Unknown error'}`);
-    } finally {
-      setIsClaimingReview(false);
-    }
-  };
-
-  // Baseline option is only useful if the document has evaluation data
-  const isBaselineAvailableForDoc = isBaselineAvailable(localItem);
-
-  // Kick off a document export for the given scope. Scope 'all' routes through the
-  // options modal so the user can opt into page images; other scopes start immediately.
-  const startDownload = async (scope: ExportScope) => {
-    setDownloadScope(scope);
-    setDownloadErrors([]);
-    setDownloadProgress(null);
-    setIsDownloadFinished(false);
-    setIsDownloadInProgress(true);
-    const controller = new AbortController();
-    setDownloadAbortController(controller);
-
-    try {
-      const result = await exportDocument(localItem as unknown as Parameters<typeof exportDocument>[0], settings, {
-        scope,
-        includePageImages: scope === 'all' && includePageImages,
-        includeSourceDocument: scope === 'all' && includeSourceDocument,
-        credentials: currentCredentials as Record<string, unknown>,
-        signal: controller.signal,
-        onProgress: (p) => {
-          setDownloadProgress(p);
-          setDownloadErrors(p.errors);
-        },
-      });
-      triggerBrowserDownload(result);
-      setDownloadErrors(result.errors);
-    } catch (err) {
-      if ((err as { name?: string })?.name === 'AbortError') {
-        logger.info('Document export cancelled by user');
-      } else {
-        logger.error('Document export failed:', err);
-        alert(`Download failed: ${(err as Error).message || 'Unknown error'}`);
-      }
-    } finally {
-      setIsDownloadInProgress(false);
-      setIsDownloadFinished(true);
-      setDownloadAbortController(null);
-    }
-  };
-
-  const handleDownloadMenuItemClick = (id: string) => {
-    if (id === 'all') {
-      setIsDownloadOptionsOpen(true);
-    } else if (id === 'predictions' || id === 'baselines') {
-      void startDownload(id);
-    }
-  };
-
-  const handleConfirmDownloadAll = () => {
-    setIsDownloadOptionsOpen(false);
-    void startDownload('all');
-  };
-
-  const handleCancelDownload = () => {
-    downloadAbortController?.abort();
-  };
-
-  const handleCloseDownloadProgress = () => {
-    setIsDownloadFinished(false);
-    setDownloadProgress(null);
-    setDownloadScope(null);
-  };
-
-  const downloadMenuItems: ButtonDropdownProps.ItemOrGroup[] = [
-    { id: 'all', text: 'Download All (ZIP)', iconName: 'download' },
-    { id: 'predictions', text: 'Download Predictions (ZIP)', iconName: 'download' },
-  ];
-  if (isBaselineAvailableForDoc) {
-    downloadMenuItems.push({ id: 'baselines', text: 'Download Baselines (ZIP)', iconName: 'download' });
-  }
+  const configLoading = !!(needsSeparateVersionFetch ? versionConfigLoading : defaultConfigLoading);
 
   // When viewing a past version, render that run's snapshot (sections, pages,
   // metering, report URIs) instead of the live document. The section/page
@@ -929,6 +382,27 @@ export const DocumentPanel = ({
     } as typeof localItem;
   }, [viewingRunId, versionDetail, localItem]);
 
+  const refresh = useCallback(async () => {
+    if (localItem?.objectKey && getDocumentDetailsFromIds) await getDocumentDetailsFromIds([localItem.objectKey]);
+  }, [localItem?.objectKey, getDocumentDetailsFromIds]);
+
+  const download = useDocumentDownload(localItem, settings, currentCredentials, setErrorMessage);
+  const actions = useDocumentActions({
+    item: localItem,
+    displayed: displayedItem,
+    isHistorical: viewingRunId !== null,
+    mergedConfig: documentVersionConfig,
+    configLoading,
+    view,
+    onViewChange: setView,
+    refresh,
+    onDocumentUpdate: (update) => setLocalItem((prev) => update(prev) as MappedDocument),
+    download: download.menu,
+    onReprocess: () => onReprocess?.(),
+    onAbort: () => onAbort?.(),
+    onDelete: () => onDelete?.(),
+  });
+
   // Ground-truth-vs-predicted classification, loaded once here and shared by
   // the Sections and Pages tables so each annotates its Class/Type values from
   // one request. Empty for a document with no evaluation, in which case neither
@@ -948,193 +422,56 @@ export const DocumentPanel = ({
 
   return (
     <DocumentVersionProvider runId={viewingRunId} files={versionDetail?.Files}>
-      <SpaceBetween size="s">
-        <Container
-          header={
-            <Header
-              variant="h2"
-              actions={
-                <SpaceBetween direction="horizontal" size="xs">
-                  {showStartReview && (
-                    <Button
-                      iconName="user-profile"
-                      variant="primary"
-                      onClick={handleStartReview}
-                      loading={isClaimingReview}
-                      disabled={isClaimingReview}
-                    >
-                      Start Review
-                    </Button>
-                  )}
-                  {/* The unified editor: the queue item for a queued document, otherwise
-                      the direct edit, which decides what is editable. */}
-                  {editInQueue ? (
-                    <Button
-                      iconName="edit"
-                      variant="primary"
-                      href={reviewItemHref(localItem.objectKey)}
-                      ariaLabel="Edit this document in its review queue"
-                    >
-                      Edit
-                    </Button>
-                  ) : (
-                    (canWrite || canReview) && (
-                      <Button
-                        iconName="edit"
-                        href={documentEditHref(localItem.objectKey)}
-                        disabled={!isEditableStatus(localItem.objectStatus)}
-                        disabledReason={isEditableStatus(localItem.objectStatus) ? undefined : PROCESSING_REASON}
-                      >
-                        Edit
-                      </Button>
-                    )
-                  )}
-                  <Button
-                    iconName="gen-ai"
-                    variant="normal"
-                    onClick={() => {
-                      logger.info('Opening troubleshoot modal for document:', localItem.objectKey);
-                      setIsTroubleshootModalVisible(true);
-                    }}
-                  >
-                    Troubleshoot
-                  </Button>
-                  {localItem?.executionArn && (
-                    <Button
-                      iconName="status-positive"
-                      variant={isFlowViewerVisible ? 'primary' : 'normal'}
-                      onClick={() => {
-                        logger.info('Opening flow viewer with execution ARN:', localItem.executionArn);
-                        setIsFlowViewerVisible(true);
-                      }}
-                    >
-                      View Processing Flow
-                    </Button>
-                  )}
-                  {onAbort && canAbort && (
-                    <Button iconName="status-stopped" variant="normal" onClick={onAbort}>
-                      Abort
-                    </Button>
-                  )}
-                  {onReprocess && (
-                    <Button iconName="redo" variant="normal" onClick={onReprocess}>
-                      Reprocess
-                    </Button>
-                  )}
-                  <ButtonDropdown
-                    items={downloadMenuItems}
-                    onItemClick={({ detail }) => handleDownloadMenuItemClick(detail.id)}
-                    disabled={isDownloadInProgress}
-                    loading={isDownloadInProgress}
-                    variant="normal"
-                    expandToViewport
-                  >
-                    Download
-                  </ButtonDropdown>
-                  {onDelete && (
-                    <Button iconName="remove" variant="normal" onClick={onDelete}>
-                      Delete
-                    </Button>
-                  )}
-                </SpaceBetween>
-              }
-            >
-              Document Details
-            </Header>
-          }
-        >
+      <SpaceBetween size="l">
+        {/* First on the page: the bar's test helpers read the first Header. */}
+        <DocumentPageHeader
+          title={documentName(localItem.objectKey)}
+          status={localItem.objectStatus}
+          objectKey={localItem.objectKey}
+          actions={<ActionBar controls={actions.controls} />}
+        />
+        <EditorNotices notices={actions.notices} />
+        {view === 'source' && <FileViewer objectKey={localItem.objectKey} />}
+        {/* Hidden rather than unmounted behind Source, so Chat and the tables keep their state. */}
+        <div data-testid="document-widgets" style={{ display: view === 'source' ? 'none' : undefined }}>
           <SpaceBetween size="l">
-            {/* Above the attribute grid on purpose: for a refused document this
-                is the only explanation there is, since no workflow ran and the
-                flow viewer has no execution to show. */}
-            <MalwareScanAlert item={enhancedItem} />
+            <Container header={<Header variant="h2">Document Details</Header>}>
+              <SpaceBetween size="l">
+                {/* Above the attribute grid on purpose: for a refused document this
+                    is the only explanation there is, since no workflow ran and the
+                    flow viewer has no execution to show. */}
+                <MalwareScanAlert item={enhancedItem} />
 
-            <DocumentAttributes
-              item={enhancedItem}
-              versions={versions}
-              setToolsOpen={setToolsOpen}
-              getDocumentDetailsFromIds={getDocumentDetailsFromIds}
+                <DocumentAttributes item={enhancedItem} versions={versions} evaluationCell={actions.evaluationStatusCell} />
+              </SpaceBetween>
+            </Container>
+            <SectionsPanel
+              sections={displayedItem.sections as never}
+              documentItem={displayedItem}
+              // The configuration profile the document was processed with, not the
+              // stack's current live config: the classes it was classified against, and
+              // its section confidence-alert thresholds. Falls back to `mergedConfig` when
+              // the doc's version is 'default'/unset — see `documentVersionConfig` above.
+              mergedConfig={documentVersionConfig}
+              classificationIndex={classificationIndex}
             />
-
-            {displayedItem.metering && (
-              <div>
-                <MeteringExpandableSection meteringData={displayedItem.metering} documentItem={displayedItem} />
-              </div>
-            )}
+            <PagesPanel
+              pages={displayedItem.pages as never}
+              classificationIndex={classificationIndex}
+              pageTextEdit={actions.pageTextEdit}
+            />
+            <DocumentVersionsPanel
+              objectKey={localItem.objectKey}
+              viewingRunId={viewingRunId}
+              onViewVersion={handleViewVersion}
+              completionTime={localItem.completionTime}
+            />
+            <ChatPanel objectKey={localItem.objectKey} configVersion={docConfigVersion} />
           </SpaceBetween>
-        </Container>
-        <DocumentViewers
-          objectKey={displayedItem.objectKey}
-          evaluationReportUri={displayedItem.evaluationReportUri}
-          summaryReportUri={displayedItem.summaryReportUri}
-          ruleValidationResultUri={displayedItem.ruleValidationResultUri}
-          evaluationStatus={displayedItem.evaluationStatus}
-        />
-        <SectionsPanel
-          {...({
-            sections: displayedItem.sections,
-            pages: displayedItem.pages,
-            documentItem: displayedItem,
-            // Use the configuration profile the document was processed with, not the
-            // stack's current live config. This drives the Edit Mode class
-            // dropdown (so users see the classes the doc was actually
-            // classified against) and section confidence-alert thresholds.
-            // Falls back to `mergedConfig` when the doc's version is
-            // 'default'/unset — see `documentVersionConfig` above.
-            mergedConfig: documentVersionConfig,
-            // Editing is disabled for a historical snapshot; the panels also
-            // gate their own edit affordances via useDocumentVersion().isHistorical.
-            onDocumentUpdate: viewingRunId ? undefined : setLocalItem,
-            classificationIndex,
-          } as Record<string, unknown>)}
-        />
-        <PagesPanel {...({ pages: displayedItem.pages, documentItem: displayedItem, classificationIndex } as Record<string, unknown>)} />
-        <DocumentVersionsPanel objectKey={localItem.objectKey} viewingRunId={viewingRunId} onViewVersion={handleViewVersion} />
-        <ChatPanel objectKey={localItem.objectKey} configVersion={docConfigVersion} />
+        </div>
 
-        {/* Step Function Flow Viewer - uses the document's configuration profile, not the active stack config */}
-        {localItem?.executionArn && (
-          <StepFunctionFlowViewer
-            executionArn={localItem.executionArn}
-            visible={isFlowViewerVisible}
-            onDismiss={() => setIsFlowViewerVisible(false)}
-            mergedConfig={documentVersionConfig}
-            malwareScan={localItem}
-          />
-        )}
-
-        {/* Troubleshoot Modal */}
-        <TroubleshootModal
-          visible={isTroubleshootModalVisible}
-          onDismiss={() => setIsTroubleshootModalVisible(false)}
-          documentItem={localItem}
-          existingJob={troubleshootJobs[localItem?.objectKey] as unknown as { jobId: string; status: string }}
-          onJobUpdate={(jobData: TroubleshootJobData) => {
-            setTroubleshootJobs((prev) => ({
-              ...prev,
-              [localItem.objectKey]: jobData,
-            }));
-          }}
-        />
-
-        {/* Document-level download UX */}
-        <DownloadOptionsModal
-          visible={isDownloadOptionsOpen}
-          includePageImages={includePageImages}
-          includeSourceDocument={includeSourceDocument}
-          onIncludePageImagesChange={setIncludePageImages}
-          onIncludeSourceDocumentChange={setIncludeSourceDocument}
-          onConfirm={handleConfirmDownloadAll}
-          onDismiss={() => setIsDownloadOptionsOpen(false)}
-        />
-        <DownloadProgressModal
-          visible={(isDownloadInProgress || isDownloadFinished) && downloadScope !== null}
-          progress={downloadProgress}
-          errors={downloadErrors}
-          isFinished={isDownloadFinished}
-          onCancel={handleCancelDownload}
-          onClose={handleCloseDownloadProgress}
-        />
+        {actions.dialogs}
+        {download.dialogs}
       </SpaceBetween>
     </DocumentVersionProvider>
   );

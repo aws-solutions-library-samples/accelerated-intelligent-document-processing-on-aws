@@ -37,6 +37,7 @@ this is the only source of a box.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,7 @@ def resolve_candidates(
             else:
                 inference_result[attr_name] = _coerce_value(inner, attr_schema)
                 assessment_data[attr_name] = {
-                    "confidence": _safe_prob(value.get("P1", 0.0)),
+                    **_confidence_from_candidate(value),
                     **_geometry_from_candidate(value),
                 }
             candidates_metadata[attr_name] = value
@@ -229,7 +230,7 @@ def _resolve_group(
             else:
                 resolved[key] = _coerce_value(inner, sub_schema)
                 assess[key] = {
-                    "confidence": _safe_prob(val.get("P1", 0.0)),
+                    **_confidence_from_candidate(val),
                     **_geometry_from_candidate(val),
                 }
         elif isinstance(val, list) and sub_schema.get("type") == "array":
@@ -272,7 +273,7 @@ def _resolve_list_items(
             if isinstance(val, dict) and "G1" in val:
                 resolved_item[key] = _coerce_value(val.get("G1"), sub_schema)
                 item_assess[key] = {
-                    "confidence": _safe_prob(val.get("P1", 0.0)),
+                    **_confidence_from_candidate(val),
                     **_geometry_from_candidate(val),
                 }
             elif isinstance(val, dict) and _looks_like_candidate_group(val):
@@ -297,10 +298,49 @@ def _coerce_value(v: Any, schema: dict[str, Any]) -> Any:
     return v
 
 
-def _safe_prob(v: Any) -> float:
-    """Convert a probability to a float clamped to [0, 1] (0.0 on failure)."""
+#: ``confidence_reason`` for a candidate whose ``P1`` is missing, null, not a
+#: number, or NaN. The leaf scores 0.0, so the field falls below every
+#: threshold and raises a confidence alert, as a missing ``P1`` always did; the reason is what tells a
+#: reviewer, and any consumer of ``explainability_info``, that the 0.0 is a
+#: stand-in for a probability the model did not give rather than the model's own
+#: verdict. Without it the two were identical in ``result.json``. (The web UI
+#: does not display ``confidence_reason``; it is visible in the raw
+#: ``explainability_info``.)
+_UNUSABLE_PROBABILITY_REASON = (
+    "No usable probability (P1) in the model's candidate response, so this 0.0 "
+    "is a stand-in, not the model's confidence. Treat the value as unverified."
+)
+
+
+def _confidence_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    """The confidence keys for one ``{G1, P1, ...}`` candidate.
+
+    ``{"confidence": P1}`` clamped to [0, 1] when ``P1`` is a number other than
+    NaN (or a numeric string). Otherwise ``{"confidence": 0.0}`` plus a
+    ``confidence_reason`` marking it as a stand-in. A missing or non-numeric
+    ``P1`` already scored 0.0, so its alerts and review routing do not change;
+    a NaN ``P1`` scored 1.0 and now falls below the threshold like the others.
+    """
+    prob = _safe_prob(candidate.get("P1"))
+    if prob is None:
+        return {"confidence": 0.0, "confidence_reason": _UNUSABLE_PROBABILITY_REASON}
+    return {"confidence": prob}
+
+
+def _safe_prob(v: Any) -> float | None:
+    """A probability as a float clamped to [0, 1], or None when it is unusable.
+
+    Unusable means missing/None, not convertible to float, or NaN. NaN must not
+    reach the clamp: ``min(1.0, nan)`` is ``1.0``, so a NaN probability (which
+    ``json.loads`` accepts) used to come out as full confidence. Infinities clamp
+    to 0.0 or 1.0 as before.
+    """
+    if v is None:
+        return None
     try:
-        f = float(v) if v is not None else 0.0
-        return max(0.0, min(1.0, f))
-    except (ValueError, TypeError):
-        return 0.0
+        f = float(v)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if math.isnan(f):
+        return None
+    return max(0.0, min(1.0, f))

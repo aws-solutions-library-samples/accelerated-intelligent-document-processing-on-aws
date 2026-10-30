@@ -42,8 +42,8 @@ DEFAULTS = (
 
 
 def _page_prompt(classification: dict) -> str:
-    """The one-stage page task prompt: nested in config format 0.9, flat before."""
-    nested = ((classification.get("one_stage") or {}).get("page") or {}).get(
+    """The combined page task prompt: nested in config format 0.9, flat before."""
+    nested = ((classification.get("combined") or {}).get("page") or {}).get(
         "task_prompt"
     )
     return nested if nested is not None else classification["task_prompt"]

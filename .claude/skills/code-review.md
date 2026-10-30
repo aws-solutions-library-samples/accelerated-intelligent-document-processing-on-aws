@@ -8,9 +8,11 @@ make test               # All tests
 make typecheck          # basedpyright
 ```
 
-**Before opening an MR** (not needed on every commit), also run the SRT
-security scan so new findings are known and addressed up front — CI runs it
-on MRs to `develop` and will fail on HIGH open findings:
+**The SRT security scan runs in CI on every pull request and merge request**, on
+both platforms, and fails on HIGH open findings, so read that check before
+merging rather than running the scan by default. Run it locally only when you
+need the answer before CI does — for example to fix a finding without a round
+trip, or on a branch whose merges do not wait for CI:
 ```bash
 make srt-scan           # requires one-time `make srt-setup`; ~5–10 min
 # or: make srt          # clean → setup → scan → optional interactive fix

@@ -14,6 +14,7 @@ import useParameterStore from '../hooks/use-parameter-store';
 import useAppContext from '../contexts/app';
 import useUserRole from '../hooks/use-user-role';
 
+import DocumentEditRoute from './DocumentEditRoute';
 import DocumentsRoutes from './DocumentsRoutes';
 import DocumentsQueryRoutes from './DocumentsQueryRoutes';
 import DocumentsAnalyticsRoutes from './DocumentsAnalyticsRoutes';
@@ -83,7 +84,7 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   } catch {
     /* ignore */
   }
-  // An Annotator-only user lands on My Work › Tasks, the items assigned to them. The
+  // An Annotator-only user lands on Home › Tasks, the items assigned to them. The
   // welcome page offers Quick Start, the tour, Configuration and Upload Document —
   // none of which they are scoped to, so it would be a page of dead ends.
   const landingPath = isAnnotatorOnly
@@ -143,10 +144,13 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   );
   const logoutRoute = <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />;
 
-  // An Annotator-only user's shell: My Work, Inbox and the annotation screens (under
-  // /review-queues, where Inbox notification links point). Nothing else is routed.
+  // An Annotator-only user's shell: Home (Inbox, Tasks, Queues), the queue pages and
+  // Test Studio items (under /review-queues), and a document's edit page (where Inbox
+  // notification links and Tasks point). Nothing else is routed, so the rest of
+  // /documents is not theirs.
   const routes = isAnnotatorOnly ? (
     <Routes>
+      <Route path={`${DOCUMENTS_PATH}/:objectKey/edit`} element={<DocumentEditRoute />} />
       <Route path={`${MY_WORK_PATH}/*`} element={<MyWorkRoutes />} />
       <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />
       <Route path={`${REVIEW_QUEUES_PATH}/*`} element={<ReviewQueuesRoutes />} />
@@ -163,8 +167,8 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
       <Route path={`${DOCUMENTS_ANALYTICS_PATH}/*`} element={<DocumentsAnalyticsRoutes />} />
       <Route path={`${TEST_STUDIO_PATH}/*`} element={<TestStudioRoutes />} />
       <Route path={`${DOCUMENTS_PATH}/*`} element={<DocumentsRoutes />} />
-      {/* The Inbox is part of My Work, which only Annotators have. */}
-      {isAnnotator && <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />}
+      {/* Home › Inbox, which every user has. */}
+      <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />
       <Route path={`${REVIEW_QUEUES_PATH}/*`} element={<ReviewQueuesRoutes />} />
       <Route path={`${MY_WORK_PATH}/*`} element={<MyWorkRoutes />} />
       {loginRoute}
@@ -182,8 +186,9 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
 
   return (
     <SettingsContext.Provider value={settingsContextValue}>
-      <InboxProvider enabled={isAnnotator}>
-        {/* My Work › Tasks and its badge: the items assigned to an Annotator. */}
+      {/* Every user has an Inbox, so it is polled for every signed-in user. */}
+      <InboxProvider>
+        {/* Home › Tasks and its badge: the items assigned to an Annotator. */}
         {isAnnotator ? <ReviewWorkProvider>{shell}</ReviewWorkProvider> : shell}
       </InboxProvider>
     </SettingsContext.Provider>

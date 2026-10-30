@@ -191,9 +191,9 @@ def test_every_swap_target_is_offered_in_canada_and_every_source_is_not():
 
 #: Where each classification call keeps its model (config format 0.9).
 CLASSIFICATION_CALLS = (
-    "one_stage.llm",
-    "two_stage.segmentation.llm",
-    "two_stage.section_classification.llm",
+    "combined.llm",
+    "split_then_classify.splitting.llm",
+    "split_then_classify.section_classification.llm",
 )
 
 

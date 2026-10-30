@@ -9,10 +9,10 @@
  * the most expected error. The page shows the team's progress and, for an Admin,
  * assigns documents to the Annotators listed on the queue (an assignment does not
  * expire) and sets how long an assigned document waits before its Annotator is
- * reminded. A listed Annotator (from My Work › Queues) claims an unassigned document
- * instead, which assigns it to them. Each row opens the annotation screen
- * (AnnotationScreen), where documents are annotated (read-only unless assigned to
- * the viewer).
+ * reminded. A listed Annotator (from Home › Queues) claims an unassigned document
+ * instead, which assigns it to them. Each row opens the edit screen
+ * (TestSetItemEdit), where documents are edited (read-only unless assigned to the
+ * viewer).
  *
  * The URL is safe to share: it only navigates, and every operation is authorized
  * server-side against the caller's allowedTestSets.
@@ -33,7 +33,6 @@ import {
   Header,
   Link,
   Modal,
-  ProgressBar,
   Pagination,
   Popover,
   Select,
@@ -53,6 +52,9 @@ import useUserRole from '../../hooks/use-user-role';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { testSetAnnotateHref, testSetItemPath } from '../../routes/constants';
 import AssignModal from '../review-queues/AssignModal';
+import QueueAnnotatorsTable, { queueAnnotatorRows } from '../review-queues/QueueAnnotatorsTable';
+import QueueProgress, { progressPercent } from '../review-queues/QueueProgress';
+import { ANNOTATOR_SORTING_COLUMN, sortByAnnotator } from './annotator-sort';
 import QueueDefinitionModal from '../review-queues/QueueDefinitionModal';
 import type { TestSetQueueTarget } from '../review-queues/QueueDefinitionModal';
 import {
@@ -62,8 +64,7 @@ import {
   listTestSetQueues,
   unassignTestSetDocuments,
 } from '../review-queues/reviewer-assignment';
-import AnnotationScreen from '../review-workspace/AnnotationScreen';
-import type { AnnotationQueue, QueueItem } from '../review-workspace/test-set-adapter';
+import type { AnnotationQueue, QueueItem } from '../edit-screen/test-set-item-edit-adapter';
 import { renderAlertCount, renderLabelSource } from './TestSetDetail';
 import {
   REVIEWED_HIDDEN_HINT,
@@ -77,7 +78,7 @@ import {
 } from './annotation-edit-flags';
 import { createLatestResponseGuard } from './latestResponseOnly';
 
-export type { QueueItem } from '../review-workspace/test-set-adapter';
+export type { QueueItem } from '../edit-screen/test-set-item-edit-adapter';
 
 const client = generateClient();
 const logger = new ConsoleLogger('AnnotationWorkspace');
@@ -128,7 +129,12 @@ interface ReviewImpact {
   totalObservations: number;
 }
 
-const AnnotationQueuePage = (): React.JSX.Element => {
+interface AnnotationQueuePageProps {
+  /** Told the test set's name once its queue has loaded (for the breadcrumbs). */
+  onName?: (name: string) => void;
+}
+
+const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.Element => {
   const { testSetId = '' } = useParams<{ testSetId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -140,16 +146,37 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { canAnnotate, isAdmin, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  // An item opened from here keeps this page in its breadcrumbs: under Review Management for an Admin, Queues otherwise.
+  const itemOrigin = isAdmin ? 'review' : 'queues';
   const reviewWork = useOptionalReviewWork();
+  // The Annotators listed on this set's queue (Admin): read with the page, and replaced by
+  // a saved settings dialog at once rather than waiting for the next read.
+  const [eligibleAnnotators, setEligibleAnnotators] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!isAdmin || !testSetId) return;
+    listTestSetQueues()
+      .then((sets) => setEligibleAnnotators(sets.find((s) => s.id === testSetId)?.eligibleAnnotators ?? []))
+      .catch((err: unknown) => {
+        logger.warn('listTestSetQueues failed', err);
+        setEligibleAnnotators([]);
+      });
+  }, [isAdmin, testSetId]);
   // A non-Admin Annotator claims documents rather than assigning them.
   const claimsWork = isAnnotator && !isAdmin;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);
+  // The breadcrumb names the set, as the title does, once the queue has loaded.
+  const queueName = queue?.name;
+  useEffect(() => {
+    if (queueName) onName?.(queueName);
+  }, [queueName, onName]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState('');
   const [queuePage, setQueuePage] = useState(1);
+  // Worst-first until someone sorts by Annotator; then by assignee, either way.
+  const [annotatorSort, setAnnotatorSort] = useState<{ descending: boolean } | null>(null);
   const [statusFilter, setStatusFilter] = useState<DocStatusFilter>(DEFAULT_STATUS_FILTER);
   const showReviewed = statusFilter === 'all';
   const [selectedRows, setSelectedRows] = useState<QueueItem[]>([]);
@@ -322,11 +349,15 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     return all.filter((d) => d.objectKey.toLowerCase().includes(needle));
   }, [queue, queueFilter, statusFilter]);
 
-  const queuePageCount = Math.max(1, Math.ceil(filteredQueue.length / QUEUE_ROWS_PER_PAGE));
+  const sortedQueue = useMemo(
+    () => (annotatorSort ? sortByAnnotator(filteredQueue, annotatorSort.descending) : filteredQueue),
+    [filteredQueue, annotatorSort],
+  );
+  const queuePageCount = Math.max(1, Math.ceil(sortedQueue.length / QUEUE_ROWS_PER_PAGE));
   const pagedQueue = useMemo(() => {
     const start = (queuePage - 1) * QUEUE_ROWS_PER_PAGE;
-    return filteredQueue.slice(start, start + QUEUE_ROWS_PER_PAGE);
-  }, [filteredQueue, queuePage]);
+    return sortedQueue.slice(start, start + QUEUE_ROWS_PER_PAGE);
+  }, [sortedQueue, queuePage]);
 
   // Every document can be assigned: one with a review record saves through the review
   // API, one without (authored ground truth) through saveTestSetDocumentSection.
@@ -386,13 +417,13 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     }
   };
 
-  /** Claim one document: it is assigned to the caller and shows in My Work › Tasks. */
+  /** Claim one document: it is assigned to the caller and shows in Home › Tasks. */
   const handleClaim = async (item: QueueItem) => {
     setClaimingKey(item.objectKey);
     reviewWork?.beginMutation();
     try {
       await claimTestSetDocument(testSetId, item.objectKey);
-      setSuccessMessage(`Claimed ${item.objectKey}. Work it in My Work › Tasks.`);
+      setSuccessMessage(`Claimed ${item.objectKey}. Work it in Home › Tasks.`);
     } catch (err) {
       setErrorMessage(describeApiError(err, 'claim the document'));
     } finally {
@@ -427,7 +458,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
       }
       const claimed = keys.length - failed.length;
       if (claimed > 0) {
-        setSuccessMessage(`Claimed ${claimed} document${claimed === 1 ? '' : 's'}. Work them in My Work › Tasks.`);
+        setSuccessMessage(`Claimed ${claimed} document${claimed === 1 ? '' : 's'}. Work them in Home › Tasks.`);
       }
       if (failed.length > 0) {
         setErrorMessage(
@@ -466,7 +497,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   // Completed: reviewed, or skipped without a review.
   const completedDocs = queue ? (queue.completedDocs ?? queue.reviewedDocs) : 0;
-  const progressPct = queue && queue.totalDocs > 0 ? Math.round((completedDocs / queue.totalDocs) * 100) : 0;
+  const progressPct = queue ? progressPercent(completedDocs, queue.totalDocs) : 0;
   const draft = currentDraft(queue, null);
   const queueLink = annotationQueueLink(window.location.origin, testSetAnnotateHref(testSetId), draft);
   // A link from a transition that has since been published: still usable, but out of date.
@@ -474,13 +505,9 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   // Whole percent until the curve is measured on this set (see estimateDecimals).
   const estimateDecimals = decimalsFor(impact?.estimateConfidence);
 
-  /** Yes (with the assignee on hover) or No. */
-  const renderAssigned = (item: QueueItem): React.ReactNode =>
-    item.assignedTo ? <span title={`Assigned to ${item.assignedTo}`}>Yes</span> : 'No';
-
   const onRowAction = (item: QueueItem, action: string) => {
-    if (action === 'view') navigate(`${testSetItemPath(testSetId, item.objectKey)}?view=source`);
-    else if (action === 'annotate') navigate(testSetItemPath(testSetId, item.objectKey));
+    if (action === 'view') navigate(`${testSetItemPath(testSetId, item.objectKey)}?view=source&from=${itemOrigin}`);
+    else if (action === 'annotate') navigate(`${testSetItemPath(testSetId, item.objectKey)}?from=${itemOrigin}`);
     else if (action === 'claim') void handleClaim(item);
     else if (action === 'assign') {
       setSelectedRows([item]);
@@ -548,9 +575,9 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   if (!roleLoading && !canAnnotate) {
     return (
-      <ContentLayout header={<Header variant="h1">Annotate</Header>}>
+      <ContentLayout header={<Header variant="h1">Edit</Header>}>
         <Alert type="error" header="Not available for your account">
-          Ground-truth annotation requires an Annotator, Author or Admin role.
+          Editing ground truth requires an Annotator, Author or Admin role.
         </Alert>
       </ContentLayout>
     );
@@ -558,6 +585,13 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   // Queue counts over the documents still to complete: pending (unassigned), assigned.
   const openDocs = (queue?.documents ?? []).filter((d) => !isDone(d));
+  // Each listed Annotator with the open documents assigned to them, as on a Production queue.
+  const assignedCounts = new Map<string, number>();
+  openDocs.forEach((d) => d.assignedTo && assignedCounts.set(d.assignedTo, (assignedCounts.get(d.assignedTo) ?? 0) + 1));
+  const annotatorRows = queueAnnotatorRows(
+    eligibleAnnotators ?? [],
+    [...assignedCounts].map(([email, claimed]) => ({ email, claimed })),
+  );
   const pendingCount = openDocs.filter((d) => !d.assignedTo).length;
   const assignedCount = openDocs.filter((d) => d.assignedTo).length;
   const annotatorCount = new Set(openDocs.map((d) => d.assignedTo).filter(Boolean)).size;
@@ -602,7 +636,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
               </SpaceBetween>
             }
           >
-            {`Test set: ${testSetId}`}
+            {`Test set: ${queue?.name || testSetId}`}
           </Header>
         </SpaceBetween>
       }
@@ -624,14 +658,12 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         )}
 
         {queue && (
-          <Container header={<Header variant="h2">Queue Progress</Header>}>
-            <ProgressBar
-              value={progressPct}
-              description="Shared across everyone annotating this test set"
-              additionalInfo={`${completedDocs} of ${queue.totalDocs} documents completed`}
-              style={{ progressBar: { height: '16px', borderRadius: '8px' } }}
-            />
-          </Container>
+          <QueueProgress
+            count={completedDocs}
+            total={queue.totalDocs}
+            countLabel="completed"
+            description="Shared across everyone annotating this test set"
+          />
         )}
 
         {queue && (
@@ -670,6 +702,8 @@ const AnnotationQueuePage = (): React.JSX.Element => {
             </SpaceBetween>
           </Container>
         )}
+
+        {isAdmin && queue && <QueueAnnotatorsTable rows={annotatorRows} loading={eligibleAnnotators == null} />}
 
         {labelJobRunning && (
           <Alert type="info" header="Draft labeling in progress">
@@ -710,6 +744,12 @@ const AnnotationQueuePage = (): React.JSX.Element => {
             variant="container"
             items={pagedQueue}
             trackBy="objectKey"
+            sortingColumn={annotatorSort ? ANNOTATOR_SORTING_COLUMN : undefined}
+            sortingDescending={annotatorSort?.descending ?? false}
+            onSortingChange={({ detail }) => {
+              setAnnotatorSort({ descending: detail.isDescending ?? false });
+              setQueuePage(1);
+            }}
             loading={isLoading}
             loadingText="Loading the queue"
             selectionType={isAdmin || claimsWork ? 'multi' : undefined}
@@ -729,7 +769,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                   isAdmin
                     ? 'Worst-first: the documents with the most confidence alerts come first. Select documents to assign them to an Annotator.'
                     : claimsWork
-                      ? 'Worst-first: the documents with the most confidence alerts come first. Select documents nobody holds and Claim them to work them in My Work › Tasks.'
+                      ? 'Worst-first: the documents with the most confidence alerts come first. Select documents nobody holds and Claim them to work them in Home › Tasks.'
                       : 'Worst-first: the documents with the most confidence alerts come first.'
                 }
                 actions={
@@ -799,7 +839,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                 id: 'document',
                 header: 'Document',
                 isRowHeader: true,
-                cell: (item) => <Link href={`#${testSetItemPath(testSetId, item.objectKey)}`}>{item.objectKey}</Link>,
+                cell: (item) => <Link href={testSetAnnotateHref(testSetId, item.objectKey, itemOrigin)}>{item.objectKey}</Link>,
               },
               { id: 'labels', header: 'Labels', cell: (item) => renderLabelSource(item.labelSource) ?? '—' },
               {
@@ -807,7 +847,12 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                 header: 'Confidence',
                 cell: (item) => renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold) ?? '—',
               },
-              { id: 'assigned', header: 'Assigned', cell: renderAssigned },
+              {
+                id: 'annotator',
+                header: 'Annotator',
+                sortingField: ANNOTATOR_SORTING_COLUMN.sortingField,
+                cell: (item) => item.assignedTo ?? '—',
+              },
               {
                 id: 'actions',
                 header: <span className="idp-visually-hidden">Actions</span>,
@@ -820,7 +865,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                     loading={claimingKey === item.objectKey}
                     items={[
                       { id: 'view', text: 'View' },
-                      { id: 'annotate', text: 'Annotate' },
+                      { id: 'annotate', text: 'Edit' },
                       ...(claimsWork
                         ? [
                             {
@@ -910,9 +955,10 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         annotators={candidates}
         annotatorsLoading={false}
         onDismiss={() => setSettingsTarget(null)}
-        onSaved={() => {
+        onSaved={(_, saved) => {
           setSuccessMessage('Saved the queue settings.');
           setSettingsTarget(null);
+          if (saved) setEligibleAnnotators([...(saved.eligibleAnnotators ?? [])]);
           void loadQueue();
         }}
       />
@@ -931,13 +977,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   );
 };
 
-/**
- * `queue`: the test set's queue page. `item` renders the annotation screen and exists
- * only until the route renders `<AnnotationScreen kind="test-set" />` itself.
- */
-export type AnnotationWorkspaceMode = 'queue' | 'item';
-
-const AnnotationWorkspace = ({ mode = 'queue' }: { mode?: AnnotationWorkspaceMode }): React.JSX.Element =>
-  mode === 'item' ? <AnnotationScreen kind="test-set" /> : <AnnotationQueuePage />;
+/** A test set's queue page. An item opens in the edit screen (`TestSetItemEdit`), which the route renders. */
+const AnnotationWorkspace = ({ onName }: AnnotationQueuePageProps): React.JSX.Element => <AnnotationQueuePage onName={onName} />;
 
 export default AnnotationWorkspace;

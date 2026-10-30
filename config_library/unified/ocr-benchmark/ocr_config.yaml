@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 # All settings not explicitly defined here are inherited from system defaults.
-notes: Pattern-2 default configuration - Bedrock LLM-based processing
+notes: Pipeline mode default configuration - Bedrock LLM-based processing
 classes:
 - $schema: https://json-schema.org/draft/2020-12/schema
   $id: BANK_CHECK
@@ -831,7 +831,7 @@ ocr:
     dpi:
     preprocessing:
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-2-lite-v1:0
       temperature: '0.0'
@@ -867,18 +867,18 @@ classification:
         <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
         <document-image> {DOCUMENT_IMAGE} </document-image>
         <final-instructions> Analyze the document above by: 1. Applying the <classification-instructions> to examine both visual and textual features 2. Selecting ONLY from document types in <document-types> 3. Providing clear reasoning with specific evidence 4. Outputting in the exact JSON format specified in <output-format> </final-instructions>
-  # The two-stage calls list only what differs from the system defaults: the
-  # other settings this preset sets for one stage equal the defaults there.
-  # This preset runs one stage; the block keeps a switch to two stage on the
-  # same model settings.
-  two_stage:
-    segmentation:
+  # The split-then-classify calls list only what differs from the system
+  # defaults: the other settings this preset sets for the combined call equal
+  # the defaults there. This preset runs the combined strategy; the block keeps
+  # a switch to split-then-classify on the same model settings.
+  split_then_classify:
+    splitting:
       llm:
         max_tokens: '4096'
     section_classification:
       llm:
         max_tokens: '4096'
-  file_shape:
+  document_shape:
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
 extraction:
@@ -923,9 +923,8 @@ agents:
   error_analyzer:
     model_id: us.anthropic.claude-sonnet-4-6
     parameters:
-      max_log_events: 5
+      max_log_events: 10
       time_range_hours_default: 24
-    system_prompt: "You are an intelligent error analysis agent for the GenAI IDP system with access to specialized diagnostic tools.\n\nGENERAL TROUBLESHOOTING WORKFLOW:\n1. Identify document status from DynamoDB\n2. Find any errors reported during Step Function execution\n3. Collect relevant logs from CloudWatch\n4. Identify any performance issues from X-Ray traces\n5. Provide root cause analysis based on the collected information\n\nTOOL SELECTION STRATEGY:\n- If user provides a filename: Use cloudwatch_document_logs and dynamodb_status for document-specific analysis\n- For system-wide issues: Use cloudwatch_logs and dynamodb_query\n- For execution context: Use lambda_lookup or stepfunction_details\n- For distributed tracing: Use xray_trace or xray_performance_analysis\n\nALWAYS format your response with exactly these three sections in this order:\n\n## Root Cause\nIdentify the specific underlying technical reason why the error occurred. Focus on the primary cause, not symptoms.\n\n## Recommendations\nProvide specific, actionable steps to resolve the issue. Limit to top three recommendations only.\n\n<details>\n<summary><strong>Evidence</strong></summary>\n\nFormat evidence with source information. Include relevant data from tool responses:\n\n**For CloudWatch logs:**\n**Log Group:** [full log_group name]\n**Log Stream:** [full log_stream name]\n```\n[ERROR] timestamp message\n```\n\n**For other sources (DynamoDB, Step Functions, X-Ray):**\n**Source:** [service name and resource]\n```\nRelevant data from tool response\n```\n\n</details>\n\nFORMATTING RULES:\n- Use the exact three-section structure above\n- Make Evidence section collapsible using HTML details tags\n- Include relevant data from all tool responses (CloudWatch, DynamoDB, Step Functions, X-Ray)\n- For CloudWatch: Show complete log group and log stream names without truncation\n- Present evidence data in code blocks with appropriate source labels\n  \nANALYSIS GUIDELINES:\n- Use multiple tools for comprehensive analysis when needed\n- Start with document-specific tools for targeted queries\n- Use system-wide tools for pattern analysis\n- Combine DynamoDB status with CloudWatch logs for complete picture\n- Leverage X-Ray for distributed system issues\n\nROOT CAUSE DETERMINATION:\n1. Document Status: Check dynamodb_status first\n2. Execution Details: Use stepfunction_details for workflow failures\n3. Log Analysis: Use cloudwatch_document_logs or cloudwatch_logs for error details\n4. Distributed Tracing: Use xray_performance_analysis for service interaction issues\n5. Context: Use lambda_lookup for execution environment\n\nRECOMMENDATION GUIDELINES:\nFor code-related issues or system bugs:\n- Do not suggest code modifications\n- Include error details, timestamps, and context\n\nFor configuration-related issues:\n- Direct users to UI configuration panel\n- Specify exact configuration section and parameter names\n\nFor operational issues:\n- Provide immediate troubleshooting steps\n- Include preventive measures\n\nTIME RANGE PARSING:\n- recent: 1 hour\n- last week: 168 hours  \n- last day: 24 hours\n- No time specified: 24 hours (default)\n\nIMPORTANT: Do not include any search quality reflections, search quality scores, or meta-analysis sections in your response. Only provide the three required sections: Root Cause, Recommendations, and Evidence."
 discovery:
   output_format:
     sample_json: "{\n    \"document_class\" : \"Form-1040\",\n    \"document_description\" : \"Brief summary of the document\",\n    \"groups\" : [\n        {\n            \"name\" : \"PersonalInformation\",\n            \"description\" : \"Personal information of Tax payer\",\n            \"attributeType\" : \"group\",\n            \"groupAttributes\" : [\n                {\n                    \"name\": \"FirstName\",\n                    \"dataType\" : \"string\",\n                    \"description\" : \"First Name of Taxpayer\"\n                },\n                {\n                    \"name\": \"Age\",\n                    \"dataType\" : \"number\",\n                    \"description\" : \"Age of Taxpayer\"\n                }\n            ]\n        },\n        {\n            \"name\" : \"Dependents\",\n            \"description\" : \"Dependents of taxpayer\",\n            \"attributeType\" : \"list\",\n            \"listItemTemplate\": {\n                \"itemAttributes\" : [\n                    {\n                        \"name\": \"FirstName\",\n                        \"dataType\" : \"string\",\n                        \"description\" : \"Dependent first name\"\n                    },\n                    {\n                        \"name\": \"Age\",\n                        \"dataType\" : \"number\",\n                        \"description\" : \"Dependent Age\"\n                    }\n                ]\n            }\n        }\n    ]\n}"

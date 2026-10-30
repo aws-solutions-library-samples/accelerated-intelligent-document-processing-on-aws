@@ -279,7 +279,7 @@ describe('ClassificationErrorsPanel', () => {
     );
 
     const link = screen.getByRole('link', { name: 'a b.pdf' });
-    // The class is corrected on the HITL annotation screen for that one document,
+    // The class is corrected on the HITL edit screen for that one document,
     // #/review-queues/test-sets/<id>/items/<doc>. The key is encoded, so a key with
     // a space or '&' still resolves to the right document.
     expect(link).toHaveAttribute('href', expect.stringContaining('/items/a%20b.pdf'));
@@ -290,7 +290,7 @@ describe('ClassificationErrorsPanel', () => {
     const href = link.getAttribute('href') ?? '';
     expect(href.startsWith('#/'), `href must be a single-hash route, got ${href}`).toBe(true);
     expect(href).not.toMatch(/^##/);
-    expect(href).toBe('#/review-queues/test-sets/ts1/items/a%20b.pdf');
+    expect(href).toBe('#/review-queues/test-sets/ts1/items/a%20b.pdf?from=test-studio');
   });
 
   it('renders the document as plain text when there is no test set to link to', () => {

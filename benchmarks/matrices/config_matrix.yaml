@@ -30,7 +30,7 @@ axes:
       extraction.coercion.enabled: true
       extraction.validation.enabled: true
       extraction.validation.fail_action: escalate
-  # classification.file_shape.sectionSplitting. The ONE genuine cost increase that shipped
+  # classification.document_shape.sectionSplitting. The ONE genuine cost increase that shipped
   # on-by-default in v0.7: fixing #686 made `llm_determined` (the default) perform
   # real boundary detection for SINGLE-CLASS configs, which previously
   # short-circuited to one all-pages section with zero inference. So a multi-page
@@ -40,9 +40,9 @@ axes:
   # (bank_statement is one) and a MULTI-PAGE document — a single-page document has
   # nothing to split, so the call is skipped either way.
   section_splitting:
-    disabled:       {classification.file_shape.sectionSplitting: disabled}
-    page:           {classification.file_shape.sectionSplitting: page}
-    llm_determined: {classification.file_shape.sectionSplitting: llm_determined}
+    disabled:       {classification.document_shape.sectionSplitting: disabled}
+    page:           {classification.document_shape.sectionSplitting: page}
+    llm_determined: {classification.document_shape.sectionSplitting: llm_determined}
   # x-aws-idp-multi-instance on the document class (#715). Replaces the class's
   # EFFECTIVE schema with an instances[] List-of-Class wrapper, so a section that
   # holds several documents of the class extracts every one of them instead of
@@ -103,7 +103,7 @@ axes:
   ocr_dpi:
     '150': {ocr.image.dpi: 150}
     '300': {ocr.image.dpi: 300}
-  # classification.one_stage.llm.confidence.mode (#731/#673). Turned ON by default (`topk`) in
+  # classification.combined.llm.confidence.mode (#731/#673). Turned ON by default (`topk`) in
   # v0.7, so every existing deployment starts paying per-page classification
   # output tokens on upgrade — this axis is how that cost gets measured.
   #
@@ -114,9 +114,9 @@ axes:
   # measured +0.00 on all three shapes with `topk` on, having measured a real
   # deficit before #731 landed. Hold it `off` to isolate a prompt change.
   class_confidence:
-    topk: {classification.one_stage.llm.confidence.mode: topk}
-    'off': {classification.one_stage.llm.confidence.mode: "off"}
-  # classification.one_stage.page.task_prompt, frozen at two points in history. This is the ONLY
+    topk: {classification.combined.llm.confidence.mode: topk}
+    'off': {classification.combined.llm.confidence.mode: "off"}
+  # classification.combined.page.task_prompt, frozen at two points in history. This is the ONLY
   # axis whose value is a whole prompt rather than a scalar, so it uses the
   # `@file:` form (see make_configs._resolve_value) and the frozen text lives in
   # benchmarks/matrices/prompts/.
@@ -138,11 +138,11 @@ axes:
   boundary_prompt:
     current: {}          # whatever the shipped system default is (the fix)
     legacy:
-      classification.one_stage.page.task_prompt: "@file:classification_task_prompt_pre653.txt"
+      classification.combined.page.task_prompt: "@file:classification_task_prompt_pre653.txt"
     # The v0.6.7 shipped prompt (#653 rules, before the #726 TABLE CONTINUATION rule):
     # the same-stack control for the #726 A/B.
     v067:
-      classification.one_stage.page.task_prompt: "@file:classification_task_prompt_v067.txt"
+      classification.combined.page.task_prompt: "@file:classification_task_prompt_v067.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -297,23 +297,23 @@ axes:
   lazy_images:
     'on':  {extraction.agentic.table_parsing.lazy_images: true}
     'off': {extraction.agentic.table_parsing.lazy_images: false}
-  # classification.one_stage.llm.model. Added for #653: that bug was reported on Sonnet 5 and
+  # classification.combined.llm.model. Added for #653: that bug was reported on Sonnet 5 and
   # the workaround was pinning classification to Sonnet 4.5, so a boundary-detection
   # fix has to be verified on the model it was reported against, not only on the
   # default. Sonnet 5 also REJECTS temperature/top_p/top_k (they are stripped, see
   # _CLAUDE_4_7_BASE_NAMES), so it samples where Nova receives temperature: 0 —
   # which makes it the stricter test of a prompt-only fix.
   classification_model:
-    nova_2_lite: {classification.one_stage.llm.model: us.amazon.nova-2-lite-v1:0}
-    nova_lite:   {classification.one_stage.llm.model: us.amazon.nova-lite-v1:0}
-    sonnet5:     {classification.one_stage.llm.model: us.anthropic.claude-sonnet-5}
-    sonnet46:    {classification.one_stage.llm.model: us.anthropic.claude-sonnet-4-6}
+    nova_2_lite: {classification.combined.llm.model: us.amazon.nova-2-lite-v1:0}
+    nova_lite:   {classification.combined.llm.model: us.amazon.nova-lite-v1:0}
+    sonnet5:     {classification.combined.llm.model: us.anthropic.claude-sonnet-5}
+    sonnet46:    {classification.combined.llm.model: us.anthropic.claude-sonnet-4-6}
     # Haiku 4.5 is here because #726's over-split is classification-model-dependent and
     # Sonnet 5 is an expensive way to fix it (classification is billed per PAGE, so it
     # costs a simple-mode user +45%). A prompt-level probe on the shipped boundary prompt
     # scored Haiku 9/9 on the boundary decision in 3 of 3 repeats — same as Sonnet 5 — at
     # a fifth of the price. This axis is how that gets confirmed end to end.
-    haiku45:     {classification.one_stage.llm.model: us.anthropic.claude-haiku-4-5-20251001-v1:0}
+    haiku45:     {classification.combined.llm.model: us.anthropic.claude-haiku-4-5-20251001-v1:0}
     # Haiku 5.5 alongside Haiku 4.5 rather than replacing it, because the pair IS the
     # measurement: classification is billed per PAGE, so the per-token rate lands
     # directly on a simple-mode user's bill, and this model is 10x cheaper per token
@@ -322,7 +322,7 @@ axes:
     # finding about where the floor is, and only a same-family pair can show it.
     # Note its images cost high-resolution tokens (~3x Haiku 4.5's), which matters
     # here more than on the extraction axis: classification can send a page image.
-    haiku55:     {classification.one_stage.llm.model: us.anthropic.claude-haiku-5-5}
+    haiku55:     {classification.combined.llm.model: us.anthropic.claude-haiku-5-5}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}

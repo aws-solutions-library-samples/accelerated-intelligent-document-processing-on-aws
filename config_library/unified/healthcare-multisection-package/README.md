@@ -106,7 +106,7 @@ This preset carries no `classification:` block, so every classification setting
 comes from the system defaults
 (`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`):
 
-- **Strategy / granularity**: one stage, page granularity — one call per page, with
+- **Strategy / granularity**: combined, page granularity — one call per page, with
   a `start`/`continue` boundary verdict per page that is folded into sections
 - **Modality**: text and images (the default task prompt carries both
   `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`)
@@ -117,12 +117,12 @@ comes from the system defaults
 The classification component segments each package from the per-page boundary
 signal and classifies each section across all 10 document types. To have the model
 see the whole package in one call instead, set
-`classification.one_stage.granularity: packet`. A packet longer than
-`classification.one_stage.packet.window_pages` (20 by default) is then split into
+`classification.combined.granularity: packet`. A packet longer than
+`classification.combined.packet.window_pages` (20 by default) is then split into
 overlapping windows and merged, which keeps a request under the 20-image-block
 threshold above which Bedrock downscales every image to 2,000 px. Keep
 `window_pages` at or below 20 while images are on, and no smaller than your
-longest single document.
+longest single section.
 
 ### Extraction Settings
 
@@ -172,7 +172,7 @@ Based on testing with the provided sample document:
 To use this healthcare configuration:
 
 1. **Deploy with Sample**: Upload `samples/healthcare-multisection-package.pdf` to test the configuration
-2. **Review Results**: Examine the classified documents and extracted nested data structure in the UI
+2. **Review Results**: Examine the classified sections and extracted nested data structure in the UI
 3. **Evaluate Performance**: Use the evaluation framework to compare against baseline results
 4. **Customize**: Modify attribute definitions for your specific healthcare document formats
 

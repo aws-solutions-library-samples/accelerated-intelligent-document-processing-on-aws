@@ -88,6 +88,13 @@ export const IN_FLUX_TEST_SET_STATUSES: ReadonlySet<string> = new Set(['QUEUED',
 
 export const isInFlux = (status?: string | null): boolean => IN_FLUX_TEST_SET_STATUSES.has(status || '');
 
+/**
+ * The part of a set's record that decides when its quality tier is requested
+ * again. The estimate also reads the set's document count and stored calibration
+ * curve, and a change to either alone does not re-rate the set.
+ */
+const labelStateKey = (ts: TestSetItem): string => `${ts.labelState ?? ''}:${ts.labelJobStatus ?? ''}`;
+
 const TestSets = (): React.JSX.Element => {
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
@@ -139,6 +146,15 @@ const TestSets = (): React.JSX.Element => {
   const [estimating, setEstimating] = useState<Record<string, boolean>>({});
 
   /**
+   * The label state each set's tier was last requested for, by set id. The tier
+   * effect estimates only the sets whose entry is missing or differs, so a poll
+   * that returns the same sets requests nothing, and one set changing re-rates
+   * that set alone. A request that fails is forgotten, so it is retried the next
+   * time the list changes.
+   */
+  const tierRequestedForRef = React.useRef<Map<string, string>>(new Map());
+
+  /**
    * Fetch each set's tier, keyed on the label state it was computed from. Must not
    * be called from loadTestSets, which runs on a 3s poll: that would fire one
    * estimateReviewEffort per labeled set every tick.
@@ -171,6 +187,11 @@ const TestSets = (): React.JSX.Element => {
         } catch (err) {
           // A missing tier is not an error state; the column says "not assessed".
           console.debug(`No quality tier for ${set.id}:`, err);
+          // Forget the request so the next change to the list retries it, unless
+          // the set's label state has moved on and a newer request owns the entry.
+          if (tierRequestedForRef.current.get(set.id) === labelStateKey(set)) {
+            tierRequestedForRef.current.delete(set.id);
+          }
         } finally {
           setEstimating((prev) => ({ ...prev, [set.id]: false }));
         }
@@ -237,12 +258,24 @@ const TestSets = (): React.JSX.Element => {
 
   /**
    * Signature of the listed sets' label state. Includes labelJobStatus so a run
-   * finishing re-rates the set, while an identical poll tick does not.
+   * finishing re-rates the set. It only decides when the effect below runs; which
+   * sets are estimated is decided per set against tierRequestedForRef, because the
+   * list's order is not stable — getTestSets fetches the records with
+   * BatchGetItem, which returns them in no particular order, and the resolver does
+   * not sort — so this string can change on a poll that returned the same sets.
    */
-  const labelStateSignature = testSets.map((ts) => `${ts.id}:${ts.labelState ?? ''}:${ts.labelJobStatus ?? ''}`).join('|');
+  const labelStateSignature = testSets.map((ts) => `${ts.id}:${labelStateKey(ts)}`).join('|');
 
   React.useEffect(() => {
-    if (testSets.length > 0) loadTiers(testSets);
+    const requested = tierRequestedForRef.current;
+    const current = new Map(testSets.map((ts) => [ts.id, labelStateKey(ts)]));
+    // Forget sets no longer listed, so one deleted and re-created is rated again.
+    for (const id of Array.from(requested.keys())) {
+      if (!current.has(id)) requested.delete(id);
+    }
+    const changed = testSets.filter((ts) => requested.get(ts.id) !== current.get(ts.id));
+    changed.forEach((ts) => requested.set(ts.id, labelStateKey(ts)));
+    if (changed.length > 0) loadTiers(changed);
   }, [labelStateSignature, loadTiers]);
 
   /**
@@ -683,7 +716,7 @@ const TestSets = (): React.JSX.Element => {
               <ButtonDropdown
                 disabled={selectedItems.length === 0 || loading}
                 items={[
-                  { id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
+                  { id: 'annotate', text: 'Edit ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
                   { id: 'browse', text: 'Browse documents', disabled: selectedItems.length !== 1 },
                   {
                     // Exactly COMPLETED here, deliberately not `!isInFlux`: this

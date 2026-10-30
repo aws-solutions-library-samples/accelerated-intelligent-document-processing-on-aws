@@ -1367,6 +1367,9 @@ type AnnotationQueueItem @aws_cognito_user_pools @aws_iam {
   reviewStatus: String
   reviewed: Boolean!
   # False when the document is assigned to someone other than the caller.
+  # Saved, unreviewed section drafts (saveTestSetDocumentSectionDraft), which the
+  # editor opens with; Process Changes applies them.
+  draftSections: [TestSetSectionDraft!]
   available: Boolean!
 }
 
@@ -1416,6 +1419,18 @@ type TestSetSectionSaveResult @aws_cognito_user_pools {
   sectionId: String!
   # True once every section of the document is reviewed; its assignment then ends.
   reviewed: Boolean!
+}
+
+# One section's draft of a test-set document (saveTestSetDocumentSectionDraft): saved
+# edits that are not reviewed and start nothing, until Process Changes applies them.
+type TestSetSectionDraft @aws_cognito_user_pools {
+  sectionId: String!
+  # Pass back as baseRevision on the next save; a stale one fails STALE_DRAFT.
+  revision: Int!
+  # Where the draft is (s3://<TestSetBucket>/<set>/drafts/...), read like a section result.
+  draftUri: String!
+  updatedAt: AWSDateTime!
+  updatedBy: String
 }
 
 # The result of skipping a test-set document (skipTestSetDocument).
@@ -2263,6 +2278,11 @@ type Mutation {
   # that has no review copy, e.g. authored ground truth. Annotators may save only
   # documents assigned to them; the label is stamped reviewed-human server-side.
   saveTestSetDocumentSection(testSetId: String!, objectKey: String!, sectionId: String!, data: AWSJSON): TestSetSectionSaveResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+  # Save one section's edits as a draft that is not reviewed and starts nothing. Process
+  # Changes applies drafts through completeSectionReview or saveTestSetDocumentSection.
+  # Annotators may save only documents assigned to them; an Author only authored ground truth.
+  saveTestSetDocumentSectionDraft(testSetId: String!, objectKey: String!, sectionId: String!, data: AWSJSON!, baseRevision: Int): TestSetSectionDraft
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   # Hand a test-set document back to its queue: the assignment ends and the document
   # is unassigned again, not completed. Annotators may skip only documents assigned

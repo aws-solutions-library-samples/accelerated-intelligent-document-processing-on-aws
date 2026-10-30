@@ -16,6 +16,7 @@ import re
 from typing import List
 
 import boto3
+from idp_common.api_adapter import ReportedServerError
 from idp_common.delete_documents import delete_single_document
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -198,8 +199,11 @@ def handler(event, context):
         # deletes and reads to a user as "nothing happened" — after which the document
         # is gone from the list anyway. The per-document detail above says which steps
         # did complete.
+        # `ReportedServerError`, so the dispatcher passes this message through: it
+        # is written for the caller, with ARNs redacted, and an unexpected
+        # exception's text is replaced by a generic message.
         if failures:
-            raise RuntimeError(
+            raise ReportedServerError(
                 f"{len(failures)} of {len(object_keys)} document(s) could not be "
                 f"completely deleted ({deleted_count} completed) — "
                 + " | ".join(failures)

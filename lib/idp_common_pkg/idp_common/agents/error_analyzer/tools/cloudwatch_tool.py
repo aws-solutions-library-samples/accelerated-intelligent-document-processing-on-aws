@@ -33,6 +33,32 @@ from .xray_tool import extract_lambda_request_ids
 
 logger = logging.getLogger(__name__)
 
+#: Upper bounds the tool descriptions advertise. A configured default above one of
+#: them is clamped to it: the configuration model accepts any positive value, and a
+#: saved profile carrying a larger one must still load.
+MAX_HOURS_BACK = 168
+MAX_LOG_GROUPS = 50
+MAX_LOG_EVENTS = 50
+
+#: The processing span searched when the tracking record does not bound the run
+#: on both sides: the last half hour while it runs, or the half hour before completion.
+_DEFAULT_PROCESSING_SPAN = timedelta(minutes=30)
+
+
+def _resolve_max_log_events(requested: Optional[int], configured: int) -> int:
+    """Return the per-group event count a search should use.
+
+    An omitted count (``None``) resolves to the configured
+    ``parameters.max_log_events``, clamped to the tools' advertised maximum. So
+    does a count below 1: CloudWatch Logs cannot be sent one, because the
+    ``FilterLogEvents`` ``limit`` has a minimum of 1, and a rejected request reads
+    as "no events found". The configuration model holds the configured value above
+    0. A count of 1 or more is used as given.
+    """
+    if requested is not None and requested >= 1:
+        return requested
+    return min(configured, MAX_LOG_EVENTS)
+
 
 def _get_params() -> Dict[str, Any]:
     """
@@ -40,11 +66,15 @@ def _get_params() -> Dict[str, Any]:
 
     Returns a dict with all ``ErrorAnalyzerParameters`` fields so callers
     can use simple dict lookups without catching AttributeError everywhere.
+    ``lookback_hours`` is the one entry read from the agent's own section
+    rather than from ``parameters``.
     """
     try:
         config = get_config(as_model=True)
-        p = config.agents.error_analyzer.parameters
+        error_analyzer = config.agents.error_analyzer
+        p = error_analyzer.parameters
         return {
+            "lookback_hours": error_analyzer.lookback_hours,
             "max_log_events": p.max_log_events,
             "max_log_groups": p.max_log_groups,
             "max_log_message_length": p.max_log_message_length,
@@ -55,7 +85,8 @@ def _get_params() -> Dict[str, Any]:
             "Could not load error analyzer parameters, using defaults: %s", exc
         )
         return {
-            "max_log_events": 5,
+            "lookback_hours": 24,
+            "max_log_events": 10,
             "max_log_groups": 20,
             "max_log_message_length": 400,
             "settings_cache_ttl_seconds": 300,
@@ -71,9 +102,9 @@ def _get_params() -> Dict[str, Any]:
 def search_cloudwatch_logs(
     document_id: str = "",
     filter_pattern: str = "ERROR",
-    hours_back: int = 24,
-    max_log_events: int = 10,
-    max_log_groups: int = 20,
+    hours_back: Optional[int] = None,
+    max_log_events: Optional[int] = None,
+    max_log_groups: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Search CloudWatch logs for errors and failures in the IDP system.
@@ -90,18 +121,30 @@ def search_cloudwatch_logs(
                     search for that specific document using processing timestamps and Lambda
                     request IDs. When omitted, searches across all recent system logs.
         filter_pattern: Error pattern to search for - "ERROR", "Exception", "Failed", "TIMEOUT" (default: "ERROR")
-        hours_back: Hours to look back from now (default: 24, max: 168). Only used for system-wide
-                   searches when document_id is not provided.
-        max_log_events: Maximum error events to return per log group (default: 10, max: 50)
-        max_log_groups: Maximum log groups to search (default: 20, max: 50)
+        hours_back: Hours to look back from now (default: the configured lookback_hours,
+                   24 unless changed; max: 168). Only used for system-wide searches when
+                   document_id is not provided. Omit it unless the user asked for a window.
+        max_log_events: Maximum error events to return per log group (default: the
+                   configured max_log_events, 10 unless changed; max: 50)
+        max_log_groups: Maximum log groups to search (default: the configured
+                   max_log_groups, 20 unless changed; max: 50)
 
     Returns:
         Dict containing error events, search metadata, and processing context
     """
     try:
         params = _get_params()
-        effective_max_log_groups = max_log_groups or params["max_log_groups"]
-        effective_max_log_events = max_log_events or params["max_log_events"]
+        effective_hours_back = (
+            min(params["lookback_hours"], MAX_HOURS_BACK)
+            if hours_back is None
+            else hours_back
+        )
+        effective_max_log_groups = max_log_groups or min(
+            params["max_log_groups"], MAX_LOG_GROUPS
+        )
+        effective_max_log_events = _resolve_max_log_events(
+            max_log_events, params["max_log_events"]
+        )
         msg_max_len = params["max_log_message_length"]
         ttl = params["settings_cache_ttl_seconds"]
 
@@ -117,7 +160,7 @@ def search_cloudwatch_logs(
         else:
             return _search_stack_logs(
                 filter_pattern,
-                hours_back,
+                effective_hours_back,
                 effective_max_log_events,
                 effective_max_log_groups,
                 msg_max_len,
@@ -132,8 +175,8 @@ def search_cloudwatch_logs(
 @tool
 def search_performance_issues(
     issue_type: str = "performance",
-    hours_back: int = 24,
-    max_log_events: int = 10,
+    hours_back: Optional[int] = None,
+    max_log_events: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Search CloudWatch logs for system performance and infrastructure issues.
@@ -151,14 +194,24 @@ def search_performance_issues(
                    "throttling" - Rate limiting and throttling
                    "timeout" - Timeout-related issues
                    "capacity" - Capacity and concurrency limits
-        hours_back: Hours to look back from now (default: 24, max: 168)
-        max_log_events: Maximum events to return per log group (default: 10, max: 50)
+        hours_back: Hours to look back from now (default: the configured lookback_hours,
+                   24 unless changed; max: 168). Omit it unless the user asked for a window.
+        max_log_events: Maximum events to return per log group (default: the configured
+                   max_log_events, 10 unless changed; max: 50)
 
     Returns:
         Dict containing performance events, search metadata, and infrastructure context
     """
     try:
         params = _get_params()
+        effective_hours_back = (
+            min(params["lookback_hours"], MAX_HOURS_BACK)
+            if hours_back is None
+            else hours_back
+        )
+        effective_max_log_events = _resolve_max_log_events(
+            max_log_events, params["max_log_events"]
+        )
         msg_max_len = params["max_log_message_length"]
         ttl = params["settings_cache_ttl_seconds"]
 
@@ -187,8 +240,8 @@ def search_performance_issues(
             search_result = search_log_group(
                 log_group_name=log_group["name"],
                 filter_pattern=combined_pattern,
-                hours_back=hours_back,
-                max_events=max_log_events,
+                hours_back=effective_hours_back,
+                max_events=effective_max_log_events,
                 log_message_max_length=msg_max_len,
             )
 
@@ -447,12 +500,19 @@ def _get_processing_time_window(document_record: Dict[str, Any]) -> Dict[str, An
         return {"start_time": end_time - buffer, "end_time": end_time + buffer}
     elif document_status == "IN_PROGRESS" or not end_time:
         now = datetime.now()
-        return {"start_time": now - timedelta(minutes=30), "end_time": now}
-    elif start_time and end_time:
-        buffer = timedelta(seconds=30)
-        return {"start_time": start_time - buffer, "end_time": end_time + buffer}
+        return {"start_time": now - _DEFAULT_PROCESSING_SPAN, "end_time": now}
 
-    return {"start_time": start_time, "end_time": end_time}
+    buffer = timedelta(seconds=30)
+    if start_time:
+        return {"start_time": start_time - buffer, "end_time": end_time + buffer}
+    # Finished, with a completion time but no recorded start. A window with no
+    # start is not a window: search_log_group would discard the completion time
+    # too and search the hours before now instead. Search the same span the
+    # in-progress branch assumes, ending at completion.
+    return {
+        "start_time": end_time - _DEFAULT_PROCESSING_SPAN,
+        "end_time": end_time + buffer,
+    }
 
 
 def _prioritize_request_ids(

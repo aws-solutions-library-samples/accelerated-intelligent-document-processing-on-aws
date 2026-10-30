@@ -231,7 +231,8 @@ def confidence_per_row_tokens(
 ) -> float:
     """Estimated confidence OUTPUT tokens for one list row.
 
-    ``num_columns`` is the row's scalar column count; ``None``/non-positive falls
+    ``num_columns`` is the row's confidence-leaf count (its scalar columns plus the
+    scalars inside any nested group or list); ``None``/non-positive falls
     back to :data:`_ASSUMED_LIST_COLUMNS`. Bounding-box geometry modes multiply
     the per-cell cost because each leaf also emits coordinates.
     """
@@ -242,10 +243,31 @@ def confidence_per_row_tokens(
     return per_row
 
 
+def confidence_leaf_count(node: Any) -> int:
+    """Confidence leaves a correct answer emits for ``node``, counted at every depth.
+
+    One leaf per scalar (a null still emits one), recursing through dicts and
+    lists, so a list row carrying a nested group or its own list is counted by
+    what it actually emits rather than by its top-level keys. A list whose items
+    are scalars counts one leaf per item. This is the count both
+    :func:`confidence_output_budget` and the batch sizer use, so the size a call
+    is planned at and the budget it then requests cannot disagree.
+    """
+    if isinstance(node, dict):
+        return sum(confidence_leaf_count(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(
+            confidence_leaf_count(item) if isinstance(item, (dict, list)) else 1
+            for item in node
+        )
+    return 1
+
+
 def confidence_rows_for_per_row_tokens(
     output_cap: int | None,
     per_row_tokens: float,
     ceiling: int | None = None,
+    fixed_tokens: float | None = None,
 ) -> int:
     """Rows that fit one confidence call, given a per-row output-token estimate.
 
@@ -254,6 +276,17 @@ def confidence_rows_for_per_row_tokens(
     :data:`_ABS_MAX_LIST_BATCH`; a caller with a user-configured ceiling passes the
     smaller of the two. An unknown ``output_cap`` uses
     :data:`_FALLBACK_CONFIDENCE_OUTPUT_CAP` rather than trusting a configured value.
+
+    ``fixed_tokens`` is the estimated output of everything ELSE the call carries —
+    the scalar and group leaves and every other list, which ride every batch
+    unsliced. When given, the rows must also fit in what the cap leaves after it
+    and :data:`_CONFIDENCE_OUTPUT_OVERHEAD_TOKENS`, so the whole call's estimate
+    stays under the cap. The safety fraction alone does not guarantee that: a
+    section with many scalars, or a second list, can carry more fixed output than
+    the half of the cap the fraction leaves free. When the fixed part is small the
+    fraction is the tighter bound and the result is unchanged; when it is omitted
+    (no rows exist yet, as in :func:`compute_sizing_plan`) only the fraction
+    applies.
     """
     cap = (
         int(output_cap)
@@ -271,7 +304,13 @@ def confidence_rows_for_per_row_tokens(
         limit = _ABS_MAX_LIST_BATCH
     if per_row_tokens <= 0:
         return limit
-    derived = int(cap * _OUTPUT_SAFETY_FRACTION // per_row_tokens)
+    budget = cap * _OUTPUT_SAFETY_FRACTION
+    if fixed_tokens is not None:
+        budget = min(
+            budget,
+            cap - max(0.0, float(fixed_tokens)) - _CONFIDENCE_OUTPUT_OVERHEAD_TOKENS,
+        )
+    derived = int(max(0.0, budget) // per_row_tokens)
     return max(_MIN_LIST_BATCH, min(limit, derived))
 
 
@@ -298,8 +337,13 @@ def confidence_rows_per_call(
     geometry_mode: str | None,
     ceiling: int | None = None,
     model_id: str | None = None,
+    fixed_tokens: float | None = None,
 ) -> int:
     """Rows one confidence call can score without truncating.
+
+    ``num_columns`` is the number of confidence leaves one row emits (see
+    :func:`confidence_leaf_count`); ``fixed_tokens`` is passed through to
+    :func:`confidence_rows_for_per_row_tokens`.
 
     There is no single correct constant here — the answer is a function of the
     model's output cap, the geometry mode and the column count. On a 10,000-cap
@@ -310,7 +354,10 @@ def confidence_rows_per_call(
     itself gives 12, 12 and 5 for those three shapes.
     """
     rows = confidence_rows_for_per_row_tokens(
-        output_cap, confidence_per_row_tokens(num_columns, geometry_mode), ceiling
+        output_cap,
+        confidence_per_row_tokens(num_columns, geometry_mode),
+        ceiling,
+        fixed_tokens=fixed_tokens,
     )
     family = model_list_batch_ceiling(model_id)
     if family is not None:
@@ -339,23 +386,7 @@ def confidence_output_budget(
     leaf per item.
     """
     per_cell = confidence_per_row_tokens(1, geometry_mode)
-    leaves = 0.0
-
-    def _walk(node: Any) -> None:
-        nonlocal leaves
-        if isinstance(node, dict):
-            for v in node.values():
-                _walk(v)
-        elif isinstance(node, list):
-            for item in node:
-                if isinstance(item, (dict, list)):
-                    _walk(item)
-                else:
-                    leaves += 1
-        else:
-            leaves += 1
-
-    _walk(extraction_results)
+    leaves = confidence_leaf_count(extraction_results)
     budget = int(leaves * per_cell) + _CONFIDENCE_OUTPUT_OVERHEAD_TOKENS
     budget = max(_MIN_CONFIDENCE_OUTPUT_BUDGET, budget)
     cap = int(output_cap) if (output_cap and output_cap > 0) else None
@@ -375,7 +406,7 @@ def compute_sizing_plan(
     # back-compat; callers should pass ``extraction.confidence.model``, because the
     # list-batch figure is meaningless when derived from the extraction model.
     confidence_model_id: str | None = None,
-    # Scalar column count of the list being scored, when known. ``compute_sizing_plan``
+    # Confidence-leaf width of the list's rows, when known. ``compute_sizing_plan``
     # runs before extraction, so this is normally None and a conservative width is
     # assumed; the authoritative value is recomputed from real rows at assessment time.
     list_columns: int | None = None,

@@ -12,10 +12,10 @@ This module provides document classification capabilities for the IDP Accelerato
   - SageMaker UDOP models
 - **Optional regex-based classification for enhanced performance**
   - Document name regex matching when all pages should be classified as the same class
-  - Page content regex matching for multi-modal page-level classification
+  - Page content regex matching for the `combined` strategy at page granularity
 - **Valid-class enforcement with re-prompt/retry** on every call that assigns a
-  class — one stage at page *and* packet granularity, and two-stage section
-  classification — rejects out-of-vocabulary predictions and re-prompts the model
+  class — the combined call at page *and* packet granularity, and
+  split-then-classify's section classification — rejects out-of-vocabulary predictions and re-prompts the model
   with the allowed classes
 - Direct integration with the Document data model
 - Support for both text and image content
@@ -24,7 +24,7 @@ This module provides document classification capabilities for the IDP Accelerato
 - Grouping of pages into sections by classification
 - Comprehensive error handling and retry mechanisms
 - **DynamoDB caching for resilient page-level classification**
-- **Sequence segmentation using BIO-like approach for document boundary detection**
+- **Sequence segmentation using BIO-like approach for section boundary detection**
 
 ## Configuration layout and how the service reads it
 
@@ -33,37 +33,37 @@ call that uses it:
 
 | Block | Used when | Holds |
 |---|---|---|
-| `strategy` | always | `single_pass` \| `two_stage` |
+| `strategy` | always | `combined` \| `split_then_classify` |
 | `fallback_class` | always | the one class assigned when no class can be decided; extraction reads it too |
-| `one_stage` | `single_pass` | `granularity`, `page`, `packet`, `llm` (class-assigning model settings) |
-| `two_stage.segmentation` | `two_stage` | `method`, `llm` (`granularity`, `page`, `packet`, `boundary_hints`, model settings), `boundary_model` (declared, not implemented) |
-| `two_stage.section_classification` | `two_stage` | `method`, `pages`, `k`, `llm` (prompts + class-assigning model settings), `embeddings`, `decision_model`, `low_confidence` (declared, not implemented) |
-| `file_shape` | always | `sectionSplitting`, `maxPagesForClassification` |
+| `combined` | `combined` | `granularity`, `page`, `packet`, `llm` (class-assigning model settings) |
+| `split_then_classify.splitting` | `split_then_classify` | `method`, `llm` (`granularity`, `page`, `packet`, `boundary_hints`, model settings), `boundary_model` (declared, not implemented) |
+| `split_then_classify.section_classification` | `split_then_classify` | `method`, `pages`, `k`, `llm` (prompts + class-assigning model settings), `embeddings`, `decision_model`, `low_confidence` (declared, not implemented) |
+| `document_shape` | always | `sectionSplitting`, `maxPagesForClassification` |
 
 A model-settings block (`ClassificationModelSettings`) is the model, its
 parameters, `modality` and `image`. The class-assigning variant
 (`ClassificationClassAssigningSettings`) adds `validation` and `confidence`;
-segmentation uses the plain one because it returns no class.
+the splitting call uses the plain one because it returns no class.
 `ClassificationConfig.page_input_call()` and `class_assigning_llm()` return the
 blocks in force under the configured strategy.
 
 The service resolves every read through a handful of methods, so the
 strategy-dependent choice of block is made in one place:
 
-- `_reader_stage()` — the stage whose call reads pages: segmentation under two
-  stage, classification otherwise.
+- `_reader_stage()` — the stage whose call reads pages: the splitting call under
+  `split_then_classify`, the combined call otherwise.
 - `_call(stage)` — that stage's model-settings block. Model, parameters, modality,
   image size, validation and confidence are all read from it, so each call uses
   its own.
 - `_page_input()` — the block holding `granularity`, `page` and `packet` for the
   page-reading call. `self.granularity` is resolved from it.
-- `_file_shape()` — `sectionSplitting` and the page limit.
+- `_document_shape()` — `sectionSplitting` and the page limit.
 
-`_stage_prompt(stage, field)` resolves prompts. One stage and segmentation read
-`page` or `packet` by their own granularity; section classification is not
+`_stage_prompt(stage, field)` resolves prompts. The combined call and the splitting
+call read `page` or `packet` by their own granularity; section classification is not
 granularity-dependent, because it is always one call about one segment's pages.
 An empty prompt falls back to the shipped default for that block (read from
-`system_defaults` by `_shipped_classification_defaults`), except the one-stage
+`system_defaults` by `_shipped_classification_defaults`), except the combined
 page prompt, whose absence is refused with `No task_prompt found` as it always
 was.
 
@@ -74,7 +74,7 @@ its wrapping element when that element held nothing else, or appends a wrapped
 placeholder when the prompt has none. Both directions are logged with the
 call's path.
 
-The page limit (`file_shape.maxPagesForClassification`) is applied only when
+The page limit (`document_shape.maxPagesForClassification`) is applied only when
 `sectionSplitting` is `disabled`; with boundary detection on it is set to `ALL`
 at construction, with a warning.
 
@@ -87,17 +87,17 @@ directly from flat keys is converted too. Four rows of the conversion are what
 keep behaviour exactly as it was:
 
 - **Model parameters, modality and image settings are copied into every call.**
-  The two-stage calls had no parameters of their own and always inherited the
-  flat ones.
+  The split-then-classify calls had no parameters of their own in 0.8 and always
+  inherited the flat ones.
 - **An empty stage model means inherit**, so it becomes the flat model; a stage
   model that was set is kept.
-- **The packet window is copied into segmentation too**, which read the shared
+- **The packet window is copied into the splitting call too**, which read the shared
   window.
-- **For a two-stage configuration the inferred modality is written onto the stage
-  blocks** whenever the single-pass prompt it was inferred from is present,
+- **For a split-then-classify configuration the inferred modality is written onto
+  the stage blocks** whenever the flat prompt it was inferred from is present,
   because each call now infers from its own prompt.
 
-A page limit combined with boundary detection is converted to
+A page limit together with boundary detection is converted to
 `sectionSplitting: disabled`, with a warning. In a hybrid of flat and nested keys
 the flat key wins, because a hybrid only arises when a flat key is applied on top
 of a nested configuration. The trigger is the presence of a flat key
@@ -118,7 +118,7 @@ overlapping page**: it is the one that saw the pages before them, which is what 
 boundary decision mostly rests on. A single window is used directly rather than
 folded, so the common case is byte-identical to the unwindowed path.
 
-A one-stage packet call validates every segment's class like the page path does:
+A combined packet call validates every segment's class like the page path does:
 a reply naming an invalid class re-prompts the window up to
 `validation.maxValidationRetries` times, and a segment still invalid afterwards is
 given `fallback_class`.
@@ -144,41 +144,41 @@ is the minimum across its pages, so building per-page sections from segments
 alone would report every page of a run as being as uncertain as its worst page —
 in the one strategy whose entire purpose is per-page granularity.
 
-### Two-stage
+### Split-then-classify
 
-`strategy: two_stage` runs `_segment_document` (segmentation, metered as
-`Segmentation`) then `_label_segments` (section classification, metered as
-`SectionClassification`). One stage is metered as `Classification`. Each stage
+`strategy: split_then_classify` runs `_detect_boundaries` (the splitting call, metered
+as `Splitting`) then `_classify_segments` (section classification, metered as
+`SectionClassification`). The combined call is metered as `Classification`. Each stage
 reads its own model settings through `_call(stage)`. A forced class
 (document-name regex match) skips section classification entirely. Under
-`sectionSplitting: disabled` or `page`, `_segments_from_file_shape` builds the
-segments directly and segmentation is not called. A segment whose section
+`sectionSplitting: disabled` or `page`, `_segments_from_document_shape` builds the
+segments directly and the splitting call is not made. A segment whose section
 classification call fails keeps `doc_class = None` and is reported — its
 boundaries are still good, and an invented class would propagate into extraction
 as though it had been decided.
 
 #### Which placeholders a stage is allowed to render
 
-The prefix saving is the whole justification for two-stage, so **segmentation
-renders `{CLASS_NAMES_AND_DESCRIPTIONS}`, `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
+The prefix saving is the whole justification for split-then-classify, so **the
+splitting call renders `{CLASS_NAMES_AND_DESCRIPTIONS}`, `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`
 and `{FEW_SHOT_EXAMPLES}` as empty**, whichever granularity it runs at and
 whatever `contextPagesCount` is set to. That is decided by the stage, in
 `_stage_withholds_class_vocabulary` and `_build_classification_substitutions`,
 rather than by the content builder that happens to render the prompt — the page
 builder, the context-page builder and the packet builder are each shared between
-single-pass, segmentation and section classification, so a per-builder answer is
-three answers. `boundary_hints: class_names` stays the one supported way to put
-class **names** into a segmentation prompt.
+the combined call, the splitting call and section classification, so a per-builder
+answer is three answers. `boundary_hints: class_names` stays the one supported way
+to put class **names** into a splitting prompt.
 
 Symmetrically, **`{BOUNDARY_HINTS}` renders as empty for every stage other than
-segmentation.** The setting lives under `two_stage.segmentation.llm` and so is
-inert under `strategy: single_pass`, but that subtree is readable either way;
+the splitting call.** The setting lives under `split_then_classify.splitting.llm` and
+so is inert under `strategy: combined`, but that subtree is readable either way;
 the block it produces ends "do NOT report a type, only where each document
-starts and ends", which is the one thing a single-pass or section-classification
+starts and ends", which is the one thing a combined or section-classification
 call exists to do.
 
-None of this is observable with the shipped prompts — the shipped segmentation
-prompts reference neither vocabulary placeholder, and the shipped one-stage
+None of this is observable with the shipped prompts — the shipped splitting
+prompts reference neither vocabulary placeholder, and the shipped combined
 prompts do not reference `{BOUNDARY_HINTS}` — so it matters for an edited
 prompt, which every one of these is.
 
@@ -205,20 +205,20 @@ and substitutes a descriptive marker for `{DOCUMENT_TEXT}` and
 
 ## Sequence Segmentation Approach
 
-Page granularity implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
+Page granularity implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate splitting of packets into sections, where a single document may contain several distinct sections.
 
 ### How It Works
 
 Each page receives two pieces of information:
-1. **Document Type**: The classification label (e.g., "invoice", "letter", "financial_statement")
-2. **Document Boundary**: A boundary indicator that signals document transitions:
-   - `"start"`: Indicates the beginning of a new document (similar to "Begin" in BIO)
-   - `"continue"`: Indicates continuation of the current document (similar to "Inside" in BIO)
+1. **Class**: The classification label (e.g., "invoice", "letter", "financial_statement")
+2. **Section Boundary** (`document_boundary`): A boundary indicator that signals section transitions:
+   - `"start"`: Indicates the beginning of a new section (similar to "Begin" in BIO)
+   - `"continue"`: Indicates continuation of the current section (similar to "Inside" in BIO)
 
 ### Benefits
 
-- **Multi-Document Packet Support**: Accurately segments packets containing multiple documents
-- **Type-Aware Boundaries**: Detects when a new document of the same type begins
+- **Packet Support**: Accurately splits packets into their sections
+- **Type-Aware Boundaries**: Detects when a new section of the same class begins
 - **Automatic Section Creation**: Pages are grouped into sections based on both type and boundaries
 - **Improved Accuracy**: Context-aware classification that considers document flow
 
@@ -235,7 +235,7 @@ Page 5: type="invoice", boundary="start"      → Section 3 (Invoice #2)
 Page 6: type="invoice", boundary="continue"   → Section 3 (Invoice #2)
 ```
 
-The system automatically creates three sections, properly separating the two invoices despite them having the same document type.
+The system automatically creates three sections, properly separating the two invoices despite them having the same class.
 
 ### The boundary rules (`<boundary-detection-rules>` in `task_prompt`)
 
@@ -268,9 +268,9 @@ Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
 
 ### A class description can override the boundary rules (`PRECEDENCE`)
 
-`<boundary-detection-rules>` in the default one-stage page prompt (`classification.one_stage.page.task_prompt`) ends with a `PRECEDENCE:` clause that promotes a document type's **own** boundary instructions above the generic rules. `_format_classes_list()` puts every class's `description` into `{CLASS_NAMES_AND_DESCRIPTIONS}`, so that clause makes the description the supported place to state a per-class rule — no code path or config key is involved.
+`<boundary-detection-rules>` in the default combined page prompt (`classification.combined.page.task_prompt`) ends with a `PRECEDENCE:` clause that promotes a document type's **own** boundary instructions above the generic rules. `_format_classes_list()` puts every class's `description` into `{CLASS_NAMES_AND_DESCRIPTIONS}`, so that clause makes the description the supported place to state a per-class rule — no code path or config key is involved.
 
-This is the fix for the one shape the generic rules get wrong ([#750](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/750)): a long table that reprints its title and column headers on every page and paginates with a bare number. Rule 3 (opening header block ⇒ `start`) outranks rule 4 (continuation evidence ⇒ `continue`), the running header satisfies rule 3, and a lone `7` matches none of rule 1's pagination patterns — so continuation pages are read as new documents. Measured on `us.amazon.nova-2-lite-v1:0` at `temperature: 0`, a 16-page fund table split into 2–5 sections in 10 of 10 runs; with a `BOUNDARY:` sentence in the class description, 1 section in 10 of 10.
+This is the fix for the one shape the generic rules get wrong ([#750](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/750)): a long table that reprints its title and column headers on every page and paginates with a bare number. Rule 3 (opening header block ⇒ `start`) outranks rule 4 (continuation evidence ⇒ `continue`), the running header satisfies rule 3, and a lone `7` matches none of rule 1's pagination patterns — so continuation pages are read as new sections. Measured on `us.amazon.nova-2-lite-v1:0` at `temperature: 0`, a 16-page fund table split into 2–5 sections in 10 of 10 runs; with a `BOUNDARY:` sentence in the class description, 1 section in 10 of 10.
 
 Working example: `scripts/sdlc/config/nuveen.yaml` (the CI Step 8 config), guarded by `scripts/tests/test_nuveen_boundary_precedence.py` — which also asserts the `PRECEDENCE:` clause still exists, since removing it would silently disable every class-level instruction that depends on it. Name `"start"` / `"continue"` explicitly in the description; those are the values `document_boundary` takes.
 
@@ -305,7 +305,7 @@ where something genuinely asserts the class — a document-name regex match
 a human correction in the Web UI — and `0.0` only on an errored page.
 
 Three paths deliberately produce no score: the SageMaker/UDOP backend (the
-endpoint returns none), pages beyond `file_shape.maxPagesForClassification` (their class is
+endpoint returns none), pages beyond `document_shape.maxPagesForClassification` (their class is
 extrapolated from a sample, not predicted), and a page whose invalid class was
 replaced by `fallback_class` (the stored class is no longer the model's, so
 neither its score nor its reasoning describes it — both are dropped, including
@@ -337,7 +337,7 @@ fewer signals than a miss.
 `topk` (**default**), `verbalized`, or `off`. `class_confidence.py` owns both halves:
 
 - **Prompt assembly.** The block lives on each class-assigning call
-  (`one_stage.llm.confidence`, `two_stage.section_classification.llm.confidence`).
+  (`combined.llm.confidence`, `split_then_classify.section_classification.llm.confidence`).
   `append_class_confidence_block` splices its `task_prompt_topk` /
   `task_prompt_verbalized` into
   the task prompt **before** the first `<<CACHEPOINT>>` / `<document-ocr-data>` /
@@ -345,17 +345,17 @@ fewer signals than a miss.
   prompt-cache prefix — the same rule, for the same reason, as
   `extraction/prompt_assembly.py::_append_bbox_block`, and it matters more here
   because classification runs per page. The splice is idempotent (a prompt that
-  already carries a `<class-confidence>` block is left alone). A one-stage packet
+  already carries a `<class-confidence>` block is left alone). A combined packet
   call takes the per-segment `task_prompt_topk_packet` /
   `task_prompt_verbalized_packet` instead, because its response is a segment list;
   section classification always takes the page-shaped block, being one call about
-  one segment. Segmentation is never given a block: it decides no class.
+  one segment. The splitting call is never given a block: it decides no class.
   Consequently the section-classification call carries **no** `_packet` blocks:
   `base-classification.yaml` ships none there and `migrations.v08_to_v09` does not
   copy them into it
   (`SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS`), so the keys an operator can
-  see on that call are the ones it can actually read. The one-stage call keeps
-  both, because one stage can run at packet granularity.
+  see on that call are the ones it can actually read. The combined call keeps
+  both, because it can run at packet granularity.
 - **Resolution.** `resolve_class_and_confidence` prefers an explicit
   `confidence`, else `confidence_from_candidates`, which returns the probability
   of the class being **stored** — not the top of the list. Those differ when the
@@ -394,9 +394,9 @@ report's `doc_split_metrics.page_details` with `predicted_confidence`, next to t
 Near-zero separation means the model is equally confident right and wrong — do not
 route work on it.
 
-### Section splitting strategies
+### Section splitting values
 
-`classification.file_shape.sectionSplitting` controls how classified pages become sections:
+`classification.document_shape.sectionSplitting` controls how classified pages become sections:
 
 | Value | Behavior |
 |-------|----------|
@@ -417,20 +417,20 @@ unscored — so one disagreeing page leaves the whole section without a
 confidence. A page that produced no verdict of its own inherits its segment's
 class *and* confidence, so silence does not count as disagreement.
 
-`file_shape.maxPagesForClassification` applies only under `disabled`. There,
-`_limit_pages_for_classification` classifies the first N pages and the whole file
-takes the class that vote returns; a file at or under the limit is classified in
+`document_shape.maxPagesForClassification` applies only under `disabled`. There,
+`_limit_pages_for_classification` classifies the first N pages and the whole document
+takes the class that vote returns; a document at or under the limit is classified in
 full. Under `llm_determined` or `page` the limit is ignored with a warning at
-construction, because applying it would collapse only files longer than N while
+construction, because applying it would collapse only documents longer than N while
 sectioning shorter ones normally.
 
-Under two stage, `disabled` and `page` also skip segmentation: the segments are
-known, so `_segments_from_file_shape` builds them and section classification runs
+Under split-then-classify, `disabled` and `page` also skip the splitting call: the
+segments are known, so `_segments_from_document_shape` builds them and section classification runs
 on each.
 
 ### Single-class configurations
 
-When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured strategy genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
+When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured `sectionSplitting` value genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
 
 | `sectionSplitting` | Single-class behavior | Backend call? |
 |--------------------|-----------------------|---------------|
@@ -439,16 +439,16 @@ When the configuration defines exactly **one** document class, the *class* decis
 | `llm_determined`, single-page document | One section | No — one page cannot be split |
 | `llm_determined`, multi-page document | Real boundary detection | **Yes** |
 
-`llm_determined` asks for LLM boundary detection, so it performs it. A knob that silently does nothing is a bug, not an optimization — and the old behaviour was actively harmful for the case it mattered most: a packet holding several separate documents of the single class became one section, and extraction then returned only the first record.
+`llm_determined` asks for LLM boundary detection, so it performs it. A knob that silently does nothing is a bug, not an optimization — and the old behaviour was actively harmful for the case it mattered most: a packet holding several separate statements of the single class became one section, and extraction then returned only the first record.
 
-**Cost note.** `llm_determined` is the *default*, so a **multi-page** single-class deployment that never set `sectionSplitting` now performs classification inference where it previously performed none. Single-page documents are unaffected (nothing to split, so the call is skipped), which covers the common "one document per file" deployment at zero cost.
+**Cost note.** `llm_determined` is the *default*, so a **multi-page** single-class deployment that never set `sectionSplitting` now performs classification inference where it previously performed none. Single-page documents are unaffected (nothing to split, so the call is skipped), which covers the common "one form per document" deployment at zero cost.
 
-If one input file is always exactly one document and you want to keep the zero-cost path on multi-page files, set it explicitly:
+If one input document is always exactly one section and you want to keep the zero-cost path on multi-page documents, set it explicitly:
 
 ```yaml
 classification:
-  file_shape:
-    sectionSplitting: disabled   # one file is always one document
+  document_shape:
+    sectionSplitting: disabled   # one document is always one section
 ```
 
 `page` remains available when you want one section per page without inference.
@@ -463,13 +463,16 @@ When you want all pages of a document to be classified the same way, document na
 
 ```yaml
 classes:
-  - name: Payslip
-    description: "Employee wage statement showing earnings and deductions"
-    document_name_regex: "(?i).*(payslip|paystub|salary|wage).*"
-    attributes:
-      - name: EmployeeName
-        description: "Name of the employee"
-        attributeType: simple
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Payslip
+    type: object
+    x-aws-idp-document-type: Payslip
+    description: Employee wage statement showing earnings and deductions
+    x-aws-idp-document-name-regex: "(?i).*(payslip|paystub|salary|wage).*"
+    properties:
+      EmployeeName:
+        type: string
+        description: Name of the employee
 ```
 
 **How it works:**
@@ -480,7 +483,7 @@ classes:
 
 #### …and `sectionSplitting` still applies
 
-A filename tells you **what** the packet holds; it never tells you **where** one record ends and the next begins. So the name match short-circuits the class decision only — section boundaries follow `sectionSplitting`, exactly as for [single-class configurations](#single-class-configurations) (GitHub issue [#705](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/705) — previously this path hard-coded one all-pages section and `sectionSplitting` was silently ignored, the same defect as [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) reached through a different trigger):
+A filename tells you **what** the packet holds; it never tells you **where** one section ends and the next begins. So the name match short-circuits the class decision only — section boundaries follow `sectionSplitting`, exactly as for [single-class configurations](#single-class-configurations) (GitHub issue [#705](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/705) — previously this path hard-coded one all-pages section and `sectionSplitting` was silently ignored, the same defect as [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) reached through a different trigger):
 
 | `sectionSplitting` | Name-matched behavior | Backend call? |
 |--------------------|-----------------------|---------------|
@@ -491,40 +494,56 @@ A filename tells you **what** the packet holds; it never tells you **where** one
 
 In the last row the model is invoked for the per-page `document_boundary` signal (or, at packet granularity, for the segment *ranges*) and its class output is discarded in favour of the regex match — so a packet of five payslips becomes five sections, all classified `Payslip`.
 
-**Cost note.** `llm_determined` is the *default*, so a name-matched **multi-page** document now performs classification inference where it previously performed none: for those documents the regex is no longer a "skip the LLM" shortcut. Single-page matches are unaffected and keep the zero-inference path. To keep multi-page files at zero cost when one file is always one document, set it explicitly:
+**Cost note.** `llm_determined` is the *default*, so a name-matched **multi-page** document now performs classification inference where it previously performed none: for those documents the regex is no longer a "skip the LLM" shortcut. Single-page matches are unaffected and keep the zero-inference path. To keep multi-page documents at zero cost when one document is always one section, set it explicitly:
 
 ```yaml
 classification:
-  file_shape:
-    sectionSplitting: disabled   # one file is always one document
+  document_shape:
+    sectionSplitting: disabled   # one document is always one section
 ```
 
 `page` also stays inference-free when you want one section per page.
 
 ### Page Content Regex Classification
 
-For multi-modal page-level classification, page content regex patterns can classify individual pages based on text content:
+Under the `combined` strategy at page granularity, page content regex patterns can classify individual pages based on text content:
 
 ```yaml
 classes:
-  - name: Invoice
-    description: "Business invoice document"
-    document_page_content_regex: "(?i)(invoice\\s+number|bill\\s+to|amount\\s+due)"
-    attributes:
-      - name: InvoiceNumber
-        description: "Invoice number"
-        attributeType: simple
-  - name: Payslip
-    description: "Employee wage statement"  
-    document_page_content_regex: "(?i)(gross\\s+pay|net\\s+pay|employee\\s+id)"
-    attributes:
-      - name: EmployeeName
-        description: "Employee name"
-        attributeType: simple
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Invoice
+    type: object
+    x-aws-idp-document-type: Invoice
+    description: Business invoice document
+    x-aws-idp-document-page-content-regex: "(?i)(invoice\\s+number|bill\\s+to|amount\\s+due)"
+    properties:
+      InvoiceNumber:
+        type: string
+        description: Invoice number
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: Payslip
+    type: object
+    x-aws-idp-document-type: Payslip
+    description: Employee wage statement
+    x-aws-idp-document-page-content-regex: "(?i)(gross\\s+pay|net\\s+pay|employee\\s+id)"
+    properties:
+      EmployeeName:
+        type: string
+        description: Employee name
 ```
 
+⚠️ **The class name and both regexes must be written as the `x-aws-idp-*` schema
+extension keys.** `ClassificationService` builds its document-type list from
+`x-aws-idp-document-type`, `x-aws-idp-document-name-regex` and
+`x-aws-idp-document-page-content-regex` only. `classes` is free-form, so a class
+written in the pre-JSON-Schema style — a bare `name:` plus
+`document_page_content_regex:` and an `attributes:` list — is stored and merged
+unchanged, with no validation error and no warning, and yields a document type
+whose name is the empty string and whose regexes are `None`. Nothing matches, and
+the only signal is that classification silently never takes the regex path.
+
 **How it works:**
-- Only applies to multi-modal page-level classification method
+- Only applies to the `combined` strategy at page granularity (`classification.combined.granularity: page`)
 - Each page's text content is checked against all class regex patterns
 - First matching pattern wins and classifies the page instantly
 - Falls back to LLM classification when no patterns match
@@ -536,15 +555,18 @@ Both regex types are optional and can be used together:
 
 ```yaml
 classes:
-  - name: W2-Form
-    description: "W2 tax form with wage and tax information"
+  - $schema: https://json-schema.org/draft/2020-12/schema
+    $id: W2-Form
+    type: object
+    x-aws-idp-document-type: W2-Form
+    description: W2 tax form with wage and tax information
     # Both regex types can be specified
-    document_name_regex: "(?i).*w-?2.*"  # For single-class scenarios
-    document_page_content_regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)"  # For page-level
-    attributes:
-      - name: EmployerEIN
-        description: "Employer identification number"
-        attributeType: simple
+    x-aws-idp-document-name-regex: "(?i).*w-?2.*"  # For single-class scenarios
+    x-aws-idp-document-page-content-regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)"  # For page-level
+    properties:
+      EmployerEIN:
+        type: string
+        description: Employer identification number
 ```
 
 ### Performance Benefits
@@ -650,7 +672,7 @@ change its answer.
 
 Implemented in `ClassificationService.classify_page_bedrock` (page granularity),
 `_classify_one_packet_window` (packet granularity) and
-`_invoke_with_class_validation` (two-stage section classification), with the
+`_invoke_with_class_validation` (split-then-classify section classification), with the
 helper `_build_validation_retry_content`. Metering is aggregated across all
 attempts. The settings are read from the class-assigning call of the configured
 strategy (`_class_validation_enforced`, `_class_validation_retries`).
@@ -658,7 +680,7 @@ strategy (`_class_validation_enforced`, `_class_validation_retries`).
 ```yaml
 classification:
   fallback_class: unclassified        # default: unclassified
-  one_stage:
+  combined:
     llm:
       validation:
         enforceValidClasses: true     # default: true
@@ -677,10 +699,10 @@ classification:
 
 > At **packet granularity** a reply naming an invalid class for any segment
 > re-prompts the whole window, and a segment still invalid after the retries gets
-> the fallback class. **Two-stage section classification** re-prompts its one
-> segment. A class outside the vocabulary is exactly as wrong whether a page or a
-> segment produced it. The fallback carries no confidence score, because it is not
-> a prediction.
+> the fallback class. **Section classification under split-then-classify**
+> re-prompts its one segment. A class outside the vocabulary is exactly as wrong
+> whether a page or a segment produced it. The fallback carries no confidence
+> score, because it is not a prediction.
 
 See `notebooks/misc/classification-valid-class-enforcement.ipynb` for a
 deterministic, mock-driven walkthrough of all three scenarios (retry-then-valid,
@@ -688,8 +710,8 @@ retries-exhausted-fallback, and enforcement-disabled).
 
 ## Reporting a Page That Could Not Be Classified
 
-`_record_unclassified_page_issues` runs once per document on the one-stage page
-granularity path, immediately after section splitting, and
+`_record_unclassified_page_issues` runs once per document on the combined
+page-granularity path, immediately after section splitting, and
 turns each page classification that carries an `error` or a `validation_error` into
 a `ProcessingIssue` on the section holding that page.
 
@@ -813,12 +835,16 @@ for section in document.sections:
 ### Using with SageMaker UDOP Models
 
 ```python
+import os
+
 from idp_common import classification, get_config
 from idp_common.models import Document
 
-# Load configuration and add SageMaker endpoint
+# The SageMaker backend reads its endpoint name from the SAGEMAKER_ENDPOINT_NAME
+# environment variable, not from the configuration, and raises ValueError at
+# construction when it is unset.
+os.environ["SAGEMAKER_ENDPOINT_NAME"] = "udop-classification-endpoint"
 config = get_config()
-config["sagemaker_endpoint_name"] = "udop-classification-endpoint"
 
 # Initialize classification service with SageMaker backend
 service = classification.ClassificationService(
@@ -885,25 +911,35 @@ api_response = result.to_dict()
 
 ## Configuration
 
-The classification service uses the following configuration structure:
+The classification service uses the following configuration structure. Each class
+is a JSON Schema whose `x-aws-idp-document-type` is the class name. The Bedrock
+model is set per call (here `classification.combined.llm.model`); there is no
+top-level model key. The SageMaker backend takes its endpoint name from the
+`SAGEMAKER_ENDPOINT_NAME` environment variable rather than from the configuration.
 
 ```json
 {
-  "model_id": "anthropic.claude-3-sonnet-20240229-v1:0", // Top-level model_id for Bedrock (optional)
-  "sagemaker_endpoint_name": "udop-classification-endpoint", // SageMaker endpoint name (optional)
   "classes": [
     {
-      "name": "invoice",
-      "description": "An invoice that specifies an amount of money to be paid."
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "invoice",
+      "x-aws-idp-document-type": "invoice",
+      "type": "object",
+      "description": "An invoice that specifies an amount of money to be paid.",
+      "properties": {}
     },
     {
-      "name": "financial_statement",
-      "description": "Documents that summarize financial performance, such as income statements, balance sheets, or cash flow statements."
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "financial_statement",
+      "x-aws-idp-document-type": "financial_statement",
+      "type": "object",
+      "description": "Documents that summarize financial performance, such as income statements, balance sheets, or cash flow statements.",
+      "properties": {}
     }
   ],
   "classification": {
-    "strategy": "single_pass",
-    "one_stage": {
+    "strategy": "combined",
+    "combined": {
       "granularity": "page",
       "page": {
         "system_prompt": "You are a document classification expert...",
@@ -915,8 +951,8 @@ The classification service uses the following configuration structure:
         "top_k": 5
       }
     },
-    "file_shape": {
-      "sectionSplitting": "llm_determined" // "llm_determined" (default) | "page" | "disabled" - see "Section splitting strategies"
+    "document_shape": {
+      "sectionSplitting": "llm_determined" // "llm_determined" (default) | "page" | "disabled" - see "Section splitting values"
     }
   }
 }
@@ -952,15 +988,14 @@ def handler(event, context):
 ```python
 from idp_common import classification, get_config
 from idp_common.models import Document, Status
-import os
 
 def handler(event, context):
     # Extract document from event
     document = Document.from_dict(event["OCRResult"]["document"])
     
-    # Configure SageMaker endpoint
-    config = get_config() or {}
-    config["sagemaker_endpoint_name"] = os.environ["SAGEMAKER_ENDPOINT_NAME"]
+    # The SageMaker backend reads the endpoint name from the
+    # SAGEMAKER_ENDPOINT_NAME environment variable set on the function.
+    config = get_config()
     
     # Initialize classification service with SageMaker backend
     service = classification.ClassificationService(
@@ -1302,7 +1337,7 @@ The service automatically:
 2. Includes them in classification prompts using the `{FEW_SHOT_EXAMPLES}` placeholder
 3. Formats examples appropriately for both classification and extraction tasks
 
-The shipped default `classification.one_stage.page.task_prompt` in
+The shipped default `classification.combined.page.task_prompt` in
 `config/system_defaults/base-classification.yaml` **already contains
 `{FEW_SHOT_EXAMPLES}`**, positioned after `<document-types>` and before
 `<<CACHEPOINT>>` (examples are static per config, so they belong in the cacheable
@@ -1344,7 +1379,7 @@ classes:
         x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/email1.jpg"
 
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document into exactly one of these categories:
@@ -1373,7 +1408,7 @@ similar names but have very different extraction schemas (e.g.
 
 - **Page-granularity** prompts get an XML-tagged listing.
 - **Packet-granularity** prompts get a three-column markdown table
-  (`type | description | attributes`). Two-stage section classification uses
+  (`type | description | attributes`). Split-then-classify section classification uses
   the packet builders, so it gets the table too.
 - The placeholder is fully **opt-in** — token usage and cost are
   unchanged for users who don't reference it. The library only
@@ -1401,7 +1436,7 @@ Example:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this page using the schema attribute names as a

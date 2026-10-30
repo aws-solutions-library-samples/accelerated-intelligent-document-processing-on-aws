@@ -87,6 +87,7 @@ class _Doc:
 
     def __init__(self, config_version=None, config_revision=None):
         self.id = "w2.pdf"
+        self.input_key = self.id
         self.config_version = config_version
         self.config_revision = config_revision
         self.status = None
@@ -251,4 +252,101 @@ class TestConfigVersionPin:
             index_module.start_workflow(doc)
 
         assert doc.config_version is None
+        index_module.sfn.start_execution.assert_called_once()
+
+
+def _pinned_and_head(manager, pinned_use_bda, head_use_bda, pinned_error=None):
+    """``get_merged_configuration`` answering by whether a revision was asked for."""
+
+    def get_merged_configuration(version, revision=None):
+        if revision is None:
+            return MagicMock(use_bda=head_use_bda)
+        if pinned_error is not None:
+            raise pinned_error
+        return MagicMock(use_bda=pinned_use_bda)
+
+    manager.get_merged_configuration.side_effect = get_merged_configuration
+    manager.get_bda_project_arn.return_value = "arn:aws:bedrock:::project/p"
+
+
+@pytest.mark.unit
+class TestRoutingReadsThePinnedRevision:
+    """``use_bda`` comes from the document's pinned revision (#1619).
+
+    The end-to-end form, against moto with a real revision history, is
+    ``lib/idp_common_pkg/tests/unit/lambdas/test_queue_processor_pinned_routing.py``;
+    these pin the same branches where the ``src_lambda`` coverage tree sees them.
+    """
+
+    @pytest.mark.parametrize(
+        ("pinned_use_bda", "head_use_bda"), [(True, False), (False, True)]
+    )
+    def test_the_pinned_revision_decides_the_branch(
+        self, index_module, pinned_use_bda, head_use_bda
+    ):
+        doc = _Doc(config_version="bda-v2.0.0", config_revision=4)
+        manager = _mock_manager(index_module, "bda-v2.0.0")
+        _pinned_and_head(manager, pinned_use_bda, head_use_bda)
+
+        index_module.start_workflow(doc)
+
+        assert manager.get_merged_configuration.call_args_list[0].args == (
+            "bda-v2.0.0",
+        )
+        assert manager.get_merged_configuration.call_args_list[0].kwargs == {
+            "revision": 4
+        }
+        assert manager.get_merged_configuration.call_count == 1
+        payload = _sfn_input(index_module)
+        assert payload["use_bda"] is pinned_use_bda
+        assert ("bda_project_arn" in payload) is pinned_use_bda
+
+    def test_no_pin_reads_the_head_exactly_as_before(self, index_module):
+        doc = _Doc(config_version="bda-v2.0.0", config_revision=None)
+        manager = _mock_manager(index_module, "bda-v2.0.0", published_revision=None)
+        _pinned_and_head(manager, pinned_use_bda=False, head_use_bda=True)
+
+        index_module.start_workflow(doc)
+
+        manager.get_merged_configuration.assert_called_once_with("bda-v2.0.0")
+        assert _sfn_input(index_module)["use_bda"] is True
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("Revision r4 is not available"),
+            PermissionError("AccessDenied on config_revisions/"),
+            RuntimeError("anything else"),
+        ],
+        ids=["revision-gone", "access-denied", "other"],
+    )
+    def test_a_failed_pinned_read_routes_from_the_head_not_to_pipeline(
+        self, index_module, error
+    ):
+        doc = _Doc(config_version="bda-v2.0.0", config_revision=4)
+        manager = _mock_manager(index_module, "bda-v2.0.0")
+        _pinned_and_head(manager, False, head_use_bda=True, pinned_error=error)
+
+        index_module.start_workflow(doc)
+
+        assert [c.kwargs for c in manager.get_merged_configuration.call_args_list] == [
+            {"revision": 4},
+            {},
+        ]
+        payload = _sfn_input(index_module)
+        assert payload["use_bda"] is True
+        assert payload["bda_project_arn"] == "arn:aws:bedrock:::project/p"
+
+    def test_a_head_read_that_fails_after_the_pin_keeps_the_old_default(
+        self, index_module
+    ):
+        """Both reads failing is the old head-read failure: pipeline, logged."""
+        doc = _Doc(config_version="bda-v2.0.0", config_revision=4)
+        manager = _mock_manager(index_module, "bda-v2.0.0")
+        manager.get_merged_configuration.side_effect = RuntimeError("ddb down")
+
+        index_module.start_workflow(doc)
+
+        assert manager.get_merged_configuration.call_count == 2
+        assert _sfn_input(index_module)["use_bda"] is False
         index_module.sfn.start_execution.assert_called_once()

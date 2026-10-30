@@ -24,7 +24,10 @@ from idp_common.config_scope import (  # type: ignore
     user_row_key,
 )
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
-from idp_common.dynamodb.client import DynamoDBError  # type: ignore
+from idp_common.dynamodb.client import (  # type: ignore
+    DynamoDBError,
+    DynamoDBUnprocessedKeysError,
+)
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
     DEFAULT_PAGES_PER_DOC,
@@ -39,6 +42,11 @@ from idp_common.review_queues.annotators import (  # type: ignore
     cognito_account,
     persona_for_groups,
 )
+from idp_common.review_queues.exceptions import (  # type: ignore
+    ReviewConflict,
+    ReviewItemNotFound,
+    ReviewValidationError,
+)
 from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS  # type: ignore
 from idp_common.review_queues.statuses import LEGACY_DONE  # type: ignore
 from idp_common.review_queues.testset_docs import (  # type: ignore
@@ -52,6 +60,13 @@ from idp_common.review_queues.testset_docs import (  # type: ignore
     store_assigned_count,
     time_limit_minutes,
     validate_time_limit,
+)
+from idp_common.review_queues.testset_labels import (  # type: ignore
+    MAX_SECTION_LABEL_BYTES,
+    DraftMove,
+    LabelEditor,
+    SectionDraft,
+    TestSetLabels,
 )
 from idp_common.review_queues.testset_summaries import (  # type: ignore
     LABEL_SOURCE_DRAFT,
@@ -268,6 +283,9 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # Saving an assigned document that has no review copy (authored ground truth);
     # the handler requires the caller to be its assignee.
     "saveTestSetDocumentSection",
+    # Saving an assigned document's section edits as a draft, which is not reviewed
+    # and starts nothing; the handler requires the caller to be its assignee.
+    "saveTestSetDocumentSectionDraft",
     # Completing an assigned document without reviewing it; the handler requires
     # the caller to be its assignee.
     "skipTestSetDocument",
@@ -433,6 +451,11 @@ def _dispatch(event, context):
         assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
         _assert_assignee(event, event["arguments"])
         return save_test_set_document_section(event["arguments"], event)
+    elif field_name == "saveTestSetDocumentSectionDraft":
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_assignee(event, event["arguments"])
+        _assert_author_may_edit(event, event["arguments"])
+        return save_test_set_document_section_draft(event["arguments"], event)
     elif field_name == "skipTestSetDocument":
         assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
         _assert_assignee(event, event["arguments"])
@@ -2419,6 +2442,29 @@ def update_test_set_document_sections(args, event=None):
         if old_key not in written_keys:
             s3_client.delete_object(Bucket=test_set_bucket, Key=old_key)
 
+    # Drafts follow their sections to the new ids, with the new pages and class; a
+    # removed section's draft goes. Best-effort: the grouping is already written.
+    carried = {str(sec.get("sectionId") or "") for sec in ordered}
+    moves = [
+        DraftMove(
+            from_id=str(section.get("sectionId") or ""),
+            to_id=str(position),
+            page_indices=[int(i) for i in section["pageIndices"]],
+            document_class=section.get("documentClass") or None,
+        )
+        for position, section in enumerate(ordered, start=1)
+        if str(section.get("sectionId") or "") in existing
+    ]
+    try:
+        _labels().move_drafts(
+            test_set_id,
+            object_key,
+            moves,
+            removed=[sid for sid in existing if sid not in carried],
+        )
+    except Exception as e:  # noqa: BLE001 — the regroup itself succeeded
+        logger.warning(f"Could not move the drafts of {test_set_id}/{object_key}: {e}")
+
     logger.info(
         f"Re-grouped {object_key} in {test_set_id} into {len(ordered)} section(s); "
         f"removed {len(existing) - len(written_keys) if len(existing) > len(written_keys) else 0} "
@@ -2595,6 +2641,55 @@ def _doc_store():
     return TestSetDocStore(
         boto3.resource("dynamodb").Table(os.environ["HITL_TABLE_NAME"])
     )
+
+
+_test_set_labels = None
+
+
+def _labels():
+    """The one Test Studio label writer (reviewed labels and drafts), built once."""
+    global _test_set_labels
+    if _test_set_labels is None:
+        _test_set_labels = TestSetLabels(
+            s3_client,
+            os.environ["TEST_SET_BUCKET"],
+            doc_table=_doc_store().table,
+            curve_table=_get_tracking_table(),
+        )
+    return _test_set_labels
+
+
+def _caller_editor(event):
+    """The caller, from the verified token, as the label writer records them."""
+    email = (caller_email(event) or "").lower()
+    return LabelEditor(name=email or "unknown", email=email)
+
+
+def _has_review_copy(test_set_id, object_key):
+    """Whether the document has a review copy (a pipeline copy draft labeling
+    produced), the same lookup getAnnotationQueue uses for ``reviewObjectKey``."""
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"}) or {}
+    state = _claim_state_for_documents(test_set_id, meta, [{"objectKey": object_key}])
+    return bool((state.get(object_key) or {}).get("exists"))
+
+
+def _assert_author_may_edit(event, args):
+    """An Author edits authored ground truth only.
+
+    A document with a review copy is completed through completeSectionReview, which
+    excludes Authors, so its draft is refused to them too: an Author could save edits
+    no Author can apply.
+    """
+    if not _caller_in_groups(event, ("Author",)) or _caller_in_groups(
+        event, ("Admin", "Annotator")
+    ):
+        return
+    if _has_review_copy(args.get("testSetId") or "", args.get("objectKey") or ""):
+        logger.warning("Denied: an Author may not edit a document with a review copy")
+        raise ResourceAccessDenied(
+            "Unauthorized: an Author edits authored ground truth only; this document "
+            "has a review copy"
+        )
 
 
 def _forget_documents(args):
@@ -3016,6 +3111,15 @@ def get_annotation_queue(args, event=None):
                 "reviewStatus": status or None,
                 "reviewed": reviewed,
                 "skipped": skipped,
+                # Saved, unreviewed section drafts, which the editor opens with.
+                "draftSections": [
+                    SectionDraft(**d).view(os.environ["TEST_SET_BUCKET"])
+                    for d in (
+                        (summaries.get(doc["objectKey"]) or {}).get("sectionDrafts")
+                        or doc.get("sectionDrafts")
+                        or []
+                    )
+                ],
                 # Admins assign work; an unassigned document can be assigned.
                 "available": not claimed_by_other,
             }
@@ -3135,8 +3239,6 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     if not per_doc_run and not default_run:
         return {}
 
-    table_name = os.environ["TRACKING_TABLE"]
-    resource = boto3.resource("dynamodb")
     state = {}
 
     # BatchGetItem rather than a GetItem per document; batches cap at 100 keys.
@@ -3153,25 +3255,28 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     for start in range(0, len(all_keys), 100):
         batch = [{"PK": pk, "SK": "none"} for pk in all_keys[start : start + 100]]
         try:
-            pending = {table_name: {"Keys": batch}}
-            # UnprocessedKeys is normal under throttling; unretried keys would
-            # silently report their documents as unclaimed.
-            for _ in range(4):
-                response = resource.batch_get_item(RequestItems=pending)
-                for item in response.get("Responses", {}).get(table_name, []):
-                    object_key = keys_by_pk.get(item.get("PK", ""))
-                    if not object_key:
-                        continue
-                    state[object_key] = {
-                        "owner": item.get("HITLReviewOwner") or "",
-                        "status": item.get("HITLStatus") or "",
-                        # The item's presence proves the run processed this
-                        # document, which is a precondition for claiming it.
-                        "exists": True,
-                    }
-                pending = response.get("UnprocessedKeys") or {}
-                if not pending:
-                    break
+            # UnprocessedKeys is normal under throttling. The helper retries them
+            # with backoff and raises if any remain; the rows it did read are
+            # still used, so only the documents left unread lose their state.
+            try:
+                rows = db_client.batch_get_items(batch)
+            except DynamoDBUnprocessedKeysError as e:
+                logger.warning(
+                    f"Could not read claim state for every document in a batch "
+                    f"of {len(batch)}: {e}"
+                )
+                rows = e.items
+            for item in rows:
+                object_key = keys_by_pk.get(item.get("PK", ""))
+                if not object_key:
+                    continue
+                state[object_key] = {
+                    "owner": item.get("HITLReviewOwner") or "",
+                    "status": item.get("HITLStatus") or "",
+                    # The item's presence proves the run processed this
+                    # document, which is a precondition for claiming it.
+                    "exists": True,
+                }
         except Exception as e:  # noqa: BLE001 — a missing claim is not an error
             logger.warning(
                 f"Could not read claim state for {len(batch)} document(s): {e}"
@@ -4197,6 +4302,14 @@ def remove_documents_from_test_set(args):
                     },
                 )
             removed += 1
+        # Its drafts too, while the item that indexes them still exists: once the
+        # document is forgotten nothing would reach them. Best-effort.
+        try:
+            _labels().delete_document_drafts(test_set_id, file_name)
+        except Exception as e:  # noqa: BLE001 — the document itself is gone
+            logger.warning(
+                f"Could not delete the drafts of {test_set_id}/{file_name}: {e}"
+            )
 
     # Only the count is used, so an unlabeled set must still recount.
     validation = _validate_test_set_files(
@@ -4719,17 +4832,10 @@ def _load_test_set_records():
         if gsi_items:
             # Step 2: BatchGetItem to fetch full records from base table
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi_items]
-            # DynamoDB BatchGetItem supports max 100 keys per call
-            for i in range(0, len(keys), 100):
-                batch_keys = keys[i : i + 100]
-                batch_response = boto3.resource("dynamodb").batch_get_item(
-                    RequestItems={os.environ["TRACKING_TABLE"]: {"Keys": batch_keys}}
-                )
-                items.extend(
-                    batch_response.get("Responses", {}).get(
-                        os.environ["TRACKING_TABLE"], []
-                    )
-                )
+            # The helper chunks at 100 and retries UnprocessedKeys with backoff.
+            # Dropping them would silently omit sets from the listing; if any
+            # remain after its retries it raises, and the scan below runs instead.
+            items = db_client.batch_get_items(keys)
             logger.info(f"BatchGetItem returned {len(items)} full testset records")
     except Exception as e:
         logger.warning(f"GSI+BatchGet failed, falling back to scan: {e}")
@@ -4742,10 +4848,6 @@ def _load_test_set_records():
             expression_attribute_values={":pk": "testset#", ":sk": "metadata"},
         )
     return items
-
-
-#: Largest section label body accepted from the editor.
-MAX_SECTION_LABEL_BYTES = 2_000_000
 
 
 def save_test_set_document_section(args, event=None):
@@ -4767,21 +4869,9 @@ def save_test_set_document_section(args, event=None):
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", section_id):
         raise ValueError("Invalid section id")
     bucket = os.environ["TEST_SET_BUCKET"]
-    key = f"{test_set_id}/baseline/{object_key}/sections/{section_id}/result.json"
-    try:
-        existing = json.loads(
-            s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
-        )
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
-            raise ResourceNotFound(
-                f"Section {section_id} of '{object_key}' has no labels"
-            ) from None
-        raise
     raw = args.get("data")
-    if raw is None:
-        label = dict(existing)
-    else:
+    label = None
+    if raw is not None:
         if (
             len(raw if isinstance(raw, str) else json.dumps(raw))
             > MAX_SECTION_LABEL_BYTES
@@ -4791,28 +4881,25 @@ def save_test_set_document_section(args, event=None):
         if not isinstance(label, dict):
             raise ValueError("data must be a JSON object")
     caller = (caller_email(event) or "").lower()
-    history = (
-        existing.get("_editHistory")
-        if isinstance(existing.get("_editHistory"), list)
-        else []
-    )
-    label["_editHistory"] = [
-        *history,
-        {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "editedBy": caller or "unknown",
-            "source": "test-set-annotation"
+    # The one reviewed-label writer: provenance, field diffs, the curve observations,
+    # and the section's draft deleted.
+    try:
+        _labels().write_reviewed(
+            test_set_id,
+            object_key,
+            section_id,
+            label,
+            editor=_caller_editor(event),
+            source="test-set-annotation"
             if raw is not None
             else "test-set-confirmation",
-        },
-    ]
-    label["labelSource"] = LABEL_SOURCE_HUMAN
-    s3_client.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=json.dumps(label, indent=2).encode("utf-8"),
-        ContentType="application/json",
-    )
+            require_existing=True,
+            skip_if_reviewed=False,
+        )
+    except ReviewItemNotFound:
+        raise ResourceNotFound(
+            f"Section {section_id} of '{object_key}' has no labels"
+        ) from None
     summary = summarize_document(s3_client, bucket, test_set_id, object_key)
     store = _doc_store()
     store.upsert_summary(test_set_id, summary)
@@ -4832,6 +4919,48 @@ def save_test_set_document_section(args, event=None):
         "sectionId": section_id,
         "reviewed": reviewed,
     }
+
+
+def save_test_set_document_section_draft(args, event=None):
+    """Save one section's edits of a test-set document as a draft.
+
+    A draft is not reviewed and starts nothing: the label, the document's summary,
+    the queue counts and the confidence curve are unchanged until Process Changes
+    applies it (through saveTestSetDocumentSection or completeSectionReview). The
+    handler has already checked set scope, the assignee and the Author rule.
+    """
+    test_set_id = args.get("testSetId") or ""
+    object_key = args.get("objectKey") or ""
+    section_id = str(args.get("sectionId") or "")
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    if not object_key or ".." in object_key or object_key.startswith("/"):
+        raise ValueError("Invalid object key")
+    raw = args.get("data")
+    if raw is None:
+        raise ValueError("data is required")
+    if len(raw if isinstance(raw, str) else json.dumps(raw)) > MAX_SECTION_LABEL_BYTES:
+        raise ValueError("DRAFT_TOO_LARGE: the section's edits are too large")
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    base_revision = args.get("baseRevision")
+    try:
+        draft = _labels().save_draft(
+            test_set_id,
+            object_key,
+            section_id,
+            data,
+            int(base_revision) if base_revision is not None else None,
+            editor=_caller_editor(event),
+        )
+    except (ReviewConflict, ReviewValidationError) as e:
+        raise ValueError(str(e)) from None
+    except ReviewItemNotFound as e:
+        raise ResourceNotFound(str(e)) from None
+    logger.info(
+        f"saveTestSetDocumentSectionDraft {test_set_id}/{object_key}#{section_id} "
+        f"revision {draft.revision}"
+    )
+    return draft.view(os.environ["TEST_SET_BUCKET"])
 
 
 def skip_test_set_document(args, event=None):

@@ -16,14 +16,21 @@ import { renderHook, waitFor } from '@testing-library/react';
 
 // Hoisted: the hook creates its GraphQL client at module scope, so the mock
 // factory runs before ordinary top-level consts are initialized.
-const { graphql, updateConfiguration } = vi.hoisted(() => ({ graphql: vi.fn(), updateConfiguration: vi.fn() }));
+const { graphql, updateConfiguration, configurationRequests } = vi.hoisted(() => ({
+  graphql: vi.fn(),
+  updateConfiguration: vi.fn(),
+  configurationRequests: [] as unknown[],
+}));
 
 vi.mock('../../api/client-shim', () => ({
   generateClient: () => ({ graphql }),
 }));
 
 vi.mock('../use-configuration', () => ({
-  default: () => ({ updateConfiguration }),
+  default: (...args: unknown[]) => {
+    configurationRequests.push(...args);
+    return { updateConfiguration };
+  },
 }));
 
 vi.mock('../use-user-role', () => ({
@@ -48,6 +55,7 @@ const VERSIONS = [
 beforeEach(() => {
   graphql.mockReset();
   updateConfiguration.mockReset();
+  configurationRequests.length = 0;
   graphql.mockResolvedValue({ data: { getConfigVersions: { success: true, versions: VERSIONS } } });
   updateConfiguration.mockResolvedValue(true);
 });
@@ -88,5 +96,33 @@ describe('saveAsNewVersion', () => {
     expect(outcome.success).toBe(false);
     expect(outcome.error).toMatch(/reserved/);
     expect(updateConfiguration).not.toHaveBeenCalled();
+  });
+});
+
+describe('list readiness', () => {
+  it('fetches no configuration profile of its own', async () => {
+    await renderVersions();
+    expect(configurationRequests.length).toBeGreaterThan(0);
+    expect(configurationRequests.every((name) => name === null)).toBe(true);
+  });
+
+  it('reports loaded only once the list has answered', async () => {
+    let answer: (value: unknown) => void = () => {};
+    graphql.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const { result } = renderHook(() => useConfigurationVersions());
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.loaded).toBe(false);
+    answer({ data: { getConfigVersions: { success: true, versions: VERSIONS } } });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.versions).toHaveLength(3);
+  });
+
+  it('reports loaded with the error when the list request fails', async () => {
+    graphql.mockReset();
+    graphql.mockResolvedValue({ data: { getConfigVersions: { success: false, error: { message: 'Unauthorized' } } } });
+    const { result } = renderHook(() => useConfigurationVersions());
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.error).toBe('Unauthorized');
+    expect(result.current.versions).toEqual([]);
   });
 });

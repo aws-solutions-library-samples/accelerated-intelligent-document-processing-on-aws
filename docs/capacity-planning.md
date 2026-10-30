@@ -15,7 +15,12 @@ The GenAI IDP accelerator includes comprehensive capacity planning capabilities 
 https://github.com/user-attachments/assets/6e668c2f-c6dc-490e-a4ce-10c533cd330e
 
 
-**This feature is designed for Pattern 2 and the Unified pattern** due to their well-defined processing steps (OCR, Classification, Extraction, Assessment, Summarization) and predictable Bedrock model quota requirements. The Unified pattern uses the same Bedrock pipeline as Pattern 2 for capacity planning purposes.
+**The arithmetic assumes the Textract-plus-Bedrock pipeline**, whose well-defined
+processing steps (OCR, Classification, Extraction, Assessment, Summarization) carry
+predictable Bedrock model quota requirements. A deployment running documents through
+BDA mode (`use_bda: true`) has a different step set and a different quota profile, and
+capacity planning does not support it — see
+[Pipeline mode only](#pipeline-mode-only).
 
 ## Key Benefits
 
@@ -99,15 +104,19 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 ### 3. Document Token Usage Population
 
 **Automatic Token Population from Processed Documents**:
-- Integration with Documents context to access processed document data
+- Reads the completed documents in the Document List's current period. The list's rows
+  carry no metering, so the full record of the most recent completed documents (up to 25)
+  is fetched when you choose **Populate tokens from Documents**, one request per document,
+  a few at a time.
+  Opening Capacity Planning starts the list load if no other page has.
 - Extraction of token usage from metering data structure
 - Support for multiple document selection and batch population
 - Document picker modal with filtering and selection capabilities
 - **Single-class document validation** - multi-class documents are not supported
 
 **Metering Data Processing**:
-- Context-prefixed key parsing (OCR/, Classification/, Segmentation/, SectionClassification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
-- All three classification contexts are summed into the one classification figure: `Classification/` carries the Bedrock tokens under `strategy: single_pass`, and `Segmentation/` and `SectionClassification/` carry them under `strategy: two_stage` (see [Which context the tokens arrive under](#which-context-the-tokens-arrive-under))
+- Context-prefixed key parsing (OCR/, Classification/, Splitting/, SectionClassification/, Extraction/, Assessment/, Summarization/, BDAProject/bda/)
+- All three classification contexts are summed into the one classification figure: `Classification/` carries the Bedrock tokens under `strategy: combined`, and `Splitting/` and `SectionClassification/` carry them under `strategy: split_then_classify` (see [Which context the tokens arrive under](#which-context-the-tokens-arrive-under))
 - Token count aggregation from inputTokens, outputTokens, and totalTokens fields
 - Request count calculation: average requests per document from metering samples
 - Page count extraction from multiple sources:
@@ -242,7 +251,7 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - `VITE_DEFAULT_MAX_LATENCY`: Default maximum latency setting in **seconds** (default: 60)
 - `VITE_DEFAULT_TOKENS_BY_STEP`: JSON object with default token limits per processing step
 - `VITE_DEFAULT_MAX_TOKENS_PER_REQUEST`: Default maximum tokens per API request (4000)
-- `VITE_BDA_TOKENS_PER_PAGE`: Estimated tokens per page for BDA pattern processing (2000)
+- `VITE_BDA_TOKENS_PER_PAGE`: Estimated tokens per page for BDA-mode documents (2000)
 - `VITE_AWS_REGION`: AWS region for console URL generation (required)
 - `VITE_BEDROCK_MODEL_QUOTA_CODES`: Optional JSON mapping for direct quota code links
 
@@ -250,17 +259,31 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 
 ### 1. Accessing the Capacity Planner
 
-**⚠️ Pattern 2 or Unified Only**: This feature is available for Pattern 2 and Unified pattern deployments. The navigation link will not appear for Pattern 1 or Pattern 3.
-
-Navigate to the Web UI and select the "Capacity Planning" section:
+Navigate to the Web UI and select the "Capacity Planning" section. The navigation link
+is present in every deployment.
 
 1. **Prerequisites**:
-   - **Must be using Pattern 2 or Unified pattern** (Textract + Bedrock pipeline)
    - Process some documents first to populate metering data
    - Documents must be single-class and classified with configured document types
-2. **Configuration**: Visit "View/Edit Configuration" tab to load your pattern configuration
-3. **Navigation**: Click on "Capacity Planning" in the main navigation (visible for Pattern 2 and Unified)
-4. **Pattern Detection**: System automatically detects your deployment pattern. The Unified pattern is treated as Pattern 2 for capacity planning purposes
+2. **Configuration**: Visit "View/Edit Configuration" tab to load your configuration profile
+3. **Navigation**: Click on "Capacity Planning" in the main navigation, under Configuration
+4. **Processing mode**: The screen sizes pipeline mode only — see below
+
+#### Pipeline mode only
+
+Capacity planning calculates quota requirements for the pipeline mode steps (OCR,
+Classification, Extraction, Assessment, Summarization), which is the right basis for a
+configuration profile whose documents run in pipeline mode (`use_bda: false`). It does
+not support BDA mode. When the selected profile sets `use_bda: true`, the screen shows a
+**⚠️ BDA mode is not supported** alert and disables **Calculate Capacity
+Requirements**, because the quota requirements it would report are for steps those
+documents never call.
+
+For a pipeline-mode profile that names no classification model, the screen shows a
+**⚠️ No classification model configured** alert. Set the model in **View/Edit
+Configuration** before reading the numbers.
+
+![Capacity Planning page with the configuration profile selected and the Expected Token Usage by Document Type table](../images/capacity-planning-token-usage.png)
 
 ### 2. Document Configuration
 
@@ -301,24 +324,24 @@ worth reading before you write a report that filters on a prefix:
 
 | Strategy | Bedrock token keys | Lambda keys |
 |---|---|---|
-| `single_pass` | `Classification/bedrock/<model>` | `Classification/lambda/requests`, `Classification/lambda/duration` |
-| `two_stage` | `Segmentation/bedrock/<model>` and `SectionClassification/bedrock/<model>` — **no** `Classification/bedrock/*` key at all | `Classification/lambda/requests`, `Classification/lambda/duration` |
+| `combined` | `Classification/bedrock/<model>` | `Classification/lambda/requests`, `Classification/lambda/duration` |
+| `split_then_classify` | `Splitting/bedrock/<model>` and `SectionClassification/bedrock/<model>` — **no** `Classification/bedrock/*` key at all | `Classification/lambda/requests`, `Classification/lambda/duration` |
 
 The Lambda keys stay under `Classification/` either way because one Lambda
 function runs both stages, and its invocation is metered under the step's name.
 So a report that filters on the `Classification/` prefix alone finds the Lambda
-cost of a two-stage run and none of its Bedrock cost, and reads as a
+cost of a split-then-classify run and none of its Bedrock cost, and reads as a
 classification step that invoked the model zero times. Sum all three prefixes,
 as Capacity Planning does.
 
-A two-stage run under a declared file shape
-(`classification.file_shape.sectionSplitting` of `disabled` or `page`) emits no
-`Segmentation/` keys at all, because the boundaries are asserted rather than
-detected and the segmentation call never runs.
+A split-then-classify run under a declared document shape
+(`classification.document_shape.sectionSplitting` of `disabled` or `page`) emits no
+`Splitting/` keys at all, because the boundaries are asserted rather than
+detected and the splitting call never runs.
 
 **Page Count Extraction Priority**:
 1. OCR Bedrock requests count (`metrics.requests`)
-2. BDA pattern pages (`BDAProject/bda/*.pages`)
+2. BDA page counts (`BDAProject/bda/*.pages`)
 3. Metering fields (`pages`, `pageCount`, `PageCount`)
 4. Document-level fields (`doc.PageCount`, `doc.pageCount`, `doc.Pages`)
 5. Sections EndPage field as fallback
@@ -565,11 +588,11 @@ part of the report.
 
 **Configuration Not Loaded**:
 - **Symptom**: Warning message "Configuration not loaded"
-- **Solution**: Visit "View/Edit Configuration" tab first to load pattern configuration
+- **Solution**: Visit "View/Edit Configuration" tab first to load the configuration profile
 
 **No Documents Available for Token Population**:
-- **Symptom**: Alert "No documents available. Please visit the Documents tab first"
-- **Solution**: Visit Documents tab to load document data, then return to Capacity Planning
+- **Symptom**: Alert "No documents available" saying the documents are still loading, or that none were found in the Document List period
+- **Solution**: Wait for the load and try again, or choose a longer period with the Document List's **Load** menu
 
 **Document Type Not in Configuration**:
 - **Symptom**: "Document type 'X' is not defined in configuration"
@@ -583,12 +606,12 @@ part of the report.
 - **Symptom**: "No request count data found for [step_name]"
 - **Solution**: Process documents through the full workflow to generate metering data with request counts
 
-**Assessment RPM Row Missing After Disabling Granular Assessment**:
+**Assessment RPM Row Missing On A Stack With Pre-Retirement Assessment History**:
 - **Symptom**: The report is produced and carries an Assessment TPM row, but no Assessment RPM row
-- **Cause**: Assessment records its Bedrock calls under `GranularAssessment/...` keys while granular assessment is enabled, and those keys are excluded from the request count when it is disabled. A history recorded entirely under them therefore leaves Assessment with token demand and nothing countable, so its request rate is dropped rather than sized from a rate the current configuration has never produced. The Lambda log names the step and the reason.
+- **Cause**: Granular assessment used to record its Bedrock calls under `GranularAssessment/...` keys, and those keys are excluded from the request count. Granular assessment has since been retired and its service removed, so nothing writes such a key any more — but documents processed before the retirement still carry them. An Assessment history recorded entirely under those keys leaves the step with token demand and nothing countable, so its request rate is dropped rather than sized from a rate the current configuration has never produced. The Lambda log names the step and the reason.
 - **Why the TPM row is still there**: the token requirement is your own scheduled token demand measured against the account's Service Quotas value, and reads no metering at all — so nothing about it is unknown in this state, and processing more documents cannot change it. Only the request rate has no measurement behind it, and only the request rate is withheld.
 - ⚠️ **Read the per-step table, not the per-model summary, in this state**: the per-step table shows the step with `N/A` for its RPM status, which is accurate. The aggregate-by-model table lists the step under "Used for" but its `Required RPM` total sums only the steps that still have a request row, and it shows a green sufficiency badge with nothing marking the gap — so that total understates the model's request demand by however much the withheld step contributes. The Lambda log names the step and the reason.
-- **Solution**: Process a document under the current configuration, which records an `Assessment/...` key — or re-enable granular assessment, which brings the recorded history back into scope. Every other step is reported either way.
+- **Solution**: Process a document under the current configuration, which records an `Assessment/...` key. That is the only route: granular assessment is retired and the `granular` configuration keys are dropped on load, so the old history cannot be brought back into scope by any setting. Every other step is reported either way.
 
 **No Processing Time Data**:
 - **Symptom**: "No processing time data found in documents"
@@ -602,7 +625,7 @@ part of the report.
 
 **Capacity Planning Workflow**:
 1. **Process Sample Documents**: Run real documents through the full workflow first
-2. **Load Configuration**: Visit View/Edit Configuration to load pattern settings
+2. **Load Configuration**: Visit View/Edit Configuration to load the configuration profile
 3. **Populate from Documents**: Use "Populate tokens from Documents" for accurate data
 4. **Configure Schedule**: Define realistic processing schedules
 5. **Calculate**: Run capacity calculations to identify quota requirements

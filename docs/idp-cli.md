@@ -691,9 +691,13 @@ idp-cli delete --stack-name test-stack --empty-buckets --force
 # Force delete ALL remaining resources (comprehensive cleanup)
 idp-cli delete --stack-name test-stack --force-delete-all --force
 
-# Delete without waiting
-idp-cli delete --stack-name test-stack --force --no-wait
+# Wait for the deletion to reach DELETE_COMPLETE before returning
+idp-cli delete --stack-name test-stack --force --wait
 ```
+
+Deletion does **not** wait by default: without `--wait` the command initiates the
+delete and returns, printing the console link and the `--wait` form to follow it with.
+There is no `--no-wait` flag — omitting `--wait` is already the no-wait path.
 
 **What you'll see (standard deletion):**
 ```
@@ -783,9 +787,17 @@ Stack 'test-stack' and all resources completely removed.
 If you run `delete` on a stack that already has a DELETE operation in progress, the command automatically switches to monitoring mode instead of failing. This is useful if you started a deletion without `--wait` - simply run the command again to monitor:
 
 ```bash
-# First run without --wait starts the deletion
-$ idp-cli delete --stack-name test-stack --force --no-wait
-✓ Stack DELETE initiated successfully!
+# First run: no --wait, so the deletion is initiated and the command returns
+$ idp-cli delete --stack-name test-stack --force
+✓ Stack deletion initiated!
+Stack: test-stack
+Region: us-east-1
+
+Monitor progress in the AWS Console:
+  CloudFormation → Stacks → test-stack
+
+Or wait for it with:
+  idp-cli delete --stack-name test-stack --force --wait
 
 # Second run - automatically monitors the in-progress deletion
 $ idp-cli delete --stack-name test-stack
@@ -1401,7 +1413,7 @@ idp-cli download-results \
 ### `use-as-baseline`
 
 Promote a processed document's output to the evaluation baseline — the
-scriptable equivalent of the web UI's **Use as Evaluation Baseline** button.
+scriptable equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies every output object for the document into the evaluation baseline bucket
 and sets the document's `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs
 synchronously (returns once the copy is complete).
@@ -2502,7 +2514,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - The task prompt of each classification call the strategy makes (for example `classification.one_stage.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
@@ -2512,7 +2524,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   form and keep it. A second warning appears for the one conversion that
   **changes behaviour**: a `maxPagesForClassification` page limit combined with
   boundary detection is converted to `sectionSplitting: disabled`, after which a
-  short multi-document file becomes one section where it used to be split. Both
+  short packet becomes one section where it used to be split. Both
   are warnings, not errors — the file is valid and will run.
 - **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
@@ -2956,7 +2968,7 @@ idp-cli abort-test-run \
 - Document workflows are stopped via Step Functions execution abort
 
 **Limitations:**
-- Cannot abort test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED**
+- Cannot abort test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED**
 - The abort operation waits up to 25 seconds for documents to reach terminal state
 
 ---
@@ -2997,7 +3009,7 @@ idp-cli test-compare \
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs
-- Shows nested config paths (e.g., `classification.one_stage.llm.model`, `extraction.temperature`)
+- Shows nested config paths (e.g., `classification.combined.llm.model`, `extraction.temperature`)
 - Highlights values that differ across test runs
 
 **Requirements:**

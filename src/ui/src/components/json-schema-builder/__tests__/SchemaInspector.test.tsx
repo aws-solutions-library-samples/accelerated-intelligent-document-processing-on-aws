@@ -360,7 +360,7 @@ describe('SchemaInspector RuleJSON Section', () => {
 });
 
 /**
- * "Documents per section" — the single class-level control for multi-instance
+ * "Records per section" — the single class-level control for multi-instance
  * (GitHub #715 / #753).
  *
  * Replaced two separate optional controls that each disabled the other. That was
@@ -368,7 +368,7 @@ describe('SchemaInspector RuleJSON Section', () => {
  * alternatives, and never asked the question that actually decides it: is this
  * class one record, or already a packet of records?
  */
-describe('SchemaInspector "Documents per section"', () => {
+describe('SchemaInspector "Records per section"', () => {
   const scalars = { CheckNumber: { type: 'string' }, NetPay: { type: 'string' } };
   const recordsArray = { type: 'array', items: { type: 'object', properties: {} } };
 
@@ -387,8 +387,8 @@ describe('SchemaInspector "Documents per section"', () => {
 
   it("asks the question in the user's terms, with three options", () => {
     renderClass(docClass());
-    expect(screen.getByText('Documents per section')).toBeInTheDocument();
-    expect(screen.getByText('One document')).toBeInTheDocument();
+    expect(screen.getByText('Records per section')).toBeInTheDocument();
+    expect(screen.getByText('One record')).toBeInTheDocument();
     expect(screen.getByText(/this class already lists them/)).toBeInTheDocument();
     expect(screen.getByText(/wrap my single-record class/)).toBeInTheDocument();
   });
@@ -455,7 +455,7 @@ describe('SchemaInspector "Documents per section"', () => {
   it('lets Designate be selected when there are SEVERAL candidate arrays, and asks which', () => {
     // The regression this guards: `mode` used to be derived purely from the schema,
     // and with >=2 candidates there is nothing to preselect — so the key stayed
-    // undefined, the derived mode snapped back to "One document", and the picker
+    // undefined, the derived mode snapped back to "One record", and the picker
     // never rendered. Clicking the option did literally nothing, for exactly the
     // class shape where naming the record axis is mandatory.
     const twoArrays = {
@@ -470,7 +470,7 @@ describe('SchemaInspector "Documents per section"', () => {
     );
     // The picker is now on screen, prompting, rather than the mode silently reverting.
     expect(screen.getByText('Record array')).toBeInTheDocument();
-    expect(screen.getByText(/Select which array holds one record per document/)).toBeInTheDocument();
+    expect(screen.getByText(/Select which array holds the records/)).toBeInTheDocument();
   });
 
   it('does not carry a pending mode across a class switch', () => {
@@ -520,7 +520,7 @@ describe('SchemaInspector "Documents per section"', () => {
 
   it('is not rendered for a policy/rule class', () => {
     render(<SchemaInspector selectedClass={docClass()} onUpdate={vi.fn()} isRuleSchema={true} />);
-    expect(screen.queryByText('Documents per section')).not.toBeInTheDocument();
+    expect(screen.queryByText('Records per section')).not.toBeInTheDocument();
   });
 });
 

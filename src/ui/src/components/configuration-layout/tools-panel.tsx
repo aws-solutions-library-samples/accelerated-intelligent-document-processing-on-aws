@@ -65,12 +65,13 @@ const ToolsPanel = (): React.JSX.Element => (
 
       <h3>Classification</h3>
       <p>
-        Classification settings are grouped by the model call that uses them. <strong>Strategy</strong> picks <strong>One stage</strong>{' '}
-        (one call finds the document boundaries and the classes) or <strong>Two stage</strong> (find the boundaries first, then classify
-        each section), and only the calls that strategy makes are shown. Those two labels are stored as <code>strategy: single_pass</code>{' '}
-        and <code>strategy: two_stage</code>, which is what the JSON and YAML views show and what an uploaded file must use. A profile saved
-        before v0.6.13 is converted when it is read; its model and parameters are copied into every call, so each can then be changed on its
-        own.
+        Classification settings are grouped by the model call that uses them. <strong>Strategy</strong> picks{' '}
+        <strong>Split and classify together (one call)</strong> (one call finds the section boundaries and the classes) or{' '}
+        <strong>Split first, then classify each section</strong> (a splitting call finds the boundaries, then section classification
+        classifies each section), and only the calls that strategy makes are shown. Those two labels are stored as{' '}
+        <code>strategy: combined</code> and <code>strategy: split_then_classify</code>, which is what the JSON and YAML views show and what
+        an uploaded file must use. A profile saved before v0.6.13 is converted when it is read; its model and parameters are copied into
+        every call, so each can then be changed on its own.
       </p>
 
       <h3>Editing</h3>

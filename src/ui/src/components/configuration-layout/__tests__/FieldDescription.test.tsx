@@ -90,14 +90,14 @@ describe('stripInlineMarkdown', () => {
   });
 
   it('leaves plain prose untouched', () => {
-    const plain = 'Splits the file into documents and assigns a class to each.';
+    const plain = 'Splits the document into sections and assigns a class to each section.';
     expect(stripInlineMarkdown(plain)).toBe(plain);
   });
 
   it('does not eat an underscore inside an identifier', () => {
-    // `single_pass` and `task_prompt` appear throughout these descriptions, and
+    // `combined` and `task_prompt` appear throughout these descriptions, and
     // a naive italics rule turns them into `singlepass`.
-    expect(stripInlineMarkdown("'single_pass' reads task_prompt")).toBe("'single_pass' reads task_prompt");
+    expect(stripInlineMarkdown("'combined' reads task_prompt")).toBe("'combined' reads task_prompt");
   });
 
   it('does not eat an asterisk that is not emphasis', () => {

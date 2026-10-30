@@ -620,8 +620,7 @@ const PageImageViewer = ({
 
   return (
     <div style={{ position: 'relative', height, overflow: 'hidden' }}>
-      {/* Image container - must exactly match VisualEditorModal structure for bounding box positioning
-          The BoundingBox calculates position relative to this container */}
+      {/* Image container: the BoundingBox calculates its position relative to this container */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div
         ref={imageContainerRef}
@@ -672,8 +671,7 @@ const PageImageViewer = ({
                 (e.target as HTMLImageElement).src = fallbackImage;
               }}
             />
-            {/* Active field bounding box - matching the VisualEditorModal pattern exactly:
-                both page and currentPage use the same currentPage value (pageId) */}
+            {/* Active field bounding box: page and currentPage use the same currentPage value (pageId) */}
             {activeFieldGeometry && (
               <BoundingBox
                 box={activeFieldGeometry}

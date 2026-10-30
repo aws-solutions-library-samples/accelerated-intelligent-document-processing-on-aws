@@ -5,8 +5,7 @@
 
 ProcessResults (Pipeline and BDA) call :func:`route_for_review` after their own
 work. Queue mode is on when HITL is enabled in the document's configuration, the
-stack has a review table and its Default queue is enabled (HITL › Queue
-Management); otherwise ``review_mode`` is ``"legacy"`` and the handlers keep the
+stack has a review table and its Default queue is enabled (Review Studio › Review Management); otherwise ``review_mode`` is ``"legacy"`` and the handlers keep the
 HITL marking through :func:`legacy_section_triggers` and
 :func:`bda_segment_triggers`. In queue mode it either recognises the finalize run
 of a disposed item, or (a fresh run) builds reasons from the sections'
@@ -21,6 +20,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
+
+from idp_common.utils import parse_blueprint_confidence
 
 from . import keys
 from .finalize import apply_corrections
@@ -118,10 +119,22 @@ def legacy_section_triggers(section: Any, *, hitl_enabled: bool) -> bool:
 def bda_segment_triggers(
     alerts: Any, bp_confidence: Any, threshold: float, *, hitl_enabled: bool
 ) -> Optional[bool]:
-    """BDA mode's trigger for a custom-output segment (``None`` when HITL is off)."""
+    """BDA mode's trigger for a custom-output segment (``None`` when HITL is off).
+
+    The blueprint confidence is read by ``parse_blueprint_confidence``, the reader
+    review-queue mode uses too. An unscored one (null, non-numeric, non-finite, a
+    bool, out of range, or a string ``float()`` rejects, such as ``"95%"``)
+    routes the segment to review at every threshold, including 0.0, as queue
+    mode holds it with a ``blueprint_confidence`` reason scored 0.0.
+    ``float(None)``
+    used to raise TypeError, which escaped ``process_segments`` into the BDA
+    handler's catch-all and abandoned the rest of the document's segments, and a
+    NaN compared directly never triggered, since ``nan < t`` is False.
+    """
     if not hitl_enabled:
         return None
-    return len(alerts) > 0 or float(bp_confidence) < threshold
+    confidence = parse_blueprint_confidence(bp_confidence)
+    return len(alerts) > 0 or confidence is None or confidence < threshold
 
 
 def _execution_name(execution_arn: str) -> str:

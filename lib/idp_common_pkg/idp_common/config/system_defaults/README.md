@@ -23,18 +23,26 @@ system_defaults/
    base-agents.yaml            # Error analyzer, chat companion
    base-discovery.yaml         # Schema discovery
    base-rule-discovery.yaml    # Rule discovery from policy documents
-   pattern-1.yaml              # BDA pattern (selective inheritance)
-   pattern-2.yaml              # Bedrock LLM pattern (full inheritance)
+   pattern-1.yaml              # BDA mode root (selective inheritance)
+   pattern-2.yaml              # Pipeline mode root (full inheritance)
    README.md
 ```
+
+`pattern-1.yaml` and `pattern-2.yaml` are the two inheritance roots, one per
+processing mode: `pattern-1.yaml` is **BDA mode** (`use_bda: true`) and
+`pattern-2.yaml` is **pipeline mode** (`use_bda: false`). Those filenames, the
+`pattern=` keyword on `load_system_defaults()` / `merge_config_with_defaults()` /
+`validate_config()`, the `VALID_PATTERNS` list in `merge_utils.py`, and the SDK's
+`PATTERN_1` / `PATTERN_2` constants are all historical names for the two modes and
+are the identifiers the code uses today. The stack picks the root from `use_bda`.
 
 ## Inheritance System
 
 Pattern files use `_inherits` directive to declare which modules to include:
 
-### Full Inheritance (Pattern-2)
+### Full inheritance — `pattern-2.yaml` (pipeline mode)
 ```yaml
-# Pattern-2 needs everything
+# Pipeline mode needs everything
 _inherits: base.yaml
 ```
 Which is equivalent to:
@@ -56,9 +64,9 @@ _inherits:
   - base-rule-discovery.yaml
 ```
 
-### Selective Inheritance (Pattern-1 - BDA)
+### Selective inheritance — `pattern-1.yaml` (BDA mode)
 ```yaml
-# Pattern-1 (BDA) - excludes OCR, classification, extraction
+# BDA mode - excludes OCR, classification, extraction
 _inherits:
   - base-notes.yaml
   - base-classes.yaml
@@ -76,8 +84,8 @@ BDA handles OCR, classification, and extraction internally, so it doesn't inheri
 is not: from v0.6 onward, per-field confidence lives at `extraction.confidence`,
 bounding-box geometry at `extraction.geometry` and the review thresholds at top-level
 `hitl`, so those two modules contribute only those sub-sections and none of the LLM
-extraction settings BDA does not use. Keeping both is what gives Pattern-1 the same
-confidence, geometry and HITL defaults as Pattern-2.
+extraction settings BDA does not use. Keeping both is what gives BDA mode the same
+confidence, geometry and HITL defaults as pipeline mode.
 
 ## Module Contents
 
@@ -103,7 +111,7 @@ confidence, geometry and HITL defaults as Pattern-2.
 Configuration values are merged in this priority order (highest first):
 
 1. **User's custom config** - Values explicitly set by the user
-2. **Pattern-specific file** - Values in pattern-X.yaml
+2. **Mode root file** - Values in `pattern-1.yaml` / `pattern-2.yaml`
 3. **Inherited modules** - Values from base-*.yaml files
 4. **Pydantic defaults** - Code-level fallbacks
 
@@ -111,13 +119,13 @@ Configuration values are merged in this priority order (highest first):
 
 ```bash
 # Generate minimal config template
-idp-cli config-create --features min --pattern pattern-2 --output config.yaml
+idp-cli config-create --features min --output config.yaml
 
-# Generate config with specific sections
-idp-cli config-create --features ocr classification extraction --output config.yaml
+# Generate config with specific sections (comma-separated, as ONE argument)
+idp-cli config-create --features "ocr,classification,extraction" --output config.yaml
 
 # Validate config
-idp-cli config-validate --custom-config ./config.yaml
+idp-cli config-validate --config-file ./config.yaml
 
 # Deploy (automatically merges with defaults)
 idp-cli deploy --stack-name my-idp --custom-config ./config.yaml --wait
@@ -126,16 +134,22 @@ idp-cli deploy --stack-name my-idp --custom-config ./config.yaml --wait
 idp-cli config-download --stack-name my-stack --output config.yaml
 ```
 
+`config-create` exposes no mode selector, so it always generates from the
+`pattern-2.yaml` (pipeline mode) defaults. To build a template against the
+`pattern-1.yaml` (BDA mode) defaults, call
+`idp_common.config.merge_utils.generate_config_template(pattern="pattern-1")`
+directly.
+
 ## Example: Minimal User Config
 
 Users only need to specify what differs from defaults:
 
 ```yaml
-# my-config.yaml - minimal Pattern-2 config
+# my-config.yaml - minimal pipeline-mode config
 notes: "My lending package processor"
 
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-lite-v1:0
 

@@ -225,6 +225,10 @@ RUN_ROOTS = [
     # Review queue sweeper: the no-table path, the deadline and the wiring.
     "src/lambda/review_queue_sweeper",
     "src/lambda/save_reporting_data",
+    # Test run sweeper: admission, the deadline bound, and the enqueue throttle
+    # it shares with the read resolver. The derivation it calls is tested in
+    # idp_common; this suite pins that a sweep which does nothing fails (#1620).
+    "src/lambda/test_run_sweeper",
     # DockerBuildRun's ECR image verification: the bounded image-scan wait and the
     # presence poll. An unbounded wait here fails the stack at CloudFormation's
     # one-hour custom-resource limit with an error that names the cfn-response

@@ -446,7 +446,7 @@ def test_suspected_multi_instance_warns_naming_both_counts():
     # Both numbers, so the message cannot be misread as "3 records extracted".
     assert "3 separate" in issue.message
     assert "returned 1" in issue.message
-    assert "2 document(s) are NOT in the result" in issue.message
+    assert "2 record(s) are NOT in the result" in issue.message
     assert issue.details["instance_count"] == 3
     assert issue.details["extracted_instance_count"] == 1
     assert issue.details["detection"] == "model_self_report"

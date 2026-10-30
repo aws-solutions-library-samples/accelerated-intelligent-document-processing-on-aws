@@ -9,9 +9,10 @@ import gzip
 import hashlib
 import json
 import os
-from typing import Callable, Dict, Any, Optional, Union, List
+from typing import Callable, Dict, Any, Optional, Tuple, Union, List
 from botocore.exceptions import ClientError
 import logging
+from dataclasses import dataclass
 from boto3.dynamodb.types import Binary
 
 from idp_common.ddb_numbers import coerce_int
@@ -280,6 +281,17 @@ class ConfigurationManager:
 
         Supports both compressed and legacy inline storage formats.
 
+        The head item's metadata attributes (`_DYNAMODB_METADATA_FIELDS`) are not
+        part of the result, `Managed` included. Its result is the editor's
+        `Custom` delta, which the UI merges into what it sends back on Save as
+        Profile and Save as default, so the result is kept free of record
+        metadata; `handle_update_custom_configuration` also drops any `managed`
+        it is sent, so a copy of a stack-managed profile is a user profile.
+        Saving this result back to the profile it was read from does not
+        un-manage it: `save_configuration` keeps the flag on a profile stored
+        as managed. `get_merged_configuration` needs the attribute and reads it
+        through `_read_raw_configuration`.
+
         Args:
             config_type: Configuration type
             version: Version identifier
@@ -289,6 +301,18 @@ class ConfigurationManager:
 
         Raises:
             ClientError: If DynamoDB operation fails
+        """
+        read = self._read_raw_configuration(config_type, version)
+        return read[0] if read is not None else None
+
+    def _read_raw_configuration(
+        self, config_type: str, version: str
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """`get_raw_configuration`, plus the head item's metadata attributes.
+
+        Returns ``(config_data, metadata)``, where ``metadata`` holds the keys of
+        the decompressed item that are in `_DYNAMODB_METADATA_FIELDS`, or None if
+        the item does not exist.
         """
         try:
             if version:
@@ -311,6 +335,9 @@ class ConfigurationManager:
             # Remove DynamoDB partition key and metadata fields - return only config data
             config_data = {
                 k: v for k, v in item.items() if k not in _DYNAMODB_METADATA_FIELDS
+            }
+            metadata = {
+                k: v for k, v in item.items() if k in _DYNAMODB_METADATA_FIELDS
             }
 
             # Relocate legacy-shaped keys to their current paths.
@@ -346,7 +373,7 @@ class ConfigurationManager:
             logger.info(
                 f"Retrieved raw configuration for {config_type}, version: {version}"
             )
-            return config_data
+            return config_data, metadata
 
         except ClientError as e:
             logger.error(f"Error retrieving raw configuration {config_type}: {e}")
@@ -422,7 +449,7 @@ class ConfigurationManager:
         # That shipped as a failure an operator could not diagnose: a profile
         # saved before `classification.packet` / `.segmentation` / `.labeling`
         # existed read back with all three prompts EMPTY, so switching it to
-        # `strategy: two_stage` + `granularity: packet` fell back to the page
+        # `strategy: split_then_classify` + `granularity: packet` fell back to the page
         # prompt, the model answered in page shape, the segments parser found
         # nothing, and every document FAILED in ~28s. A profile created after the
         # upgrade worked, which makes it look like the feature works and the
@@ -436,6 +463,7 @@ class ConfigurationManager:
         # it recurs on every future field that is added with a non-empty shipped
         # default.
         full_config_fallback: Optional[IDPConfig] = None
+        raw_read: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
         raw_version: Optional[Dict[str, Any]] = None
         try:
             config = self.get_configuration(CONFIG_TYPE_CONFIG, version)
@@ -444,7 +472,8 @@ class ConfigurationManager:
                 # gzip-compressed precisely because it is large, and nothing on
                 # this path is cached — `get_config()` builds a fresh manager per
                 # call — so a second `get_item` is paid per invocation.
-                raw_version = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+                raw_read = self._read_raw_configuration(CONFIG_TYPE_CONFIG, version)
+                raw_version = raw_read[0] if raw_read is not None else None
                 if raw_version and _is_full_config(raw_version):
                     # Keep it, in case `default` cannot be read below: returning a
                     # usable config beats returning None, which is what the merge
@@ -479,13 +508,11 @@ class ConfigurationManager:
 
         # Get version as RAW dict (no Pydantic defaults), reusing the read above
         # when it succeeded.
-        version_dict = (
-            raw_version
-            if raw_version is not None
-            else self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
-        )
-        if not version_dict:
+        if raw_read is None:
+            raw_read = self._read_raw_configuration(CONFIG_TYPE_CONFIG, version)
+        if raw_read is None or not raw_read[0]:
             raise ValueError(f"No Version {version} configuration found")
+        version_dict, stored_metadata = raw_read
 
         # Remove format marker if present (shouldn't be in sparse, but just in case)
         version_dict.pop(_FULL_CONFIG_MARKER, None)
@@ -499,6 +526,25 @@ class ConfigurationManager:
         from .migrations import migrate_config
 
         version_dict = migrate_config(version_dict)
+
+        # ⚠️ `managed` is the one `IDPConfig` field stored as a head-item
+        # attribute (`Managed`) rather than in the body, so the raw read above
+        # does not carry it. Left out, the merge fills it from `default`, which
+        # is not managed: a stack-managed profile then never compares equal to
+        # its stored self, and the write-back below fires on EVERY unpinned read
+        # — persisting `Managed=False`, which un-manages the profile, wherever the
+        # role can write the table, and failing with AccessDenied wherever it
+        # cannot. It is record metadata, not a setting to inherit, so it is
+        # resolved exactly as `ConfigurationRecord.from_dynamodb_item` resolves
+        # it for the validated read the comparison is made against: the head
+        # attribute when present, else a body key (older writers left it there),
+        # else the field default. Issue #1613.
+        if "Managed" in stored_metadata:
+            version_dict["managed"] = stored_metadata["Managed"]
+        else:
+            version_dict.setdefault(
+                "managed", IDPConfig.model_fields["managed"].default
+            )
 
         # Merge: start from the default profile, then let every key the stored
         # config HAS override it. A key it lacks is backfilled; a key it holds
@@ -586,7 +632,7 @@ class ConfigurationManager:
 
         # Save the resolved config back, so the next read is a direct one and so
         # the UI shows the fields that were backfilled instead of empty boxes —
-        # which is what made the two-stage failure undiagnosable.
+        # which is what made the split-then-classify failure undiagnosable.
         #
         # Not a revision: this is a storage-format rewrite, not a user's edit, and
         # recording it would make every legacy profile's history start with a
@@ -742,6 +788,29 @@ class ConfigurationManager:
                 else None
             )
             is_active_status = existing_record.is_active if existing_record else False
+
+            # ⚠️ A save never clears `managed` on a profile stored as
+            # stack-managed. The flag is the head's `Managed` attribute, not part
+            # of the body, so every caller that reads a profile raw
+            # (`get_raw_configuration`, which the discovery, BDA, bootstrap and
+            # editor-update paths all use) and saves it back passes a body
+            # without it — and the model's `False` default then un-managed the
+            # profile on every such save. A save CAN set it: the stack's own
+            # presets carry `managed: true`. The rule is a property of the
+            # profile, not of the save, so it applies to a body that spells out
+            # `managed: false` and to the stack's own saves too. "Stored as
+            # managed" is what the validated read says (`from_dynamodb_item`:
+            # the attribute, else a body key an older writer left), so a head
+            # written by such a writer is kept managed and gains the attribute.
+            # A new profile name has no head, so a copy takes the body's value.
+            # Issue #1613.
+            if (
+                isinstance(config, IDPConfig)
+                and not config.managed
+                and existing_record is not None
+                and getattr(existing_record.config, "managed", False) is True
+            ):
+                config = config.model_copy(update={"managed": True})
 
             if existing_record:
                 # Existing config - preserve created_at, update updated_at
@@ -1335,7 +1404,7 @@ class ConfigurationManager:
             # Non-fatal: resolution falls back to the scan.
             logger.warning(f"Could not write the active-profile pointer: {e}")
 
-    def resolve_active_version(self) -> str:
+    def resolve_active_version(self, raise_errors: bool = False) -> str:
         """
         Resolve the configuration version a new document should be processed under.
 
@@ -1358,6 +1427,14 @@ class ConfigurationManager:
         next activation writes it. The fallback paginates, so it cannot miss an
         active row that sorts late.
 
+        Args:
+            raise_errors: Raise when the profiles cannot be read instead of
+                degrading to DEFAULT_VERSION. For a caller that must know the
+                answer rather than have a usable one — `bda_routing` on behalf of
+                the processChanges resolver, which refuses rather than guesses.
+                A failed pointer read still falls back to the scan, which reads
+                the same answer from the profiles.
+
         Returns:
             The active version name, or DEFAULT_VERSION if none is active.
         """
@@ -1369,17 +1446,21 @@ class ConfigurationManager:
             if pointer and pointer.get("ActiveVersion"):
                 return str(pointer["ActiveVersion"])
         except Exception as e:  # noqa: BLE001
+            # Not raised even under `raise_errors`: the scan below reads the same
+            # answer from the profiles themselves, and raises if IT fails.
             logger.warning(
                 f"Could not read the active-profile pointer ({e}); scanning instead"
             )
 
         try:
-            for version_dict in self.list_config_versions():
+            for version_dict in self.list_config_versions(raise_errors=raise_errors):
                 if version_dict.get("isActive"):
                     name = version_dict.get("versionName")
                     if name:
                         return name
         except Exception as e:  # noqa: BLE001
+            if raise_errors:
+                raise
             # Never fail a document over this — the default is always readable.
             logger.warning(
                 f"Could not resolve the active config version ({e}); "
@@ -1467,12 +1548,16 @@ class ConfigurationManager:
 
     # ===== BDA Project Tracking Methods =====
 
-    def get_bda_project_arn(self, version: str) -> Optional[str]:
+    def get_bda_project_arn(
+        self, version: str, raise_errors: bool = False
+    ) -> Optional[str]:
         """
         Get the BDA project ARN linked to a config version.
 
         Args:
             version: Config version name
+            raise_errors: Raise a failed read instead of answering None, which
+                reads as "no project linked" and so as pipeline mode.
 
         Returns:
             BDA project ARN string, or None if no project is linked
@@ -1487,6 +1572,8 @@ class ConfigurationManager:
                 return item.get("BdaProjectArn")
             return None
         except ClientError as e:
+            if raise_errors:
+                raise
             logger.error(f"Error getting BDA project ARN for version {version}: {e}")
             return None
 
@@ -1824,6 +1911,13 @@ class ConfigurationManager:
         if isinstance(config_dict, dict):
             config_dict.pop("pricing", None)
             config_dict.pop(_FULL_CONFIG_MARKER, None)
+            # Whether a profile is stack-managed is decided by the stack, which
+            # writes through `save_configuration` directly, and is kept by that
+            # method on a profile already stored as managed. It is not a setting
+            # this operation edits: honoured here, a delta or a Save as carrying
+            # `managed: true` would make a user profile, or a copy of a managed
+            # one, stack-managed and undeletable in the web UI (#1613).
+            config_dict.pop("managed", None)
 
         # Migrate an incoming legacy-shaped config/delta to the current format BEFORE
         # it is merged onto a v0.6 default/current config below. If a v0.5-shaped upload
@@ -1834,10 +1928,15 @@ class ConfigurationManager:
         # reverting to default). Migration is idempotent, so this is a no-op for v0.6
         # input. (saveAsVersion/saveAsDefault/normal-update all merge, so migrate once
         # here at the single choke point.)
+        #
+        # `unstamped_is_current`: the input is a configuration being saved now. An
+        # editor delta never carries `config_format_version`, so without it a
+        # `max_log_events: 5` typed today would go through the v0.10 hop and be
+        # saved as 10; see `migrations.migrate_config`.
         if isinstance(config_dict, dict) and config_dict:
             from .migrations import migrate_config
 
-            config_dict = migrate_config(config_dict)
+            config_dict = migrate_config(config_dict, unstamped_is_current=True)
 
         # === Reset to default ===
         #
@@ -2453,3 +2552,90 @@ class ConfigurationManager:
         """
         logger.info("sync_custom_with_new_default called (no-op in full config mode)")
         return old_custom
+
+
+@dataclass(frozen=True)
+class BdaRouting:
+    """Which branch of the unified workflow a document is routed to.
+
+    ``version`` is the profile the routing was read for, ``requested`` that
+    profile's ``use_bda``, and ``project_arn`` the BDA project linked to it (read
+    only when BDA is requested).
+    """
+
+    version: str
+    requested: bool
+    project_arn: Optional[str] = None
+
+    @property
+    def bda(self) -> bool:
+        """True when the run goes down the BDA branch."""
+        return self.requested and bool(self.project_arn)
+
+
+def bda_routing(
+    manager: "ConfigurationManager",
+    config_version: Optional[str],
+    raise_errors: bool = False,
+    config_revision: Optional[int] = None,
+) -> BdaRouting:
+    """How a document processed under ``config_version`` is routed.
+
+    The queue processor's routing rule (``start_workflow`` and
+    ``routing_configuration`` in ``src/lambda/queue_processor/index.py``), stated
+    once for the processChanges resolver, which must know before it requeues a
+    document whether the run will be a BDA one: a BDA run keeps the sections a
+    document already has, so an edit that clears a section's values is not carried
+    through it. The queue processor still carries the rule inline; its unit suites
+    stub ``idp_common.config`` as a plain module, so routing it through here is a
+    change to those suites.
+
+    The rule: an unpinned document is processed under the ACTIVE profile (the
+    queue processor pins it before routing). ``use_bda`` is read from the revision
+    the document is pinned to (``config_revision``), or from the profile head when
+    it has none, and the run goes down the BDA branch when it is set and a BDA
+    project is linked to the profile — a profile that asks for BDA with no project
+    falls back to the pipeline.
+
+    A pinned revision that cannot be read is where the two callers differ. Lenient
+    (the queue processor's behaviour), the profile head is read instead. Strict
+    (``raise_errors``), the failure is raised: the head may disagree with the
+    revision the requeued run will route by whenever the revision becomes readable
+    again, so it is not an answer a caller that refuses rather than guesses can
+    use.
+
+    Args:
+        manager: A ``ConfigurationManager`` for the configuration table.
+        config_version: The profile the document is pinned to, or None.
+        raise_errors: Raise on any failed read instead of degrading to an answer.
+            The queue processor degrades to the pipeline; the resolver refuses.
+        config_revision: The revision of that profile the document is pinned to,
+            or None to read the profile head.
+    """
+    version = config_version or manager.resolve_active_version(
+        raise_errors=raise_errors
+    )
+    if config_revision is None:
+        config = manager.get_merged_configuration(version)
+    else:
+        try:
+            config = manager.get_merged_configuration(
+                version, revision=config_revision
+            )
+        except Exception as e:  # noqa: BLE001 — strict raises, lenient reads the head
+            if raise_errors:
+                raise
+            logger.warning(
+                f"Could not read revision r{config_revision} of configuration "
+                f"profile '{version}' for routing: {e}. Routing from the profile head."
+            )
+            config = manager.get_merged_configuration(version)
+    requested = bool(getattr(config, "use_bda", False)) if config else False
+    if not requested:
+        return BdaRouting(version=version, requested=False)
+    return BdaRouting(
+        version=version,
+        requested=True,
+        project_arn=manager.get_bda_project_arn(version, raise_errors=raise_errors)
+        or None,
+    )

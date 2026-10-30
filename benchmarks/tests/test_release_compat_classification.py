@@ -10,7 +10,7 @@ a ``sectionSplitting: disabled`` cell silently runs ``llm_determined`` on the co
 default model with an empty task prompt. Two halves are pinned here:
 
 * ``compat/classification_flat.py`` adds the equivalent pre-0.9 flat keys, and the
-  CURRENT reader resolves the result to the same single-pass classification as the
+  CURRENT reader resolves the result to the same combined classification as the
   nested original (a flat key wins over a nested one), so one file still serves
   both sides;
 * ``compat/release_model_check.py`` loads the TARGET release's own models and turns
@@ -59,7 +59,7 @@ def _cell_config(cell_id, **axes):
 
 def _packet(cfg):
     cfg = copy.deepcopy(cfg)
-    cfg["classification"]["one_stage"]["granularity"] = "packet"
+    cfg["classification"]["combined"]["granularity"] = "packet"
     return cfg
 
 
@@ -76,12 +76,13 @@ def _diff(a, b, path=()):
     return [".".join(path)] if a != b else []
 
 
-_PACKET_PAGE_PROMPTS = ["one_stage.page.system_prompt", "one_stage.page.task_prompt"]
+_PACKET_PAGE_PROMPTS = ["combined.page.system_prompt", "combined.page.task_prompt"]
 
-# (id, config builder, the diff OUTSIDE two_stage the current reader may show).
+# (id, config builder, the diff OUTSIDE split_then_classify the current reader may
+# show).
 # The page-granularity cells must resolve identically everywhere; at packet
 # granularity the old release's one prompt pair is the packet pair, which the
-# current reader files under one_stage.page as well — a block a packet-granularity
+# current reader files under combined.page as well — a block a packet-granularity
 # run does not read.
 CELLS = [
     ("split-disabled", lambda: _cell_config("split-disabled"), []),
@@ -120,29 +121,29 @@ def built():
 
 
 @pytest.mark.parametrize(
-    "cid,expected_outside_two_stage", [(c[0], c[2]) for c in CELLS]
+    "cid,expected_outside_split_then_classify", [(c[0], c[2]) for c in CELLS]
 )
 def test_current_reader_resolves_the_compat_copy_like_the_original(
-    built, cid, expected_outside_two_stage
+    built, cid, expected_outside_split_then_classify
 ):
     original = built[cid]
     compat, _ = classification_flat.with_flat_classification(original)
     diff = _diff(_resolved(original), _resolved(compat))
-    outside = [p for p in diff if not p.startswith("two_stage.")]
-    assert outside == expected_outside_two_stage, (
-        f"{cid}: the compat copy changes what a single-pass run reads: {outside}"
+    outside = [p for p in diff if not p.startswith("split_then_classify.")]
+    assert outside == expected_outside_split_then_classify, (
+        f"{cid}: the compat copy changes what a combined run reads: {outside}"
     )
 
 
-def test_a_two_stage_model_of_its_own_is_kept_under_the_flat_model(built):
-    """The cell sets only the one-stage model, so the two-stage calls keep the
-    defaults' model. The flat `model` in the compat copy replaces a two-stage
-    model only where that call followed the one-stage model, so the copy
-    resolves to exactly the original — pinned, not assumed."""
+def test_a_split_then_classify_model_of_its_own_is_kept_under_the_flat_model(built):
+    """The cell sets only the combined call's model, so the split-then-classify
+    calls keep the defaults' model. The flat `model` in the compat copy replaces a
+    split-then-classify model only where that call followed the combined model, so
+    the copy resolves to exactly the original — pinned, not assumed."""
     original = built["classification-model-haiku45"]
     compat, _ = classification_flat.with_flat_classification(original)
     assert _diff(_resolved(original), _resolved(compat)) == []
-    assert _resolved(compat)["strategy"] == "single_pass"
+    assert _resolved(compat)["strategy"] == "combined"
 
 
 def test_flat_keys_carry_the_cell_settings(built):
@@ -153,8 +154,8 @@ def test_flat_keys_carry_the_cell_settings(built):
     nested = built["split-disabled"]["classification"]
     assert flat["sectionSplitting"] == "disabled"
     assert flat["classificationMethod"] == "multimodalPageLevelClassification"
-    assert flat["model"] == nested["one_stage"]["llm"]["model"]
-    assert flat["task_prompt"] == nested["one_stage"]["page"]["task_prompt"]
+    assert flat["model"] == nested["combined"]["llm"]["model"]
+    assert flat["task_prompt"] == nested["combined"]["page"]["task_prompt"]
     assert flat["task_prompt"].strip(), (
         "an empty flat prompt is what the bug looked like"
     )
@@ -168,7 +169,7 @@ def test_packet_granularity_uses_the_packet_prompts_and_reports_what_differs(bui
     original = built["split-llm-packet"]
     compat, notes = classification_flat.with_flat_classification(original)
     flat = compat["classification"]
-    packet = original["classification"]["one_stage"]["packet"]
+    packet = original["classification"]["combined"]["packet"]
     assert flat["classificationMethod"] == "textbasedHolisticClassification"
     assert flat["task_prompt"] == packet["task_prompt"]
     assert flat["system_prompt"] == packet["system_prompt"]
@@ -176,16 +177,16 @@ def test_packet_granularity_uses_the_packet_prompts_and_reports_what_differs(bui
     assert any("confidence" in n for n in notes)
 
 
-def test_two_stage_cell_is_refused(built):
+def test_split_then_classify_cell_is_refused(built):
     cfg = copy.deepcopy(built["split-llm"])
-    cfg["classification"]["strategy"] = "two_stage"
-    with pytest.raises(classification_flat.CompatError, match="two-stage"):
+    cfg["classification"]["strategy"] = "split_then_classify"
+    with pytest.raises(classification_flat.CompatError, match="split-then-classify"):
         classification_flat.with_flat_classification(cfg)
 
 
 def test_explicit_modality_the_old_release_cannot_express_is_refused(built):
     cfg = copy.deepcopy(built["split-llm"])
-    cfg["classification"]["one_stage"]["llm"]["modality"]["images"] = False
+    cfg["classification"]["combined"]["llm"]["modality"]["images"] = False
     with pytest.raises(classification_flat.CompatError, match="modality.images"):
         classification_flat.with_flat_classification(cfg)
 
@@ -213,16 +214,16 @@ def test_dropped_keys_walks_sub_models_and_stops_at_free_form_fields():
 
     data = {
         "model": "m",
-        "one_stage": {"llm": {}},
+        "combined": {"llm": {}},
         "confidence": {"mode": "off", "task_prompt_topk_packet": "x"},
         "maybe": {"nope": 1},
         "free": {"anything": 1},
         "open_block": {"kept": 1},
     }
     assert release_model_check.dropped_keys(Root, data, "classification") == [
+        "classification.combined",
         "classification.confidence.task_prompt_topk_packet",
         "classification.maybe.nope",
-        "classification.one_stage",
     ]
 
 
@@ -254,8 +255,8 @@ def test_nested_config_fails_against_the_previous_release(built, release_lib):
     errors = release_model_check.check_config(built["split-disabled"], release_lib)
     dropped = {e.split(" ")[0] for e in errors}
     assert {
-        "classification.one_stage",
-        "classification.file_shape",
+        "classification.combined",
+        "classification.document_shape",
         "classification.fallback_class",
     } <= dropped
 
@@ -299,11 +300,11 @@ def test_prepare_native_configs_reports_problems_and_prepares_the_rest(
 ):
     pytest.importorskip("boto3")
     run_matrix = harness_module("run_matrix")
-    two_stage = copy.deepcopy(built["split-llm"])
-    two_stage["classification"]["strategy"] = "two_stage"
+    split_then_classify = copy.deepcopy(built["split-llm"])
+    split_then_classify["classification"]["strategy"] = "split_then_classify"
     cells = [
         _write_cell(tmp_path, "bench-ok", built["split-disabled"]),
-        _write_cell(tmp_path, "bench-two", two_stage),
+        _write_cell(tmp_path, "bench-split", split_then_classify),
         _write_cell(tmp_path, "bench-dropped", built["split-llm"]),
     ]
     monkeypatch.setattr(release_model_check, "extract_release_lib", lambda tag: "/x")
@@ -319,7 +320,9 @@ def test_prepare_native_configs_reports_problems_and_prepares_the_rest(
     prepared, problems = run_matrix.prepare_native_configs(cells, PREVIOUS_RELEASE)
     assert sorted(prepared) == ["bench-dropped", "bench-ok"]
     assert len(problems) == 2
-    assert any(p.startswith("bench-two:") and "two-stage" in p for p in problems)
+    assert any(
+        p.startswith("bench-split:") and "split-then-classify" in p for p in problems
+    )
     assert any(p.startswith("bench-dropped:") for p in problems)
 
 

@@ -1,12 +1,12 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// HITL › Queue Management: edit one system-wide production queue — its name,
+// Review Studio › Review Management: edit one system-wide production queue — its name,
 // priority, reminder time limit, enabled switch and eligible Annotators — or a Test
 // Studio queue's settings (the same, less the id, name and switch, which a test set
 // doesn't have: its documents come from the set, not from the pipeline). Queues have
 // no confidence threshold: documents are routed by their confidence alerts. Create
-// mode stays in the component for the API, but Queue Management doesn't open it. Every queue's skip reasons, which an Annotator
+// mode stays in the component for the API, but Review Management doesn't open it. Every queue's skip reasons, which an Annotator
 // picks from when giving an item back, are edited here one per line. A queue's stored
 // checklist and reject reasons are kept as they are; the dialog doesn't edit them.
 import React, { useEffect, useState } from 'react';
@@ -248,15 +248,15 @@ const QueueDefinitionModal = ({
             <FormField
               label="Priority"
               description="Higher numbers are worked first."
-              constraintText="A whole number."
+              constraintText="A whole number. For information: orders the queues and Next item. Kept for when there is more than one queue; with only the Default queue it changes nothing yet."
               errorText={submitted ? priorityError : undefined}
             >
               <Input type="number" inputMode="numeric" value={priority} onChange={({ detail }) => setPriority(detail.value)} />
             </FormField>
             <FormField
               label="Time limit (minutes)"
-              description="When the Annotator is reminded."
-              constraintText={`An item still open after this long sends one reminder; assignments don't expire. 1 to ${MAX_TIME_LIMIT_MINUTES}.`}
+              description="When an assigned item's Annotator is reminded."
+              constraintText={`For information: one reminder is sent, and the item stays assigned (assignments don't expire). 1 to ${MAX_TIME_LIMIT_MINUTES}.`}
               errorText={submitted ? timeLimitError : undefined}
             >
               <Input type="number" inputMode="numeric" value={timeLimit} onChange={({ detail }) => setTimeLimit(detail.value)} />
@@ -283,7 +283,7 @@ const QueueDefinitionModal = ({
           </FormField>
           <FormField
             label="Eligible Annotators"
-            description="The Annotators who work this queue: they see it in My Work › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
+            description="The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
             stretch
           >
             <Multiselect

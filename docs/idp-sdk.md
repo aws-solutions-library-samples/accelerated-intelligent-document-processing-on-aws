@@ -747,7 +747,7 @@ result = client.evaluation.create_baseline(
 ### evaluation.use_as_baseline()
 
 Promote a processed document's output to the evaluation baseline — the
-programmatic equivalent of the web UI's **Use as Evaluation Baseline** button.
+programmatic equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies the document's output into the evaluation baseline bucket and sets its
 `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs synchronously.
 

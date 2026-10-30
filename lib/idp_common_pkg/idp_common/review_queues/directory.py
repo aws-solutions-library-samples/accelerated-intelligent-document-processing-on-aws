@@ -85,6 +85,12 @@ class QueueDirectory:
         return self._view().queue(queue)
 
     def in_scope(self, caller: CallerContext, profile: str) -> bool:
+        """Whether a queue reference's profile is within the caller's scope.
+
+        For a queue, not an item: a system-wide queue has no profile, so it is
+        admitted. Items are decided by their own profile, with ``scope_allows``
+        (``ReviewQueueService._sees``).
+        """
         if caller.is_admin or caller.allowed_versions is None or not profile:
             return True
         return scope_allows(caller.allowed_versions, profile)
@@ -111,6 +117,6 @@ class QueueDirectory:
         """``(groups, emails)`` told when work arrives in a queue: nobody.
 
         Only Annotators have an Inbox, and they hear about an item when it is
-        assigned to them; Admins see waiting work on HITL › Queue Management.
+        assigned to them; Admins see waiting work on Review Studio › Review Management.
         """
         return [], []

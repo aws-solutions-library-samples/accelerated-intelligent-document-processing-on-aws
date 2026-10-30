@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: MIT-0
 //
 // One row shape for every kind of HITL work: production review queue items and Test
-// Studio documents. Queue Management and My Work › Tasks list both; each row opens
-// the annotation screen for its item. An Admin assigns work, or an Annotator listed
+// Studio documents. Review Management and Home › Tasks list both; each row opens
+// the edit screen for its item. An Admin assigns work, or an Annotator listed
 // on the queue claims it.
 import type { ReviewItem, TestSetTask } from '../../graphql/generated/operation-types';
-import { reviewItemHref, testSetAnnotateHref } from '../../routes/constants';
+import { documentEditHref, testSetAnnotateHref } from '../../routes/constants';
+import type { EditOrigin } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import type { StateView } from '../common/review-status';
 import { documentName, reasonText } from './review-api';
+import { productionWorkItemId, testSetWorkItemId } from './work-item-ids';
 
 export type WorkSource = 'production' | 'test-set';
 
@@ -45,27 +47,30 @@ export const SOURCE_LABELS: Record<WorkSource, string> = {
 
 const ASSIGNED: StateView = { label: 'Assigned', type: 'in-progress' };
 
-export const fromReviewItem = (item: ReviewItem): WorkItem => ({
-  id: `p:${item.objectKey}`,
-  source: 'production',
-  objectKey: item.objectKey,
-  name: documentName(item.objectKey),
-  queue: `${item.queue}${item.escalated ? ' (escalated)' : ''}`,
-  priority: item.priority,
-  enqueuedAt: item.enqueuedAt,
-  reason: item.reasons[0] ? reasonText(item.reasons[0]) : null,
-  extraReasons: Math.max(item.reasonCount - 1, 0),
-  // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
-  state: item.state === QueueItemState.CLAIMED ? ASSIGNED : reviewItemStateView(item.state),
-  assignedTo: item.isMine ? 'You' : (item.ownerEmail ?? null),
-  assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
-  href: reviewItemHref(item.objectKey),
-  reviewItem: item,
-});
+/** One production review item, as a row whose link opens the edit page with its origin. */
+export const fromReviewItem =
+  (from: EditOrigin) =>
+  (item: ReviewItem): WorkItem => ({
+    id: productionWorkItemId(item.objectKey),
+    source: 'production',
+    objectKey: item.objectKey,
+    name: documentName(item.objectKey),
+    queue: `${item.queue}${item.escalated ? ' (escalated)' : ''}`,
+    priority: item.priority,
+    enqueuedAt: item.enqueuedAt,
+    reason: item.reasons[0] ? reasonText(item.reasons[0]) : null,
+    extraReasons: Math.max(item.reasonCount - 1, 0),
+    // The backend state for an item held by its Annotator is CLAIMED; the UI says Assigned.
+    state: item.state === QueueItemState.CLAIMED ? ASSIGNED : reviewItemStateView(item.state),
+    assignedTo: item.isMine ? 'You' : (item.ownerEmail ?? null),
+    assignedToMe: item.isMine && item.state === QueueItemState.CLAIMED,
+    href: documentEditHref(item.objectKey, { from }),
+    reviewItem: item,
+  });
 
 /** One of the caller's assigned Test Studio documents (listMyTestSetTasks). */
 export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
-  id: `t:${task.testSetId}:${task.objectKey}`,
+  id: testSetWorkItemId(task.testSetId, task.objectKey),
   source: 'test-set',
   objectKey: task.objectKey,
   name: documentName(task.objectKey),
@@ -81,6 +86,6 @@ export const fromTestSetTask = (task: TestSetTask): WorkItem => ({
   state: ASSIGNED,
   assignedTo: 'You',
   assignedToMe: true,
-  href: testSetAnnotateHref(task.testSetId, task.objectKey),
+  href: testSetAnnotateHref(task.testSetId, task.objectKey, 'tasks'),
   testSetId: task.testSetId,
 });

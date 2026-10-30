@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The Inbox belongs to Annotators: it is the first entry of the My Work section,
- * which leads the navigation for anyone in the Annotator group (Annotator-only, or
- * Annotator alongside another role). Every other role has no Inbox entry at all
+ * Every user has an Inbox: it is the first entry of the Home section, which leads the
+ * navigation for every role. Home adds Tasks and Queues only for the Annotator group
+ * (Annotator-only, or Annotator alongside another role), who are assigned HITL work
  * (docs/web-ui.md, "Inbox"; docs/rbac.md). These tests check each role rather than
  * trusting that one role's list is representative.
  */
@@ -50,14 +50,14 @@ const NO_ROLE = {
   allowedTestSets: null,
 };
 
-/** Roles that have My Work, and so the Inbox. */
+/** Roles in the Annotator group: Home has their Tasks and Queues. */
 const ANNOTATOR_ROLES: Array<[string, Record<string, unknown>]> = [
   ['Annotator', { ...NO_ROLE, isAnnotator: true, isAnnotatorOnly: true, allowedTestSets: ['set-1'] }],
   ['Admin + Annotator', { ...NO_ROLE, isAdmin: true, isAnnotator: true }],
   ['Viewer + Annotator', { ...NO_ROLE, isViewerOnly: true, isAnnotator: true }],
 ];
 
-/** Roles without the Annotator group, which have no Inbox. */
+/** Roles without the Annotator group: Home has the Inbox only. */
 const OTHER_ROLES: Array<[string, Record<string, unknown>]> = [
   ['Admin', { ...NO_ROLE, isAdmin: true }],
   ['Author', { ...NO_ROLE, isAuthor: true }],
@@ -85,13 +85,16 @@ const allLinks = (items: ReadonlyArray<SideNavigationProps.Item>): SideNavigatio
 
 const inboxLinks = (nav: SideNavigationProps) => allLinks(nav.items ?? []).filter((l) => l.href === '#/inbox');
 
-/** The first link of the first item, which must be the My Work section. */
-const firstMyWorkLink = (nav: SideNavigationProps) => {
+/** The first item, which must be the Home section. */
+const homeSection = (nav: SideNavigationProps) => {
   const first = (nav.items ?? [])[0] as SideNavigationProps.Section;
   expect(first.type).toBe('section');
-  expect(first.text).toBe('My Work');
-  return first.items[0] as SideNavigationProps.Link;
+  expect(first.text).toBe('Home');
+  return first;
 };
+const homeLinks = (nav: SideNavigationProps) => homeSection(nav).items.map((l) => (l as SideNavigationProps.Link).text);
+/** The first link of the Home section. */
+const firstHomeLink = (nav: SideNavigationProps) => homeSection(nav).items[0] as SideNavigationProps.Link;
 
 const infoText = (link: SideNavigationProps.Link): string => {
   if (!link.info) return '';
@@ -99,32 +102,32 @@ const infoText = (link: SideNavigationProps.Link): string => {
   return container.textContent ?? '';
 };
 
-describe.each(ANNOTATOR_ROLES)('Inbox navigation entry for %s', (_name, role) => {
+describe.each([...ANNOTATOR_ROLES, ...OTHER_ROLES])('Inbox navigation entry for %s', (_name, role) => {
   beforeEach(() => {
     state.role = role;
     state.unreadCount = 0;
     state.nav = null;
   });
 
-  it('is the first entry of My Work, which comes first, and links to the Inbox', () => {
-    const link = firstMyWorkLink(renderNav());
+  it('is the first entry of Home, which comes first, and links to the Inbox', () => {
+    const link = firstHomeLink(renderNav());
     expect(link.type).toBe('link');
     expect(link.text).toBe('Inbox');
     expect(link.href).toBe('#/inbox');
   });
 
   it('shows no badge with nothing unread', () => {
-    expect(firstMyWorkLink(renderNav()).info).toBeUndefined();
+    expect(firstHomeLink(renderNav()).info).toBeUndefined();
   });
 
   it('announces the unread count', () => {
     state.unreadCount = 3;
-    expect(infoText(firstMyWorkLink(renderNav()))).toContain('3 unread');
+    expect(infoText(firstHomeLink(renderNav()))).toContain('3 unread');
   });
 
   it('caps the badge at 99+', () => {
     state.unreadCount = 150;
-    expect(infoText(firstMyWorkLink(renderNav()))).toContain('99+');
+    expect(infoText(firstHomeLink(renderNav()))).toContain('99+');
   });
 
   it('is the active link on the Inbox page', () => {
@@ -134,21 +137,33 @@ describe.each(ANNOTATOR_ROLES)('Inbox navigation entry for %s', (_name, role) =>
   it('appears exactly once', () => {
     expect(inboxLinks(renderNav())).toHaveLength(1);
   });
-});
-
-describe.each(OTHER_ROLES)('No Inbox navigation entry for %s', (_name, role) => {
-  beforeEach(() => {
-    state.role = role;
-    state.unreadCount = 3;
-    state.nav = null;
-  });
-
-  it('has no Inbox link anywhere in the navigation', () => {
-    expect(inboxLinks(renderNav())).toHaveLength(0);
-  });
 
   it('has no My Work section', () => {
     const sections = (renderNav().items ?? []).filter((i) => i.type === 'section').map((i) => (i as SideNavigationProps.Section).text);
     expect(sections).not.toContain('My Work');
+  });
+});
+
+describe.each(ANNOTATOR_ROLES)('Home for %s', (_name, role) => {
+  beforeEach(() => {
+    state.role = role;
+    state.unreadCount = 0;
+    state.nav = null;
+  });
+
+  it('lists Inbox, Tasks and Queues', () => {
+    expect(homeLinks(renderNav())).toEqual(['Inbox', 'Tasks', 'Queues']);
+  });
+});
+
+describe.each(OTHER_ROLES)('Home for %s', (_name, role) => {
+  beforeEach(() => {
+    state.role = role;
+    state.unreadCount = 0;
+    state.nav = null;
+  });
+
+  it("lists the Inbox only: Tasks and Queues are an Annotator's", () => {
+    expect(homeLinks(renderNav())).toEqual(['Inbox']);
   });
 });

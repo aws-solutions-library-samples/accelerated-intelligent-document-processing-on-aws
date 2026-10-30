@@ -140,8 +140,8 @@ class TestConfigModels:
         assert config.extraction.confidence.enabled is True
 
         # Numbers from strings
-        assert config.classification.one_stage.llm.temperature == 0.0
-        assert config.classification.one_stage.llm.max_tokens == 4096
+        assert config.classification.combined.llm.temperature == 0.0
+        assert config.classification.combined.llm.max_tokens == 4096
 
         # Numbers from natives
         assert config.extraction.top_p == 0.1
@@ -152,7 +152,7 @@ class TestConfigModels:
         from idp_common.config.models import ClassificationConfig
 
         cfg = ClassificationConfig()
-        validation = cfg.one_stage.llm.validation
+        validation = cfg.combined.llm.validation
         assert validation.enforceValidClasses is True
         assert validation.maxValidationRetries == 2
         assert cfg.fallback_class == "unclassified"
@@ -171,8 +171,8 @@ class TestConfigModels:
         # Flat (pre-0.9) keys passed straight to the model are migrated, not
         # dropped: direct construction is a second entry point to protect.
         for validation in (
-            cfg.one_stage.llm.validation,
-            cfg.two_stage.section_classification.llm.validation,
+            cfg.combined.llm.validation,
+            cfg.split_then_classify.section_classification.llm.validation,
         ):
             assert validation.enforceValidClasses is False
             assert validation.maxValidationRetries == 3
@@ -180,7 +180,7 @@ class TestConfigModels:
 
         # Negative retries are clamped to 0.
         clamped = ClassificationConfig.model_validate({"maxValidationRetries": "-1"})
-        assert clamped.one_stage.llm.validation.maxValidationRetries == 0
+        assert clamped.combined.llm.validation.maxValidationRetries == 0
 
     def test_config_type_hints(self):
         """Test that config can be used as type hint"""
@@ -473,7 +473,7 @@ class TestPipelineHookPreservation:
         )
         assert len(cfg.rule_validation.postHook) == 1
         # classification still has its default model (not wiped out).
-        assert cfg.classification.one_stage.llm.model
+        assert cfg.classification.combined.llm.model
 
 
 @pytest.mark.unit
@@ -543,8 +543,8 @@ NO_PAGE_LIMIT_SPELLINGS = [
 
 
 @pytest.mark.unit
-class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
-    """`file_shape` used to accept three values it could not act on.
+class TestTheDocumentShapeIsOnlyAcceptedWhenItCanBeHonoured:
+    """`document_shape` used to accept three values it could not act on.
 
     Both settings are assertions about a file, and an assertion the pipeline cannot
     honour is worse than a refused one: the editor shows it, the operator believes
@@ -554,10 +554,12 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
 
     @pytest.mark.parametrize("value", NO_PAGE_LIMIT_SPELLINGS)
     def test_a_value_that_is_not_a_page_count_classifies_every_page(self, value):
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         assert (
-            FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+            DocumentShapeConfig(
+                maxPagesForClassification=value
+            ).maxPagesForClassification
             == "ALL"
         )
 
@@ -567,19 +569,19 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
         Once by the `sectionSplitting` check and again by an `int()` inside a bare
         `except`, so the editor kept showing a limit that was never in force.
         """
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         with caplog.at_level(logging.WARNING):
-            shape = FileShapeConfig(maxPagesForClassification="abc")
+            shape = DocumentShapeConfig(maxPagesForClassification="abc")
         assert shape.maxPagesForClassification == "ALL"
         assert "maxPagesForClassification" in caplog.text
 
     def test_the_legacy_zero_takes_the_default_silently(self, caplog):
         """`0` has always meant ALL, so it is a spelling rather than a mistake."""
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         with caplog.at_level(logging.WARNING):
-            shape = FileShapeConfig(maxPagesForClassification=0)
+            shape = DocumentShapeConfig(maxPagesForClassification=0)
         assert shape.maxPagesForClassification == "ALL"
         assert "maxPagesForClassification" not in caplog.text
 
@@ -588,10 +590,12 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
         self, value
     ):
         """`-5` became ALL and `'-5'` was stored verbatim — one value, two answers."""
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         assert (
-            FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+            DocumentShapeConfig(
+                maxPagesForClassification=value
+            ).maxPagesForClassification
             == "ALL"
         )
 
@@ -609,10 +613,12 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
         ],
     )
     def test_a_real_page_limit_is_kept(self, value, expected):
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         assert (
-            FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+            DocumentShapeConfig(
+                maxPagesForClassification=value
+            ).maxPagesForClassification
             == expected
         )
 
@@ -627,20 +633,20 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
         validator stored it, while a bad `sectionSplitting` cannot, because the
         validator rewrote it before it was saved.
         """
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         with pytest.raises(ValueError, match="sectionSplitting"):
-            FileShapeConfig(sectionSplitting="bogus")
+            DocumentShapeConfig(sectionSplitting="bogus")
 
     @pytest.mark.parametrize("value", ["", "   ", None])
     def test_clearing_section_splitting_takes_the_default_silently(self, value, caplog):
         """Every sibling validator treats empty as "use the default", and now so does
         this one: clearing the field in the editor used to print a spurious
         "Invalid sectionSplitting value ''"."""
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
         with caplog.at_level(logging.WARNING):
-            shape = FileShapeConfig(sectionSplitting=value)
+            shape = DocumentShapeConfig(sectionSplitting=value)
         assert shape.sectionSplitting == "llm_determined"
         assert "sectionSplitting" not in caplog.text
 
@@ -654,9 +660,9 @@ class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
         ],
     )
     def test_a_recognised_value_is_normalised(self, value, expected):
-        from idp_common.config.models import FileShapeConfig
+        from idp_common.config.models import DocumentShapeConfig
 
-        assert FileShapeConfig(sectionSplitting=value).sectionSplitting == expected
+        assert DocumentShapeConfig(sectionSplitting=value).sectionSplitting == expected
 
 
 @pytest.mark.unit
@@ -762,8 +768,8 @@ class TestDirectConstructionRunsTheWholeMigrationChain:
         from idp_common.config.models import ClassificationConfig
 
         cfg = ClassificationConfig(**self.FLAT_HOLISTIC)
-        assert cfg.one_stage.granularity == "packet"
-        assert "ordinal_start_page" in cfg.one_stage.packet.task_prompt
+        assert cfg.combined.granularity == "packet"
+        assert "ordinal_start_page" in cfg.combined.packet.task_prompt
 
     def test_both_routes_now_agree(self):
         """The property the docstring claims, asserted as an equality.

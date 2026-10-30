@@ -147,7 +147,7 @@ service = ClassificationService(region="us-east-1", config=config)
 document = service.classify_document(document)
 ```
 
-**Features:** Two strategies (`single_pass`, `two_stage`) selected by `classification.strategy`; two granularities for the page-reading call (`page`, `packet`); BIO-like sequence segmentation, regex-based classification, DynamoDB caching, few-shot examples, class confidence, section splitting strategies (`disabled`, `page`, `llm_determined`).
+**Features:** Two strategies (`combined`, `split_then_classify`) selected by `classification.strategy`; two granularities for the page-reading call (`page`, `packet`); BIO-like sequence segmentation, regex-based classification, DynamoDB caching, few-shot examples, class confidence, section splitting values (`disabled`, `page`, `llm_determined`).
 
 ### Extraction (`idp_common.extraction`)
 

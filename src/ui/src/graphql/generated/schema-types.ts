@@ -98,6 +98,7 @@ export type AnnotationQueueItem = {
   claimedByMe: Scalars['Boolean']['output'];
   confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   documentClasses?: Maybe<Array<Scalars['String']['output']>>;
+  draftSections?: Maybe<Array<TestSetSectionDraft>>;
   fieldCount?: Maybe<Scalars['Int']['output']>;
   inputKey: Scalars['String']['output'];
   labelSource?: Maybe<Scalars['String']['output']>;
@@ -989,6 +990,7 @@ export type Mutation = {
   saveReviewDraft?: Maybe<ReviewDraft>;
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
+  saveTestSetDocumentSectionDraft?: Maybe<TestSetSectionDraft>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
@@ -1455,6 +1457,15 @@ export type MutationSaveSectionReviewEditsArgs = {
 
 export type MutationSaveTestSetDocumentSectionArgs = {
   data?: InputMaybe<Scalars['AWSJSON']['input']>;
+  objectKey: Scalars['String']['input'];
+  sectionId: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationSaveTestSetDocumentSectionDraftArgs = {
+  baseRevision?: InputMaybe<Scalars['Int']['input']>;
+  data: Scalars['AWSJSON']['input'];
   objectKey: Scalars['String']['input'];
   sectionId: Scalars['String']['input'];
   testSetId: Scalars['String']['input'];
@@ -2778,6 +2789,14 @@ export type TestSetQueueSummary = {
   status?: Maybe<Scalars['String']['output']>;
   summaryStatus?: Maybe<Scalars['String']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
+export type TestSetSectionDraft = {
+  draftUri: Scalars['String']['output'];
+  revision: Scalars['Int']['output'];
+  sectionId: Scalars['String']['output'];
+  updatedAt: Scalars['AWSDateTime']['output'];
+  updatedBy?: Maybe<Scalars['String']['output']>;
 };
 
 export type TestSetSectionGrouping = {

@@ -254,7 +254,7 @@ more, because each is judged on a *rate* and a single sample cannot resolve one.
 | `enforcecost` | What does `fail_action: escalate` cost? | `cost` — the only enforcement arm that spends money per failure; kept separate so it is never run by accident |
 | `forcing` | Does forcing the schema as a tool improve extraction? | `cell_accuracy`, `completeness_recall`, and `forced_tool_honored_rate` — **not** "did it parse" |
 | `restatement` | Does dropping the duplicated schema copy cost completeness? | `completeness_recall`. The gate is completeness, not tokens: a saving that loses list rows is a loss |
-| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-document file (must yield 2). A fix that only stops over-splitting regresses the second |
+| `boundary` | Does boundary detection split correctly in **both** directions? | `sections_correct` on a 3-page single document (must yield 1) *and* a two-section packet (must yield 2). A fix that only stops over-splitting regresses the second |
 | `boundaryctl` | Control for `boundary`: what did the **pre-fix** prompt score? | `sections_correct`. Runs the frozen pre-#653 prompt from `benchmarks/matrices/prompts/`, so the claim is a measured delta rather than a single post-fix number |
 | `splitcost` | What did making `llm_determined` do real work cost? | `cost`, `repeats: 5` |
 
@@ -272,14 +272,14 @@ model only appears there if it has been swept, and the table records when:
 
 | Model | In the sweep | Measured | Note |
 |---|---|---|---|
-| Nova Lite | ✅ | 2026-09-12, **v0.6.8** (full `coresynth`, 133 runs, 32 failed) — not re-measured on v0.6.9 | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-which-model-for-which-documents--the-model-axis-measured) |
+| Nova Lite | ✅ | 2026-09-12, **v0.6.8** (full `coresynth`, 133 runs, 32 failed) — not re-measured on v0.6.9 | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-choosing-models-by-document-type) |
 | Nova Pro | ✅ | 2026-09-12, **v0.6.8** (`simplegrid`, 63 runs; not re-measured on v0.6.9; full grid abandoned after 36 launches — advanced cells stuck in stream-error retries) | simple mode ≤100 rows only |
 | Claude Sonnet 4.6 | held as the sweep's control | **2026-09-19, v0.6.9** (`core`, 893 runs incl. both reference corpora) | the fixed baseline every sweep varies against; cheapest of the three measured on v0.6.9 ($0.537/doc) and the only one that failed runs (4 of 133) |
 | **Claude Sonnet 5** (default) | ✅ | **2026-09-19, v0.6.9** (133 runs, plus `scaling`, `scalingsimple`, `cost`, `advverify`, `astravalue`, `astracap`) | the shipped default; 0 failures of 133 at $0.676/doc, no confidence leaf below 0.9 anywhere in the grid |
 | Sonnet 5 `:1m` | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | matched Sonnet 5's accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
 | **Claude Opus 5** | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
 | **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | **2026-10-11, v0.6.11** (`coresynth`, 133 runs, 13 failed) | **Measured: recall 1.000, cell accuracy 1.000, $0.699/doc, 286 s/doc** — the joint-best accuracy in the grid and cheaper per document than Opus 5 ($0.816), but the slowest arm by 52%. ⚠️ **It cannot complete a large document in simple mode at all**: all 13 of its failures are `large_narrow`, and they are exactly the 13 *simple*-mode cells, while all 6 *advanced* (sharded) cells completed 7/7. Sonnet 5 and Sonnet 5 1M completed all 13 of those same cells in the same window on the same stack, so this is a per-request limit (the 300 s non-streaming `converse` read timeout), not load. **On large documents this model requires advanced mode.** ⚠️ **The `forcing` axis has no measurement for it**, now confirmed from the API rather than the model card: its `force-on` cells completed with `forced_tool_attempted=0`, `forced_tool_honored_rate=None` and the refusal recorded in `forced_tool_skips` — `tool_choice: type "tool" and "any" are not supported for this model`. Every other arm honoured forcing at rate 1.00, so that column is meaningful everywhere else and absent here. `opus55value` has still not run. Its rate card is cheaper than Opus 5 in every category ($4/$20 per 1M vs $5/$25, and a cache read at 0.05x input rather than 0.1x), and its launch claim adds "fewer tokens for the same task" on top — three multipliers that compound, so **no cost figure for it should be quoted until `opus55value` has run**. Two behaviours also differ from Opus 5 in ways a run will show: thinking cannot be disabled (effort is the only spend lever, and its default is `medium` where Opus 5's is `high` — per the model card; a default is not observable from a response, so it is cited rather than measured), and a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on` for it |
-| **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap-opus55value) |
+| **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
 | Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | see the guide §5.3 |
 | **Claude Haiku 5.5** | ✅ (`extraction_model` **and** `classification_model` sweeps) | **2026-10-11, v0.6.11** (`coresynth` extraction sweep 133 runs / 4 failed, **and** the `classification_model` sweep 133 runs / 5 failed) | **Measured accuracy: cell accuracy 0.999 over ~61,400 compared cells — equal to the shipped default — at recall 0.981 and 168 s/doc.** As a *classification* model it is also at 0.999, indistinguishable from the `nova_2_lite` default, so classification is where it is unambiguously safe to adopt. ⚠️ **Two caveats that the accuracy figure alone hides.** Completeness at size: only **9 of 13** simple-mode cells complete on `large_narrow`, against 13/13 for Sonnet 5 in the same window — it is the second-least reliable arm in simple mode after Opus 5.5. And **cost remains unquotable**: the 5× long-context band below is not a hypothetical here, **105 of its 129 completed runs exceed 100,000 input tokens** (median 543,675, max 10.96M), so the harness's $0.155/doc is a lower bound and 5× of it (~$0.77) would exceed Sonnet 5's $0.587 — the *sign* of the comparison is unresolved, so **no cost ratio for this model is published**. The cheap end of the axis, and the first one that is a Claude: $0.11/$0.55 per 1M in/out, 10x below Haiku 4.5 and 20x below Sonnet 5 on input. The open question is not whether it wins but **how much completeness and accuracy the floor costs**, so quote no accuracy figure for it until the sweep has run. Four things a run will show that cannot be carried over from the Haiku 4.5 row: it accepts `reasoning_effort` (the first Haiku that does — 4.5 rejects it with a 400 — default `medium` per the model card, so an effort-unset cell is not comparable to a 4.5 cell); a forced `toolChoice` **is** accepted, unlike Opus 5.5, so a `forcing` A/B is valid; its prompt-cache minimum is 512 tokens against 4.5's 4,096, so classes that never cached may cache here; and images cost high-resolution tokens (~4,770 for a 2550x3301 page vs ~1,542 on 4.5), so an image-bearing cell is ~3x the input tokens and "10x cheaper per token" is not "10x cheaper per page". ⚠️ **Cost is under-reported by 5x above 100,000 input tokens, and the sizers cross that by default** — Anthropic prices this model in two prompt-length bands (5x on every token type above 100,000 tokens) while `pricing.yaml` holds one flat rate per model, and its agentic shard budget is 578,400 tokens. Same shape as the GPT-6 Astra arm and handled the same way; read the note on its `model_config_limits.yaml` entry before quoting a dollar figure for it. Capping the window to dodge the band was tried and rejected: 100,000 leaves a 2,000-token shard budget against Sonnet 5's 18,400 |
@@ -351,17 +351,17 @@ Three things about reading the result:
   long packets and per-document flatters page granularity on short ones;
   whichever you quote alone will argue for the setting it favours.
 - **`classification_by_context`** carries the per-stage tokens, cost and Lambda
-  invocation count, so a two-stage cell shows whether the money went to
-  `Segmentation` or `SectionClassification`.
+  invocation count, so a split-then-classify cell shows whether the money went to
+  `Splitting` or `SectionClassification`.
   ⚠️ **Two counts, and the obvious reading of the first one is wrong.**
   `lambda_invocations_per_document` counts Lambda invocations: a 6-page document
   at `page` granularity makes six Bedrock calls inside **one** invocation, so it
-  reads `1.0` for `page` and `packet` alike, and in a two-stage run the single
+  reads `1.0` for `page` and `packet` alike, and in a split-then-classify run the single
   invocation lands under `Classification` while the spend lands under
-  `Segmentation`/`SectionClassification`, which therefore read `0.0`.
+  `Splitting`/`SectionClassification`, which therefore read `0.0`.
   **`bedrock_calls_per_document`** is the figure the N-calls-to-one claim is
-  about, and it is per stage — a two-stage page-granularity run over a 6-page
-  document measured 6 segmentation calls and 6 section classification calls. ⚠️ It is `None` rather
+  about, and it is per stage — a split-then-classify page-granularity run over a 6-page
+  document measured 6 splitting calls and 6 section classification calls. ⚠️ It is `None` rather
   than `0` when nothing carried a request count, because not every metering entry
   does and "made no calls" is a different claim from "not metered".
   **`classification_output_tokens_per_page`** separates the granularities too,
@@ -389,7 +389,7 @@ putting seven model-pinned cells there inflated the standard grid by 37% and —
 document over ~11 pages — added cells that are *expected* to fail, which makes a
 release regression gate unreadable.
 
-### Is a premium model worth it? (`astravalue` / `astracap`)
+### Is a premium model worth it?
 
 A model-price question is a **ratio**, so this pair is built to be able to answer
 "no". It compares Claude Sonnet 5 against OpenAI GPT-6 Astra (~4× the input price)
@@ -442,7 +442,7 @@ cost. A premium model earns its price only where the accuracy gap is large enoug
 the cheaper model would need human review to close it. If accuracy ties, the answer is
 the cheaper model.
 
-### Is the newer Opus cheaper for the same result? (`opus55value`)
+### Is the newer Opus cheaper for the same result?
 
 The same method, one generation apart: Claude Opus 5.5 against Claude Opus 5, with only
 `extraction.model` differing. The comparator is Opus 5 rather than the shipped default
@@ -537,7 +537,7 @@ level across documents.
 > The n=1 limitation this replaces bit at v0.6.5 — see
 > [releases/v0.6.5.md §3.1](./releases/v0.6.5.md) for what it cost.
 
-## Reproducibility & honesty rules
+## Reproducibility and reporting rules
 
 - Each results directory records the exact commit, the deployed stack version (read from the
   stack's CloudFormation `Description`, **not** the local git HEAD — those differ whenever a

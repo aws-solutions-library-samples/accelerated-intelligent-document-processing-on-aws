@@ -3,7 +3,7 @@
 
 """System-wide review queue definitions (``QDEF`` / ``Q#<queueId>`` items).
 
-Admins manage queues in HITL › Queue Management. A production document that
+Admins manage queues in Review Studio › Review Management. A production document that
 raised confidence alerts is routed to the ``Default`` queue when HITL is enabled
 in its configuration and the queue is enabled (see :mod:`.routing`); queues have
 no confidence threshold of their own. An Admin can move items to any other

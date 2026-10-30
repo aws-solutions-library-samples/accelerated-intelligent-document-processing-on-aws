@@ -95,9 +95,9 @@ During stack deployment, the system automatically:
 
 Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
 
-Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.file_shape.sectionSplitting: disabled`, because every file is one invoice: all of a file's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.document_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; to match, open *Advanced — known document shape* in its classification settings and set **Section splitting** to **One section** (stored as `sectionSplitting: disabled`).
 
-The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.file_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a file holding several documents. To get one section per file in a profile built from the preset, set **Section splitting** to `disabled` in it.
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.document_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the `sectionSplitting` value that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** under *Advanced — known document shape* to **One section** (stored as `sectionSplitting: disabled`) in it.
 
 ---
 
@@ -168,7 +168,7 @@ All test sets are immediately available after stack deployment:
 2. Select the test set from the **Select Test Set** dropdown:
    - "RealKIE-FCC-Verified" for invoice extraction testing
    - "OmniAI-OCR-Benchmark" for multi-format document testing
-   - "DocSplit-Poly-Seq" for document splitting and classification testing
+   - "DocSplit-Poly-Seq" for section splitting and classification testing
    - "Fake-W2-Tax-Forms" for W-2 tax form extraction testing
 3. Enter a description in the **Context** field
 4. Click **Run Test** to start processing
@@ -185,10 +185,10 @@ All test sets are immediately available after stack deployment:
 - Benchmarking multi-format document processing pipelines
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
@@ -202,13 +202,13 @@ All test sets are immediately available after stack deployment:
 **DocSplit Dataset**: https://huggingface.co/datasets/amazon/doc_split  
 **Documents Source**: https://huggingface.co/datasets/jordyvl/rvl_cdip_n_mp
 
-The DocSplit dataset contains 500 multi-page packet PDFs created by combining pages from 13 different document types. Documents are sourced from the RVL-CDIP-N-MP dataset. Each packet contains multiple subdocuments of different types to test classification and document splitting capabilities.
+The DocSplit dataset contains 500 multi-page packet PDFs created by combining pages from 13 different document types. Documents are sourced from the RVL-CDIP-N-MP dataset. Each packet combines several source documents of different types, to test classification and section splitting capabilities.
 
 #### Benchmark Methodology
 
 **DocSplit-Poly-Seq (Multi Category Documents Concatenation Sequentially):** Creates document packets by first determining a target page count (5-20 pages), then sequentially selecting documents from different categories without repetition. For each selected document, all of its pages are included while preserving the original page ordering, and this process continues until the target page count is reached.
 
-This benchmark simulates the most common real-world scenario where heterogeneous documents are assembled into packets, as observed in medical claims processing where prescription records, laboratory results, and insurance forms are concatenated. The varying document types test models' ability to detect inter-document boundaries based on content and structural transitions, a fundamental requirement for accurate packet splitting.
+This benchmark simulates the most common real-world scenario where heterogeneous documents are assembled into packets, as observed in medical claims processing where prescription records, laboratory results, and insurance forms are concatenated. The varying document types test models' ability to detect section boundaries based on content and structural transitions, a fundamental requirement for accurate packet splitting.
 
 #### Document Types
 
@@ -242,8 +242,8 @@ During stack deployment, the system automatically:
 
 #### Key Features
 
-- **Multi-Document Packets**: Each PDF contains 2-10 distinct documents of different types
-- **Splitting Evaluation**: Tests ability to correctly split multi-document packets into individual sections
+- **Multi-Section Packets**: Each PDF combines 2-10 source documents of different types
+- **Splitting Evaluation**: Tests ability to correctly split packets into sections
 - **Classification Diversity**: 13 document types provide comprehensive classification testing
 - **Variable Page Counts**: Packets range from 5 to 20 pages with varying complexity
 - **Ground Truth Included**: Complete page-level classification and splitting information
@@ -256,14 +256,14 @@ Use with: `config_library/unified/rvl-cdip/config.yaml`
 
 This test set enables evaluation of:
 - **Page-Level Classification**: Accuracy of classifying each page to correct document type
-- **Document Splitting**: Accuracy of identifying document boundaries within packets
+- **Section Splitting**: Accuracy of identifying section boundaries within packets
 - **Split Order**: Accuracy of maintaining correct page order within each split section
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 ---
 
@@ -340,10 +340,10 @@ All datasets share these deployment characteristics:
 - Benchmarking multi-format document processing pipelines
 
 **DocSplit-Poly-Seq** is ideal for:
-- Evaluating document splitting and classification accuracy
-- Testing multi-document packet processing capabilities
+- Evaluating section splitting and classification accuracy
+- Testing packet processing capabilities
 - Benchmarking page-level classification across diverse document types
-- Assessing document boundary detection in complex packets
+- Assessing section boundary detection in complex packets
 
 ---
 
@@ -354,7 +354,7 @@ All datasets share these deployment characteristics:
 ### Backend Components
 
 #### TestSetResolver Lambda
-- **Location**: `src/lambda/test_set_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
 - **Purpose**: Handles GraphQL operations for test set management
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
@@ -369,7 +369,7 @@ All datasets share these deployment characteristics:
 - **Features**: S3 event triggered extraction, file validation, status updates, file count recount for accurate totals
 
 #### TestRunner Lambda
-- **Location**: `src/lambda/test_runner/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_runner/index.py`
 - **Purpose**: Initiates test runs and queues file processing jobs
 - **Features**: Test validation, SQS message queuing, fast response optimization
 
@@ -379,7 +379,7 @@ All datasets share these deployment characteristics:
 - **Features**: SQS message processing, file copying, status management
 
 #### TestResultsResolver Lambda
-- **Location**: `src/lambda/test_results_resolver/index.py`
+- **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
 - **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
@@ -397,13 +397,13 @@ All datasets share these deployment characteristics:
   - Automatic retry handling
 
 ### GraphQL Schema
-- **Location**: `src/api/schema.graphql`
+- **Location**: `nested/api-resolvers/src/api/schema.graphql`
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
 #### TestStudioLayout
-- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestStudioLayout.tsx`
 - **Purpose**: Main container with two-tab navigation and global state management
 
 #### TestSets
@@ -412,7 +412,7 @@ All datasets share these deployment characteristics:
 - **Features**: Pattern-based creation, zip upload, direct upload detection, incremental document addition, time-based file filtering, dual polling (3s active, 60s discovery)
 
 #### TestExecutions
-- **Location**: `src/ui/src/components/test-studio/TestExecutions.jsx`
+- **Location**: `src/ui/src/components/test-studio/TestExecutions.tsx`
 - **Purpose**: Unified interface combining TestRunner and TestResultsList
 - **Features**: Test execution, results viewing, comparison, export, abort, delete operations
 
@@ -421,16 +421,16 @@ All datasets share these deployment characteristics:
 ```
 components/
 └── test-studio/
-    ├── TestStudioLayout.jsx
-    ├── TestSets.jsx
-    ├── TestExecutions.jsx
-    ├── TestRunner.jsx
-    ├── TestResultsList.jsx
-    ├── TestResults.jsx
-    ├── TestComparison.jsx
-    ├── TestRunnerStatus.jsx
-    ├── DeleteTestModal.jsx
-    └── index.js
+    ├── TestStudioLayout.tsx
+    ├── TestSets.tsx
+    ├── TestExecutions.tsx
+    ├── TestRunner.tsx
+    ├── TestResultsList.tsx
+    ├── TestResults.tsx
+    ├── TestComparison.tsx
+    ├── TestRunnerStatus.tsx
+    ├── DeleteTestModal.tsx
+    └── index.ts
 ```
 
 ## Lifecycle flows: online vs offline paths
@@ -525,7 +525,7 @@ flowchart LR
     Runner --> WF[Document processing workflow]
     WF -->|"docs finish"| RunDDB
 
-    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETED<br/>+ enqueue aggregation"| RunDDB
+    Poll["UI Executions row<br/>getTestRunStatus poll<br/>every 5 s"] -->|"all docs terminal ⇒<br/>update Status=COMPLETE<br/>+ enqueue aggregation"| RunDDB
     Poll --> AggQ[SQS aggregation queue]
     AggQ --> Agg[Metrics aggregation Lambda]
     Agg -->|"write testRunResult"| RunDDB
@@ -535,7 +535,7 @@ flowchart LR
 The tab that started the run stays on Test Studio, so the 5-second
 `getTestRunStatus` poll runs against the row. When the workflow finishes and
 every document has terminated, that poll — **not** the workflow — transitions
-`Status → COMPLETED` and enqueues aggregation. The metrics land, the next
+`Status → COMPLETE` and enqueues aggregation. The metrics land, the next
 poll reads the fresh row, the `EVALUATING` badge clears. All Test-Studio
 transitions happen in real time while the user watches.
 
@@ -553,7 +553,7 @@ flowchart LR
 
     Later([User logs into Test Studio<br/>hours later]) --> UI[UI Executions page]
     UI -->|"per-row getTestRunStatus poll"| RunDDB
-    RunDDB -->|"deferred:<br/>Status→COMPLETED + enqueue"| AggQ[SQS aggregation queue]
+    RunDDB -->|"deferred:<br/>Status→COMPLETE + enqueue"| AggQ[SQS aggregation queue]
     AggQ --> Agg[Aggregation]
     Agg -->|"write testRunResult"| RunDDB
     RunDDB -.->|"badge clears"| UI
@@ -625,7 +625,7 @@ Every source shares three optional fields:
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
-  (packets containing multiple sub-documents).
+  (packets that split into several sections).
 
 The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
@@ -653,9 +653,11 @@ Click a COMPLETED test set's name in the table (or select it and click
 input documents with a first-page thumbnail preview, size, last-modified
 time, and ground-truth section count. Thumbnails are rendered lazily in the
 browser as rows scroll into view (for PDFs only the byte ranges needed for
-page 1 are fetched, so large packets stay cheap). Each document name links
-to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
-mirroring the app's Document List → Document Details structure.
+page 1 are fetched, so large packets stay cheap). Each document name opens the
+document's Test Studio item (`#/review-queues/test-sets/<id>/items/<document>`), the
+edit page where its ground truth is read and edited. An older document link,
+`#/test-studio/sets/<id>/doc/<document>`, opens the same item (with `?view=source`
+kept).
 
 The search box above the table searches the **whole set**, not the page on screen,
 so a document several pages along is found from page 1. Pagination then runs over
@@ -669,25 +671,27 @@ Sorting is the one control that stays page-scoped — see
 
 This page is where a set is worked on end to end: **Publish version** at the top
 acts on the set as a whole, while **Add documents**, **Generate draft labels**,
-**Annotate**, **Clear draft labels** and **Remove** sit above the document list and
+**Edit ground truth**, **Clear draft labels** and **Remove** sit above the document list and
 act on its documents. See [Publishing a version](#publishing-a-version).
 
-The document detail page offers two views:
+A document's Test Studio item is the same edit page as a production review item:
 
-- **View Source Document** — the original PDF or image rendered inline.
-- **Edit Ground Truth** (read-only for non-Admin/Author roles) — a visual
-  editor with the document's page images on the left and an editable form
-  over the baseline's `inference_result` on the right, plus a raw JSON tab.
-  Multi-section baselines get a section selector that also scopes the page
-  images to that section's `split_document.page_indices`; when a baseline
-  carries `explainability_info` geometry (created via **Copy to Baseline**),
-  focusing a field highlights its bounding box on the page image. The page
-  images carry **Zoom**, **Pan** and **Rotate** controls — rotate turns the
-  page in 90° steps for a sideways or upside-down scan, re-fitting it to the
-  panel and carrying any bounding-box highlight around with it. Rotation
-  applies to every page you then navigate to, and **Reset View** clears it
-  along with zoom and pan. Saves write back to the section's
-  `baseline/.../result.json` and append an `_editHistory` provenance entry.
+- **Edit | View** switches between the ground-truth editor and the original PDF or
+  image.
+- The editor shows the document's page images on the left and an editable form over
+  the baseline's `inference_result` on the right, plus a raw JSON tab. A
+  multi-section baseline has a **Section** dropdown that also scopes the page images
+  to that section's `split_document.page_indices`; when a baseline carries
+  `explainability_info` geometry (created via **Copy to Baseline**), focusing a field
+  highlights its bounding box on the page image. The page images carry **Zoom**,
+  **Pan** and **Rotate** controls — rotate turns the page in 90° steps for a
+  sideways or upside-down scan, re-fitting it to the panel and carrying any
+  bounding-box highlight around with it. Rotation applies to every page you then
+  navigate to, and **Reset View** clears it along with zoom and pan.
+- Every save goes through the server, which records an `_editHistory` provenance
+  entry (who, when, which fields changed). An Author edits a document whose labels
+  are authored ground truth; a document with a review copy (draft labels from the
+  pipeline) is reviewed by Admins and Annotators, and is view-only for an Author.
 
 Note: page images are rendered in the browser from the source document
 (test set documents are unprocessed, so no pipeline page images exist).
@@ -969,8 +973,15 @@ rest of the set does not. Search is not page-scoped — it runs over the whole
 set — and the table says which of the two is which whenever the page is not the
 whole set.
 
-Reviewing a draft label is the same **Edit Ground Truth** flow described above;
-saving flips the label to *Reviewed*. Once enough of the set is
+Reviewing a draft label happens on the document's Test Studio item, described
+above; **Process Changes** flips the label to *Reviewed*.
+
+**Saved changes are drafts until Process Changes.** A draft is stored under
+`<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
+published version or a test run, and the label, the queue's progress and the
+confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
+**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
+Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
@@ -1018,7 +1029,7 @@ be sized off. When a partial sample holds only ground truth, the dialog says how
 much of the set it read rather than reporting the set as fully labelled, and still
 lets you continue to the annotation queue, which lists every document.
 
-### The curve is measured, and it improves
+### How the curve is measured and refined
 
 The curve comes from three sources of increasing fidelity:
 
@@ -1139,9 +1150,10 @@ documents.
 
 Create one from **User Management**: set the persona to `Annotator` and assign the
 test set(s), then share the queue link
-(`#/test-studio/sets/<test-set-id>/annotate`). You can copy that link from the
+(`#/review-queues/test-sets/<test-set-id>`; an older
+`#/test-studio/sets/<test-set-id>/annotate` link opens it too). You can copy that link from the
 **Copy queue link** button on the queue itself, or open the queue for any set via
-**Actions → Annotate ground truth**.
+**Actions → Edit ground truth**.
 
 An annotator must be assigned at least one test set — an account with none is
 denied every set by the scope check, so the create form refuses to submit without
@@ -1165,39 +1177,37 @@ The queue page shows:
   missed by 2 points or 40 — and it reflects the actual effort in a document,
   which a single lowest score does not. Each card also shows the label source. A
   document claimed by someone else is greyed out and names who has it.
-- **The ground-truth editor** — the same editor used everywhere else in Test
-  Studio, with the page images, per-field confidence, the JSON tab, and the
-  revision history.
-- **Save & next in queue** — saves the correction and moves straight to the next
-  available document, without waiting for the queue to be re-read.
-- **Multi-section documents take more than one save.** A document is marked
-  reviewed once **every** one of its sections carries a human verdict, so a save
-  records the section you were working on and then moves to the next *document* —
-  it does not walk the remaining sections of the one you were in. The
-  confirmation says how many sections the document has, and the document stays in
-  the queue until they are all done; reopen it from the queue rail to work the
-  rest, using the section tabs above the editor. (The set's own document table
-  shows the same thing as **Awaiting review** in its Review state column.)
-- **Labels are correct — mark reviewed** covers a whole document at once: it
-  submits every section unchanged. ⚠️ That is a verdict on *all* of them — each
-  one is tagged human-reviewed, becomes ground truth protected from re-labeling,
-  and is fed to the calibration curve as a correct-at-this-confidence signal — so
-  use it when you have actually looked at every section, not as a shortcut past
-  the ones you have not opened.
+- **Each document opens on its Test Studio item** — the edit page, with the page
+  images, per-field confidence, the JSON tab and the history.
+- **A document is reviewed once every one of its sections is.** **Process
+  Changes** applies every section — your saved changes where you made some, the
+  labels as they are otherwise — and leaves only when the server counts the
+  document reviewed; if it does not yet, the page stays and says so. (The set's own
+  document table shows a part-reviewed document as **Awaiting review** in its Review
+  state column.) ⚠️ That is a verdict on *all* the sections — each one is tagged
+  human-reviewed, becomes ground truth protected from re-labeling, and is fed to the
+  calibration curve as a correct-at-this-confidence signal — so choose it when you
+  have actually looked at every section.
 - **Show reviewed documents** — the **Assigned** and **Not assigned** filters leave
   out reviewed work, so this switches back to **All documents**: the way back to a
   document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
   them re-reads the queue from the server and takes a few seconds on a large set.
 
-Per-document actions sit in one bar at the top of the document editor (the same
-editor as production review items), so finishing a long document does not mean
-scrolling past every field to reach them: **History**, **Skip**, **Discard Changes**,
-**Save**, **Edit Page Grouping**, **Processing Report** and **Complete**, or **Claim**
-for an Annotator viewing an unassigned document. **Save** saves the open section,
-which marks it reviewed (switching sections saves it too), and **Complete** saves the
-open section and confirms the rest. Under the title the screen names the **Document**
-(its input key) and its **Ground Truth**, with an **Annotate | View Source Document**
-switch beneath them, and its notices share one alert.
+Per-document actions sit in one bar at the top of the edit screen (the same screen as
+production review items), so finishing a long document does not mean scrolling past
+every field to reach them: **Edit | View**, **Reports** (**History**, **Processing
+Report**), **Skip**, **Cancel**, **Save** and **Process Changes**, or the view switch,
+**Reports** and **Claim** for an Annotator viewing an unassigned document. **Edit Page
+Grouping** is on the **Document Editor** panel, beside its **Section** and **Show Fields**
+dropdowns. **Save** keeps the open section's changes as a
+draft, which is not reviewed: you, a later session or the next assignee after a
+**Skip** open the document with it, and switching sections with unsaved changes asks
+first. **Process Changes** saves the open section's changes, applies every section's
+draft (the rest as they are) and re-runs evaluation and summarization on the
+document's review copy (OCR, classification and extraction are not repeated). Authored ground truth has no review copy, so for it **Process Changes**
+only marks the labels reviewed. The title is the document's name with its status (**To review**,
+**Reviewed** or **Skipped**), and the **Document Editor** panel has a **Section**
+dropdown at its top left. The notices share one alert.
 
 On large sets the queue is read a page at a time, and the page says so rather than
 implying the whole set has been ranked. What bounds that page is the number of
@@ -1257,10 +1267,10 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-In the editor, **Class label** is a dropdown of the classes defined by the config
+A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the config
 version that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
-names which config the list came from, and says so explicitly when it is a
+names which config the class list came from, and says so explicitly when it is a
 fallback ("… (active config)", "built-in default"), because a list of classes
 from the wrong config looks exactly like a list of classes from the right one.
 
@@ -1268,10 +1278,10 @@ The order is: the config stamped on the baseline; failing that the test set's ow
 declared version; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
-preset. Choosing a different class offers
-**Change class & re-extract**, which re-runs that one document and waits for the
-new labels before returning, so you are never left looking at fields from the
-previous class.
+preset. After a section's class is changed and saved in **Edit Page Grouping**, the
+section says **Fields still reflect the previous class** and offers **Re-extract**,
+which re-runs that one document and waits for the new labels before returning, so you
+are never left looking at fields from the previous class.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
@@ -1307,7 +1317,7 @@ what the doc-split metrics score classification against — so a wrong split mak
 classification ground truth wrong, not merely untidy.
 
 **Edit Page Grouping** opens a board with every section side by side and each page as a
-thumbnail. In the queue's document editor it is in the action bar at the top and opens
+thumbnail, where a section's pages and its class are changed. On the queue's edit screen it is in the action bar at the top and opens
 the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
 section selector at the top of the document. Either way it is kept away from the
 extracted fields because it changes the document's structure, not one section's values. (**Pages in this section**, in the field
@@ -1347,7 +1357,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Change class & re-extract** is there if you would rather the model redo one. It is
+**Re-extract**, offered after a class change, is there if you would rather the model redo one. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1371,8 +1381,8 @@ Non-contiguous sections are supported, because the pipeline can produce them.
 Annotators can do this within their assigned sets, scope-checked per test set like
 every other annotation operation.
 
-The same board is available on a processed document, from **Document Sections** in
-the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+The same board is available on a processed document, from **More Actions › Edit Page
+Class** on the document page — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
 ### A section with no field values
@@ -1381,8 +1391,9 @@ A section can legitimately have nothing extracted, and the editor says which of 
 things happened rather than showing an empty form:
 
 - **No document class.** With no class there is no schema, so extraction had nothing to
-  extract against. This is the actionable one: set the class first — re-extracting before
-  that produces nothing. A section in this state is marked **(no class)** in its tab. It
+  extract against. This is the actionable one: set the class in **Edit Page Grouping** first —
+  re-extracting before that produces nothing. A section in this state is marked **(no
+  class)** in the **Section** list. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
   which **Edit Page Grouping** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
@@ -1436,8 +1447,8 @@ has a chat tool, and the reviewer keeps ownership of the document.
 ### Edit history
 
 Each label records who changed it, when, and which fields moved. Open a document
-and use the **Edit history** tab, or **History › Field Edits** in the queue's
-document editor (which has no Edit history tab) — the same view as the document editor in the main app.
+and use the **Edit history** tab, or **History › Field Edits** on the queue's
+edit screen (which has no Edit history tab) — the same view as the edit screen in the main app.
 
 > Not to be confused with a Configuration Profile **revision**, which is an
 > immutable numbered snapshot of a *configuration*. This is a log of edits to
@@ -1474,12 +1485,15 @@ be able to discard the team's annotation work.
 
 ### Running Tests
 1. Select test set from dropdown
-2. **Optional**: Select configuration version to use for processing
-3. **Optional**: Enter number of files to limit processing (useful for quick testing)
-4. **Optional**: Add context description for the test run
-5. Click "Run Test" (single test execution only)
-6. Monitor progress via TestRunnerStatus
-7. View results in integrated listing
+2. **Optional**: Pin a **Test set version** (defaults to the set's current labels)
+3. **Optional**: Select a **Configuration Profile**, and optionally a **Configuration revision**
+4. **Optional**: Enter number of files to limit processing (useful for quick testing)
+5. **Optional**: Add context description for the test run
+6. Click "Run Test" (single test execution only)
+7. Monitor progress via TestRunnerStatus
+8. View results in integrated listing
+
+![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
 
 ### Configuration Versioning
 The Test Studio supports running tests with specific Configuration Profiles and
@@ -1498,7 +1512,7 @@ For full details on configuration profiles and their revisions, see [configurati
 - **QUEUED**: File copying jobs queued in SQS
 - **RUNNING**: Files being copied and processed
 - **EVALUATING**: Documents processed, evaluation in progress
-- **COMPLETED**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETED while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
+- **COMPLETE**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETE while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
 - **PARTIAL_COMPLETE**: Test finished with some documents failed. A document whose evaluation failed or timed out (`EvaluationStatus` `FAILED` or `TIMED_OUT`) counts as failed, and the run's metrics cover the documents that were scored
 - **FAILED**: Errors during processing
 - **ABORTED**: Test run manually stopped before completion
@@ -1516,7 +1530,11 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
    - Evaluation metrics for completed documents
    - Cost breakdown for processed documents
 
-**Note**: Test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+**Note**: Test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED** cannot be aborted.
+
+The abort waits a few seconds for each document's workflow to confirm it has stopped. A document that could not be confirmed stopped is reported rather than hidden. The Test Studio page shows a warning beside the success message. In the abort response, the message ends with the number of such documents, and `errors` gives, for each affected run, how many and why: the stop request could not be made, was refused, or was not answered in time; the document was at a processing step the abort cannot stop, such as rule validation or malware scanning; or the request was too large to wait for in full — each run's documents are sent in stop requests of up to 25, and the abort waits for the answers to at most 20 of them, taking every run's first request before any run's second (so at most 500 documents, and fewer when a run's count is not a multiple of 25) — in which case the remaining stop requests are sent at the same moment without waiting for an answer. The run is still marked **ABORTED**, but those documents may still be processing. Documents that had already finished are not counted among them.
+
+The abort then waits for the run's documents to reach a final status. A document the wait did not see reach one is reported the same way, as not seen to reach a terminal state, even if its stop request was answered: a document can be reported stopped and still be processing, so the response describes what the wait read rather than what the stop requests answered. That includes a document whose status the wait could not read in time. When a stop request is still unanswered at the time by which the wait must end, the wait has no time left to read any status, so every document not already counted is reported this way, including one that had finished. A completed document counts as finished once its evaluation has a final status. Each document is counted at most once across the two counts. A document already reported as not confirmed stopped is not counted again. When the document abort reports that some of a stop request's documents failed without naming them, up to that many of the request's unfinished documents that no error names are taken to be those failures rather than counted a second time, so the two counts together are the fewest documents consistent with both readings, and the number still processing may be higher. If the wait itself fails, every document of the run is reported, because none was observed to finish.
 
 ### Results Management
 - Filter and paginate test runs
@@ -1543,6 +1561,9 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 - SQS-based asynchronous processing
 
 ### Results Analysis
+
+![Test results for a Fake-W2-Tax-Forms run: cost, confidence and accuracy summary above the weighted overall score distribution](../images/test-studio-results.png)
+
 - Comprehensive metrics display including:
   - **Test run metadata**: Configuration version, duration, context, file counts
   - **Overall accuracy and confidence metrics**
@@ -1566,8 +1587,9 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
 **Diagnosing a low-scoring document.** Opening a document from *Documents with
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
-next to its Class/Type value — hover it for the expected class. The Visual
-Editor ("View Data") shows the section's class comparison as soon as it opens,
+next to its Class/Type value — hover it for the expected class. The edit page
+(**Edit Data** in a section row's **⋮** menu, or **View Data** for a read-only role) shows the section's class
+comparison in its **Visual Editor** tab as soon as it opens,
 without needing the **Show Evaluation** toggle, which adds the per-field
 comparison. Check the class before reading the extraction scores: a misclassified
 page was extracted against the wrong schema, so its low score is a symptom
@@ -1686,12 +1708,14 @@ document can be *confidently* wrong, which means it raises few confidence alerts
 and therefore ranks **low priority** in the annotation queue's worst-first order.
 Without this panel it is the failure most likely to go unnoticed.
 
+![Classification errors panel for a DocSplit-Poly-Seq run, listing each wrong class and unmatched section with its expected and predicted class and pages](../images/test-studio-classification-errors.png)
+
 Three kinds are distinguished, because they call for different fixes:
 
 | Issue | Meaning | What to do |
 |---|---|---|
 | **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
-| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting-strategies)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
+| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 
 A row is **Wrong class** only when the prediction has a section on exactly the

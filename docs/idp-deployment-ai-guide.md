@@ -228,7 +228,7 @@ There are two ways to build and deploy from source. Ask the user which they pref
 | **A — Combined (one-shot)** | `idp-cli deploy --from-code .` | Dev/test — builds, publishes, and deploys in a single command |
 | **B — Separate publish then deploy** | `idp-cli publish` → save URL → `idp-cli deploy --template-url` | Production / CI-CD — publish once, deploy to multiple stacks |
 
-#### Option A — One-shot (--from-code)
+#### Option A — One-shot (`--from-code`)
 
 ```bash
 # macOS / Linux
@@ -562,7 +562,8 @@ parameters.
 | `ApiGatewayVpcEndpointId` | — | execute-api interface endpoint id |
 | `S3PresignedUrlViaVpcEndpoint` | — | `false` (default, uploads via NAT) or `true` (uploads via BYO S3 VPCE) |
 | `EnableMCP` | `true` (default) | `false` (requires public endpoint) |
-| `DocumentKnowledgeBase` | `OPENSEARCH_SERVERLESS` or `S3_VECTORS` | `DISABLED` |
+| `DocumentKnowledgeBase` | `BEDROCK_KNOWLEDGE_BASE (Create)` (default) | `DISABLED` |
+| `KnowledgeBaseVectorStore` | `S3_VECTORS` (default) or `OPENSEARCH_SERVERLESS` — only read when `DocumentKnowledgeBase` creates one | — |
 | `ArtifactsBucketKmsKeyArn` | optional | optional (required if bucket is KMS-encrypted) |
 
 > **`ApiGatewayVisibility` is immutable** — it cannot be changed after stack creation.

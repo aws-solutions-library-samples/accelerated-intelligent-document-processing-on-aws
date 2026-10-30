@@ -1,6 +1,6 @@
 # Classification Service Configuration
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-pro-v1:0
       temperature: '0.0'
@@ -29,8 +29,8 @@ classification:
         <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
         <document-image> {DOCUMENT_IMAGE} </document-image>
         <final-instructions> Analyze the document above by: 1. Applying the <classification-instructions> to examine both visual and textual features 2. Selecting ONLY from document types in <document-types> 3. Providing clear reasoning with specific evidence 4. Outputting in the exact JSON format specified in <output-format> </final-instructions>
-  two_stage:
-    segmentation:
+  split_then_classify:
+    splitting:
       llm:
         model: us.amazon.nova-pro-v1:0
         max_tokens: '4096'
@@ -38,5 +38,5 @@ classification:
       llm:
         model: us.amazon.nova-pro-v1:0
         max_tokens: '4096'
-  file_shape:
+  document_shape:
     sectionSplitting: llm_determined
