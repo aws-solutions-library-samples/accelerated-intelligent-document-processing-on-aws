@@ -966,7 +966,9 @@ Resources:
                 # would hand codebuild_deployment.py the string "None".
                 - export IDP_RUN_PROBES=$(aws s3api head-object --bucket ${SOURCE_BUCKET} --key deploy/code.zip --query 'Metadata."idp-run-probes"' --output text 2>/dev/null || echo "false")
                 - '[ "$IDP_RUN_PROBES" = "true" ] || export IDP_RUN_PROBES=false'
-                - echo "Deployment-variant probes: $IDP_RUN_PROBES"
+                # Quoted: an unquoted `- echo "...: ..."` is a YAML mapping, and
+                # CodeBuild then rejects the whole buildspec at DOWNLOAD_SOURCE.
+                - 'echo "Deployment-variant probes: $IDP_RUN_PROBES"'
                 - make setup || { echo "IDP Common and IDP CLI installation failed"; exit 1; }
                 - pip install rich scikit-learn || echo "Additional package installation failed, using fallbacks"
                 - export PATH="$PWD/.venv/bin:$PATH"
