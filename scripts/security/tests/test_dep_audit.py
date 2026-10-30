@@ -801,8 +801,8 @@ class TestStaleAllowlistEntries:
     """An allowlist entry that suppressed nothing fails the run.
 
     Its advisory was withdrawn or the package moved past it, and leaving it in
-    place approves the same id in advance the day it comes back. Three entries
-    were in that state on develop before this check existed.
+    place approves the same id in advance the day it comes back. Entries in that
+    state sat on develop unnoticed before this check existed.
     """
 
     def test_an_entry_that_matched_nothing_exits_1_and_is_named(
@@ -1005,7 +1005,19 @@ class TestUnmappedInTheGate:
 
         monkeypatch.setattr(dep_audit, "fetch_unreviewed", boom)
         assert dep_audit.main(["--no-generate"]) == 0
-        assert "not checked: GitHub advisory request failed" in capsys.readouterr().out
+        assert "not checked: RuntimeError: GitHub advisory request failed" in (
+            capsys.readouterr().out
+        )
+
+    def test_any_exception_in_the_pass_costs_the_report_not_the_exit_code(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A malformed advisory must not turn a review list into a red gate."""
+        _manifests(tmp_path, monkeypatch, node="mammoth@1.12.0\n")
+        _osv(monkeypatch, {}, {})
+        monkeypatch.setattr(dep_audit, "fetch_unreviewed", lambda token: ["not-a-dict"])
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "not checked: AttributeError" in capsys.readouterr().out
 
     def test_no_unmapped_flag_does_not_call_github(self, tmp_path, monkeypatch, capsys):
         _manifests(tmp_path, monkeypatch)
@@ -1057,4 +1069,113 @@ class TestGithubToken:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setattr(dep_audit.shutil, "which", lambda t: None)
+        assert dep_audit.github_token() is None
+
+
+class _Resp:
+    """A minimal ``urlopen`` response: a body and a ``Link`` header."""
+
+    def __init__(self, body, link=""):
+        self._body, self.headers = json.dumps(body).encode(), {"Link": link}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+FIRST = dep_audit.GHSA_URL + "?type=unreviewed&published=2026-10-30&per_page=100"
+
+
+@pytest.mark.unit
+class TestGhsaPage:
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr(dep_audit.time, "sleep", lambda s: None)
+
+    def test_returns_the_page_the_next_link_and_sends_the_token(self, monkeypatch):
+        seen = {}
+        nxt = dep_audit.GHSA_URL + "?after=abc"
+
+        def fake_open(req, timeout):
+            seen["auth"] = req.get_header("Authorization")
+            return _Resp([{"ghsa_id": "G"}], f'<{nxt}>; rel="next"')
+
+        monkeypatch.setattr(dep_audit.urllib.request, "urlopen", fake_open)
+        assert dep_audit._ghsa_page(FIRST, "tok") == ([{"ghsa_id": "G"}], nxt)
+        assert seen["auth"] == "Bearer tok"
+
+    def test_the_last_page_has_no_next_link(self, monkeypatch):
+        monkeypatch.setattr(
+            dep_audit.urllib.request, "urlopen", lambda req, timeout: _Resp([])
+        )
+        assert dep_audit._ghsa_page(FIRST, "tok") == ([], "")
+
+    def test_the_token_is_never_sent_to_another_host(self, monkeypatch):
+        """The next-page URL is server-supplied, so it is checked before use."""
+
+        def boom(req, timeout):
+            raise AssertionError("must not open a foreign URL")
+
+        monkeypatch.setattr(dep_audit.urllib.request, "urlopen", boom)
+        for url in (
+            "https://evil.example/advisories?x",
+            "https://api.github.com.evil.example/advisories?x",
+            "http://api.github.com/advisories?x",
+        ):
+            with pytest.raises(RuntimeError, match="refusing to send"):
+                dep_audit._ghsa_page(url, "tok")
+
+    def test_a_body_that_is_not_a_list_is_an_error(self, monkeypatch):
+        monkeypatch.setattr(
+            dep_audit.urllib.request,
+            "urlopen",
+            lambda req, timeout: _Resp({"message": "Bad credentials"}),
+        )
+        with pytest.raises(RuntimeError, match="returned a dict"):
+            dep_audit._ghsa_page(FIRST, "tok")
+
+    def test_a_truncated_read_is_retried_then_raised(self, monkeypatch):
+        import http.client
+
+        calls = []
+
+        def short(req, timeout):
+            calls.append(1)
+            raise http.client.IncompleteRead(b"")
+
+        monkeypatch.setattr(dep_audit.urllib.request, "urlopen", short)
+        with pytest.raises(RuntimeError, match="after 3 attempts"):
+            dep_audit._ghsa_page(FIRST, "tok")
+        assert len(calls) == 3
+
+
+@pytest.mark.unit
+class TestGithubTokenFromGh:
+    def test_falls_back_to_gh_auth_token(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda t: "/usr/bin/gh")
+        monkeypatch.setattr(
+            dep_audit.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 0, "gh-tok\n", ""),
+        )
+        assert dep_audit.github_token() == "gh-tok"
+
+    def test_a_gh_with_no_login_gives_none(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda t: "/usr/bin/gh")
+        monkeypatch.setattr(
+            dep_audit.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "not logged in"),
+        )
         assert dep_audit.github_token() is None

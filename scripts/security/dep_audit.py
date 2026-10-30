@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import json
 import os
 import re
@@ -288,11 +289,18 @@ def github_token() -> Optional[str]:
 
 
 def _ghsa_page(url: str, token: str, retries: int = 3) -> Tuple[List[Any], str]:
-    """One page of the advisory API, plus the URL of the next page ("" at the end)."""
+    """One page of the advisory API, plus the URL of the next page ("" at the end).
+
+    The next-page URL comes from the response's ``Link`` header, so it is checked
+    against ``GHSA_URL`` before the token is sent to it; anything else ends the
+    walk with an error rather than handing the token to another host.
+    """
+    if not url.startswith(GHSA_URL + "?"):
+        raise RuntimeError(f"refusing to send the GitHub token to {url!r}")
     last: Optional[Exception] = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(  # nosec B310 - fixed https GitHub endpoint
+            req = urllib.request.Request(  # nosec B310 - URL checked against GHSA_URL above
                 url,
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -302,13 +310,22 @@ def _ghsa_page(url: str, token: str, retries: int = 3) -> Tuple[List[Any], str]:
             )
             with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
                 link = resp.headers.get("Link", "") or ""
-                nxt = re.search(r'<([^>]+)>;\s*rel="next"', link)
-                return json.loads(resp.read().decode("utf-8")), (
-                    nxt.group(1) if nxt else ""
-                )
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                page = json.loads(resp.read().decode("utf-8"))
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            TimeoutError,
+            json.JSONDecodeError,
+        ) as exc:
             last = exc
             time.sleep(2 * (attempt + 1))
+            continue
+        if not isinstance(page, list):
+            raise RuntimeError(
+                f"GitHub advisory API returned a {type(page).__name__}, not a list"
+            )
+        nxt = re.search(r'<([^>]+)>;\s*rel="next"', link)
+        return page, nxt.group(1) if nxt else ""
     raise RuntimeError(
         f"GitHub advisory request failed after {retries} attempts: {last}"
     )
@@ -629,12 +646,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         else:
             known = {vid for ids in hits.values() for vid in ids}
             known |= {a for v in details.values() for a in v.get("aliases", [])}
+            # Deliberately broad: this pass is a review list, and an upstream
+            # surprise in it must cost the report, never the gate's exit code.
             try:
                 advisories = fetch_unreviewed(token)
-            except RuntimeError as exc:
-                unmapped["reason"] = str(exc)
-            else:
                 found, not_affected = match_unmapped(advisories, packages, known)
+            except Exception as exc:  # noqa: BLE001
+                unmapped["reason"] = f"{type(exc).__name__}: {exc}"
+            else:
                 unmapped = {
                     "status": "ran",
                     "days": UNMAPPED_DAYS,
