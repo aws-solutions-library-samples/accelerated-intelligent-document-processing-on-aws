@@ -207,6 +207,7 @@ def override_groups(payload: dict) -> list | None:
 # after the flow is enabled can still answer "Auth flow not enabled for this
 # client"; boto3 does not retry an InvalidParameterException. Only that message
 # is retried, with a bounded backoff — scripts/rbac_common.py does the same.
+AUTH_FLOW_NOT_PROPAGATED = "Auth flow not enabled for this client"
 AUTH_FLOW_RETRY_DELAYS = (1, 2, 4, 8, 15, 30)
 
 
@@ -220,7 +221,7 @@ def admin_password_auth(cog, pool_id, client_id):
                 AuthParameters={"USERNAME": NATIVE_EMAIL, "PASSWORD": NATIVE_PW},
             )
         except cog.exceptions.InvalidParameterException as e:
-            if delay is None or "Auth flow not enabled" not in str(e):
+            if delay is None or AUTH_FLOW_NOT_PROPAGATED not in str(e):
                 raise
             print(f"  auth flow not yet active; retrying in {delay}s")
             time.sleep(delay)

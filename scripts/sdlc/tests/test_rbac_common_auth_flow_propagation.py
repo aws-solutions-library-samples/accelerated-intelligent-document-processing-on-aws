@@ -111,9 +111,11 @@ class _FakeCognito:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.kwargs = []
 
     def admin_initiate_auth(self, **kwargs):
         self.calls += 1
+        self.kwargs.append(kwargs)
         outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
         if isinstance(outcome, Exception):
             raise outcome
@@ -141,6 +143,12 @@ def test_the_federated_check_waits_out_the_same_race(federated):
     )
     assert mod.admin_password_auth(cog, "pool", "client") == {"ok": 1}
     assert cog.calls == 2
+    assert cog.kwargs[-1] == {
+        "UserPoolId": "pool",
+        "ClientId": "client",
+        "AuthFlow": "ADMIN_USER_PASSWORD_AUTH",
+        "AuthParameters": {"USERNAME": mod.NATIVE_EMAIL, "PASSWORD": mod.NATIVE_PW},
+    }
     assert sleeps == [mod.AUTH_FLOW_RETRY_DELAYS[0]]
 
 
@@ -151,3 +159,9 @@ def test_the_federated_check_fails_other_errors_at_once(federated):
         mod.admin_password_auth(cog, "pool", "client")
     assert cog.calls == 1
     assert sleeps == []
+
+
+def test_both_retries_recognise_the_same_message(rbac_common, federated):
+    mod, _ = federated
+    assert mod.AUTH_FLOW_NOT_PROPAGATED == rbac_common.AUTH_FLOW_NOT_PROPAGATED
+    assert mod.AUTH_FLOW_RETRY_DELAYS == rbac_common.AUTH_FLOW_RETRY_DELAYS
