@@ -7,6 +7,7 @@ Handles IDP stack deployment and testing in AWS CodeBuild environment.
 
 import json
 import os
+import pathlib
 import re
 import secrets
 import shutil
@@ -46,6 +47,7 @@ sys.path.append(
 from failure_agent import (  # noqa: E402
     build_evidence_brief,
     fetch_full_build_log,
+    regional_model_id,
     run_failure_agent,
 )
 
@@ -940,6 +942,95 @@ MANAGED_STACK_NAME_PREFIX = "idp"
 # create_iam_resources) because test_step13_permission_boundaries asserts against
 # the boundary that stack actually deployed with.
 SHARED_BOUNDARY_POLICY_NAME = "idp-cicd-shared-PermissionsBoundary"
+#: The region the nightly, the probe run and every button press build in. Same
+#: value as integration_test_deployment.PRIMARY_CI_REGION.
+PRIMARY_CI_REGION = "us-east-1"
+#: Every region holding CI infrastructure: PRIMARY_CI_REGION plus
+#: integration_test_deployment.REGION_RUN_REGIONS, which
+#: test_weekly_region_runs.py keeps in step with this. The startup sweeps reap
+#: GLOBAL IAM roles and policies whose run has no stack left, so they must look
+#: for that stack in every region a run can be in, not only the build's own.
+CI_INFRA_REGIONS = ("us-east-1", "eu-central-1", "ca-central-1")
+
+
+def ci_region(environ: dict | None = None) -> str:
+    """The region this build runs in. CodeBuild sets both variables."""
+    env = os.environ if environ is None else environ
+    return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
+
+
+_UPDATE_CONFIGURATION_DIR = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "src"
+    / "lambda"
+    / "update_configuration"
+)
+
+
+def _model_swapper():
+    """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
+
+    Loaded from source rather than copied, so the harness swaps a config exactly
+    as a stack deploy swaps its shipped defaults. The module sets the root
+    logger's level on import, which is put back.
+    """
+    import importlib.util
+    import logging
+
+    root_level = logging.getLogger().level
+    added = str(_UPDATE_CONFIGURATION_DIR) not in sys.path
+    if added:
+        # Its own cfnresponse.py sits beside it.
+        sys.path.insert(0, str(_UPDATE_CONFIGURATION_DIR))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_ci_update_configuration", _UPDATE_CONFIGURATION_DIR / "index.py"
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {_UPDATE_CONFIGURATION_DIR / 'index.py'}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        if added:
+            sys.path.remove(str(_UPDATE_CONFIGURATION_DIR))
+        logging.getLogger().setLevel(root_level)
+    return module.swap_model_ids
+
+
+def regional_config_file(config_path: str, environ: dict | None = None) -> str:
+    """`config_path`, or a copy with its model ids swapped for an EU or CA build.
+
+    A stack deployed outside the US has its shipped defaults swapped to models its
+    region can call, but a configuration uploaded afterwards is stored as written,
+    which the product documents (docs/eu-region-model-support.md). A suite config
+    naming `us.` models would then fail on its first Bedrock call in eu-central-1,
+    and on the ones ca-central-1 cannot call. Uploading the swapped copy is what a
+    user in that region would do. In PRIMARY_CI_REGION, and any other region the
+    swap does not cover, the path comes back unchanged.
+    """
+    import yaml
+
+    region = ci_region(environ)
+    region_type = (
+        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
+    )
+    if region_type is None:
+        return config_path
+    with open(config_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    swapped = _model_swapper()(config, region_type)
+    if swapped == config:
+        return config_path
+    fd, out_path = tempfile.mkstemp(
+        prefix=f"citest-{region_type}-",
+        suffix=".yaml",
+        dir="/tmp",  # nosec B108
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        yaml.safe_dump(swapped, f, sort_keys=False)
+    print(f"🌍 Swapped model ids in {config_path} for {region} → {out_path}")
+    return out_path
+
 
 #: The long-lived review stack the MR UX test (scripts/sdlc/ai_ux_test.py) runs
 #: against, updated in place by the SCHEDULED build only. Its membership of
@@ -1579,7 +1670,7 @@ def test_step4_bda_mode(stack_name):
 
     try:
         print("Uploading BDA config (use_bda: true)")
-        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {bda_config_path} --config-version {config_version}"
+        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(bda_config_path)} --config-version {config_version}"
         run_command(cmd)
 
         print("Syncing BDA config to create blueprints (without activation)")
@@ -1654,7 +1745,7 @@ def test_step5_rule_validation(stack_name):
     content_path = "responses.global_periods.0.policy_type"
 
     print(f"Uploading rule validation config from: {config_path}")
-    cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {config_path} --config-version {config_version}"
+    cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(config_path)} --config-version {config_version}"
     run_command(cmd)
 
     def verify_rule_results(json_data):
@@ -1907,7 +1998,7 @@ def test_step8_agentic_extraction(stack_name):
 
     try:
         print("Uploading nuveen.yaml configuration...")
-        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file scripts/sdlc/config/nuveen.yaml --config-version agentic-nuveen --no-validate"
+        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file('scripts/sdlc/config/nuveen.yaml')} --config-version agentic-nuveen --no-validate"
         run_command(cmd, check=False)
 
         print(
@@ -2564,7 +2655,7 @@ def test_step15_config_prefix_mappings(stack_name):
         # A real second profile, through the product's own path.
         cmd = (
             f"idp-cli config-upload --stack-name {stack_name} "
-            f"--config-file config_library/unified/lending-package-sample/config.yaml "
+            f"--config-file {regional_config_file('config_library/unified/lending-package-sample/config.yaml')} "
             f"--config-version {mapped_profile}"
         )
         run_command(cmd)
@@ -2754,6 +2845,7 @@ _HOOK_FAIL_CONFIG_VERSION = "test-pipeline-hooks-fail"
 # instead of the API we tell feature authors to use).
 _HOOK_SOURCE = '''
 import os
+import pathlib
 from idp_common.hooks import load_hook_document, updated_document_result
 
 MARKER_KEY = os.environ["MARKER_KEY"]
@@ -3296,7 +3388,7 @@ def _assert_onerror_fail_aborts(stack_name, sm_arn, hook_arn, base_cfg, suffix):
         yaml.safe_dump(cfg, f, sort_keys=False)
     run_command(
         f"idp-cli config-upload --stack-name {stack_name} "
-        f"--config-file {fail_cfg_path} "
+        f"--config-file {regional_config_file(fail_cfg_path)} "
         f"--config-version {_HOOK_FAIL_CONFIG_VERSION}",
         check=True,
     )
@@ -3546,7 +3638,7 @@ def test_step14_pipeline_hooks(stack_name):
 
         run_command(
             f"idp-cli config-upload --stack-name {stack_name} "
-            f"--config-file {base} --config-version {config_version}",
+            f"--config-file {regional_config_file(base)} --config-version {config_version}",
             check=True,
         )
         # Round-trip check: the flat hook sections must survive the config
@@ -5420,11 +5512,12 @@ def _filter_root_cause_events(failed_events):
 
 def _invoke_bedrock(prompt):
     """Invoke Bedrock with a prompt and return the response text"""
-    bedrock = boto3.client("bedrock-runtime")
+    region = ci_region()
+    bedrock = boto3.client("bedrock-runtime", region_name=region)
     # Opus 4.8 rejects sampling params (temperature/top_p/top_k) with a 400 —
     # do not add them back.
     response = bedrock.invoke_model(
-        modelId="us.anthropic.claude-opus-4-8",
+        modelId=regional_model_id("us.anthropic.claude-opus-4-8", region),
         body=json.dumps(
             {
                 "anthropic_version": "bedrock-2023-05-31",
@@ -6955,9 +7048,34 @@ def _live_idp_run_prefixes():
     Raises if any page of the listing cannot be read, rather than returning the
     prefixes read so far. Every caller reaps what is NOT in the set, so a partial
     set would read each run on an unread page as over, on a path that deletes.
+
+    The stacks are listed in every region in CI_INFRA_REGIONS, and the build's own
+    region if it is not one of them. IAM roles and policies are global, so a
+    region run's sweep that listed only its own region would read every
+    us-east-1 run, a retained failed stack included, as over and reap its IAM;
+    and the nightly would do the same to a region run's.
     """
     prefixes = set()
-    cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+    for region in _live_run_regions():
+        prefixes |= _live_idp_run_prefixes_in(region)
+    return prefixes
+
+
+def _live_run_regions() -> list[str]:
+    """CI_INFRA_REGIONS, plus the build's own region if it is not one of them."""
+    regions: list[str] = list(CI_INFRA_REGIONS)
+    own = ci_region()
+    if own not in regions:
+        regions.append(own)
+    return regions
+
+
+def _live_idp_run_prefixes_in(region: str) -> set:
+    """The run-prefixes with a stack in `region`; raises on an unread page."""
+    prefixes = set()
+    cf = boto3.client(
+        "cloudformation", region_name=region, config=_THROTTLE_RETRY_CONFIG
+    )
     paginator = cf.get_paginator("list_stacks")
     # All statuses EXCEPT DELETE_COMPLETE (a completed delete means the stack is
     # gone, so its buckets — if any survived — are fair game).
@@ -8833,6 +8951,10 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
     options say ``variant_probes``. It leaves the review stack alone, so the stack
     still moves once a night, and the probe run does not add that stack's update
     to the burst its own probe stacks already make.
+
+    A weekly region run leaves it alone too. Its options say ``region_run``, and
+    the build itself is outside PRIMARY_CI_REGION, where the review stack is not.
+    Either is enough.
     """
     env = os.environ if environ is None else environ
     switch = str(env.get(UX_NIGHTLY_DISABLE_ENV, "true")).strip().lower()
@@ -8843,6 +8965,8 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         and options.get("pipeline_source") == "schedule"
         and options.get("ref") == "develop"
         and options.get("variant_probes") is not True
+        and not options.get("region_run")
+        and region_run(env) is None
     )
 
 
@@ -9201,6 +9325,53 @@ def label_variant_probe_run(summary_text: str, environ: dict | None = None) -> s
         f"🔬 {VARIANT_PROBE_RUN_LABEL} — the deployment-variant probes ran beside "
         "the primary suite. This is not the nightly result.\n\n" + summary_text
     )
+
+
+#: Heads the consolidated summary, and marks the failure email's subject, on a
+#: weekly region run, followed by the region, so its result is never read as the
+#: nightly's.
+REGION_RUN_LABEL = "WEEKLY REGION RUN"
+
+
+def region_run(environ: dict | None = None) -> str | None:
+    """The region of a weekly region run, or None in PRIMARY_CI_REGION.
+
+    The build runs in the region of the pipeline that started it, and only a
+    weekly region schedule uploads to a pipeline outside PRIMARY_CI_REGION
+    (integration_test_deployment.region_run_requested), so the build's own region
+    is the whole answer and no flag needs to travel with the zip.
+    """
+    region = ci_region(environ)
+    return None if region == PRIMARY_CI_REGION else region
+
+
+def label_region_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary, headed with REGION_RUN_LABEL and the region on a region run."""
+    region = region_run(environ)
+    if region is None:
+        return summary_text
+    return (
+        f"🌍 {REGION_RUN_LABEL} · {region} — the primary suite ran in {region}. "
+        "This is not the nightly result.\n\n" + summary_text
+    )
+
+
+def label_ci_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary with every label that applies: probe run, region run, both."""
+    return label_region_run(label_variant_probe_run(summary_text, environ), environ)
+
+
+def failure_subject(stack_name: str, environ: dict | None = None) -> str:
+    """The failure email's subject, naming the weekly run it came from if any."""
+    labels = []
+    if variant_probe_run(environ):
+        labels.append(VARIANT_PROBE_RUN_LABEL.lower())
+    region = region_run(environ)
+    if region is not None:
+        labels.append(f"{REGION_RUN_LABEL.lower()} · {region}")
+    if not labels:
+        return f"IDP CI failure: {stack_name}"
+    return f"IDP CI failure ({'; '.join(labels)}): {stack_name}"
 
 
 def build_consolidated_summary(
@@ -9678,7 +9849,7 @@ def main():
             "⏳ INTERIM SUMMARY (primary suite done; deployment-variant probes "
             "may still be running — final summary overwrites this)\n\n" + interim
         )
-        interim = label_variant_probe_run(interim)
+        interim = label_ci_run(interim)
         if ai_summary:
             interim = f"{interim}\n\n{ai_summary}"
         publish_summary_to_s3(interim)
@@ -9817,7 +9988,7 @@ def main():
         startup_sweep_findings,
         ux_nightly_update=ux_nightly_outcome,
     )
-    consolidated = label_variant_probe_run(consolidated)
+    consolidated = label_ci_run(consolidated)
     print(f"\n{consolidated}\n")
 
     print("\n🤖 Generating deployment summary with Bedrock...")
@@ -9837,11 +10008,7 @@ def main():
         reason_suffix = f" — {failure_reason}" if failure_reason else ""
         print(f"💥 Stack: {stack_name} deployment failed!{reason_suffix}")
         send_failure_notification(
-            (
-                f"IDP CI failure ({VARIANT_PROBE_RUN_LABEL.lower()}): {stack_name}"
-                if variant_probe_run()
-                else f"IDP CI failure: {stack_name}"
-            ),
+            failure_subject(stack_name),
             f"Stack: {stack_name}\nRoot cause: {failure_reason or 'unknown'}\n\n"
             f"{full_summary or 'No summary available.'}",
         )

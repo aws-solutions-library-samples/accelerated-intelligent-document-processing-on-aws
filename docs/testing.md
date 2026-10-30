@@ -442,6 +442,8 @@ nightly schedule plus a **manual play button**, available on any MR targeting
 The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and
 the deploy variants in [section 6](#6-live-stack-tiers-manual)) run on a separate
 **weekly** schedule, so a probe failure is never read as a nightly regression.
+Two more weekly schedules run the primary suite in `eu-central-1` and
+`ca-central-1`; each result is labelled with its region, in the same Slack channel.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,

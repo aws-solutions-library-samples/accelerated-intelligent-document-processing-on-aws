@@ -15,6 +15,14 @@ Parameters:
     Description: 'Prefix for the S3 bucket name'
     Default: genaiic-sdlc-sourcecode
 
+  PipelineTriggerRoleName:
+    Type: String
+    Default: genaiic-sdlc-pipeline-trigger-role
+    Description: >-
+      Name of the role EventBridge uses to start the pipeline. IAM names are
+      global, so a copy of this stack in a second region needs its own, for
+      example genaiic-sdlc-pipeline-trigger-role-eu-central-1. The default is the
+      name the us-east-1 stack already carries, so that stack keeps its role.
   FailureAgentRoleName:
     Type: String
     Description: 'Name of the read-only role the CI failure-analysis agent assumes. Created by scripts/sdlc/cfn/sdlc-iam-role.yml as <BuilderRoleName>-failure-agent; must match that stack.'
@@ -1195,7 +1203,7 @@ Resources:
   PipelineTriggerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: genaiic-sdlc-pipeline-trigger-role
+      RoleName: !Ref PipelineTriggerRoleName
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

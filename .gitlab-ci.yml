@@ -536,6 +536,13 @@ integration_tests:
   # automatically, to let different MRs deploy concurrently. That concurrency is
   # what used to exhaust account quotas, and it no longer exists to be bounded.)
   interruptible: true
+  # One group for every region, not one per region. The weekly region runs could
+  # overlap the nightly without a per-region quota noticing, but IAM is global:
+  # the IAM CreatePolicy rate limit is one of the bursts that made concurrent
+  # deploys flaky, and every run's startup sweep reaps IAM roles and policies
+  # account-wide. Serialising them keeps one run's deploy out of another's sweep
+  # and rate limit. A queued run waits for the group without its job timeout
+  # running.
   resource_group: integration_deploy
   variables:
     IDP_ADMIN_EMAIL: ${GITLAB_USER_EMAIL}
@@ -547,6 +554,9 @@ integration_tests:
 
   # The expensive (~1h) real-AWS deploy + probe suite. Trigger policy:
   #   - the nightly schedule                     → auto, primary suite only
+  #   - a weekly region schedule                 → auto, primary suite only, in the
+  #     region its IDP_TEST_REGION names (eu-central-1, ca-central-1), against
+  #     that region's own source bucket and genaiic-sdlc-codepipeline stack
   #   - the weekly variant-probe schedule        → auto, primary suite plus the
   #     deployment-variant probes. The schedule carries the pipeline variable
   #     IDP_RUN_PROBES=true, and integration_test_deployment.py
@@ -619,7 +629,13 @@ integration_tests:
 
     # Set environment variables for Python script
     - export IDP_ACCOUNT_ID=${IDP_ACCOUNT_ID:-020432867916}
-    - export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    # The region: us-east-1, or the IDP_TEST_REGION a weekly region schedule
+    # carries (honoured on a schedule only, and only for a region with CI
+    # infrastructure — see region_run_requested). Two lines, not
+    # `eval "$(...)"`, so an unknown region fails the job here: a failed command
+    # substitution inside eval's argument is invisible to errexit.
+    - REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env)
+    - eval "$REGION_ENV"
     - export IDP_PIPELINE_NAME=genaiic-sdlc-deploy-pipeline
 
     # Run integration test deployment
@@ -647,6 +663,15 @@ integration_tests:
       else
         echo "ℹ️ No persisted credentials — using the job's own (expired past ~1h)"
       fi
+    # The same region the script ran in: after_script is a separate shell, so the
+    # script's exports are gone, and every read below (the pipeline execution, the
+    # build log, the S3 summary) is in that region. An unknown region already
+    # failed the script, so here it falls back to the default rather than ending
+    # after_script before the logs are captured.
+    - |
+      REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env 2>/dev/null) || REGION_ENV=""
+      eval "$REGION_ENV"
+      echo "Region: ${AWS_DEFAULT_REGION:-us-east-1}"
 
     # Display CodeBuild logs directly in GitLab runner console
     - |
@@ -858,6 +883,8 @@ integration_tests:
       # The weekly variant-probe schedule posts to the same channel, so its result
       # says so: a probe failure must not be read as a nightly regression.
       probe_run = os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
+      # A weekly region run posts to the same channel too, and names its region.
+      region_run = os.environ.get("IDP_REGION_RUN", "").strip()
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
       # monitor stopped before the pipeline reached a terminal state, on the
@@ -896,6 +923,8 @@ integration_tests:
           status = "✅ PASSED"
       if probe_run:
           status = "🔬 WEEKLY VARIANT PROBES · " + status
+      if region_run:
+          status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -1922,6 +1951,12 @@ nightly_notification:
           # schedule shares the channel, and its result must not read as the nightly's.
           if os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true":
               status = "🔬 WEEKLY VARIANT PROBES · " + status
+          # And a weekly region run names its region. This job runs on schedules
+          # only, which is the one source integration_test_deployment.py honours
+          # IDP_TEST_REGION on.
+          region_run = os.environ.get("IDP_TEST_REGION", "").strip().lower()
+          if region_run:
+              status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -1970,6 +2005,8 @@ nightly_notification:
 #     stack's state, which keeps it out of the comparison;
 #   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
 #   - a push to develop, as a manual button.
+# The weekly region schedules (IDP_TEST_REGION) are excluded for the same reason:
+# the review stack is in us-east-1 and they leave it alone.
 # The weekly variant-probe schedule (IDP_RUN_PROBES=true) is also a scheduled
 # develop pipeline and is excluded: it leaves the review stack alone, so a story
 # run there would re-test the night's stack and add a second "night" to the
@@ -2007,6 +2044,8 @@ ai_ux_test_stories_nightly:
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_PROBES =~ /^\s*true\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_TEST_REGION
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always

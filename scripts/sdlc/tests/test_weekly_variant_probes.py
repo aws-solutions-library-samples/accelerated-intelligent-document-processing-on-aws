@@ -218,9 +218,21 @@ def test_main_labels_the_summary_and_the_failure_email():
         encoding="utf-8"
     )
     main = source[source.index("\ndef main(") :]
-    assert "consolidated = label_variant_probe_run(consolidated)" in main
+    # label_ci_run applies the probe label and the region label together, and
+    # failure_subject names every weekly run the build belongs to.
+    assert "consolidated = label_ci_run(consolidated)" in main
     email = main[main.index("send_failure_notification(") :][:400]
-    assert "VARIANT_PROBE_RUN_LABEL" in email and "variant_probe_run()" in email
+    assert "failure_subject(stack_name)" in email
+
+
+def test_the_combined_label_and_subject_carry_the_probe_run(cbd):
+    environ = {"IDP_RUN_PROBES": "true", "AWS_REGION": "us-east-1"}
+    assert cbd.label_ci_run("TABLE", environ).startswith(
+        f"🔬 {cbd.VARIANT_PROBE_RUN_LABEL}"
+    )
+    assert cbd.failure_subject("s", environ) == (
+        f"IDP CI failure ({cbd.VARIANT_PROBE_RUN_LABEL.lower()}): s"
+    )
 
 
 # ---------------------------------------------------------------------------

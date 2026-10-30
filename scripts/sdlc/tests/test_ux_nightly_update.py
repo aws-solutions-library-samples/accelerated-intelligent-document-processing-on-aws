@@ -482,6 +482,9 @@ def test_any_other_switch_value_leaves_the_schedule_deciding(cbd, value):
 @pytest.mark.unit
 def test_the_switch_is_read_from_the_process_environment_by_default(cbd, monkeypatch):
     options = {"pipeline_source": "schedule", "ref": "develop"}
+    # The build's region is read from the same environment, and the review stack
+    # is updated only from PRIMARY_CI_REGION.
+    monkeypatch.setenv("AWS_REGION", cbd.PRIMARY_CI_REGION)
     monkeypatch.setenv("IDP_UX_NIGHTLY_UPDATE", "false")
     assert cbd.ux_nightly_update_requested(options) is False
     monkeypatch.delenv("IDP_UX_NIGHTLY_UPDATE")

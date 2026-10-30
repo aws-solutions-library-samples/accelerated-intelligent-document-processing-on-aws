@@ -101,6 +101,27 @@ AGENT_HAIKU_MODEL = os.environ.get(
     "IDP_FAILURE_AGENT_HAIKU_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 
+
+def regional_model_id(model_id: str, region: str | None = None) -> str:
+    """A `us.` inference-profile id rewritten for the region the build runs in.
+
+    The CI analysis models are written as `us.` profiles, which Bedrock refuses
+    as invalid from an EU region; there the `eu.` twin is the one to call, and
+    eu-central-1 carries one for each of these models. ca-central-1 calls the
+    `us.` Claude profiles directly (docs/canada-region-model-support.md), so every
+    region but EU keeps the id as written. An id that is not a `us.` profile is
+    returned unchanged.
+    """
+    region = (
+        region
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    )
+    if region.startswith("eu-") and model_id.startswith("us."):
+        return "eu." + model_id[len("us.") :]
+    return model_id
+
+
 # Three independent caps. --max-turns and --max-budget-usd are enforced by the
 # CLI (print mode only); the wall clock is ours, because a single turn can stall
 # on a slow AWS call and neither CLI cap would fire.
@@ -528,8 +549,8 @@ def run_failure_agent(
         env.update(
             {
                 "CLAUDE_CODE_USE_BEDROCK": "1",
-                "ANTHROPIC_MODEL": AGENT_MODEL,
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": AGENT_HAIKU_MODEL,
+                "ANTHROPIC_MODEL": regional_model_id(AGENT_MODEL),
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": regional_model_id(AGENT_HAIKU_MODEL),
                 # Never let CI wait on a TTY that does not exist.
                 "CI": "1",
                 "DISABLE_TELEMETRY": "1",
@@ -555,7 +576,7 @@ def run_failure_agent(
             "--output-format",
             "json",
             "--model",
-            AGENT_MODEL,
+            regional_model_id(AGENT_MODEL),
             "--max-turns",
             str(AGENT_MAX_TURNS),
             "--max-budget-usd",
@@ -572,7 +593,7 @@ def run_failure_agent(
         ]
 
         print(
-            f"🤖 failure-agent: starting (model={AGENT_MODEL}, "
+            f"🤖 failure-agent: starting (model={regional_model_id(AGENT_MODEL)}, "
             f"max_turns={AGENT_MAX_TURNS}, budget=${AGENT_MAX_BUDGET_USD}, "
             f"wall_clock={AGENT_WALL_CLOCK_SECONDS}s)"
         )

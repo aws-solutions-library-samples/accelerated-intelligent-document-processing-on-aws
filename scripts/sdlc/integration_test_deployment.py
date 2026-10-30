@@ -8,6 +8,7 @@ Handles code packaging, S3 upload, and pipeline monitoring for integration tests
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import time
@@ -117,6 +118,62 @@ def variant_probes_requested(environ: dict | None = None) -> bool:
         env.get("CI_PIPELINE_SOURCE", "") == "schedule"
         and str(env.get(VARIANT_PROBES_VARIABLE, "")).strip().lower() == "true"
     )
+
+
+#: The pipeline variable a weekly region schedule carries: the region the run
+#: deploys and tests in. Unset, the run is in PRIMARY_CI_REGION.
+REGION_RUN_VARIABLE = "IDP_TEST_REGION"
+#: The region the nightly, the probe run and every button press use.
+PRIMARY_CI_REGION = "us-east-1"
+#: The regions other than PRIMARY_CI_REGION that hold the CI infrastructure a run
+#: needs: the source bucket, the `genaiic-sdlc-codepipeline` stack and its test
+#: VPC. A region is added here only once those exist in it; codebuild_deployment.py
+#: holds the same set as CI_INFRA_REGIONS, and test_weekly_region_runs.py keeps the
+#: two in step.
+REGION_RUN_REGIONS = ("eu-central-1", "ca-central-1")
+
+
+def region_run_requested(environ: dict | None = None) -> str | None:
+    """The region a weekly region run deploys in, or None for every other run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives: a project-level variable or the "Run pipeline" form must not move a
+    deploy somebody clicked to check a merge request into another region.
+
+    Raises ValueError for a value outside REGION_RUN_REGIONS on a schedule. A
+    region with no CI infrastructure has no source bucket and no pipeline, and
+    running the suite in us-east-1 instead would report a result for a region
+    that was never tested.
+    """
+    env = os.environ if environ is None else environ
+    region = str(env.get(REGION_RUN_VARIABLE, "")).strip().lower()
+    if not region or env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return None
+    if region not in REGION_RUN_REGIONS:
+        raise ValueError(
+            f"{REGION_RUN_VARIABLE}={region!r} names no region with CI "
+            f"infrastructure; expected one of {', '.join(REGION_RUN_REGIONS)}"
+        )
+    return region
+
+
+def region_env_lines(environ: dict | None = None) -> list[str]:
+    """Shell `export` lines that select the run's region, for the GitLab job.
+
+    The job's script and after_script are separate shells, so both evaluate these
+    rather than one inheriting the other's exports. AWS_REGION is set as well as
+    AWS_DEFAULT_REGION because the CLI and boto3 prefer it, and a runner that
+    exports it would otherwise keep every call in its own region. IDP_REGION_RUN
+    is the region of a region run and empty otherwise; the Slack post reads it.
+    """
+    env = os.environ if environ is None else environ
+    requested = region_run_requested(env)
+    region = requested or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
+    return [
+        f"export AWS_DEFAULT_REGION={shlex.quote(region)}",
+        f"export AWS_REGION={shlex.quote(region)}",
+        f"export IDP_REGION_RUN={shlex.quote(requested or '')}",
+    ]
 
 
 def upload_to_s3(bucket_name):
@@ -456,6 +513,7 @@ def write_ci_run_options(
         "ref": env.get("CI_COMMIT_REF_NAME", ""),
         "pipeline_id": env.get("CI_PIPELINE_ID", ""),
         "variant_probes": variant_probes_requested(env),
+        "region_run": region_run_requested(env) or "",
     }
     try:
         pathlib.Path(path).write_text(
@@ -829,6 +887,24 @@ def main():
 
     print(f"Account ID: {account_id}")
     print(f"Region: {region}")
+    region_run = region_run_requested()
+    if region_run:
+        print(f"🌍 Weekly region run — deploying and testing in {region_run}")
+        if region != region_run:
+            # The job evaluates region_env_lines before calling this; a mismatch
+            # means it did not, and the run would test the wrong region.
+            print(
+                f"❌ AWS_DEFAULT_REGION is {region} but {REGION_RUN_VARIABLE} asks "
+                f"for {region_run}; the job must evaluate --region-env first"
+            )
+            sys.exit(1)
+    elif os.environ.get(REGION_RUN_VARIABLE, "").strip():
+        source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
+        print(
+            f"⚠️ {REGION_RUN_VARIABLE} is set, but this is a {source} pipeline: "
+            f"region runs happen only on a scheduled one, so this run stays in "
+            f"{region}."
+        )
     print(f"Bucket: {bucket_name}")
     print(f"Pipeline: {pipeline_name}")
 
@@ -880,4 +956,11 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--region-env"]:
+        try:
+            print("\n".join(region_env_lines()))
+        except ValueError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            sys.exit(2)
+        sys.exit(0)
     main()
