@@ -45,7 +45,7 @@ def _offline_unmapped(monkeypatch):
     token and an empty advisory list, so the pass runs and finds nothing.
     """
     monkeypatch.setattr(dep_audit, "github_token", lambda: "test-token")
-    monkeypatch.setattr(dep_audit, "fetch_unreviewed", lambda token: [])
+    monkeypatch.setattr(dep_audit, "fetch_unreviewed", lambda token: ([], []))
 
 
 def subprocess_result(code, out, err):
@@ -104,20 +104,29 @@ class TestAllowlistScoping:
     }
 
     def test_bare_id_suppresses_any_package(self):
-        entry = dep_audit.is_allowlisted(self.ALLOWLIST, "GHSA-GLOBAL", "whatever")
-        assert entry is not None and entry["reason"] == "applies everywhere"
+        assert (
+            dep_audit.allowlist_key(self.ALLOWLIST, "GHSA-GLOBAL", "whatever")
+            == "GHSA-GLOBAL"
+        )
 
     def test_scoped_id_suppresses_its_own_package(self):
-        entry = dep_audit.is_allowlisted(self.ALLOWLIST, "GHSA-SCOPED", "pkg-a")
-        assert entry is not None and entry["reason"] == "only this package"
+        assert (
+            dep_audit.allowlist_key(self.ALLOWLIST, "GHSA-SCOPED", "pkg-a")
+            == "GHSA-SCOPED|pkg-a"
+        )
+
+    def test_a_scoped_entry_wins_over_a_bare_one_for_its_package(self):
+        both = {"GHSA-X": {}, "GHSA-X|pkg-a": {}}
+        assert dep_audit.allowlist_key(both, "GHSA-X", "pkg-a") == "GHSA-X|pkg-a"
+        assert dep_audit.allowlist_key(both, "GHSA-X", "pkg-b") == "GHSA-X"
 
     def test_scoped_id_does_not_suppress_another_package(self):
         """The failure that matters: a scoped triage must not hide a real finding
         for the same advisory on a different dependency."""
-        assert dep_audit.is_allowlisted(self.ALLOWLIST, "GHSA-SCOPED", "pkg-b") is None
+        assert dep_audit.allowlist_key(self.ALLOWLIST, "GHSA-SCOPED", "pkg-b") is None
 
     def test_unknown_id_is_not_suppressed(self):
-        assert dep_audit.is_allowlisted(self.ALLOWLIST, "GHSA-NEW", "pkg-a") is None
+        assert dep_audit.allowlist_key(self.ALLOWLIST, "GHSA-NEW", "pkg-a") is None
 
 
 class TestSeverity:
@@ -979,7 +988,7 @@ class TestUnmappedInTheGate:
         monkeypatch.setattr(
             dep_audit,
             "fetch_unreviewed",
-            lambda token: [_unreviewed("mammoth before 1.12.2 is vulnerable")],
+            lambda token: ([_unreviewed("mammoth before 1.12.2 is vulnerable")], []),
         )
         assert dep_audit.main(["--no-generate"]) == 0
         out = capsys.readouterr().out
@@ -1015,7 +1024,9 @@ class TestUnmappedInTheGate:
         """A malformed advisory must not turn a review list into a red gate."""
         _manifests(tmp_path, monkeypatch, node="mammoth@1.12.0\n")
         _osv(monkeypatch, {}, {})
-        monkeypatch.setattr(dep_audit, "fetch_unreviewed", lambda token: ["not-a-dict"])
+        monkeypatch.setattr(
+            dep_audit, "fetch_unreviewed", lambda token: (["not-a-dict"], [])
+        )
         assert dep_audit.main(["--no-generate"]) == 0
         assert "not checked: AttributeError" in capsys.readouterr().out
 
@@ -1046,8 +1057,10 @@ class TestFetchUnreviewed:
         monkeypatch.setattr(dep_audit, "_ghsa_page", fake_page)
         import datetime as dt
 
-        got = dep_audit.fetch_unreviewed("t", days=3, today=dt.date(2026, 10, 30))
-        assert len(got) == 6 and len(calls) == 6
+        got, unread = dep_audit.fetch_unreviewed(
+            "t", days=3, today=dt.date(2026, 10, 30)
+        )
+        assert len(got) == 6 and len(calls) == 6 and unread == []
         firsts = sorted(u for u in calls if "after=" not in u)
         assert [u.split("published=")[1][:10] for u in firsts] == [
             "2026-10-28",
@@ -1179,3 +1192,56 @@ class TestGithubTokenFromGh:
             lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "not logged in"),
         )
         assert dep_audit.github_token() is None
+
+
+@pytest.mark.unit
+class TestUnmappedPassResilience:
+    def test_one_unreadable_day_costs_that_day_not_the_pass(self, monkeypatch):
+        monkeypatch.undo()
+        import datetime as dt
+
+        def page(url, token):
+            if "2026-10-29" in url:
+                raise RuntimeError("rate limited")
+            return [{"ghsa_id": url[-30:]}], ""
+
+        monkeypatch.setattr(dep_audit, "_ghsa_page", page)
+        got, unread = dep_audit.fetch_unreviewed(
+            "t", days=3, today=dt.date(2026, 10, 30)
+        )
+        assert len(got) == 2 and unread == ["2026-10-29"]
+
+    def test_unread_days_are_printed(self, tmp_path, monkeypatch, capsys):
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {})
+        monkeypatch.setattr(
+            dep_audit, "fetch_unreviewed", lambda token: ([], ["2026-10-29"])
+        )
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "could not be read and are not covered: 2026-10-29" in (
+            capsys.readouterr().out
+        )
+
+    def test_retry_after_is_honoured_and_capped(self):
+        import email.message
+        import urllib.error
+
+        def err(code, after):
+            h = email.message.Message()
+            if after is not None:
+                h["Retry-After"] = after
+            return urllib.error.HTTPError("u", code, "x", h, None)
+
+        assert dep_audit._retry_delay(err(429, "7"), 0) == 7.0
+        assert dep_audit._retry_delay(err(403, "900"), 0) == 60.0
+        assert dep_audit._retry_delay(err(403, None), 0) == 30.0
+        assert dep_audit._retry_delay(err(403, "soon"), 0) == 30.0
+        assert dep_audit._retry_delay(err(500, "7"), 1) == 4.0
+        assert dep_audit._retry_delay(TimeoutError(), 0) == 2.0
+
+    def test_python_names_match_after_pep503_normalisation(self):
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("pillow_heif before 1.2.0 contains a flaw")],
+            [("PyPI", "pillow-heif", "1.1.0")],
+        )
+        assert len(found) == 1

@@ -267,13 +267,6 @@ def allowlist_key(
     return None
 
 
-def is_allowlisted(
-    allowlist: Dict[str, Dict[str, Any]], vid: str, name: str
-) -> Optional[Dict[str, Any]]:
-    key = allowlist_key(allowlist, vid, name)
-    return allowlist[key] if key else None
-
-
 def github_token() -> Optional[str]:
     """A token for the GitHub advisory API: the environment, else ``gh``."""
     for var in ("GITHUB_TOKEN", "GH_TOKEN"):
@@ -286,6 +279,17 @@ def github_token() -> Optional[str]:
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
     return None
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """Seconds to wait before retrying: GitHub's ``Retry-After`` on a rate-limit
+    answer (403 or 429), capped at a minute; otherwise a short linear backoff."""
+    if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 429):
+        try:
+            return min(60.0, float(exc.headers.get("Retry-After") or 0)) or 30.0
+        except (TypeError, ValueError):
+            return 30.0
+    return 2.0 * (attempt + 1)
 
 
 def _ghsa_page(url: str, token: str, retries: int = 3) -> Tuple[List[Any], str]:
@@ -318,7 +322,7 @@ def _ghsa_page(url: str, token: str, retries: int = 3) -> Tuple[List[Any], str]:
             json.JSONDecodeError,
         ) as exc:
             last = exc
-            time.sleep(2 * (attempt + 1))
+            time.sleep(_retry_delay(exc, attempt))
             continue
         if not isinstance(page, list):
             raise RuntimeError(
@@ -333,21 +337,32 @@ def _ghsa_page(url: str, token: str, retries: int = 3) -> Tuple[List[Any], str]:
 
 def fetch_unreviewed(
     token: str, days: int = UNMAPPED_DAYS, today: Optional[dt.date] = None
-) -> List[Dict[str, Any]]:
-    """Every unreviewed GitHub advisory published in the last ``days`` days."""
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Unreviewed GitHub advisories published in the last ``days`` days.
+
+    Returns (advisories, unread_days). A day whose pages could not be read is
+    listed rather than failing the whole pass, so a rate limit on one busy day
+    costs that day and not the other fifty-nine.
+    """
     today = today or dt.datetime.now(dt.timezone.utc).date()
 
-    def one_day(day: dt.date) -> List[Dict[str, Any]]:
+    def one_day(day: dt.date) -> Tuple[List[Dict[str, Any]], bool]:
         out: List[Dict[str, Any]] = []
         url = f"{GHSA_URL}?type=unreviewed&published={day.isoformat()}&per_page=100"
-        while url:
-            page, url = _ghsa_page(url, token)
-            out.extend(page)
-        return out
+        try:
+            while url:
+                page, url = _ghsa_page(url, token)
+                out.extend(page)
+        except RuntimeError:
+            return out, False
+        return out, True
 
+    days_list = [today - dt.timedelta(days=i) for i in range(days)]
     with ThreadPoolExecutor(UNMAPPED_WORKERS) as pool:
-        days_list = [today - dt.timedelta(days=i) for i in range(days)]
-        return [adv for chunk in pool.map(one_day, days_list) for adv in chunk]
+        results = list(pool.map(one_day, days_list))
+    advisories = [adv for chunk, _ in results for adv in chunk]
+    unread = [d.isoformat() for d, (_, ok) in zip(days_list, results) if not ok]
+    return advisories, sorted(unread)
 
 
 # "<name> [(aka ...)] [package] [versions] [from <lo>] before|through|<= <hi>" at the
@@ -382,6 +397,12 @@ def _compare(a: Tuple[int, ...], b: Tuple[int, ...]) -> int:
     return (a > b) - (a < b)
 
 
+def _norm(name: str) -> str:
+    """PEP 503 normalisation (``Pillow_HEIF`` == ``pillow-heif``), which is also
+    harmless for npm names, whose registry forbids ``_`` and uppercase."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def match_unmapped(
     advisories: List[Dict[str, Any]],
     packages: List[Tuple[str, str, str]],
@@ -392,11 +413,16 @@ def match_unmapped(
     Returns (findings, not_affected): a finding is an advisory whose stated range
     includes the pinned version, or whose range could not be read; ``not_affected``
     counts the ones that named a package but exclude the version we pin.
+
+    Recall is bounded on purpose: only a summary that *opens* with the package
+    name is read, so "A flaw in foo before 1.2 ..." is not matched. That is the
+    price of keeping generic names out of the list, and it is why an empty
+    section means "nothing found this way", not "nothing unmapped exists".
     """
     known = set(known_ids)
     by_name: Dict[str, List[Tuple[str, str, str]]] = {}
     for eco, name, version in packages:
-        by_name.setdefault(name.lower(), []).append((eco, name, version))
+        by_name.setdefault(_norm(name), []).append((eco, name, version))
 
     findings: List[Dict[str, Any]] = []
     not_affected = 0
@@ -408,7 +434,7 @@ def match_unmapped(
         m = _UNMAPPED_HEAD.match(adv.get("summary") or "")
         if not m:
             continue
-        for eco, name, version in by_name.get(m.group("name").lower(), []):
+        for eco, name, version in by_name.get(_norm(m.group("name")), []):
             ours, hi = _version_tuple(version), _version_tuple(m.group("hi"))
             lo = _version_tuple(m.group("lo")) if m.group("lo") else None
             if ours is not None and hi is not None:
@@ -649,7 +675,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             # Deliberately broad: this pass is a review list, and an upstream
             # surprise in it must cost the report, never the gate's exit code.
             try:
-                advisories = fetch_unreviewed(token)
+                advisories, unread = fetch_unreviewed(token)
                 found, not_affected = match_unmapped(advisories, packages, known)
             except Exception as exc:  # noqa: BLE001
                 unmapped["reason"] = f"{type(exc).__name__}: {exc}"
@@ -659,6 +685,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     "days": UNMAPPED_DAYS,
                     "advisories_read": len(advisories),
                     "not_affected": not_affected,
+                    "unread_days": unread,
                     "findings": found,
                 }
 
@@ -669,9 +696,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         for e in stale:
             print(f"  {e['key']}")
         print(
-            "    The advisory was withdrawn, or the package moved past it. Delete\n"
-            f"    the entry from {ALLOWLIST.relative_to(REPO_ROOT)} and its twin in\n"
-            "    .ash/.ash.yaml."
+            "    Usually the advisory was withdrawn or the package moved past it.\n"
+            "    Confirm that on the advisory page, then delete the entry from\n"
+            f"    {ALLOWLIST.relative_to(REPO_ROOT)} and its twin in .ash/.ash.yaml."
         )
     show("ALLOWLISTED (triaged, not gating)", suppressed)
     show(f"BELOW THRESHOLD (informational, under {args.severity})", below)
@@ -685,6 +712,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             "pinned package but exclude its version)"
         )
         print("-" * 100)
+        if unmapped["unread_days"]:
+            print(
+                f"  ⚠️  {len(unmapped['unread_days'])} day(s) could not be read and "
+                f"are not covered: {', '.join(unmapped['unread_days'])}"
+            )
         for f in rows:
             print(
                 f"  {f['severity']:<14} {f['ecosystem']}:{f['package']}@{f['version']}"
