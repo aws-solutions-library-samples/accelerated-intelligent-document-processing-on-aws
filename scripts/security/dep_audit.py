@@ -370,7 +370,7 @@ def fetch_unreviewed(
                     return out, False
                 page, url = _ghsa_page(url, token)
                 out.extend(page)
-        except RuntimeError:
+        except Exception:  # noqa: BLE001 - any failure costs this day only
             return out, False
         return out, True
 

@@ -419,7 +419,8 @@ line-scoped `# nosec <ID> - <reason>`, unreachable advisories go in
 `scripts/security/dep_audit_allowlist.json` with a justification (an entry that
 no longer matches any finding fails the audit, so delete it once the advisory is
 withdrawn or the package is upgraded), and security-matrix/Checkov findings go in
-`scripts/srt/issues.json`.
+`scripts/srt/issues.json`. Procedures:
+[`srt-security-scan`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/srt-security-scan.md).
 
 `dep-audit` also prints an **unmapped advisories** section. GitHub publishes many
 advisories as *unreviewed*, with no affected package attached; matching by package
@@ -428,13 +429,15 @@ section lists each unreviewed advisory from the last 60 days whose summary opens
 with a pinned package's name and a range that includes the pinned version. It is a
 list to review, not a gate: it is read from prose, and it never changes the exit
 code. It needs a GitHub token (`GITHUB_TOKEN`, `GH_TOKEN` or a `gh` login), and
-says "not checked" without one. An advisory in that list is not allowlisted:
-there is no OSV finding for the entry to suppress, so it would fail the audit as
-stale. Once reviewed it needs no record; it leaves the list when it is 60 days old
-or when GitHub maps it to a package, at which point OSV reports it normally. GitLab's `dep_audit` job runs it; GitHub's does
-not, because the Actions token's hourly request limit is shared by every job in
-the repository and one run of this report uses about a third of it. Procedures:
-[`srt-security-scan`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/srt-security-scan.md).
+says "not checked" without one; `make dep-audit DEP_AUDIT_ARGS=--no-unmapped`
+skips it. GitLab's `dep_audit` job runs it. GitHub's passes `--no-unmapped`,
+because the Actions token's hourly request limit is shared by every job in the
+repository and one run of this report uses about a third of it.
+
+An advisory in that list is not allowlisted: there is no OSV finding for the entry
+to suppress, so it would fail the audit as stale. Once reviewed it needs no
+record; it leaves the list when it is 60 days old or when GitHub maps it to a
+package, at which point OSV reports it normally.
 
 Published, redacted snapshots of the four security tests per release live in
 [`security/test-results/<version>/`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/tree/develop/security/test-results),

@@ -21,6 +21,7 @@ stage flags exactly this class). If you are asked "are we exposed to CVE-X",
 ```bash
 make dep-audit        # regenerate manifests + audit ~1800 pinned deps vs OSV
 make dep-audit-fast   # reuse existing dist/manifests (skip regeneration)
+make dep-audit DEP_AUDIT_ARGS=--no-unmapped   # skip the GitHub advisory pass
 ```
 
 - Implemented by `scripts/security/dep_audit.py`; gated in CI by the `dep_audit`

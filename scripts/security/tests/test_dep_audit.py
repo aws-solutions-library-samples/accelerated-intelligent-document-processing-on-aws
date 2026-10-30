@@ -1227,6 +1227,22 @@ class TestUnmappedPassResilience:
         )
         assert len(got) == 2 and unread == ["2026-10-29"]
 
+    def test_an_unexpected_error_on_one_day_costs_only_that_day(self, monkeypatch):
+        """A reset connection is neither a URLError nor an HTTPException."""
+        monkeypatch.undo()
+        import datetime as dt
+
+        def page(url, token):
+            if "2026-10-29" in url:
+                raise ConnectionResetError("peer reset")
+            return [{"ghsa_id": url[-30:]}], ""
+
+        monkeypatch.setattr(dep_audit, "_ghsa_page", page)
+        got, unread = dep_audit.fetch_unreviewed(
+            "t", days=3, today=dt.date(2026, 10, 30)
+        )
+        assert len(got) == 2 and unread == ["2026-10-29"]
+
     def test_unread_days_are_printed(self, tmp_path, monkeypatch, capsys):
         _manifests(tmp_path, monkeypatch)
         _osv(monkeypatch, {}, {})
