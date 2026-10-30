@@ -21,25 +21,11 @@
     "triagedOn": "2026-08-25"
   },
   {
-    "id": "GHSA-vfj7-8cjw-p6xm",
-    "package": "braces",
-    "severity": "HIGH",
-    "reason": "Not reachable. braces reaches src/ui only as a development dependency of micromatch, which the build and lint tooling uses; the browser bundle does not include it, and the patterns it expands come from this repository's own configuration, never from user input. No fixed release exists yet; upgrade and remove this entry once one is published.",
-    "triagedOn": "2026-10-05"
-  },
-  {
     "id": "GHSA-c4qx-w738-7hr3",
     "package": "@graphql-tools/utils",
     "severity": "HIGH",
     "reason": "Not reachable at runtime. Prototype pollution in mergeIncrementalResult. In src/ui the package is reached only through the @graphql-codegen/* dev tooling (npm ls @graphql-tools/utils), and nothing under src/ui/src imports @graphql-tools, so it never ships in the built bundle. The fixed releases depend on @whatwg-node/promise-helpers@2, which requires Node >=22.15.0, while the UI build pins Node 22.14.0 (.gitlab-ci.yml, the UI CodeBuild project in template.yaml, scripts/sdlc/cfn/codepipeline-s3.yml) and src/ui/.npmrc sets engine-strict=true, so the bump fails npm ci. Revisit when the Node pin moves to 22.15 or later.",
     "triagedOn": "2026-10-22"
-  },
-  {
-    "id": "GHSA-434m-5hcj-pxf3",
-    "package": "@graphql-tools/executor-legacy-ws",
-    "severity": "HIGH",
-    "reason": "Not reachable. Per-request WebSocket connection parameters persisting into later authentications in the legacy WebSocket executor. In src/ui the package is reached only through @graphql-codegen/cli -> @graphql-tools/url-loader (npm ls @graphql-tools/executor-legacy-ws), dev tooling that never ships in the built bundle; nothing under src/ui/src imports @graphql-tools, and codegen.config.mjs loads the schema from the local nested/api-resolvers/src/api/schema.graphql file, so no WebSocket executor is ever constructed. The fix (1.1.36) requires @graphql-tools/utils ^12.0.2, which is blocked by the Node 22.14.0 pin for the same reason as GHSA-c4qx-w738-7hr3. Revisit when the Node pin moves to 22.15 or later.",
-    "triagedOn": "2026-10-28"
   },
   {
     "id": "GHSA-4v6f-7vjh-6x4m",
