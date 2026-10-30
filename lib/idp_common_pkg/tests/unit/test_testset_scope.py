@@ -387,3 +387,112 @@ class TestReviewerProfileScope:
                 users_table,
                 set_profile=profile,
             )
+
+
+class _BatchGetOnly:
+    """A DynamoDB resource holding only what the layer-free file resolver's role is
+    granted on the tracking table: ``BatchGetItem``. ``GetItem`` is refused as IAM
+    refuses it there, which moto does not enforce."""
+
+    def __init__(self, item=None, unprocessed_rounds=0):
+        self.item = item
+        self.unprocessed_rounds = unprocessed_rounds
+        self.calls = []
+
+    def Table(self, name):  # noqa: N802 — boto3's spelling
+        table = MagicMock(name=f"Table({name})")
+        table.get_item.side_effect = RuntimeError(
+            "AccessDeniedException: not authorized to perform dynamodb:GetItem"
+        )
+        return table
+
+    def batch_get_item(self, RequestItems):  # noqa: N803 — boto3's spelling
+        self.calls.append(RequestItems)
+        ((table, request),) = RequestItems.items()
+        if self.unprocessed_rounds:
+            self.unprocessed_rounds -= 1
+            return {"Responses": {table: []}, "UnprocessedKeys": RequestItems}
+        return {"Responses": {table: [self.item] if self.item else []}}
+
+
+@pytest.mark.unit
+class TestStoredScopeProfileRead:
+    """The recorded profile is read with ``BatchGetItem``, the only tracking-table read
+    the file resolver may make; anything it cannot answer raises so the caller refuses."""
+
+    @pytest.fixture(autouse=True)
+    def _table(self, monkeypatch):
+        monkeypatch.setenv("TRACKING_TABLE_NAME", "tracking")
+
+    def _with(self, monkeypatch, resource):
+        monkeypatch.setattr(boto3, "resource", lambda *_a, **_k: resource)
+        return resource
+
+    def test_reads_the_recorded_profile_without_get_item(self, monkeypatch):
+        ddb = self._with(monkeypatch, _BatchGetOnly({"ScopeProfile": "lending"}))
+        assert testset_scope._stored_scope_profile("ts-a") == "lending"
+        assert ddb.calls == [
+            {
+                "tracking": {
+                    "Keys": [{"PK": "testset#ts-a", "SK": "metadata"}],
+                    "ProjectionExpression": "ScopeProfile",
+                }
+            }
+        ]
+
+    @pytest.mark.parametrize(
+        ("item", "expected"),
+        [(None, None), ({}, None), ({"ScopeProfile": ""}, "")],
+        ids=["no-item", "unrecorded", "no-single-profile"],
+    )
+    def test_an_unrecorded_or_empty_profile(self, monkeypatch, item, expected):
+        self._with(monkeypatch, _BatchGetOnly(item))
+        assert testset_scope._stored_scope_profile("ts-a") == expected
+
+    def test_an_unprocessed_key_is_retried(self, monkeypatch):
+        ddb = self._with(
+            monkeypatch,
+            _BatchGetOnly({"ScopeProfile": "lending"}, unprocessed_rounds=2),
+        )
+        assert testset_scope._stored_scope_profile("ts-a") == "lending"
+        assert len(ddb.calls) == 3
+
+    def test_a_key_left_unprocessed_raises_so_the_caller_refuses(self, monkeypatch):
+        self._with(
+            monkeypatch, _BatchGetOnly({"ScopeProfile": "x"}, unprocessed_rounds=99)
+        )
+        with pytest.raises(RuntimeError, match="unprocessed"):
+            testset_scope._stored_scope_profile("ts-a")
+
+    def test_a_scoped_reviewer_is_admitted_under_the_resolver_grant(self, monkeypatch):
+        from idp_common import config_scope
+
+        monkeypatch.setattr(
+            config_scope,
+            "resolve_allowed_config_versions",
+            lambda *_a, **_k: ["lending"],
+        )
+        self._with(monkeypatch, _BatchGetOnly({"ScopeProfile": "lending"}))
+        assert_can_access_test_set(_event(["Reviewer"], "rev@example.com"), "ts-a")
+
+    def test_reads_a_real_table(self, monkeypatch):
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            table = ddb.create_table(
+                TableName="tracking",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            table.put_item(
+                Item={"PK": "testset#ts-a", "SK": "metadata", "ScopeProfile": "lending"}
+            )
+            assert testset_scope._stored_scope_profile("ts-a") == "lending"
+            assert testset_scope._stored_scope_profile("ts-missing") is None

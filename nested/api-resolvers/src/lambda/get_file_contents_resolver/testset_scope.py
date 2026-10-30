@@ -176,10 +176,18 @@ def _config_scope():
     return config_scope
 
 
+#: How many ``BatchGetItem`` calls the profile read makes before an unprocessed key
+#: is treated as unreadable (and so refused).
+_PROFILE_READ_ATTEMPTS = 3
+
+
 def _stored_scope_profile(test_set_id: str) -> Optional[str]:
     """The set's ``ScopeProfile`` as recorded on its metadata item; None if unrecorded.
 
-    Raises when the item cannot be read, so the caller refuses.
+    Read with ``BatchGetItem`` rather than ``GetItem``: the layer-free file resolver
+    is granted only ``BatchGetItem`` on the tracking table, deliberately, and every
+    other caller's role allows both. Raises when the item cannot be read (including
+    a key DynamoDB leaves unprocessed after the retries), so the caller refuses.
     """
     table_name = os.environ.get("TRACKING_TABLE_NAME") or os.environ.get(
         "TRACKING_TABLE", ""
@@ -188,15 +196,23 @@ def _stored_scope_profile(test_set_id: str) -> Optional[str]:
         raise RuntimeError("the tracking table is not configured")
     import boto3
 
-    item = (
-        boto3.resource("dynamodb")
-        .Table(table_name)
-        .get_item(
-            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-            ProjectionExpression=SCOPE_PROFILE_ATTRIBUTE,
-        )
-        .get("Item")
-    )
+    dynamodb = boto3.resource("dynamodb")
+    request = {
+        table_name: {
+            "Keys": [{"PK": f"testset#{test_set_id}", "SK": "metadata"}],
+            "ProjectionExpression": SCOPE_PROFILE_ATTRIBUTE,
+        }
+    }
+    items: list = []
+    for _ in range(_PROFILE_READ_ATTEMPTS):
+        response = dynamodb.batch_get_item(RequestItems=request)
+        items.extend(response.get("Responses", {}).get(table_name, []))
+        request = response.get("UnprocessedKeys") or {}
+        if not request:
+            break
+    else:
+        raise RuntimeError("the test set's metadata item was left unprocessed")
+    item = items[0] if items else None
     if not item or SCOPE_PROFILE_ATTRIBUTE not in item:
         return None
     return str(item[SCOPE_PROFILE_ATTRIBUTE] or "")
