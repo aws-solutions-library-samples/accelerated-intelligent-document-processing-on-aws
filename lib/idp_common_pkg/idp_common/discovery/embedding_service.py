@@ -17,7 +17,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from idp_common.bedrock.client import BedrockClient
-from idp_common.discovery.regional_defaults import default_embedding_model_id
+from idp_common.discovery.regional_defaults import (
+    DEFAULT_EMBEDDING_MODEL_ID,
+    default_embedding_model_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +72,9 @@ class EmbeddingService:
         ... )
     """
 
-    # Default embedding model — must support multimodal (image) embeddings.
-    # Cohere Embed v4 is preferred (best quality, multimodal).
-    # Alternative: amazon.titan-embed-image-v1 (lower quality but simpler API)
-    DEFAULT_MODEL_ID = "us.cohere.embed-v4:0"
+    # The US default, kept as an alias for callers that read it. The constructor
+    # resolves its default per Region through regional_defaults instead.
+    DEFAULT_MODEL_ID = DEFAULT_EMBEDDING_MODEL_ID
 
     # Maximum image size for embedding (bytes) - 5MB
     MAX_IMAGE_SIZE = 5 * 1024 * 1024

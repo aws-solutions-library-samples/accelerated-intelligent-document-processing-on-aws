@@ -64,3 +64,30 @@ def test_the_discovery_fallbacks_agree_with_the_swap_tables():
             assert regional_defaults.regional_default(
                 us_id, region
             ) == index.get_model_mapping(us_id, region_type), (us_id, region)
+
+
+def _analysis_model_picklist() -> tuple[str, list[str]]:
+    """The cluster-analysis default and enum, read from the shipped UI schema."""
+    import re
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parents[3] / "patterns" / "unified" / "template.yaml"
+    ).read_text(encoding="utf-8")
+    block = template[template.index("                  analysis_model_id:") :]
+    block = block[: block.index("                    order:")]
+    (default,) = re.findall(r'^\s+default: "([^"]+)"', block, re.MULTILINE)
+    enum = re.findall(r'^\s+- "([^"]+)"', block, re.MULTILINE)
+    assert enum, "analysis_model_id has no enum; this test reads nothing"
+    return default, enum
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("region_type", ["eu", "ca", "us"])
+def test_the_analysis_picklist_offers_the_default_the_swap_writes(region_type):
+    """An EU stack keeps only eu. ids, so the swapped default must be one of them."""
+    from test_canada_region import _enum_offered
+
+    default, enum = _analysis_model_picklist()
+    swapped = index.get_model_mapping(default, region_type)
+    assert swapped in _enum_offered(enum, region_type)
