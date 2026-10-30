@@ -428,7 +428,9 @@ section lists each unreviewed advisory from the last 60 days whose summary opens
 with a pinned package's name and a range that includes the pinned version. It is a
 list to review, not a gate: it is read from prose, and it never changes the exit
 code. It needs a GitHub token (`GITHUB_TOKEN`, `GH_TOKEN` or a `gh` login), and
-says "not checked" without one. Procedures:
+says "not checked" without one. GitLab's `dep_audit` job runs it; GitHub's does
+not, because the Actions token's hourly request limit is shared by every job in
+the repository and one run of this report uses about a third of it. Procedures:
 [`srt-security-scan`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/srt-security-scan.md).
 
 Published, redacted snapshots of the four security tests per release live in

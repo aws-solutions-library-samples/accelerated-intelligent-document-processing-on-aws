@@ -115,6 +115,13 @@ class TestAllowlistScoping:
             == "GHSA-SCOPED|pkg-a"
         )
 
+    def test_a_scoped_python_name_matches_after_normalisation(self):
+        entries = {"GHSA-P|Pillow_Heif": {}}
+        assert (
+            dep_audit.allowlist_key(entries, "GHSA-P", "pillow-heif")
+            == "GHSA-P|Pillow_Heif"
+        )
+
     def test_a_scoped_entry_wins_over_a_bare_one_for_its_package(self):
         both = {"GHSA-X": {}, "GHSA-X|pkg-a": {}}
         assert dep_audit.allowlist_key(both, "GHSA-X", "pkg-a") == "GHSA-X|pkg-a"

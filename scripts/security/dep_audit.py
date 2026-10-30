@@ -264,11 +264,17 @@ def load_allowlist() -> Dict[str, Dict[str, Any]]:
 def allowlist_key(
     allowlist: Dict[str, Dict[str, Any]], vid: str, name: str
 ) -> Optional[str]:
-    """The allowlist key that suppresses ``vid`` on ``name``, if any."""
-    for key in (f"{vid}|{name}", vid):
-        if key in allowlist:
+    """The allowlist key that suppresses ``vid`` on ``name``, if any.
+
+    A package-scoped key wins over a bare one, and package names compare after
+    PEP 503 normalisation, because the manifest and a hand-written entry may
+    spell a Python name differently (``Pillow`` against ``pillow``).
+    """
+    for key in allowlist:
+        scoped_id, sep, scoped_pkg = key.partition("|")
+        if sep and scoped_id == vid and _norm(scoped_pkg) == _norm(name):
             return key
-    return None
+    return vid if vid in allowlist else None
 
 
 def github_token() -> Optional[str]:
