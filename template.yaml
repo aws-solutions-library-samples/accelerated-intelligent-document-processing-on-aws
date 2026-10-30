@@ -4681,23 +4681,50 @@ Resources:
       LifecycleConfiguration:
         Rules:
           # Athena query output is scratch, not reporting data, and it is the
-          # highest-cardinality thing in this bucket: every SELECT any consumer
-          # runs leaves a .csv plus a .csv.metadata object here forever. Under
-          # the bucket-wide rule below that is the retention period — measured
-          # at 147,755 objects on a development stack, from dashboard refreshes
-          # alone. Expiring it separately keeps the prefix small, and the
-          # prefix matters beyond storage: S3 throttles per prefix, and
-          # `GetQueryResults` has returned 503 "reduce your request rate"
-          # against this one under dashboard fan-out.
+          # highest-cardinality thing in this bucket: every SELECT a consumer
+          # runs leaves a .csv plus a .csv.metadata object forever. Under the
+          # bucket-wide rule below that is the retention period — measured at
+          # 147,755 objects on a development stack, from dashboard refreshes
+          # alone.
+          #
+          # ⚠️ THERE ARE TWO PREFIXES, spelled differently, and a rule for one
+          # does not cover the other. Every consumer except one writes to
+          # `athena-results/` (ATHENA_OUTPUT_LOCATION, five sites across this
+          # template and nested/api-resolvers); DataMartRollupFunction writes to
+          # `athena_query_results/` with UNDERSCORES
+          # (ATHENA_QUERY_OUTPUT_LOCATION). Both resolve to this bucket. The
+          # underscore prefix is also the only one that accrues with nobody
+          # logged in — three EventBridge schedules fire the rollup, and each
+          # run leaves an idempotency-probe result, its .metadata and a
+          # <query_id>-manifest.txt. So it gets its own rule below rather than
+          # being folded into the one above, and
+          # scripts/tests/test_athena_result_lifecycle.py derives both prefixes
+          # from the templates and fails if either loses coverage.
           #
           # 30 days rather than something shorter because deleting a result
-          # object silently disables Athena's result reuse for that query —
-          # a subsequent identical query re-scans instead of being served from
-          # cache. The reuse age is capped by Athena at 7 days, so 30 leaves
-          # four times that margin and cannot undercut a live cache entry.
+          # object silently disables Athena's result reuse for that query — a
+          # subsequent identical query re-scans instead of being served from
+          # cache. Athena caps a reuse age at 7 days, so 30 leaves four times
+          # that margin. Nothing in THIS repo asks for reuse; the idp-monitor
+          # extension does, at that 7-day maximum, and it reads
+          # `athena-results/` in this bucket — so the margin is headroom for a
+          # live cache rather than a theoretical one, and that is the consumer
+          # to re-check before shortening it.
           - Id: DeleteAthenaQueryResults
             Status: Enabled
             Prefix: athena-results/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          # The rollup's prefix — see the underscore note above. Same settings:
+          # it is the same kind of scratch, and the rollup's own idempotency
+          # probe reads a manifest only within one run, so nothing here depends
+          # on an object surviving longer.
+          - Id: DeleteAthenaRollupQueryResults
+            Status: Enabled
+            Prefix: athena_query_results/
             ExpirationInDays: 30
             NoncurrentVersionExpiration:
               NoncurrentDays: 30
