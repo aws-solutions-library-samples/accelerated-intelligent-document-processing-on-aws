@@ -358,6 +358,8 @@
         "scripts/sdlc/validate_service_role_permissions.py": 83.63,
         "scripts/security/curate_results.py": 34.42,
         "scripts/security/dep_audit.py": 99.06,
+        "scripts/security/live_checks/cognito_groups.py": 51.85,
+        "scripts/security/live_checks/verify_federated_signin.py": 16.93,
         "scripts/srt/ci_paths.py": 90.83,
         "scripts/srt/register.py": 98.61,
         "scripts/srt/run.py": 22.12,

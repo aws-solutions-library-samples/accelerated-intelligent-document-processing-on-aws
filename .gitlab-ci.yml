@@ -1040,6 +1040,17 @@ dep_audit:
     # Node/npm are NOT needed: the manifest is read from the committed
     # package-lock.json files, not from an install.
 
+  # The unmapped-advisory report reads GitHub's advisory API with the
+  # `GITHUB_TOKEN` project variable described on `srt_security_review`; GitLab
+  # injects it, so nothing is wired here. That report never changes the exit
+  # code, and with the variable absent it prints "not checked".
+  #
+  # Budget: one run is about 330 requests against that token's 5,000 an hour,
+  # whose only other user here is SRT's single release lookup per job. GitHub's
+  # workflow runs the audit WITHOUT a token for the opposite reason: the Actions
+  # token allows 1,000 an hour shared by every job in that repository. If the
+  # GitLab budget is ever exhausted the report degrades to unread days; the
+  # audit's verdict is unaffected.
   script:
     - python3 scripts/security/dep_audit.py --json dep-audit-report.json
 

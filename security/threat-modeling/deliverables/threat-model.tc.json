@@ -2,19 +2,19 @@
   "schema": "threat-composer/1.0",
   "projectName": "GenAI IDP Accelerator",
   "description": "STRIDE threat model for the GenAI Intelligent Document Processing Accelerator (unified architecture: Pipeline + BDA modes). Generated from the Markdown corpus by scripts/build_threat_model.py \u2014 do not edit by hand.",
-  "version": "3.12",
-  "lastUpdated": "2026-10-29",
+  "version": "3.13",
+  "lastUpdated": "2026-10-30",
   "appliesToRelease": "v0.6.13",
   "lastReviewedAgainstVersion": "0.6.13",
-  "threatCount": 103,
+  "threatCount": 104,
   "riskDistribution": {
     "High": 31,
     "Medium": 47,
-    "Low": 16,
+    "Low": 17,
     "Critical": 9
   },
   "mitigationStatus": {
-    "Mitigated": 63,
+    "Mitigated": 64,
     "Partially Mitigated": 33,
     "Accepted": 4,
     "Open": 3
@@ -631,6 +631,23 @@
       "mitigations": "Feature ui-deployers set `Cache-Control: max-age=300` (down from a previously-shipped `max-age=31536000, immutable`, which pinned a stale bundle for up to a year on same-version republish), matching the CloudFront TTL \u2014 so an update propagates within minutes. The module-level registry loads a given feature's script once per page load, so a mid-session swap does not take effect until reload. `expectedVersion` mismatches are logged.",
       "residualRisk": "The `expectedVersion` check **warns but still loads**, and there is no digest pinning (see FEAT.T01 recommendation 1, which also closes this). Prefer publishing security fixes under a **new version** so the registry path itself changes.",
       "source": "feature-threats/feature-platform.md"
+    },
+    {
+      "id": "HITL.T01",
+      "title": "Queue Listings Show Items Outside the Caller's Profile Scope",
+      "stride": "Information Disclosure",
+      "description": "Queues are system-wide, so one queue holds items of several configuration profiles, and an Annotator's access to an item is bounded by two things: queue eligibility and profile scope (`allowedConfigVersions`). A queue reference carries no profile, so a check made at the queue level cannot apply profile scope; it has to be made against each item's own profile. A listing that applies only eligibility shows a scoped Annotator the items of every profile in the queues they work. A listed item carries the document's object key, its profile, the fields that raised confidence alerts with their scores, and the holder's email.",
+      "attackVector": "An Annotator with `allowedConfigVersions` set, eligible for a queue that also holds other profiles' items, calls `listReviewQueueItems`, `getMyReviewQueues`, `listMyReviewWork` or `claimNextReviewItem`.",
+      "impact": "Disclosure of review-item metadata \u2014 document names, profile names, alert fields and scores, holder identity \u2014 across the profile boundary. Not document content, drafts or the work itself, which the per-item operations refuse.",
+      "likelihood": "Low",
+      "severity": "Medium",
+      "riskScore": 2,
+      "component": "Review Queues",
+      "affectedComponents": "`review_queues_resolver`, `idp_common/review_queues/` (`service.py`, `directory.py`)",
+      "status": "Mitigated",
+      "mitigations": "Every per-item operation and every listing decides profile scope by the **item's own profile**: `ReviewQueueService._sees`, which uses `idp_common.config_scope.scope_allows` \u2014 the same comparison the rest of the API uses (AUTH.T07) \u2014 and so admits an item with no profile to no scoped caller. It applies to `listReviewQueueItems` (one queue or all of the caller's), `getMyReviewQueues`, `listMyReviewWork` and `claimNextReviewItem`; a listing that leaves items out still pages forward, and Claim next reads past them up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope`, which admits an empty profile, is used only for a queue reference, never for an item. `lib/idp_common_pkg/tests/unit/review_queues/test_listing_profile_scope.py` covers each listing for a scoped caller, an unscoped caller and an Admin. Admins and unscoped Annotators see every profile by design.",
+      "residualRisk": "A queue's counts (depth, unclaimed) are the queue's and are not filtered by scope, so a scoped Annotator can see how many items a queue holds beyond the ones they are shown, though not what they are. The static RBAC rule (`make api-test-static`) checks that a scope lookup is reachable from a `scope_filtered` operation, not that its result is applied to each returned item, so a regression of this class is caught by the unit tests above rather than by that gate. The behaviour has not been exercised against a live deployment.",
+      "source": "feature-threats/review-queues.md"
     },
     {
       "id": "HITL.T02",

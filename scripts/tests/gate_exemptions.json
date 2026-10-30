@@ -1650,7 +1650,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Advisories triaged as unreachable, each with a justification. Mirrored by .ash/.ash.yaml, and scripts/security/tests/test_dep_audit.py fails on an ASH entry with no allowlist twin.",
+      "reason": "Advisories triaged as unreachable, each with a justification. dep_audit.py fails the run on an entry that matched no finding, because a dead entry pre-approves its advisory id if it is ever reissued; scripts/security/tests/test_dep_audit.py asserts that, and also fails on an ASH entry in .ash/.ash.yaml with no allowlist twin.",
       "crossReferences": [
         ".ash/.ash.yaml::suppressions",
         "scripts/security/dep_audit.py::suppressed"

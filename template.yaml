@@ -4680,6 +4680,63 @@ Resources:
         LogFilePrefix: reporting-bucket-logs/
       LifecycleConfiguration:
         Rules:
+          # Athena query output is scratch, not reporting data, and it is the
+          # highest-cardinality thing in this bucket: every SELECT a consumer
+          # runs leaves a .csv plus a .csv.metadata object forever. Under the
+          # bucket-wide rule below that is the retention period — measured at
+          # 147,755 objects on a development stack, from dashboard refreshes
+          # alone.
+          #
+          # ⚠️ THERE ARE TWO PREFIXES, spelled differently, and a rule for one
+          # does not cover the other. Every consumer except one writes to
+          # `athena-results/` via ATHENA_OUTPUT_LOCATION, across this template
+          # and nested/api-resolvers; DataMartRollupFunction writes to
+          # `athena_query_results/` with UNDERSCORES
+          # (ATHENA_QUERY_OUTPUT_LOCATION). Both resolve to this bucket. Grep
+          # ATHENA_.*OUTPUT_LOCATION for the current set rather than trusting a
+          # number here — the test below enumerates it, so it is not written
+          # down. The
+          # underscore prefix is also the only one that accrues with nobody
+          # logged in — three EventBridge schedules fire the rollup, and each
+          # run leaves an idempotency-probe result, its .metadata and a
+          # <query_id>-manifest.txt. So it gets its own rule below rather than
+          # being folded into the one above, and
+          # scripts/tests/test_athena_result_lifecycle.py derives both prefixes
+          # from the templates and fails if either loses coverage.
+          #
+          # 30 days rather than something shorter because deleting a result
+          # object silently disables Athena's result reuse for that query — a
+          # subsequent identical query re-scans instead of being served from
+          # cache. Athena caps `MaxAgeInMinutes` at 7 days, so any consumer
+          # that enables reuse needs its results to survive that window, and
+          # 30 days leaves four times it. That ceiling is the Athena limit, so
+          # it holds whether or not a given consumer opts in today — reuse is
+          # off by default and per-query (docs/reporting-sql-layer.md §2.2).
+          # ⚠️ Before shortening this, check the CONSUMERS rather than this
+          # template: a consumer that enables reuse is not visible from here,
+          # and at least one out-of-tree one does (the IDP Monitor extension,
+          # in the marketplace-features repository, reading `athena-results/`
+          # in this bucket).
+          - Id: DeleteAthenaQueryResults
+            Status: Enabled
+            Prefix: athena-results/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          # The rollup's prefix — see the underscore note above. Same settings:
+          # it is the same kind of scratch, and the rollup's own idempotency
+          # probe reads a manifest only within one run, so nothing here depends
+          # on an object surviving longer.
+          - Id: DeleteAthenaRollupQueryResults
+            Status: Enabled
+            Prefix: athena_query_results/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
           - Id: DeleteAfterNDays
             Status: Enabled
             ExpirationInDays: !Ref DataRetentionInDays

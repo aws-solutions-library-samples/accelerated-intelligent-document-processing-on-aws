@@ -8,7 +8,7 @@
 | **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 103 |
+| **Total Threat IDs** | 104 |
 
 ## 1. Threat ID Naming Convention
 
@@ -224,10 +224,11 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SELL.T09 | Customer roster disclosure | ID | 4 (Medium) |
 | SELL.T10 | Allow-list bypass left enabled in production | EoP | 4 (Medium) |
 
-### HITL — Review Queues (3 threats)
+### HITL — Review Queues (4 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
+| HITL.T01 | Queue listings show items outside the caller's profile scope | ID | 2 (Low) |
 | HITL.T02 | Reviewer-controlled drafts become the document's final output | Tampering, R | 3 (Medium) |
 | HITL.T03 | Review metadata reaches readers beyond the queue's audience | ID | 2 (Low) |
 | HITL.T04 | Resolvers serving Annotator operations hold write grants on authorization and workflow state | EoP | 3 (Medium) |

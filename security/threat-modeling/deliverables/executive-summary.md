@@ -42,30 +42,30 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Category | Count |
 |----------|-------|
-| **Total threats identified** | **103** |
+| **Total threats identified** | **104** |
 | Critical risk (score 8-9) | 9 |
 | High risk (score 6-7) | 31 |
 | Medium risk (score 3-5) | 47 |
-| Low risk (score 1-2) | 16 |
+| Low risk (score 1-2) | 17 |
 
 ### 3.2 STRIDE Distribution
 
 | STRIDE Category | Count | Key Concern |
 |----------------|-------|-------------|
 | **Tampering** | 40 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output |
-| **Information Disclosure** | 39 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure |
+| **Information Disclosure** | 40 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure |
 | **Elevation of Privilege** | 34 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
 | **Denial of Service** | 18 | Resource exhaustion, cost escalation, redaction loops, service dependency |
 | **Spoofing** | 16 | Token theft, caller-identity spoofing, credential compromise |
 | **Repudiation** | 5 | Insufficient audit trail, BDA opacity, review history that is not tamper-evident |
 
-> Counts sum to more than 103 because a threat may carry multiple STRIDE categories.
+> Counts sum to more than 104 because a threat may carry multiple STRIDE categories.
 
 ### 3.3 Mitigation Status
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 63 | 61% |
+| **Mitigated** | 64 | 62% |
 | **Partially Mitigated** | 33 | 32% |
 | **Open** (real gap, needs work) | **3** | **3%** |
 | **Accepted** | 4 | 4% |
@@ -125,7 +125,7 @@ The system's high configurability (prompts, schemas, model selection, agent tool
 
 The API Gateway Cognito authorizer only authenticates the JWT. Group evaluation happens in two places: the API dispatcher enforces each operation's declared groups and refuses an undeclared operation, and the resolver Lambdas enforce everything narrower — configuration-profile and test-set scope, ownership, and review-queue eligibility. A resolver missing one of those checks exposes the objects it guards to every caller the operation's groups admit (AUTH.T03, AUTH.T08, AUTH.T16). The system is single-tenant per deployment.
 
-HITL review queues (v0.6.13) add 40 operations and give the `Annotator` group production documents in the queues it is eligible for; their per-item operations check eligibility and profile scope and fail closed, and only an item's holder can write it (HITL.T02).
+HITL review queues (v0.6.13) add 40 operations and give the `Annotator` group production documents in the queues it is eligible for; their per-item operations check eligibility and profile scope and fail closed, the listings filter each item by its own profile (HITL.T01), and only an item's holder can write it (HITL.T02).
 
 **Mitigations**: A default-deny group floor at the dispatcher and per-operation resolver authorization for all 164 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
 
@@ -194,4 +194,4 @@ The threat model has been developed using:
 | [STRIDE Analysis](../threat-analysis/stride-analysis.md) | Full STRIDE analysis across all components |
 | [Risk Matrix](../risk-assessment/risk-matrix.md) | Complete risk register with scoring |
 | [Implementation Guide](implementation-guide.md) | Security controls implementation details |
-| [Threat ID Glossary](../threat-id-glossary.md) | All 103 threat IDs with cross-references |
+| [Threat ID Glossary](../threat-id-glossary.md) | All 104 threat IDs with cross-references |

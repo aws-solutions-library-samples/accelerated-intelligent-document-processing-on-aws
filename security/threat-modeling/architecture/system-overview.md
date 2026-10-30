@@ -418,7 +418,8 @@ lists it as eligible, and an Admin supervises.
 
 - **Per-item operations** check queue eligibility (keyed on the `email` claim) and
   the item's configuration profile against `allowedConfigVersions`, and fail closed
-  on everything they cannot evaluate.
+  on everything they cannot evaluate. **Listings** apply the same profile check to
+  each item they return, since a queue holds several profiles' items (HITL.T01).
 - **Writes** are conditioned in DynamoDB on the item's version, state and holder,
   so only the holder saves or completes and a stale writer is refused (HITL.T02).
 - **The finalize execution** is started by the review-queues resolver itself,

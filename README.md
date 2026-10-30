@@ -247,7 +247,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 103 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 104 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats

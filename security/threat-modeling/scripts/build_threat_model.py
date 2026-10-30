@@ -202,6 +202,9 @@ STATUS: dict[str, tuple[int, str]] = {
     "SELL.T10": (4, "Accepted"),
     # HITL review queues and Inbox (v0.6.13). Scores are Likelihood x Severity on
     # the risk matrix's scale, per entry.
+    # Low x Medium: listings filter each item by its own profile; queue counts are
+    # not scope-filtered.
+    "HITL.T01": (2, "Mitigated"),
     # Low x High: holder-only conditional writes; drafts are not schema-checked.
     "HITL.T02": (3, "Partially Mitigated"),
     # Medium x Low: metadata only; announcements address whole groups.
