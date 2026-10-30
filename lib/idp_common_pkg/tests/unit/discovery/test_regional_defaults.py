@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.discovery.embedding_service import EmbeddingService
 from idp_common.discovery.multi_document_discovery import MultiDocumentDiscovery
 from idp_common.discovery.regional_defaults import (
     DEFAULT_ANALYSIS_MODEL_ID,
@@ -61,3 +62,26 @@ def test_a_configured_model_is_used_as_it_is():
     )
     assert pinned.embedding_model_id == "amazon.titan-embed-image-v1"
     assert pinned.analysis_model_id == "eu.anthropic.claude-haiku-5-5"
+
+
+@pytest.mark.unit
+def test_an_empty_configured_model_falls_back_too():
+    """`config.get(k) or default`: a blank value is unset, not a model id."""
+    blank = MultiDocumentDiscovery(
+        region="eu-central-1",
+        config={"embedding_model_id": "", "analysis_model_id": ""},
+        bedrock_client=MagicMock(),
+    )
+    assert blank.embedding_model_id == "eu.cohere.embed-v4:0"
+    assert blank.analysis_model_id == "eu.anthropic.claude-sonnet-4-6"
+
+
+@pytest.mark.unit
+def test_the_embedding_service_default_follows_its_clients_region():
+    client = MagicMock()
+    client.region = "eu-west-1"
+    assert EmbeddingService(bedrock_client=client).model_id == "eu.cohere.embed-v4:0"
+    client.region = "us-east-1"
+    assert (
+        EmbeddingService(bedrock_client=client).model_id == DEFAULT_EMBEDDING_MODEL_ID
+    )

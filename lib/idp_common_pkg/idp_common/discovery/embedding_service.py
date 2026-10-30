@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from idp_common.bedrock.client import BedrockClient
+from idp_common.discovery.regional_defaults import default_embedding_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +92,17 @@ class EmbeddingService:
 
         Args:
             bedrock_client: BedrockClient instance with retry/throttle handling
-            model_id: Bedrock embedding model ID (default: cohere.embed-english-v3)
+            model_id: Bedrock embedding model ID. Defaults to the Cohere Embed v4
+                profile callable from the client's Region (see regional_defaults).
             max_concurrent: Maximum concurrent embedding requests
             input_type: Input type for Cohere models (search_document, search_query,
                        classification, clustering)
         """
         self.client = bedrock_client
-        self.model_id = model_id or self.DEFAULT_MODEL_ID
+        region = getattr(bedrock_client, "region", None)
+        self.model_id = model_id or default_embedding_model_id(
+            region if isinstance(region, str) else None
+        )
         self.max_concurrent = max_concurrent
         self.input_type = input_type
 
