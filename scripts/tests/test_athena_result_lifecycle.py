@@ -10,18 +10,17 @@ objects on one development stack, from dashboard refreshes alone, with the
 bucket-wide `DataRetentionInDays` rule (default 365) the only thing covering
 them.
 
-**The defect this gate exists for is a spelling difference, and it is the kind
-review is bad at.** A prefix-scoped rule was added for `athena-results/`, which
-is where five of the six consumers write. The sixth —
-`DataMartRollupFunction` — writes to `athena_query_results/`, with
-*underscores*, in the same bucket, and a rule for one prefix does not cover the
-other. It was also the worst one to miss: three EventBridge schedules fire the
-rollup, so that prefix is the only one that accrues with nobody logged in. The
-rule shipped, every offline gate passed, and the entry describing it claimed
-"every SELECT any consumer runs" — which was false of exactly the prefix the
-rule did not reach.
+⚠️ **The risk this guards is a spelling difference, and it is the kind review is
+bad at.** The reporting bucket holds Athena output under **two** prefixes:
+`athena-results/`, where five consumers write via `ATHENA_OUTPUT_LOCATION`, and
+`athena_query_results/` — *underscores* — where `DataMartRollupFunction` writes
+via `ATHENA_QUERY_OUTPUT_LOCATION`. A lifecycle rule for one does not cover the
+other, and the underscore prefix is the one it would hurt most to leave
+uncovered: three EventBridge schedules fire the rollup, so it is the only Athena
+output that accrues with nobody logged in.
 
-So this closes the class rather than the instance. Both halves are **derived**:
+So the prefix set is **derived from the templates** rather than listed here, and
+so is the coverage:
 
 * the prefixes come from every `ATHENA_*OUTPUT_LOCATION` environment variable in
   every template `scripts/discover_templates.sh` finds — by content, so a new
@@ -32,16 +31,26 @@ So this closes the class rather than the instance. Both halves are **derived**:
 A seventh consumer with an eighth prefix therefore fails here rather than
 quietly accruing.
 
-⚠️ **Two bounds, stated so a green run is not over-read.**
+⚠️ **Three bounds, stated so a green run is not over-read.**
 
-A location whose bucket is a *parameter* or an `ImportValue` — which is how
+**A bucket this template does not create is not checked at all.**
+`ReportingBucket` carries `Condition: ShouldCreateReportingBucket`
+(`!Equals [!Ref ReportingBucketName, ""]`), so an operator who supplies their
+own bucket gets no lifecycle rules from this stack — not these and not the
+bucket-wide `DataRetentionInDays` one. This gate reads the rule off the
+resource unconditionally, so it reports coverage for a configuration in which
+the rule does not exist. That is a deliberate scope decision — the template
+cannot manage a bucket it does not own — but it means a green run here says
+"covered when this stack creates the bucket", not "covered".
+
+**A location whose bucket is a parameter or an `ImportValue`** — which is how
 `nested/api-resolvers/template.yaml` receives the reporting bucket — cannot be
 resolved to a bucket resource from inside its own template, so for those the
 assertion is only that *some* template declares a rule covering the prefix, not
 that it is the right bucket. Where the bucket does resolve to a resource in the
 same template, that specific bucket is checked.
 
-And this reasons about the template, not about runtime. A consumer that builds
+**This reasons about the template, not about runtime.** A consumer that builds
 its output location in Python from a bucket name, rather than taking it from an
 `ATHENA_*OUTPUT_LOCATION` variable, is invisible here. The naming convention is
 what makes the derivation work, so keep it: name the variable
@@ -122,11 +131,13 @@ def _refs(expr) -> set[str]:
     long form in JSON-style YAML is ``{"Ref": "X"}``, but ``_CfnLoader`` turns
     the short form ``!Ref X`` into ``{"Fn::Ref": "X"}`` — the multi-constructor
     prefixes every tag with ``Fn::``, including the two that have no ``Fn::``
-    spelling in CloudFormation itself. Matching only ``Ref`` made this function
-    return an empty set for every short-form template in the repo, which is all
-    of them: the bucket then looked unresolvable, the caller fell through to the
-    weaker repo-wide branch, and the specific-bucket assertion silently never
-    ran. Caught by the mutation test, not by review.
+    spelling in CloudFormation itself. Every template in this repository uses
+    the short form, so a version of this function matching only ``Ref`` returns
+    an empty set for all of them — and the failure is silent in the worst
+    direction: the bucket looks unresolvable, the caller falls through to the
+    weaker repo-wide branch, and the specific-bucket assertion never runs.
+    ``test_the_derivation_finds_the_prefixes_that_exist_today`` is what refuses
+    that state.
     """
     found: set[str] = set()
     if isinstance(expr, str):
@@ -207,6 +218,22 @@ def _lifecycle_prefixes(doc: dict) -> dict[str, set[str]]:
     return out
 
 
+def _covers(rule_prefix: str, location_prefix: str) -> bool:
+    """Does a lifecycle rule's ``Prefix`` cover an Athena output prefix?
+
+    S3 matches a rule's ``Prefix`` as a literal string prefix of the key, so
+    ``athena-`` does cover ``athena-results/`` and is accepted.
+
+    ⚠️ **An empty ``Prefix`` is refused, and that is the whole point.** A rule
+    with no prefix covers the entire bucket — which is what
+    `DataRetentionInDays` already is. Accepting it here would satisfy every
+    Athena prefix whether or not any Athena-scoped rule existed, so the gate
+    would pass in exactly the state it exists to reject. One shared predicate
+    for both assertions below, so neither can drift from this rule.
+    """
+    return bool(rule_prefix) and location_prefix.startswith(rule_prefix)
+
+
 def _parse_all() -> tuple[list[tuple[str, str, str, set[str]]], dict[str, dict]]:
     """``([(template, var, prefix, buckets)], {template: {bucket: prefixes}})``."""
     locations: list[tuple[str, str, str, set[str]]] = []
@@ -256,9 +283,10 @@ def test_the_derivation_finds_the_prefixes_that_exist_today():
     # assertions below — a strict one against the bucket a location names, and
     # a weaker repo-wide one for a bucket that arrives as a parameter — and a
     # resolution failure routes EVERY location to the weak branch, turning the
-    # strict assertion off with nothing failing. That happened: the loader
-    # renders `!Ref X` as `Fn::Ref`, `_refs` matched only `Ref`, and so no
-    # location in the repo resolved to a local bucket.
+    # strict assertion off with nothing failing. The live hazard is the
+    # intrinsic spelling: the loader renders `!Ref X` as `Fn::Ref`, so a
+    # `_refs` that matches only `Ref` resolves nothing in a repo whose
+    # templates are all short-form.
     resolved_locally = [
         (t, v)
         for t, v, _p, buckets in _LOCATIONS
@@ -281,14 +309,14 @@ def test_the_derivation_finds_the_prefixes_that_exist_today():
 def test_every_athena_output_prefix_is_covered_by_a_lifecycle_rule(
     template, var, prefix, buckets
 ):
-    """The gate. `athena_query_results/` failed here before it got its rule."""
+    """The gate: an Athena prefix with no expiring rule scoped to it fails."""
     own = _COVERAGE.get(template) or {}
     local = [name for name in buckets if name in own]
 
     if local:
         # The bucket is declared in this template, so check that bucket.
         for name in local:
-            covering = [p for p in own[name] if prefix.startswith(p) and p]
+            covering = [p for p in own[name] if _covers(p, prefix)]
             assert covering, (
                 f"{template}: {var} writes to '{prefix}' in bucket '{name}', "
                 f"which has no expiring lifecycle rule scoped to that prefix "
@@ -301,7 +329,7 @@ def test_every_athena_output_prefix_is_covered_by_a_lifecycle_rule(
 
     # Bucket arrives as a parameter or an import — see the bound in the module
     # docstring. The prefix must still be covered somewhere in the repo.
-    covering = [p for p in _ALL_COVERED if prefix.startswith(p) and p]
+    covering = [p for p in _ALL_COVERED if _covers(p, prefix)]
     assert covering, (
         f"{template}: {var} writes to '{prefix}' in a bucket this template "
         f"receives rather than declares ({sorted(buckets) or 'unresolved'}), and "
@@ -311,27 +339,44 @@ def test_every_athena_output_prefix_is_covered_by_a_lifecycle_rule(
 
 
 @pytest.mark.unit
-def test_a_whole_bucket_rule_is_not_accepted_as_prefix_coverage():
-    """The bucket-wide `DataRetentionInDays` rule is not the answer.
+@pytest.mark.parametrize(
+    ("rule_prefix", "location_prefix", "covered"),
+    [
+        # A catch-all rule is NOT coverage. This is the case that matters:
+        # `DataRetentionInDays` has no Prefix, so accepting an empty one would
+        # satisfy every Athena prefix whether or not an Athena-scoped rule
+        # existed — the gate would pass in the state it exists to reject.
+        ("", "athena-results/", False),
+        ("", "athena_query_results/", False),
+        # Exact and genuine string prefixes are coverage, matching how S3
+        # evaluates a rule's Prefix against a key.
+        ("athena-results/", "athena-results/", True),
+        ("athena-", "athena-results/", True),
+        # The hyphen/underscore distinction this gate exists for: neither
+        # spelling covers the other. ⚠️ The first pair below differs ONLY by
+        # the separator, which is what makes it load-bearing — the real
+        # prefixes also differ in a word, so a matcher that normalised `_` to
+        # `-` would still return False for them and the table would pass while
+        # pinning nothing.
+        ("athena-results/", "athena_results/", False),
+        ("athena_results/", "athena-results/", False),
+        ("athena-results/", "athena_query_results/", False),
+        ("athena_query_results/", "athena-results/", False),
+        # A longer rule prefix does not cover a shorter location.
+        ("athena-results/deep/", "athena-results/", False),
+        # An unrelated prefix covers nothing.
+        ("mcp-temp/", "athena-results/", False),
+    ],
+)
+def test_coverage_requires_a_scoped_prefix(rule_prefix, location_prefix, covered):
+    """The predicate both assertions share, tested directly.
 
-    It is what the Athena prefixes were already subject to, and the whole point
-    of the change is that query scratch should not inherit the retention of
-    reporting data. A gate that counted the catch-all rule as coverage would
-    have passed before the change and after removing it, which is no gate at
-    all — so the prefix match above requires a non-empty `Prefix`, and this
-    pins that choice.
+    An earlier form of this test inspected the tree instead — it looked for a
+    bucket whose *only* rule was the catch-all, and fired `pytest.fail` if an
+    Athena prefix depended on it. That condition is unreachable while
+    `ReportingBucket` carries any scoped rule, so the test could not fail for
+    the reason its name gave, and dropping the empty-prefix guard from the
+    matcher left the whole suite green. Asserting the predicate's own table
+    removes the dependence on tree state.
     """
-    for template, buckets in _COVERAGE.items():
-        for name, prefixes in buckets.items():
-            scoped = {p for p in prefixes if p}
-            if not scoped and prefixes:
-                # A bucket with only a catch-all rule is fine in itself; what
-                # must not happen is an Athena prefix being satisfied by it.
-                for t, var, prefix, bkts in _LOCATIONS:
-                    if t == template and name in bkts:
-                        pytest.fail(
-                            f"{template}: {var}'s prefix '{prefix}' would be "
-                            f"covered only by bucket '{name}'s catch-all rule, "
-                            "which is the pre-existing behaviour this change "
-                            "exists to replace"
-                        )
+    assert _covers(rule_prefix, location_prefix) is covered
