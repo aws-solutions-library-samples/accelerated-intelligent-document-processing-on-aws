@@ -181,8 +181,18 @@ document, so it finishes with the new grouping.
 - An Annotator listed on a queue may open its items read-only (`getReviewItem`);
   saving, completing and rejecting need the claim. `getReviewItem` also returns
   `queueName`, the queue's display name, for the web UI's breadcrumbs. The holder keeps access to their
-  item even after being taken off the list. `allowedConfigVersions` still filters
-  items by profile.
+  item even after being taken off the list.
+- **Profile scope is per item.** A queue is system-wide, so it can hold items of
+  several profiles. A caller with `allowedConfigVersions` sees and works only the
+  items whose own profile that scope admits: `ReviewQueueService._sees`, which uses
+  `idp_common.config_scope.scope_allows` and so admits no item without a profile to a
+  scoped caller. It applies to the per-item operations and to every listing
+  (`list_queue_items` for one queue or all of the caller's, `get_my_queues`,
+  `list_my_work`, `claim_next`). A listing that leaves items out still pages
+  forward, so a page can be short; `claim_next` reads past the items it leaves out,
+  up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope` is for a
+  queue reference, which has no profile, never for an item. A queue's counts
+  (depth, unclaimed) are the queue's, not filtered by scope.
 - Admins also have `renewReviewLease`, which the web UI doesn't use.
 - **Test Studio** queues are the test sets. `testset_docs.TestSetDocStore` holds
   each document's summary and assignment (`assignTestSetDocuments`,

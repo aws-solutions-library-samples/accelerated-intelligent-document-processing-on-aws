@@ -1313,9 +1313,12 @@ operations:
   # ==========================================================================
   # HITL review queues (idp_common.review_queues)
   # ==========================================================================
-  # Queues are system-wide and an Admin assigns their items to Annotators, who
-  # work only what is assigned to them (owner key from verified claims). Every
-  # other operation is Admin only. The mutation args name an item nobody has, so
+  # Queues are system-wide, so one queue holds items of several configuration
+  # profiles. An Admin works every queue; an Annotator works the queues that list
+  # them, claiming items or being assigned them (owner key from verified claims).
+  # Profile scope (allowedConfigVersions) is applied to each item by its own
+  # profile, in the listings as in the per-item operations, and an item with no
+  # profile is admitted to no scoped caller. Every other operation is Admin only. The mutation args name an item nobody has, so
   # an allowed role gets a benign 404 (ITEM_NOT_FOUND); claimNextReviewItem names
   # an undefined queue (400).
   getMyReviewQueues:
@@ -1326,7 +1329,7 @@ operations:
     scope_enforced_in: _caller_context
     args: { itemLimit: 1 }
     note: >-
-      Lists the queues the caller works with their depth and the caller's own items: every queue for an Admin, the queues that list them for an Annotator (My Work › Queues).
+      Lists the queues the caller works with their depth, and those queues' items: every queue for an Admin, the queues that list them for an Annotator (Home › Queues). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
   listReviewQueueItems:
     groups: [Admin, Annotator]
     kind: read
@@ -1335,7 +1338,7 @@ operations:
     scope_enforced_in: _caller_context
     args: { limit: 1 }
     note: >-
-      Lists a queue's items in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER).
+      Lists a queue's items, or the items of every queue the caller works, in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
   listMyReviewWork:
     groups: [Admin, Annotator]
     kind: read
@@ -1344,7 +1347,7 @@ operations:
     scope_enforced_in: _caller_context
     args: { limit: 1 }
     note: >-
-      Lists only the items assigned to the caller (owner key from verified claims); an Annotator's allowedConfigVersions still filters them.
+      Lists only the items the caller holds (owner key from verified claims), each filtered by its own profile against the caller's allowedConfigVersions as they are now.
   getReviewItem:
     groups: [Admin, Annotator]
     kind: read
@@ -1353,7 +1356,7 @@ operations:
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__" }
     note: >-
-      One queue item, its reasons, drafts and history. An Annotator may open only an item assigned to them (NOT_ASSIGNED otherwise) whose profile is in their allowedConfigVersions. A nonexistent key is a benign 404.
+      One queue item, its reasons, drafts and history. An Annotator may open, read-only until they claim it, an item in a queue that lists them, or an item they hold (NOT_A_MEMBER otherwise), and only when the item's own profile is in their allowedConfigVersions (OUT_OF_SCOPE otherwise). A nonexistent key is a benign 404.
   claimReviewItem:
     groups: [Admin, Annotator]
     kind: mutation
@@ -1371,7 +1374,7 @@ operations:
     scope_enforced_in: _caller_context
     args: { queueProfile: "__x__", queueName: "__x__" }
     note: >-
-      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them.
+      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them, and only items whose own profile is in their allowedConfigVersions.
   renewReviewLease:
     groups: [Admin]
     kind: mutation

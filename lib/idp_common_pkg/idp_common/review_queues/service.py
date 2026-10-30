@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from idp_common.config_scope import scope_allows
 from idp_common.dynamodb.client import DynamoDBTransactionCanceledError
 
 from . import keys, status_object
@@ -85,6 +86,9 @@ COUNTER_IDLE_SECONDS = 60
 MAX_CHANGED_FIELDS = 200
 CLAIM_NEXT_ATTEMPTS = 10
 CLAIM_NEXT_TIER_PEEK = 5
+#: The most pages of a queue Claim next reads to find its candidates, when the items
+#: it reads first are outside the caller's scope.
+CLAIM_NEXT_MAX_PAGES = 10
 #: Draft objects live in the output bucket under the document's review segment.
 DRAFT_KEY_FORMAT = "{doc}/review/drafts/{cycle}/{section}/{revision:06d}.json"
 
@@ -270,10 +274,21 @@ class ReviewQueueService:
         if record.cycle_id != cycle_id:
             raise ReviewConflict("STALE_CYCLE", "the item has a newer review cycle")
 
+    @staticmethod
+    def _sees(caller: CallerContext, record: ReviewItemRecord) -> bool:
+        """Whether the caller's profile scope admits this item, by its own profile.
+
+        Queues are system-wide, so one queue holds items of several profiles; scope is
+        decided per item, by the same comparison the API uses everywhere else
+        (``scope_allows``), which admits no item without a profile to a scoped caller.
+        Every read of items applies it: the per-item operations and the listings.
+        """
+        return caller.is_admin or scope_allows(caller.allowed_versions, record.profile)
+
     def _check_access(self, caller: CallerContext, record: ReviewItemRecord) -> None:
         if caller.is_admin:
             return
-        if not self.directory.in_scope(caller, record.profile):
+        if not self._sees(caller, record):
             logger.warning("Rejecting review-queue access: OUT_OF_SCOPE")
             raise ReviewAccessDenied(
                 "OUT_OF_SCOPE", "the item's profile is outside your scope"
@@ -504,8 +519,10 @@ class ReviewQueueService:
             items, lek = self.store.query_queue(
                 ref, open_only=claimable, limit=limit, start_key=start
             )
+            # A page can be short, or empty with a token: the items outside the
+            # caller's scope are read and left out.
             return ReviewItemPage(
-                items=[item_view(i, caller) for i in items],
+                items=[item_view(i, caller) for i in items if self._sees(caller, i)],
                 next_token=keys.encode_single_cursor(lek) if lek else None,
             )
         positions: dict[str, Optional[dict]] = {}
@@ -532,10 +549,17 @@ class ReviewQueueService:
                         item,
                     )
                 )
-        taken = heapq.nsmallest(limit, candidates, key=lambda c: c[:4])
+        # The page is the first `limit` items the caller's scope admits. An item it
+        # leaves out still counts as read, up to the last one taken (all of them on a
+        # page that is not full), so the cursor moves past it and the next page never
+        # reads it again.
+        visible = [c for c in candidates if self._sees(caller, c[4])]
+        taken = heapq.nsmallest(limit, visible, key=lambda c: c[:4])
+        threshold = taken[-1][:4] if taken and len(taken) == limit else None
         last_taken: dict[str, int] = {}
-        for _, _, partition, idx, _ in taken:
-            last_taken[partition] = max(last_taken.get(partition, -1), idx)
+        for c in candidates:
+            if threshold is None or c[:4] <= threshold:
+                last_taken[c[2]] = max(last_taken.get(c[2], -1), c[3])
         new_positions: dict[str, Optional[dict]] = dict(positions)
         more = False
         for partition, (items, lek) in fetched.items():
@@ -559,11 +583,9 @@ class ReviewQueueService:
             }
             new_positions[partition] = index_key
             more = True
-        token = None
-        if more and any(v is not None for v in new_positions.values()):
-            for r, _ in refs:
-                new_positions.setdefault(r.partition, None)
-            token = keys.encode_multi_cursor(new_positions)
+        # A queue not read from yet stays out of the cursor, so the next page reads it
+        # from its start; only a queue read to its end is marked exhausted.
+        token = keys.encode_multi_cursor(new_positions) if more else None
         return ReviewItemPage(
             items=[item_view(c[4], caller) for c in taken], next_token=token
         )
@@ -577,8 +599,9 @@ class ReviewQueueService:
         )
         if not cursor:
             self.repair_counter(caller.reviewer_key)
+        # The caller's own items, within their scope as it is now.
         return ReviewItemPage(
-            items=[item_view(i, caller) for i in items],
+            items=[item_view(i, caller) for i in items if self._sees(caller, i)],
             next_token=keys.encode_single_cursor(lek) if lek else None,
         )
 
@@ -758,10 +781,7 @@ class ReviewQueueService:
         for priority in sorted(tiers, reverse=True):
             candidates: list[ReviewItemRecord] = []
             for r in tiers[priority]:
-                items, _ = self.store.query_queue(
-                    r, open_only=True, limit=CLAIM_NEXT_TIER_PEEK
-                )
-                candidates.extend(items)
+                candidates.extend(self._claimable_peek(caller, r))
             candidates.sort(key=lambda i: (i.enqueued_at_ms, i.doc_key))
             for candidate in candidates:
                 saw_open = True
@@ -780,6 +800,25 @@ class ReviewQueueService:
         if cap_hits and cap_hits == attempts:
             return ClaimNextResult(item=None, reason="CAP_REACHED")
         return ClaimNextResult(item=None, reason="CONTENDED" if saw_open else "EMPTY")
+
+    def _claimable_peek(
+        self, caller: CallerContext, ref: QueueRef
+    ) -> list[ReviewItemRecord]:
+        """A queue's oldest open items within the caller's scope, for Claim next.
+
+        Only these are tried, so the attempts are spent on items the caller may
+        claim; the queue is read past the items left out, a bounded number of pages.
+        """
+        found: list[ReviewItemRecord] = []
+        start: Optional[dict] = None
+        for _ in range(CLAIM_NEXT_MAX_PAGES):
+            items, start = self.store.query_queue(
+                ref, open_only=True, limit=CLAIM_NEXT_TIER_PEEK, start_key=start
+            )
+            found.extend(i for i in items if self._sees(caller, i))
+            if len(found) >= CLAIM_NEXT_TIER_PEEK or not start:
+                break
+        return found[:CLAIM_NEXT_TIER_PEEK]
 
     def _owned_live(
         self, caller: CallerContext, object_key: str, cycle_id: str
