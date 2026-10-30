@@ -42,8 +42,9 @@ global, so the `sdlc-iam-role.yml` and `credential-vendor.yml` stacks stay in
    triggers the pipeline.
 3. Confirm the failure-notification SNS subscription the stack creates.
 4. Allow the GitLab role (`idp-sdlc-GitLab`) to `s3:PutObject` to
-   `genaiic-sdlc-sourcecode-<account>-<region>/deploy/code.zip`. Its
-   `S3PutObjectPolicy` names the `us-east-1` bucket only.
+   `genaiic-sdlc-sourcecode-<account>-<region>/deploy/code.zip`: add the bucket to
+   `S3PutObjectPolicy` in `credential-vendor.yml` and update the
+   `genaiic-sdlc-credential-vendor` stack in `us-east-1`.
 5. Add the region to `REGION_RUN_REGIONS` (`integration_test_deployment.py`) and
    `CI_INFRA_REGIONS` (`codebuild_deployment.py`), then create its weekly schedule
    with `IDP_TEST_REGION=<region>`.

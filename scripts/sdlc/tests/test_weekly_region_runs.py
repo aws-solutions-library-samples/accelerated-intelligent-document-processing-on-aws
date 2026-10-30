@@ -470,3 +470,15 @@ def test_every_config_upload_goes_through_the_swap():
         assert window[flag:].startswith("--config-file {regional_config_file("), text[
             start : start + 200
         ]
+
+
+def test_the_gitlab_role_may_upload_to_every_region_runs_bucket(itd):
+    """Without the grant the region run's upload is denied before anything deploys."""
+    template = (
+        REPO_ROOT / "scripts" / "sdlc" / "cfn" / "credential-vendor.yml"
+    ).read_text(encoding="utf-8")
+    for region in itd.REGION_RUN_REGIONS:
+        assert (
+            f"genaiic-sdlc-sourcecode-${{AWS::AccountId}}-{region}/deploy/code.zip"
+            in template
+        ), region
