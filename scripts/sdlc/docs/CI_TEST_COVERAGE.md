@@ -118,7 +118,7 @@ primary suite only.
 | Pipeline | `IDP_RUN_PROBES` | Runs |
 |---|---|---|
 | Nightly schedule | not set | primary suite; updates the UX review stack |
-| Weekly variant-probe schedule | `true`, as a schedule variable | primary suite plus the probes; labelled `WEEKLY VARIANT-PROBE RUN` in the summary, the failure email and Slack; leaves the UX review stack alone |
+| Weekly variant-probe schedule | `true`, as a schedule variable | primary suite plus the probes; labelled `WEEKLY VARIANT-PROBE RUN` in the summary and the failure email and `WEEKLY VARIANT PROBES` in Slack; leaves the UX review stack alone |
 | Manual button, `web` or any other source | ignored | primary suite |
 
 **Why a separate schedule.** A probe failure fails the run it is in. On the nightly
@@ -165,9 +165,23 @@ because the command *succeeded* — so a bare read hands the deploy script the s
 
 ⚠️ **The buildspec lives in a CloudFormation template**, so the
 `genaiic-sdlc-codepipeline` stack in the CI account has to be updated to the
-template on `develop` before the weekly schedule runs any probes. Until it is, a
-weekly run carries the variable, is labelled, and deploys the primary suite only;
-its summary's probe section reads "None run".
+template on `develop` before the weekly schedule runs any probes. The same update
+raises the `app-sdlc` project's timeout from 120 to 180 minutes, which the probe
+join needs. Until it is, a weekly run carries the variable and deploys the primary
+suite only, and its summary's probe section reads "None run". Its Slack post is
+labelled, because the label is read in GitLab, but its summary and failure email
+are not, because they read the flag inside CodeBuild. It still leaves the UX review
+stack alone, because that decision is recorded in `ci_run_options.json`.
+
+**How long the weekly run is watched.** The probes are joined after the primary
+suite, so the weekly run's final summary lands later than the nightly's. CodeBuild
+stops waiting for them `PROBE_JOIN_DEADLINE_SECONDS` after its `main()` starts and
+reports any still running as a failed `probe supervisor` row, so the final summary
+and failure email are always written before the project timeout. The GitLab
+monitor watches a probe run for longer than a nightly
+(`PROBE_RUN_MONITOR_HANDOFF_SECONDS` in `integration_test_deployment.py`), so the
+job's verdict and Slack post come from that final summary rather than from the
+interim one.
 
 ### Why fast_checks is seven jobs
 

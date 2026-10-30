@@ -263,3 +263,192 @@ def test_both_slack_posts_label_the_weekly_run(config, job):
         "the label goes on `status`, a key the Slack workflow already declares; a "
         "new key would be ignored by the workflow"
     )
+
+
+# ---------------------------------------------------------------------------
+# The buildspec's read of the flag, run in a shell
+# ---------------------------------------------------------------------------
+
+
+def _buildspec_flag_lines() -> list[str]:
+    lines = [
+        line.strip()[2:]
+        for line in BUILDSPEC_TEMPLATE.read_text(encoding="utf-8").splitlines()
+        if "IDP_RUN_PROBES" in line and line.strip().startswith("- ")
+    ]
+    reads = [line for line in lines if line.startswith("export IDP_RUN_PROBES=$(")]
+    assert len(reads) == 1, lines
+    start = lines.index(reads[0])
+    return [lines[start], yaml.safe_load(lines[start + 1])]
+
+
+@pytest.mark.parametrize(
+    ("printed", "status", "expected"),
+    [
+        ("true", 0, "true"),
+        # --output text prints `None` for an absent key, and exits 0.
+        ("None", 0, "false"),
+        ("", 0, "false"),
+        ("TRUE", 0, "false"),
+        # head-object itself failing falls through to the `|| echo`.
+        ("", 1, "false"),
+    ],
+)
+def test_the_buildspec_turns_anything_but_true_into_false(printed, status, expected):
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+    stub = f'aws() {{ printf "%s\\n" "{printed}"; return {status}; }}'
+    script = "\n".join(
+        [stub, *_buildspec_flag_lines(), 'printf "%s" "$IDP_RUN_PROBES"']
+    )
+    completed = subprocess.run(  # noqa: S603 - fixed argv, script built from the repo
+        [bash, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": "/usr/bin:/bin", "SOURCE_BUCKET": "bucket"},
+    )
+    assert completed.stdout == expected
+
+
+# ---------------------------------------------------------------------------
+# The weekly run is watched until its final summary exists
+# ---------------------------------------------------------------------------
+
+
+class _Executor:
+    def __init__(self):
+        self.shutdowns: list[bool] = []
+
+    def shutdown(self, wait=True, **_):
+        self.shutdowns.append(wait)
+
+
+def test_a_probe_join_that_outlives_its_deadline_is_reported_not_waited_for(cbd):
+    from concurrent.futures import Future
+
+    executor = _Executor()
+    pending: Future = Future()
+    now = iter([cbd.PROBE_JOIN_DEADLINE_SECONDS + 1.0] * 2)
+
+    results = cbd.join_variant_probes(
+        pending, executor, started=0.0, clock=lambda: next(now)
+    )
+
+    assert len(results) == 1
+    assert results[0]["success"] is False
+    assert results[0]["probe"] == "probe supervisor"
+    assert "still running" in results[0]["error"]
+    assert executor.shutdowns == [False]
+
+
+def test_a_finished_probe_join_hands_back_every_result(cbd):
+    from concurrent.futures import Future
+
+    executor = _Executor()
+    done: Future = Future()
+    rows = [{"probe": "waf", "success": True}, {"probe": "zap", "success": False}]
+    done.set_result(rows)
+
+    assert (
+        cbd.join_variant_probes(done, executor, started=0.0, clock=lambda: 0.0) == rows
+    )
+    assert executor.shutdowns == [False]
+
+
+def test_a_dead_probe_supervisor_is_one_failed_row(cbd):
+    from concurrent.futures import Future
+
+    executor = _Executor()
+    died: Future = Future()
+    died.set_exception(RuntimeError("boom"))
+
+    (row,) = cbd.join_variant_probes(died, executor, started=0.0, clock=lambda: 0.0)
+    assert row["success"] is False
+    assert row["error"] == "boom"
+
+
+def _minutes(duration: str) -> int:
+    hours = re.search(r"(\d+)h", duration)
+    minutes = re.search(r"(\d+)m", duration)
+    return (int(hours.group(1)) * 60 if hours else 0) + (
+        int(minutes.group(1)) if minutes else 0
+    )
+
+
+def test_the_deadlines_nest_with_headroom(cbd, itd):
+    """Join < CodeBuild timeout < monitor handoff window < GitLab job timeout.
+
+    The join deadline counts from main()'s start, CodeBuild's timeout from the
+    build's start, and the monitor from the pipeline's start, so each outer bound
+    keeps an unmeasured allowance for the phases between those starts. The
+    allowances are pinned here so narrowing one is deliberate.
+    """
+    template = BUILDSPEC_TEMPLATE.read_text(encoding="utf-8")
+    (timeout_minutes,) = re.findall(
+        r"^\s*TimeoutInMinutes:\s*(\d+)\s*$", template, re.MULTILINE
+    )
+    job = yaml.safe_load(CI_CONFIG.read_text(encoding="utf-8"))["integration_tests"]
+
+    join = cbd.PROBE_JOIN_DEADLINE_SECONDS
+    assert int(timeout_minutes) * 60 - join >= 30 * 60
+    assert itd.PROBE_RUN_MONITOR_HANDOFF_SECONDS - join >= 20 * 60
+    assert (
+        itd.PROBE_RUN_MONITOR_MAX_WAIT_SECONDS > itd.PROBE_RUN_MONITOR_HANDOFF_SECONDS
+    )
+    assert itd.PROBE_RUN_MONITOR_HANDOFF_SECONDS > itd.MONITOR_HANDOFF_SECONDS
+    assert _minutes(job["timeout"]) * 60 - itd.PROBE_RUN_MONITOR_MAX_WAIT_SECONDS >= (
+        10 * 60
+    )
+
+
+@pytest.mark.parametrize(
+    ("environ", "probe_run"),
+    [
+        ({"CI_PIPELINE_SOURCE": "schedule", "IDP_RUN_PROBES": "true"}, True),
+        ({"CI_PIPELINE_SOURCE": "schedule"}, False),
+    ],
+    ids=["weekly", "nightly"],
+)
+def test_main_watches_the_weekly_run_for_longer(
+    itd, monkeypatch, tmp_path, environ, probe_run
+):
+    monkeypatch.chdir(tmp_path)
+    for name in ("CI_PIPELINE_SOURCE", "IDP_RUN_PROBES"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environ.items():
+        monkeypatch.setenv(name, value)
+    seen: list[dict] = []
+    monkeypatch.setattr(itd, "write_ci_run_options", lambda *a, **k: None)
+    monkeypatch.setattr(itd, "create_deployment_package", lambda *a, **k: None)
+    monkeypatch.setattr(itd, "upload_to_s3", lambda *a, **k: "v1")
+    monkeypatch.setattr(itd, "monitor_pipeline", lambda *a, **k: seen.append(k) or True)
+
+    with pytest.raises(SystemExit):
+        itd.main()
+
+    (kwargs,) = seen
+    if probe_run:
+        assert kwargs == {
+            "max_wait": itd.PROBE_RUN_MONITOR_MAX_WAIT_SECONDS,
+            "handoff_after": itd.PROBE_RUN_MONITOR_HANDOFF_SECONDS,
+        }
+    else:
+        assert kwargs == {}
+
+
+def test_a_variable_the_rule_ignores_says_so(itd, monkeypatch, tmp_path, capsys):
+    """IDP_RUN_PROBES on a clicked pipeline is ignored, and the log says why."""
+    metadata = _uploaded_metadata(
+        itd,
+        monkeypatch,
+        tmp_path,
+        {"CI_PIPELINE_SOURCE": "web", "IDP_RUN_PROBES": "true"},
+    )
+    assert "idp-run-probes" not in metadata
+    out = capsys.readouterr().out
+    assert "IDP_RUN_PROBES is set, but this is a web pipeline" in out

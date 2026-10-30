@@ -91,7 +91,7 @@ VARIANT_PROBES_VARIABLE = "IDP_RUN_PROBES"
 def variant_probes_requested(environ: dict | None = None) -> bool:
     """Whether this run is the weekly variant-probe run.
 
-    The five deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and
+    The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and
     PRIVATE hosting, Jobs API) each stand up their own throwaway stack beside the
     primary one. Two conditions, both required:
 
@@ -100,8 +100,8 @@ def variant_probes_requested(environ: dict | None = None) -> bool:
       would put the probes on the nightly, and a probe failure would then fail
       the nightly and be read as a product regression.
     * ``CI_PIPELINE_SOURCE == "schedule"``, so the variable set anywhere else (a
-      project-level CI/CD variable, the "Run pipeline" form) cannot add five
-      stacks to a deploy somebody clicked to check a merge request. An on-demand
+      project-level CI/CD variable, the "Run pipeline" form) cannot add the
+      probe stacks to a deploy somebody clicked to check a merge request. An on-demand
       probe run is "Run" on the weekly schedule, which GitLab starts as a
       scheduled pipeline, or ``make stacktest-*``.
 
@@ -143,6 +143,13 @@ def upload_to_s3(bucket_name):
             metadata["idp-run-probes"] = "true"
             print(
                 "Weekly variant-probe run — enabling the deployment-variant probes"
+            )
+        elif os.environ.get(VARIANT_PROBES_VARIABLE, "").strip().lower() == "true":
+            source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
+            print(
+                f"⚠️ {VARIANT_PROBES_VARIABLE} is set, but this is a {source} "
+                "pipeline: the deployment-variant probes run only on a scheduled "
+                "one. Press Run on the weekly schedule, or use make stacktest-*."
             )
 
         response = s3_client.put_object(
@@ -370,10 +377,18 @@ def stream_new_milestones(logs_client, log_stream, next_token, console, max_page
 # before they expire: it re-assumes idp-sdlc-GitLab again (a fresh 1h session —
 # role chaining allows repeated re-assumes, each capped at 1h) and rebuilds its
 # boto3 clients. So MONITOR_HANDOFF_SECONDS can now exceed the 1h cap. It is set
-# below the GitLab job timeout (2h30m) with headroom for before/after_script.
+# below the GitLab job timeout (3h30m) with headroom for before/after_script.
 # If refresh ever fails (e.g. the self-assume permission is missing), the
 # monitor still hands off gracefully to the S3 summary + SNS email.
 MONITOR_HANDOFF_SECONDS = 6600  # 110 min
+# The weekly variant-probe run joins the probes after the primary suite, so its
+# final summary lands later: up to PROBE_JOIN_DEADLINE_SECONDS (150 min) after
+# CodeBuild's main() starts, plus the source stage and provisioning before it.
+# Handing off at 110 min would read the INTERIM summary and leave a probe failure
+# to the email alone, so that run watches longer. Both stay below the GitLab job
+# timeout (3h30m) with the same before/after_script headroom as the nightly.
+PROBE_RUN_MONITOR_HANDOFF_SECONDS = 10500  # 175 min
+PROBE_RUN_MONITOR_MAX_WAIT_SECONDS = 11700  # 195 min
 # Re-assume this far before the ~1h chained-session expiry.
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
@@ -551,7 +566,7 @@ def monitor_pipeline_execution(
               a failure. The caller exits neutrally and the run's real result
               surfaces via the S3 summary + SNS.
 
-    max_wait (135 min) is a hard backstop below the GitLab job's 2h30m ceiling;
+    max_wait (135 min) is a hard backstop below the GitLab job's 3h30m ceiling;
     handoff_after (110 min) is the normal exit for a still-running pipeline.
     The monitor refreshes its 1h-capped creds every ~50 min (see
     _CredentialRefresher), so it can watch past the single-credential lifetime.
@@ -764,7 +779,7 @@ def monitor_pipeline_execution(
         return False
 
 
-def monitor_pipeline(pipeline_name, version_id, max_wait=8100):
+def monitor_pipeline(pipeline_name, version_id, max_wait=8100, handoff_after=None):
     """Monitor pipeline using version-based tracking"""
     # First find the execution that matches our version
     execution_id = find_pipeline_execution_by_version(pipeline_name, version_id)
@@ -778,7 +793,11 @@ def monitor_pipeline(pipeline_name, version_id, max_wait=8100):
     print(f"Pipeline execution ID written to file: {execution_id}")
         
     # Then monitor that specific execution
-    return monitor_pipeline_execution(pipeline_name, execution_id, max_wait)
+    if handoff_after is None:
+        return monitor_pipeline_execution(pipeline_name, execution_id, max_wait)
+    return monitor_pipeline_execution(
+        pipeline_name, execution_id, max_wait, handoff_after=handoff_after
+    )
 
 
 def main():
@@ -818,7 +837,15 @@ def main():
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 
-    result = monitor_pipeline(pipeline_name, version_id)
+    if variant_probes_requested():
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=PROBE_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=PROBE_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    else:
+        result = monitor_pipeline(pipeline_name, version_id)
 
     if result is True:
         print("🎉 Integration test deployment completed successfully!")

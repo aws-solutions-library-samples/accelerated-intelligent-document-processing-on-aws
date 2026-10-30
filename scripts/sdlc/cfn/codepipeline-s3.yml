@@ -858,7 +858,11 @@ Resources:
     Properties:
       Name: app-sdlc
       ServiceRole: !If [CreateCodeBuildRole, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
-      TimeoutInMinutes: 120
+      # 180, not 120: the weekly variant-probe run joins the probes after the
+      # primary suite, and PROBE_JOIN_DEADLINE_SECONDS in codebuild_deployment.py
+      # (150 min) sits 30 minutes below this so its final summary is written. The
+      # nightly finishes well inside either value; this is a backstop, not a budget.
+      TimeoutInMinutes: 180
       VpcConfig:
         !If
           - DeployInVPC

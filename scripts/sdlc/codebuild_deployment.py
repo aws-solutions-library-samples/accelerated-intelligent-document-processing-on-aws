@@ -956,7 +956,7 @@ CI_RUN_OPTIONS_FILE = "ci_run_options.json"
 #: How long after main() starts it will wait for the update before reporting it as
 #: still running. CloudFormation carries on server-side either way. It counts from
 #: main()'s start, and the two bounds it must stay inside count from earlier ones:
-#: CodeBuild's 120-minute project timeout from the build's start, and the GitLab
+#: CodeBuild's 180-minute project timeout from the build's start, and the GitLab
 #: monitor's 110-minute handoff (MONITOR_HANDOFF_SECONDS) from the monitor's, both
 #: before the pipeline's source stage, the build's provisioning and its install
 #: phase, none of which main() sees. So a slow update leaves the verdict alone only
@@ -966,6 +966,14 @@ CI_RUN_OPTIONS_FILE = "ci_run_options.json"
 UX_NIGHTLY_JOIN_DEADLINE_SECONDS = 90 * 60
 #: The timeout on the update's `idp-cli deploy --wait`, inside the deadline above.
 UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS = 85 * 60
+#: How long after main() starts it will wait for the deployment-variant probes
+#: before reporting the ones still running as failed. Only the weekly
+#: variant-probe run launches them. Like UX_NIGHTLY_JOIN_DEADLINE_SECONDS it counts
+#: from main()'s start, and it sits 30 minutes below CodeBuild's 180-minute project
+#: timeout (scripts/sdlc/cfn/codepipeline-s3.yml), so the final summary and the
+#: failure email are written even when a probe hangs; without it the build is
+#: killed mid-join and neither is. test_weekly_variant_probes.py pins the headroom.
+PROBE_JOIN_DEADLINE_SECONDS = 150 * 60
 #: Set to false/0/no/off, or to an empty value, to turn the update off without a
 #: commit; unset, the schedule decides. An empty value is off, as it is for
 #: IDP_KEEP_FAILED_STACK, so an entry declared with a blank value cannot leave the
@@ -8565,8 +8573,8 @@ def _run_probe_attempt(probe, admin_email, template_url, vpc_params):
     finally:
         # A probe's teardown findings are printed by the verification but do NOT
         # change its verdict: a probe uses the shared boundary policy, so it
-        # creates no per-run policy of its own, and probes are off by default in
-        # CI. Folding them into the probe result is a separate change.
+        # creates no per-run policy of its own, and in CI probes run only on the
+        # weekly variant-probe schedule. Folding them into the probe result is a separate change.
         cleanup_stack({"stack_name": stack_name})
 
 
@@ -9041,6 +9049,62 @@ def join_ux_nightly_update(
     if isinstance(outcome, dict):
         return outcome
     return {"state": "failed", "phase": "thread"}
+
+
+def join_variant_probes(
+    future: Future,
+    executor: ThreadPoolExecutor,
+    *,
+    started: float,
+    clock: Callable[[], float] = time.monotonic,
+    deadline: float = PROBE_JOIN_DEADLINE_SECONDS,
+) -> list[dict]:
+    """The probes' results, waiting at most until `deadline` after `started`.
+
+    A supervisor still running at the deadline is reported as one failed entry
+    rather than waited for: the build would otherwise reach CodeBuild's timeout
+    mid-join and be killed before the final summary and failure email exist. Its
+    probe stacks are left to the startup reapers, and its threads end with the
+    process at os._exit. A supervisor that died is reported the same way.
+
+    Never raises, and shuts the executor down without waiting on every path.
+    `clock` is injectable so the bound is testable without sleeping.
+    """
+    remaining = max(0.0, deadline - (clock() - started))
+    try:
+        results = future.result(timeout=remaining)
+    except FuturesTimeoutError:
+        executor.shutdown(wait=False)
+        minutes = round((clock() - started) / 60, 1)
+        return [
+            {
+                "stack_name": "<probe supervisor>",
+                "success": False,
+                "error": (
+                    f"probes still running {minutes} min after the build started; "
+                    "stopped waiting so the summary is written before CodeBuild's "
+                    "timeout"
+                ),
+                "failure_type": "deploy",
+                "probe": "probe supervisor",
+            }
+        ]
+    except Exception as e:  # noqa: BLE001
+        # run_variant_probes catches per-probe failures itself; this only fires
+        # if the supervisor thread itself died.
+        executor.shutdown(wait=False)
+        print(f"❌ Deployment-variant probe supervisor exception: {e}")
+        return [
+            {
+                "stack_name": "<probe supervisor>",
+                "success": False,
+                "error": str(e),
+                "failure_type": "deploy",
+                "probe": "probe supervisor",
+            }
+        ]
+    executor.shutdown(wait=False)
+    return list(results or [])
 
 
 def ux_nightly_row(outcome: dict | None) -> tuple[str, str]:
@@ -9598,6 +9662,7 @@ def main():
             "⏳ INTERIM SUMMARY (primary suite done; deployment-variant probes "
             "may still be running — final summary overwrites this)\n\n" + interim
         )
+        interim = label_variant_probe_run(interim)
         if ai_summary:
             interim = f"{interim}\n\n{ai_summary}"
         publish_summary_to_s3(interim)
@@ -9609,23 +9674,9 @@ def main():
             print(f"\n{'=' * 80}")
             print("Waiting for deployment-variant probes...")
             print(f"{'=' * 80}\n")
-            try:
-                probe_results = probes_future.result()
-            except Exception as e:  # noqa: BLE001
-                # run_variant_probes catches per-probe failures itself; this
-                # only fires if the supervisor thread itself died.
-                print(f"❌ Deployment-variant probe supervisor exception: {e}")
-                probe_results = [
-                    {
-                        "stack_name": "<probe supervisor>",
-                        "success": False,
-                        "error": str(e),
-                        "failure_type": "deploy",
-                        "probe": "probe supervisor",
-                    }
-                ]
-            finally:
-                probes_executor.shutdown(wait=True)
+            probe_results = join_variant_probes(
+                probes_future, probes_executor, started=main_started
+            )
 
             for probe_result in probe_results:
                 probe_name = probe_result.get("probe", "deployment-variant probe")

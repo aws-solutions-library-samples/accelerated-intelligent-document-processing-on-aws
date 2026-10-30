@@ -518,13 +518,14 @@ deployment_validation:
 
 integration_tests:
   stage: integration_tests
-  # Must exceed the pipeline monitor's max_wait (8100s / 135 min in
-  # integration_test_deployment.py — the monitor refreshes its 1h-capped creds
-  # so it can watch that long) plus before_script (~5 min) and after_script log
+  # Must exceed the pipeline monitor's longest max_wait — 195 min on the weekly
+  # variant-probe run (PROBE_RUN_MONITOR_MAX_WAIT_SECONDS), 135 min otherwise, in
+  # integration_test_deployment.py; the monitor refreshes its 1h-capped creds so
+  # it can watch that long — plus before_script (~5 min) and after_script log
   # capture (~2 min), so the SCRIPT owns the deadline and always exits cleanly.
   # When this equalled the monitor's deadline, GitLab hard-killed the job first
   # and after_script never captured logs.
-  timeout: 2h30m
+  timeout: 3h30m
   # Serialize deploys. The resource_group is a size-1 mutex; it is now scoped to a
   # single SHARED group rather than per-branch, which is the right choice once the
   # trigger is a nightly schedule plus occasional manual clicks: the thing it has to
@@ -1879,13 +1880,13 @@ nightly_notification:
           if names:
               return (
                   "❌ FAILED BEFORE THE DEPLOY" + status_suffix(names),
-                  "This nightly did not reach the deploy stage, so NOTHING was "
+                  "This scheduled run did not reach the deploy stage, so NOTHING was "
                   "deployed and no integration test ran. GitLab skipped the rest "
                   "of the pipeline because of:\n\n" + causes,
               )
           return (
               "❌ FAILED BEFORE THE DEPLOY",
-              "This nightly did not reach the deploy stage, so NOTHING was "
+              "This scheduled run did not reach the deploy stage, so NOTHING was "
               "deployed and no integration test ran. An earlier stage failed "
               "and GitLab skipped the rest of the pipeline.\n\n"
               "The failed job could not be read from the GitLab API "
@@ -2005,7 +2006,7 @@ ai_ux_test_stories_nightly:
   rules: &ux_story_nightly_rules
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
       when: never
-    - if: $IDP_RUN_PROBES == "true"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_PROBES =~ /^\s*true\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always
