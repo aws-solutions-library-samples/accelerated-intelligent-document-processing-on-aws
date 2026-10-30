@@ -259,12 +259,15 @@ def assert_can_access_test_set(
 
     1. A direct (IAM-gated) invoke is trusted — no Cognito identity to scope.
     2. Admin and Author are unscoped: they own test sets.
-    3. A Reviewer may touch a test set whose configuration profile is within their
-       ``allowedConfigVersions`` (``reviewer_may_access_test_set``); one who also
-       holds Annotator falls through to rule 4 when it is not.
-    4. An Annotator must have ``test_set_id`` in their ``allowedTestSets``. An
+    3. An Annotator must have ``test_set_id`` in their ``allowedTestSets``,
+       whatever other role they also hold, Reviewer included: an Annotator is often an
+       external contractor onboarded to one set, and holding Reviewer as well must not
+       widen that. An
        Annotator with *no* scope is denied rather than unrestricted, so a
        misconfigured or half-created annotator fails closed.
+    4. A Reviewer (not also an Annotator) may touch a test set whose configuration
+       profile is within their ``allowedConfigVersions``
+       (``reviewer_may_access_test_set``).
     5. Any other role (e.g. Viewer) is refused test-set annotation access.
     """
     if is_direct_invoke(event):
@@ -276,19 +279,18 @@ def assert_can_access_test_set(
 
     email = caller_email(event)
 
-    if REVIEWER_GROUP in groups:
+    if REVIEWER_GROUP in groups and ANNOTATOR_GROUP not in groups:
         if reviewer_may_access_test_set(event, test_set_id, set_profile):
             return
-        if ANNOTATOR_GROUP not in groups:
-            logger.warning(
-                "Forbidden: reviewer %s is not scoped to the profile of test set '%s'",
-                email,
-                test_set_id,
-            )
-            raise TestSetAccessDenied(
-                f"Unauthorized: test set '{test_set_id}' is outside your allowed "
-                "configuration scope"
-            )
+        logger.warning(
+            "Forbidden: reviewer %s is not scoped to the profile of test set '%s'",
+            email,
+            test_set_id,
+        )
+        raise TestSetAccessDenied(
+            f"Unauthorized: test set '{test_set_id}' is outside your allowed "
+            "configuration scope"
+        )
 
     if ANNOTATOR_GROUP in groups:
         allowed = get_allowed_test_sets(email, users_table)

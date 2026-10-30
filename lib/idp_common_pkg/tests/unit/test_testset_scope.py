@@ -364,22 +364,26 @@ class TestReviewerProfileScope:
         assert_can_access_test_set(self._reviewer(), "ts-a")
         assert reads == ["ts-a"]
 
-    def test_a_reviewer_who_is_also_an_annotator_falls_back_to_allowed_test_sets(
+    def test_a_reviewer_who_is_also_an_annotator_stays_scoped_by_allowed_test_sets(
         self, scope, users_table
     ):
-        scope["scope"] = ["lending"]
+        """Holding Reviewer must not widen an Annotator's allowedTestSets, even with no
+        profile restriction: the profile rule is never consulted for them."""
+        scope["scope"] = None
         _seed_user(users_table, "rev@example.com", allowed=["ts-a"])
-        # Outside the profile scope, but named in allowedTestSets.
+        profile = MagicMock(
+            side_effect=AssertionError("the profile rule must not be consulted")
+        )
         assert_can_access_test_set(
             self._reviewer(("Reviewer", "Annotator")),
             "ts-a",
             users_table,
-            set_profile=lambda _id: "claims",
+            set_profile=profile,
         )
         with pytest.raises(TestSetAccessDenied):
             assert_can_access_test_set(
                 self._reviewer(("Reviewer", "Annotator")),
                 "ts-b",
                 users_table,
-                set_profile=lambda _id: "claims",
+                set_profile=profile,
             )
