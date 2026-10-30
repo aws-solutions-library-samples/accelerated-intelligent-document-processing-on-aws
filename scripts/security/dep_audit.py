@@ -262,17 +262,21 @@ def load_allowlist() -> Dict[str, Dict[str, Any]]:
 
 
 def allowlist_key(
-    allowlist: Dict[str, Dict[str, Any]], vid: str, name: str
+    allowlist: Dict[str, Dict[str, Any]], vid: str, name: str, ecosystem: str = "PyPI"
 ) -> Optional[str]:
     """The allowlist key that suppresses ``vid`` on ``name``, if any.
 
     A package-scoped key wins over a bare one, and package names compare after
-    PEP 503 normalisation, because the manifest and a hand-written entry may
-    spell a Python name differently (``Pillow`` against ``pillow``).
+    the ecosystem's own rule (see ``_norm``), because the manifest and a
+    hand-written entry may spell a Python name differently.
     """
     for key in allowlist:
         scoped_id, sep, scoped_pkg = key.partition("|")
-        if sep and scoped_id == vid and _norm(scoped_pkg) == _norm(name):
+        if (
+            sep
+            and scoped_id == vid
+            and _norm(scoped_pkg, ecosystem) == _norm(name, ecosystem)
+        ):
             return key
     return vid if vid in allowlist else None
 
@@ -410,9 +414,15 @@ def _compare(a: Tuple[int, ...], b: Tuple[int, ...]) -> int:
     return (a > b) - (a < b)
 
 
-def _norm(name: str) -> str:
-    """PEP 503 normalisation (``Pillow_HEIF`` == ``pillow-heif``), which is also
-    harmless for npm names, whose registry forbids ``_`` and uppercase."""
+def _norm(name: str, ecosystem: str = "PyPI") -> str:
+    """A package name in the form its registry compares it in.
+
+    PyPI applies PEP 503 (``Pillow_HEIF`` == ``pillow-heif``). npm does not: ``.``
+    is significant there (``decimal.js`` and ``decimal-js`` are different
+    packages), so an npm name is only lowercased.
+    """
+    if ecosystem == "npm":
+        return name.lower()
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
@@ -435,7 +445,7 @@ def match_unmapped(
     known = set(known_ids)
     by_name: Dict[str, List[Tuple[str, str, str]]] = {}
     for eco, name, version in packages:
-        by_name.setdefault(_norm(name), []).append((eco, name, version))
+        by_name.setdefault(f"{eco}|{_norm(name, eco)}", []).append((eco, name, version))
 
     findings: List[Dict[str, Any]] = []
     not_affected = 0
@@ -451,7 +461,12 @@ def match_unmapped(
         # both with and without it: "Mammoth.js" is pinned as "mammoth", but
         # "Chart.js" is pinned as "chart.js".
         bare = m.group("name")
-        candidates = by_name.get(_norm(bare), []) + by_name.get(_norm(bare + ".js"), [])
+        candidates = [
+            pkg
+            for eco in ("PyPI", "npm")
+            for spelling in (bare, bare + ".js")
+            for pkg in by_name.get(f"{eco}|{_norm(spelling, eco)}", [])
+        ]
         for eco, name, version in candidates:
             ours, hi = _version_tuple(version), _version_tuple(m.group("hi"))
             lo = _version_tuple(m.group("lo")) if m.group("lo") else None
@@ -639,7 +654,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 "last_known_affected": last_known_affected(vuln, name),
                 "summary": (vuln.get("summary") or "").strip(),
             }
-            matched = allowlist_key(allowlist, vid, name)
+            matched = allowlist_key(allowlist, vid, name, eco)
             entry = allowlist[matched] if matched else None
             if entry:
                 used_keys.add(matched)

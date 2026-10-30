@@ -122,6 +122,15 @@ class TestAllowlistScoping:
             == "GHSA-P|Pillow_Heif"
         )
 
+    def test_npm_names_keep_their_dots(self):
+        """decimal.js and decimal-js are different npm packages."""
+        entries = {"GHSA-D|decimal.js": {}}
+        assert dep_audit.allowlist_key(entries, "GHSA-D", "decimal-js", "npm") is None
+        assert (
+            dep_audit.allowlist_key(entries, "GHSA-D", "Decimal.js", "npm")
+            == "GHSA-D|decimal.js"
+        )
+
     def test_a_scoped_entry_wins_over_a_bare_one_for_its_package(self):
         both = {"GHSA-X": {}, "GHSA-X|pkg-a": {}}
         assert dep_audit.allowlist_key(both, "GHSA-X", "pkg-a") == "GHSA-X|pkg-a"
@@ -1284,3 +1293,13 @@ class TestDotJsNamesAndTheBudget:
             "t", days=2, today=dt.date(2026, 10, 30)
         )
         assert got == [] and unread == ["2026-10-29", "2026-10-30"]
+
+
+@pytest.mark.unit
+class TestNpmNamesInTheUnmappedMatch:
+    def test_a_dotted_npm_name_does_not_match_its_dashed_neighbour(self):
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("decimal-js before 2.0.0 contains a flaw")],
+            [("npm", "decimal.js", "1.0.0")],
+        )
+        assert found == []
