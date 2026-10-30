@@ -94,3 +94,60 @@ def test_a_flow_that_never_takes_effect_still_fails(rbac_common, monkeypatch):
         rbac_common.get_id_token(CTX, "a@example.invalid", "pw")
     assert len(calls) == len(rbac_common.AUTH_FLOW_RETRY_DELAYS) + 1
     assert sum(sleeps) <= 90, "the wait must stay bounded"
+
+
+# The federated sign-in live check enables the same flow and authenticates
+# straight after, through boto3, which does not retry InvalidParameterException.
+
+
+class _InvalidParameter(Exception):
+    pass
+
+
+class _FakeCognito:
+    class exceptions:
+        InvalidParameterException = _InvalidParameter
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def admin_initiate_auth(self, **kwargs):
+        self.calls += 1
+        outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.fixture
+def federated(monkeypatch):
+    live = Path(__file__).resolve().parents[2] / "security" / "live_checks"
+    monkeypatch.syspath_prepend(str(live))
+    spec = importlib.util.spec_from_file_location(
+        "verify_federated_signin_propagation", live / "verify_federated_signin.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    return mod, sleeps
+
+
+def test_the_federated_check_waits_out_the_same_race(federated):
+    mod, sleeps = federated
+    cog = _FakeCognito(
+        [_InvalidParameter("Auth flow not enabled for this client"), {"ok": 1}]
+    )
+    assert mod.admin_password_auth(cog, "pool", "client") == {"ok": 1}
+    assert cog.calls == 2
+    assert sleeps == [mod.AUTH_FLOW_RETRY_DELAYS[0]]
+
+
+def test_the_federated_check_fails_other_errors_at_once(federated):
+    mod, sleeps = federated
+    cog = _FakeCognito([_InvalidParameter("USERNAME is required")])
+    with pytest.raises(_InvalidParameter):
+        mod.admin_password_auth(cog, "pool", "client")
+    assert cog.calls == 1
+    assert sleeps == []

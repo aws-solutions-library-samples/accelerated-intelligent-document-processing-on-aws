@@ -15,6 +15,7 @@ import argparse
 import base64
 import json
 import sys
+import time
 import urllib.parse
 
 import boto3
@@ -200,6 +201,30 @@ def override_groups(payload: dict) -> list | None:
     if not details:
         return None
     return (details.get("groupOverrideDetails") or {}).get("groupsToOverride")
+
+
+# UpdateUserPoolClient is eventually consistent, so the first AdminInitiateAuth
+# after the flow is enabled can still answer "Auth flow not enabled for this
+# client"; boto3 does not retry an InvalidParameterException. Only that message
+# is retried, with a bounded backoff — scripts/rbac_common.py does the same.
+AUTH_FLOW_RETRY_DELAYS = (1, 2, 4, 8, 15, 30)
+
+
+def admin_password_auth(cog, pool_id, client_id):
+    for delay in (*AUTH_FLOW_RETRY_DELAYS, None):
+        try:
+            return cog.admin_initiate_auth(
+                UserPoolId=pool_id,
+                ClientId=client_id,
+                AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+                AuthParameters={"USERNAME": NATIVE_EMAIL, "PASSWORD": NATIVE_PW},
+            )
+        except cog.exceptions.InvalidParameterException as e:
+            if delay is None or "Auth flow not enabled" not in str(e):
+                raise
+            print(f"  auth flow not yet active; retrying in {delay}s")
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def main() -> int:
@@ -492,12 +517,7 @@ def main() -> int:
         )
         print("  temporarily enabled ADMIN_USER_PASSWORD_AUTH")
     try:
-        auth = cog.admin_initiate_auth(
-            UserPoolId=pool_id,
-            ClientId=client_id,
-            AuthFlow="ADMIN_USER_PASSWORD_AUTH",
-            AuthParameters={"USERNAME": NATIVE_EMAIL, "PASSWORD": NATIVE_PW},
-        )
+        auth = admin_password_auth(cog, pool_id, client_id)
         access_token = auth["AuthenticationResult"]["AccessToken"]
         # custom:idp_groups MUST stay writable while it is IdP-mapped: Cognito
         # applies AttributeMapping as this client and fails the sign-in otherwise.
@@ -542,12 +562,7 @@ def main() -> int:
             "the native user's own write persisted",
             f"stored={stored.get('custom:idp_groups')!r}",
         )
-        auth = cog.admin_initiate_auth(
-            UserPoolId=pool_id,
-            ClientId=client_id,
-            AuthFlow="ADMIN_USER_PASSWORD_AUTH",
-            AuthParameters={"USERNAME": NATIVE_EMAIL, "PASSWORD": NATIVE_PW},
-        )
+        auth = admin_password_auth(cog, pool_id, client_id)
         tok_groups = (
             jwt_claims(auth["AuthenticationResult"]["IdToken"]).get("cognito:groups")
             or []
