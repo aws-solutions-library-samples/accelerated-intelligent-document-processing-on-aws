@@ -18,10 +18,8 @@ import numpy as np
 
 from idp_common.bedrock.client import BedrockClient
 from idp_common.config import ConfigurationReader
-from idp_common.discovery.embedding_service import (
-    EmbeddingService,
-    default_embedding_model_id,
-)
+from idp_common.discovery.embedding_service import EmbeddingService
+from idp_common.discovery.regional_defaults import default_embedding_model_id
 
 from appsync_status import update_status
 

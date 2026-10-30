@@ -27,9 +27,9 @@ from idp_common.bedrock.client import BedrockClient
 from idp_common.config.class_names import sanitize_class_name
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
 from idp_common.discovery.discovery_agent import DiscoveredClass, DiscoveryAgent
-from idp_common.discovery.embedding_service import (
-    EmbeddingResult,
-    EmbeddingService,
+from idp_common.discovery.embedding_service import EmbeddingResult, EmbeddingService
+from idp_common.discovery.regional_defaults import (
+    default_analysis_model_id,
     default_embedding_model_id,
 )
 
@@ -127,14 +127,14 @@ class MultiDocumentDiscovery:
         self.bedrock_client = bedrock_client or BedrockClient(region=self.region)
 
         # Extract config values with defaults
-        # The fallback follows the Region: this path (the SDK's local pipeline)
+        # The fallbacks follow the Region: this path (the SDK's local pipeline)
         # never runs the deploy-time model swap.
         self.embedding_model_id = self.config.get(
             "embedding_model_id"
         ) or default_embedding_model_id(self.region)
         self.analysis_model_id = self.config.get(
-            "analysis_model_id", "us.anthropic.claude-sonnet-4-6"
-        )
+            "analysis_model_id"
+        ) or default_analysis_model_id(self.region)
         self.max_documents = self.config.get("max_documents", 500)
         self.min_cluster_size = self.config.get("min_cluster_size", 2)
         self.num_sample_documents = self.config.get("num_sample_documents", 3)

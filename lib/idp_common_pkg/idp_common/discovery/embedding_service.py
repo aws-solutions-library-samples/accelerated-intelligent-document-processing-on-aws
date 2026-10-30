@@ -11,7 +11,6 @@ throttle handling via the existing BedrockClient retry logic.
 
 import io
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -48,30 +47,6 @@ class EmbeddingResult:
             "num_valid": len(self.valid_keys),
             "num_failed": len(self.failed_keys),
         }
-
-
-#: The default embedding model for each Region family. A `us.` inference profile
-#: is rejected as an invalid model identifier from an EU or Canada Region, so a
-#: code-level fallback must follow the Region the way the deploy-time swap in
-#: src/lambda/update_configuration does for stored configuration (`eu.` in EU
-#: Regions, `global.` in Canada, where Cohere Embed v4 has no `ca.` profile).
-_REGIONAL_DEFAULT_EMBEDDING_MODELS = {
-    "eu-": "eu.cohere.embed-v4:0",
-    "ca-": "global.cohere.embed-v4:0",
-}
-
-
-def default_embedding_model_id(region: Optional[str] = None) -> str:
-    """The default multimodal embedding model callable from ``region``.
-
-    ``region`` defaults to ``AWS_REGION``. Any Region outside the EU and Canada
-    gets ``EmbeddingService.DEFAULT_MODEL_ID``.
-    """
-    region = region or os.environ.get("AWS_REGION", "")
-    for prefix, model_id in _REGIONAL_DEFAULT_EMBEDDING_MODELS.items():
-        if region.startswith(prefix):
-            return model_id
-    return EmbeddingService.DEFAULT_MODEL_ID
 
 
 class EmbeddingService:

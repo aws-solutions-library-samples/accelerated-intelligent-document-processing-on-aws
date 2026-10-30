@@ -40,3 +40,27 @@ def test_the_discovery_embedding_default_moves_to_its_eu_profile():
     assert (
         after["discovery.multi_document.embedding_model_id"] == "eu.cohere.embed-v4:0"
     )
+
+
+_REGION_TYPES = {"eu-": "eu", "ca-": "ca"}
+
+
+@pytest.mark.unit
+def test_the_discovery_fallbacks_agree_with_the_swap_tables():
+    """A code fallback must be what the deploy-time swap makes of the same id.
+
+    Otherwise a stack that read its configuration gets one model and a stack that
+    fell back gets another, which is the divergence the fallbacks exist to remove.
+    """
+    from idp_common.discovery import regional_defaults
+
+    assert set(regional_defaults.REGIONAL_DEFAULT_MODELS) == set(_REGION_TYPES)
+    for us_id in (
+        regional_defaults.DEFAULT_EMBEDDING_MODEL_ID,
+        regional_defaults.DEFAULT_ANALYSIS_MODEL_ID,
+    ):
+        for prefix, region_type in _REGION_TYPES.items():
+            region = f"{prefix}central-1"
+            assert regional_defaults.regional_default(
+                us_id, region
+            ) == index.get_model_mapping(us_id, region_type), (us_id, region)

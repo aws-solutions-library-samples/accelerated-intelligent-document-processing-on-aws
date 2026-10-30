@@ -155,10 +155,12 @@ alternative is offered in the region before selecting it. See [Document Knowledg
   `EMBEDDING_MODELS` in `scripts/tests/test_model_surface_consistency.py` name
   the Knowledge Base embedding models, and `NON_SELECTABLE_DEFAULTS` names
   `us.cohere.embed-v4:0`. `global.cohere.embed-v4:0` and `eu.cohere.embed-v4:0`
-  are in none of them, and need no entry only because they reach a stack
-  through the swap table rather than through any surface those gates walk — so a
-  shipped preset or code default naming either would fail them with no entry to
-  point at.
+  are in none of them. They reach a stack two ways that those gates do not walk:
+  the swap table, and multi-document discovery's Region-aware code fallbacks in
+  `idp_common/discovery/regional_defaults.py`. The fallbacks are held to the swap
+  table instead, by `src/lambda/update_configuration/test_eu_region.py`. A shipped
+  preset or a `config/models.py` default naming either id would fail the coverage
+  gates with no entry to point at.
 - **ca-west-1 is handled, but the model lists are derived from ca-central-1.**
   A `ca-west-1` stack resolves to the same `ca` region type and gets the same
   picklists, swaps and Knowledge Base default, which is validated for

@@ -6922,7 +6922,7 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
 @click.option(
     "--analysis-model",
     default=None,
-    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6)",
+    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6; eu.anthropic.claude-sonnet-4-6 in EU Regions)",
 )
 @click.option(
     "--output",
