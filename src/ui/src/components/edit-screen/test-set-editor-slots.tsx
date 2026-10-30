@@ -73,7 +73,7 @@ export interface TestSetEditorSlotsOptions {
   /** Section ids, classes or labels moved on the server: the caller re-reads its refs. */
   onChanged: () => void;
   /**
-   * Where Edit Page Class is: `external` (the default) is the edit page's More Actions;
+   * Where Edit Page Grouping is: `external` (the default) is the edit page's More Actions;
    * `structure` is a button beside the section selector. Only the pages field's
    * description differs.
    */
@@ -123,7 +123,7 @@ export const useTestSetEditorSlots = ({
   const [regroupedSectionIds, setRegroupedSectionIds] = useState<string[]>([]);
   const [isReextracting, setIsReextracting] = useState(false);
   const [reextractNote, setReextractNote] = useState<string | null>(null);
-  // Sections whose class Edit Page Class just changed, by section id, with the class
+  // Sections whose class Edit Page Grouping just changed, by section id, with the class
   // their fields were extracted under: their fields no longer match their class until
   // they are re-extracted.
   const [reclassified, setReclassified] = useState<Record<string, string>>({});
@@ -300,7 +300,7 @@ export const useTestSetEditorSlots = ({
   /* Rendered whenever a baseline is loaded, including when it carries no class. */
   const classSlot: EditorSlot = (ctx) => (
     <>
-      {/* A section's class is changed in Edit Page Class. Its fields were extracted under
+      {/* A section's class is changed in Edit Page Grouping. Its fields were extracted under
           the previous class, and only a re-extract replaces them. */}
       {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && (
         <Alert
@@ -328,8 +328,8 @@ export const useTestSetEditorSlots = ({
           label="Pages in this section"
           description={
             regroupPlacement === 'external'
-              ? "Which pages of the document this section covers, in reading order. Use Edit Page Class at the top to move or reorder pages, or change a section's class."
-              : "Which pages of the document this section covers, in reading order. Use Edit Page Class, above, to move or reorder pages, or change a section's class."
+              ? "Which pages of the document this section covers, in reading order. Use Edit Page Grouping at the top to move or reorder pages, or change a section's class."
+              : "Which pages of the document this section covers, in reading order. Use Edit Page Grouping, above, to move or reorder pages, or change a section's class."
           }
         >
           <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
@@ -349,19 +349,19 @@ export const useTestSetEditorSlots = ({
     return (
       <Alert type="info" header="No field values for this section">
         {!documentClassType
-          ? 'This section has no document class, so there is no schema to extract against — that is why it has no fields. Set its class in Edit Page Class first; re-extracting before that will not produce anything.'
+          ? 'This section has no document class, so there is no schema to extract against — that is why it has no fields. Set its class in Edit Page Grouping first; re-extracting before that will not produce anything.'
           : inferenceResult
             ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
             : 'This section has no inference_result at all.'}{' '}
         {sections.length > 1 ? 'Other sections of this document may still have values — choose one from the Section list above. ' : ''}
         {documentClassType ? (
           <>
-            To have the model populate it, change its class in <b>Edit Page Class</b> and choose <b>Re-extract</b>, or use the{' '}
+            To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the{' '}
             <b>JSON Editor</b> tab to enter values by hand.
           </>
         ) : (
           <>
-            If the pages belong with another section instead, <b>Edit Page Class</b> can merge them rather than classifying this one
+            If the pages belong with another section instead, <b>Edit Page Grouping</b> can merge them rather than classifying this one
             separately.
           </>
         )}

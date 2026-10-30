@@ -46,7 +46,8 @@ const headers = (): string[] => Array.from(document.querySelectorAll('th')).map(
 describe('Document Sections — class confidence is not shown', () => {
   it('has no class-confidence column', () => {
     renderPanel();
-    expect(headers().some((h) => h.startsWith('Class conf.'))).toBe(false);
+    // Neither the Pages table's name for it nor the earlier abbreviation.
+    expect(headers().some((h) => h.startsWith('Class Confidence') || h.startsWith('Class conf.'))).toBe(false);
   });
 
   it('does not render the score anywhere in the row, even when the section has one', () => {
@@ -59,7 +60,7 @@ describe('Document Sections — class confidence is not shown', () => {
   it('keeps the table narrow enough for its own columns', () => {
     renderPanel();
     // The regression this guards is width, so it counts columns rather than
-    // inspecting styles: Section ID, Class/Type, Page IDs, Low-conf. fields,
+    // inspecting styles: Section ID, Class/Type, Page IDs, Low Confidence Fields,
     // Status, Actions.
     expect(headers().filter((h) => h.length > 0)).toHaveLength(6);
   });

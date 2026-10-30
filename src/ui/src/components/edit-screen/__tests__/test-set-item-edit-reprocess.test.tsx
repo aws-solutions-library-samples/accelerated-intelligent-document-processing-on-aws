@@ -3,7 +3,7 @@
 
 /**
  * The primary action on a Test Studio document. What has to hold: the bar is Reports
- * (History, Processing Report), More Actions (Edit Page Class), Skip, Cancel, Save and
+ * (History, Processing Report), More Actions (Edit Page Grouping), Skip, Cancel, Save and
  * Process Changes, for a document with a review copy and for authored ground truth alike;
  * Save keeps a draft (the adapter's draft save) and never leaves the page; the primary
  * action saves the open section's unsaved edits first, then applies every section and
@@ -67,7 +67,23 @@ vi.mock('../SectionEditor', () => ({
     editorProps = props;
     (props.controllerRef as { current: unknown }).current = controller;
     const ctx = { data: null, setData: vi.fn(), selectedSectionId: '1', hasChanges: false };
-    return <div data-testid="editor">{(props.headerExtras as ((c: unknown) => React.ReactNode) | undefined)?.(ctx)}</div>;
+    const regroup = props.regroup as { disabledReason?: string; onClick: () => void } | undefined;
+    const regroupButton = regroup && (
+      <button
+        data-testid="editor-regroup"
+        disabled={!!regroup.disabledReason}
+        data-reason={regroup.disabledReason}
+        onClick={regroup.onClick}
+      >
+        Edit Page Grouping
+      </button>
+    );
+    return (
+      <div data-testid="editor">
+        {regroupButton}
+        {(props.headerExtras as ((c: unknown) => React.ReactNode) | undefined)?.(ctx)}
+      </div>
+    );
   },
 }));
 vi.mock('../../common/PageGroupingEditor', () => ({
@@ -90,11 +106,11 @@ vi.mock('../../../hooks/use-test-doc-pages', () => ({
 vi.mock('../../../hooks/use-configuration', () => ({ default: () => ({ mergedConfig: null }) }));
 vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => ({ versions: [] }) }));
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
-/** The breadcrumb root the page gives its layout. */
-let layoutRoot: unknown = null;
+/** The breadcrumbs the page gives its layout. */
+let layoutTrail: { text: string; href: string }[] | null = null;
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({
-  default: ({ children, root }: { children: React.ReactNode; root?: unknown }) => {
-    layoutRoot = root;
+  default: ({ children, trail }: { children: React.ReactNode; trail?: { text: string; href: string }[] }) => {
+    layoutTrail = trail ?? null;
     return <>{children}</>;
   },
 }));
@@ -126,11 +142,12 @@ vi.mock('../../../hooks/use-user-role', () => ({
 vi.mock('../../document-viewer/FileViewer', () => ({ default: () => <div data-testid="source-viewer" /> }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
-import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
+import { barButtonLabels, menuItems, menuNames } from './edit-bar';
+import { chooseRegroup, regroupItem } from './regroup-stand-in';
 
-const renderScreen = () =>
+const renderScreen = (path = '/') =>
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
     </MemoryRouter>,
   );
@@ -152,25 +169,26 @@ beforeEach(() => {
   exit.mockReset();
   setErrorMessage.mockReset();
   setSuccessMessage.mockReset();
-  layoutRoot = null;
+  layoutTrail = null;
   controller.isDirty.mockReset().mockReturnValue(true);
   controller.save.mockReset().mockResolvedValue(true);
 });
 
 describe('the primary action on a Test Studio document', () => {
-  it('offers Skip, Cancel, Save and Process Changes for a document with a review copy, with no Summary or baseline', () => {
+  it('offers Refresh, Skip, Cancel, Save and Process Changes for a document with a review copy, with no Summary or baseline', () => {
     renderScreen();
-    expect(menuNames()).toEqual(['Reports', 'More Actions']);
-    expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
-    // Test Studio has no summary, and its labels already are the baseline.
+    // Test Studio has no summary, and its labels already are the baseline, so More Actions
+    // has nothing in it and is not shown; Edit Page Grouping is on the Document Editor panel.
+    expect(menuNames()).toEqual(['Reports']);
+    expect(barButtonLabels()).toEqual(['Refresh', 'Skip', 'Cancel', 'Save', 'Process Changes']);
     expect(menuItems('Reports').map((i) => i.text)).toEqual(['History', 'Processing Report']);
-    expect(menuItems('More Actions').map((i) => i.text)).toEqual(['Edit Page Class']);
+    expect(regroupItem()).toMatchObject({ disabled: false });
   });
 
   it('offers Reprocess for authored ground truth too, saying nothing is reprocessed', () => {
     docOver.reviewObjectKey = null;
     renderScreen();
-    expect(barButtonLabels()).toEqual(['Skip', 'Cancel', 'Save', 'Process Changes']);
+    expect(barButtonLabels()).toEqual(['Refresh', 'Skip', 'Cancel', 'Save', 'Process Changes']);
     expect(button('Process Changes').getElement().closest('span[title]')?.getAttribute('title')).toContain('nothing is reprocessed');
   });
 
@@ -233,14 +251,14 @@ describe('the primary action on a Test Studio document', () => {
     expect(editorProps!.confirmSectionSwitch).toBeUndefined();
   });
 
-  it('places save, discard and page grouping in the top bar', () => {
+  it('places save and discard in the top bar, and page grouping on the Document Editor panel', () => {
     renderScreen();
     // The editor shows no Save of its own: Save is the bar's.
     expect(barButtonLabels()).toContain('Save');
     expect(boardProps).toBeNull();
-    chooseMenuItem('More Actions', 'Edit Page Class');
-    // The board opens as a dialog from the bar, not inline in the editor.
-    expect(boardProps).toMatchObject({ presentation: 'modal', title: 'Edit Page Class' });
+    chooseRegroup();
+    // The board opens as a dialog, not inline in the editor.
+    expect(boardProps).toMatchObject({ presentation: 'modal', title: 'Edit Page Grouping' });
   });
 
   it('puts the Edit | View switch in the bar, opening on Edit', async () => {
@@ -281,27 +299,28 @@ describe('the primary action on a Test Studio document', () => {
     expect(document.body.textContent).not.toContain('You can still correct and complete it');
   });
 
-  it('tells the breadcrumbs the set name', () => {
-    renderScreen();
-    expect(layoutRoot).toEqual({ text: 'Invoices', href: '#/review-queues/test-sets/ts-1' });
+  it('tells the breadcrumbs the set name, on the trail the Annotator came by', () => {
+    renderScreen('/?from=queues');
+    expect(layoutTrail?.map((c) => c.text)).toEqual(['Home', 'Queues', 'Test set: Invoices', 'a.pdf']);
+    expect(layoutTrail?.[2]).toEqual({ text: 'Test set: Invoices', href: '#/review-queues/test-sets/ts-1' });
   });
 
-  it('disables Edit Page Class for someone who cannot change the class, saying why', () => {
+  it('disables Edit Page Grouping for someone who cannot change the class, saying why', () => {
     // Not assigned to this Annotator, so they can't work it, and its class is theirs to leave.
     docOver.claimedByMe = false;
     docOver.assignedTo = 'other@example.com';
     renderScreen();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({
+    expect(regroupItem()).toMatchObject({
       disabled: true,
       disabledReason: 'Your role cannot change this document’s page grouping',
     });
   });
 
-  it('offers Edit Page Class on a single-section document too: splitting one section is a fix', () => {
+  it('offers Edit Page Grouping on a single-section document too: splitting one section is a fix', () => {
     docOver.sections = [{ sectionId: '1', baselineKey: 'b1', documentClass: 'Invoice', pageIndices: [0, 1] }];
     renderScreen();
-    expect(menuItems('More Actions').find((i) => i.text === 'Edit Page Class')).toMatchObject({ disabled: false });
-    chooseMenuItem('More Actions', 'Edit Page Class');
+    expect(regroupItem()).toMatchObject({ disabled: false });
+    chooseRegroup();
     expect(boardProps).toMatchObject({ presentation: 'modal' });
   });
 });

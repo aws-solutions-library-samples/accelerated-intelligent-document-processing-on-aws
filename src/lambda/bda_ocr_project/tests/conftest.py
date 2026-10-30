@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT-0
 """Test config for the bda_ocr_project custom-resource Lambda.
 
-Stubs ``cfnresponse`` (delivered via the ``cfnresponse`` pip dep at deploy
-time) and sets fake AWS credentials so ``import index`` works locally.
+Stubs ``cfnresponse`` (vendored as ``cfnresponse.py`` beside ``index.py``, and
+it would PUT to a real URL) and sets fake AWS credentials so ``import index``
+works locally.
 """
 
 from __future__ import annotations

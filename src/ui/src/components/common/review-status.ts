@@ -109,7 +109,7 @@ export const isHitlReviewFinished = (raw: string | null | undefined): boolean =>
 
 /**
  * A document waiting in a production review queue. It is reviewed from its queue item
- * (Review), and edited nowhere else until the review finishes: an edit made on the
+ * (Edit, on the document page), and edited nowhere else until the review finishes: an edit made on the
  * document page bypasses the item's assignment and is overwritten by the reviewer's
  * corrections when the review completes.
  */
@@ -142,7 +142,7 @@ export const lastSkipAllReason = (history: unknown): { reason: string; note?: st
 /** Why editing is off on the document page while it is in a review queue. */
 export const inReviewQueueEditReason = (canWorkReviewQueues: boolean): string =>
   canWorkReviewQueues
-    ? 'This document is in a review queue. Choose Review to work on it there.'
+    ? 'This document is in a review queue. Choose Edit to work on it there.'
     : 'This document is in a review queue. An Admin or Annotator reviews it there.';
 
 export interface StateView {

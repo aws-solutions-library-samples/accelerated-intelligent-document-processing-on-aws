@@ -112,7 +112,7 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - The `ANY_GROUP` operations every role gets: its own profile, the Inbox and
     document reads.
 - **What is Admin-only.**
-  - Queue Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
+  - Review Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
     `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
     `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
   - Assignment: `reassignReviewItem` (assign), `takeOverReviewItem` (take an item
@@ -140,13 +140,15 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   has **Tasks** and **Queues** under Home, and a user whose only app group is
   `Annotator` sees exactly that: Home (Inbox, Tasks and Queues), plus a document's
   edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to;
-  the rest of the documents app isn't routed for them. **HITL › Queue Management** is
+  the rest of the documents app isn't routed for them. **Review Studio › Review Management** is
   Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
   `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
   Annotators. `claimReview` and `releaseReview` refuse a finished review
-  (`REVIEW_FINISHED`) for every role, and `skipAllSectionsReview` refuses a caller
+  (`REVIEW_FINISHED`) for every role, `claimReview` also refuses a document no
+  review was raised on (`NO_REVIEW_PENDING`) for every role, and
+  `skipAllSectionsReview` refuses a caller
   who is not an Admin unless a review was raised on the document and has not
   finished (`REVIEW_FINISHED`, `NO_REVIEW_PENDING`), which is where the web UI offers
   **Skip All Reviews**.
@@ -163,77 +165,81 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
 ## Permission Matrix
 
 ```
-Feature / API                    Admin   Author   Reviewer   Viewer
-──────────────────────────────────────────────────────────────────────
+Feature / API                     Admin   Author   Reviewer   Viewer
+───────────────────────────────────────────────────────────────────────
 DOCUMENTS
-  List documents                  ✅      ✅†      ✅*†      ✅†
-  View document details           ✅      ✅†      ✅*†      ✅†
-  Upload documents                ✅      ✅       ❌        ❌
-  Delete documents                ✅      ✅       ❌        ❌
-  Reprocess documents             ✅      ✅       ❌        ❌
-  Abort workflows                 ✅      ✅       ❌        ❌
+  List documents                   ✅      ✅†      ✅*†      ✅†
+  View document details            ✅      ✅†      ✅*†      ✅†
+  Upload documents                 ✅      ✅       ❌        ❌
+  Delete documents                 ✅      ✅       ❌        ❌
+  Reprocess documents              ✅      ✅       ❌        ❌
+  Abort workflows                  ✅      ✅       ❌        ❌
+  Copy to evaluation baseline      ✅      ✅       ❌        ❌
+  Regroup pages (Edit Page Grouping)  ✅      ❌       ✅        ❌
+  Troubleshoot                     ✅      ✅       ❌        ✅
 
 HITL REVIEW
-  Claim/Release review            ✅      ❌       ✅        ❌
-  Complete section review         ✅      ❌       ✅        ❌
-  Skip all section reviews        ✅      ❌       ✅        ❌
-  Process changes (edit mode)     ✅      ❌       ✅        ❌
+  Claim/Release review             ✅      ❌       ✅        ❌
+  Complete section review          ✅      ❌       ✅        ❌
+  Skip all section reviews         ✅      ❌       ✅        ❌
+  Process changes                  ✅      ❌       ✅        ❌
 
 CONFIGURATION
-  View config profiles            ✅      ✅†      ❌        ✅†
-  View/Edit configuration         ✅      ✅†      ❌        ❌
-  Save as Profile (new profile)   ✅      ❌       ❌        ❌
-  Save as Default                 ✅      ❌       ❌        ❌
-  Delete config profile           ✅      ❌       ❌        ❌
-  Set active profile              ✅      ✅†      ❌        ❌
-  Sync BDA                        ✅      ✅†      ❌        ❌
-  Manage prefix mappings          ✅      ❌       ❌        ❌
+  View config profiles             ✅      ✅†      ❌        ✅†
+  View/Edit configuration          ✅      ✅†      ❌        ❌
+  Save as Profile (new profile)    ✅      ❌       ❌        ❌
+  Save as Default                  ✅      ❌       ❌        ❌
+  Delete config profile            ✅      ❌       ❌        ❌
+  Set active profile               ✅      ✅†      ❌        ❌
+  Sync BDA                         ✅      ✅†      ❌        ❌
+  Manage prefix mappings           ✅      ❌       ❌        ❌
 
 CONFIGURATION PROFILE REVISIONS
-  View/compare revisions          ✅      ✅†      ❌        ✅†
-  Restore a revision              ✅      ✅†      ❌        ❌
-  Label a revision                ✅      ✅†      ❌        ❌
-  Delete a revision               ✅      ❌       ❌        ❌
+  View/compare revisions           ✅      ✅†      ❌        ✅†
+  Restore a revision               ✅      ✅†      ❌        ❌
+  Label a revision                 ✅      ✅†      ❌        ❌
+  Delete a revision                ✅      ❌       ❌        ❌
 
 DISCOVERY
-  List/run discovery jobs         ✅      ✅       ❌        ❌
+  List/run discovery jobs          ✅      ✅       ❌        ❌
 
 AGENT CHAT & CODE EXPLORER
-  Chat with agent                 ✅      ✅       ❌        ✅
-  Code intelligence               ✅      ✅       ❌        ✅
+  Chat with agent                  ✅      ✅       ❌        ✅
+  Code intelligence                ✅      ✅       ❌        ✅
 
 TEST STUDIO
-  View/run test sets              ✅      ✅       ❌        ❌
-  Create/delete test sets         ✅      ✅       ❌        ❌
+  View/run test sets               ✅      ✅       ❌        ❌
+  Create/delete test sets          ✅      ✅       ❌        ❌
 
 CUSTOM MODEL FINE-TUNING
-  List/view fine-tuning jobs      ✅      ✅       ❌        ❌
-  Create fine-tuning jobs         ✅      ✅       ❌        ❌
-  Delete fine-tuning jobs         ✅      ✅       ❌        ❌
-  List available models           ✅      ✅       ❌        ❌
+  List/view fine-tuning jobs       ✅      ✅       ❌        ❌
+  Create fine-tuning jobs          ✅      ✅       ❌        ❌
+  Delete fine-tuning jobs          ✅      ✅       ❌        ❌
+  List available models            ✅      ✅       ❌        ❌
 
 CAPACITY PLANNING
-  Calculate capacity              ✅      ✅       ❌        ✅
+  Calculate capacity               ✅      ✅       ❌        ✅
 
 INBOX
-  Own messages and preferences    ✅      ✅       ✅        ✅
+  Own messages and preferences     ✅      ✅       ✅        ✅
 
 USER MANAGEMENT
-  List all users                  ✅      ❌       ❌        ❌
-  Create/delete users             ✅      ❌       ❌        ❌
-  Edit user scope                 ✅      ❌       ❌        ❌
-  View own profile                ✅      ✅       ✅        ✅
+  List all users                   ✅      ❌       ❌        ❌
+  Create/delete users              ✅      ❌       ❌        ❌
+  Edit user scope                  ✅      ❌       ❌        ❌
+  View own profile                 ✅      ✅       ✅        ✅
 
 PRICING
-  View pricing                    ✅      ✅       ❌        ✅
-  Edit pricing                    ✅      ❌       ❌        ❌
+  View pricing                     ✅      ✅       ❌        ✅
+  Edit pricing                     ✅      ❌       ❌        ❌
 
 MODEL LIMITS
-  View model limits               ✅      ✅       ❌        ✅
-  Edit model limits               ✅      ❌       ❌        ❌
+  View model limits                ✅      ✅       ❌        ✅
+  Edit model limits                ✅      ❌       ❌        ❌
 
 ✅* = Reviewer sees only docs awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them (server-side filtered); see Document Filtering below
 ✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
+Regroup pages: the server also admits an Annotator for documents in their test sets; the document page doesn't offer it
 ```
 
 ## Configuration-Profile Scoping (Use Case Isolation)
@@ -1020,7 +1026,7 @@ filtering based on the caller's identity:
 
 The UI adapts based on the user's role and scope:
 - Navigation sidebar shows only relevant features per role
-- Action buttons (delete, reprocess, upload, save, import) are hidden for roles that can't perform those actions
+- Action buttons and menu items (delete, reprocess, upload, save, import, and the document page's actions) are hidden for roles that can never perform them; disabled, with the reason, when they don't apply now (for example a past version, a document in a review queue or still processing, or BDA mode)
 - Version dropdowns are automatically filtered to show only scoped versions
 - The top navigation badge shows the user's role with color coding (blue=Admin, green=Author, grey=Reviewer/Viewer)
 - **Admin-only buttons**: "Save as Profile", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits

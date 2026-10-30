@@ -189,7 +189,7 @@ This is the most important step. You'll review each document's predictions, corr
 For each processed document:
 
 1. Open the document from the document list
-2. Click **Edit Data** on a section (or **Edit** at the top of the document page) to open the edit screen
+2. Choose **Edit Data** in a section row's **⋮** menu (or **Edit** in the document page's action bar) to open the edit screen
 3. Review each extracted field:
    - Click on a field to highlight it in the document viewer
    - Compare the extracted value against the source document
@@ -202,8 +202,8 @@ For each processed document:
 
 Once you're confident the predictions are correct for a document:
 
-1. Click the **Use as Evaluation Baseline** button
-2. The system copies the corrected predictions to the evaluation baseline bucket
+1. On the document page, choose **More Actions › Use As Evaluation Baseline** (Admin and Author roles). It is disabled while a copy is in progress, while the document is processing or in a review queue, and while you view a past version
+2. The system copies the corrected predictions to the evaluation baseline bucket. The **Evaluation** field in Document Details shows **Baseline copying in progress**, then **Baseline available** (or **Baseline copy failed**, and the failure is reported)
 
 Repeat this for every document you want to include in your test set.
 

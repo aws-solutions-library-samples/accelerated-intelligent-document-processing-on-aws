@@ -76,7 +76,7 @@ Admins have full access to all system features:
 | Upload Documents | ✅ Allowed |
 | View/Edit Extraction Results | ✅ Full access |
 | Complete Section Reviews | ✅ Allowed |
-| Skip All Reviews | ✅ Allowed on any document |
+| Skip All Reviews | ✅ Allowed on any document outside a review queue (document page **More Actions**) |
 | Release Any Review | ✅ Allowed (can release reviews owned by others) |
 | View/Edit Configuration | ✅ Full access |
 | User Management | ✅ Full access (create/delete users) |
@@ -95,7 +95,7 @@ Reviewers have limited access focused on document review tasks:
 | View/Edit Extraction Results | ✅ Can view and edit (only for owned documents) |
 | Complete Section Reviews | ✅ Allowed (only for owned documents) |
 | Release Review | ✅ Can release own reviews only |
-| Skip All Reviews | ✅ Only on a review that is still waiting (raised, and not completed or skipped) |
+| Skip All Reviews | ✅ Only on a review that is still waiting (raised, and not completed or skipped), outside a review queue (document page **More Actions**) |
 | View/Edit Configuration | ❌ Not allowed |
 | User Management | ❌ Not allowed |
 | Discovery | ❌ Not allowed |
@@ -174,24 +174,32 @@ HITL review is automatically triggered when:
 
 2. **Start Review (Claim Document)**:
    - Select a document with **Review Pending** status
-   - Click **Start Review** button
+   - Click **Start Review** in the document page's action bar (it is shown while the
+     review is pending and unclaimed)
    - Document status changes to **Review In Progress**
    - You become the review owner
+   - Only a document a review was raised on can be claimed, by any user, Admins
+     included: claiming a document with no review waiting is refused with
+     `NO_REVIEW_PENDING`, and the document list and document page offer **Start
+     Review** only where a review was raised. When a claim is refused, the page shows
+     the server's message
 
 3. **Review Sections**:
    - In the document detail view, locate the **Sections** panel
-   - Click **Edit Data** on a section (or **Edit** at the top of the document page)
-     to open the edit page at `#/documents/<document>/edit`
+   - Choose **Edit Data** in a section row's **⋮** menu (or **Edit** in the document
+     page's action bar) to open the edit page at `#/documents/<document>/edit`
    - Review and correct extracted key-value pairs
    - Click **Save** to save your corrections. Saving does not finish the
      review: the document stays **Review In Progress** and you stay its review owner,
      so you can come back and keep editing
 
 4. **Complete the Review**:
-   - Click **Process Changes** on the edit page (or in the Sections panel's Edit
-     Mode) to finish the review and process the changes: evaluation and summarization
-     re-run, and OCR, classification and extraction are not repeated. The
-     edit page saves your latest edits first and asks you to confirm
+   - Click **Process Changes** on the edit page to finish the review and process the
+     changes: evaluation and summarization re-run, and OCR, classification and
+     extraction are not repeated. The edit page saves your latest edits first and
+     asks you to confirm. (On the document page, **More Actions › Edit Page Grouping ›
+     Save and Re-extract** and **More Actions › Re-extract Sections** also complete a
+     pending review, after re-extracting the changed sections.)
    - Document status changes to **Review Completed**, and **Review Completed By**
      records you
    - Unless you are an Admin, **Process Changes** applies the same checks as saving:
@@ -206,28 +214,30 @@ HITL review is automatically triggered when:
    - Only a claimed review can be released: releasing a document nobody has claimed is refused
    - A finished review (completed or skipped) can be neither claimed nor released, by any user, Admins included
 
-**For Admins:**
+**Skipping a review (Admins and Reviewers):**
 
-Admins have additional capabilities:
-
-- **Skip All Reviews**: Click **Skip All Reviews** to mark all pending sections as skipped
+- **Skip All Reviews**: Choose **More Actions › Skip All Reviews** on the document page
+  to mark all pending sections as skipped. It is offered for a pending review outside
+  a review queue
   - Choose a reason (for example **Extracted values look correct** or **Duplicate document**) and optionally add a note; both are recorded with the skip in the review history, and the document page shows them as **Skip Reason**
   - Document status changes to **Review Skipped**
-  - The **Review Completed By** field records the admin who skipped
-  - Reviewers can skip too, but only a review that is still waiting: the server refuses a Reviewer's skip on a document whose review has finished or was never raised, which is also where the button is hidden
+  - The **Review Completed By** field records the user who skipped
+  - Reviewers can skip too, but only a review that is still waiting: the server refuses a Reviewer's skip on a document whose review has finished or was never raised
   - Downstream reprocessing (Summarization/Evaluation) is triggered automatically — consistent with completing all sections — which also fires the optional post-processing Lambda hook (`PostProcessingLambdaHookFunctionArn`) on workflow completion
-  
+
+**For Admins:**
+
 - **Release Any Review**: Admins can release reviews owned by other users
 
 ### 3. Result Integration
 
-When the review is completed with **Process Changes** (on the edit page or in the Sections panel), or every section is completed or skipped:
+When the review is completed with **Process Changes** on the edit page, with a re-extract from the document page, or every section is completed or skipped:
 - Document status changes to **Review Completed** or **Review Skipped**
 - Corrected data is saved to S3
 - **Review Completed By** field records who completed/skipped the review
 - Review history is recorded with reviewer information and timestamps
 
-**Note:** Finalizing reviews — **Process Changes** (on the edit page or in the Sections panel), completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
+**Note:** Finalizing reviews — **Process Changes** on the edit page, completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use **More Actions › Reprocess** on the document page if you later edit data and need to re-run those steps again.
 
 ## Configuration
 
@@ -293,21 +303,23 @@ Document statuses displayed:
 The section review interface provides:
 
 - **Section List**: All document sections with review status
-- **Edit Data** (or **View Data** for a read-only role): opens the section in the edit page
-- **Download Data**: Export extraction results as JSON
+- A **⋮** menu on each section row:
+  - **Edit Data** (or **View Data** for a role that can't edit): opens the section in the edit page
+  - **Download Data**: Export extraction results as JSON
+  - **Download Baseline**: Export the evaluation baseline, when one exists
 
 ### Review Actions
 
 | Action | Available To | Description |
 |--------|--------------|-------------|
-| **Start Review** | Reviewers, Admins | Claim a pending document for review |
+| **Start Review** | Reviewers, Admins | Claim a pending, unclaimed document for review (document page action bar) |
 | **Release Review** | Owner, Admins | Release document back to pending status |
-| **Skip All Reviews** | Reviewers (on a review still waiting), Admins | Skip all remaining sections |
+| **Skip All Reviews** | Reviewers (on a review still waiting), Admins | Skip all remaining sections, with a reason (document page **More Actions**) |
 | **Process Changes** (edit page) | Owner, Admins | Complete the review and process the changes |
 
 ### Document Editor
 
-**Edit Data** and the document page's **Edit** open the document's edit page, the
+**Edit Data** (a section row's **⋮** menu) and the document page's **Edit** open the document's edit page, the
 same page that review queue items use, at `#/documents/<document>/edit`
 (`?section=<id>` opens one section, `?field=<path>` one field). It opens for any
 processed document, whether or not HITL is enabled. A document in a review queue
@@ -326,14 +338,14 @@ hover.
 | Reports | **History** | The open section's field edits (prediction and baseline) and the document's review activity | everyone |
 | Reports | **Summary** | The document's summary, on a processed document that has one | everyone |
 | Reports | **Processing Report** | How the open section was extracted | everyone |
-| More Actions | **Edit Page Class** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | Admin, Reviewer (disabled for other roles, with the reason) |
-| More Actions | **Use As Evaluation Baseline** | Copies the processed document's results into the evaluation baseline, as on the document page | Admin, Author |
+| Document Editor panel | **Edit Page Grouping** | Opens the page-grouping board in a dialog, where each section's pages and class are changed | Admin, Reviewer (disabled for other roles, with the reason) |
+| More Actions | **Use As Evaluation Baseline** | Copies the processed document's results into the evaluation baseline, as the document page's **More Actions › Use As Evaluation Baseline** does; disabled while a copy is in progress | Admin, Author |
 | Button | **Cancel** | Leaves for the document page; asks first when there are unsaved edits, and discards them | editors |
 | Button | **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
-| Button | **Process Changes** | Saves the edits, confirms, then processes them like the Sections panel's **Process Changes**: evaluation and summarization re-run, and OCR, classification and extraction are not repeated | Admin, Reviewer |
+| Button | **Process Changes** | Saves the edits, confirms, then processes them: evaluation and summarization re-run, and OCR, classification and extraction are not repeated | Admin, Reviewer |
 
 A direct edit has no **Skip**: that belongs to a queue item. **Edit | View**, first in
-the bar, shows the original file in the editor's place. Summary and Use as Evaluation
+the bar, shows the original file in the editor's place. Summary and Use As Evaluation
 Baseline are not offered while the document is still processing or is in a review
 queue. The info icon opens a panel describing the screen. The
 editor itself is the **Document Editor** panel, with a **Section** dropdown at its
@@ -383,7 +395,7 @@ API and a Reviewer doesn't save baseline edits.
 
 After making edits to predictions or baselines, you can trigger reprocessing to re-run downstream steps with the updated data:
 
-1. **Save and process the changes**: Click **Process Changes** on the edit page. It saves your prediction and baseline edits, asks you to confirm, then processes the changes. (**Save** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
+1. **Save and process the changes**: Click **Process Changes** on the edit page. It saves your prediction and baseline edits, asks you to confirm, then processes the changes. (**Save** saves them without reprocessing; the document page's **More Actions › Reprocess** re-runs the steps later.)
 2. **Confirm**: The confirmation says which steps re-run
 3. **Automatic Pipeline Execution**: The document automatically transitions through processing stages:
    - `SUMMARIZING` → Re-generates document summary using updated extraction data
@@ -444,7 +456,8 @@ When evaluation data is available, turn on **Show Evaluation**:
 - Ensure extraction confidence scores are being calculated
 
 **Cannot Start Review:**
-- Verify document is in **Review Pending** status
+- Verify document is in **Review Pending** status. A document no review was raised on
+  cannot be claimed (`NO_REVIEW_PENDING`)
 - Check if document is already claimed by another reviewer
 - Ensure you have Reviewer or Admin persona
 
@@ -460,8 +473,7 @@ When evaluation data is available, turn on **Show Evaluation**:
 - Clear browser cache and re-login
 
 **Estimated Cost Shows Zero After Start Review:**
-- This issue has been fixed - HITL operations no longer re-serialize document data
-- If still occurring, ensure you have the latest deployment
+- HITL operations do not re-serialize document data, so **Reports › Estimated Cost** keeps the document's cost; if it shows zero, ensure you have the latest deployment
 
 ### Monitoring
 

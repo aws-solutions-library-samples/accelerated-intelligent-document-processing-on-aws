@@ -3,7 +3,7 @@
 
 /**
  * A queue is worked by the Annotators listed on it; an empty list means none (Admins
- * still work every queue). Queue Management's Annotators column shows how many are
+ * still work every queue). Review Management's Annotators column shows how many are
  * listed, and Assign offers only those.
  */
 

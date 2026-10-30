@@ -28,18 +28,18 @@
     "triagedOn": "2026-10-05"
   },
   {
-    "id": "GHSA-ch52-4w7c-c8xp",
-    "package": "http-cache-semantics",
-    "severity": "HIGH",
-    "reason": "Not reachable. It reaches this repository only through astro in docs-site, the documentation site, which CI builds into static files. The advisory concerns a shared HTTP cache returning one user's cached response to another, and no deployed component of the solution runs astro or a shared cache on it. No fixed release exists yet; upgrade and remove this entry once one is published.",
-    "triagedOn": "2026-10-05"
-  },
-  {
     "id": "GHSA-c4qx-w738-7hr3",
     "package": "@graphql-tools/utils",
     "severity": "HIGH",
     "reason": "Not reachable at runtime. Prototype pollution in mergeIncrementalResult. In src/ui the package is reached only through the @graphql-codegen/* dev tooling (npm ls @graphql-tools/utils), and nothing under src/ui/src imports @graphql-tools, so it never ships in the built bundle. The fixed releases depend on @whatwg-node/promise-helpers@2, which requires Node >=22.15.0, while the UI build pins Node 22.14.0 (.gitlab-ci.yml, the UI CodeBuild project in template.yaml, scripts/sdlc/cfn/codepipeline-s3.yml) and src/ui/.npmrc sets engine-strict=true, so the bump fails npm ci. Revisit when the Node pin moves to 22.15 or later.",
     "triagedOn": "2026-10-22"
+  },
+  {
+    "id": "GHSA-434m-5hcj-pxf3",
+    "package": "@graphql-tools/executor-legacy-ws",
+    "severity": "HIGH",
+    "reason": "Not reachable. Per-request WebSocket connection parameters persisting into later authentications in the legacy WebSocket executor. In src/ui the package is reached only through @graphql-codegen/cli -> @graphql-tools/url-loader (npm ls @graphql-tools/executor-legacy-ws), dev tooling that never ships in the built bundle; nothing under src/ui/src imports @graphql-tools, and codegen.config.mjs loads the schema from the local nested/api-resolvers/src/api/schema.graphql file, so no WebSocket executor is ever constructed. The fix (1.1.36) requires @graphql-tools/utils ^12.0.2, which is blocked by the Node 22.14.0 pin for the same reason as GHSA-c4qx-w738-7hr3. Revisit when the Node pin moves to 22.15 or later.",
+    "triagedOn": "2026-10-28"
   },
   {
     "id": "GHSA-4v6f-7vjh-6x4m",
@@ -52,7 +52,7 @@
     "id": "GHSA-3w55-933p-8pv5",
     "package": "strands-agents",
     "severity": "HIGH",
-    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage directory under the system temp dir follows a symbolic link another local user planted there. Only a caller that constructs a session manager reaches it: Agent's session_manager defaults to None and the SDK never creates a FileSessionManager itself, and nothing in this repo imports strands.session or passes session_manager, so no agent here writes session files. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin, the same upgrade GHSA-4v6f-7vjh-6x4m is waiting on. Re-check this entry if a session manager is ever added.",
-    "triagedOn": "2026-10-27"
+    "reason": "Not reachable. The advisory is in FileSessionManager (strands.session.file_session_manager), whose default storage under /tmp/strands/sessions follows a pre-placed symlink when it writes session files. The SDK creates no session manager on its own: Agent's session_manager argument defaults to None in 1.14.0, and FileSessionManager is instantiated only by the caller. Nothing in this repo imports strands.session, names FileSessionManager or any SessionManager, or passes session_manager to an Agent (git grep over every tracked file, including idp_common/agents, extraction/agentic_idp.py, the discovery code and nested/multi-doc-discovery); chat history is persisted to DynamoDB by src/lambda/agent_chat_processor, not through strands. The fix (1.48.0) is 34 minor versions past the 1.14.0 pin and belongs with the same agent-framework upgrade as GHSA-4v6f-7vjh-6x4m. Re-check this entry if a strands session manager is ever configured.",
+    "triagedOn": "2026-10-28"
   }
 ]

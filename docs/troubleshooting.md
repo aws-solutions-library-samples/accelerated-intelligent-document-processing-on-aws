@@ -15,7 +15,7 @@ For automated troubleshooting, use the **Error Analyzer** tool:
 
 - **What it is**: AI-powered agent that automatically diagnoses document processing failures
 - **When to use**: Document-specific failures, system-wide error patterns, performance issues
-- **How to access**: Web UI → Failed document → Troubleshoot button
+- **How to access**: Web UI → open the failed document → **Troubleshoot** in the document page's action bar (Admin, Author and Viewer roles); reopening it on the same document shows the last result, and **Run again** starts a new analysis
 - **Documentation**: See [Error Analyzer](error-analyzer.md) for complete guide
 
 **Quick Start**:
@@ -196,10 +196,10 @@ configuration that no longer defines its class; or the classifier returned a cla
 outside the configured vocabulary with `enforceValidClasses: false`, which
 stores the model's class verbatim. That setting lives inside the `validation`
 block of each call that assigns a class —
-`classification.one_stage.llm.validation.enforceValidClasses` and
-`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+`classification.combined.llm.validation.enforceValidClasses` and
+`classification.split_then_classify.section_classification.llm.validation.enforceValidClasses`
 — and there is no `classification.enforceValidClasses`. With enforcement on (the
-default), page and packet granularity and two-stage section classification all
+default), page and packet granularity and split-then-classify section classification all
 re-prompt and then assign `fallback_class` instead. Add the class to the configuration, reclassify the document
 under the current one, or turn enforcement on. The same section also carries
 `assessment_skipped_confidence_unavailable`, because it has no confidence scores
@@ -239,8 +239,8 @@ artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
 was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
-three you are most likely to see. These are recorded only at one-stage page
-granularity; packet granularity and two stage still re-prompt and assign
+three you are most likely to see. These are recorded only at combined page
+granularity; packet granularity and split-then-classify still re-prompt and assign
 `fallback_class`, but record no issue for it.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
@@ -378,7 +378,7 @@ Optimize performance through proper resource sizing:
    - Use the load simulation scripts to test capacity
    - Monitor queue depth and processing latency
 
-## Queue Management
+## Review Management
 
 ### Dead Letter Queue (DLQ) Processing
 

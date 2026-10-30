@@ -53,7 +53,7 @@ which saves the partial rows and the diagnosis before failing the section. See
 
 ## Simple mode: two limits
 
-### 1. Silent output truncation — onset ~800–1,000 rows (narrow 3-column rows)
+### 1. Silent output truncation, from about 800–1,000 rows
 As the single extraction call's input grows, the model begins **abandoning the list
 early** and returns fewer rows than are present — with no error and a "SUCCESS" status.
 
@@ -69,13 +69,13 @@ This is **not** a fixable max-tokens setting — the truncated runs emitted only
 2.5K–12K output tokens, far below the model's 128K output cap. The model gives up on
 the list as total input grows. The more rows/pages, the *earlier* it truncates.
 
-### 2. Hard input-context overflow — ~130+ pages
+### 2. Input context overflow, above about 130 pages
 A very large document's OCR text exceeds the model's input context window (200K tokens
 for Sonnet 5), producing a hard failure:
 `ValidationException: Input is too long for requested model`. Unlike truncation, this
 fails loudly (the document errors out rather than returning partial data).
 
-## Advanced mode: extraction completeness holds; cost and downstream steps are the limits
+## Advanced mode: limits are cost and downstream steps, not completeness
 Advanced (agentic sharding) kept **100% extraction recall through 6,400 rows / 131
 pages** — the extraction step itself has no completeness ceiling in the range tested.
 Because it splits the document into small shards, neither the output-truncation nor the

@@ -167,7 +167,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the one-stage and two-stage calls, `document_shape` |
+| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape` |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -192,7 +192,7 @@ notes: "Configuration that classifies a whole packet in one call"
 
 # Override just the classification granularity
 classification:
-  one_stage:
+  combined:
     granularity: packet
 
 # Override confidence to use integrated mode
@@ -269,7 +269,7 @@ free-form content whose names are yours to choose — your document `classes`, a
 pipeline hook's `args` — and the pipeline-hook blocks, which keep whatever they are
 given.
 
-#### Pricing and Model Limits are separate records, and they report the same way
+#### Pricing and Model Limits records
 
 The **Pricing** and **View / Edit Model Limits** panels edit their own records
 rather than part of the configuration document, so the paragraphs above describe
@@ -392,7 +392,7 @@ in the configuration**, so read a clean run as covering those and nothing else:
 | Checked | Not checked |
 |---|---|
 | `ocr.model_id` | `extraction.confidence.model` |
-| the model of each call the **active** classification strategy makes (`classification.one_stage.llm.model`, or both `two_stage` calls) | `extraction.validation.escalation_model`, and the per-class `x-aws-idp-extraction-escalation-model` override |
+| the model of each call the **active** classification strategy makes (`classification.combined.llm.model`, or both `split_then_classify` calls) | `extraction.validation.escalation_model`, and the per-class `x-aws-idp-extraction-escalation-model` override |
 | `extraction.model` | the evaluation, rule-validation, discovery and chat models |
 | `summarization.model` | |
 
@@ -458,7 +458,7 @@ extraction**, configured under `extraction.confidence.*` and
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
 `hitl.*` block. See [Extraction & Confidence](./extraction-and-confidence.md) for
 the full reference. Production [review queues](./review-queues.md) are not part of
-the configuration: Admins manage them in HITL › Queue Management.
+the configuration: Admins manage them in Review Studio › Review Management.
 
 ### Enable/Disable Confidence
 
@@ -520,14 +520,14 @@ extraction:
 **For large documents**, prefer **Advanced (agentic) extraction** — it shards both
 extraction and confidence assessment and yields the best-calibrated confidence.
 
-### Classification confidence (`classification.one_stage.llm.confidence.*`)
+### Classification confidence (`classification.combined.llm.confidence.*`)
 
 Separate from the extraction confidence above, and **on by default** — so an
 existing deployment that never set it starts paying for it on upgrade.
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     llm:
       confidence:
         mode: topk          # topk (default) | verbalized | off
@@ -535,10 +535,10 @@ classification:
 ```
 
 ⚠️ **This block belongs to the call that assigns the class, so under
-`classification.strategy: two_stage` it is a different one.** The two-stage
-equivalent is `classification.two_stage.section_classification.llm.confidence`,
-and the `one_stage` block above is not read at all — editing it under two stage
-changes nothing and raises no error. Boundary detection has no confidence block,
+`classification.strategy: split_then_classify` it is a different one.** The split-then-classify
+equivalent is `classification.split_then_classify.section_classification.llm.confidence`,
+and the `combined` block above is not read at all — editing it under split-then-classify
+changes nothing and raises no error. The splitting call has no confidence block,
 because it assigns no class. See [Classification
 Configuration](#classification-configuration).
 
@@ -561,9 +561,9 @@ study](./benchmarking/studies/classification-confidence.md).
 
 | Configuration | One score per |
 |---|---|
-| `single_pass`, `granularity: page` | page |
-| `single_pass`, `granularity: packet` | segment the call returns |
-| `two_stage` | section |
+| `combined`, `granularity: page` | page |
+| `combined`, `granularity: packet` | segment the call returns |
+| `split_then_classify` | section |
 
 Only the first case multiplies by page count.
 
@@ -1025,7 +1025,7 @@ invocation and the released concurrency slot, not a retry.
 
 - **Workflow Limits**: Maximum concurrent Step Function executions, controlled by `MaxConcurrentWorkflows` parameter
 - **Lambda Concurrency**: Per-function concurrent execution limits
-- **Queue Management**: SQS visibility timeout (30 seconds) and message batching
+- **Review Management**: SQS visibility timeout (30 seconds) and message batching
 - **Dynamic Scaling**: Automatic adjustment based on queue depth and in-flight workflows
 
 ## Document Status Tracking
@@ -1146,11 +1146,11 @@ the first thing to settle is which calls you are making. That is
 
 | `classification.strategy` | Web UI label | Calls it makes |
 |---|---|---|
-| `single_pass` (the default) | **One stage** | One call per page, or per packet, returning the section boundaries and the classes together |
-| `two_stage` | **Two stage** | A *boundary detection* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
+| `combined` (the default) | **Split and classify together (one call)** | One call per page, or per packet, returning the section boundaries and the classes together |
+| `split_then_classify` | **Split first, then classify each section** | A *splitting* call that returns page ranges and is sent no class vocabulary, then one *section classification* call per range |
 
-*One stage* and *Two stage* are the labels the configuration editor's form view
-shows. The stored value is `single_pass` or `two_stage` — write that in the
+*Split and classify together (one call)* and *Split first, then classify each section*
+are the labels the configuration editor's form view shows. The stored value is `combined` or `split_then_classify` — write that in the
 editor's YAML or JSON view and in any file you upload, because the form labels
 are not accepted as values and a save using one is refused.
 
@@ -1158,10 +1158,10 @@ are not accepted as values and a save using one is refused.
 
 ```yaml
 classification:
-  strategy: single_pass            # single_pass (One stage) | two_stage
+  strategy: combined               # combined | split_then_classify
   fallback_class: unclassified     # the class assigned when none can be decided
 
-  one_stage:                       # read only under strategy: single_pass
+  combined:                        # read only under strategy: combined
     granularity: page              # page | packet
     page:
       contextPagesCount: "0"       # neighbouring pages sent as context; each call carries up to 2k+1 pages
@@ -1187,8 +1187,8 @@ classification:
         maxValidationRetries: "2"  # then assign fallback_class
       confidence: {mode: topk, top_k_candidates: "3"}
 
-  two_stage:                       # read only under strategy: two_stage
-    boundary_detection:
+  split_then_classify:             # read only under strategy: split_then_classify
+    splitting:                     # where each section starts; sent no class list
       method: llm
       llm:
         granularity: page          # this call's own granularity
@@ -1217,22 +1217,28 @@ Four notes on reading that:
 
 - **Only the active strategy's block is read.** A setting written in the inactive
   one validates, saves and does nothing. This is also why `granularity` appears
-  twice: `one_stage.granularity` is the one in force under `single_pass`, and
-  `two_stage.boundary_detection.llm.granularity` under `two_stage`.
+  twice: `combined.granularity` is the one in force under `combined`, and
+  `split_then_classify.splitting.llm.granularity` under `split_then_classify`.
 - **`reasoning_effort` and `model_lambda_hook_arn` are per call**, in each
-  `llm` block, like the model and its parameters. Neither appears in
-  `base-classification.yaml`, so classification runs them at their field
-  defaults — `medium` and unset — until you write them; the configuration editor
-  offers both on each call. `reasoning_effort` is read only by models that have
-  an effort control (Claude Sonnet/Opus/Fable, OpenAI GPT-5.x and GPT-6, xAI
-  Grok — the legal tokens differ per family) and is ignored by the Nova family,
-  including the shipped default model. It is not validated at save time, so a
-  value the model does not accept surfaces as a Bedrock error at run time.
+  `llm` block, like the model and its parameters. `base-classification.yaml`
+  writes both in all three `llm` blocks, at `medium` and `null`, and the
+  configuration editor offers both on each call. `model_lambda_hook_arn` is used
+  only when that call's `model` is `LambdaHook`. `reasoning_effort` is read only
+  by models that have an effort control (Claude Sonnet/Opus/Fable, OpenAI GPT-5.x
+  and GPT-6, xAI Grok — the legal tokens differ per family) and is ignored by the
+  Nova family, including the shipped default model. The value is checked against
+  one list shared by every family (`none`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`): anything outside it is replaced with `medium` and logged as a
+  warning rather than refused. A value on that list that the selected model does
+  not accept is not sent: the request goes without it, with a line in the log.
 - **`validation` and `confidence` exist only on the two calls that assign a
-  class** — `one_stage.llm` and `two_stage.section_classification.llm`. Each
-  carries four editable confidence prompts (`task_prompt_topk`,
-  `task_prompt_verbalized`, and the `_packet` variants used at packet
-  granularity), spliced into the call's own task prompt.
+  class** — `combined.llm` and `split_then_classify.section_classification.llm`.
+  Their confidence prompts are spliced into the call's own task prompt.
+  `combined.llm` carries four (`task_prompt_topk`, `task_prompt_verbalized`, and
+  the `_packet` variants used at packet granularity). Section classification
+  carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
+  call per section that always returns one class, so the per-segment `_packet`
+  variants would never be read.
 - **`fallback_class` is not validated against your class list.** It accepts any
   string; the built-in value is `unclassified`. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
@@ -1247,11 +1253,11 @@ The authoritative list of every key with its shipped default and an inline
 rationale is
 `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
 
-## Section Splitting Strategies
+## Section Splitting
 
-Pipeline mode supports configurable strategies for how classified pages are grouped into document sections. This is controlled by the `classification.document_shape.sectionSplitting` configuration field, and applies identically under both strategies:
+Pipeline mode offers three values for how classified pages are grouped into document sections. They are set with the `classification.document_shape.sectionSplitting` configuration field, which applies identically under both classification strategies:
 
-### Available Strategies
+### Available Values
 
 - **`disabled`**: Treats the entire document as a single section. At **either**
   granularity its class comes from a page-weighted vote across the segments that
@@ -1265,8 +1271,8 @@ Pipeline mode supports configurable strategies for how classified pages are grou
   
 - **`llm_determined`** (default): Uses whatever boundary signal the active call
   produces — a per-page `start`/`continue` verdict at page granularity, and a
-  `segments` array of page ranges at packet granularity or from two-stage
-  boundary detection. Best for complex scenarios where section boundaries are not
+  `segments` array of page ranges at packet granularity or from the
+  splitting call of the split-then-classify strategy. Best for complex scenarios where section boundaries are not
   obvious.
 
 ⚠️ **`disabled` and `page` are assertions, not preferences.** They replace
@@ -1274,9 +1280,10 @@ boundary detection with a claim about the document rather than nudging the model
 nothing downstream recovers if the claim is wrong: a packet of eight forms
 declared `disabled` becomes one section with one extraction over all of it. They
 are also the only two values that let a single-class configuration, or a
-document-name regex match, skip the model call entirely — under `llm_determined`
-that call still runs, because the class may be known while the boundaries are
-not. See
+document-name regex match, skip the model call entirely on a multi-page
+document — under `llm_determined` that call still runs, because the class may be
+known while the boundaries are not. A single-page document skips the call under
+`llm_determined` as well, since one page cannot be split. See
 [Classification](./classification.md#what-decides-the-choice) for which to pick.
 
 ### Configuration Example
@@ -1323,7 +1330,7 @@ same setting would give different answers for different documents in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `single_pass` it offers *Classification: one stage*, and under `two_stage` it offers *Classification: boundary detection* and *Classification: section classification* instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 
@@ -1824,7 +1831,7 @@ Empty strings or unspecified image dimensions preserve the original document res
 ```yaml
 # Preserves original image resolution (recommended for high-accuracy processing)
 classification:
-  one_stage:
+  combined:
     llm:              # each classification call has its own image block
       image:
         target_width: ""     # Empty string = no resizing
@@ -1852,7 +1859,7 @@ You can still specify exact dimensions when needed for performance optimization:
 ```yaml
 # Custom dimensions for specific requirements
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "1200"   # Resize to 1200 pixels wide
@@ -1946,8 +1953,8 @@ so on a document with uneven — or entirely absent — text per page the clamp 
 engage *earlier* than the table says, never later.
 
 This also reaches stages other than extraction. Classification at packet
-granularity (`classification.one_stage.granularity: packet`, or
-`classification.two_stage.boundary_detection.llm.granularity: packet`) sends up to
+granularity (`classification.combined.granularity: packet`, or
+`classification.split_then_classify.splitting.llm.granularity: packet`) sends up to
 `window_pages` pages per request, so the downscale is reached only when that
 setting is raised above 20 or set to `0`, which never windows and sends the whole
 packet in one request. At the shipped `window_pages: 20` a packet is split into
@@ -2004,7 +2011,7 @@ To resize every classification page image to a fixed size, set both dimensions o
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "951"

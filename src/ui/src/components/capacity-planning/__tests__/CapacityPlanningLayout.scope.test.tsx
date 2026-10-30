@@ -91,7 +91,7 @@ const answer = (name: string) => ({
     getConfigVersion: {
       success: true,
       Schema: JSON.stringify({ type: 'object', properties: {} }),
-      Default: JSON.stringify({ classification: { one_stage: { llm: { model: `${name}-classifier` } } } }),
+      Default: JSON.stringify({ classification: { combined: { llm: { model: `${name}-classifier` } } } }),
       Custom: JSON.stringify({}),
     },
   },
@@ -210,5 +210,50 @@ describe('CapacityPlanningLayout — answers that arrive out of order', () => {
     expect(requestedProfiles()).toEqual(['tenant-a_dev']);
     expect(screen.getByText('Model: tenant-a_dev-classifier')).toBeInTheDocument();
     expect(screen.queryByText(/Configuration not loaded/)).not.toBeInTheDocument();
+  });
+});
+
+describe('CapacityPlanningLayout — processing mode', () => {
+  const answerWith = (config: Record<string, unknown>) => ({
+    data: {
+      getConfigVersion: {
+        success: true,
+        Schema: JSON.stringify({ type: 'object', properties: {} }),
+        Default: JSON.stringify(config),
+        Custom: JSON.stringify({}),
+      },
+    },
+  });
+
+  const renderWithProfile = async (config: Record<string, unknown>) => {
+    const release = holdEveryRequest();
+    listAnswered([{ versionName: 'profile', isActive: true }]);
+    render(<CapacityPlanningLayout />);
+    await settle();
+    await release('profile', answerWith(config));
+  };
+
+  it('says a BDA-mode profile is not supported, and offers no pattern override', async () => {
+    await renderWithProfile({ use_bda: true });
+
+    expect(screen.getByText(/BDA mode is not supported/)).toBeInTheDocument();
+    expect(screen.queryByText(/No classification model configured/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Pattern [123]/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Calculate Capacity Requirements' })).toBeDisabled();
+  });
+
+  it('asks for a classification model on a pipeline-mode profile that names none', async () => {
+    await renderWithProfile({ use_bda: false });
+
+    expect(screen.getByText(/No classification model configured/)).toBeInTheDocument();
+    expect(screen.queryByText(/BDA mode is not supported/)).not.toBeInTheDocument();
+  });
+
+  it('shows neither alert for a pipeline-mode profile with a classification model', async () => {
+    await renderWithProfile({ use_bda: false, classification: { combined: { llm: { model: 'm' } } } });
+
+    expect(screen.queryByText(/BDA mode is not supported/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No classification model configured/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Calculate Capacity Requirements' })).toBeEnabled();
   });
 });

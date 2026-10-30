@@ -4,12 +4,11 @@
 // /review-queues: the edit page for one Test Studio document and a test set's queue
 // page (Admin, Annotator, and Author, who edits authored ground truth there), each
 // Production queue's page (Admin, and the Annotators listed on it, who reach it from Home › Queues)
-// and HITL › Queue Management (Admin only). A Production item's former route,
+// and Review Studio › Review Management (Admin only). A Production item's former route,
 // items/:objectKey, redirects to the document's edit page (/documents/:objectKey/edit),
 // which opens the item while the document is in review.
 import React, { useCallback, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
-import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
 
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
 import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
@@ -17,19 +16,11 @@ import QueuesPage from '../components/review-queues/QueuesPage';
 import ReviewQueuePage from '../components/review-queues/ReviewQueuePage';
 import TestSetItemEdit from '../components/edit-screen/TestSetItemEdit';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
-import { QueueManagementToolsPanel, QueueToolsPanel } from '../components/review-queues/tools-panel';
+import { ReviewManagementToolsPanel, QueueToolsPanel } from '../components/review-queues/tools-panel';
 import useUserRole from '../hooks/use-user-role';
+import { queuePageTrail } from '../components/review-queues/breadcrumbs';
 import RequireRole from './RequireRole';
-import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditPath, productionQueuePath } from './constants';
-
-const MY_QUEUES_CRUMB: BreadcrumbGroupProps.Item = { text: 'Queues', href: `#${MY_QUEUES_PATH}` };
-
-/** A queue's page: Queue Management › <queue> for an Admin, Queues › <queue> for an Annotator (both under Home). */
-const useQueueCrumbs = (queueCrumb: BreadcrumbGroupProps.Item) => {
-  const { isAdmin } = useUserRole();
-  if (isAdmin) return { root: undefined, crumbs: [queueCrumb] };
-  return { root: MY_QUEUES_CRUMB, crumbs: [queueCrumb] };
-};
+import { MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditPath, productionQueuePath } from './constants';
 
 /**
  * A Production item's former route, which Inbox messages (kept up to a year) and copied
@@ -61,9 +52,10 @@ const TestSetQueuePage = (): React.JSX.Element => {
   const [loaded, setLoaded] = useState<{ id: string; name: string } | null>(null);
   const onName = useCallback((name: string) => setLoaded({ id: testSetId, name }), [testSetId]);
   const name = loaded?.id === testSetId ? loaded.name : testSetId;
-  const { root, crumbs } = useQueueCrumbs({ text: `Test set: ${name}`, href: '#' });
+  const { isAdmin } = useUserRole();
+  const trail = queuePageTrail(!!isAdmin, { text: `Test set: ${name}`, href: '#' }, 'test');
   return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<QueueToolsPanel />}>
+    <ReviewQueuesLayout trail={trail} tools={<QueueToolsPanel />}>
       <AnnotationWorkspace key={testSetId} onName={onName} />
     </ReviewQueuesLayout>
   );
@@ -75,9 +67,10 @@ const ProductionQueuePage = (): React.JSX.Element => {
   const [loaded, setLoaded] = useState<{ id: string; name: string } | null>(null);
   const onName = useCallback((name: string) => setLoaded({ id: queue, name }), [queue]);
   const name = loaded?.id === queue ? loaded.name : queue;
-  const { root, crumbs } = useQueueCrumbs({ text: name, href: '#' });
+  const { isAdmin } = useUserRole();
+  const trail = queuePageTrail(!!isAdmin, { text: name, href: '#' }, 'production');
   return (
-    <ReviewQueuesLayout root={root} crumbs={crumbs} tools={<QueueToolsPanel />}>
+    <ReviewQueuesLayout trail={trail} tools={<QueueToolsPanel />}>
       <ReviewQueuePage onName={onName} />
     </ReviewQueuesLayout>
   );
@@ -89,25 +82,25 @@ const LegacyProductionQueueRedirect = (): React.JSX.Element => {
   return <Navigate to={productionQueuePath(queue)} replace />;
 };
 
-/** Queue Management is Admin-only; an Annotator who lands here goes to their Tasks. */
+/** Review Management is Admin-only; an Annotator who lands here goes to their Tasks. */
 const AdminOnly = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const { isAdmin, isAnnotator, loading } = useUserRole();
   if (!loading && !isAdmin && isAnnotator) return <Navigate to={MY_TASKS_PATH} replace />;
   return <RequireRole roles={['Admin']}>{children}</RequireRole>;
 };
 
-const QueueManagementRoutes = (): React.JSX.Element => (
+const ReviewManagementRoutes = (): React.JSX.Element => (
   <AdminOnly>
     <Routes>
       <Route
         index
         element={
-          <ReviewQueuesLayout tools={<QueueManagementToolsPanel />}>
+          <ReviewQueuesLayout tools={<ReviewManagementToolsPanel />}>
             <QueuesPage />
           </ReviewQueuesLayout>
         }
       />
-      {/* Queue health is part of Queue Management and each queue's page. */}
+      {/* Queue health is part of Review Management and each queue's page. */}
       <Route path="supervise" element={<Navigate to={REVIEW_QUEUES_PATH} replace />} />
       <Route path="*" element={<Navigate to={REVIEW_QUEUES_PATH} replace />} />
     </Routes>
@@ -155,7 +148,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       />
       {/* My Tasks moved to Home › Tasks. */}
       <Route path="my-tasks" element={<Navigate to={MY_TASKS_PATH} replace />} />
-      <Route path="*" element={<QueueManagementRoutes />} />
+      <Route path="*" element={<ReviewManagementRoutes />} />
     </Routes>
   </div>
 );

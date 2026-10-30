@@ -1,12 +1,13 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { SelectProps } from '@cloudscape-design/components';
 import { Box, Modal, SpaceBetween, Button, Select, FormField, Alert } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import ConfigRevisionSelector from './ConfigRevisionSelector';
-import useSettingsContext from '../../contexts/settings';
+import useConfiguration from '../../hooks/use-configuration';
+import { isBdaModeConfig } from '../../utils/processing-mode';
 
 const logger = new ConsoleLogger('ReprocessDocumentModal');
 
@@ -32,10 +33,23 @@ const ReprocessDocumentModal = ({
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const { versions, getVersionOptions } = useConfigurationVersions();
-  const { settings } = useSettingsContext();
-
-  // Helper function to check if Pattern-1 is selected
-  const isPattern1 = ((settings as Record<string, unknown>)?.IDPPattern as string)?.includes('Pattern1');
+  // BDA mode is a property of the selected configuration profile (`use_bda`), not of
+  // the stack: every stack deploys the unified pattern. `useConfiguration` keeps the
+  // previous profile's configuration while a new one loads and after a failed read,
+  // so the answer is used only once a load for the selected profile has finished.
+  const configVersionName = visible ? ((selectedVersion?.value as string | undefined) ?? null) : null;
+  const { mergedConfig: selectedConfig, loading: configLoading, error: configError } = useConfiguration(configVersionName);
+  const loadingFor = useRef<string | null>(null);
+  const [configLoadedFor, setConfigLoadedFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (configLoading) {
+      loadingFor.current = configVersionName;
+    } else if (!configError) {
+      setConfigLoadedFor(loadingFor.current);
+    }
+  }, [configLoading, configError, configVersionName]);
+  const isBdaProfile =
+    configVersionName !== null && configLoadedFor === configVersionName && !configError && isBdaModeConfig(selectedConfig);
 
   // Reset selected version when modal closes so it picks up the correct version next time
   useEffect(() => {
@@ -114,7 +128,7 @@ const ReprocessDocumentModal = ({
       <SpaceBetween size="m">
         <p>{message}</p>
 
-        {isPattern1 && (
+        {isBdaProfile && (
           <Alert type="info">
             <strong>NOTE:</strong> To ensure that BDA project blueprints are aligned with your selected configuration profile, be sure to
             execute &quot;Sync To BDA&quot; for your configuration profile from the View/Edit Configuration page.

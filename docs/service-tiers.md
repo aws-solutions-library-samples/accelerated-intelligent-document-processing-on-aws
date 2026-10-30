@@ -70,7 +70,7 @@ Simply specify the model ID with the desired tier suffix in your configuration:
 ```yaml
 classification:
   # ... other settings
-  one_stage:
+  combined:
     llm:
       model: "us.amazon.nova-2-lite-v1:0:priority"  # Fast classification
 
@@ -90,16 +90,16 @@ you — a tier suffix written there is silently not applied, and the confidence 
 on whatever `extraction.confidence.model` resolves to.
 
 ⚠️ **Classification has one model field per call, so a tier suffix has to be
-applied to the call that runs.** The `one_stage.llm.model` above is read only
-under `classification.strategy: single_pass` — the default, labelled *One stage*
-in the configuration editor. Under `strategy: two_stage` it is not read at all,
+applied to the call that runs.** The `combined.llm.model` above is read only
+under `classification.strategy: combined` — the default, labelled *Split and
+classify together (one call)* in the configuration editor. Under `strategy: split_then_classify` it is not read at all,
 and there are **two** fields to set:
 
 ```yaml
 classification:
-  strategy: two_stage
-  two_stage:
-    boundary_detection:
+  strategy: split_then_classify
+  split_then_classify:
+    splitting:
       llm:
         model: "us.amazon.nova-2-lite-v1:0:flex"      # boundaries can wait
     section_classification:
@@ -108,7 +108,7 @@ classification:
 ```
 
 The two may legitimately differ, and that pairing is the obvious mixed-tier case:
-a `:priority` labeller over a `:flex` segmenter puts the latency where it affects
+a `:priority` section classification call over a `:flex` splitting call puts the latency where it affects
 the rest of the pipeline and takes the discount on the pass that does not.
 
 ### How It Works
@@ -129,9 +129,10 @@ When you specify a model ID with a service tier suffix:
 1. Navigate to the Configuration page
 2. In each operation section (Classification, Extraction, Assessment, Summarization):
    - Find the "Model" dropdown. Classification shows **one dropdown per model
-     call**: one under *One stage*, or — when **Strategy** is *Two stage*
-     (`strategy: two_stage` in the JSON and YAML views) — one under
-     *Boundary detection* and one under *Section classification*. Set the tier on each
+     call**: one under *Split and classify together*, or — when **Strategy** is
+     *Split first, then classify each section* (`strategy: split_then_classify` in
+     the JSON and YAML views) — one under *Splitting* and one under *Section
+     classification*. Set the tier on each
      call you want it on
    - Select a model with the desired tier suffix:
      - Models ending in `:flex` use Flex tier
@@ -154,7 +155,7 @@ The model dropdown will show all available models including those with tier suff
 ```yaml
 classification:
   # Fast classification for real-time user uploads
-  one_stage:
+  combined:
     llm:
       model: "us.amazon.nova-2-lite-v1:0:priority"
 ```
@@ -194,7 +195,7 @@ You can use different tiers for different operations:
 ```yaml
 classification:
   # Fast classification for user experience
-  one_stage:
+  combined:
     llm:
       model: "us.amazon.nova-2-lite-v1:0:priority"
 
@@ -206,7 +207,7 @@ extraction:
     # Standard tier for the confidence pass
 ```
 
-Under `strategy: two_stage` the classification half becomes two decisions rather
+Under `strategy: split_then_classify` the classification half becomes two decisions rather
 than one — see the note in [Using Model IDs with Service Tier
 Suffixes](#using-model-ids-with-service-tier-suffixes) above.
 

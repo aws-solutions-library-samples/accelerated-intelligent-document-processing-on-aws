@@ -134,14 +134,24 @@ export interface PageGroupingEditorProps {
   saveLabel?: string;
   isSaving?: boolean;
   onSave: (sections: GroupedSection[]) => void | Promise<void>;
+  /**
+   * A second way to save, beside the primary one (the document page's Save and
+   * Re-extract). Disabled like the primary save while the grouping is invalid or
+   * unchanged, and also while `disabledReason` gives a reason for the draft.
+   */
+  secondarySave?: {
+    label: string;
+    disabledReason?: (draft: GroupedSection[]) => string | undefined;
+    onSave: (sections: GroupedSection[]) => void | Promise<void>;
+  };
   onCancel: () => void;
   /**
    * `inline` (the default) renders the board in place, with an Expand button that opens
    * it in a modal. `modal` opens it straight in the modal, with no Expand, and dismissing
-   * the modal cancels the edit (the unified editor's Edit Page Grouping).
+   * the modal cancels the edit (Edit Page Grouping on the edit page and the document page).
    */
   presentation?: 'inline' | 'modal';
-  /** The dialog's title: the edit screen's button is Edit Page Class, the Sections panel's Edit Page Grouping. */
+  /** The dialog's title. */
   title?: string;
 }
 
@@ -474,6 +484,7 @@ const PageGroupingEditor = ({
   saveLabel = 'Save grouping',
   isSaving = false,
   onSave,
+  secondarySave,
   onCancel,
   presentation = 'inline',
   title = 'Edit Page Grouping',
@@ -690,12 +701,22 @@ const PageGroupingEditor = ({
     </SpaceBetween>
   );
 
+  const secondaryReason = secondarySave?.disabledReason?.(sortSectionsByFirstPage(draft));
   const footer = (
     <Box float="right">
       <SpaceBetween direction="horizontal" size="xs">
         <Button variant="link" onClick={onCancel} disabled={isSaving}>
           Cancel
         </Button>
+        {secondarySave && (
+          <Button
+            disabled={isSaving || !validation.isValid || !isChanged || !!secondaryReason}
+            disabledReason={secondaryReason}
+            onClick={() => void secondarySave.onSave(sortSectionsByFirstPage(draft))}
+          >
+            {secondarySave.label}
+          </Button>
+        )}
         <Button
           variant="primary"
           loading={isSaving}

@@ -6,7 +6,7 @@ import type { SideNavigationProps } from '@cloudscape-design/components';
 
 import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH } from '../../routes/constants';
 
-export const HITL_SECTION = 'HITL';
+export const REVIEW_STUDIO_SECTION = 'Review Studio';
 export const HOME_SECTION = 'Home';
 
 /** Tasks, with a badge counting the items assigned to the caller. */
@@ -37,9 +37,9 @@ export const buildHomeNavSection = (
   items: showWork ? [inboxLink, buildMyTasksNavLink(taskCount), { type: 'link', text: 'Queues', href: `#${MY_QUEUES_PATH}` }] : [inboxLink],
 });
 
-/** The "HITL" section (Admins): Queue Management, where queues are defined and work is assigned. */
-export const buildHitlNavSection = (): SideNavigationProps.Section => ({
+/** The "Review Studio" section (Admins): Review Management, where queues are defined and work is assigned. */
+export const buildReviewStudioNavSection = (): SideNavigationProps.Section => ({
   type: 'section',
-  text: HITL_SECTION,
-  items: [{ type: 'link', text: 'Queue Management', href: `#${REVIEW_QUEUES_PATH}` }],
+  text: REVIEW_STUDIO_SECTION,
+  items: [{ type: 'link', text: 'Review Management', href: `#${REVIEW_QUEUES_PATH}` }],
 });

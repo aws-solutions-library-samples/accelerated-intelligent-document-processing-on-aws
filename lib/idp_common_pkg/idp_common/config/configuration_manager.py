@@ -449,7 +449,7 @@ class ConfigurationManager:
         # That shipped as a failure an operator could not diagnose: a profile
         # saved before `classification.packet` / `.segmentation` / `.labeling`
         # existed read back with all three prompts EMPTY, so switching it to
-        # `strategy: two_stage` + `granularity: packet` fell back to the page
+        # `strategy: split_then_classify` + `granularity: packet` fell back to the page
         # prompt, the model answered in page shape, the segments parser found
         # nothing, and every document FAILED in ~28s. A profile created after the
         # upgrade worked, which makes it look like the feature works and the
@@ -632,7 +632,7 @@ class ConfigurationManager:
 
         # Save the resolved config back, so the next read is a direct one and so
         # the UI shows the fields that were backfilled instead of empty boxes —
-        # which is what made the two-stage failure undiagnosable.
+        # which is what made the split-then-classify failure undiagnosable.
         #
         # Not a revision: this is a storage-format rewrite, not a user's edit, and
         # recording it would make every legacy profile's history start with a

@@ -10,6 +10,7 @@ the real configuration reader against moto with a revision history whose class
 list differs from the head's.
 """
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -91,6 +92,18 @@ class TestPinnedRead:
             call(table_name=_TABLE, as_model=True, version=_PROFILE, revision=7),
             call(table_name=_TABLE, as_model=True, version=_PROFILE),
         ]
+
+    def test_the_fallback_warning_carries_the_traceback(self, manager, caplog):
+        manager.return_value.get_merged_pricing.return_value = None
+        error = ValueError("r7 is gone")
+        with patch("index.get_config", side_effect=[error, MagicMock()]):
+            with caplog.at_level(logging.WARNING):
+                _run(7)
+        [record] = [
+            r for r in caplog.records if "Building the report from" in r.getMessage()
+        ]
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is not None and record.exc_info[1] is error
 
     def test_both_reads_failing_still_saves_without_a_config(self, manager):
         with patch("index.get_config", side_effect=RuntimeError("ddb down")):

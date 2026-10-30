@@ -19,10 +19,10 @@ no effect.
 
 ```yaml
 classification:
-  strategy: single_pass          # "One stage" | two_stage ("Two stage")
+  strategy: combined   # "Split and classify together (one call)" | split_then_classify ("Split first, then classify each section")
   fallback_class: unclassified   # assigned when no class can be decided
 
-  one_stage:                     # strategy: single_pass
+  combined:                      # strategy: combined
     granularity: page            # page | packet — how many calls are made
     page:   {contextPagesCount, system_prompt, task_prompt}
     packet: {window_pages, overlap_pages, system_prompt, task_prompt}
@@ -35,8 +35,8 @@ classification:
       validation: {enforceValidClasses, maxValidationRetries}
       confidence: {mode, top_k_candidates, ...}
 
-  two_stage:                     # strategy: two_stage
-    boundary_detection:          # where each section starts — no class list
+  split_then_classify:           # strategy: split_then_classify
+    splitting:                   # where each section starts — no class list
       method: llm
       llm:
         granularity, page, packet, boundary_hints
@@ -56,8 +56,8 @@ classification:
 
 The model settings are the same block in every call: a model, its parameters,
 **modality** (send page text, send page images) and the image size. The two
-calls that assign a class — one stage, and two-stage section classification —
-add **validation** and **class confidence**. Boundary detection has neither, because it
+calls that assign a class — the combined call, and split-then-classify's section classification —
+add **validation** and **class confidence**. Splitting has neither, because it
 returns page ranges and never a class.
 
 Two of those settings are substituted rather than used as written when they
@@ -71,14 +71,14 @@ request or is silently ignored by a model family that has no effort control.
 
 | Setting | Values | What it decides |
 |---|---|---|
-| `strategy` | `single_pass` (default) \| `two_stage` | **Whether splitting and classifying are one call or two.** `two_stage` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
-| `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. One stage and boundary detection each have their own. |
-| `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty means "infer from this call's task prompt placeholders". |
-| `document_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
+| `strategy` | `combined` (default; *Split and classify together (one call)* in the editor) \| `split_then_classify` (*Split first, then classify each section*) | **Whether splitting and classifying are one call or two.** `split_then_classify` finds the boundaries with no class vocabulary in the prompt, then classifies each section with one call. |
+| `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. The combined call and the splitting call each have their own. |
+| `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty, shown in the editor as *Infer from the task prompt*, means "infer from this call's task prompt placeholders". |
+| `document_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the document as one section and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting](#section-splitting). |
 | `document_shape.maxPagesForClassification` | `ALL` (default) \| a positive number of pages | **How much of a single-section document is classified.** Only with `sectionSplitting: disabled`: the first N pages are classified and the whole document takes their majority class. See [Page limit configuration](#page-limit-configuration) below, which carries the spelling hazards. |
 
-The settings combine freely. Two stage with boundary detection at `packet` granularity
-and page images on is one boundary call over the whole packet with its images,
+The settings combine freely. Split-then-classify with splitting at `packet` granularity
+and page images on is one splitting call over the whole packet with its images,
 followed by one section classification call per section found.
 
 A stored configuration written for an earlier release, with every setting
@@ -86,6 +86,38 @@ directly under `classification:`, is converted to this layout automatically when
 it is read; nothing needs editing.
 [Migrating from v0.6.12 to v0.6.13](migration-v0612-to-v0613.md) lists what each
 old setting becomes and the cases where the conversion is not a pure move.
+
+### Configuration keys and their labels in the editor
+
+The configuration editor's form view names settings by what they do. The JSON and
+YAML views, uploaded files, and the cost table use the configuration keys and
+stored values.
+
+| Configuration key | Label in the form view |
+|---|---|
+| `strategy: combined` | *Split and classify together (one call)* |
+| `strategy: split_then_classify` | *Split first, then classify each section* |
+| `fallback_class` | *Fallback class* |
+| `combined` | *Split and classify together* |
+| `split_then_classify` | *Split first, then classify each section* |
+| `split_then_classify.splitting` | *Splitting*; its `method` is *Splitting method*, with `llm` shown as *LLM* |
+| `split_then_classify.section_classification` | *Section classification*; its `method` is *Section classification method*, with `llm` shown as *LLM* |
+| `…granularity` | *Granularity*: `page` is *Page — one call per page, in parallel (default)*, `packet` is *Packet — one call for the whole document* |
+| `…page`, `…packet` | *Page settings*, *Packet settings* |
+| `…llm` | *Inference settings* |
+| `…llm.model` | *Model ID* |
+| `…modality.text`, `…modality.images` | *Send page text*, *Send page images*: empty is *Infer from the task prompt (default)*, `true` is *Yes*, `false` is *No* |
+| `…image.target_width`, `…image.target_height` | *Target width (px)*, *Target height (px)* |
+| `…confidence.mode` | *Class confidence mode*: `topk` is *Top-K — ranked candidate classes (default)*, `verbalized` is *Verbalized — one 0–1 score*, `off` is *Off — no score* |
+| `split_then_classify.splitting.llm.boundary_hints` | *Boundary hints*: `none` is *None — no class vocabulary (default)*, `class_names` is *Class names — names only, as a hint* |
+| `split_then_classify.section_classification.pages` | *Pages per section*: `first` is *First page*, `first_k` is *First k pages (default)*, `all` is *All pages* |
+| `document_shape` | *Advanced — known document shape* |
+| `document_shape.sectionSplitting` | *Section splitting*: `llm_determined` is *Detect boundaries (default)*, `disabled` is *One section*, `page` is *One per page* |
+| `document_shape.maxPagesForClassification` | *Pages to classify*: `ALL` is *All pages (default)* |
+
+In the cost table, *Splitting* is metered as `Splitting/…` and *Section
+classification* as `SectionClassification/…`. The combined strategy stays under
+`Classification/…`.
 
 ### What each setting costs
 
@@ -106,14 +138,14 @@ old setting becomes and the cases where the conversion is not a pure move.
 - **`contextPagesCount` is the most expensive setting per unit of change.**
   Each call carries up to 2k+1 pages: ×3 at k=1 and ×5 at k=2, in both text and
   image tokens.
-- **`strategy: two_stage` drops the class vocabulary from every boundary call
+- **`strategy: split_then_classify` drops the class vocabulary from every splitting call
   and classifies once per section instead of once per page.** A clear win on
   long documents with few sections; roughly a wash on single-page documents, where it
-  adds a second call to save a prefix that was only paid once. Each stage can use
-  its own model, so boundaries can run on a cheap model and classification on a
+  adds a second call to save a prefix that was only paid once. Each call can use
+  its own model, so splitting can run on a cheap model and classification on a
   stronger one.
 - **A declared document shape skips the boundary work.** Under
-  `sectionSplitting: disabled` or `page`, two stage makes no boundary detection calls:
+  `sectionSplitting: disabled` or `page`, split-then-classify makes no splitting calls:
   the segments are known, so it goes straight to section classification.
 - **The model choice outweighs all of it.** On the benchmark suite Nova 2 Lite,
   Claude Haiku 4.5 and Claude Sonnet 5 reached the same classification accuracy
@@ -137,7 +169,7 @@ old setting becomes and the cases where the conversion is not a pure move.
   while claiming to be the cost-saving granularity.
 - A model ID that is not a known Bedrock model, or a `max_tokens` above the
   model's output limit, on a call the selected strategy makes. Each is named by
-  its path, for example `classification.two_stage.section_classification.llm.model`.
+  its path, for example `classification.split_then_classify.section_classification.llm.model`.
 
 ## Classification in BDA mode and pipeline mode
 
@@ -153,7 +185,7 @@ places, which is why only one of them is configurable here:
 
 ### Pipeline mode (`use_bda: false`)
 
-In Pipeline mode, one-stage classification works at one of two granularities:
+In Pipeline mode, combined classification works at one of two granularities:
 
 #### Page granularity with sequence segmentation (default)
 
@@ -163,7 +195,7 @@ In Pipeline mode, one-stage classification works at one of two granularities:
 - **Automatically splits packets into sections where several sections may be combined**
 - Works exceptionally well for complex packets containing multiple sections of the same or different types
 - Supports optional few-shot examples to improve classification accuracy
-- Selected with `classification.one_stage.granularity: page`, the default
+- Selected with `classification.combined.granularity: page`, the default
 - See the [few-shot-examples.md](./few-shot-examples.md) documentation for details on configuring examples
 
 ##### Sequence Segmentation Approach
@@ -209,7 +241,7 @@ Page granularity supports including surrounding pages as context to improve clas
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     granularity: page
     page:
       contextPagesCount: 1  # Include 1 page before and 1 page after as context
@@ -217,8 +249,8 @@ classification:
       # contextPagesCount: 2  # Include 2 pages before and 2 pages after
 ```
 
-Two-stage boundary detection at page granularity has the same setting at
-`classification.two_stage.boundary_detection.llm.page.contextPagesCount`.
+Splitting at page granularity, under split-then-classify, has the same setting at
+`classification.split_then_classify.splitting.llm.page.contextPagesCount`.
 
 **How It Works:**
 
@@ -322,7 +354,7 @@ established in this sequence, this is treated as the start of the document."* Th
 result was intermittent over-splitting of multi-page documents
 ([#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)).
 
-The one-stage page prompt, `classification.one_stage.page.task_prompt`, carries a `<boundary-detection-rules>` block that
+The combined page prompt, `classification.combined.page.task_prompt`, carries a `<boundary-detection-rules>` block that
 asks a question a single page **can** answer — is this page a *first* page? — from
 its own evidence, in priority order: pagination (`Page 2 of 2` ⇒ `continue`), then
 the presence of an opening identity block, then **table continuation** — a page of
@@ -472,15 +504,14 @@ per classification call.
 **`granularity: packet` is the other lever, and on this shape it works.** A
 3-page statement with the identity header reprinted on every page returned 3
 sections at page granularity and **1** — correct — at packet granularity, under
-`single_pass` and `two_stage` alike. That is the expected direction: the rules
+`combined` and `split_then_classify` alike. That is the expected direction: the rules
 above fail because a page judged alone has nothing to compare its header
 against, and a packet call sees every page at once. The cost is the mirror-image
 error, measured on the same pair of fixtures: at packet granularity two 3-page
 statements filed back to back merged into one section where page granularity got
 them right. `boundary_hints: class_names` was also measured on the over-split
-case and left it at 3 sections. See [Neither granularity dominates, and the
-failure modes are
-opposite](#neither-granularity-dominates-and-the-failure-modes-are-opposite) for
+case and left it at 3 sections. See [Page versus packet granularity: opposite failure
+modes](#page-versus-packet-granularity-opposite-failure-modes) for
 the pair. So on a corpus of long single-section documents, packet granularity is a
 genuine fix for this shape; on a mixed corpus the class-description `BOUNDARY:`
 sentence remains the only lever measured not to cost anything elsewhere.
@@ -501,7 +532,7 @@ Two notes on reading that table next to the *Measured effect* numbers above:
   trigger needs more of the real document than the generator emits. The 0/10 is
   measured on `samples/Nuveen.pdf` itself, and CI Step 8 is the standing guard.
 
-⚠️ **A stored or preset `classification.one_stage.page.task_prompt` overrides the
+⚠️ **A stored or preset `classification.combined.page.task_prompt` overrides the
 default, so it does not get these rules.** If you customized the prompt, re-apply the block or
 reset to the default. The presets shipped in `config_library/` are kept in sync by
 `scripts/tests/test_classification_prompt_copies_in_sync.py`.
@@ -511,8 +542,8 @@ reset to the default. The presets shipped in `config_library/` are kept in sync 
 With a fixed set of classes, a language model can occasionally return a label
 that is **not** in your configured list (for example predicting `receipt` when
 only `invoice`, `w2`, and `check` are valid). Smaller / cheaper models are
-especially prone to this. Every call that assigns a class — one stage at page or
-packet granularity, and two-stage section classification — includes a
+especially prone to this. Every call that assigns a class — the combined call at page or
+packet granularity, and split-then-classify's section classification — includes a
 deterministic validation + retry guardrail to prevent out-of-vocabulary
 classifications:
 
@@ -545,15 +576,15 @@ classifications:
 ```yaml
 classification:
   fallback_class: unclassified        # Class used when retries are exhausted (default: unclassified)
-  one_stage:
+  combined:
     llm:
       validation:
         enforceValidClasses: true     # Validate + retry on invalid class (default: true)
         maxValidationRetries: 2       # Re-prompt up to N times (default: 2)
-  two_stage:
+  split_then_classify:
     section_classification:
       llm:
-        validation:                   # the same block, for two-stage section classification
+        validation:                   # the same block, for split-then-classify section classification
           enforceValidClasses: true
           maxValidationRetries: 2
 ```
@@ -582,12 +613,12 @@ the retry correct it) is available in
 - Identifies the distinct sections within a multi-page document
 - Determines the class of each section
 - Better suited for packets where context spans multiple pages
-- Selected with `classification.one_stage.granularity: packet`
+- Selected with `classification.combined.granularity: packet`
 
 The packet task prompt lives in
 `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-under `classification.one_stage.packet.task_prompt`, and the configuration panel
-exposes it under *Packet settings* once the one-stage granularity is `packet`. It
+under `classification.combined.packet.task_prompt`, and the configuration panel
+exposes it under *Packet settings* once the combined call's granularity is `packet`. It
 instructs the model to:
 
 1. Read through the entire document package to understand its contents
@@ -595,8 +626,8 @@ instructs the model to:
 3. Match each document segment to one of the defined document types
 4. Record the start and end pages for each identified segment
 
-⚠️ **Write a packet prompt under `one_stage.packet.task_prompt`, not
-`one_stage.page.task_prompt`.** The two are asked for different output shapes:
+⚠️ **Write a packet prompt under `combined.packet.task_prompt`, not
+`combined.page.task_prompt`.** The two are asked for different output shapes:
 the page prompt returns one class and a boundary verdict, the packet prompt a
 `segments` array, and each granularity reads only its own.
 
@@ -604,7 +635,7 @@ Example configuration:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     granularity: packet
     llm:
       model: us.amazon.nova-pro-v1:0
@@ -645,9 +676,9 @@ of what tells you where a section starts. Subject to the call's
 **Few-shot examples.** `{FEW_SHOT_EXAMPLES}` is filled from each class's
 `x-aws-idp-examples`, the same way the page-level path fills it.
 
-> ⚠️ **In a two-stage *boundary detection* prompt this placeholder renders empty, at
-> either granularity.** Sending no examples is part of what makes the boundary
-> call cheap, so a boundary detection template that references `{FEW_SHOT_EXAMPLES}`
+> ⚠️ **In a split-then-classify *splitting* prompt this placeholder renders empty, at
+> either granularity.** Sending no examples is part of what makes the splitting
+> call cheap, so a splitting template that references `{FEW_SHOT_EXAMPLES}`
 > gets nothing rather than an error. See
 > [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
 
@@ -656,15 +687,15 @@ whose results are merged:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     granularity: packet
     packet:
       window_pages: "20"    # 0 = never window: a packet too large for the model fails
       overlap_pages: "2"
 ```
 
-Two-stage boundary detection at packet granularity has the same window settings at
-`classification.two_stage.boundary_detection.llm.packet`.
+Splitting at packet granularity, under split-then-classify, has the same window settings at
+`classification.split_then_classify.splitting.llm.packet`.
 
 The default of 20 is where Bedrock starts downscaling: above 20 image blocks in
 one request every image is shrunk to 2,000px, so a wider window with images on
@@ -732,11 +763,11 @@ the library directly, with an endpoint it supplies itself.
 
 Everything else on this page describes the Bedrock path.
 
-## Section Splitting Strategies
+## Section Splitting
 
 `classification.document_shape.sectionSplitting` controls how classified pages are grouped into sections. It applies to both strategies and both granularities, and the configuration editor shows it under *Advanced — known document shape* with the labels *Detect boundaries (default)*, *One section* and *One per page*. It has three values:
 
-### Available Strategies
+### Available Values
 
 #### 1. `disabled` - No Splitting (Entire Document = One Section)
 
@@ -747,7 +778,7 @@ Everything else on this page describes the Bedrock path.
 - If there's a tie, uses the class of the earliest segment carrying a tied class, for determinism
 - Ignores the detected boundaries when building sections — it still reads them to weight the vote
 - With a **single-class configuration**, sends no page to the model: every page is given that class with confidence `1.0`. Under `llm_determined`, a multi-page document in such a configuration still goes to the model for its section boundaries: page by page at page granularity, and in one call for the whole document at packet granularity
-- Under two stage, makes **no boundary detection call**: the whole document is one segment, given its class by one section classification call
+- Under split-then-classify, makes **no splitting call**: the whole document is one segment, given its class by one section classification call
 
 **Use Cases:**
 - Documents known to be single-type with no internal divisions
@@ -768,7 +799,7 @@ classification:
 
 **Voting Behavior:**
 
-The `disabled` strategy votes on the document classification, which provides
+The `disabled` value votes on the document classification, which provides
 robust handling of edge cases. The same rule runs at **both** granularities and
 under both strategies — what differs is only how the segments it counts were
 produced:
@@ -814,7 +845,7 @@ This voting behavior addresses [Issue #167](https://github.com/aws-solutions-lib
 - Every page becomes an independent section
 - Each page keeps the class it was individually assigned
 - **Prevents automatic joining of adjacent same-class sections**
-- Under two stage, makes **no boundary detection call**: each page is its own segment, given its class by its own section classification call
+- Under split-then-classify, makes **no splitting call**: each page is its own segment, given its class by its own section classification call
 
 **Use Cases:**
 - **Critical for long documents with multiple same-type forms** (e.g., multiple W-2 forms, multiple invoices)
@@ -834,7 +865,7 @@ classification:
 - Each page maintains its individual classification
 
 **GitHub Issue Reference:**
-This strategy directly addresses [Issue #146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/146) where long documents with multiple same-type forms were being incorrectly joined together.
+This value directly addresses [Issue #146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/146) where long documents with multiple same-type forms were being incorrectly joined together.
 
 #### 3. `llm_determined` - LLM Boundary Detection (Default)
 
@@ -859,9 +890,9 @@ classification:
 - Document with 10 pages → Variable number of sections based on LLM boundary detection
 - Pages grouped according to section boundaries and class changes
 
-### Strategy Comparison Table
+### Value Comparison Table
 
-| Strategy | Sections Created | Boundary Detection | Same-Type Handling | Deterministic | Performance |
+| Value | Sections Created | Boundary Detection | Same-Type Handling | Deterministic | Performance |
 |----------|-----------------|-------------------|-------------------|---------------|-------------|
 | `disabled` | 1 section always | None — asserted | All joined | Yes | Fastest |
 | `page` | N sections (N pages) | None — asserted | Never joined | Yes | Fast |
@@ -889,22 +920,23 @@ So the choice is really a question about your input, not about accuracy:
 
 Three further properties worth knowing:
 
-- **`disabled` and `page` are the only values that let classification skip the
-  model entirely.** With a single-class configuration, or a document-name regex
-  match that already fixes the class, there is nothing left to decide and no
-  call is made. Under `llm_determined` the model is still called in both of those
-  cases, on purpose: the class may be known but the boundaries are not, and
-  silently skipping the call would collapse every packet into one
-  section.
-- **`document_shape` applies identically under both strategies.** Under `two_stage`
-  a declared shape skips the boundary detection call outright, leaving one section
+- **`disabled` and `page` are the only values that let a multi-page document
+  skip the model entirely.** With a single-class configuration, or a
+  document-name regex match that already fixes the class, there is nothing left
+  to decide and no call is made. Under `llm_determined` the model is still called
+  in both of those cases when the document has more than one page, on purpose:
+  the class may be known but the boundaries are not, and silently skipping the
+  call would collapse every packet into one section. A single-page document
+  skips the call under `llm_determined` too, because one page cannot be split.
+- **`document_shape` applies identically under both strategies.** Under `split_then_classify`
+  a declared shape skips the splitting call outright, leaving one section
   classification call per asserted section.
-- **`two_stage` with `sectionSplitting: page` is strictly dominated.** It makes
-  one classification call per page with no boundary pass, which on a measured
+- **`split_then_classify` with `sectionSplitting: page` is strictly dominated.** It makes
+  one classification call per page with no splitting call, which on a measured
   3-page document cost the same requests and essentially the same input tokens as
-  `single_pass` at page granularity (3 calls, 1,545 against 1,527 input tokens) —
+  `combined` at page granularity (3 calls, 1,545 against 1,527 input tokens) —
   the same price for a configuration that cannot return a per-page boundary
-  verdict. If you want one section per page, `single_pass` is the simpler
+  verdict. If you want one section per page, `combined` is the simpler
   spelling.
 
 ### Configuration Placement
@@ -943,20 +975,20 @@ setting that is in force.
 
 ### Interaction with the strategies
 
-**One stage, page granularity:**
+**Combined, page granularity:**
 - `disabled`: All pages in one section, with the class most pages were given (see Voting Behavior above)
 - `page`: Each page's individual classification preserved in separate sections
 - `llm_determined`: Pages grouped by class + boundary verdicts
 
-**One stage, packet granularity:**
+**Combined, packet granularity:**
 - `disabled`: All pages in one section, with the class most pages were given
 - `page`: Each page gets its own section, with the class of the segment it fell in
 - `llm_determined`: The model's segments used as sections (default behavior)
 
-**Two stage:**
-- `disabled`: No boundary detection call; one section classification call over the document
-- `page`: No boundary detection call; one section classification call per page
-- `llm_determined`: Boundary detection finds the segments, then one section classification call each
+**Split-then-classify:**
+- `disabled`: No splitting call; one section classification call over the document
+- `page`: No splitting call; one section classification call per page
+- `llm_determined`: The splitting call finds the segments, then one section classification call each
 
 ### Real-World Example: Multiple W-2 Forms
 
@@ -1006,8 +1038,8 @@ processing issue on the section that holds the page, which is where the Sections
 panel renders it and where `ProcessingIssueCount` on the document counts it. The
 severity says how much attention the case deserves:
 
-> **Scope: one stage at page granularity only.** These issues are recorded from
-> the page-level path. Packet granularity and two stage make one decision per
+> **Scope: the combined strategy at page granularity only.** These issues are recorded from
+> the page-level path. Packet granularity and split-then-classify make one decision per
 > segment rather than per page and record none of them; at packet granularity a
 > page the model places in no segment is appended to no section at all, so it
 > produces neither data nor a record. Extending this to the segment-level paths is
@@ -1157,13 +1189,14 @@ OCR → classification (LLM + optional regex) → extraction → assessment
 ships at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
-## Two-stage classification: boundary detection, then section classification
+## The split-then-classify strategy
 
-`strategy: two_stage` (*Two stage* in the editor) splits the two jobs into two
-calls. One stage stays the default.
+`strategy: split_then_classify` (*Split first, then classify each section* in the editor)
+splits the two jobs into two calls: a splitting call, then section classification.
+`combined` stays the default.
 
 ```
-packet ──► boundary detection ────► segments {start_page, end_page}
+packet ──► splitting ─────────────► segments {start_page, end_page}
                                         │
                                         ▼
            section classification ─► segments {start_page, end_page, class, confidence}
@@ -1172,7 +1205,7 @@ packet ──► boundary detection ────► segments {start_page, end_pa
                      section forming, HITL, extraction (unchanged)
 ```
 
-A one-stage call does two different jobs at once, and pays for it in two ways.
+A combined call does two different jobs at once, and pays for it in two ways.
 **Every boundary decision carries the whole class vocabulary** — the class list,
 every description and every few-shot example — although finding a boundary does
 not depend on any of it; at page granularity that prefix is paid once per page.
@@ -1181,9 +1214,9 @@ is classified forty times to produce one answer.
 
 ```yaml
 classification:
-  strategy: two_stage
-  two_stage:
-    boundary_detection:
+  strategy: split_then_classify
+  split_then_classify:
+    splitting:
       method: llm
       llm:
         granularity: packet        # page | packet — this call's own
@@ -1201,22 +1234,22 @@ classification:
         confidence: {mode: topk}
 ```
 
-Boundary detection has its own granularity, page and packet settings, prompts and
-model settings — the same call shape as one stage, asked a smaller question. At
+The splitting call has its own granularity, page and packet settings, prompts and
+model settings — the same call shape as the combined call, asked a smaller question. At
 packet granularity it is one call (or one per window) asking for page ranges; at
 page granularity it is one call per page asking only `start` or `continue`, which
 still makes N calls but drops the prefix from each. It has no validation or
 class confidence, because it returns no class.
 
-> ⚠️ **Writing a custom boundary detection prompt: the vocabulary placeholders render
+> ⚠️ **Writing a custom splitting prompt: the vocabulary placeholders render
 > empty there.** `{CLASS_NAMES_AND_DESCRIPTIONS}`,
 > `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` are
-> all substituted with nothing in a boundary detection prompt, at either granularity
+> all substituted with nothing in a splitting prompt, at either granularity
 > and whatever `contextPagesCount` is set to — that absence *is* the dropped
 > prefix, so referencing one gets you silence rather than an error.
 > `boundary_hints: class_names` is the supported way to put the class **names**
 > into this call; it renders a short `{BOUNDARY_HINTS}` block, which in turn is
-> empty in every call other than boundary detection, because it tells the model to
+> empty in every call other than splitting, because it tells the model to
 > report no class. See
 > [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
 
@@ -1228,9 +1261,9 @@ validation and class confidence.
 
 #### Setting `boundary_hints`
 
-`boundary_hints` decides whether the boundary detection prompt is told your class
+`boundary_hints` decides whether the splitting prompt is told your class
 names. Leave it at **`none`** by default: withholding the vocabulary from the
-boundary pass is the saving two stage exists for, and a boundary is a question
+splitting call is the saving split-then-classify exists for, and a boundary is a question
 about where a section ends rather than about what kind it is.
 
 Reach for **`class_names`** when `boundary_accuracy` is the metric that is
@@ -1240,7 +1273,7 @@ title, an institution's own name for a statement. Those give the model a literal
 token to look for at the top of a page. If your class names are internal labels
 (`type_a`, `customer_doc_3`), `class_names` sends tokens that match nothing and
 costs the saving for no signal. On the over-split fixture [measured
-above](#neither-granularity-dominates-and-the-failure-modes-are-opposite),
+above](#page-versus-packet-granularity-opposite-failure-modes),
 `class_names` changed nothing, which is the expected result when the ambiguity
 is about extent rather than identity. `class_names` sends names only, never
 descriptions or examples.
@@ -1248,14 +1281,14 @@ descriptions or examples.
 #### Setting `pages` and `k`
 
 `pages` decides how much of each section the classifying call sees, and it is
-the only two-stage setting whose cost grows with section length:
+the only split-then-classify setting whose cost grows with section length:
 
 - **`first_k` with `k: 2`** is the default and covers the opening identity block
   of nearly every form — a cover page plus the first content page.
 - **`first`** is the cheapest. Use it when every class is identifiable from its
   very first page, which is usually true of forms and statements.
 - **`all`** makes a long section cost roughly what page-level classification
-  would have cost, which removes most of two stage's advantage. It is the right
+  would have cost, which removes most of split-then-classify's advantage. It is the right
   answer only when a class is genuinely not identifiable from its opening pages.
 - **Raise `k` above 2** only for classes whose distinguishing content sits past
   the cover page — a bundle whose first page is a generic transmittal sheet, or
@@ -1266,40 +1299,40 @@ Lite, section classification input tokens only): `first` sent 1 page for 1,317
 input tokens, `first_k` with `k: 2` sent 2 pages for 2,777, and `all` sent 6 for
 6,599.
 
-⚠️ `pages` and `k` are **Stage B** settings and cannot change the boundaries —
+⚠️ `pages` and `k` are **section classification** settings and cannot change the boundaries —
 if your sections are wrong, this is not the axis to tune.
 
 Four things worth knowing:
 
-- **Each stage names its own model.** That is most of the point: boundary
-  detection may want a capable multimodal model looking at a whole packet, while
+- **Each call names its own model.** That is most of the point: splitting
+  may want a capable multimodal model looking at a whole packet, while
   classifying a clean segment is often a much easier problem a cheaper model
   answers just as well. A custom or fine-tuned classification model
   (`CustomClassificationModelARN`, or *Create configuration version* on a
   fine-tuning job) is written to section classification.
-- **The halves are metered separately**, as `BoundaryDetection/...` and
+- **The halves are metered separately**, as `Splitting/...` and
   `SectionClassification/...` in the cost table and the reporting database,
-  while one stage keeps `Classification/...`. That split is what makes "is this
+  while the combined strategy keeps `Classification/...`. That split is what makes "is this
   actually cheaper on my documents?" answerable from the cost table rather than
   from arithmetic.
 - **A document-name regex match skips section classification entirely.** The
   name already asserts the class, so a name-matched 40-page packet costs its
-  boundary calls and no classification calls at all.
-- **A declared document shape skips boundary detection entirely.** Under
+  splitting calls and no classification calls at all.
+- **A declared document shape skips splitting entirely.** Under
   `document_shape.sectionSplitting: disabled` the whole document is one segment, and
-  under `page` every page is one, so no boundary call is made.
+  under `page` every page is one, so no splitting call is made.
 
 A segment whose section classification call fails keeps **no class** and is
 reported in the document's errors. Its boundaries are still good, and an
 invented class would propagate into extraction as though it had been decided.
 
-`boundary_detection.method` and `section_classification.method` ship with one value,
+`splitting.method` and `section_classification.method` ship with one value,
 `llm`. A boundary-detection model, embeddings-based classification and external
 classifier endpoints (SageMaker, a Bedrock custom model, or a Lambda adapter in
 front of anything else) are described in
 [issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329);
 each needs measurement on real documents before its defaults can be set
-honestly. Their settings blocks (`boundary_detection.boundary_model`,
+honestly. Their settings blocks (`splitting.boundary_model`,
 `section_classification.embeddings`, `decision_model` and `low_confidence`) are
 declared so adding a method later needs no configuration migration, and are
 ignored until their method exists.
@@ -1321,12 +1354,12 @@ boundary_accuracy × label_accuracy`. `label_accuracy` is reported as *not
 scored* rather than `0.0` when no section's boundaries matched — "we never got
 far enough to judge the labels" is a different fact from "every label was
 wrong", and that is the pair of readings the split exists to keep apart. Both
-are computed for one stage too.
+are computed for the combined strategy too.
 
 ## Choosing granularity, modality and strategy
 
-Granularity and modality are per call: one stage has one of each, and two stage
-sets them separately on boundary detection and on section classification (which has
+Granularity and modality are per call: the combined call has one of each, and
+split-then-classify sets them separately on splitting and on section classification (which has
 modality only — it is always one call per section).
 
 ### Use `granularity: packet` when
@@ -1362,7 +1395,7 @@ modality only — it is always one call per section).
   requires a real OCR backend only if you still want the page-content regex
   shortcut (which reads the text even when it is not sent).
 
-### Neither granularity dominates, and the failure modes are opposite
+### Page versus packet granularity: opposite failure modes
 
 The hardest boundary case is a **reprinted identity block**: a multi-page
 document whose header, account number and address appear again on every page.
@@ -1381,7 +1414,7 @@ expected section counts from exact ground truth:
 
 Page granularity split a single statement into one section per page; packet
 granularity merged two adjacent statements into one. Both results held under
-`strategy: single_pass` and `strategy: two_stage`, so this is a property of the
+`strategy: combined` and `strategy: split_then_classify`, so this is a property of the
 granularity rather than of the strategy. **Choose by which error your corpus can
 afford.** A corpus of long single-section documents is safer at packet granularity; a
 corpus of back-to-back same-type forms is safer at page granularity.
@@ -1402,35 +1435,35 @@ If neither error is acceptable, assert the shape instead of detecting it:
 `document_shape.sectionSplitting: disabled` gives a document known to hold a single section
 exactly one section, and `page` gives a document of one-page sections exactly one
 section each. Both are assertions, so they are only right when you know the
-shape — see [Section Splitting Strategies](#section-splitting-strategies).
+shape — see [Section Splitting](#section-splitting).
 
 ### Strategy
 
-- **One stage (`single_pass`)** for single-page documents and short packets, where
-  two stage adds a call to save a prefix that was only paid once.
-- **Two stage (`two_stage`)** for long documents with few sections, when you
-  want a different model for classifying than for boundary detection, or when you
+- **Combined (`combined`)** for single-page documents and short packets, where
+  split-then-classify adds a call to save a prefix that was only paid once.
+- **Split-then-classify (`split_then_classify`)** for long documents with few sections, when you
+  want a different model for classifying than for splitting, or when you
   need to know whether your section errors are boundary errors or label errors.
 
 #### Why the prefix saving is smaller than it looks
 
-The argument for two stage above is that a one-stage boundary decision carries
+The argument for split-then-classify above is that a combined boundary decision carries
 the class vocabulary it does not need. That is true, and it is **not** worth the
 list price of those tokens, because the prefix is cached. The default
 classification model, `us.amazon.nova-2-lite-v1:0`, is in
 `CACHEPOINT_SUPPORTED_MODELS` in
-`lib/idp_common_pkg/idp_common/bedrock/client.py`, the shipped one-stage prompts
+`lib/idp_common_pkg/idp_common/bedrock/client.py`, the shipped combined prompts
 put the class list, the descriptions and the few-shot examples **before**
 `<<CACHEPOINT>>`, and `config_library/pricing.yaml` prices that model's
 `cacheReadInputTokens` at a quarter of its `inputTokens` with
 `cacheWriteInputTokens` at zero. So from the second page of a run onward the
-prefix one stage "wastes" is billed at 25% of list and was free to write. Two
-stage can therefore recover at most three quarters of the prefix on a cache-hit
+prefix the combined strategy "wastes" is billed at 25% of list and was free to write.
+Split-then-classify can therefore recover at most three quarters of the prefix on a cache-hit
 page — and it spends a whole extra request per section to do it.
 
 Which way that nets out depends on how many pages each section has, so measure
 it rather than reasoning about it. ⚠️ **The figures below are one regime, and it
-is the regime least favourable to two stage** — a 3-page document holding three
+is the regime least favourable to split-then-classify** — a 3-page document holding three
 1-page sections, a 2-class vocabulary with short descriptions, Nova 2 Lite,
 classification Bedrock tokens only. One page per section means the per-section
 second call is a whole extra request against a prefix that was small to begin
@@ -1438,33 +1471,33 @@ with. Do not read it as a general result:
 
 | Cell | Bedrock requests | Fresh input tokens |
 |---|---|---|
-| one stage, `granularity: page` | 3 | 1,527 |
-| two stage, `granularity: page` | 6 | 2,988 |
-| one stage, `granularity: packet` | 1 | 1,650 |
-| two stage, `granularity: packet` | 4 | 3,258 |
+| combined, `granularity: page` | 3 | 1,527 |
+| split-then-classify, `granularity: page` | 6 | 2,988 |
+| combined, `granularity: packet` | 1 | 1,650 |
+| split-then-classify, `granularity: packet` | 4 | 3,258 |
 
-At each granularity two stage cost about twice the fresh input tokens and twice
+At each granularity split-then-classify cost about twice the fresh input tokens and twice
 the requests. Section counts were correct in all four cells, so this is a cost
 difference and not an accuracy trade. (Cache-read volumes are omitted
 deliberately: they depend on what else had recently run against the same prefix,
 so single runs are not comparable on that column.)
 
-The durable reasons to pick two stage are not the prefix:
+The durable reasons to pick split-then-classify are not the prefix:
 
 - **One classification call per *section* instead of per page.** This is the one
   that scales, and it is the opposite of the regime measured above: on a 40-page
-  statement, one stage makes 40 classification calls to produce one answer and
-  two stage makes one boundary pass plus one classification call. The longer your
-  sections, the better two stage looks.
-- **A different model per stage.** Boundary detection and classification are
+  statement, the combined strategy makes 40 classification calls to produce one answer
+  and split-then-classify makes one splitting pass plus one classification call. The
+  longer your sections, the better split-then-classify looks.
+- **A different model per call.** Splitting and classification are
   different problems and the cheapest model that is good at one is often not the
-  other. One stage has a single model field for both.
+  other. The combined strategy has a single model field for both.
 - **The `boundary_accuracy` / `label_accuracy` decomposition**, which tells you
   which half to fix. See [Telling a wrong boundary from a wrong
   label](#telling-a-wrong-boundary-from-a-wrong-label).
 
-Measure on your own corpus. The two stages are metered separately
-(`BoundaryDetection/` and `SectionClassification/`, against one stage's
+Measure on your own corpus. The two calls are metered separately
+(`Splitting/` and `SectionClassification/`, against the combined strategy's
 `Classification/`), so the cost table answers the question directly.
 
 ### Comparison Table
@@ -1508,8 +1541,8 @@ classified in full. `ALL` and `0` both mean "every page".
 ### Prompt Components
 
 You can customize classification behavior through the prompts of each call. The
-examples below are written for the one-stage page call
-(`classification.one_stage.page`); the packet call, boundary detection and section
+examples below are written for the combined page call
+(`classification.combined.page`); the packet call, the splitting call and section
 classification have the same two prompts in their own blocks.
 
 ### System Prompts
@@ -1518,7 +1551,7 @@ Define overall model behavior and constraints:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       system_prompt: |
         You are an expert document classifier specializing in financial and business documents.
@@ -1537,7 +1570,7 @@ looking like the start of a new section:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Analyze the following document page and classify it into one of these categories:
@@ -1566,7 +1599,7 @@ which produces an error if it is missing.**
   of `ordinal_start_page`/`ordinal_end_page`/`type`. Asking for the wrong one
   fails the parse rather than the validation. The shipped prompts in
   `lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
-  are the reference for both shapes, and the two-stage boundary detection prompts there
+  are the reference for both shapes, and the split-then-classify splitting prompts there
   drop `class`/`type` entirely because that call assigns no class.
 - **Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`, unless you mean to drop one.**
   An unset `modality.text` or `modality.images` is **inferred from this call's
@@ -1637,7 +1670,7 @@ Example task prompt with CachePoint for few-shot examples:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document into exactly one of these categories:
@@ -1700,7 +1733,7 @@ Pipeline mode supports precise control over where document images are positioned
 **Without Placeholder (Default Behavior):**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Analyze this document:
@@ -1714,7 +1747,7 @@ Images are automatically appended after the text content.
 **With Placeholder (Controlled Placement):**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Analyze this document:
@@ -1764,7 +1797,7 @@ The `{DOCUMENT_IMAGE}` placeholder works seamlessly with few-shot examples:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Here are examples of each document type:
@@ -1816,11 +1849,11 @@ The placeholder is fully **opt-in**:
   can drop `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` into a custom
   `task_prompt` to give the model the extra signal.
 
-> ⚠️ **In a two-stage *boundary detection* prompt this placeholder renders empty**,
+> ⚠️ **In a split-then-classify *splitting* prompt this placeholder renders empty**,
 > as `{CLASS_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` do: it carries
 > the class names, their descriptions *and* their attributes, which is more
-> vocabulary than the plain listing rather than less, and a boundary call that
-> carries none of it is the saving two-stage exists for. A boundary detection
+> vocabulary than the plain listing rather than less, and a splitting call that
+> carries none of it is the saving split-then-classify exists for. A splitting
 > template referencing it gets nothing rather than an error;
 > `boundary_hints: class_names` is the supported way to put class **names**
 > into that call. See
@@ -1857,7 +1890,7 @@ existing `{CLASS_NAMES_AND_DESCRIPTIONS}` table:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify the following document page into one of these document types.
@@ -1986,7 +2019,7 @@ shipped setting on all three calls:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-2-lite-v1:0
       # Image processing settings - preserves original resolution
@@ -1999,9 +2032,9 @@ A classification call's `image` block honours **only** `target_width` and
 `target_height`. `dpi` and `preprocessing` are accepted by the same model, so
 writing them produces no error and no warning, and they do nothing here —
 rasterization DPI and binarization are OCR-stage decisions and belong under
-`ocr.image`. Under `strategy: two_stage` the same block exists on each stage at
-`classification.two_stage.boundary_detection.llm.image` and
-`classification.two_stage.section_classification.llm.image`, and the boundary detection
+`ocr.image`. Under `strategy: split_then_classify` the same block exists on each call at
+`classification.split_then_classify.splitting.llm.image` and
+`classification.split_then_classify.section_classification.llm.image`, and the splitting
 one is the one worth shrinking first: a boundary decision needs layout, not
 legible body text.
 
@@ -2012,7 +2045,7 @@ Configure specific dimensions when performance optimization is needed:
 ```yaml
 # For high-accuracy classification with controlled dimensions
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "1200"   # Resize to 1200 pixels wide
@@ -2020,7 +2053,7 @@ classification:
 
 # For fast processing with lower resolution
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "600"    # Smaller for faster processing
@@ -2051,7 +2084,7 @@ a call sends to a fixed size, set both dimensions on that call:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "951"
@@ -2076,7 +2109,7 @@ The system automatically detects whether the LLM response is in JSON or YAML for
 ```yaml
 # JSON response (traditional)
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document and respond with JSON:
@@ -2084,7 +2117,7 @@ classification:
 
 # YAML response (more token-efficient)
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document and respond with YAML:
@@ -2106,7 +2139,7 @@ YAML format provides significant token savings:
 **JSON-focused prompt:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       system_prompt: |
         You are a document classifier. Respond only with JSON format.
@@ -2117,7 +2150,7 @@ classification:
 **YAML-focused prompt:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       system_prompt: |
         You are a document classifier. Respond only with YAML format.
@@ -2159,8 +2192,8 @@ this one is about the *class*, not the extracted values.
 
 There is no separate confidence inference for classification: the value comes out
 of the same response as the class. Each class-assigning call's `confidence.mode`
-(`classification.one_stage.llm.confidence.mode`, and the same under
-`two_stage.section_classification.llm`) composes the
+(`classification.combined.llm.confidence.mode`, and the same under
+`split_then_classify.section_classification.llm`) composes the
 instruction into the prompt for you — it is **on by default** — and a custom
 prompt that asks for `confidence` or `candidates` itself is honoured either way,
 because the response parser is not gated on the setting.
@@ -2170,7 +2203,7 @@ confidence**, or in YAML:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     llm:
       confidence:
         mode: topk           # topk (default) | verbalized | off
@@ -2211,7 +2244,7 @@ The instruction block is spliced in before the document content so it stays
 inside the prompt-cache prefix, and it is skipped for a prompt that already
 carries a `<class-confidence>` block. Both blocks are editable config
 (`confidence.task_prompt_topk` / `task_prompt_verbalized`), like every other
-prompt here. At one-stage packet granularity the per-segment variants,
+prompt here. At combined packet granularity the per-segment variants,
 `task_prompt_topk_packet` / `task_prompt_verbalized_packet`, are spliced instead,
 because that call returns a segment list rather than one object per page.
 
@@ -2219,7 +2252,7 @@ Writing it into your own prompt works too:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         ...
@@ -2279,7 +2312,7 @@ as `section_confidence`: a fabricated `1.0` there would be indistinguishable
 from a genuinely confident classification and would silently corrupt any
 analysis of it.
 
-### Section confidence is the weakest page
+### Section confidence is the lowest page confidence
 
 A section's confidence is the **minimum** across its pages, and *not scored* if
 any of its pages is unscored. A mean would hide the one page the classifier was
@@ -2288,7 +2321,7 @@ be more certain than its least certain page.
 
 ### Where it shows up
 
-- **Web UI** — a **Class conf.** column in the **Document Pages** table on the
+- **Web UI** — a **Class Confidence** column in the **Document Pages** table on the
   document detail page, beside `Class/Type` rather than inside it. It **sorts**,
   so you can put the least-confident pages first — which is how you find the ones
   worth a second look. The percentage is a link: click it for **"Why this
@@ -2301,7 +2334,7 @@ be more certain than its least certain page.
   numbers already listed per page in the table directly below, and two extra
   columns squeezed that table until its own headers wrapped. `Section.Confidence`
   is still on the API and still lands in the reporting lake as
-  `section_confidence`. The **Low-conf. fields** column there is a different
+  `section_confidence`. The **Low Confidence Fields** column there is a different
   measurement entirely — per-extracted-field confidence, not the class.
 
   The number is deliberately shown the same way at every value. There is no
@@ -2394,24 +2427,22 @@ classes:
 ```
 
 **Benefits:**
-- **Instant Classification**: Entire document classified without any LLM calls
-- **Massive Performance Gains**: ~100-1000x faster than LLM classification
-- **Zero Token Usage**: Complete elimination of API costs for matched documents
-- **Deterministic Results**: Consistent classification for known patterns
+- **Deterministic class**: every page of a matched document gets the matching class, and the model's own class output is never used for it
+- **No inference when no boundary decision is needed**: a single-page document, or any document under `sectionSplitting: disabled` or `page`, is classified without any model call and uses no tokens
 
 **When document ID matches the pattern:**
-- All pages are immediately classified as the matching class
-- Single section is created containing all pages
-- No backend service calls are made
-- Info logging confirms regex match
+- All pages are classified as the matching class
+- Sections follow `sectionSplitting`: `disabled` creates one section over all pages, `page` creates one section per page, and `llm_determined` (the default) on a single-page document creates one section — in all three cases no backend call is made
+- Under `llm_determined`, a **multi-page** document still calls the model, because the name says what the document is but not where each section starts. With the `combined` strategy the model supplies the boundaries and its class output is replaced by the matched class; with `split_then_classify` only the splitting call runs and section classification is skipped. Set `sectionSplitting: disabled` to keep multi-page matches at zero inference when one file is always one document
+- Info logging confirms the regex match
 
-### Page Content Regex (Multi-Modal Page-Level Classification)
+### Page Content Regex (Page Granularity)
 
-For multi-class configurations using page-level classification, you can use page content regex to classify individual pages based on text patterns:
+For multi-class configurations using the `combined` strategy at page granularity (`classification.combined.granularity: page`), you can use page content regex to classify individual pages based on text patterns:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     granularity: page
 
 classes:
@@ -2454,7 +2485,7 @@ classes:
 - Each page's text content is checked against all class regex patterns
 - First matching pattern wins and classifies the page instantly
 - Pages with no matches use standard LLM classification
-- Results are seamlessly integrated into document sections
+- A matched page is recorded with a `continue` boundary, so under `sectionSplitting: llm_determined` it joins the preceding section whenever that section has the same class: consecutive pages of one class form a single section, whether each was matched by the regex or classified by the model
 
 ### Regex Pattern Best Practices
 

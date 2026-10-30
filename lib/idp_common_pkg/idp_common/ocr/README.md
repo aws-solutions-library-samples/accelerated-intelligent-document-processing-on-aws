@@ -255,7 +255,7 @@ The DPI (dots per inch) setting controls the base resolution when extracting ima
 long-edge ceiling before tokenizing, so LLM token spend saturates — measured end
 to end, moving the stored page image from 897×1269 to 2000×2829 changed total
 input tokens by 1.4% (22,598 → 22,914). To cut LLM cost, downscale for the
-prompt via a classification call's `image` (for example `classification.one_stage.llm.image`) / `extraction.image` /
+prompt via a classification call's `image` (for example `classification.combined.llm.image`) / `extraction.image` /
 `extraction.confidence.image` and leave OCR at full fidelity.
 
 **Below ~200 DPI Textract drops small glyphs silently.** Small, faint or skewed

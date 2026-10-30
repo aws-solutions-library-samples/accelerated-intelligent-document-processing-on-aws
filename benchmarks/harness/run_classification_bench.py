@@ -37,8 +37,8 @@ Usage:
 
   # Compare granularity and modality on one model, against the shipped default:
   ... --models nova2lite --variants page-both,packet-both,packet-text
-  # Is two-stage cheaper on this corpus?
-  ... --models nova2lite --variants page-both,twostage-packet
+  # Is split-then-classify cheaper on this corpus?
+  ... --models nova2lite --variants page-both,split-then-classify-packet
 
   ... --estimate      # print the plan (and the document count) and exit
   ... --score-only benchmarks/results/clsconf-<stamp>/runmap.json
@@ -116,32 +116,32 @@ VARIANTS = {
     "packet-both": {"granularity": "packet", "text": True, "images": True},
     "packet-text": {"granularity": "packet", "text": True, "images": False},
     "packet-images": {"granularity": "packet", "text": False, "images": True},
-    "twostage-packet": {
+    "split-then-classify-packet": {
         "granularity": "packet",
         "text": True,
         "images": True,
-        "strategy": "two_stage",
+        "strategy": "split_then_classify",
     },
-    "twostage-page": {
+    "split-then-classify-page": {
         "granularity": "page",
         "text": True,
         "images": True,
-        "strategy": "two_stage",
+        "strategy": "split_then_classify",
     },
 }
 
 
 #: Every model call a classification config can make, under ``classification``.
 CALL_PATHS = (
-    ("one_stage", "llm"),
-    ("two_stage", "boundary_detection", "llm"),
-    ("two_stage", "section_classification", "llm"),
+    ("combined", "llm"),
+    ("split_then_classify", "splitting", "llm"),
+    ("split_then_classify", "section_classification", "llm"),
 )
 
 #: The calls that assign a class, and so carry a confidence block.
 CLASS_ASSIGNING_PATHS = (
-    ("one_stage", "llm"),
-    ("two_stage", "section_classification", "llm"),
+    ("combined", "llm"),
+    ("split_then_classify", "section_classification", "llm"),
 )
 
 
@@ -164,14 +164,14 @@ def _get(root, *path):
 
 def _reader(cls, strategy):
     """The block whose granularity and page prompts are in force."""
-    if strategy == "two_stage":
-        return _get(cls, "two_stage", "boundary_detection", "llm") or {}
-    return cls.get("one_stage") or {}
+    if strategy == "split_then_classify":
+        return _get(cls, "split_then_classify", "splitting", "llm") or {}
+    return cls.get("combined") or {}
 
 
 def _class_assigning(cls):
-    strategy = cls.get("strategy") or "single_pass"
-    path = CLASS_ASSIGNING_PATHS[1 if strategy == "two_stage" else 0]
+    strategy = cls.get("strategy") or "combined"
+    path = CLASS_ASSIGNING_PATHS[1 if strategy == "split_then_classify" else 0]
     return _get(cls, *path) or {}
 
 
@@ -183,12 +183,12 @@ def build_config(base_path, model_id, mode, top_k, variant=None):
     class-assigning call's `confidence.task_prompt_topk` — the block that gets
     spliced into the prompt. A config that set only `mode: topk` would ask for
     nothing. The same reasoning applies to a `granularity: packet` variant, which
-    needs `one_stage.packet.task_prompt` from the defaults: packet granularity has
+    needs `combined.packet.task_prompt` from the defaults: packet granularity has
     its own prompt because it asks for a different output shape, and a config
     carrying only the flag would send the page prompt to the segments parser.
 
-    The model under test is written into EVERY call, so a two-stage cell runs
-    both of its calls on it — the model axis compares models, not a mix.
+    The model under test is written into EVERY call, so a split-then-classify
+    cell runs both of its calls on it — the model axis compares models, not a mix.
 
     Args:
         variant: A key of :data:`VARIANTS`, or None for the stored config's own
@@ -213,8 +213,8 @@ def build_config(base_path, model_id, mode, top_k, variant=None):
         }
     if variant:
         spec = VARIANTS[variant]
-        classification["strategy"] = spec.get("strategy", "single_pass")
-        _node(classification, ("one_stage",))["granularity"] = spec["granularity"]
+        classification["strategy"] = spec.get("strategy", "combined")
+        _node(classification, ("combined",))["granularity"] = spec["granularity"]
         _node(classification, CALL_PATHS[1])["granularity"] = spec["granularity"]
         # Set EXPLICITLY rather than left empty. An unset modality flag is
         # inferred from the prompt's placeholders, which is the right default for
@@ -246,9 +246,9 @@ def confidence_block_problems(cls, mode):
     # not produce. Today's shipped defaults carry both keys, so this is about
     # a hand-written config rather than about the default.
     candidates = [f"task_prompt_{suffix}"]
-    strategy = cls.get("strategy") or "single_pass"
+    strategy = cls.get("strategy") or "combined"
     if (
-        strategy != "two_stage"
+        strategy != "split_then_classify"
         and _reader(cls, strategy).get("granularity") == "packet"
     ):
         candidates.insert(0, f"task_prompt_{suffix}_packet")
@@ -277,7 +277,7 @@ def variant_merge_problems(cfg, variant, mode):
     problems = []
     cls = cfg.get("classification") or {}
     spec = VARIANTS[variant]
-    expected_strategy = spec.get("strategy", "single_pass")
+    expected_strategy = spec.get("strategy", "combined")
     if cls.get("strategy") != expected_strategy:
         problems.append(
             f"strategy is {cls.get('strategy')!r}, expected {expected_strategy!r}"
@@ -289,7 +289,9 @@ def variant_merge_problems(cfg, variant, mode):
             f"granularity is {reader.get('granularity')!r}, expected "
             f"{spec['granularity']!r}"
         )
-    active = CALL_PATHS[1:] if expected_strategy == "two_stage" else CALL_PATHS[:1]
+    active = (
+        CALL_PATHS[1:] if expected_strategy == "split_then_classify" else CALL_PATHS[:1]
+    )
     for path in active:
         modality = _get(cls, *path, "modality") or {}
         for flag in ("text", "images"):
@@ -304,8 +306,8 @@ def variant_merge_problems(cfg, variant, mode):
     # class plus a boundary verdict and is read by a different parser, so a
     # packet cell running the page prompt fails every document rather than
     # measuring anything.
-    if spec["granularity"] == "packet" and expected_strategy != "two_stage":
-        packet_prompt = _get(cls, "one_stage", "packet", "task_prompt") or ""
+    if spec["granularity"] == "packet" and expected_strategy != "split_then_classify":
+        packet_prompt = _get(cls, "combined", "packet", "task_prompt") or ""
         # Checked against the keys the PARSER requires rather than the word
         # "segments": a prompt merely mentioning segments in prose would satisfy
         # a substring test while asking for an output shape
@@ -317,21 +319,23 @@ def variant_merge_problems(cfg, variant, mode):
         ]
         if missing:
             problems.append(
-                "classification.one_stage.packet.task_prompt does not ask for the "
+                "classification.combined.packet.task_prompt does not ask for the "
                 f"output shape the segments parser reads (missing {missing}) after "
                 "merge"
             )
-    if expected_strategy == "two_stage":
+    if expected_strategy == "split_then_classify":
         side = "packet" if spec["granularity"] == "packet" else "page"
         if not (_get(reader, side, "task_prompt") or ""):
             problems.append(
-                f"the {spec['granularity']} boundary detection task_prompt is empty after "
-                "merge, so two-stage would fall back to the shipped prompt rather "
-                "than the one this cell names"
+                f"the {spec['granularity']} splitting task_prompt is empty after "
+                "merge, so split-then-classify would fall back to the shipped prompt "
+                "rather than the one this cell names"
             )
-        if not _get(cls, "two_stage", "section_classification", "llm", "task_prompt"):
+        if not _get(
+            cls, "split_then_classify", "section_classification", "llm", "task_prompt"
+        ):
             problems.append(
-                "classification.two_stage.section_classification.llm.task_prompt "
+                "classification.split_then_classify.section_classification.llm.task_prompt "
                 "is empty after merge"
             )
 
@@ -377,17 +381,17 @@ def launch(stack, testset_id, version, context, n_files):
 
 #: Metering context prefixes that belong to the classification step.
 #:
-#: ⚠️ **Three, not one.** `single_pass` bills under `Classification/`; `two_stage`
-#: bills its halves under `BoundaryDetection/` and `SectionClassification/` and emits NO
+#: ⚠️ **Three, not one.** `combined` bills under `Classification/`;
+#: `split_then_classify` bills its halves under `Splitting/` and `SectionClassification/` and emits NO
 #: `Classification/` entry at all (GitHub #1329). Filtering on `Classification/`
-#: alone — which this function did — matched nothing for a two-stage run and
+#: alone — which this function did — matched nothing for a split-then-classify run and
 #: returned a cost of `0.0`, so the configuration with an extra call per segment
 #: appeared to be the free one. That is the most misleading possible answer in a
 #: cost comparison, and it is the same silent-zero this module refuses elsewhere
 #: (#1079, #1146): adding nothing is the same arithmetic as adding zero.
 CLASSIFICATION_CONTEXTS = (
     "Classification/",
-    "BoundaryDetection/",
+    "Splitting/",
     "SectionClassification/",
 )
 
@@ -402,8 +406,8 @@ def classification_cost(metering):
     token counts are a separate measurement and stay — they were read, not priced.
 
     ``by_context`` reports each of :data:`CLASSIFICATION_CONTEXTS` separately as
-    well as summed. For a two-stage run that split is most of the point — "which
-    half is the money in, finding the boundaries or labelling the segments?" is
+    well as summed. For a split-then-classify run that split is most of the
+    point — "which half is the money in, finding the boundaries or labelling the segments?" is
     the question the strategy is chosen on, and a single total cannot answer it.
     """
     cls = {
@@ -439,14 +443,14 @@ def classification_cost(metering):
             #   `<ctx>/lambda/requests`  -> Lambda INVOCATIONS. A 6-page document
             #       at `page` granularity makes six Bedrock calls inside ONE
             #       invocation, so this reads 1 for `page` and `packet` alike and
-            #       cannot tell them apart. In a two-stage run the single
+            #       cannot tell them apart. In a split-then-classify run the single
             #       invocation lands under `Classification` while the spend lands
-            #       under `BoundaryDetection`/`SectionClassification`, so those two read 0.
+            #       under `Splitting`/`SectionClassification`, so those two read 0.
             #
             #   `<ctx>/bedrock/<model>` `requests` -> BEDROCK CALLS. This is the
             #       count packet granularity's N-calls-to-one claim is about, and
-            #       it is per stage: a two-stage page-granularity run on a 6-page
-            #       document measured 6 under `BoundaryDetection` and 6 under
+            #       it is per call: a split-then-classify page-granularity run on a
+            #       6-page document measured 6 under `Splitting` and 6 under
             #       `SectionClassification`.
             #
             # ⚠️ The Bedrock count is NOT always present — the same stack emitted
@@ -769,8 +773,8 @@ def score_run(res, run_id):
         if metered_pages
         else None,
         "classification_tokens": cls_tokens,
-        # Per metering context, so a two-stage run shows where the money and the
-        # tokens went — BoundaryDetection or SectionClassification — rather than only their sum.
+        # Per metering context, so a split-then-classify run shows where the money
+        # and the tokens went — Splitting or SectionClassification — rather than only their sum.
         # See the note on `lambda_invocations` above for what that count does and
         # does not evidence.
         # `totals`, not `bucket` — see the loop above. A comprehension scopes its

@@ -29,7 +29,7 @@ anything else in a build. It answers three questions:
 
 ---
 
-## 1. Does the transform recover the lost records? Yes.
+## 1. Does the transform recover the lost records?
 
 `twodocs_2x20` is two complete bank statements in one file — distinct account
 numbers, 20 transactions each, globally unique `SEQ` tags so completeness is
@@ -65,7 +65,7 @@ taking the same deterministic first N. **80 paired runs**, scored against each t
 set's committed baselines. Paired on document, because document difficulty
 dominates variance on a real corpus.
 
-### 2a. Does it find real multi-record documents? Yes — perfectly.
+### 2a. Detection accuracy on real multi-record documents
 
 `OmniAI-OCR-Benchmark`, first 40 documents (all `BANK_CHECK` — scanned check
 images, some holding several checks on one sheet). The class's baseline is a
@@ -122,7 +122,7 @@ do collapse several records into one.
 > counted the extracted rows. The same discipline fixes both: a plausible story
 > about the mechanism is not a measurement of it. The count above is a measurement.
 
-### 2b. What does it cost?
+### 2b. Cost of detection
 
 | metric | detection off | detection on | delta |
 |---|---|---|---|
@@ -149,7 +149,7 @@ do collapse several records into one.
   **no** multi-record documents, so on it the feature is pure cost with zero
   benefit, which is exactly the shape of deployment a default has to protect.
 
-### 2c. Why the earlier synthetic result was not good enough
+### 2c. Limits of the earlier synthetic result
 
 The synthetic grid reported "scalar accuracy consistently worse, 5/10 vs 2/10 on
 one document, not significant" and **zero** false positives. Both readings were too
@@ -164,7 +164,7 @@ The real corpora answered both in one pass, and answered them differently: FP is
 because detection is *accurate*, not because the test was blind, and the accuracy
 cost is real but corpus-dependent.
 
-## 3. So detection ships OFF by default — and the guidance is now specific
+## 3. Default setting and guidance
 
 Not "gated on evidence we could not resolve". The evidence resolved:
 
@@ -192,7 +192,7 @@ It is per configuration profile, so a multi-record corpus can have it while the
 rest of a deployment does not. With it off the extraction prompt and the forced
 toolSpec are byte-identical to earlier releases.
 
-## Honesty notes
+## Limitations
 
 - **Detection numbers alone cannot establish data loss.** "Each of those 18
   documents silently ships 1 to 7 checks fewer than it contains" is the conclusion

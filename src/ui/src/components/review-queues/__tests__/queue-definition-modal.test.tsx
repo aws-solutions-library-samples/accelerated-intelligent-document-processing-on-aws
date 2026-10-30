@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The queue dialog in HITL › Queue Management. What has to hold: creating reads
+ * The queue dialog in Review Studio › Review Management. What has to hold: creating reads
  * "Create Queue"; the fields in the two columns each carry a one-line description so
  * the inputs line up; a production queue has no confidence threshold, and its Enabled
  * switch is prefilled and sent on save; and a Test Studio queue, which has no switch,

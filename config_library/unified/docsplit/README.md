@@ -18,7 +18,7 @@ classification A/B benchmark, and they are installed by naming them explicitly �
 `idp-cli config-upload -f <path>`, `idp-cli deploy --custom-config <path>`, or a
 **Custom Configuration Path** S3 URI.
 
-| File | `classification.one_stage.llm.model` | Purpose |
+| File | `classification.combined.llm.model` | Purpose |
 |---|---|---|
 | `config.yaml` | preset default | The selectable preset |
 | `docsplit_base_model_config.yaml` | `us.amazon.nova-2-lite-v1:0` | Base-model arm of the A/B |
@@ -34,7 +34,7 @@ account that owns the deployment, and from anywhere else Bedrock answers
 so the classification stage fails outright rather than degrading. The file therefore
 cannot ship a working one.
 
-It ships with `classification.one_stage.llm.model` set to the base model, so it runs as-is and is
+It ships with `classification.combined.llm.model` set to the base model, so it runs as-is and is
 priced and limit-checked correctly.
 
 ⚠️ **As shipped, the two arms of this A/B are the same configuration, so running both
@@ -48,7 +48,7 @@ To run the fine-tuned arm:
 
 1. Fine-tune `amazon.nova-2-lite-v1:0` on your own classification data.
 2. Create a custom model deployment for the result and note its ARN.
-3. Replace `classification.one_stage.llm.model` in your copy of the file with that ARN. The line is
+3. Replace `classification.combined.llm.model` in your copy of the file with that ARN. The line is
    marked with a comment showing the shape:
    `arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>`.
 4. Add a `bedrock/<that ARN>` entry to your pricing configuration if you want cost
@@ -111,7 +111,7 @@ The configuration defines 13 document classes, each with specific attributes to 
 ### Classification Settings
 
 - **Model**: Amazon Nova2 Lite
-- **Strategy / granularity**: One stage, page granularity
+- **Strategy / granularity**: Combined, page granularity
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 

@@ -160,4 +160,23 @@ describe('getDocumentDetailsFromIds error reporting', () => {
     expect(setErrorMessage).not.toHaveBeenCalled();
     expect(result).toEqual([]);
   });
+
+  it('tells onError the key and reason; no banner with reportErrors:false', async () => {
+    graphql.mockImplementation(async ({ variables }: { variables: { objectKey: string } }) => {
+      if (variables.objectKey === 'b.pdf') throw SERVER;
+      return { data: { getDocument: { ObjectKey: variables.objectKey } } };
+    });
+    const hook = renderHook(() => useGraphQlApi({ initialPeriodsToLoad: LATEST_PERIODS }));
+    const onError = vi.fn();
+
+    let result: unknown[] = [];
+    await act(async () => {
+      result = await hook.result.current.getDocumentDetailsFromIds(['a.pdf', 'b.pdf'], { reportErrors: false, onError });
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith('b.pdf', SERVER);
+    expect(setErrorMessage).not.toHaveBeenCalled();
+    expect(result).toEqual([{ ObjectKey: 'a.pdf' }]);
+  });
 });

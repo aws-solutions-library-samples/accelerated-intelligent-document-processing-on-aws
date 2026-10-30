@@ -1,21 +1,15 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React from 'react';
 import {
   Box,
   Container,
   SpaceBetween,
   Table,
   StatusIndicator,
-  Button,
   ButtonDropdown,
   Header,
-  FormField,
-  Select,
-  Input,
-  Textarea,
-  Alert,
   Badge,
   Popover,
 } from '@cloudscape-design/components';
@@ -28,25 +22,16 @@ import { getSectionConfidenceAlertCount, getSectionConfidenceAlerts } from '../c
 import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import ClassNameText from '../common/ClassNameText';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
-import { getConfigClassOptions } from '../common/config-class-options';
-import PageGroupingEditor from '../common/PageGroupingEditor';
-import type { GroupedSection } from '../common/section-grouping';
-import { saveDocumentGrouping } from '../common/document-grouping';
-import { submitProcessChanges } from '../common/process-changes';
-import ProcessChangesConfirmModal from '../common/ProcessChangesConfirmModal';
-import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
-import { getErrorMessage } from '../../utils/errorUtils';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
 import type { EditableSection } from '../../types/documents';
+import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
-import { isBdaModeConfig } from '../../utils/processing-mode';
 import useUserRole from '../../hooks/use-user-role';
 import { documentEditHref } from '../../routes/constants';
-import { useDocumentVersion } from '../../contexts/document-version';
-import { getFilePresignedUrl, skipAllSectionsReview } from '../../graphql/generated';
-import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
-import { SKIP_ALL_REASONS, isHitlReviewFinished, isInReviewQueue, isQueueManaged } from '../common/review-status';
-import ReasonModal from '../common/ReasonModal';
+import { getFilePresignedUrl } from '../../graphql/generated';
+import { isBaselineAvailable } from '../document-panel/document-export';
+import { SECTION_NO_DATA_REASON } from '../document-actions/action-reasons';
+import { ColumnPreferences, fillTableColumns, useColumnPreferences } from '../common/detail-table-columns';
 
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
@@ -62,12 +47,6 @@ const logger = new ConsoleLogger('SectionsPanel');
  * drifted between the two Section shapes.
  */
 type SectionItem = EditableSection;
-
-interface PageItem {
-  Id: number;
-  ImageUri?: string;
-  TextUri?: string;
-}
 
 interface DocumentItem {
   hitlReviewOwner?: string;
@@ -90,10 +69,8 @@ interface DocumentItem {
 
 interface SectionsPanelProps {
   sections?: SectionItem[];
-  pages?: PageItem[];
   documentItem?: DocumentItem;
   mergedConfig?: Record<string, unknown> | null;
-  onDocumentUpdate?: (updater: (prev: Record<string, unknown>) => Record<string, unknown>) => void;
   /**
    * Ground-truth-vs-predicted classification for this document, loaded once by
    * the document page. Empty (the default) when there is no ground truth, in
@@ -295,33 +272,17 @@ const StatusCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
 };
 
 /**
- * A section's data opens in the unified editor's direct edit, on that section. "Edit
- * Data" for a user who may edit (Admin, Author, Reviewer), "View Data" otherwise; the
- * editor decides what is editable (a document in a review queue is read-only there).
+ * A section row's ⋮ menu: its data in the edit page's direct edit, on that section ("Edit
+ * Data" for a user who may edit, Admin, Author or Reviewer; "View Data" otherwise; the
+ * editor decides what is editable), and its data and baseline as JSON.
  */
-const SectionDataLink = ({ item, documentItem }: { item: SectionItem; documentItem: DocumentItem | undefined }): React.JSX.Element => {
-  const { canWrite, canReview } = useUserRole();
-  const canEdit = canWrite || canReview;
-  const objectKey = (documentItem?.objectKey || documentItem?.ObjectKey || '') as string;
-  return (
-    <Button
-      href={documentEditHref(objectKey, { section: String(item.Id) })}
-      variant="inline-link"
-      iconName={canEdit ? 'edit' : undefined}
-      disabled={!objectKey || !item.OutputJSONUri}
-      disabledReason={!item.OutputJSONUri ? 'This section has no data yet' : undefined}
-    >
-      {canEdit ? 'Edit Data' : 'View Data'}
-    </Button>
-  );
-};
-
 const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: DocumentItem | undefined }) => {
   const [isDownloading, setIsDownloading] = React.useState(false);
   const { settings } = useSettingsContext();
-
-  // Check if baseline is available based on evaluation status
-  const isBaselineAvailable = documentItem?.evaluationStatus === 'BASELINE_AVAILABLE' || documentItem?.evaluationStatus === 'COMPLETED';
+  const { setErrorMessage } = useAppContext();
+  const { canWrite, canReview } = useUserRole();
+  const canEdit = canWrite || canReview;
+  const objectKey = (documentItem?.objectKey || documentItem?.ObjectKey || '') as string;
 
   // Construct baseline URI by replacing output bucket with evaluation baseline bucket
   const constructBaselineUri = (outputUri: string | undefined) => {
@@ -345,7 +306,7 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
       return null;
     }
 
-    const [, bucketName, objectKey] = match;
+    const [, bucketName, key] = match;
 
     // Verify this is actually the output bucket before replacing
     if (bucketName !== outputBucketName) {
@@ -353,7 +314,7 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
     }
 
     // Replace the output bucket with the baseline bucket (same object key)
-    const baselineUri = `s3://${baselineBucketName}/${objectKey}`;
+    const baselineUri = `s3://${baselineBucketName}/${key}`;
 
     logger.info(`Converted output URI to baseline URI:`);
     logger.info(`  Output: ${outputUri}`);
@@ -377,7 +338,7 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
       const fileUri = type === 'baseline' ? constructBaselineUri(item.OutputJSONUri) : item.OutputJSONUri;
 
       if (!fileUri) {
-        alert('File URI not available');
+        setErrorMessage('File URI not available');
         return;
       }
 
@@ -431,194 +392,54 @@ const ActionsCell = ({ item, documentItem }: { item: SectionItem; documentItem: 
         errorMessage = `Failed to download ${type} data: ${(error as Error).message}`;
       }
 
-      alert(errorMessage);
+      setErrorMessage(errorMessage);
     } finally {
       setIsDownloading(false);
     }
   };
 
-  // Build dropdown menu items
-  const downloadMenuItems: ButtonDropdownProps.ItemOrGroup[] = [
+  const items: ButtonDropdownProps.ItemOrGroup[] = [
     {
-      id: 'prediction',
-      text: 'Download Data',
-      iconName: 'download',
+      id: 'edit-data',
+      text: canEdit ? 'Edit Data' : 'View Data',
+      href: documentEditHref(objectKey, { section: String(item.Id), from: 'document' }),
+      ...(canEdit ? { iconName: 'edit' as const } : {}),
+      disabled: !objectKey || !item.OutputJSONUri,
+      disabledReason: !item.OutputJSONUri ? SECTION_NO_DATA_REASON : undefined,
     },
+    { id: 'prediction', text: 'Download Data', iconName: 'download' },
+    ...(isBaselineAvailable(documentItem) ? [{ id: 'baseline', text: 'Download Baseline', iconName: 'download' as const }] : []),
   ];
 
-  // Add baseline option if available
-  if (isBaselineAvailable) {
-    downloadMenuItems.push({
-      id: 'baseline',
-      text: 'Download Baseline',
-      iconName: 'download',
-    });
-  }
-
   return (
-    <SpaceBetween direction="horizontal" size="xs">
-      <SectionDataLink item={item} documentItem={documentItem} />
-      <ButtonDropdown
-        items={downloadMenuItems}
-        onItemClick={({ detail }) => handleDownload(detail.id)}
-        disabled={isDownloading}
-        loading={isDownloading}
-        variant="normal"
-        expandToViewport
-      >
-        Download
-      </ButtonDropdown>
-    </SpaceBetween>
-  );
-};
-
-// Editable cell components for edit mode (moved outside render)
-const EditableIdCell = ({
-  item,
-  validationErrors,
-  updateSectionId,
-}: {
-  item: SectionItem;
-  validationErrors: Record<string, string[]>;
-  updateSectionId: (oldId: string, newId: string) => void;
-}): React.JSX.Element => (
-  <FormField errorText={validationErrors[item.Id]?.find((err) => err.includes('Section ID'))}>
-    <Input
-      value={item.Id}
-      onChange={({ detail }) => updateSectionId(item.Id, detail.value)}
-      placeholder="e.g., section_1"
-      invalid={validationErrors[item.Id]?.some((err) => err.includes('Section ID'))}
+    <ButtonDropdown
+      items={items}
+      variant="inline-icon"
+      expandToViewport
+      ariaLabel={`Actions for section ${item.Id}`}
+      loading={isDownloading}
+      onItemClick={({ detail }) => {
+        if (detail.id === 'prediction' || detail.id === 'baseline') void handleDownload(detail.id);
+      }}
     />
-  </FormField>
-);
-
-const EditableClassCell = ({
-  item,
-  validationErrors,
-  updateSection,
-  getAvailableClasses,
-  classificationIndex = EMPTY_CLASSIFICATION_INDEX,
-}: {
-  item: SectionItem;
-  validationErrors: Record<string, string[]>;
-  updateSection: (id: string, field: string, value: string) => void;
-  getAvailableClasses: () => { value: string; label: string; description?: string }[];
-  classificationIndex?: ClassificationIndex;
-}): React.JSX.Element => (
-  <FormField errorText={validationErrors[item.Id]?.find((err) => err.includes('class'))}>
-    <SpaceBetween size="xs">
-      <Select
-        selectedOption={getAvailableClasses().find((option) => option.value === item.Class) || null}
-        onChange={({ detail }) => updateSection(item.Id, 'Class', detail.selectedOption.value ?? '')}
-        options={getAvailableClasses()}
-        placeholder="Select class/type"
-        invalid={validationErrors[item.Id]?.some((err) => err.includes('class'))}
-        filteringType="auto"
-        expandToViewport
-      />
-      {/* Shown in edit mode too: this is where the class can actually be
-          corrected, so knowing what ground truth expects is most actionable
-          here. */}
-      <SectionClassMismatch index={classificationIndex} pageNumbers={item.PageIds ?? []} predictedClass={item.Class} />
-    </SpaceBetween>
-  </FormField>
-);
-
-const EditablePageIdsCell = ({
-  item,
-  validationErrors,
-  updateSection,
-}: {
-  item: SectionItem;
-  validationErrors: Record<string, string[]>;
-  updateSection: (id: string, field: string, value: number[]) => void;
-}): React.JSX.Element => {
-  // Store the raw input value separately from the parsed PageIds
-  const [inputValue, setInputValue] = React.useState(item.PageIds && item.PageIds.length > 0 ? item.PageIds.join(', ') : '');
-
-  // Update input value when item changes (e.g., when entering edit mode)
-  React.useEffect(() => {
-    setInputValue(item.PageIds && item.PageIds.length > 0 ? item.PageIds.join(', ') : '');
-  }, [item.PageIds]);
-
-  const parseAndUpdatePageIds = (value: string) => {
-    const trimmedValue = value.trim();
-
-    if (!trimmedValue) {
-      updateSection(item.Id, 'PageIds', []);
-      return;
-    }
-
-    // Parse comma-separated page IDs
-    const rawPageIds = trimmedValue
-      .split(/[,\s]+/) // Split on commas and/or whitespace
-      .map((id: string) => id.trim())
-      .filter((id: string) => id !== '');
-
-    const seenIds = new Set<number>();
-
-    const pageIds = rawPageIds
-      .map((rawId: string) => parseInt(rawId, 10))
-      .filter((parsed: number) => !Number.isNaN(parsed) && parsed > 0)
-      .filter((parsed: number) => {
-        if (seenIds.has(parsed)) {
-          return false;
-        }
-        seenIds.add(parsed);
-        return true;
-      });
-
-    updateSection(item.Id, 'PageIds', pageIds);
-  };
-
-  const handleInputChange = ({ detail }: { detail: { value: string } }) => {
-    // Only update the input value, don't parse yet
-    setInputValue(detail.value);
-  };
-
-  const handleBlur = () => {
-    // Parse and update PageIds when user finishes editing
-    parseAndUpdatePageIds(inputValue);
-  };
-
-  return (
-    <FormField
-      errorText={validationErrors[item.Id]?.find((err) => err.includes('Page') || err.includes('page'))}
-      description="Enter page numbers separated by commas (e.g., 1, 2, 3)"
-    >
-      <Textarea
-        value={inputValue}
-        onChange={handleInputChange}
-        onBlur={handleBlur}
-        placeholder="1, 2, 3"
-        {...({ autoComplete: 'off', spellCheck: false } as Record<string, unknown>)}
-        rows={1}
-        invalid={validationErrors[item.Id]?.some((err: string) => err.includes('Page') || err.includes('page'))}
-      />
-    </FormField>
   );
 };
 
-const EditableActionsCell = ({
-  item,
-  deleteSection,
-  documentItem,
-}: {
-  item: SectionItem;
-  deleteSection: (id: string) => void;
-  documentItem: DocumentItem | undefined;
-}) => {
-  return (
-    <SpaceBetween direction="horizontal" size="xs">
-      <SectionDataLink item={item} documentItem={documentItem} />
-      <Button variant="icon" iconName="remove" ariaLabel="Delete section" onClick={() => deleteSection(item.Id)} />
-    </SpaceBetween>
-  );
-};
+/** The data columns a user may show or hide (⚙), with their headers. */
+export const SECTION_COLUMN_OPTIONS = [
+  { id: 'id', label: 'Section ID' },
+  { id: 'class', label: 'Class/Type' },
+  { id: 'pageIds', label: 'Page IDs' },
+  { id: 'confidenceAlerts', label: 'Low Confidence Fields' },
+  { id: 'status', label: 'Status' },
+] as const;
 
-// Column definitions
-const createColumnDefinitions = (
-  pages: PageItem[],
+/**
+ * The sections table's columns, the ⋮ Actions column last. Their widths come from
+ * fillTableColumns (common/detail-table-columns): Actions fixed on the right, the data
+ * columns sharing the rest evenly.
+ */
+export const sectionColumnDefinitions = (
   documentItem: DocumentItem | undefined,
   mergedConfig: Record<string, unknown> | null | undefined,
   classificationIndex: ClassificationIndex,
@@ -629,925 +450,89 @@ const createColumnDefinitions = (
       header: 'Section ID',
       cell: (item: SectionItem) => <IdCell item={item} />,
       sortingField: 'Id',
-      minWidth: 160,
-      width: 160,
-      isResizable: true,
     },
     {
       id: 'class',
       header: 'Class/Type',
       cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
       sortingField: 'Class',
-      minWidth: 200,
-      width: 200,
-      isResizable: true,
     },
     {
       id: 'pageIds',
       header: 'Page IDs',
       cell: (item: SectionItem) => <PageIdsCell item={item} />,
-      minWidth: 120,
-      width: 120,
-      isResizable: true,
     },
     {
       id: 'confidenceAlerts',
-      header: 'Low-conf. fields',
+      header: 'Low Confidence Fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
-      minWidth: 140,
-      width: 140,
-      isResizable: true,
     },
     {
       id: 'status',
       header: 'Status',
       cell: (item: SectionItem) => <StatusCell item={item} />,
-      minWidth: 150,
-      width: 150,
-      isResizable: true,
     },
     {
       id: 'actions',
       header: 'Actions',
       cell: (item: SectionItem) => <ActionsCell item={item} documentItem={documentItem} />,
-      minWidth: 400,
-      width: 400,
-      isResizable: true,
     },
   ];
 };
-
-// Pattern-1 edit mode column definitions - data-only editing (read-only section structure)
-const createPattern1EditColumnDefinitions = (
-  pages: PageItem[],
-  documentItem: DocumentItem | undefined,
-  mergedConfig: Record<string, unknown> | null | undefined,
-  classificationIndex: ClassificationIndex,
-) => {
-  return [
-    {
-      id: 'id',
-      header: 'Section ID',
-      cell: (item: SectionItem) => <IdCell item={item} />,
-      sortingField: 'Id',
-      minWidth: 160,
-      width: 160,
-      isResizable: true,
-    },
-    {
-      id: 'class',
-      header: 'Class/Type',
-      cell: (item: SectionItem) => <ClassCell item={item} classificationIndex={classificationIndex} />,
-      sortingField: 'Class',
-      minWidth: 200,
-      width: 200,
-      isResizable: true,
-    },
-    {
-      id: 'pageIds',
-      header: 'Page IDs',
-      cell: (item: SectionItem) => <PageIdsCell item={item} />,
-      minWidth: 120,
-      width: 120,
-      isResizable: true,
-    },
-    {
-      id: 'confidenceAlerts',
-      header: 'Low-conf. fields',
-      cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
-      minWidth: 140,
-      width: 140,
-      isResizable: true,
-    },
-    {
-      id: 'actions',
-      header: 'Actions',
-      cell: (item: SectionItem) => <SectionDataLink item={item} documentItem={documentItem} />,
-      minWidth: 200,
-      width: 200,
-      isResizable: true,
-    },
-  ];
-};
-
-// Edit mode column definitions for Pattern-2/3 - expanded to use maximum available width
-const createEditColumnDefinitions = (
-  validationErrors: Record<string, string[]>,
-  updateSection: (id: string, field: string, value: unknown) => void,
-  updateSectionId: (oldId: string, newId: string) => void,
-  getAvailableClasses: () => { value: string; label: string }[],
-  deleteSection: (id: string) => void,
-  pages: PageItem[],
-  documentItem: DocumentItem | undefined,
-  mergedConfig: Record<string, unknown> | null | undefined,
-  classificationIndex: ClassificationIndex,
-) => [
-  {
-    id: 'id',
-    header: 'Section ID',
-    cell: (item: SectionItem) => <EditableIdCell item={item} validationErrors={validationErrors} updateSectionId={updateSectionId} />,
-    minWidth: 160,
-    width: 300,
-    isResizable: true,
-  },
-  {
-    id: 'class',
-    header: 'Class/Type',
-    cell: (item: SectionItem) => (
-      <EditableClassCell
-        item={item}
-        validationErrors={validationErrors}
-        updateSection={updateSection}
-        getAvailableClasses={getAvailableClasses}
-        classificationIndex={classificationIndex}
-      />
-    ),
-    minWidth: 200,
-    width: 400,
-    isResizable: true,
-  },
-  {
-    id: 'pageIds',
-    header: 'Page IDs',
-    cell: (item: SectionItem) => <EditablePageIdsCell item={item} validationErrors={validationErrors} updateSection={updateSection} />,
-    minWidth: 250,
-    width: 500,
-    isResizable: true,
-  },
-  {
-    id: 'actions',
-    header: 'Actions',
-    cell: (item: SectionItem) => <EditableActionsCell item={item} deleteSection={deleteSection} documentItem={documentItem} />,
-    minWidth: 300,
-    width: 350,
-    isResizable: true,
-  },
-];
 
 const SectionsPanel = ({
   sections,
-  pages = [],
   documentItem,
   mergedConfig,
-  onDocumentUpdate,
   classificationIndex = EMPTY_CLASSIFICATION_INDEX,
 }: SectionsPanelProps): React.JSX.Element => {
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [isRegrouping, setIsRegrouping] = useState(false);
-  const [isSavingGrouping, setIsSavingGrouping] = useState(false);
-  const [groupingNotice, setGroupingNotice] = useState<string | null>(null);
-  // Deferred until the page-regrouping board is actually open: these thumbnails
-  // feed only that board, so signing them on mount signed a whole document's
-  // pages — one resolver round trip per document view — and rendered none of
-  // them. PagesPanel keeps signing eagerly because it shows its thumbnails
-  // immediately.
-  const { urls: thumbnailUrls, failure: thumbnailFailure } = usePageThumbnails(pages, { enabled: isRegrouping });
-  const [editedSections, setEditedSections] = useState<SectionItem[]>([]);
-  const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [showSkipAllModal, setShowSkipAllModal] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isSkipping, setIsSkipping] = useState(false);
-  // Track which section's viewer is open for navigation
-  // `mergedConfig` is the config VERSION the document was processed with
-  // (see DocumentPanel: it fetches `documentVersionConfig` from the doc's
-  // `configVersion` and passes it in here). Using the current live config
-  // instead would show the wrong class vocabulary in Edit Mode for docs
-  // processed under a previous or different configuration profile.
-  const configuration = mergedConfig;
-  const { isReviewerOnly, canWrite, canReview } = useUserRole();
-  // When viewing a past document version, all edits are disabled — the panels
-  // write to the *current* output objects, not the historical snapshot.
-  const { isHistorical } = useDocumentVersion();
-
-  // BDA mode: data-only Edit Mode, with no section-structure editing and no page
-  // regrouping. Decided by the document's own configuration (`use_bda`), not by the
-  // stack's `IDPPattern`, which names the one unified pattern for every document.
-  const isPattern1 = () => isBdaModeConfig(mergedConfig);
-
-  // Check if document has pending HITL review
-  const hitlStatusLower = documentItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
-  const isHitlSkipped = hitlStatusLower === 'skipped' || hitlStatusLower === 'reviewskipped';
-  const isHitlCompleted = hitlStatusLower === 'completed' || hitlStatusLower === 'reviewcompleted';
-  // A queued document's review is skipped from its queue item, not here.
-  const hasPendingHITL = documentItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !isQueueManaged(documentItem?.hitlStatus);
-  // Show skip button only if HITL pending and not already completed/skipped
-  // (never while viewing a historical version — it mutates current state).
-  const showSkipAllButton = canReview && hasPendingHITL && !isHistorical;
-
-  // Log for debugging
-  logger.debug('HITL Status Check:', {
-    hitlStatus: documentItem?.hitlStatus,
-    hitlStatusLower,
-    isHitlSkipped,
-    isHitlCompleted,
-    hitlTriggered: documentItem?.hitlTriggered,
-    hasPendingHITL,
-    showSkipAllButton,
-  });
-
-  // Edit Mode should be disabled for reviewers until they click Start Review (claim the document)
-  const hasReviewOwner = !!(documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail);
-  const hitlTriggered = !!documentItem?.hitlTriggered;
-
-  // Check if document is currently processing (disable edit during reprocessing)
-  const processingStatuses = ['queued', 'running', 'processing', 'postprocessing', 'summarizing', 'evaluating'];
-  const docStatus = documentItem?.objectStatus?.toLowerCase() || '';
-  const isDocumentProcessing = processingStatuses.includes(docStatus);
-
-  /**
-   * Pages for the board, in the document's OWN numbering.
-   *
-   * Passed through unconverted, unlike the test-set path: document page ids are 1-based
-   * except BDA / Pattern-1, which is 0-based, and `section-grouping` is deliberately
-   * base-agnostic for exactly this reason. Converting here would put an off-by-one into
-   * the surface that has two numbering conventions.
-   */
-  const boardPages = useMemo(
-    () => (pages ?? []).map((page) => ({ id: page.Id, imageUri: thumbnailUrls[String(page.Id)] ?? null })),
-    [pages, thumbnailUrls],
-  );
-
-  const boardSections = useMemo<GroupedSection[]>(
-    () =>
-      (sections ?? []).map((section) => ({
-        sectionId: String(section.Id),
-        documentClass: section.Class ?? null,
-        pageIds: (section.PageIds ?? []).map((id) => Number(id)),
-      })),
-    [sections],
-  );
-
-  const handleSaveGrouping = async (next: GroupedSection[]) => {
-    const documentKey = documentItem?.objectKey || documentItem?.ObjectKey;
-    if (!documentKey) return;
-    setIsSavingGrouping(true);
-    try {
-      const result = await saveDocumentGrouping(documentKey, next);
-      if (!result.success) {
-        // Surfaced rather than thrown: the resolver returns a reasoned refusal for the
-        // cases a reviewer can act on — a document mid-pipeline, most of all.
-        setGroupingNotice(result.message ?? 'The page grouping could not be saved.');
-        return;
-      }
-      setGroupingNotice(result.message);
-      setIsRegrouping(false);
-      // The document record changed underneath the page, so the caller refetches.
-      if (onDocumentUpdate) onDocumentUpdate((prev) => ({ ...prev }));
-    } catch (err) {
-      logger.error('Could not save the page grouping:', err);
-      setGroupingNotice(`Could not save the page grouping: ${getErrorMessage(err)}`);
-    } finally {
-      setIsSavingGrouping(false);
-    }
-  };
-
-  // Disable edit mode if:
-  // - User has no write or review permissions (Viewer role), OR
-  // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL finished
-  //   (a legacy review completed or skipped, or a queue review that ended complete or rejected)
-  // Admins and Authors can always edit
-  // - Viewing a historical version (read-only snapshot)
-  // - In a review queue, for every role: it is reviewed from its queue item
-  const inReviewQueue = isInReviewQueue(documentItem?.hitlStatus);
-  const isHitlFinished = isHitlReviewFinished(documentItem?.hitlStatus);
-  const isEditModeDisabled =
-    isHistorical ||
-    inReviewQueue ||
-    (!canWrite && !canReview) ||
-    (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlFinished));
-
-  logger.debug('Edit Mode Check:', { isReviewerOnly, isEditModeDisabled, isHitlFinished });
-
-  // Handle skip all sections review (Admin or Reviewer); the reason and note are
-  // recorded with the skip in the review history.
-  const handleSkipAllSections = async (reason: string, note: string | undefined) => {
-    setIsSkipping(true);
-    setShowSkipAllModal(false);
-
-    try {
-      const objectKey = documentItem?.objectKey || documentItem?.ObjectKey;
-      if (!objectKey) {
-        throw new Error('Document object key is missing');
-      }
-
-      const result = await client.graphql({
-        query: skipAllSectionsReview,
-        variables: { objectKey, reason, note },
-      });
-
-      logger.info('All sections review skipped successfully', result);
-
-      // Update document state immediately with mutation response
-      const updatedData = result.data.skipAllSectionsReview;
-      if (updatedData && onDocumentUpdate) {
-        // Parse HITLReviewHistory from AWSJSON using typed parser
-        const reviewHistory = parseHITLReviewHistory(updatedData.HITLReviewHistory as string);
-
-        onDocumentUpdate((prev) => {
-          const newState = {
-            ...prev,
-            objectStatus: updatedData.ObjectStatus ?? prev.objectStatus,
-            hitlStatus: updatedData.HITLStatus ?? prev.hitlStatus,
-            hitlTriggered: updatedData.HITLTriggered ?? prev.hitlTriggered,
-            hitlCompleted: updatedData.HITLCompleted ?? true,
-            hitlSectionsPending: updatedData.HITLSectionsPending ?? [],
-            hitlSectionsCompleted: updatedData.HITLSectionsCompleted ?? prev.hitlSectionsCompleted,
-            hitlSectionsSkipped: updatedData.HITLSectionsSkipped ?? [],
-            hitlReviewOwner: updatedData.HITLReviewOwner || prev.hitlReviewOwner,
-            hitlReviewOwnerEmail: updatedData.HITLReviewOwnerEmail || prev.hitlReviewOwnerEmail,
-            hitlReviewHistory: reviewHistory ?? prev.hitlReviewHistory,
-          };
-          logger.info('Skip All Reviews - Updated document state:', {
-            hitlStatus: newState.hitlStatus,
-            hitlCompleted: newState.hitlCompleted,
-          });
-          return newState;
-        });
-      }
-    } catch (error) {
-      logger.error('Failed to skip all sections review:', error);
-      alert(`Failed to skip all sections: ${getErrorMessage(error)}`);
-    } finally {
-      setIsSkipping(false);
-    }
-  };
-
-  // Initialize edited sections when entering edit mode
-  useEffect(() => {
-    if (isEditMode && sections) {
-      const sectionsWithEditableFormat = sections.map((section) => ({
-        ...section, // Copy all properties including OutputJSONUri
-        Id: section.Id,
-        Class: section.Class,
-        PageIds: section.PageIds ? [...section.PageIds] : [],
-        OriginalId: section.Id,
-        isModified: false,
-        isNew: false,
-      }));
-      setEditedSections(sectionsWithEditableFormat);
-    }
-  }, [isEditMode, sections]);
-
-  // Get available classes from the document's configuration profile (passed in as
-  // `mergedConfig`). Shared with Test Studio's annotation editor, which offers
-  // the same correction against the same config.
-  const getAvailableClasses = () => getConfigClassOptions(configuration);
-
-  // Generate next sequential section ID
-  const getNextSectionId = () => {
-    const allSections = [...(sections || []), ...editedSections];
-
-    // Extract all numeric values from existing section IDs
-    const sectionNumbers = allSections
-      .map((section) => {
-        // Handle both formats: simple numbers ("1", "2") and prefixed ("section_1", "section_2")
-        const simpleMatch = section.Id.match(/^\d+$/);
-        const prefixedMatch = section.Id.match(/^section_(\d+)$/);
-
-        if (simpleMatch) {
-          return parseInt(section.Id, 10);
-        }
-        if (prefixedMatch) {
-          return parseInt(prefixedMatch[1], 10);
-        }
-        return null;
-      })
-      .filter((num): num is number => num !== null && !Number.isNaN(num));
-
-    // Determine the format to use based on existing sections
-    const hasSimpleFormat = allSections.some((section) => /^\d+$/.test(section.Id));
-    const hasPrefixedFormat = allSections.some((section) => /^section_\d+$/.test(section.Id));
-
-    // Get the next number
-    const maxNumber = sectionNumbers.length > 0 ? Math.max(...sectionNumbers) : 0;
-    const nextNumber = maxNumber + 1;
-
-    // Use existing format or default to simple format
-    if (hasSimpleFormat && !hasPrefixedFormat) {
-      return nextNumber.toString();
-    }
-    return `section_${nextNumber}`;
-  };
-
-  // Validate page ID overlaps and section ID uniqueness
-  const validateSections = (sectionsToValidate: SectionItem[]): boolean => {
-    const errors: Record<string, string[]> = {};
-    const pageIdMap = new Map();
-    const sectionIdMap = new Map();
-
-    // Get available page IDs from the document
-    const availablePageIds = pages ? pages.map((page) => page.Id) : [];
-    const maxPageId = availablePageIds.length > 0 ? Math.max(...availablePageIds) : 0;
-
-    sectionsToValidate.forEach((section) => {
-      const sectionErrors = [];
-
-      // Check for empty or invalid section ID
-      if (!section.Id || !section.Id.trim()) {
-        sectionErrors.push('Section ID cannot be empty');
-      } else if (sectionIdMap.has(section.Id)) {
-        sectionErrors.push(`Section ID '${section.Id}' is already used by another section`);
-      } else {
-        sectionIdMap.set(section.Id, true);
-      }
-
-      // Check for empty page IDs
-      if (!section.PageIds || section.PageIds.length === 0) {
-        sectionErrors.push('Section must have at least one valid page ID');
-      } else {
-        // Check each page ID for validity
-        const invalidPageIds: number[] = [];
-        const nonExistentPageIds: number[] = [];
-
-        section.PageIds.forEach((pageId) => {
-          // Check if page ID is valid (should be handled by parsing, but double-check)
-          // Note: BDA (Pattern-1) uses 0-based page indices, so we allow pageId >= 0
-          if (!Number.isInteger(pageId) || pageId < 0) {
-            invalidPageIds.push(pageId);
-          } else if (!availablePageIds.includes(pageId)) {
-            // Check if page exists in document
-            nonExistentPageIds.push(pageId);
-          } else if (pageIdMap.has(pageId)) {
-            // Check for overlaps with other sections
-            const conflictSection = pageIdMap.get(pageId);
-            sectionErrors.push(`Page ${pageId} is already assigned to section ${conflictSection}`);
-          } else {
-            pageIdMap.set(pageId, section.Id);
-          }
-        });
-
-        // Add specific error messages for invalid page IDs
-        if (invalidPageIds.length > 0) {
-          sectionErrors.push(`Invalid page IDs: ${invalidPageIds.join(', ')} (must be non-negative integers)`);
-        }
-
-        if (nonExistentPageIds.length > 0) {
-          const minPageId = availablePageIds.length > 0 ? Math.min(...availablePageIds) : 0;
-          sectionErrors.push(
-            `Page IDs ${nonExistentPageIds.join(', ')} do not exist in this document (available: ${minPageId}-${maxPageId})`,
-          );
-        }
-      }
-
-      if (sectionErrors.length > 0) {
-        errors[section.Id] = sectionErrors;
-      }
-    });
-
-    setValidationErrors(errors);
-    return Object.keys(errors).length === 0;
-  };
-
-  // Handle section modifications
-  const updateSection = (sectionId: string, field: string, value: unknown): void => {
-    const updatedSections = editedSections.map((section) => {
-      if (section.Id === sectionId) {
-        const updated = {
-          ...section,
-          [field]: value,
-          isModified: true,
-        };
-        return updated;
-      }
-      return section;
-    });
-
-    setEditedSections(updatedSections);
-
-    // Re-validate after changes
-    setTimeout(() => validateSections(updatedSections), 0);
-  };
-
-  // Handle section ID updates
-  const updateSectionId = (oldId: string, newId: string): void => {
-    const updatedSections = editedSections.map((section) => {
-      if (section.Id === oldId) {
-        return {
-          ...section,
-          Id: newId.trim(),
-          isModified: true,
-        };
-      }
-      return section;
-    });
-
-    setEditedSections(updatedSections);
-
-    // Update validation errors - move errors from old ID to new ID
-    const updatedErrors = { ...validationErrors };
-    if (updatedErrors[oldId]) {
-      updatedErrors[newId.trim()] = updatedErrors[oldId];
-      delete updatedErrors[oldId];
-      setValidationErrors(updatedErrors);
-    }
-
-    // Re-validate after changes
-    setTimeout(() => validateSections(updatedSections), 0);
-  };
-
-  // Add new section
-  const addSection = () => {
-    const newId = getNextSectionId();
-    const newSection: SectionItem = {
-      Id: newId,
-      Class: '',
-      PageIds: [] as number[],
-      OriginalId: null,
-      isModified: false,
-      isNew: true,
-    };
-
-    const updatedSections = [...editedSections, newSection];
-    setEditedSections(updatedSections);
-  };
-
-  // Delete section
-  const deleteSection = (sectionId: string): void => {
-    const updatedSections = editedSections.filter((section) => section.Id !== sectionId);
-    setEditedSections(updatedSections);
-
-    // Remove validation errors for deleted section
-    const updatedErrors = { ...validationErrors };
-    delete updatedErrors[sectionId];
-    setValidationErrors(updatedErrors);
-
-    // Re-validate remaining sections
-    setTimeout(() => validateSections(updatedSections), 0);
-  };
-
-  // Sort sections by starting page ID
-  const sortSectionsByPageId = (sectionsToSort: SectionItem[]) => {
-    return [...sectionsToSort].sort((a, b) => {
-      const aMin = Math.min(...(a.PageIds || [Infinity]));
-      const bMin = Math.min(...(b.PageIds || [Infinity]));
-      return aMin - bMin;
-    });
-  };
-
-  // Check if a section has actually been modified
-  const hasActualChanges = (section: SectionItem, originalSections: SectionItem[] | undefined) => {
-    // If it's a new section, it's always a change
-    if (section.isNew) {
-      return true;
-    }
-
-    // Find the original section
-    const originalSection = originalSections?.find((orig: SectionItem) => orig.Id === section.OriginalId);
-    if (!originalSection) {
-      // If we can't find the original, treat as modified (shouldn't happen)
-      return true;
-    }
-
-    // Check for changes in classification
-    if (section.Class !== originalSection.Class) {
-      return true;
-    }
-
-    // Page ids, compared in order. Both sides used to be sorted before comparing, which
-    // made a pure reorder invisible — Save would stay disabled on a real change — and the
-    // sort had no comparator, so it ordered numbers lexicographically (1, 10, 2). Order is
-    // part of the grouping: it is what `split_accuracy_with_order` scores.
-    const originalPageIds = originalSection.PageIds || [];
-    const currentPageIds = section.PageIds || [];
-
-    if (originalPageIds.length !== currentPageIds.length) {
-      return true;
-    }
-
-    for (let i = 0; i < originalPageIds.length; i += 1) {
-      if (originalPageIds[i] !== currentPageIds[i]) {
-        return true;
-      }
-    }
-
-    // Check for section ID changes
-    if (section.Id !== section.OriginalId) {
-      return true;
-    }
-
-    return false;
-  };
-
-  // Handle Edit Sections button click
-  // For Pattern-1: enters "data-only" edit mode (can edit data but not section structure)
-  // For Pattern-2/3: enters full edit mode (can edit data, section structure, add/delete sections)
-  const handleEditSectionsClick = () => {
-    setIsEditMode(true);
-  };
-
-  // Handle save changes
-  const handleSaveChanges = async () => {
-    if (!validateSections(editedSections)) {
-      return;
-    }
-
-    setShowConfirmModal(true);
-  };
-
-  // Confirm and process changes
-  const confirmSaveChanges = async () => {
-    setIsProcessing(true);
-    setShowConfirmModal(false);
-
-    try {
-      // Try different possible property names for the object key
-      const objectKey =
-        documentItem?.ObjectKey ||
-        documentItem?.objectKey ||
-        documentItem?.key ||
-        documentItem?.Key ||
-        documentItem?.id ||
-        documentItem?.Id;
-
-      if (!objectKey) {
-        const availableProps = documentItem ? Object.keys(documentItem).join(', ') : 'none';
-        throw new Error(`Document object key is missing. Available properties: ${availableProps}`);
-      }
-
-      // Filter to only include sections that have actually changed
-      const actuallyModifiedSections = editedSections.filter((section) => hasActualChanges(section, sections));
-
-      // Sort modified sections by starting page ID
-      const sortedModifiedSections = sortSectionsByPageId(actuallyModifiedSections);
-
-      // Create payload for actually modified sections only
-      const modifiedSections = sortedModifiedSections.map((section) => ({
-        sectionId: section.Id,
-        classification: section.Class,
-        pageIds: section.PageIds,
-        isNew: section.isNew,
-        isDeleted: false,
-      }));
-
-      // Find deleted sections
-      const deletedSectionIds =
-        sections
-          ?.filter((original) => !editedSections.find((edited) => edited.OriginalId === original.Id))
-          ?.map((section) => ({
-            sectionId: section.Id,
-            classification: section.Class,
-            pageIds: section.PageIds,
-            isNew: false,
-            isDeleted: true,
-          })) || [];
-
-      const allChanges = [...modifiedSections, ...deletedSectionIds];
-
-      // Log the changes for debugging
-      console.log(`Processing ${allChanges.length} actual changes out of ${editedSections.length} total sections`);
-      console.log('Modified sections:', modifiedSections);
-      console.log('Deleted sections:', deletedSectionIds);
-
-      // Call the API with a timeout
-      await submitProcessChanges(objectKey, allChanges);
-
-      // Update document state with new HITL status (review completed via Save and Reprocess)
-      if (onDocumentUpdate) {
-        onDocumentUpdate((prev) => ({
-          ...prev,
-          hitlStatus: 'Review Completed',
-          hitlCompleted: true,
-          objectStatus: 'QUEUED',
-        }));
-      }
-
-      // Exit edit mode
-      setIsEditMode(false);
-      setEditedSections([]);
-      setValidationErrors({});
-
-      alert('Section changes submitted!');
-    } catch (error) {
-      // Handle different types of errors
-      let errorMessage = 'Failed to process changes';
-      const err = error as { message?: string; errors?: { message?: string }[]; data?: { processChanges?: { message?: string } } };
-
-      if (err?.message) {
-        errorMessage = err.message;
-      } else if (err?.errors && err.errors.length > 0) {
-        errorMessage = err.errors[0].message || 'GraphQL error occurred';
-      } else if (typeof error === 'string') {
-        errorMessage = error;
-      } else if (err?.data?.processChanges?.message) {
-        errorMessage = err.data.processChanges.message;
-      }
-
-      alert(`Error processing changes: ${errorMessage}`);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // Cancel edit mode
-  const cancelEdit = () => {
-    setIsEditMode(false);
-    setEditedSections([]);
-    setValidationErrors({});
-  };
-
-  // Determine which columns and data to use
-  // Pattern-1: uses data-only edit mode (no section structure editing)
-  // Pattern-2/3: uses full edit mode with section structure editing
-  const columnDefinitions = isEditMode
-    ? isPattern1()
-      ? createPattern1EditColumnDefinitions(pages, documentItem, mergedConfig, classificationIndex)
-      : createEditColumnDefinitions(
-          validationErrors,
-          updateSection,
-          updateSectionId,
-          getAvailableClasses,
-          deleteSection,
-          pages,
-          documentItem,
-          mergedConfig,
-          classificationIndex,
-        )
-    : createColumnDefinitions(pages, documentItem, mergedConfig, classificationIndex);
-
   // Sort sections by their starting page ID for consistent display order.
-  // During parallel Map state execution (Extraction/Assessment), subscription events
-  // may arrive out of order — the DynamoDB Sections array order depends on which
-  // parallel Lambda finishes first. Sorting ensures stable visual ordering.
-  const tableItems = isEditMode ? editedSections : sortSectionsByPageId(sections || []);
+  // During parallel Map state execution (Extraction/Assessment), events may arrive out
+  // of order — the DynamoDB Sections array order depends on which parallel Lambda
+  // finishes first. Sorting ensures stable visual ordering.
+  const tableItems = [...(sections || [])].sort((a, b) => {
+    const aMin = Math.min(...(a.PageIds || [Infinity]));
+    const bMin = Math.min(...(b.PageIds || [Infinity]));
+    return aMin - bMin;
+  });
 
   // Sorting via the design system's own collection hook rather than a hand-rolled
   // sort: it honours BOTH `sortingField` and `sortingComparator` columns and owns
   // the direction, so every column that declares a sort works. Starts unsorted,
-  // so the default view keeps its existing order. `sortedItems` feeds the table
-  // ONLY — `tableItems` still feeds everything else, which must stay in document
-  // order however the table is sorted.
+  // so the default view keeps its existing order.
   const { items: sortedItems, collectionProps } = useCollection(tableItems, { sorting: {} });
-
-  // Check if there are any validation errors
-  const hasValidationErrors = Object.keys(validationErrors).length > 0;
+  const { preferences, setPreferences, visibleColumns } = useColumnPreferences('document-sections-columns', SECTION_COLUMN_OPTIONS);
 
   return (
-    <SpaceBetween size="l">
-      <Container
-        header={
-          <Header
-            variant="h2"
-            actions={
-              <SpaceBetween direction="horizontal" size="xs">
-                {!isEditMode ? (
-                  <>
-                    {showSkipAllButton && (
-                      <Button variant="normal" onClick={() => setShowSkipAllModal(true)} disabled={isSkipping} loading={isSkipping}>
-                        Skip All Reviews
-                      </Button>
-                    )}
-                    {/* Distinct from Edit Mode on purpose, and the labels carry the
-                        difference: this keeps the extracted values, whereas Edit Mode's
-                        save is already called "Process Changes" / "Save and Reprocess"
-                        because it regenerates them. Hidden for Pattern-1, where BDA owns
-                        the section structure. */}
-                    {!isPattern1() && (
-                      // Always enabled for now; the server still refuses a save it can't take.
-                      <Button iconName="edit" onClick={() => setIsRegrouping(true)}>
-                        Edit Page Grouping
-                      </Button>
-                    )}
-                    {/* Always enabled for now; the server still refuses a save it can't take. */}
-                    <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick}>
-                      Edit Mode
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button variant="link" onClick={cancelEdit} disabled={isProcessing}>
-                      Cancel
-                    </Button>
-                    {/* Hide Add Section button for Pattern-1 (section structure managed by BDA) */}
-                    {!isPattern1() && (
-                      <Button iconName="add-plus" onClick={addSection} disabled={isProcessing}>
-                        Add Section
-                      </Button>
-                    )}
-                    <Button
-                      variant="primary"
-                      iconName="external"
-                      onClick={handleSaveChanges}
-                      disabled={(hasValidationErrors && !isPattern1()) || isProcessing}
-                      loading={isProcessing}
-                    >
-                      {isPattern1() ? 'Save and Reprocess' : 'Process Changes'}
-                    </Button>
-                  </>
-                )}
-              </SpaceBetween>
-            }
-          >
-            Document Sections
-          </Header>
-        }
-      >
-        {groupingNotice && (
-          <Alert type="info" dismissible onDismiss={() => setGroupingNotice(null)}>
-            {groupingNotice}
-          </Alert>
-        )}
-
-        {/* The board's page cards are the thumbnails, so a refused signing leaves it
-            showing unlabelled empty cards. Say why instead. */}
-        {isRegrouping && thumbnailFailure && (
-          <Alert type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'} header="Page thumbnails unavailable">
-            {THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]}
-          </Alert>
-        )}
-
-        {isRegrouping && (
-          <PageGroupingEditor
-            pages={boardPages}
-            sections={boardSections}
-            classOptions={getAvailableClasses()}
-            canChangeClass={!isEditModeDisabled}
-            consequence={
-              <>
-                Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> — including
-                any a reviewer corrected — and the document is <b>not</b> reprocessed, so they may no longer match their pages. Use{' '}
-                <b>Edit Mode → Process Changes</b> afterwards if you would rather the pipeline redo them.
-              </>
-            }
-            saveLabel="Save page grouping"
-            isSaving={isSavingGrouping}
-            onSave={handleSaveGrouping}
-            onCancel={() => setIsRegrouping(false)}
-          />
-        )}
-
-        {hasValidationErrors && (
-          <Alert type="error" header="Validation Errors">
-            Please fix the following errors before saving:
-            <ul>
-              {Object.entries(validationErrors).map(([sectionId, errors]) => (
-                <li key={sectionId}>
-                  <strong>Section {sectionId}:</strong>
-                  <ul>
-                    {errors.map((error) => (
-                      <li key={`${sectionId}-error-${error.slice(0, 50)}`}>{error}</li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
-        <div style={{ overflowX: 'auto', position: 'relative' }}>
-          <Table
-            columnDefinitions={columnDefinitions}
-            items={sortedItems}
-            {...collectionProps}
-            variant="embedded"
-            resizableColumns
-            stickyHeader={false}
-            empty={
-              <Box textAlign="center" color="inherit">
-                <b>No sections</b>
-                <Box padding={{ bottom: 's' }} variant="p" color="inherit">
-                  {isEditMode ? "Click 'Add Section' to create a new section." : 'This document has no sections.'}
-                </Box>
+    <Container header={<Header variant="h2">Document Sections</Header>}>
+      <div style={{ overflowX: 'auto', position: 'relative' }}>
+        <Table
+          columnDefinitions={fillTableColumns(sectionColumnDefinitions(documentItem, mergedConfig, classificationIndex), visibleColumns)}
+          visibleColumns={visibleColumns}
+          preferences={
+            <ColumnPreferences
+              title="Document Sections"
+              options={SECTION_COLUMN_OPTIONS}
+              preferences={preferences}
+              setPreferences={setPreferences}
+            />
+          }
+          items={sortedItems}
+          {...collectionProps}
+          variant="embedded"
+          stickyHeader={false}
+          empty={
+            <Box textAlign="center" color="inherit">
+              <b>No sections</b>
+              <Box padding={{ bottom: 's' }} variant="p" color="inherit">
+                This document has no sections.
               </Box>
-            }
-            wrapLines
-          />
-        </div>
-      </Container>
-
-      {/* Confirmation Modal */}
-      <ProcessChangesConfirmModal
-        visible={showConfirmModal}
-        structuralChanges={
-          editedSections.some((section) => hasActualChanges(section, sections)) ||
-          (sections ?? []).some((original) => !editedSections.find((edited) => edited.OriginalId === original.Id))
-        }
-        bdaMode={!!isPattern1()}
-        onConfirm={() => void confirmSaveChanges()}
-        onCancel={() => setShowConfirmModal(false)}
-      />
-
-      {/* Skip All Sections Review Modal (Admin or Reviewer) */}
-      <ReasonModal
-        onDismiss={() => setShowSkipAllModal(false)}
-        visible={showSkipAllModal}
-        header="Skip All Section Reviews"
-        reasons={SKIP_ALL_REASONS}
-        confirmLabel="Skip All Reviews"
-        loading={isSkipping}
-        onConfirm={(reason, note) => void handleSkipAllSections(reason, note)}
-      >
-        <SpaceBetween size="s">
-          <Alert type="warning">This action will skip all pending section reviews and continue the document processing workflow.</Alert>
-          <Box>Skipping review will:</Box>
-          <ul>
-            <li>Mark all pending sections as review skipped without human verification</li>
-            <li>Record this action, with your reason, in the review history</li>
-          </ul>
-          <Box>Are you sure you want to skip all section reviews?</Box>
-        </SpaceBetween>
-      </ReasonModal>
-    </SpaceBetween>
+            </Box>
+          }
+          wrapLines
+        />
+      </div>
+    </Container>
   );
 };
 

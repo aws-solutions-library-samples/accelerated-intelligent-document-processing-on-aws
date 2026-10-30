@@ -22,6 +22,7 @@ from .v06_to_v07 import migrate_v06_to_v07
 from .v07_to_v08 import _has_legacy_markers as _v07_legacy
 from .v07_to_v08 import migrate_v07_to_v08
 from .v08_to_v09 import _has_flat_keys as _v08_flat
+from .v08_to_v09 import _has_prerelease_names as _v08_prerelease
 from .v08_to_v09 import migrate_v08_to_v09
 from .v09_to_v010 import TARGET_VERSION as V010_TARGET_VERSION
 from .v09_to_v010 import migrate_v09_to_v010
@@ -47,6 +48,7 @@ def _carries_a_legacy_key(config: Dict[str, Any]) -> bool:
         or _v06_legacy(config)
         or _v07_legacy(config)
         or _v08_flat(config)
+        or _v08_prerelease(config)
     )
 
 

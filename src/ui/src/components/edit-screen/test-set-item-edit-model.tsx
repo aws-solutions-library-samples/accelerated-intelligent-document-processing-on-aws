@@ -15,7 +15,7 @@
 // assignee works the document; an Admin or Author may too. An Annotator listed on the
 // set's queue can open any document read-only, and Claim an unassigned one to work it.
 import React, { useCallback, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
@@ -23,14 +23,8 @@ import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import {
-  MY_QUEUES_PATH,
-  MY_TASKS_PATH,
-  REVIEW_QUEUES_PATH,
-  TEST_STUDIO_PATH,
-  testSetAnnotateHref,
-  testSetQueuePath,
-} from '../../routes/constants';
+import { MY_QUEUES_PATH, parseEditOrigin, testSetAnnotateHref, testSetDetailHref, testSetQueuePath } from '../../routes/constants';
+import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { claimTestSetDocument } from '../review-queues/reviewer-assignment';
 import { testSetWorkItemId } from '../review-queues/work-item-ids';
@@ -83,6 +77,7 @@ const FAILED_ACTION: Record<EditAction, string> = {
   regroup: 'edit the page grouping',
   baseline: 'use this document as the evaluation baseline',
   cancel: 'leave this document',
+  refresh: 'reload this document',
 };
 
 export const useTestSetItemEditModel = (testSetId: string, objectKey: string, session: EditorSession): EditModel => {
@@ -94,6 +89,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   const leavePath = useLeavePath();
   const reviewWork = useOptionalReviewWork();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const focusField = searchParams.get('field');
   const initialSectionId = searchParams.get('section');
   const [isOpeningDraft, setIsOpeningDraft] = useState(false);
@@ -126,12 +122,20 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
     [testSetId, objectKey],
   );
 
+  // The trail the user came by; without one, Review Management for an Admin, Tasks for an
+  // Annotator, the set in Test Studio for an Author.
+  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : isAnnotator ? 'tasks' : 'test-studio');
+  // The set is named once its queue has loaded, never by its id first.
+  const setName = queue ? (queue.name ?? testSetId) : null;
   const navigation: EditNavigation = {
-    // Home only until the set's queue (and so its name) is known.
-    root: queue ? { text: queue.name ?? testSetId, href: `#${queuePath}` } : null,
-    crumbs: queue ? [{ text: name, href: '#' }] : [],
-    // Queue Management for an Admin, Tasks for an Annotator, the test sets for an Author.
-    activeHref: isAdmin ? `#${REVIEW_QUEUES_PATH}` : isAnnotator ? `#${MY_TASKS_PATH}` : `#${TEST_STUDIO_PATH}?tab=sets`,
+    trail: editTrail({
+      origin,
+      objectKey,
+      name,
+      queue: setName ? { crumb: { text: `Test set: ${setName}`, href: `#${queuePath}` }, view: 'test' } : null,
+      testSet: setName ? { text: setName, href: testSetDetailHref(testSetId) } : null,
+    }),
+    activeHref: editActiveHref(origin),
   };
 
   if (!roleLoading && !canAnnotate) {
@@ -289,6 +293,8 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         // Save keeps a draft; only Process Changes marks the labels reviewed.
         showSave: !editorReadOnly,
         saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined,
+        showRefresh: true,
+        refreshDisabledReason: saving ? 'Saving your changes…' : loading ? 'Loading…' : undefined,
         showRegroup: true,
         regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
         showClaim: canClaim,
@@ -360,6 +366,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         return `Claimed ${name}. It is in Home › Tasks.`;
       },
       savedMessage: savedDraftMessage(name),
+      refresh: adapter.refresh,
       cancelTo: leavePath(queuePath),
       failures: {
         surface: 'flash',

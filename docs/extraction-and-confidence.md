@@ -828,7 +828,7 @@ carries few enough pages that the clamp engages only at about **101 pages**; at
 (`max_concurrent_batches: 1`) it is 11. Because `max_concurrent_batches` caps the
 number of shards as well as the parallelism, *raising* it makes each request smaller
 and the threshold higher. Classification at packet granularity is affected on the same >20-image rule,
-which is why `classification.one_stage.packet.window_pages` ships at 20.
+which is why `classification.combined.packet.window_pages` ships at 20.
 
 Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5,
 Opus 5.5 and Sonnet 5 it is about 20% below the resolution they would otherwise use,
@@ -1012,7 +1012,7 @@ now preserved (the first becomes the section result, the rest are recorded in
 `metadata.recovered_instances`) and the section is flagged for review rather than
 failed.
 
-#### The silent case, and the warning that catches it
+#### When the model returns a single record for a multi-record section
 
 The hard case is the model returning a **single object** for a several-record
 section. Only that one record exists in the response, so nothing can recover the
@@ -1609,8 +1609,8 @@ extraction:
 > false` stores an out-of-vocabulary prediction verbatim, so there the rate follows
 > model output and `ConfidenceUnavailableThreshold` is the lever. The setting sits
 > in each class-assigning call's own `validation` block
-> (`classification.one_stage.llm.validation.enforceValidClasses`, and
-> `classification.two_stage.section_classification.llm.validation.enforceValidClasses`).
+> (`classification.combined.llm.validation.enforceValidClasses`, and
+> `classification.split_then_classify.section_classification.llm.validation.enforceValidClasses`).
 > `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
@@ -2920,4 +2920,4 @@ the system automatically adds `confidence_threshold` from configuration.
 - [OpenAI GPT-5.x Models](openai-models.md) — non-agentic-only model support
 - [Classification](classification.md) — excluding static pages
 - [Web UI](web-ui.md) — UI integration and display
-- [Pattern 2 Reference](pattern-2.md) — Pipeline mode details
+- [Pipeline Mode Reference](pattern-2.md) — Pipeline mode details

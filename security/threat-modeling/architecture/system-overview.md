@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
-| **Applies to release** | v0.6.9 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-10-29 |
+| **Applies to release** | v0.6.13 |
 | **Classification** | Internal |
 | **System Name** | GenAI Intelligent Document Processing (IDP) Accelerator |
 
@@ -18,18 +18,19 @@
 > portal in the Web UI); and the **Feature Platform**, **Jobs API**, and
 > **preprocessing hook** are new trust-boundary-crossing surfaces.
 
-> **v3.2 refresh (v0.6.9).** The sections below were re-derived from
-> `template.yaml`, `nested/api-resolvers/template.yaml`,
-> `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor
-> source rather than edited in place. The main user pool has **five** groups (an
-> `Annotator` group scoped by `allowedTestSets`); **161** operations are routable
-> through the dispatcher, with the group distribution in §5 taken from
-> `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover,
-> including the absence of a default deny at the dispatcher; §5.2 covers the two
-> non-REST authenticated entry points and §5.3 admission control; §6 states
-> encryption per bucket; §7.1 covers deployment-time privilege. Where a gap's
-> fix is in flight it is cited by issue number and marked **pending** — a pending
-> fix is not a control, and nothing below should be read as one.
+> **Re-derived for v0.6.13.** The sections below are taken from `template.yaml`,
+> the nested stacks it deploys (`patterns/unified`, `nested/api-resolvers`,
+> `nested/bedrockkb`, `nested/multi-doc-discovery`, the feature-platform main-stack
+> extensions), `patterns/unified/statemachine/workflow.asl.json`,
+> `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor /
+> review-queue source. The main user pool has **five** groups; **164** operations
+> are routable through the dispatcher, with the group distribution in §5 taken from
+> `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover;
+> §5.2 covers the two non-REST authenticated entry points, §5.3 admission control
+> and §5.4 the review-queue surface; §6 states encryption per store; §7.1 covers
+> deployment-time privilege. Where a gap's fix is in flight it is cited by issue
+> number and marked **pending** — a pending fix is not a control, and nothing below
+> should be read as one.
 
 ## 1. System Purpose
 
@@ -49,6 +50,7 @@ flowchart TD
     subgraph Ingestion
         S3Input[S3 Input Bucket] --> EB[EventBridge]
         EB --> QS[Queue Sender Lambda]
+        GD[GuardDuty Malware Protection<br/>optional] -.->|verdict via EventBridge| QS
         QS --> SQS[SQS Queue]
         SQS --> QP[Queue Processor Lambda]
     end
@@ -74,6 +76,7 @@ flowchart TD
     subgraph SharedTail[Shared Processing Tail]
         Pipeline --> HITL[HITL Check]
         BDA --> HITL
+        HITL -->|review queue on| Hold[HITL_IN_PROGRESS<br/>finalize run after review]
         HITL --> RuleVal[Rule Validation]
         RuleVal --> PostHook[Post-Rule-Validation Hook]
         PostHook --> Summary[Summarization]
@@ -100,17 +103,17 @@ flowchart TD
 | Component | Service | Purpose |
 |-----------|---------|---------|
 | **Input/Output Storage** | Amazon S3 (13 buckets) | Document upload, processing output, configuration, reporting, test sets, evaluation baseline, Web UI assets |
-| **Document Queue** | Amazon SQS (17 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
-| **Event Routing** | Amazon EventBridge | S3 events → Lambda, Step Functions status tracking |
-| **Workflow Orchestration** | AWS Step Functions (4 state machines) | Multi-step document processing, agentic shard Distributed Map |
-| **Document Tracking** | Amazon DynamoDB (13 tables) | Documents, Configuration, Users, Metering, ChatSessions, ChatMessages, Agents, TestSets, Notifications (each user's Inbox, `NotificationsTable`), etc. |
+| **Document Queue** | Amazon SQS (18 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
+| **Event Routing** | Amazon EventBridge | S3 events → Lambda, Step Functions status tracking, GuardDuty malware verdicts → queue sender (when `MalwareScanning` is on), scheduled sweepers; the Output bucket also sends every object event to the default bus for external consumers of `review/status.json`, with no consumer in the stack |
+| **Workflow Orchestration** | AWS Step Functions (5 state machines) | Multi-step document processing, agentic shard Distributed Map |
+| **Document Tracking** | Amazon DynamoDB (15 tables across the parent and nested stacks) | Tracking, Concurrency, Configuration, Users, Agent, ChatSessions, ChatMessages, IdHelperChatMemory, DiscoveryTracking, BootstrapTracking, **`HITLTable`** (review queues, items, drafts, history), **`NotificationsTable`** (each user's Inbox), plus ChatDocumentSessions, BDAMetadata and InstalledFeatures in nested stacks |
 | **UI API Layer** | **Amazon API Gateway REST** (`POST /op/{field}`) | Single Cognito-authorized route + dispatcher to resolver Lambdas |
 | **Chat Streaming** | **AWS Lambda Function URL** (`AuthType=AWS_IAM`, `RESPONSE_STREAM`) | SSE token-delta streaming for the two chat flows |
 | **Jobs API** (optional) | Amazon API Gateway REST (PRIVATE) | `EnableJobsApi=true`: `/jobs` endpoints for machine-to-machine batch submission |
 | **Edge / WAF** | CloudFront, optional WAFv2 (REGIONAL) | SPA delivery; optional IP allow-list WebACL on the REST API stage |
 | **Authentication** | Amazon Cognito (2 user pools + 1 identity pool) | Main user pool (**5 RBAC groups**: Admin, Author, Reviewer, Annotator, Viewer); Identity Pool mints the SigV4 credentials the chat Function URL requires; separate M2M pool for the Jobs API |
-| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables, the SQS queues and the CloudWatch log groups |
-| **Compute** | AWS Lambda (115+ functions) | Processing logic, API resolvers, agents, hooks |
+| **Encryption keys** | AWS KMS customer-managed key | One stack-owned CMK (`CustomerManagedEncryptionKey`, `EnableKeyRotation: true`) used by 11 of the 13 buckets, the DynamoDB tables except `InstalledFeaturesTable` (AWS-managed key), the SQS queues and 124 of the 126 explicitly declared log groups; the optional bastion host adds a second key of its own |
+| **Compute** | AWS Lambda (130+ functions) | Processing logic, API resolvers, agents, hooks |
 | **Monitoring** | Amazon CloudWatch | Alarms, dashboards, KMS-encrypted log groups |
 
 ### 3.2 AI/ML Services
@@ -134,7 +137,9 @@ flowchart TD
 | **Companion Chat** | Multi-turn conversational AI with SSE streaming | **Lambda Function URL**, Bedrock, DynamoDB |
 | **MCP Integration** | External tool execution via Model Context Protocol | AgentCore Gateway, Lambda, Cognito M2M client |
 | **RBAC** | **5-group** role-based access control, plus config-version scope (`allowedConfigVersions`) and test-set scope (`allowedTestSets`) | Cognito Groups, resolver Lambdas |
-| **Human Review (HITL)** | **Built-in review portal in the Web UI** (no A2I/SageMaker) | REST API, DynamoDB, S3 |
+| **Human Review (HITL)** | **Built-in review in the Web UI** (no A2I/SageMaker): the legacy Reviewer flow, and **review queues** (v0.6.13) worked by eligible Annotators with Admin supervision, a per-user Inbox, and a second (finalize) execution per reviewed document — see §5.4 | REST API, DynamoDB (`HITLTable`, `NotificationsTable`), S3, SQS, Step Functions |
+| **Malware scanning** (optional) | GuardDuty Malware Protection for S3 holds each upload at ingest until a verdict arrives; `QUARANTINED` and `MALWARE_SCAN_FAILED` documents never start a workflow (PM.T09) | GuardDuty, EventBridge, Lambda |
+| **Configuration prefix mappings** | An Input-bucket prefix decides a document's Configuration Profile and so its visibility partition; Admin-only CRUD (AUTH.T07) | DynamoDB, Lambda |
 | **Discovery** | AI-driven configuration generation from sample documents | Bedrock, Lambda, multi-doc-discovery ECR container |
 | **SDK/CLI** | Programmatic access for automation and integration | Python packages, Cognito auth |
 | **Knowledge Base** | RAG integration for context-enhanced processing | Bedrock KB, OpenSearch Serverless / S3 Vectors |
@@ -237,10 +242,10 @@ flowchart TD
 |----------|-------------|----------|
 | **TB1: Internet/End User** | Untrusted external users and clients | TLS 1.2+, authentication required |
 | **TB2: AWS Edge** | CDN, identity, optional WAF | CloudFront OAC, Cognito JWT validation, optional WAFv2 IP allow-list (default-block WebACL) |
-| **TB3: Application Layer** | Core application infrastructure | IAM roles, least-privilege Lambda execution roles, **all group/scope authorization enforced in resolver Lambdas**, VPC-optional (`ApiGatewayVisibility=PRIVATE`) |
+| **TB3: Application Layer** | Core application infrastructure | IAM roles, least-privilege Lambda execution roles, a **default-deny group floor at the dispatcher** with every narrower check (scope, ownership, review-queue eligibility) in the resolver Lambdas, VPC-optional (`ApiGatewayVisibility=PRIVATE`) |
 | **TB4: Managed AI Services** | AWS-managed AI/ML services | Service-linked roles, encryption in transit/at rest; note GPT-5.x is a non-Anthropic model family on Bedrock |
 | **TB5: Analytics Layer** | Data analytics and search | Athena workgroup isolation, OpenSearch encryption |
-| **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes its catch to a terminal failure state (HOOK.T07, closed by in **issue #919**) |
+| **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes `HookFatalError` (what `onError: fail` raises) to a terminal failure state (HOOK.T07, closed by **issue #919**). Under queue review the four hooks before the review point run in both executions (§5.4) |
 | **TB7: Deployment / IaC** | The principal that creates the stack, and the optional CloudFormation service role shipped for it | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped role now carries a **permissions boundary**, which bounds what it can reach; its own policy still grants `iam:*`, so it is not yet narrowed to the resources the stack needs — see §7.1 and SDK.T05 (**issue #927**, closed on the boundary) |
 
 > **Critical boundary note (new in v3.0).** TB6 now contains code that executes
@@ -260,7 +265,7 @@ flowchart TD
 > permissions and the install-time review of the feature, not verification at
 > load time.
 
-## 5. Authorization Model (v0.6.9)
+## 5. Authorization Model (v0.6.13)
 
 ### 5.1 The Web UI API edge
 
@@ -277,28 +282,29 @@ table.
 | Cognito authorizer (`COGNITO_USER_POOLS`) | **Authenticates** the ID token; 401 on missing/invalid/expired | **No group evaluation.** It cannot do per-operation authorization, because every operation shares one route |
 | Dispatcher (`http_api_dispatcher`) | Normalizes the event, validates argument shape (400), routes to a resolver Lambda or an in-process handler, maps denials to 403 | **Denies by default.** `authz.py` checks the caller's groups against the generated field-level manifest before routing, and a field with no entry is refused with 403 rather than forwarded (AUTH.T16, **issue #928** closed). Its 403 mapping now keys on the exception **type** first (`PermissionError`/`AuthorizationError`), with the conventional message prefix retained as a fallback — so a reworded exception raised as one of those types keeps its status, and one raised as a bare `Exception` still depends on its wording |
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
-| **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
+| **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**161 operations** are routable — 42 mapped directly by the
+**164 operations** are routable — 42 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **109** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **112** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 162, not 161, because one field (`getCircuitBreakerStatus`)
+three sets sum to 165, not 164, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 161, which is exactly the number of entries in
+union is 164, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
 | Admin + Author | 42 |
-| Admin only | 38 |
+| Admin only | 39 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 27 |
 | Admin + Author + Viewer | 15 |
 | Any authenticated user, group or no group (`ANY`) | 8 |
-| Admin + Annotator + Author | 10 |
-| Admin + Annotator | 12 |
+| Admin + Annotator + Author | 11 |
+| Admin + Annotator | 11 |
 | Admin + Annotator + Reviewer | 4 |
-| Admin + Reviewer | 2 |
+| Admin + Reviewer | 3 |
+| Annotator only | 1 |
 | Admin + Annotator + Author + Viewer | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
 
@@ -315,8 +321,8 @@ so whatever that role can read is readable by every authenticated user irrespect
 group, with no resolver in the path to apply a check of any kind — which is why it
 grants **nothing** on the document buckets, **no** `s3:GetObject`,
 `s3:GetObjectVersion` or `s3:ListBucket` on any bucket, and **no** KMS action. Its two
-inline policies are `lambda:InvokeFunction` on the chat-streaming Function URL and
-`ssm:GetParameter` on the settings parameter. A document read is therefore an API call
+inline policies are `lambda:InvokeFunction` and `lambda:InvokeFunctionUrl` on the
+chat-streaming function and `ssm:GetParameter` on the settings parameter. A document read is therefore an API call
 — `getFileContents`, `getFilePresignedUrl` or `getFilePresignedUrls`, each declared
 `ANY_GROUP` — so the distribution above does bound the bytes (see UI.T06 and
 AUTH.T03). The two buckets partitioned per user — Configuration and Test Set — are
@@ -349,7 +355,7 @@ type is `AWS::ApiGateway::RestApi` — a name to read carefully rather than a
 second API.
 
 The GraphQL schema (`schema.graphql`) is retained as the source for input-shape
-validation and as documentation of intent. Its 213 `@aws_cognito_user_pools`
+validation and as documentation of intent. Its 306 `@aws_cognito_user_pools`
 directives are **advisory only** — nothing enforces them at runtime now that
 AppSync is gone (see AUTH.T08).
 
@@ -360,7 +366,7 @@ and do **not** inherit the resolver authorization model:
 
 | Entry point | Authentication | Authorization |
 |---|---|---|
-| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06. **issue #920** is closed: both routes now resolve identity through one helper in which a body-supplied `callerSub` is a fallback only and a value contradicting the transport is refused with 403. What that does not supply is a *verified per-user* subject on this transport, and no group claim reaches it at all (`GAP-07`) — so CHAT.T03 stays open |
+| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` (and `lambda:InvokeFunction`, on the function itself) is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06. **issue #920** is closed: both routes now resolve identity through one helper in which a body-supplied `callerSub` is a fallback only and a value contradicting the transport is refused with 403. What that does not supply is a *verified per-user* subject on this transport, and no group claim reaches it at all (`GAP-07`) — so CHAT.T03 stays open |
 | **Jobs API** (optional, `EnableJobsApi=true`) | A separate `ApiUserPool` with OAuth **client-credentials** scopes (`idp-api/jobs.write`, `jobs.read`) | Scope-based, PRIVATE-endpoint only. A distinct realm from the Cognito group model — see JOB.T01–T03 |
 
 When `WebUIHosting=APIGateway`, two further methods (`GET /` and `GET /{proxy+}`)
@@ -389,11 +395,51 @@ race. Around it: `reconcile_counter` corrects drift against the real count of
 running executions under its own conditional write; drift is emitted as a metric
 so a leaked slot is visible rather than silent; a circuit breaker can stop
 admission entirely; SQS visibility is extended during a downstream outage
-instead of dropping work; and executions are named deterministically from the
-input key and message id, so a redelivered SQS message cannot start a second
-execution for the same document. The failure mode worth modelling here is a
+instead of dropping work; and executions are named deterministically — from the
+input key and message id, or for a review-queue finalize run from its single-use
+finalize token — so a redelivered SQS message cannot start a second execution for
+the same document. The queue processor also holds `states:StopExecution`, scoped
+to this stack's processing state machine, to stop a workflow it started for a
+document that was aborted while the start was in flight. When `MalwareScanning`
+is on, the queue sender does not enqueue an upload until its GuardDuty verdict
+arrives, so a held document occupies no slot. The failure mode worth modelling here is a
 *leaked* slot — capacity lost until reconciliation runs — rather than
 over-admission. See SDK.T04.
+
+### 5.4 The review-queue surface (v0.6.13)
+
+Review queues are the largest change to the authorization surface since the REST
+migration: 40 operations, all behind the same dispatcher floor, in three resolvers
+(`review_queues_resolver`, new operations in `test_set_resolver`, and
+`notifications_resolver` for the Inbox). What they change is **who can reach a
+production document**: the `Annotator` group, previously confined by design to the
+test sets in `allowedTestSets`, now works the production items of every queue that
+lists it as eligible, and an Admin supervises.
+
+- **Per-item operations** check queue eligibility (keyed on the `email` claim) and
+  the item's configuration profile against `allowedConfigVersions`, and fail closed
+  on everything they cannot evaluate.
+- **Writes** are conditioned in DynamoDB on the item's version, state and holder,
+  so only the holder saves or completes and a stale writer is refused (HITL.T02).
+- **The finalize execution** is started by the review-queues resolver itself,
+  which holds `sqs:SendMessage` on `DocumentQueue`; the message body is built
+  server-side from the tracking row. The four hooks before the review point run in
+  both executions; post-review hooks, summarization, evaluation and rule
+  validation run in the finalize execution only (HOOK.T04).
+- **The Inbox** has no posting operation; reads are keyed on the caller's verified
+  identity. Group-addressed messages are expanded with `ListUsersInGroup` at post
+  time, so `WorkflowTracker`, the review-queues resolver and the test-set resolver
+  hold that Cognito read (HITL.T03).
+- **New write grants** worth knowing: the test-set resolver can write the
+  UsersTable (it records an assignee's `allowedTestSets`), and the review-queues
+  resolver can update any tracking row and read the whole Output bucket (HITL.T04).
+- **Outbound:** `<document>/review/status.json` records the outcome, reviewer and
+  any reject note, and the Output bucket's EventBridge feed carries every object
+  event to the account's default bus (HITL.T03).
+
+The legacy Reviewer operations remain for documents a queue does not manage, and
+refuse one it does (`QUEUE_MANAGED`); `uploadDocument` and `processChanges` refuse
+to overwrite a document's sections while it is in review.
 
 ## 6. Data Classification
 
@@ -402,8 +448,10 @@ over-admission. See SDK.T04.
 > `EnableKeyRotation: true`. **11 of the 13 buckets** encrypt with it; the S3
 > access-log bucket and the Web UI asset bucket use SSE-S3 (`AES256`) instead,
 > which is appropriate — one is a log sink S3 itself writes to, the other holds
-> public SPA assets. The DynamoDB tables, the SQS queues and the CloudWatch log
-> groups also use the CMK. **All 13 buckets** block public access, enable
+> public SPA assets. The DynamoDB tables (except `InstalledFeaturesTable`, which
+> uses the AWS-managed key), the SQS queues and 124 of the 126 explicitly declared
+> CloudWatch log groups also use the CMK; the knowledge-base stack declares no log
+> groups for its five functions, which therefore take Lambda's defaults. **All 13 buckets** block public access, enable
 > versioning, and carry a bucket policy that denies any request where
 > `aws:SecureTransport` is false, so cleartext access is refused at the bucket
 > rather than merely discouraged at the client. Two properties of the key policy
@@ -423,6 +471,7 @@ over-admission. See SDK.T04.
 | User credentials | Restricted | Cognito | AWS-managed encryption |
 | Chat conversations | Customer Confidential | DynamoDB | DynamoDB SSE-KMS (stack CMK) + TTL |
 | Inbox messages and preferences | Customer Confidential | DynamoDB (`NotificationsTable`, partitioned per user) | DynamoDB SSE-KMS (stack CMK) + TTL |
+| Review queues, items, drafts, history | Customer Confidential | DynamoDB (`HITLTable`); draft bodies and `review/status.json` in the Output bucket | DynamoDB SSE-KMS (stack CMK); SSE-KMS (stack CMK) |
 | **PII redaction mappings** | **Restricted** | DynamoDB (feature-owned table) | **SSE with CMK; opt-in storage only** |
 | Reporting data | Customer Confidential | S3 Reporting Bucket (Parquet) | SSE-KMS (stack CMK) |
 | Test sets + ground truth | Customer Confidential | S3 TestSetBucket | SSE-KMS (stack CMK) |
@@ -450,8 +499,8 @@ every runtime control in this document depends on. The repository ships an
 without holding administrator rights. As written it does not achieve that
 separation — it holds permissions broad enough to alter the guardrails that
 would otherwise bound it, so the ability to pass it is effectively equivalent to
-account administrator. **issue #927** is closed by attaching a **permissions boundary** to the role, which bounds what it can reach; the policy's own `iam:*` grant is unchanged, so the narrowing itself is still outstanding. Until that
-merges, treat `iam:PassRole` for that role as an administrative grant and scope
+account administrator. **issue #927** is closed by attaching a **permissions boundary** to the role, which bounds what it can reach; the policy's own `iam:*` grant is unchanged, so the narrowing itself is still outstanding. Until it is
+narrowed, treat `iam:PassRole` for that role as an administrative grant and scope
 who holds it accordingly. See SDK.T05.
 
 ## 8. Security Test Coverage
@@ -471,8 +520,10 @@ otherwise take it as broader assurance than it is. Both RBAC suites drive
 `POST /op/{field}` only, so **no test exercises the chat Function URL
 transport** — a regression on the paths described in §5.2 would not be detected
 (CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
-expectations manifest; it does not assert that an operation *has* an entry, which
-is the AUTH.T16 gap that **issue #928** addresses.
+expectations manifest and the dispatcher refuses an operation with no entry
+(**issue #928**, closed), but neither asserts that a resolver's per-object check —
+scope, ownership, review-queue eligibility — exists and matches the right object,
+which is the AUTH.T16 residual.
 
 See [`security/README.md`](../../README.md) for how to run each, and
 `security/threat-modeling/README.md` for how this corpus is kept current

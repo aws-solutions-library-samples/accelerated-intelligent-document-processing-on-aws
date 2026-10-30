@@ -7,296 +7,161 @@ SPDX-License-Identifier: MIT-0
 
 # Release Runbook
 
-This is the operational procedure for publishing a release of the GenAI IDP Accelerator to
-its four public S3 regions. It covers what must be true before you start, the ordered
-steps, what success looks like at each step, the failure and recovery paths that actually
-exist, what is not automated, and how to verify the release afterwards.
+This page explains how a release of the GenAI IDP Accelerator is built and published,
+so that you can publish your own releases to S3 buckets in an AWS account you own. A
+published release is a set of CloudFormation templates and build artifacts in S3 that
+anyone with the template URL can deploy with **Launch Stack**, `idp-cli deploy` or the
+CloudFormation console.
 
-It exists because the step that makes artifacts public — `scripts/aws-release.sh` — is six
-lines long, is invoked by a human, and is referenced by no CI job in either pipeline.
-Everything around it (validation tiers, changelog, benchmarks) was already documented; the
-one irreversible step was not.
+The page covers what a release consists of, what must be true before you publish, the
+ordered steps, how to recover from a failed or broken publish, and how to verify the
+result.
 
-## How this document was verified — read this first
+## What a release is
 
-Under pressure, a runbook is trusted literally. So every claim below is marked with how it
-was established, and the gaps are marked as gaps rather than filled in with plausible
-guesses.
+A release is one run of `idp-cli publish` per AWS region you want to serve. Each run
+builds the solution from the checked-out source tree and uploads it to one bucket in
+that region:
 
-| Marker | Meaning |
-|---|---|
-| ✅ | **Verified by reading code** in this repository, at the cited file and line. |
-| 📄 | **Verified from committed documentation** in this repository (a skill, a doc, a CHANGELOG entry) — i.e. someone recorded it after doing it, but this runbook did not re-derive it from code. |
-| ⚠️ | **Unverified.** Either it depends on account/organisation state that is not in the repository, or it is a step this document's author could not observe. Treat as a question to answer, not an instruction to follow. |
-
-Nothing in this document was executed. No release was published, no AWS write API was
-called, and `publish.py` / `scripts/aws-release.sh` were not run while writing it. The
-verification therefore covers *what the code does*, not *what happens when it runs*.
-
-## What a release physically is
-
-✅ `scripts/aws-release.sh` runs `idp-cli publish` four times, once per region, each with
-`--public`:
-
-```sh
-set -e
-set -x
-
-idp-cli publish --source-dir . --bucket-basename aws-ml-blog --prefix artifacts/genai-idp --region us-west-2 --public
-idp-cli publish --source-dir . --bucket-basename aws-ml-blog --prefix artifacts/genai-idp --region us-east-1 --public
-idp-cli publish --source-dir . --bucket-basename aws-ml-blog --prefix artifacts/genai-idp --region eu-central-1 --public
-idp-cli publish --source-dir . --bucket-basename aws-bigdata-blog-replica --prefix artifacts/genai-idp --region ca-central-1 --public
+```bash
+idp-cli publish --source-dir . --bucket-basename <basename> --prefix <prefix> \
+  --region <region> --public
 ```
 
-✅ The bucket for each region is `<bucket-basename>-<region>` — the region suffix is
-appended by the publisher, not written in the script
-(`lib/idp_sdk/idp_sdk/_core/publish.py`, `setup_environment`). So the four buckets are
-`aws-ml-blog-us-west-2`, `aws-ml-blog-us-east-1`, `aws-ml-blog-eu-central-1` and
-`aws-bigdata-blog-replica-ca-central-1`, all under prefix `artifacts/genai-idp`.
+- `--region` is the region the release is built for and published to.
+- `--bucket-basename` names the bucket. The publisher appends the region, so the
+  bucket it writes to is `<basename>-<region>`. If you omit the option, a name is
+  generated for you.
+- `--prefix` is the key prefix every object is written under.
+- `--public` makes the published objects anonymously readable, which is what lets
+  other accounts deploy the release. Leave it off for a private release that only your
+  own account deploys. It covers the standard template and its artifacts only: the
+  template variants written by `--headless` and `--govcloud` are uploaded without a
+  public ACL, so on a public release they are not anonymously readable unless your bucket
+  policy grants anonymous read.
+- `--clean-build` forces every component to rebuild instead of reusing cached builds.
 
-⚠️ **The basename is not the same in every region.** Three use `aws-ml-blog`; `ca-central-1`
-uses `aws-bigdata-blog-replica`, so its bucket is `aws-bigdata-blog-replica-ca-central-1`
-and **not** `aws-ml-blog-ca-central-1`, which does not exist. Any snippet, URL or
-`for`-loop that builds a bucket name from the region alone is wrong for Canada; the loops
-in §5 below carry the region-to-basename pairs for that reason. Where this page says
-`aws-ml-blog-*` it is talking about the three that share that basename.
+`make publish REGION=<region> BUCKET_BASENAME=<basename> PREFIX=<prefix> PUBLIC=1` is a
+wrapper around the same command. The repository's own release script,
+`scripts/aws-release.sh`, is a list of these commands, one per region, run with `set -e`
+so that the first failure stops it. For your own releases, write an equivalent script
+that names your buckets and regions.
 
-⚠️ **Why those regions** is recorded for one of the four and not for the other three. The
-rationale for `ca-central-1` is Canada-specific model routing and data residency, built out
-in [#1373](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1373)
-and documented in `docs/canada-region-model-support.md`. For `us-west-2`,
-`us-east-1` and `eu-central-1` the rationale (customer demand, EU data-residency coverage,
-model availability) is not written down anywhere in the repository. Do not add or drop a
-region on the strength of this document.
-
-⚠️ **The publish set is asserted in two places and they must agree.**
-`scripts/aws-release.sh` is the script above; `TEMPLATE_URLS` in
-`lib/idp_cli_pkg/idp_cli/cli.py` is what `idp-cli deploy` serves. The failure is one-sided
-and silent in each direction — a region published but missing from the dict is refused by
-**all three** deploy paths that read it (`--govcloud`, `--headless` and the plain `idp-cli
-deploy`, the last being the one most people hit) while the Launch Stack buttons still offer
-it, and a region in the dict that was never published serves a 404. `TestTemplateUrlTable`
-in `lib/idp_cli_pkg/tests/test_cli_module_helpers.py` derives the script's region list and
-fails naming the mismatch, so adding a region means both files plus **three** Launch Stack
-tables — `README.md`, `docs/deployment.md` and
-`workshop/amazon-quick-integration-workshop.md`, the third being the one easiest to miss —
-the `## Templates` block in `.claude/skills/cut-release-changelog.md`, the upgrade-test
-region list in `.claude/skills/test-upgrade.md`, the **two** "update an existing stack"
-template URL lists (`README.md` and `docs/deployment.md`, which are separate from those
-pages' Launch Stack tables), the runbook descriptions in `docs/README.md` and
-`docs/release-validation/README.md`, `IDP_REGIONS` in
-`lib/idp_sdk/idp_sdk/_core/cleanup_orphaned.py`, and any per-region page such as
-`docs/canada-region-model-support.md`. ✅ The two source files **and all three Launch Stack
-tables** are held together by that test, so omitting a table fails a gate rather than
-shipping quietly. What nothing checks is the rest of the list.
-
-⚠️ **`IDP_REGIONS` is the SDK default only.** `discover_idp_stacks` falls back to it when
-its caller names no regions, but `idp-cli remove-deleted-stack-resources` declares its own
-`--check-stack-regions` default of three regions and always passes it, so adding a region
-to `IDP_REGIONS` does **not** widen what the CLI sweeps. A deleted Canada stack's orphaned
-resources are skipped unless `ca-central-1` is named explicitly. Aligning the two would
-widen a deletion command's default blast radius from three regions to seven, which is a
-decision rather than a tidy-up. The extensions marketplace
-(`config_library/extensions-marketplace.yaml`) is a **separate** set and is not covered by
-that test — it still carries three regions.
+**Each region's release is self-contained.** The template published to a region points
+at the code and nested templates in that same region's bucket, so a stack created from
+one region's template never reads another region's bucket. Publish every region you
+advertise; a region that was not published cannot be deployed.
 
 ### What lands in each bucket
 
-✅ Derived from `publish.py`. `VERSION` below is the contents of the repo's `VERSION` file,
-read from `./VERSION` relative to the process working directory.
+`<VERSION>` is the contents of the repository's `VERSION` file.
 
-| Key | Mutability | What reads it |
+| Key | Changes | What reads it |
 |---|---|---|
-| `artifacts/genai-idp/idp-main.yaml` | **Overwritten every release** | the "Launch Stack" buttons in `README.md` and `docs/deployment.md`; a third set of Launch Stack buttons in `workshop/amazon-quick-integration-workshop.md`; **and `idp-cli` itself** — `lib/idp_cli_pkg/idp_cli/cli.py` hardcodes this key for all four regions in its `TEMPLATE_URLS` dict, used at three call sites on the `deploy` command's create and update paths, so `idp-cli deploy` serves whatever this key currently holds |
-| `artifacts/genai-idp/idp-main_<VERSION>.yaml` | write-once per version | the `## Templates` block in `CHANGELOG.md`; every release-validation and benchmark record |
-| `artifacts/genai-idp/idp-main-latest.json` | **Overwritten every release** | the Web UI "update available" indicator, via the version-check resolver (`src/lambda/version_check_resolver/index.py`) |
-| `artifacts/genai-idp/<VERSION>/layers/idp-common-<name>-<hash>.zip` | content-addressed | the deployed stack's Lambda layers |
-| `artifacts/genai-idp/<VERSION>/config_library/…` | per-version | the deploy-time config copy custom resource |
-| `artifacts/genai-idp/<VERSION>/…` (SAM-packaged nested/pattern templates, function code zips, UI bundle, unified-pattern source zip, samples, `catalog.json`, `samples-manifest.json`) | per-version | CloudFormation and CodeBuild during stack deployment |
-| `artifacts/genai-idp/extensions/<id>/…` | **version-free** | the feature platform's catalog; a sibling of the versioned prefix, not underneath it |
+| `<prefix>/idp-main.yaml` | Overwritten by every release | Launch Stack buttons, and `idp-cli deploy` (see below) |
+| `<prefix>/idp-main_<VERSION>.yaml` | Written once per version | Anyone who wants to deploy or upgrade to that exact version, such as the `## Templates` links in `CHANGELOG.md` |
+| `<prefix>/idp-main-latest.json` | Overwritten by every release | The Web UI's "update available" indicator in deployed stacks |
+| `<prefix>/<VERSION>/…` | Written once per version | CloudFormation and CodeBuild while a stack deploys: nested and pattern templates, Lambda code and layers, the Web UI bundle, the configuration library and samples |
+| `<prefix>/extensions/<id>/…` | Not versioned | The feature platform's extension catalog |
 
-✅ `artifacts/genai-idp-mp/` — the *marketplace* extensions prefix — is **not** written by
-`scripts/aws-release.sh`. It is published separately by extension authors via
-`idp-feature-cli publish`, deliberately kept on a different prefix so the two publish paths
-cannot collide (`config_library/extensions-marketplace.yaml`).
+`idp-main.yaml` and `idp-main-latest.json` are the only keys a release overwrites, so
+they are the only keys that move when you publish or roll back.
 
-### What publish substitutes into the template
+`idp-cli deploy` does not take a bucket from configuration. When it is not given a
+template, it uses the URLs in `TEMPLATE_URLS` in `lib/idp_cli_pkg/idp_cli/cli.py`, which
+name the floating `idp-main.yaml` key in each region. To make `idp-cli deploy` use your
+releases by default, change those URLs; otherwise pass your template with
+`--template-url`.
 
-✅ `publish.py` rewrites tokens in `template.yaml` as it packages
-(`build_main_template`). The ones that matter operationally:
+### What the publisher writes into the template
 
-- `<VERSION>` → the `VERSION` file's contents. This is why the published template's
-  `Description` line reads `AWS GenAI IDP Accelerator (uksb-r8evguc4p9) (SO9027) (v0.6.8)`
-  — checking that string is the cheapest way to confirm *which* build an object is.
-- `<ARTIFACT_BUCKET_TOKEN>` / `<ARTIFACT_PREFIX_TOKEN>` → that region's bucket
-  (`<bucket-basename>-<region>`, so `aws-bigdata-blog-replica-ca-central-1` in Canada) and
-  `artifacts/genai-idp/<VERSION>`. The deployed stack fetches its own code from the region
-  it was published to.
-- `<PUBLIC_ARTIFACTS_BUCKET_TOKEN>` / `<PUBLIC_ARTIFACTS_PREFIX_TOKEN>` → the bucket and
-  the *version-stripped* prefix, becoming the defaults of the `PublicArtifactsBucket` and
-  `PublicArtifactsPrefix` stack parameters. This is what makes the update indicator work
-  with no customer action. See [Version Update Indicator](./version-update-indicator.md).
+While packaging, the publisher replaces tokens in `template.yaml`:
 
-A consequence worth internalising: **each region's artifacts are region-local and not
-interchangeable.** A stack created from the `us-east-1` template pulls code from
-`aws-ml-blog-us-east-1`. Publishing three of four regions does not give you a
-three-quarters-working release; it gives you one region of customers who cannot deploy.
+- `<VERSION>` becomes the `VERSION` file's contents. The published template's
+  `Description` line ends with `(v<VERSION>)`, which is the quickest way to confirm which
+  build an object is.
+- The artifact bucket and prefix tokens become that region's bucket and
+  `<prefix>/<VERSION>`, which is how a deployed stack finds its own code.
+- The public-artifacts bucket and prefix tokens become the defaults of the
+  `PublicArtifactsBucket` and `PublicArtifactsPrefix` stack parameters, which tell a
+  deployed stack where to look for `idp-main-latest.json`. See
+  [Version Update Indicator](./version-update-indicator.md).
 
 ## 1. Preconditions
 
 ### 1.1 Branch and tree state
 
-- ✅ `VERSION` must be a **final** version, not `x.y.z.devN` / `rcN` / `aN`. Nothing in the
-  publish path enforces this — `check_parameters` and `setup_environment` accept any string
-  and `version_compare` deliberately treats a non-numeric segment as `999` so dev builds
-  pass the SAM/Python version gates. A `.devN` value would be published as a real release,
-  with `.devN` in every key and in the template `Description`. The only guard is the
-  changelog skill, which refuses to cut a section over a non-final `VERSION`
-  (📄 `.claude/skills/cut-release-changelog.md`). **Check `cat VERSION` by hand.**
-- ✅ `VERSION` is set by `make version V=x.y.z`, which validates PEP 440 and rewrites
-  `VERSION`, 9 package version files (five `pyproject.toml` files under `lib/`, the
-  `__version__` of `idp_sdk`, `idp_mcp_connector` and `idp_feature_sdk`, and `idp_cli`'s
-  `click.version_option`) and the seller-entitlement-service template's `ServiceVersion`
-  output — 11 paths in all, which the target lists when it finishes (`Makefile`,
-  `##@ Version Management`). Never hand-edit `VERSION`.
-- 📄 `CHANGELOG.md` must have the `[Unreleased]` section already **pruned** to
-  net-since-release content in three subsections (`.claude/skills/prepare-changelog.md`),
-  and then **cut** to `## [<VERSION>]` with the four-region `## Templates` block appended
-  (`.claude/skills/cut-release-changelog.md`). Those URLs are written *before* the publish
-  and 404 until it lands — that is expected and is stated in the skill.
-- The working tree must be clean and at the commit you intend to tag. ✅ The publish reads
-  the working tree, not a tag: `--source-dir .` and `open("./VERSION")` are both relative to
-  the process working directory, so whatever is checked out is what ships.
+- **`VERSION` must be a final version**, such as `1.2.3`, not `1.2.3.dev1` or
+  `1.2.3rc1`. The publisher accepts any string and will publish a development version as
+  a real release, with that string in every key. Check it by hand with `cat VERSION`.
+- Set the version with `make version V=<x.y.z>`. It validates the version, then rewrites
+  `VERSION`, the 9 package version files and the seller entitlement service template's
+  version: 11 paths in all, which it lists when it finishes. Do not edit `VERSION` by
+  hand.
+- `CHANGELOG.md` should have its `[Unreleased]` section turned into a section for the new
+  version, with the template URLs for each region you publish. The procedures are in
+  `.claude/skills/prepare-changelog.md` and `.claude/skills/cut-release-changelog.md`.
+  The URLs return 404 until the publish completes.
+- The working tree must be clean and checked out at the commit you intend to tag. The
+  publisher reads the working tree and `./VERSION` relative to the current directory, so
+  whatever is checked out is what ships.
 
-### 1.2 Validation tiers that must have passed
+### 1.2 Validation before you publish
 
-📄 The tier list, the order and the record format are fixed by
-[Release Validation](./release-validation/README.md) and its driving skill
-`.claude/skills/release-validation.md`. Do not duplicate that list here; run it.
+Run the offline checks on the release commit before publishing: `make lint`,
+`make test`, `make typecheck` and `make dep-audit`, and the security scan with
+`make srt-setup` followed by `make srt-scan`. Run the scan before you build, because
+publishing adds build output to the tree.
 
-Two ordering constraints from that skill are load-bearing for *this* runbook:
-
-- 📄 **Run the SRT security scan before you build.** `make srt-setup` (with `CI=1`) then
-  `make srt-scan`, *before* `publish.py` puts `.aws-sam/` output in the tree. Scanning after
-  a build is not wrong — build output is labelled LOCAL-ONLY — but the ordering is the
-  documented one and avoids arguing about it later.
-- 📄 The release-validation battery's "artifact under test" is the **published**
-  `idp-main_<VERSION>.yaml`, so most of its tiers can only run *after* this runbook's
-  step 3. The offline tiers (`make test`, `make lint-cicd`, `make typecheck`,
-  `make dep-audit`, and a `--clean-build` publish to a throwaway bucket) run before.
+The fuller validation programme, including the tiers that deploy the published
+template, is described in [Release Validation](./release-validation/README.md) and
+`.claude/skills/release-validation.md`. Most of its tiers test the published artifact,
+so they run after Step 3.
 
 ### 1.3 Local toolchain
 
-✅ `check_prerequisites` in `publish.py` hard-fails on exactly three commands and one
-version floor:
+The publisher checks for `aws`, `sam` (1.129.0 or later) and `uv` on the `PATH`, and for
+Python 3.12 or later. It also needs tools it does not check for in advance:
 
-| Requirement | Enforced? |
-|---|---|
-| `aws` on `PATH` | ✅ checked |
-| `sam` on `PATH`, version ≥ `1.129.0` | ✅ checked |
-| `uv` on `PATH` | ✅ checked |
-| Python ≥ 3.12 | ✅ checked |
-| `npm` / Node | ✅ **not checked** — but required. `validate_ui_build` runs `npm ci` then `npm run build` in `src/ui`, and a failure there aborts the publish (`sys.exit(1)`) well after uploads have begun. |
-| `ruff` | ✅ **not checked** — but required. `_validate_python_linting` runs `ruff check` and `ruff format --check` and fails the publish if either is non-zero. A missing `ruff` binary raises rather than skipping. |
-| `cfn-lint` | ✅ **not checked, and silently skipped if absent.** `_validate_cfn_lint` prints `cfn-lint not installed, skipping CloudFormation linting` and returns success. A release published on a machine without `cfn-lint` gets **no** CloudFormation linting at all. |
-| Docker | ✅ **not required.** Pattern container images are built at *stack deployment* time by CodeBuild, not at publish time. The claim in `CLAUDE.md` that the build checks for Docker is stale with respect to this code path. |
+- **Node.js and npm.** The publish builds the Web UI with `npm ci` and `npm run build`,
+  and fails if that build fails.
+- **`ruff`.** The publish runs `ruff check` and `ruff format --check` and fails on
+  findings.
+- **`cfn-lint`.** If it is not installed, the publish skips CloudFormation linting
+  without failing. Run `make cfn-lint` yourself on the release commit.
 
-Because of the `cfn-lint` behaviour, run `make lint` (or at minimum `make cfn-lint`) on the
-release commit before publishing rather than relying on the publish to catch a template
-error.
+Docker is not needed. Container images are built by CodeBuild when a stack deploys.
 
-### 1.4 Credentials and permissions
+### 1.4 Account, credentials and buckets
 
-✅ The publish calls exactly these AWS APIs (enumerated from `publish.py` and
-`lib/idp_sdk/idp_sdk/_core/s3_security.py`), plus whatever `sam package` and `aws s3 sync`
-issue against the same bucket:
+The identity you publish with needs, on each release bucket: `s3:ListBucket`,
+`s3:GetObject`, `s3:PutObject`, and `s3:PutObjectAcl` for a public release. It also
+needs `sts:GetCallerIdentity` and `cloudformation:ValidateTemplate`. If the bucket does
+not exist yet, the publisher creates it and enables versioning, which needs
+`s3:CreateBucket` and `s3:PutBucketVersioning`. It also tries to add a bucket policy
+that denies non-TLS requests (`s3:GetBucketPolicy` and `s3:PutBucketPolicy`), and only
+prints a warning if it cannot.
 
-- `sts:GetCallerIdentity`
-- `s3:ListBucket` (`head_bucket`, and `ListObjectsV2` via paginator)
-- `s3:GetObject` / `s3:GetObjectAcl`-adjacent reads (`head_object`)
-- `s3:PutObject` (`upload_file`, `put_object`, and `aws s3 sync`)
-- `s3:PutObjectAcl` (`put_object_acl` with `ACL=public-read`, only when `--public`)
-- `s3:GetBucketPolicy` / `s3:PutBucketPolicy` — best-effort only on a pre-existing bucket.
-  `setup_artifacts_bucket` tries to add an `EnforceSSLOnly` statement and, if it cannot,
-  prints `Could not verify/apply the EnforceSSLOnly bucket policy on the existing bucket —
-  add it manually` and **continues**. It is not fatal.
-- `s3:CreateBucket` / `s3:PutBucketVersioning` — only on the 404 path, i.e. only if the
-  bucket does not exist. For the release buckets this path is not taken: all four,
-  `aws-bigdata-blog-replica-ca-central-1` included, answer an unauthenticated request with
-  `403 AccessDenied` rather than `404 NoSuchBucket`, which only an existing bucket does
-  (measured 2026-10-16, with two controls — a name that does not exist answered `404
-  NoSuchBucket`, and so did the unsuffixed `aws-bigdata-blog-replica`, confirming the
-  publisher's `<basename>-<region>` suffixing is what names the real one). ⚠️ That
-  establishes existence and **nothing about configuration** — whether the Canada bucket has
-  ACLs enabled is unread, and `--public` depends on it, so see the ACL note below.
-- `cloudformation:ValidateTemplate`
+**A public release works through object ACLs.** `--public` sets `public-read` on every
+object it publishes. For that to work, the bucket must have ACLs enabled (Object
+Ownership not set to *Bucket owner enforced*), and its Block Public Access settings must
+allow public ACLs. New S3 buckets have both protections on by default, and the publisher
+does not change them, so configure each bucket before its first public release. If you
+do not, the publish fails at the ACL step, after the uploads.
 
-✅ `--public` works by setting **object ACLs** (`ACL=public-read`) on every object under
-`artifacts/genai-idp/<VERSION>/` and `artifacts/genai-idp/extensions/`, plus the two main
-template keys and `idp-main-latest.json`. That requires the bucket to have ACLs enabled
-(Object Ownership not set to *bucket owner enforced*) and `BlockPublicAcls` off in its Public
-Access Block configuration.
-
-⚠️ **Which AWS account owns the release buckets, which role or profile the releaser
-assumes, and how that credential is obtained are not recorded anywhere in this
-repository.** Nor is the buckets' Object Ownership / Public Access Block / versioning
-configuration. This is the single largest gap in this runbook and the one most responsible
-for the bus factor the issue describes. Before the next release, the person who has
-published before should record: the account id (or its name), the role, how to assume it,
-and whether the buckets have versioning enabled. Until then, treat the credential step as
-tribal knowledge that this document cannot supply.
-
-✅ **Object ACLs are load-bearing: these buckets do *not* carry a prefix-wide anonymous-read
-bucket policy over `artifacts/genai-idp/`.** Earlier revisions of this runbook marked that
-question undetermined, and several statements here turned on the answer. It was settled by
-measurement on 2026-09-18 — a credential-free `GetObject` against every release region as
-the set then stood. `ca-central-1` was added afterwards and is **not** covered by these
-readings; re-run the same probe against it on its first release rather than assuming the
-result carries over, since the conclusion below turns on an ACL the publisher sets per
-object:
-
-| Key | us-east-1 | us-west-2 | eu-central-1 |
-|---|---|---|---|
-| `artifacts/genai-idp/idp-main.yaml` (ACL'd by the publisher) | 200 | 200 | 200 |
-| `artifacts/genai-idp/idp-main-latest.json` (was not ACL'd) | 403 | 403 | 403 |
-
-Two keys in the same prefix answering differently is only possible if the ACL is what grants
-the read. So `set_public_acls` is **not** belt-and-braces, the exposure window in §3.1 is
-real, and
-[issue #962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)
-was a live defect rather than a hypothetical one: the version pointer had never been publicly
-readable, so the Web UI's "update available" indicator had never worked for any deployed
-stack. It fails closed and logs at `INFO`, which is why nothing surfaced it.
-
-✅ Fixed: `_upload_version_pointer` now passes `ACL="public-read"` inline on a `--public`
-publish, `set_public_acls` also covers the key so that a re-publish repairs pointers written
-by earlier releases, and `verify_public_readability` checks the advertised keys anonymously at
-the end of every public publish and **fails** the publish if one answers 403. The credential
-gap below still stands on its own terms — Object Ownership, Public Access Block and versioning
-are still unrecorded — but the readability question that hung off it is now answered.
-
-To re-verify by hand at any time:
+Use a dedicated bucket for public releases, and confirm which account your shell is
+using before publishing:
 
 ```bash
-env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_PROFILE \
-  curl -sS -o /dev/null -w '%{http_code}\n' \
-  https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main-latest.json
+aws sts get-caller-identity
 ```
 
-✅ The `--headless` and `--govcloud` transformed templates are also outside `set_public_acls`
-coverage, but that is **not applicable** and
-[issue #963](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/963)
-is closed: those transforms are used only on the deploy path, no transformed template is
-published to the release buckets, and `scripts/aws-release.sh` passes neither flag. See §4
-item 8. Note that `make publish HEADLESS=1 PUBLIC=1` remains a constructible combination, so
-if we ever do decide to publish a transformed template its upload needs `ACL="public-read"`
-in `ExtraArgs` at the point of upload.
+Environment-variable credentials take precedence over `AWS_PROFILE`, so unset
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` if you mean to use a
+profile.
 
-Note also ⚠️/📄: the repo's own AWS guidance is that ambient sandbox environment credentials
-override `AWS_PROFILE`, so `unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN`
-before checking `aws sts get-caller-identity`
-(📄 `.claude/skills/release-validation.md`, preflight step 1). Confirm the identity you get
-is the release account before running a command that writes to a public bucket.
+Enabling versioning on the release buckets is recommended. It lets you recover an
+earlier copy of an overwritten key if you ever need to.
 
 ## 2. Ordered steps
 
@@ -305,124 +170,81 @@ is the release account before running a command that writes to a public bucket.
 ```bash
 make version V=<x.y.z>
 cat VERSION                      # must print exactly <x.y.z>
-git describe --tags --abbrev=0   # must print the PREVIOUS release tag
+git describe --tags --abbrev=0   # should print the previous release tag
 ```
 
-**Success:** `VERSION` and the 9 package version files all read `<x.y.z>`; the Makefile
-prints the 11 paths it touched. ✅ Verified from the `version` target. That printed list is
-the authority — read it rather than trusting the count here, and
-`scripts/tests/test_release_runbook_doc.py` fails if the two disagree.
+**Success:** `VERSION` and the 9 package version files read `<x.y.z>`, and the command
+lists the 11 paths it changed.
 
 ### Step 2 — Cut the CHANGELOG
 
-📄 Follow `.claude/skills/prepare-changelog.md` then
-`.claude/skills/cut-release-changelog.md`. The result: `## [Unreleased]` becomes
-`## [<x.y.z>]` (no date), followed by a `## Templates` block with the four region URLs.
+Follow `.claude/skills/prepare-changelog.md`, then `.claude/skills/cut-release-changelog.md`.
+`## [Unreleased]` becomes `## [<x.y.z>]`, followed by a `## Templates` block with one
+template URL per region.
 
 ```bash
-grep -n "^## \[" CHANGELOG.md | head -5              # exactly one section for the new version
-grep -n "idp-main_$(cat VERSION).yaml" CHANGELOG.md  # four hits, one per region
-grep -nE " +$" CHANGELOG.md                          # no trailing whitespace
+grep -n "^## \[" CHANGELOG.md | head -5              # one section for the new version
+grep -n "idp-main_$(cat VERSION).yaml" CHANGELOG.md  # one hit per region you publish
 ```
 
-**Success:** four URLs, all carrying the new version, all with the region appearing twice
-in each URL (host *and* bucket name). The URLs 404 at this point — expected.
+**Success:** one versioned template URL per region. They return 404 until Step 3.
 
 ### Step 3 — Publish the artifacts
 
-Preconditions from §1 all satisfied, credentials confirmed, on the release commit with a
-clean tree.
-
-⚠️ **The first Canada publish is the one new failure mode here, and it lands late.**
-`--public` works by setting object ACLs, so if `aws-bigdata-blog-replica-ca-central-1` carries
-`BucketOwnerEnforced` Object Ownership or a Public Access Block that refuses public ACLs,
-`set_public_acls` raises and the release fails **after** the other three regions are
-already live — the "one region of customers who cannot deploy" state, reached from the
-opposite direction and not something the recovery paths below were written for. The bucket
-exists (§1), but its Object Ownership is unread. Confirm it before the first Canada
-release, or expect to re-run that one region after fixing the bucket.
+From the repository root, with a clean tree on the release commit, run your release
+script and keep its log:
 
 ```bash
-cd <repo root>            # required: publish reads ./VERSION relative to cwd
-mkdir -p scratch          # gitignored, and absent in a fresh clone; tee will not create it
-bash scripts/aws-release.sh 2>&1 | tee scratch/release-<x.y.z>.log
+cd <repo root>
+mkdir -p scratch
+bash <your release script> 2>&1 | tee scratch/release-<x.y.z>.log
+echo "exit status: ${PIPESTATUS[0]}"   # zsh: ${pipestatus[1]}
 ```
 
-Notes on how this behaves, all ✅ verified from code:
+With the output piped to `tee`, `$?` is `tee`'s exit status, not the script's, so read
+`PIPESTATUS` (or run with `set -o pipefail`).
 
-- **Run it from the repository root.** `--source-dir .` is relative. 📄 `.claude/skills/live-eval-and-cost.md`
-  records that a relative `--source-dir` fails with `VERSION file not found` when the cwd is
-  reset — which is what happens if you background the script. If you must detach it, pass an
-  absolute path instead of using the script as-is.
-- **Each region does a full rebuild.** The per-component checksum is computed over the
-  source hashes *plus* `bucket + prefix_and_version + region`
-  (`_verify_packaged_templates_exist`, `get_components_needing_rebuild`), so region 2 never
-  matches the checksum region 1 wrote. Budget three full builds, not one build and two
-  uploads.
-- **`set -e` means a failure stops the script.** Earlier regions stay published; later ones
-  are untouched.
-- **`--public` is applied at the very end of each region's run.** `set_public_acls` is
-  called from `print_outputs`, i.e. after every upload. See §3.1 for what that implies.
+How the publish behaves:
 
-**Success looks like**, per region: `✅ All builds completed successfully`, then
+- **Run it from the repository root.** `--source-dir .` and `./VERSION` are relative to
+  the current directory. If you run the script detached or from elsewhere, pass an
+  absolute `--source-dir`.
+- **Each region is a full build.** The build cache is keyed on the bucket and region as
+  well as the source, so plan for one complete build per region.
+- **Public ACLs are applied at the end of each region's run**, after all of that
+  region's uploads.
+
+**Success looks like this for each region:** `✅ All builds completed successfully`, then
 `✅ Public ACLs set successfully`, then `✅ All advertised keys are anonymously readable`
-(the `verify_public_readability` step, which lists each key it checked), then a Deployment
-Outputs block with the 1-Click Launch URL and the template URL, then `✅ Done!`. Three of
-those, one per region.
+(listing each key it checked), then a Deployment Outputs block with the Launch Stack URL
+and template URL, then `✅ Done!`.
 
-If that readability step reports `❌` for a key, the artifacts are uploaded but the release is
-**not** announceable: the publish raises rather than continuing, and the message names the key
-and the status it got. Check Object Ownership and Public Access Block on the bucket and re-run.
-A `⚠️ ... UNVERIFIED` instead means the publishing shell could not reach the public S3
-endpoint at all, which says nothing about the ACL — verify by hand from a credential-free
-shell with egress before announcing.
-
-Judge the outcome from those three blocks and from the log, not from the shell's exit
-status, because with the script piped to `tee` the status the shell reports is `tee`'s and
-not the script's. Two consequences, both measured with a throwaway script in place of
-`scripts/aws-release.sh` — no release was run to establish them. First, that is why the
-`mkdir -p scratch` above is there: `scratch/` is gitignored and absent in a fresh clone,
-`tee` does not create the directory, and without it you get a `No such file or directory`
-error from `tee`, a publish that nonetheless runs to completion because `tee` keeps copying
-its input, no log file at all, and a non-zero exit status from a release that succeeded.
-Second, in the other direction, a script that exits 1 under `set -e` gave a pipeline status
-of 0 while `${PIPESTATUS[0]}` held the real 1 — so a failed publish reads as success if you
-only look at `$?`. If you want the status to be meaningful, read `${PIPESTATUS[0]}` on the
-next line (in zsh, `${pipestatus[1]}`), or enable `pipefail` in the shell you run this in,
-which returned 1 for the same failing pipeline.
+If the readability check reports `❌` for a key, the publish stops: the objects are
+uploaded but are not publicly readable. Check the bucket's Object Ownership and Block
+Public Access settings, then run the publish again. A `⚠️ ... UNVERIFIED` result means
+the machine could not reach the public S3 endpoint to check. Verify by hand with Step 4
+before announcing the release.
 
 ### Step 4 — Verify the artifacts are public and correct
 
-Do this before announcing anything. See the checklist in §5.
+Run the checklist in [§5](#5-post-release-verification-checklist) before announcing
+anything.
 
 ### Step 5 — Tag and push
 
 ```bash
 git tag v<x.y.z>
-git push github v<x.y.z>
-git push origin v<x.y.z>     # origin is GitLab
+git push <remote> v<x.y.z>
 ```
-
-⚠️ **Unverified:** whether both remotes are tagged as a matter of practice. Every `v0.6.x`
-tag is present on the GitHub remote (checked with `git ls-remote --tags`), which is why the
-GitHub Release exists; whether the GitLab remote is also tagged, and whether that matters
-to anything, this document could not determine.
 
 ### Step 6 — Create the GitHub Release
 
-⚠️ **Not automated, and the mechanism is unverified.** No GitHub Actions workflow and no
-GitLab job creates a release — verified by reading all four workflows and the full
-`.gitlab-ci.yml`. What is observable is the outcome: every tag `v0.6.4` … `v0.6.8` has a
-non-draft, non-prerelease GitHub Release authored by the repo owner, titled with the bare
-version, whose body is the CHANGELOG section for that version verbatim. For v0.6.8 the
-release was created 43 minutes before it was published, i.e. drafted then published.
-
-A command consistent with that outcome — ⚠️ **not** confirmed to be the one actually used:
+Create a release for the tag, using the version as the title and the version's
+CHANGELOG section as the body:
 
 ```bash
-gh release create v<x.y.z> \
-  -R aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws \
-  --title "v<x.y.z>" --notes-file <file containing the CHANGELOG section>
+gh release create v<x.y.z> --title "v<x.y.z>" \
+  --notes-file <file containing the CHANGELOG section>
 ```
 
 ### Step 7 — Publish the documentation site
@@ -431,348 +253,158 @@ gh release create v<x.y.z> \
 make docs-deploy
 ```
 
-✅ This runs `docs-build` (which runs `docs-setup`, then `node sync-sidebar.mjs`, then
-`npm run build`) and pushes `docs-site/dist` to the `gh-pages` branch with `npx gh-pages`.
-It is entirely manual: `.github/workflows/build-docs.yml` builds the site as a check on
-pushes and PRs touching `docs/**`, `docs-site/**` or `images/**`, and explicitly does not
-publish.
+This builds the documentation site and pushes it to the repository's `gh-pages` branch.
+The documentation workflow in CI only builds the site as a check; it does not publish
+it.
 
-**Success:** the site at
-<https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/>
-serves the new content.
+**Success:** the GitHub Pages site serves the new content.
 
 ### Step 8 — Run the live release-validation battery
 
-📄 One request, per `.claude/skills/release-validation.md`; the record lands in
-`docs/release-validation/v<x.y.z>.md` and a row is appended to
-[the index](./release-validation/README.md). Budget most of a working day and real Bedrock
-spend. Do not treat the release as validated until that record exists.
+Deploy and test the published release as described in
+[Release Validation](./release-validation/README.md) and
+`.claude/skills/release-validation.md`. It covers deploy variants, the `--headless` and
+`--govcloud` template transforms, an in-place upgrade from the previous release, API
+authorization, security scanning and a benchmark comparison. Expect it to take most of
+a working day and to incur Bedrock charges.
 
 ## 3. Failure and recovery
 
 ### 3.1 The publish fails partway through
 
-✅ **Re-running the same command is the recovery, and it is safe.** The reasoning, from
-code:
+**Re-run the same command.** It is safe to repeat:
 
-- **Nothing is deleted.** There is no `delete_object` or `delete_objects` call anywhere in
-  `publish.py`. Objects from a failed run are either overwritten by the retry or left
-  unreferenced and inert.
-- **Checksums are only written on success.** `update_component_checksum` is one of the last
-  steps of `run()`, after all uploads and after cfn-lint. A crash before it leaves the
-  checksum files untouched, so the next run rebuilds and re-uploads the same components.
-  `build_main_template` additionally deletes `.checksum` on any failure, forcing a main
-  template rebuild.
-- **Two independent safety nets catch a half-deleted build directory.**
-  `_verify_layer_zips_exist` forces a layer rebuild if the zips are gone, and
-  `_verify_packaged_templates_exist` adds any component whose
-  `<component>/.aws-sam/packaged.yaml` is missing back onto the rebuild list even when its
-  checksum says it is current.
-- **Uploads are cheap on retry.** Layer zips are content-addressed
-  (`idp-common-<name>-<sourcehash>.zip`) and skipped with `head_object` if already present;
-  the config library goes up with `aws s3 sync`, which skips unchanged files.
+- The publisher never deletes objects. Anything a failed run uploaded is either
+  overwritten by the retry or left unreferenced.
+- Build checksums are written only after a successful run, so the retry rebuilds and
+  re-uploads whatever did not finish.
+- Uploads that already succeeded are cheap to repeat. Layer zips are named by content
+  hash and skipped if present, and the configuration library is uploaded with
+  `aws s3 sync`, which skips unchanged files.
 
-**If the retry itself is suspect** — e.g. you edited a bundled data file such as a
-`system_defaults/*.yaml` and the layer did not rebuild — 📄 use `--clean-build`. The
-checksum cache is known to miss data-only edits, leaving the deployed stack on the old
-default (`.claude/skills/live-eval-and-cost.md`, and the same warning appears in the
-project's memory of a real occurrence). `scripts/aws-release.sh` does not pass
-`--clean-build`; add it by hand for that case, or run the four `idp-cli publish` commands
-individually with the flag.
+If you suspect the build cache, for example after editing a data file bundled into a
+Lambda layer, add `--clean-build`.
 
-**The window you should care about.** ✅ `idp-main.yaml` (the floating key the README Launch
-Stack buttons use) and `idp-main-latest.json` (the key the Web UI update indicator reads)
-are both written inside `build_main_template`, which runs **before** `set_public_acls`. So
-between those two uploads and the end of a successful run, the floating pointer already
-names the new version while some of that version's artifacts are still private. A customer
-who clicks Launch Stack in that window can get a template whose nested stacks or code zips
-answer 403. The window is minutes, not hours, and only bites on the first publish of a
-version.
+**Re-run promptly.** `idp-main.yaml` and `idp-main-latest.json` are written before the
+ACL step at the end of the run. Until a run completes, the floating template can already
+name the new version while some of that version's artifacts are not yet public, and a
+Launch Stack in that window fails with access errors.
 
-**This window is real.** Earlier revisions said its existence was undetermined, because it
-depends on whether the buckets carry a prefix-wide anonymous-read bucket policy, which would
-render objects readable from the moment of upload regardless of ACL. They do not — see the
-measurement in §1 — so the ACL pass is what grants the read and the window is exactly as
-described above. That is why §5 says verify before announcing, and why a publish that dies
-partway should be re-run promptly rather than left overnight.
-
-One narrowing since: `idp-main-latest.json` is now written with `public-read` inline rather
-than waiting for the ACL pass, so the pointer itself is readable as soon as it exists. That
-removes the pointer from the window but not the versioned artifacts it names, which are still
-ACL'd at the end of the run.
-
-**If a middle region fails**, `set -e` leaves you with, say, `us-west-2` published,
-`us-east-1` half-published, `eu-central-1` untouched — and `eu-central-1`'s
-`idp-main-latest.json` still naming the previous version, so the update indicator is
-inconsistent by region until you finish. Re-run the whole script; the completed region
-short-circuits on `head_object` and `s3 sync` and costs only its rebuild time.
+**If one region fails**, the regions before it are published and the regions after it
+are untouched, so the floating template and the update indicator disagree by region.
+Re-run the whole script. Regions that already finished cost only their rebuild time.
 
 ### 3.2 A published template turns out to be broken
 
-There is no "unpublish". ✅ Publish never deletes, and the version-pinned
-`idp-main_<VERSION>.yaml` is referenced permanently by `CHANGELOG.md`, the release-validation
-records and the benchmark records — treat it as an immutable historical artifact and do not
-try to remove it.
+There is no unpublish, and the versioned `idp-main_<VERSION>.yaml` should stay in place:
+release notes and validation records link to it.
 
-What you can move are the two mutable keys. **The preferred, fully verified action is to
-re-publish the previous tag**, because it rewrites both of them consistently and from a
-known-good source:
+What you can change are the two keys a release overwrites. **The recommended action is
+to re-publish the previous release tag**, which points both keys back at a known-good
+version consistently:
 
 ```bash
 git checkout v<PREV>
 cat VERSION                       # must read <PREV>
-bash scripts/aws-release.sh
+bash <your release script>
 ```
 
-✅ That rewrites `idp-main.yaml` and `idp-main-latest.json` in all four regions to point at
-`<PREV>`, while `<PREV>`'s versioned artifacts under `artifacts/genai-idp/<PREV>/` are
-already there (so it is mostly a template re-upload plus per-region rebuild time). Then
-publish a patch release with the fix.
+This rewrites `idp-main.yaml` and `idp-main-latest.json` in every region to point at
+`<PREV>`. The previous version's artifacts are already in each bucket, so this is mostly
+rebuild and upload time. A region that never had `<PREV>` published gets a full first
+publish. Then publish a patch release with the fix.
 
-⚠️ **Rolling back across the 0.6.11/0.6.12 boundary is different in `ca-central-1`**, where
-`<PREV>` was never published: that region does a full publish rather than a re-upload, and
-the Canada Launch Stack button then serves a release whose own `## Templates` block carries
-no Canada URL. Expect the Canada leg to take as long as a first publish.
-
-⚠️ **Do not assume you can recover the previous `idp-main.yaml` bytes from S3 object
-versioning.** `publish.py` enables versioning only on buckets it creates; all four release
-buckets pre-exist, so they take the `head_bucket` success path and their versioning state
-is whatever the account configured. This document could not determine it.
-
-If you must move the floating pointer without a rebuild, note the trap: a server-side copy
-of the previous versioned template over `idp-main.yaml` fixes the Launch Stack buttons —
-and, because `idp-cli` reads the same key (see the table in "What lands in each bucket"),
-`idp-cli deploy` too, in both directions — but it **does not** touch
-`idp-main-latest.json`, which will keep advertising the bad version as an available update
-in every deployed Web UI. ✅ That pointer's body is `{"version": …, "templateUrl": …}`
-written by `_upload_version_pointer`; rewriting it by hand means putting a correct JSON
-object at `artifacts/genai-idp/idp-main-latest.json` in each region.
-
-✅ **You must also apply `public-read` to that object**, or no deployed Web UI can read it.
-This was undetermined in earlier revisions; the §1 measurement settles it — object ACLs are
-what grants the anonymous read, so a hand-written pointer with no ACL is invisible to every
-customer:
+If you copy an earlier template over `idp-main.yaml` by hand instead, you must also
+rewrite `idp-main-latest.json` in each region. Otherwise every deployed Web UI keeps
+offering the broken version as an update. The pointer is a JSON object,
+`{"version": "<version>", "templateUrl": "<versioned template URL>"}`, and on a public
+release it needs `public-read` or no deployed stack can read it:
 
 ```bash
-# <bucket> is <basename>-<region>: aws-ml-blog-<region> for the three, and
-# aws-bigdata-blog-replica-ca-central-1 for Canada.
-aws s3api put-object-acl --bucket <bucket> \
-  --key artifacts/genai-idp/idp-main-latest.json --acl public-read --region <region>
+aws s3api put-object-acl --bucket <basename>-<region> \
+  --key <prefix>/idp-main-latest.json --acl public-read --region <region>
 ```
 
-Then confirm it anonymously with the `curl` in §1 before walking away; a silent 403 here is
-exactly how
-[issue #962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)
-went unnoticed for as long as it did. Prefer the re-publish above where you can: it applies
-the ACL itself and its `verify_public_readability` step proves the result.
+### 3.3 Protecting customers who upgrade
 
-### 3.3 Customers who already upgraded, and stacks wedged in rollback
+A release is also what existing stacks move to with an in-place update. Two checks
+prevent the failures that are hardest to recover from:
 
-These are the failure modes with real committed evidence in this repository. They are not
-release-time failures — they are what a bad release does to a customer running
-`update-stack`, which is why the pre-release guard in each case matters more than the
-recovery.
+- **Before changing a configuration default, confirm the previous release accepts the
+  new value.** A failed update rolls back to the previous release's code, which then
+  reads configuration written by the new release. A value the old code rejects can leave
+  the stack unable to finish its rollback.
+- **Validate `config_library/pricing.yaml` before publishing.** It is re-validated during
+  both update and rollback, so an invalid file can block both:
 
-**A bad `pricing.yaml` deadlocks the update *and* the rollback.**
-📄 `.claude/skills/live-eval-and-cost.md` and `.claude/skills/test-upgrade.md`: the
-`UpdateDefaultConfig` custom resource re-validates `pricing.yaml`, read from
-`s3://<config-bucket>/config_library/pricing.yaml`, in **both** directions. A Pydantic
-failure (the recorded case: an empty `units:` list) leaves the nested `PATTERNSTACK` in
-`UPDATE_ROLLBACK_FAILED`. Recovery, as recorded:
+  ```bash
+  PYTHONPATH=lib/idp_common_pkg python3 -c "import yaml; from idp_common.config.models import PricingConfig; PricingConfig(**yaml.safe_load(open('config_library/pricing.yaml')))"
+  ```
 
-```bash
-# validate a candidate locally first
-PYTHONPATH=lib/idp_common_pkg python3 -c "import yaml; from idp_common.config.models import PricingConfig; PricingConfig(**yaml.safe_load(open('config_library/pricing.yaml')))"
-# upload the corrected file to the config bucket key config_library/pricing.yaml, then:
-aws cloudformation continue-update-rollback --stack-name <PARENT> --region <region>
-```
-
-No `--resources-to-skip`: child stacks reject a direct skip, and fixing the S3 object lets
-the parent's rollback re-validate and complete.
-
-**A rollback-hostile config value wedges the rollback.**
-📄 `lib/idp_common_pkg/idp_common/config/README.md`: a rollback reverts the config
-custom-resource Lambda to the *previous release's* code but leaves current-shape records in
-DynamoDB. Two value classes break older models — `None` on a field an older model coerces
-with a bare `int()`, and `0` on a field an older model constrains with `gt=0`. Mitigated in
-code (`_omit_rollback_hostile_defaults`, plus rollback detection that returns SUCCESS on a
-parse error when the stored `config_format_version` is newer than the running code), but
-the mitigation only covers values equal to their declared default.
-
-**The pre-release guard this implies:** before changing a configuration default, confirm the
-**previous** release's code accepts the new value, because a rollback runs that code against
-the new records. This has bitten the project more than once.
-
-**S3 `OperationAborted` during a rollback.** 📄 `CHANGELOG.md` (the #576 entry) and
-`template.yaml`: S3 permits one conditional bucket-config operation per bucket at a time,
-and CloudFormation deleted `TestSetBucketPolicy`, `TestSetBucketAutoDelete` and
-`TestSetBucketNotificationConfiguration` simultaneously, so
-`PutBucketNotificationConfiguration` returned `OperationAborted` ("A conflicting conditional
-operation is currently in progress"). With no retry, a recoverable rollback became
-`ROLLBACK_FAILED`. Fixed three ways: a bounded retry ladder on transient S3 codes, a
-**Delete** that always reports success, and `DependsOn: TestSetBucketPolicy` to serialise
-the two conditional writes. If you see `OperationAborted` on a release older than that fix,
-the identical call typically succeeds minutes later — retry the rollback.
-
-**`iam:UpdateAssumeRolePolicy` AccessDenied, then a wedge.**
-📄 `docs/troubleshooting.md`: affects upgrades from before v0.6.2 to v0.6.2–v0.6.4 when
-deploying with a CloudFormation service role lacking that permission. The rollback needs the
-same permission, so the stack cannot self-recover:
-
-```bash
-aws cloudformation continue-update-rollback --stack-name <StackName> \
-  --resources-to-skip <StackName>-CognitoAuthorizedRole
-```
-
-This is the one case where `--resources-to-skip` is the documented answer. 📄 Note also that
-`continue-update-rollback` applies **only** to `UPDATE_ROLLBACK_FAILED` — it is invalid from
-a CREATE rollback (`scripts/sdlc/tests/test_codebuild_failure_trail.py` asserts exactly
-this).
+[Troubleshooting](./troubleshooting.md) covers recovering a stack whose update or
+rollback has failed.
 
 ## 4. What is not automated
 
-Everything. ✅ Verified by reading all of `.gitlab-ci.yml` and all four
-`.github/workflows/*.yml`: no job in either CI is keyed on a git tag, and neither
-`scripts/aws-release.sh` nor `--public` appears anywhere in either. The GitLab
-`integration_tests` job does deploy to AWS, but into an internal test pipeline, not to the
-public buckets.
+No CI job publishes a release. Every step is run by hand, in this order:
 
-Done by hand, in order:
-
-1. `make version V=x.y.z` — the only automated *part* of this list, and you still invoke it.
-2. Pruning and cutting `CHANGELOG.md` (two skills, no script).
-3. `bash scripts/aws-release.sh` — the release itself. No confirmation prompt, no dry-run
-   mode, no check that `VERSION` is final, no check that the tree is clean, no check that
-   you are in the right account.
-4. `git tag` and pushing the tag.
-5. The GitHub Release (⚠️ mechanism unverified — see step 6).
+1. `make version V=<x.y.z>`.
+2. Preparing and cutting `CHANGELOG.md`.
+3. Running the release script. It has no confirmation prompt or dry-run mode, and it
+   does not check that `VERSION` is final, that the tree is clean, or which account you
+   are using.
+4. Tagging and pushing the tag.
+5. Creating the GitHub Release.
 6. `make docs-deploy`.
-7. The live validation battery, and committing its record.
-8. ✅ **No headless or GovCloud template is published publicly.** `scripts/aws-release.sh`
-   passes neither `--headless` nor `--govcloud`, so `idp-headless.yaml` and
-   `idp-govcloud.yaml` are never written to the release prefix. Customers needing those
-   build them from source.
+7. The live validation battery.
 
-   ✅ Those transforms are a **deploy-path** artifact, not a published one: they are consumed
-   by `idp-cli deploy --headless` / `--govcloud` and the `make transform-deploy-test-headless`
-   / `make transform-deploy-test-govcloud` tier,
-   which deploy a transformed template into an account rather than publishing one. So the
-   fact that their keys also fall outside `set_public_acls`' coverage has no consumer, and
-   [issue #963](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/963)
-   is closed as not applicable.
+The release script publishes only the standard template. The `--headless` and
+`--govcloud` variants are normally generated by `idp-cli deploy --headless` and
+`idp-cli deploy --govcloud` at deploy time. A publish run with `--headless` or
+`--govcloud` also uploads `<prefix>/idp-headless.yaml` or `<prefix>/idp-govcloud.yaml`,
+but without a public ACL, so other accounts cannot read them unless your bucket policy
+grants anonymous read.
 
-   The mechanics are recorded here because `make publish HEADLESS=1 PUBLIC=1` remains a
-   constructible combination. Under it, the transformed templates are uploaded by the
-   operations layer (`lib/idp_sdk/idp_sdk/operations/publish.py:242-247` for
-   `idp-govcloud.yaml`, `:284-289` for `idp-headless.yaml`, neither passing an ACL) **after**
-   `set_public_acls` has already run inside `publisher.run()` at `:180` — and those two keys
-   fall outside its coverage anyway, since it paginates only `<prefix>/<VERSION>/` and
-   `<prefix>/extensions` then ACLs a short explicit key list. Re-ordering the calls alone
-   would not make them public. If we ever decide to publish a transformed template, pass
-   `ACL="public-read"` in the `upload_file` `ExtraArgs`, which localises the fix to where the
-   object is created.
-9. ✅ Marketplace extensions under `artifacts/genai-idp-mp/` — a separate `idp-feature-cli
-   publish`, by the extension author.
-10. ✅ The seller entitlement service template — deployed directly by a seller via
-    `sam deploy` / `idp-feature-cli`, which is why `make version` bakes a literal version
-    into it rather than leaving a token.
-11. ⚠️ The two sibling repositories that pin themselves to a release
-    (`cdklabs/genai-idp`, `awslabs/genai-idp-terraform`) — whether they need a bump, who
-    does it, and on what timeline is not recorded in this repository.
+Marketplace extensions are published separately by their authors with
+`idp-feature-cli publish`, under a different prefix so the two cannot collide.
 
 ## 5. Post-release verification checklist
 
-All of these are unauthenticated HTTP requests, which is the point: if they succeed without
-credentials, the objects are genuinely public. Run them for **all four regions**.
+Run these as unauthenticated requests from a shell with no AWS credentials. A request
+that succeeds without credentials proves the object is public, while a credential in
+scope could read a private object and hide the problem. Set `RELEASES` to one
+`<region>:<basename>` pair per publish line in your release script, since the
+basename can differ from region to region, and `PREFIX` to its `--prefix`:
 
 ```bash
 V=$(cat VERSION)
-for RB in us-west-2:aws-ml-blog us-east-1:aws-ml-blog eu-central-1:aws-ml-blog \
-          ca-central-1:aws-bigdata-blog-replica; do
-  R="${RB%%:*}"; BASE="${RB##*:}"
-  B="https://s3.$R.amazonaws.com/$BASE-$R/artifacts/genai-idp"
+for RB in $RELEASES; do
+  R="${RB%%:*}"; BASENAME="${RB##*:}"
+  B="https://s3.$R.amazonaws.com/$BASENAME-$R/$PREFIX"
   echo "== $R"
-  curl -sI  "$B/idp-main_$V.yaml"     -o /dev/null -w '  versioned  %{http_code}\n'
-  curl -sI  "$B/idp-main.yaml"        -o /dev/null -w '  floating   %{http_code}\n'
-  curl -s   "$B/idp-main-latest.json"
-  curl -s   "$B/idp-main_$V.yaml" | grep -m1 '^Description:'
+  curl -sI "$B/idp-main_$V.yaml"  -o /dev/null -w '  versioned  %{http_code}\n'
+  curl -sI "$B/idp-main.yaml"     -o /dev/null -w '  floating   %{http_code}\n'
+  curl -s  "$B/idp-main-latest.json"; echo
+  curl -s  "$B/idp-main_$V.yaml" | grep -m1 '^Description:'
+  Z=$(curl -s "$B/idp-main_$V.yaml" | grep -om1 'idp-common-base-[0-9a-f]*\.zip')
+  curl -sI "$B/$V/layers/$Z" -o /dev/null -w "  layer      %{http_code}  $Z\n"
 done
 ```
 
-- [ ] Versioned template returns **200** in all four regions.
-- [ ] Floating `idp-main.yaml` returns **200** in all four regions.
-- [ ] `idp-main-latest.json` reads `{"version": "<VERSION>", "templateUrl": …}` with the
-      **region-local** bucket in `templateUrl`, in all four regions. ✅ A failure to *write*
-      this pointer is non-fatal to the publish — it prints a yellow warning and continues —
-      so its content is still a check the publish will not make for you. Its anonymous
-      *readability* is now checked: `verify_public_readability` fails a `--public` publish if
-      this key (or either main template) answers 403 to an unsigned request, which is what
-      [#962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)
-      needed and did not have. Run the `curl` above from a **credential-free** shell anyway:
-      a credential in scope can read a private object and mask exactly the defect #962 was.
-- [ ] The `Description:` line of the versioned template ends `(v<VERSION>)`. 📄 The
-      release-validation skill makes the same check its preflight step 4.
-- [ ] The four `## Templates` URLs in `CHANGELOG.md` resolve:
+- [ ] The versioned template returns **200** in every region.
+- [ ] The floating `idp-main.yaml` returns **200** in every region.
+- [ ] `idp-main-latest.json` reads `{"version": "<VERSION>", "templateUrl": …}`, with
+      that region's own bucket in `templateUrl`, in every region.
+- [ ] The versioned template's `Description:` line ends with `(v<VERSION>)`.
+- [ ] A layer zip from the versioned prefix returns **200** in every region.
+- [ ] The template URLs in the new `CHANGELOG.md` section resolve:
       ```bash
       grep -oE "https://s3[^\`]*idp-main_$(cat VERSION)\.yaml" CHANGELOG.md \
         | xargs -n1 -I{} curl -sI {} -o /dev/null -w '%{http_code} {}\n'
       ```
-- [ ] A versioned sub-artifact is public — spot-check one layer zip per region, whose exact
-      name is read out of that region's published template. This snippet repeats the loop
-      rather than reusing `$B` from the block above, because `$B` is set inside that loop
-      and afterwards holds only the last region:
-      ```bash
-      V=$(cat VERSION)
-      for RB in us-west-2:aws-ml-blog us-east-1:aws-ml-blog eu-central-1:aws-ml-blog \
-                ca-central-1:aws-bigdata-blog-replica; do
-        R="${RB%%:*}"; BASE="${RB##*:}"
-        B="https://s3.$R.amazonaws.com/$BASE-$R/artifacts/genai-idp"
-        Z=$(curl -s "$B/idp-main_$V.yaml" | grep -om1 'idp-common-base-[0-9a-f]*\.zip')
-        curl -sI "$B/$V/layers/$Z" -o /dev/null -w "  $R  %{http_code}  $Z\n"
-      done
-      ```
-      ⚠️ This is *intended* as the check that would catch a publish that died before
-      `set_public_acls` — but whether it can actually catch that depends on the
-      undetermined question above: if the buckets carry a prefix-wide anonymous-read
-      bucket policy, the zip answers `200` whether or not `set_public_acls` ever ran, so
-      the check passes vacuously in exactly the scenario it is written for. Under that
-      reading it still confirms the object *exists* and is readable, which is worth
-      knowing — it just does not confirm the ACL pass completed. Treat a `200` here as
-      "readable", not as "the publish finished". Resolving
-      [#962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)
-      tells you which of the two this check is doing.
-- [ ] The docs site serves the new content.
-- [ ] The GitHub Release exists, is not a draft, and its body matches the CHANGELOG section.
-- [ ] The live tiers: run the battery per
-      [Release Validation](./release-validation/README.md) /
-      `.claude/skills/release-validation.md`, and commit
-      `docs/release-validation/v<VERSION>.md` plus its index row. Deploy variants, the
-      `--headless` / `--govcloud` transforms, the in-place `PREV → VERSION` upgrade, RBAC,
-      ZAP, the browser UX review and the benchmark A/B all live there. Do not re-derive them
-      here.
-
-## Known gaps in this runbook
-
-Collected so they are not buried:
-
-1. ⚠️ **The release credential.** Account, role, and how to assume it. Not in the repo.
-2. ⚠️ **The release buckets' configuration.** Object Ownership, Public Access Block,
-   and versioning — the last of which determines whether a bad `idp-main.yaml` is
-   recoverable by any means other than re-publishing. One part of this is now **closed**:
-   whether a prefix-wide anonymous-read bucket policy exists. It does not; object ACLs are
-   load-bearing, measured 2026-09-18 (see §1).
-3. ⚠️ **Why the three original regions** (`us-west-2`, `us-east-1`, `eu-central-1`). Adding
-   `ca-central-1` established what the *mechanics* of a new region cost — the publish
-   script, `TEMPLATE_URLS`, two Launch Stack tables, the workshop's third table and the
-   `## Templates` block, with `TestTemplateUrlTable` holding the first two together — but
-   the selection criterion for the original three is still unwritten, and the bucket in a
-   new region has to exist with the right Object Ownership and Public Access Block before
-   the first publish can succeed.
-4. ⚠️ **How the GitHub Release is created.** The outcome is observable; the command is not.
-5. ⚠️ **Whether the tag goes to both remotes**, and whether the GitLab tag is used for
-   anything.
-6. ⚠️ **The sibling repositories' pinning.** Whether `cdklabs/genai-idp` and
-   `awslabs/genai-idp-terraform` need a coordinated bump.
-7. ⚠️ **Nothing here has been executed.** The step ordering and the success criteria are
-   read out of the code; the first person to follow this runbook end to end should correct
-   it where reality differs.
+- [ ] A test stack deploys from the published template.
+- [ ] The documentation site serves the new content.
+- [ ] The GitHub Release exists, is not a draft, and its body matches the CHANGELOG
+      section.
+- [ ] The live validation battery has run, per
+      [Release Validation](./release-validation/README.md).

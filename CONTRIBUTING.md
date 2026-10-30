@@ -195,7 +195,7 @@ checkouts are worked on at once and `python3` resolves to a shared interpreter, 
 when they disagree. This runs in both CI systems and inside `make setup`. The full
 explanation is in [docs/dependency-confusion.md](docs/dependency-confusion.md), and
 what it means for a test run is in
-[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it).
+[docs/testing.md](docs/testing.md#making-sure-a-run-tests-this-checkout).
 
 ### Modular extras, and why Lambda package size matters
 
@@ -588,7 +588,7 @@ editable install pointing at another tree cannot decide what the gate reads. Run
 `lib/idp_common_pkg`, because the packages import each other — and a guard wired into
 several conftests will put the roots on `sys.path` for you and say so, or refuse the
 run when it cannot.
-[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it)
+[docs/testing.md](docs/testing.md#making-sure-a-run-tests-this-checkout)
 has the detail; the short version is that a refusal from that guard means the run
 **did not happen**, rather than that something failed.
 

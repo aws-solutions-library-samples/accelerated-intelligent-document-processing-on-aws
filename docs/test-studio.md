@@ -95,9 +95,9 @@ During stack deployment, the system automatically:
 
 Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
 
-Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.document_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.document_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; to match, open *Advanced — known document shape* in its classification settings and set **Section splitting** to **One section** (stored as `sectionSplitting: disabled`).
 
-The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.document_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** to `disabled` in it.
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.document_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the `sectionSplitting` value that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** under *Advanced — known document shape* to **One section** (stored as `sectionSplitting: disabled`) in it.
 
 ---
 
@@ -1029,7 +1029,7 @@ be sized off. When a partial sample holds only ground truth, the dialog says how
 much of the set it read rather than reporting the set as fully labelled, and still
 lets you continue to the annotation queue, which lists every document.
 
-### The curve is measured, and it improves
+### How the curve is measured and refined
 
 The curve comes from three sources of increasing fidelity:
 
@@ -1196,9 +1196,10 @@ The queue page shows:
 Per-document actions sit in one bar at the top of the edit screen (the same screen as
 production review items), so finishing a long document does not mean scrolling past
 every field to reach them: **Edit | View**, **Reports** (**History**, **Processing
-Report**), **More Actions** (**Edit Page Class**), **Skip**, **Cancel**, **Save** and
-**Process Changes**, or the view switch, **Reports** and **Claim** for an Annotator
-viewing an unassigned document. **Save** keeps the open section's changes as a
+Report**), **Skip**, **Cancel**, **Save** and **Process Changes**, or the view switch,
+**Reports** and **Claim** for an Annotator viewing an unassigned document. **Edit Page
+Grouping** is on the **Document Editor** panel, beside its **Section** and **Show Fields**
+dropdowns. **Save** keeps the open section's changes as a
 draft, which is not reviewed: you, a later session or the next assignee after a
 **Skip** open the document with it, and switching sections with unsaved changes asks
 first. **Process Changes** saves the open section's changes, applies every section's
@@ -1266,7 +1267,7 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-A section's class is changed in **Edit Page Class**, whose class list holds the classes defined by the config
+A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the config
 version that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
 names which config the class list came from, and says so explicitly when it is a
@@ -1277,7 +1278,7 @@ The order is: the config stamped on the baseline; failing that the test set's ow
 declared version; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
-preset. After a section's class is changed and saved in **Edit Page Class**, the
+preset. After a section's class is changed and saved in **Edit Page Grouping**, the
 section says **Fields still reflect the previous class** and offers **Re-extract**,
 which re-runs that one document and waits for the new labels before returning, so you
 are never left looking at fields from the previous class.
@@ -1315,7 +1316,7 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Edit Page Class** opens a board with every section side by side and each page as a
+**Edit Page Grouping** opens a board with every section side by side and each page as a
 thumbnail, where a section's pages and its class are changed. On the queue's edit screen it is in the action bar at the top and opens
 the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
 section selector at the top of the document. Either way it is kept away from the
@@ -1380,8 +1381,8 @@ Non-contiguous sections are supported, because the pipeline can produce them.
 Annotators can do this within their assigned sets, scope-checked per test set like
 every other annotation operation.
 
-The same board is available on a processed document, from **Document Sections** in
-the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+The same board is available on a processed document, from **More Actions › Edit Page
+Class** on the document page — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
 ### A section with no field values
@@ -1390,11 +1391,11 @@ A section can legitimately have nothing extracted, and the editor says which of 
 things happened rather than showing an empty form:
 
 - **No document class.** With no class there is no schema, so extraction had nothing to
-  extract against. This is the actionable one: set the class in **Edit Page Class** first —
+  extract against. This is the actionable one: set the class in **Edit Page Grouping** first —
   re-extracting before that produces nothing. A section in this state is marked **(no
   class)** in the **Section** list. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
-  which **Edit Page Class** can merge.
+  which **Edit Page Grouping** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
 - **A section added by re-grouping**, which starts with no values because nothing has
   extracted those pages as a group yet.
@@ -1587,7 +1588,7 @@ The abort then waits for the run's documents to reach a final status. A document
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
 next to its Class/Type value — hover it for the expected class. The edit page
-(**Edit Data**, or **View Data** for a read-only role) shows the section's class
+(**Edit Data** in a section row's **⋮** menu, or **View Data** for a read-only role) shows the section's class
 comparison in its **Visual Editor** tab as soon as it opens,
 without needing the **Show Evaluation** toggle, which adds the per-field
 comparison. Check the class before reading the extraction scores: a misclassified
@@ -1714,7 +1715,7 @@ Three kinds are distinguished, because they call for different fixes:
 | Issue | Meaning | What to do |
 |---|---|---|
 | **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
-| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting-strategies)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
+| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 
 A row is **Wrong class** only when the prediction has a section on exactly the

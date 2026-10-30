@@ -14,7 +14,7 @@ summarization:
   enabled: false
 
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-2-lite-v1:0
 
