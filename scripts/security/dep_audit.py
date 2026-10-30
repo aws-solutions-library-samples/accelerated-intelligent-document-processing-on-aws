@@ -106,9 +106,11 @@ RANK = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "MEDIUM": 2, "LOW": 1, "": 0}
 # 330 paged requests. One day per worker keeps the pass under half a minute.
 UNMAPPED_DAYS = 60
 UNMAPPED_WORKERS = 8
-# Wall-clock budget for the whole pass. A rate limit on every day would otherwise
-# cost 60 days x 3 retries x up to a minute, spread over 8 workers, before the
-# pass gave up; past this budget the remaining days are listed as unread.
+# Wall-clock budget after which no new page request is started; days not yet read
+# are listed as unread. A request already in flight still finishes its retries
+# (up to three 60 s timeouts and two waits of at most 60 s), so the pass can
+# overrun this by about five minutes in the worst case, which is a rate limit
+# on every worker at once.
 UNMAPPED_BUDGET_SECONDS = 180
 
 
