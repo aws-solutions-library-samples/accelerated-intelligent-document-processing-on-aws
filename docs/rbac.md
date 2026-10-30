@@ -98,6 +98,9 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     `claimTestSetDocument` is Annotator-only, at the gateway as well as in the
     resolver: Admins assign test-set documents (`assignTestSetDocuments`) rather than
     claim them. A user in both Admin and Annotator may claim.
+  - Within those queues, an Annotator with `allowedConfigVersions` sees and works only
+    the Production items whose own profile is in that scope, in every listing as well
+    as when an item is opened or claimed.
   - Their work: `listMyReviewWork`, `getReviewItem`, `saveReviewDraft`,
     `completeReviewItem` and `rejectReviewItem`. `getReviewItem` is read-only for an
     item the caller doesn't hold; saving and the dispositions need the claim.
