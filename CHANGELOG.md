@@ -74,6 +74,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Review-queue listings apply per-item profile scope, and page through every queue.** A queue holds items of several configuration profiles, so a caller with `allowedConfigVersions` is now shown, in every queue listing, in **Tasks** and by **Claim next**, only the items whose own profile is in that scope, as when an item is opened or claimed; an item with no profile is shown to no scoped caller. Listing all of the caller's queues now pages through every queue, where a later page could leave out a lower-priority queue. See [Review queues](docs/review-queues.md#turning-review-queues-on). **Action:** none.
+
 - **The reprocess dialog reminds BDA-mode users to run Sync To BDA.** The reminder was shown only when the stack setting named Pattern 1, which no stack does since the unified pattern, so it never appeared. It now follows the selected configuration profile's `use_bda` flag ([#1645](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1645)). **Action:** none.
 
 - **Release Review on the document list sends only documents it can release, and shows a refusal.** With several documents selected, **Release Review** releases only the claimed documents whose review has not finished, rather than sending every selected document and leaving the unclaimed or finished ones to fail with nothing shown. When the server refuses a release, its message appears above the table, as it does for **Start Review**. See [human-review.md](docs/human-review.md#2-review-process).
