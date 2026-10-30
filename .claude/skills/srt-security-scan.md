@@ -33,6 +33,13 @@ make dep-audit-fast   # reuse existing dist/manifests (skip regeneration)
   allowlist only when the advisory is genuinely unreachable, and say why.
 - **Exit 2 means the audit could not run** (OSV unreachable) — that is not a
   pass. Exit 1 is findings, 0 is clean.
+- **An allowlist entry that matched no finding is exit 1 too.** Delete it, and its
+  twin in `.ash/.ash.yaml`; it would otherwise pre-approve the id if it came back.
+- **Read the `UNMAPPED ADVISORIES` section; it never fails the build.** It lists
+  unreviewed GitHub advisories with no package mapping whose summary names a pinned
+  package and a range including its version — the class a commercial scanner
+  reports and OSV cannot. Confirm each one by hand before acting. "not checked"
+  means no GitHub token was available.
 - Two gotchas worth knowing before you chase a finding:
   - An advisory with **no `fixed` event** and an open-ended range matches *every*
     version. Check the reported `last known affected range` — the fix may have

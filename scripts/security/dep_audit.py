@@ -31,8 +31,11 @@ USAGE
     python3 scripts/security/dep_audit.py --no-generate    # reuse manifests
     python3 scripts/security/dep_audit.py --severity CRITICAL
     python3 scripts/security/dep_audit.py --json report.json
+    python3 scripts/security/dep_audit.py --no-unmapped    # skip the GitHub pass
 
-Exits 1 when un-allowlisted findings remain at/above the threshold, 0 otherwise,
+Exits 1 when un-allowlisted findings remain at/above the threshold, or when an
+allowlist entry matched no finding at all (a dead entry pre-approves its
+advisory id the day it comes back, so it must be deleted), 0 otherwise,
 and **2 whenever the audit could not actually be performed** — an audit that did
 not run must never look like an audit that passed. Exit 2 covers: OSV unreachable,
 a required tool missing from PATH (``REQUIRED_TOOLS``), the generator failing, and
@@ -52,18 +55,33 @@ KNOWN LIMITS
   reason (see the ``bedrock-agentcore`` entry).
 - **Version matching is OSV's, not ours.** Advisories with no ``fixed`` event and
   an open-ended range match every version; see ``last_known_affected()``.
+- **Unmapped advisories are reported, never gated.** GitHub publishes many
+  advisories as *unreviewed* with no affected package attached (a CVE mirrored
+  before anyone has mapped it). OSV, ``npm audit`` and Dependabot all match by
+  package and version, so none of them can report one; a commercial scanner that
+  maps CVEs itself can. ``match_unmapped()`` closes most of that gap by reading
+  the advisory summary — "mammoth (aka mammoth.js) before 1.12.2 ...",
+  "http-cache-semantics through 4.2.0 ..." — but that is text matching, so its
+  output is a review list, not a verdict. It reads the last ``UNMAPPED_DAYS`` of
+  advisories only, so one that stays unmapped longer than that drops out of the
+  report. It needs a GitHub token (the 60-request unauthenticated limit is far
+  below what one run uses); without one the section says it was skipped.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import os
+import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, runs the repo's own manifest script
 import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -75,12 +93,18 @@ NODE_MANIFEST = MANIFEST_DIR / "node-packages.txt"
 ALLOWLIST = Path(__file__).resolve().parent / "dep_audit_allowlist.json"
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+GHSA_URL = "https://api.github.com/advisories"
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/"
 
 # OSV's batch endpoint returns ids only, so severities come from a second
 # per-vulnerability lookup. Keep batches modest to stay well inside OSV limits.
 BATCH_SIZE = 500
 RANK = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "MEDIUM": 2, "LOW": 1, "": 0}
+
+# GitHub publishes roughly 500 unreviewed advisories a day, so 60 days is about
+# 330 paged requests. One day per worker keeps the pass under half a minute.
+UNMAPPED_DAYS = 60
+UNMAPPED_WORKERS = 8
 
 
 def _http_post_json(
@@ -232,10 +256,167 @@ def load_allowlist() -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def allowlist_key(
+    allowlist: Dict[str, Dict[str, Any]], vid: str, name: str
+) -> Optional[str]:
+    """The allowlist key that suppresses ``vid`` on ``name``, if any."""
+    for key in (f"{vid}|{name}", vid):
+        if key in allowlist:
+            return key
+    return None
+
+
 def is_allowlisted(
     allowlist: Dict[str, Dict[str, Any]], vid: str, name: str
 ) -> Optional[Dict[str, Any]]:
-    return allowlist.get(f"{vid}|{name}") or allowlist.get(vid)
+    key = allowlist_key(allowlist, vid, name)
+    return allowlist[key] if key else None
+
+
+def github_token() -> Optional[str]:
+    """A token for the GitHub advisory API: the environment, else ``gh``."""
+    for var in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if os.environ.get(var):
+            return os.environ[var]
+    if shutil.which("gh"):
+        proc = subprocess.run(  # nosec B603 B607 - fixed argv
+            ["gh", "auth", "token"], capture_output=True, text=True
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    return None
+
+
+def _ghsa_page(url: str, token: str, retries: int = 3) -> Tuple[List[Any], str]:
+    """One page of the advisory API, plus the URL of the next page ("" at the end)."""
+    last: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(  # nosec B310 - fixed https GitHub endpoint
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
+                link = resp.headers.get("Link", "") or ""
+                nxt = re.search(r'<([^>]+)>;\s*rel="next"', link)
+                return json.loads(resp.read().decode("utf-8")), (
+                    nxt.group(1) if nxt else ""
+                )
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last = exc
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError(
+        f"GitHub advisory request failed after {retries} attempts: {last}"
+    )
+
+
+def fetch_unreviewed(
+    token: str, days: int = UNMAPPED_DAYS, today: Optional[dt.date] = None
+) -> List[Dict[str, Any]]:
+    """Every unreviewed GitHub advisory published in the last ``days`` days."""
+    today = today or dt.datetime.now(dt.timezone.utc).date()
+
+    def one_day(day: dt.date) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        url = f"{GHSA_URL}?type=unreviewed&published={day.isoformat()}&per_page=100"
+        while url:
+            page, url = _ghsa_page(url, token)
+            out.extend(page)
+        return out
+
+    with ThreadPoolExecutor(UNMAPPED_WORKERS) as pool:
+        days_list = [today - dt.timedelta(days=i) for i in range(days)]
+        return [adv for chunk in pool.map(one_day, days_list) for adv in chunk]
+
+
+# "<name> [(aka ...)] [package] [versions] [from <lo>] before|through|<= <hi>" at the
+# start of an advisory summary. Anchoring on the start is what keeps generic package
+# names ("build", "buffer", "requests") from matching the middle of unrelated prose:
+# measured over 60 days of unreviewed advisories, an unanchored name match returned
+# 183 hits, almost all noise, and this one returned only advisories about the package.
+_UNMAPPED_HEAD = re.compile(
+    r"^\s*(?:the\s+)?(?P<name>@?[\w.\-/]+?)(?:\.js)?"
+    r"(?:\s*\([^)]{0,80}\))?"
+    r"(?:\s+(?:npm\s+|python\s+)?(?:package|library|module))?"
+    r"(?:\s*\([^)]{0,80}\))?"
+    r"\s+(?:versions?\s+)?"
+    r"(?:(?:from\s+)?v?(?P<lo>\d+(?:\.\d+)*)\s+)?"
+    r"(?P<op>before|prior to|through|up to and including|up to|<=|<)\s+"
+    r"v?(?P<hi>\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
+
+
+def _version_tuple(text: str) -> Optional[Tuple[int, ...]]:
+    """``1.12.0`` -> (1, 12, 0); None for anything that is not dotted integers."""
+    try:
+        return tuple(int(part) for part in text.split("."))
+    except ValueError:
+        return None
+
+
+def _compare(a: Tuple[int, ...], b: Tuple[int, ...]) -> int:
+    width = max(len(a), len(b))
+    a, b = a + (0,) * (width - len(a)), b + (0,) * (width - len(b))
+    return (a > b) - (a < b)
+
+
+def match_unmapped(
+    advisories: List[Dict[str, Any]],
+    packages: List[Tuple[str, str, str]],
+    known_ids: Iterable[str] = (),
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Advisories with no package mapping whose summary names a pinned package.
+
+    Returns (findings, not_affected): a finding is an advisory whose stated range
+    includes the pinned version, or whose range could not be read; ``not_affected``
+    counts the ones that named a package but exclude the version we pin.
+    """
+    known = set(known_ids)
+    by_name: Dict[str, List[Tuple[str, str, str]]] = {}
+    for eco, name, version in packages:
+        by_name.setdefault(name.lower(), []).append((eco, name, version))
+
+    findings: List[Dict[str, Any]] = []
+    not_affected = 0
+    for adv in advisories:
+        if adv.get("vulnerabilities"):
+            continue  # mapped, so OSV already matches it by package and version
+        if adv.get("ghsa_id") in known or adv.get("cve_id") in known:
+            continue
+        m = _UNMAPPED_HEAD.match(adv.get("summary") or "")
+        if not m:
+            continue
+        for eco, name, version in by_name.get(m.group("name").lower(), []):
+            ours, hi = _version_tuple(version), _version_tuple(m.group("hi"))
+            lo = _version_tuple(m.group("lo")) if m.group("lo") else None
+            if ours is not None and hi is not None:
+                inclusive = m.group("op").lower() not in ("before", "prior to", "<")
+                under = _compare(ours, hi) <= (0 if inclusive else -1)
+                over = lo is None or _compare(ours, lo) >= 0
+                if not (under and over):
+                    not_affected += 1
+                    continue
+                stated = "in the stated range"
+            else:
+                stated = "range not machine-readable; check by hand"
+            findings.append(
+                {
+                    "id": adv.get("ghsa_id", ""),
+                    "cve": adv.get("cve_id") or "",
+                    "ecosystem": eco,
+                    "package": name,
+                    "version": version,
+                    "severity": (adv.get("severity") or "unknown").upper(),
+                    "match": stated,
+                    "summary": (adv.get("summary") or "").strip(),
+                }
+            )
+    return findings, not_affected
 
 
 # External tools `scripts/generate-dep-manifest.sh` shells out to. Checked up
@@ -268,6 +449,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         help="reuse existing dist/manifests instead of regenerating them",
     )
     ap.add_argument("--json", metavar="PATH", help="write the full report as JSON")
+    ap.add_argument(
+        "--no-unmapped",
+        action="store_true",
+        help="skip the report of unreviewed GitHub advisories with no package mapping",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     if not args.no_generate:
@@ -374,6 +560,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     gating: List[Dict[str, Any]] = []
     suppressed: List[Dict[str, Any]] = []
     below: List[Dict[str, Any]] = []
+    used_keys = set()
 
     for key, ids in sorted(hits.items()):
         eco, name, version = key.split("|", 2)
@@ -391,8 +578,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 "last_known_affected": last_known_affected(vuln, name),
                 "summary": (vuln.get("summary") or "").strip(),
             }
-            entry = is_allowlisted(allowlist, vid, name)
+            matched = allowlist_key(allowlist, vid, name)
+            entry = allowlist[matched] if matched else None
             if entry:
+                used_keys.add(matched)
                 finding["allowlist_reason"] = entry.get("reason", "(no reason given)")
                 suppressed.append(finding)
             elif RANK.get(sev, 0) >= threshold:
@@ -421,9 +610,70 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             if "allowlist_reason" in f:
                 print(f"    allowlisted: {f['allowlist_reason']}")
 
+    # An entry that suppressed nothing is gating too: its advisory was withdrawn,
+    # or the package was upgraded or removed, and leaving it in place approves the
+    # same id in advance if it is ever reissued or the old version comes back.
+    stale = [
+        {"key": key, **allowlist[key]}
+        for key in sorted(allowlist)
+        if key not in used_keys
+    ]
+
+    unmapped: Dict[str, Any] = {"status": "skipped", "findings": []}
+    if args.no_unmapped:
+        unmapped["reason"] = "--no-unmapped"
+    else:
+        token = github_token()
+        if not token:
+            unmapped["reason"] = "no GitHub token (set GITHUB_TOKEN or log in with gh)"
+        else:
+            known = {vid for ids in hits.values() for vid in ids}
+            known |= {a for v in details.values() for a in v.get("aliases", [])}
+            try:
+                advisories = fetch_unreviewed(token)
+            except RuntimeError as exc:
+                unmapped["reason"] = str(exc)
+            else:
+                found, not_affected = match_unmapped(advisories, packages, known)
+                unmapped = {
+                    "status": "ran",
+                    "days": UNMAPPED_DAYS,
+                    "advisories_read": len(advisories),
+                    "not_affected": not_affected,
+                    "findings": found,
+                }
+
     show(f"GATING — at or above {args.severity}", gating)
+    if stale:
+        print(f"\nGATING — allowlist entries that matched no finding ({len(stale)})")
+        print("-" * 100)
+        for e in stale:
+            print(f"  {e['key']}")
+        print(
+            "    The advisory was withdrawn, or the package moved past it. Delete\n"
+            f"    the entry from {ALLOWLIST.relative_to(REPO_ROOT)} and its twin in\n"
+            "    .ash/.ash.yaml."
+        )
     show("ALLOWLISTED (triaged, not gating)", suppressed)
     show(f"BELOW THRESHOLD (informational, under {args.severity})", below)
+
+    if unmapped["status"] == "ran":
+        rows = unmapped["findings"]
+        print(
+            f"\nUNMAPPED ADVISORIES — review, not gating ({len(rows)}; "
+            f"{unmapped['advisories_read']} unreviewed advisories from the last "
+            f"{UNMAPPED_DAYS} days read, {unmapped['not_affected']} more name a "
+            "pinned package but exclude its version)"
+        )
+        print("-" * 100)
+        for f in rows:
+            print(
+                f"  {f['severity']:<14} {f['ecosystem']}:{f['package']}@{f['version']}"
+            )
+            print(f"    {f['id']} {f['cve']}  {f['match']}")
+            print(f"    {f['summary'][:150]}")
+    else:
+        print(f"\nUNMAPPED ADVISORIES — not checked: {unmapped['reason']}")
 
     report = {
         "packages_audited": len(packages),
@@ -431,6 +681,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         "gating": gating,
         "allowlisted": suppressed,
         "below_threshold": below,
+        "stale_allowlist": stale,
+        "unmapped": unmapped,
     }
     if args.json:
         Path(args.json).write_text(
@@ -440,8 +692,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     print(
         f"\nSummary: {len(packages)} packages audited | {len(gating)} gating | "
-        f"{len(suppressed)} allowlisted | {len(below)} below {args.severity}"
+        f"{len(suppressed)} allowlisted | {len(below)} below {args.severity} | "
+        f"{len(stale)} stale allowlist | {len(unmapped['findings'])} unmapped to review"
     )
+    if stale and not gating:
+        print(
+            f"\n❌ {len(stale)} allowlist entr{'y' if len(stale) == 1 else 'ies'} "
+            "matched no finding. Delete them (see above)."
+        )
+        return 1
     if gating:
         print(
             f"\n❌ {len(gating)} dependency finding(s) at/above {args.severity}.\n"

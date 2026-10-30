@@ -150,7 +150,13 @@ jobs:
       # Regenerates the manifests then audits ~1800 pinned packages against OSV.
       # Fails on HIGH/CRITICAL. Exit 2 means the audit could not run (OSV
       # unreachable) and is NOT a pass — dep_audit.py distinguishes the two.
+      #
+      # The token is for the unmapped-advisory report only (GitHub's advisory
+      # API, read-only, public data); that report never changes the exit code.
+      # Without it the report prints "not checked" and the gate is unaffected.
       - name: Run dependency audit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/security/dep_audit.py --json dep-audit-report.json
 
       - name: Upload dependency audit report

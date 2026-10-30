@@ -416,8 +416,19 @@ job alone.
 
 Findings are triaged in place rather than waved through: bandit findings take a
 line-scoped `# nosec <ID> - <reason>`, unreachable advisories go in
-`scripts/security/dep_audit_allowlist.json` with a justification, and
-security-matrix/Checkov findings go in `scripts/srt/issues.json`. Procedures:
+`scripts/security/dep_audit_allowlist.json` with a justification (an entry that
+no longer matches any finding fails the audit, so delete it once the advisory is
+withdrawn or the package is upgraded), and security-matrix/Checkov findings go in
+`scripts/srt/issues.json`.
+
+`dep-audit` also prints an **unmapped advisories** section. GitHub publishes many
+advisories as *unreviewed*, with no affected package attached; matching by package
+and version, as OSV, `npm audit` and Dependabot do, can never report one. The
+section lists each unreviewed advisory from the last 60 days whose summary opens
+with a pinned package's name and a range that includes the pinned version. It is a
+list to review, not a gate: it is read from prose, and it never changes the exit
+code. It needs a GitHub token (`GITHUB_TOKEN`, `GH_TOKEN` or a `gh` login), and
+says "not checked" without one. Procedures:
 [`srt-security-scan`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/srt-security-scan.md).
 
 Published, redacted snapshots of the four security tests per release live in

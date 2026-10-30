@@ -15,6 +15,9 @@ mis-classify a finding are the parts worth pinning:
 - **severity mapping** — an unrecognised label must not accidentally rank at or
   above the gate threshold.
 - **`last_known_affected`** — must read only the entry for the package in hand.
+- **stale allowlist entries** — an entry that matched no finding fails the run.
+- **unmapped advisories** — read from the start of a summary only, compared
+  against the pinned version, and never allowed to change the exit code.
 
 No network: every test drives the pure functions directly.
 """
@@ -32,6 +35,17 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import dep_audit  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _offline_unmapped(monkeypatch):
+    """Keep the GitHub advisory pass off the network for every test in this file.
+
+    Tests that exercise that pass replace these again; everything else sees a
+    token and an empty advisory list, so the pass runs and finds nothing.
+    """
+    monkeypatch.setattr(dep_audit, "github_token", lambda: "test-token")
+    monkeypatch.setattr(dep_audit, "fetch_unreviewed", lambda token: [])
 
 
 def subprocess_result(code, out, err):
@@ -766,3 +780,281 @@ class TestTheJsonReport:
         assert [f["id"] for f in report["allowlisted"]] == ["GHSA-ok"]
         assert [f["id"] for f in report["below_threshold"]] == ["GHSA-mod"]
         assert report["packages_audited"] == 2
+
+
+def _unreviewed(summary, ghsa="GHSA-unmp", cve="CVE-2026-0001", severity="high"):
+    """An unreviewed advisory as GitHub returns it: no affected packages at all."""
+    return {
+        "ghsa_id": ghsa,
+        "cve_id": cve,
+        "severity": severity,
+        "summary": summary,
+        "vulnerabilities": [],
+    }
+
+
+MAMMOTH = [("npm", "mammoth", "1.12.0")]
+
+
+@pytest.mark.unit
+class TestStaleAllowlistEntries:
+    """An allowlist entry that suppressed nothing fails the run.
+
+    Its advisory was withdrawn or the package moved past it, and leaving it in
+    place approves the same id in advance the day it comes back. Three entries
+    were in that state on develop before this check existed.
+    """
+
+    def test_an_entry_that_matched_nothing_exits_1_and_is_named(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {},
+            {},
+            allowlist={"GHSA-gone": {"id": "GHSA-gone", "reason": "was triaged"}},
+        )
+        assert dep_audit.main(["--no-generate"]) == 1
+        out = capsys.readouterr().out
+        assert "matched no finding" in out and "GHSA-gone" in out
+
+    def test_an_entry_that_suppressed_a_finding_is_not_stale(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]},
+            {"GHSA-aaaa": _advisory("HIGH")},
+            allowlist={
+                "GHSA-aaaa|pillow": {
+                    "id": "GHSA-aaaa",
+                    "package": "pillow",
+                    "reason": "not reachable",
+                }
+            },
+        )
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "matched no finding" not in capsys.readouterr().out
+
+    def test_an_entry_scoped_to_a_package_is_stale_when_only_another_package_hits(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The advisory id appearing somewhere is not enough: the scoped key is what
+        has to match, or a package-scoped entry outlives its package."""
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]},
+            {"GHSA-aaaa": _advisory("LOW")},
+            allowlist={
+                "GHSA-aaaa|removed-pkg": {
+                    "id": "GHSA-aaaa",
+                    "package": "removed-pkg",
+                    "reason": "x",
+                }
+            },
+        )
+        assert dep_audit.main(["--no-generate"]) == 1
+        assert "GHSA-aaaa|removed-pkg" in capsys.readouterr().out
+
+    def test_the_stale_block_is_headed_gating_so_the_ci_summary_keeps_it(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The GitLab job summary keeps lines from the first header starting with
+        GATING up to ALLOWLISTED; a stale-only failure must not summarise as empty."""
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {}, allowlist={"GHSA-gone": {"id": "GHSA-gone"}})
+        dep_audit.main(["--no-generate"])
+        lines = capsys.readouterr().out.splitlines()
+        header = next(i for i, ln in enumerate(lines) if "matched no finding" in ln)
+        assert lines[header].startswith("GATING")
+        assert any("GHSA-gone" in ln for ln in lines[header:])
+
+    def test_the_json_report_lists_stale_entries(self, tmp_path, monkeypatch, capsys):
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {}, allowlist={"GHSA-gone": {"id": "GHSA-gone"}})
+        out = tmp_path / "r.json"
+        dep_audit.main(["--no-generate", "--json", str(out)])
+        capsys.readouterr()
+        assert [e["key"] for e in json.loads(out.read_text())["stale_allowlist"]] == [
+            "GHSA-gone"
+        ]
+
+
+@pytest.mark.unit
+class TestMatchUnmapped:
+    """The summary forms are the real ones from the advisories that prompted this."""
+
+    def test_the_aka_form_with_a_before_bound(self):
+        found, _ = dep_audit.match_unmapped(
+            [
+                _unreviewed(
+                    "mammoth (aka mammoth.js) before 1.12.2 is vulnerable to "
+                    "prototype pollution when reading the styles"
+                )
+            ],
+            MAMMOTH,
+        )
+        assert [(f["package"], f["version"]) for f in found] == [("mammoth", "1.12.0")]
+        assert found[0]["match"] == "in the stated range"
+
+    def test_the_dot_js_form_with_a_lower_and_upper_bound(self):
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("Mammoth.js 1.3.0 before 1.12.3 contains a ReDoS")], MAMMOTH
+        )
+        assert len(found) == 1
+
+    def test_a_through_bound_is_inclusive(self):
+        pkgs = [("npm", "http-cache-semantics", "4.2.0")]
+        adv = [_unreviewed("http-cache-semantics through 4.2.0 contains a flaw")]
+        assert len(dep_audit.match_unmapped(adv, pkgs)[0]) == 1
+        pkgs = [("npm", "http-cache-semantics", "4.3.0")]
+        found, not_affected = dep_audit.match_unmapped(adv, pkgs)
+        assert found == [] and not_affected == 1
+
+    def test_a_before_bound_is_exclusive(self):
+        adv = [_unreviewed("DOMPurify before 3.4.16 contains a cross-site scripting")]
+        pkgs = [("npm", "dompurify", "3.4.16")]
+        found, not_affected = dep_audit.match_unmapped(adv, pkgs)
+        assert found == [] and not_affected == 1
+        assert (
+            len(dep_audit.match_unmapped(adv, [("npm", "dompurify", "3.4.15")])[0]) == 1
+        )
+
+    def test_a_version_below_the_lower_bound_is_not_affected(self):
+        adv = [_unreviewed("DOMPurify from 3.4.13 before 3.4.16 contains a flaw")]
+        found, not_affected = dep_audit.match_unmapped(
+            adv, [("npm", "dompurify", "3.4.12")]
+        )
+        assert found == [] and not_affected == 1
+
+    def test_a_package_named_mid_sentence_does_not_match(self):
+        """Generic names are the noise source: anchoring on the start is the rule."""
+        adv = [
+            _unreviewed(
+                "Don't Starve Together through build 747465 contains a memory flaw"
+            ),
+            # The first place an unanchored search could match is "requests
+            # before 2.40" itself, so this is the case that pins the anchor.
+            _unreviewed("A flaw in requests before 2.40 lets a proxy read headers"),
+        ]
+        pkgs = [("npm", "build", "0.1.4"), ("PyPI", "requests", "2.32.0")]
+        assert dep_audit.match_unmapped(adv, pkgs) == ([], 0)
+
+    def test_a_mapped_advisory_is_left_to_osv(self):
+        adv = _unreviewed("mammoth before 1.12.2 is vulnerable")
+        adv["vulnerabilities"] = [{"package": {"name": "mammoth"}}]
+        assert dep_audit.match_unmapped([adv], MAMMOTH) == ([], 0)
+
+    def test_an_advisory_osv_already_reported_is_not_repeated(self):
+        adv = [_unreviewed("mammoth before 1.12.2 is vulnerable", cve="CVE-2026-9")]
+        assert dep_audit.match_unmapped(adv, MAMMOTH, {"CVE-2026-9"}) == ([], 0)
+
+    def test_an_unreadable_pinned_version_is_reported_for_a_human(self):
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("h3 versions before 2.0.1 contain an open redirect")],
+            [("npm", "h3", "2.0.0-rc.3")],
+        )
+        assert len(found) == 1 and "by hand" in found[0]["match"]
+
+    def test_names_match_case_insensitively(self):
+        found, _ = dep_audit.match_unmapped(
+            [_unreviewed("GitPython before 3.2.0 contains a flaw")],
+            [("PyPI", "gitpython", "3.1.0")],
+        )
+        assert len(found) == 1
+
+
+@pytest.mark.unit
+class TestUnmappedInTheGate:
+    """The unmapped pass is a review list: it must never change the exit code."""
+
+    def test_a_high_unmapped_finding_is_printed_but_exits_0(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        _manifests(tmp_path, monkeypatch, node="mammoth@1.12.0\n")
+        _osv(monkeypatch, {}, {})
+        monkeypatch.setattr(
+            dep_audit,
+            "fetch_unreviewed",
+            lambda token: [_unreviewed("mammoth before 1.12.2 is vulnerable")],
+        )
+        assert dep_audit.main(["--no-generate"]) == 0
+        out = capsys.readouterr().out
+        assert "UNMAPPED ADVISORIES" in out and "npm:mammoth@1.12.0" in out
+
+    def test_no_token_says_the_pass_was_skipped(self, tmp_path, monkeypatch, capsys):
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {})
+        monkeypatch.setattr(dep_audit, "github_token", lambda: None)
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "UNMAPPED ADVISORIES — not checked: no GitHub token" in (
+            capsys.readouterr().out
+        )
+
+    def test_a_github_failure_says_the_pass_was_skipped(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {})
+
+        def boom(token):
+            raise RuntimeError("GitHub advisory request failed after 3 attempts")
+
+        monkeypatch.setattr(dep_audit, "fetch_unreviewed", boom)
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "not checked: GitHub advisory request failed" in capsys.readouterr().out
+
+    def test_no_unmapped_flag_does_not_call_github(self, tmp_path, monkeypatch, capsys):
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {})
+
+        def boom(token):
+            raise AssertionError("fetch_unreviewed must not run under --no-unmapped")
+
+        monkeypatch.setattr(dep_audit, "fetch_unreviewed", boom)
+        assert dep_audit.main(["--no-generate", "--no-unmapped"]) == 0
+        assert "not checked: --no-unmapped" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+class TestFetchUnreviewed:
+    def test_every_day_is_requested_and_every_page_followed(self, monkeypatch):
+        monkeypatch.undo()  # drop the autouse stub so the real function runs
+        calls = []
+
+        def fake_page(url, token):
+            calls.append(url)
+            if "after=" in url:
+                return [{"ghsa_id": url[-10:] + "-p2"}], ""
+            return [{"ghsa_id": url[-10:]}], url + "&after=x"
+
+        monkeypatch.setattr(dep_audit, "_ghsa_page", fake_page)
+        import datetime as dt
+
+        got = dep_audit.fetch_unreviewed("t", days=3, today=dt.date(2026, 10, 30))
+        assert len(got) == 6 and len(calls) == 6
+        firsts = sorted(u for u in calls if "after=" not in u)
+        assert [u.split("published=")[1][:10] for u in firsts] == [
+            "2026-10-28",
+            "2026-10-29",
+            "2026-10-30",
+        ]
+        assert all("type=unreviewed" in u for u in calls)
+
+
+@pytest.mark.unit
+class TestGithubToken:
+    def test_the_environment_wins(self, monkeypatch):
+        monkeypatch.undo()  # drop the autouse stub so the real function runs
+        monkeypatch.setenv("GITHUB_TOKEN", "from-env")
+        assert dep_audit.github_token() == "from-env"
+
+    def test_none_without_env_or_gh(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda t: None)
+        assert dep_audit.github_token() is None
