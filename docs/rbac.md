@@ -26,7 +26,7 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; not Test Studio queues |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
 | **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
@@ -86,8 +86,15 @@ user locked out for the full TTL.
 
 ## Annotators and review queues
 
-[Review queues](./review-queues.md) are worked by the Annotators listed on them. An
-Annotator claims an item from one of their queues, or an Admin assigns it to them.
+[Review queues](./review-queues.md) are worked by the Annotators listed on them and,
+for Production queues, by every Reviewer. An Annotator claims an item from one of their
+queues, or an Admin assigns it to them; a Reviewer claims their own items and is never
+assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
+Production review-queue operations as an Annotator (`getMyReviewQueues`,
+`listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
+`claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
+`rejectReviewItem`), within their `allowedConfigVersions`, and none of the Test Studio
+ones.
 
 - **What an Annotator can call.**
   - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,

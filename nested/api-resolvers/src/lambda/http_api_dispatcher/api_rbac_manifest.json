@@ -43,7 +43,8 @@
     "checkFeatureEntitlement": "ANY",
     "claimNextReviewItem": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "claimReview": [
       "Admin",
@@ -52,7 +53,8 @@
     ],
     "claimReviewItem": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "claimTestSetDocument": [
       "Annotator"
@@ -81,7 +83,8 @@
     ],
     "completeReviewItem": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "completeSectionReview": [
       "Admin",
@@ -300,7 +303,8 @@
     "getMyProfile": "ANY",
     "getMyReviewQueues": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "getPricing": [
       "Admin",
@@ -309,7 +313,8 @@
     ],
     "getReviewItem": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "getReviewQueuesOverview": [
       "Admin"
@@ -436,7 +441,8 @@
     "listInstalledFeatures": "ANY",
     "listMyReviewWork": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "listMyTestSetTasks": [
       "Admin",
@@ -445,7 +451,8 @@
     ],
     "listReviewQueueItems": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "listReviewQueues": [
       "Admin"
@@ -518,7 +525,8 @@
     ],
     "rejectReviewItem": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "releaseReview": [
       "Admin",
@@ -527,7 +535,8 @@
     ],
     "releaseReviewItem": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "removeDocumentsFromTestSet": [
       "Admin",
@@ -565,7 +574,8 @@
     ],
     "saveReviewDraft": [
       "Admin",
-      "Annotator"
+      "Annotator",
+      "Reviewer"
     ],
     "saveSectionReviewEdits": [
       "Admin",

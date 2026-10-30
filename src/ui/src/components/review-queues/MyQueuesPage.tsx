@@ -25,6 +25,7 @@ import { fetchMyReviewQueues } from './review-api';
 import { listTestSetQueues } from './reviewer-assignment';
 import { SOURCE_LABELS } from './work-items';
 import type { WorkSource } from './work-items';
+import useUserRole from '../../hooks/use-user-role';
 
 const logger = new ConsoleLogger('MyQueuesPage');
 
@@ -106,19 +107,21 @@ const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [
 
 const MyQueuesPage = (): React.JSX.Element => {
   const reviewWork = useOptionalReviewWork();
+  const { isAnnotator } = useUserRole();
   const [production, setProduction] = useState<ReviewQueueSummary[] | null>(null);
   const [testSets, setTestSets] = useState<TestSetQueueSummary[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const [mine, sets] = await Promise.allSettled([fetchMyReviewQueues(1), listTestSetQueues()]);
+    // Test Studio queues are Annotators'; a Reviewer works the Production queues only.
+    const [mine, sets] = await Promise.allSettled([fetchMyReviewQueues(1), isAnnotator ? listTestSetQueues() : Promise.resolve([])]);
     if (mine.status === 'fulfilled') setProduction(mine.value.queues);
     if (sets.status === 'fulfilled') setTestSets(sets.value.filter((t) => (t.fileCount ?? 0) > 0));
     const failure = mine.status === 'rejected' ? mine.reason : sets.status === 'rejected' ? sets.reason : null;
     if (failure) logger.error('loading my queues failed', failure);
     setError(failure);
-  }, []);
+  }, [isAnnotator]);
 
   usePolling(load, { enabled: true, intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
 

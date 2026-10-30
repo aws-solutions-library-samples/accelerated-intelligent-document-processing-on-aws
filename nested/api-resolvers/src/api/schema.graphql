@@ -2354,16 +2354,17 @@ type Mutation {
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
   # HITL review queues (ReviewQueuesResolverFunction). Annotators work the queues
-  # that list them: they claim an item (assigning it to themselves), work their own
-  # items (saveReviewDraft, completeReviewItem, rejectReviewItem) and release one
-  # (Skip). Queue management, assignment and supervision are Admin only.
+  # that list them, and Reviewers every Production queue: they claim an item
+  # (assigning it to themselves), work their own items (saveReviewDraft,
+  # completeReviewItem, rejectReviewItem) and release one (Skip). Queue management,
+  # assignment and supervision are Admin only.
   claimReviewItem(objectKey: String!, cycleId: String!): ReviewItem
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   claimNextReviewItem(queueProfile: String, queueName: String): ClaimNextResult
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   renewReviewLease(objectKey: String!, cycleId: String!): ReviewItem
     @aws_cognito_user_pools(
@@ -2371,19 +2372,19 @@ type Mutation {
     )
   releaseReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   saveReviewDraft(objectKey: String!, cycleId: String!, sectionId: String!, data: AWSJSON!, baseRevision: Int): ReviewDraft
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   completeReviewItem(objectKey: String!, cycleId: String!, checklist: [Boolean!], note: String): ReviewItem
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   rejectReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   # Takes an OPEN or assigned item out of review: the document completes with its
   # machine results and its review status object is removed.
@@ -2784,19 +2785,19 @@ type Query @aws_cognito_user_pools @aws_iam {
   # HITL review queues (ReviewQueuesResolverFunction).
   getMyReviewQueues(itemLimit: Int): MyReviewQueues
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   listReviewQueueItems(queueProfile: String, queueName: String, claimable: Boolean, limit: Int, nextToken: String): ReviewItemPage
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   listMyReviewWork(limit: Int, nextToken: String): ReviewItemPage
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   getReviewItem(objectKey: String!): ReviewItemDetail
     @aws_cognito_user_pools(
-      cognito_groups: ["Admin", "Annotator"]
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
     )
   getReviewQueuesOverview: ReviewQueuesOverview
     @aws_cognito_user_pools(

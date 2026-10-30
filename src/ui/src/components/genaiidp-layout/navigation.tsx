@@ -367,7 +367,7 @@ const FullNavigation = ({
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isAnnotator } = useUserRole();
+  const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isQueueWorker } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
@@ -405,7 +405,7 @@ const FullNavigation = ({
     else roleItems = viewerNavItems; // Default: if user has Viewer + Reviewer, show viewer nav (union)
 
     // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
-    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isAnnotator, taskCount: reviewCount });
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isQueueWorker, taskCount: reviewCount });
     roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
@@ -424,7 +424,7 @@ const FullNavigation = ({
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, isAnnotator, showHitl, reviewCount]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified

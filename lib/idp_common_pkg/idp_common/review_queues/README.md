@@ -29,7 +29,7 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `models.py` | Pydantic records for the table (`ReviewItemRecord`, `DraftRecord`, `HistoryEntry`), `StatusObject`, `ReviewDecision`, `CallerContext` |
 | `keys.py` | Table key layout and the opaque list cursors |
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
-| `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths |
+| `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths. Only Annotators are assigned work; Reviewers claim it |
 | `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch, cached for 30 s; the Default queue is seeded, enabled, whenever it is missing, and a stored Default is never overwritten |
 | `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins every queue; Annotators those whose `eligible_annotators` is empty or names them), failing closed |
 | `reasons.py` | `build_reasons`: why a document is held (its sections' `confidence_threshold_alerts`, and in BDA mode a blueprint confidence under `hitl.confidence_threshold`); reads no S3 |

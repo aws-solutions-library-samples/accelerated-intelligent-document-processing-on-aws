@@ -16,6 +16,8 @@ import type { ReviewWorkContextValue } from '../review-work';
 import useReviewWork from '../../hooks/use-review-work';
 
 const { graphqlMock } = vi.hoisted(() => ({ graphqlMock: vi.fn() }));
+const role = vi.hoisted(() => ({ isAnnotator: true }));
+vi.mock('../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../api/client-shim', () => ({
   generateClient: () => ({ graphql: graphqlMock }),
 }));
@@ -113,5 +115,32 @@ describe('ReviewWorkProvider.settle', () => {
       await latest.refresh();
     });
     expect(latest.count).toBe(3);
+  });
+});
+
+describe('ReviewWorkProvider for a Reviewer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    role.isAnnotator = false;
+    graphqlMock.mockReset().mockImplementation(answer);
+    server = { production: ['doc-p.pdf'], testSet: ['doc-a.pdf'] };
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    render(
+      <ReviewWorkProvider>
+        <Consumer />
+      </ReviewWorkProvider>,
+    );
+  });
+
+  afterEach(() => {
+    role.isAnnotator = true;
+    vi.useRealTimers();
+  });
+
+  it('counts the Production work only, and never asks for Test Studio tasks', async () => {
+    await flush();
+    expect(latest.count).toBe(1);
+    const queries = graphqlMock.mock.calls.map((c) => String((c[0] as { query: unknown }).query));
+    expect(queries.some((q) => q.includes('listMyTestSetTasks'))).toBe(false);
   });
 });

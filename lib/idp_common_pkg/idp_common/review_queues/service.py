@@ -1334,7 +1334,8 @@ class ReviewQueueService:
         email = assignee_email.strip().lower()
         info = self.user_lookup(email) if self.user_lookup else None
         groups = set(info.groups) if info else set()
-        # HITL work is assigned to Annotators only (Admins assign; nobody self-claims).
+        # HITL work is assigned to Annotators only (Admins assign). Reviewers work every
+        # Production queue and claim their own work; they are never assigned it.
         if info is None or not info.exists or "Annotator" not in groups:
             raise ReviewValidationError(
                 "ASSIGNEE_NOT_ELIGIBLE", "the user isn't an Annotator"

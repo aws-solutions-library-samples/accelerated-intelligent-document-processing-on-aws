@@ -1317,33 +1317,34 @@ operations:
   # HITL review queues (idp_common.review_queues)
   # ==========================================================================
   # Queues are system-wide, so one queue holds items of several configuration
-  # profiles. An Admin works every queue; an Annotator works the queues that list
-  # them, claiming items or being assigned them (owner key from verified claims).
+  # profiles. An Admin and a Reviewer work every Production queue; an Annotator
+  # works the queues that list them; each claims items or is assigned them (owner
+  # key from verified claims). Test Studio queues are Annotators' only.
   # Profile scope (allowedConfigVersions) is applied to each item by its own
   # profile, in the listings as in the per-item operations, and an item with no
   # profile is admitted to no scoped caller. Every other operation is Admin only. The mutation args name an item nobody has, so
   # an allowed role gets a benign 404 (ITEM_NOT_FOUND); claimNextReviewItem names
   # an undefined queue (400).
   getMyReviewQueues:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { itemLimit: 1 }
     note: >-
-      Lists the queues the caller works with their depth, and those queues' items: every queue for an Admin, the queues that list them for an Annotator (Home › Queues). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
+      Lists the queues the caller works with their depth, and those queues' items: every queue for an Admin or a Reviewer, the queues that list them for an Annotator (Home › Queues). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
   listReviewQueueItems:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { limit: 1 }
     note: >-
-      Lists a queue's items, or the items of every queue the caller works, in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
+      Lists a queue's items, or the items of every queue the caller works, in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER); a Reviewer works every Production queue. Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
   listMyReviewWork:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_filtered: true
@@ -1352,32 +1353,32 @@ operations:
     note: >-
       Lists only the items the caller holds (owner key from verified claims), each filtered by its own profile against the caller's allowedConfigVersions as they are now.
   getReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__" }
     note: >-
-      One queue item, its reasons, drafts and history. An Annotator may open, read-only until they claim it, an item in a queue that lists them, or an item they hold (NOT_A_MEMBER otherwise), and only when the item's own profile is in their allowedConfigVersions (OUT_OF_SCOPE otherwise). A nonexistent key is a benign 404.
+      One queue item, its reasons, drafts and history. An Annotator or a Reviewer may open, read-only until they claim it, an item in a queue they work (every Production queue for a Reviewer), or an item they hold (NOT_A_MEMBER otherwise), and only when the item's own profile is in their allowedConfigVersions (OUT_OF_SCOPE otherwise). A nonexistent key is a benign 404.
   claimReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__", cycleId: "000000000000000000000" }
     note: >-
-      Takes one queue item for the caller, assigning it to them (no expiry); the claim is one conditional write. An Annotator may claim only in a queue that lists them (NOT_A_MEMBER).
+      Takes one queue item for the caller, assigning it to them (no expiry); the claim is one conditional write. An Annotator may claim only in a queue that lists them (NOT_A_MEMBER); a Reviewer in any Production queue.
   claimNextReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { queueProfile: "__x__", queueName: "__x__" }
     note: >-
-      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them, and only items whose own profile is in their allowedConfigVersions.
+      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them, a Reviewer from every Production queue, and only items whose own profile is in their allowedConfigVersions.
   renewReviewLease:
     groups: [Admin]
     kind: mutation
@@ -1388,7 +1389,7 @@ operations:
     note: >-
       Extends the caller's own hold; the owner is checked inside the write condition. Admin only.
   releaseReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1397,7 +1398,7 @@ operations:
     note: >-
       Returns the caller's own item to its queue, keeping the draft (Skip), with a reason from the queue's skip list. Only the holder may release (NOT_LEASE_HOLDER).
   saveReviewDraft:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1406,7 +1407,7 @@ operations:
     note: >-
       Saves a section draft for an item assigned to the caller (bounded size and depth).
   completeReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1415,7 +1416,7 @@ operations:
     note: >-
       Completes an item assigned to the caller (Admin: any held item) and starts its durable finalize run.
   rejectReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1471,7 +1472,7 @@ operations:
     enforced_in: *rq
     args: {}
     note: >-
-      Lists the emails of the Cognito Annotator group's members, the only users HITL work can be assigned to. Admin only.
+      Lists the emails of the Cognito Annotator group's members, the only users HITL work can be assigned to; Reviewers claim their own work and are never assigned it. Admin only.
   listReviewQueues:
     groups: [Admin]
     kind: read

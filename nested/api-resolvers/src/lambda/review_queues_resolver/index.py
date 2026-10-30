@@ -62,9 +62,10 @@ _SERVICE = create_review_queue_service()
 _DYNAMODB = boto3.resource("dynamodb")
 _SCOPE_CACHE: dict = {}
 
-# Annotators work the queues that list them: they claim items (or an Admin assigns
-# them) and work their own. Admins manage the queues and assign the work.
-_WORKERS = frozenset({"Admin", "Annotator"})
+# Annotators work the queues that list them and Reviewers every Production queue: they
+# claim items (or an Admin assigns them) and work their own. Admins manage the queues
+# and assign the work.
+_WORKERS = frozenset({"Admin", "Annotator", "Reviewer"})
 _ADMIN = frozenset({"Admin"})
 
 #: Mirrors scripts/api_rbac_expectations.yaml.
@@ -74,9 +75,10 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "saveReviewDraft": _WORKERS,
     "completeReviewItem": _WORKERS,
     "rejectReviewItem": _WORKERS,
-    # My Work › Queues: an Annotator lists the queues that list them, opens their
-    # items, claims one (assigning it to themselves) and releases it (Skip). The
-    # service limits each to the queues the caller is listed on.
+    # Home › Queues: an Annotator lists the queues that list them, a Reviewer every
+    # Production queue; either opens their items, claims one (assigning it to
+    # themselves) and releases it (Skip). The service limits each to the queues the
+    # caller works (`QueueDirectory.is_member`).
     "getMyReviewQueues": _WORKERS,
     "listReviewQueueItems": _WORKERS,
     "claimReviewItem": _WORKERS,
@@ -304,7 +306,8 @@ def _queue_input(raw: Any, existing: QueueDefinition | None = None) -> QueueDefi
 
 
 def _list_annotators(c, args):
-    """The members of the Cognito Annotator group: who HITL work can go to."""
+    """The members of the Cognito Annotator group: who HITL work can be assigned to.
+    Reviewers are never assigned work; they claim it."""
     NoArgs.model_validate(args)
     pool = os.environ.get("USER_POOL_ID", "")
     if not pool:

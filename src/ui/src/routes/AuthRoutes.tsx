@@ -54,7 +54,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isAnnotator, isAnnotatorOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
+  const { isQueueWorker, isAnnotatorOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -189,7 +189,7 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
       {/* Every user has an Inbox, so it is polled for every signed-in user. */}
       <InboxProvider>
         {/* Home › Tasks and its badge: the items assigned to an Annotator. */}
-        {isAnnotator ? <ReviewWorkProvider>{shell}</ReviewWorkProvider> : shell}
+        {isQueueWorker ? <ReviewWorkProvider>{shell}</ReviewWorkProvider> : shell}
       </InboxProvider>
     </SettingsContext.Provider>
   );

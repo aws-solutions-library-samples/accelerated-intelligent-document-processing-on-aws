@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **Reviewers work the Production review queues.** A Reviewer now has **Home › Tasks** and **Queues**, sees every Production queue without being listed on it, and claims, saves, skips, finishes and rejects its items, and edits their page grouping, as an Annotator does, with no Admin assignment and within their configuration-profile scope. Reviewers claim their own work: they are not listed on queues or assigned items, which stay Annotators'. See [Review queues](docs/review-queues.md#annotator-guide). **Action:** none.
+
 - **An Annotator holding a Production review item can edit its page grouping.** **Edit Page Grouping** on the edit page was Admin-only for a queue item; the item's holder, Annotator or Admin, can now correct the document's split, within their configuration-profile scope, and the server's `updateDocumentSections` admits an Annotator only as the holder of the document's claimed item. Where it is unavailable the button says why: "Claim this item first" or "Assigned to …". The Document Editor's **Section** and **Show Fields** filters are dropdown buttons, as **More Actions** is, each showing its current choice. See [Review queues](docs/review-queues.md#annotator-guide). **Action:** none.
 
 ## [0.6.13]

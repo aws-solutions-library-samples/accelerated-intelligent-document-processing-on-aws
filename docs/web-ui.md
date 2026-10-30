@@ -708,8 +708,9 @@ production documents held in review queues, and test sets that need ground truth
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
 - **Navigation.** A user whose only role is Annotator sees exactly **Home**
-  (**Inbox**, **Tasks**, **Queues**). Other users have **Home** with the **Inbox**
-  only, then the usual sections their roles
+  (**Inbox**, **Tasks**, **Queues**). A Reviewer also has **Tasks** and **Queues**
+  under **Home**, and works every Production queue. Other users have **Home** with the
+  **Inbox** only, then the usual sections their roles
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **Review Studio › Review Management**.
 - **Review Management** (Admins) has two tables, **Production Queues** and **Test Studio

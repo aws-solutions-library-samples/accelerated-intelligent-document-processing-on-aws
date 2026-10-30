@@ -129,15 +129,18 @@ class QueueDefinition(BaseModel):
     # Compatibility with the claim/registry code, which reads these per queue.
     @property
     def member_groups(self) -> List[str]:
-        return ["Annotator", "Admin"]
+        # Who hears that work waits: Annotators, Reviewers (who work every
+        # Production queue) and Admins.
+        return ["Annotator", "Reviewer", "Admin"]
 
     @property
     def member_emails(self) -> List[str]:
         return list(self.eligible_annotators)
 
     def allows(self, email: str) -> bool:
-        # Only the listed Annotators work a queue; an empty list means none (Admins
-        # still work every queue, see QueueDirectory.is_member).
+        # Only the listed Annotators work a queue; an empty list means none. Admins
+        # and Reviewers work every queue regardless, see QueueDirectory.is_member: a
+        # Reviewer may be listed, and listing one changes nothing.
         return email.lower() in self.eligible_annotators
 
     def to_item(self) -> dict[str, Any]:
