@@ -29,6 +29,15 @@ background = "You lead a team that checks processing results and answers questio
 group = "Admin"
 background = "You set this deployment up last month and look after its settings and extensions."
 
+[personas.queue-annotator]
+group = "Annotator"
+background = "You joined the review team this week to check documents the system was unsure about. You were told work would be waiting for you when you signed in."
+
+[personas.scoped-annotator]
+group = "Annotator"
+credentials = "Annotator-scoped"
+background = "You review documents for one team, and you were told you can only work on that team's documents. You started this week."
+
 [fixtures.complete-document]
 description = "a shipped sample (samples/lending_package.pdf) processed to COMPLETE"
 
@@ -46,6 +55,18 @@ description = "shipped samples uploaded without expected results"
 
 [fixtures.feature-platform]
 description = "the Feature Platform enabled, with at least one extension installed"
+
+[fixtures.review-queue-item]
+description = "a profile with HITL on, the Default queue listing the review stack's Annotators, and a shipped sample waiting in it unassigned"
+
+[fixtures.assigned-review-item]
+description = "a shipped sample waiting in the Default queue and assigned to the review stack's Annotator"
+
+[fixtures.out-of-scope-review-item]
+description = "a shipped sample waiting in the Default queue under a HITL profile outside the profile-limited Annotator's limit"
+
+[fixtures.test-set-review-queue]
+description = "a test set whose queue lists the review stack's Annotator, with documents nobody holds"
 
 # ---- p0: 7 stories, 13 flows --------------------------------------------------------
 
@@ -169,7 +190,7 @@ rbac = "Upload documents"
 docs = ["web-ui.md#upload-documents"]
 terms = ["upload documents"]
 
-# ---- p1: 8 stories, 10 flows --------------------------------------------------------
+# ---- p1: 20 stories, 26 flows --------------------------------------------------------
 
 [[stories]]
 id = "read-document-history"
@@ -311,3 +332,197 @@ claims = [{ lead = "`allowDocumentUpdate` is now editable in the Configuration U
 docs = ["feature-platform.md#pipeline-hooks"]
 issues = [613]
 terms = ["allowDocumentUpdate"]
+
+[[stories]]
+id = "find-my-review-work"
+title = "Find the review work waiting for you"
+intent = "You were added to the review team this week. Find what is waiting for you to review and what you are expected to do with it."
+kind = "read"
+documented_steps = 3
+as = { queue-annotator = "allowed", scoped-annotator = "allowed" }
+needs = ["review-queue-item", "out-of-scope-review-item"]
+first_visit = true
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["tasks", "queues"]
+
+[[stories]]
+id = "take-a-review"
+title = "Take a document that is waiting for review"
+intent = "Several documents are waiting for review and nobody has taken them yet. Take one so that it is yours to work on."
+kind = "commit_point"
+documented_steps = 3
+as = { queue-annotator = "allowed", scoped-annotator = "allowed" }
+needs = ["review-queue-item", "out-of-scope-review-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["claim"]
+
+[[stories]]
+id = "why-is-it-in-review"
+title = "Find out why a document needs review"
+intent = "A document was handed to you for review. Find out why it needs a person to look at it, and which of its values are in doubt."
+kind = "read"
+documented_steps = 3
+as = { queue-annotator = "allowed" }
+needs = ["assigned-review-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["review reason", "confidence alerts"]
+
+[[stories]]
+id = "finish-a-review"
+title = "Finish a review that needs no corrections"
+intent = "You checked the document you were given, and its values are all correct. Finish your review so the document can complete."
+kind = "commit_point"
+documented_steps = 3
+as = { queue-annotator = "allowed" }
+needs = ["assigned-review-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["process changes", "finalize run"]
+
+[[stories]]
+id = "hand-back-a-review"
+title = "Give back a review you cannot finish"
+intent = "You cannot finish a document you were given. Give it back so someone else can take it, and record why."
+kind = "commit_point"
+documented_steps = 3
+as = { queue-annotator = "allowed" }
+needs = ["assigned-review-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["skip reasons", "optional note"]
+
+[[stories]]
+id = "open-an-assignment"
+title = "Get to a document you were assigned"
+intent = "You were told you have been given a document to review. Find the message about it and get to the document."
+kind = "read"
+documented_steps = 2
+as = { queue-annotator = "allowed" }
+needs = ["assigned-review-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["web-ui.md#inbox", "review-queues.md#annotator-guide"]
+terms = ["inbox", "assignments"]
+
+[[stories]]
+id = "check-test-labels"
+title = "Take test documents whose labels need checking"
+intent = "You were asked to check the expected results for some test documents. Take a few of them to work on."
+kind = "commit_point"
+documented_steps = 3
+as = { queue-annotator = "allowed" }
+needs = ["test-set-review-queue"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["test set"]
+
+[[stories]]
+id = "turn-on-review"
+title = "Have uncertain documents wait for a person"
+intent = "You want documents processed with one particular configuration to wait for a person whenever the system is unsure of their values, before they finish. Set that up."
+kind = "commit_point"
+documented_steps = 4
+as = { platform-admin = "allowed" }
+tier = "p1"
+since = "0.6.13"
+origin = "changelog"
+claims = [{ lead = "HITL review queues, worked by Annotators." }]
+
+[stories.match]
+docs = ["review-queues.md#turning-review-queues-on"]
+terms = ["review queue", "hitl"]
+
+[[stories]]
+id = "assign-review-work"
+title = "Give waiting review work to a reviewer"
+intent = "A document has been waiting for review and nobody has taken it. Give it to one of the people who review documents."
+kind = "commit_point"
+documented_steps = 3
+as = { platform-admin = "allowed" }
+needs = ["review-queue-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#admin-guide-review-management"]
+terms = ["assign", "review management"]
+
+[[stories]]
+id = "who-is-reviewing"
+title = "Find out who is reviewing a document"
+intent = "Someone asks who is checking a document that is waiting for review, and how much review work is still open. Find out."
+kind = "read"
+documented_steps = 3
+as = { platform-admin = "allowed" }
+needs = ["assigned-review-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+
+[stories.match]
+docs = ["review-queues.md#admin-guide-review-management", "review-queues.md#reviewing-from-the-document-page"]
+terms = ["annotator", "review owner"]
+
+[[stories]]
+id = "correct-a-value"
+title = "Correct a wrong value on a processed document"
+intent = "One value on a processed document is wrong. Correct it and have the document's results updated."
+kind = "commit_point"
+documented_steps = 3
+as = { platform-admin = "allowed" }
+needs = ["complete-document"]
+tier = "p1"
+since = "0.6.13"
+origin = "changelog"
+claims = [{ lead = "The document page has one action bar." }]
+
+[stories.match]
+docs = ["web-ui.md#document-details", "review-queues.md#annotator-guide"]
+terms = ["edit page", "action bar"]
+
+[[stories]]
+id = "check-notifications"
+title = "Find your notifications"
+intent = "You heard the application can send you notifications. Find where they are and whether anything new is waiting for you."
+kind = "read"
+documented_steps = 2
+as = { new-analyst = "allowed", team-lead = "allowed", platform-admin = "allowed" }
+tier = "p1"
+since = "0.6.13"
+origin = "changelog"
+claims = [{ lead = "An Inbox for every user." }]
+
+[stories.match]
+docs = ["web-ui.md#inbox"]
+terms = ["inbox", "bell"]

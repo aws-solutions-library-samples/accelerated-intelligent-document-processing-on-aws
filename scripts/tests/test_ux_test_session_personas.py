@@ -36,6 +36,7 @@ _CTX = {
     "stack": "idp-ux-nightly",
     "user_pool": "us-east-1_AbCdEfGhI",
     "region": "us-east-1",
+    "users_table": "idp-ux-nightly-UsersTable-1",
 }
 _URL = "https://d111111abcdef8.cloudfront.net/"
 _NOT_FOUND = (
@@ -81,6 +82,8 @@ class _Pool:
         self.deleted: list[str] = []
         self.resolved: list[tuple[str, str]] = []
         self.attributes: dict[str, dict[str, str]] = {}
+        self.managed: list[tuple[str, dict]] = []
+        self.rows: dict[str, str] = {}
 
     def aws(self, *args: str, region: str | None = None) -> dict | None:
         self.aws_calls.append(args)
@@ -104,6 +107,18 @@ class _Pool:
     def delete(self, ctx: dict, email: str) -> None:
         self.deleted.append(email)
 
+    def user_management(self, ctx: dict, field: str, arguments: dict) -> object:
+        self.managed.append((field, dict(arguments)))
+        if field == "createUser":
+            self.existing.add(arguments["email"])
+            self.rows[arguments["email"]] = "user-1"
+        if field == "deleteUser":
+            self.deleted.append(arguments["userId"])
+        return {"ok": True}
+
+    def users_row_id(self, ctx: dict, email: str) -> str | None:
+        return self.rows.get(email)
+
     def resolve(self, stack: str, region: str) -> dict:
         self.resolved.append((stack, region))
         return dict(_CTX)
@@ -116,6 +131,8 @@ def _module_with(pool: _Pool, monkeypatch) -> ModuleType:
     monkeypatch.setattr(module, "delete_cognito_user", pool.delete)
     monkeypatch.setattr(module, "resolve_stack", pool.resolve)
     monkeypatch.setattr(module, "_web_url", lambda stack, region: _URL)
+    monkeypatch.setattr(module, "_user_management", pool.user_management)
+    monkeypatch.setattr(module, "_users_row_id", pool.users_row_id)
     return module
 
 
@@ -313,15 +330,93 @@ def test_a_rotate_flag_that_is_not_literally_true_does_not_rotate(monkeypatch):
 
 
 @pytest.mark.unit
-def test_an_annotator_persona_is_refused(monkeypatch):
+def test_an_annotator_persona_is_created_through_user_management(monkeypatch, capsys):
     pool = _Pool()
     module = _module_with(pool, monkeypatch)
 
-    with pytest.raises(SystemExit) as excinfo:
-        module.cmd_setup(_setup_args(group="Annotator"))
+    rc = module.cmd_setup(_setup_args(group="Annotator"))
 
-    assert "UsersTable" in str(excinfo.value)
-    assert pool.created == [] and pool.aws_calls == []
+    email = "ux-persona-annotator@example.invalid"
+    assert rc == 0
+    assert pool.managed == [("createUser", {"email": email, "persona": "Annotator"})]
+    assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
+    session = json.loads(capsys.readouterr().out)
+    assert set(session["persona"]) == {"Annotator"}
+    assert "profiles" not in session
+
+
+@pytest.mark.unit
+def test_a_second_persona_has_its_own_key_address_and_profile_limit(
+    monkeypatch, capsys
+):
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    rc = module.cmd_setup(
+        _setup_args(
+            group="Annotator", key="Annotator-scoped", profiles="ux-fixture-hitl"
+        )
+    )
+
+    email = "ux-persona-annotator-scoped@example.invalid"
+    assert rc == 0
+    assert pool.managed == [
+        (
+            "createUser",
+            {
+                "email": email,
+                "persona": "Annotator",
+                "allowedConfigVersions": ["ux-fixture-hitl"],
+            },
+        )
+    ]
+    session = json.loads(capsys.readouterr().out)
+    assert session["persona"]["Annotator-scoped"]["username"] == email
+    assert session["profiles"] == ["ux-fixture-hitl"]
+    assert 'credentials = "Annotator-scoped"' in session["next"]
+    assert pool.attributes[email]["family_name"] == "Persona Annotator-scoped"
+
+
+@pytest.mark.unit
+def test_a_profile_limit_on_any_group_goes_through_user_management(monkeypatch):
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    module.cmd_setup(_setup_args(group="Viewer", profiles="a, b"))
+
+    assert pool.managed[0][1]["allowedConfigVersions"] == ["a", "b"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"group": "Admin", "profiles": "ux-fixture-hitl"},
+        {"group": "Annotator", "profiles": " , "},
+        {"group": "Annotator", "key": "has space"},
+        {"group": "Annotator", "key": "x" * 41},
+    ],
+)
+def test_an_admin_limit_an_empty_limit_or_a_bad_key_is_refused(monkeypatch, overrides):
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit):
+        module.cmd_setup(_setup_args(**overrides))
+
+    assert pool.managed == [] and pool.created == []
+
+
+@pytest.mark.unit
+def test_rotating_an_existing_annotator_does_not_create_it_again(monkeypatch):
+    email = "ux-persona-annotator@example.invalid"
+    pool = _Pool(existing={email})
+    module = _module_with(pool, monkeypatch)
+
+    module.cmd_setup(_setup_args(group="Annotator", rotate=True))
+
+    assert pool.managed == []
+    assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
 
 
 @pytest.mark.unit
@@ -409,6 +504,79 @@ def test_teardown_of_a_persona_with_long_lived_deletes_it(monkeypatch):
 
 
 @pytest.mark.unit
+def test_teardown_of_a_persona_with_a_users_row_goes_through_user_management(
+    monkeypatch,
+):
+    email = "ux-persona-annotator@example.invalid"
+    pool = _Pool()
+    pool.rows[email] = "user-7"
+    module = _module_with(pool, monkeypatch)
+
+    rc = module.cmd_teardown(_teardown_args(email, long_lived=True))
+
+    assert rc == 0
+    assert pool.managed == [("deleteUser", {"userId": "user-7"})]
+    assert pool.deleted == ["user-7"]
+
+
+@pytest.mark.unit
+def test_user_management_is_invoked_as_the_api_would_and_its_refusal_stops(
+    monkeypatch, tmp_path
+):
+    module = _load_module()
+    calls: list[tuple[str, ...]] = []
+    answer: dict[str, object] = {"meta": {"StatusCode": 200}, "body": {"id": "u"}}
+
+    def fake_aws(*args: str, region: str | None = None) -> object:
+        calls.append(args)
+        if args[:2] == ("cloudformation", "describe-stack-resource"):
+            return "idp-ux-nightly-UserManagementFunction-1"
+        assert args[:2] == ("lambda", "invoke")
+        Path(args[-1]).write_text(json.dumps(answer["body"]), encoding="utf-8")
+        return answer["meta"]
+
+    monkeypatch.setattr(module, "aws", fake_aws)
+
+    assert module._user_management(dict(_CTX), "createUser", {"email": "e"}) == {
+        "id": "u"
+    }
+    event = json.loads(calls[1][calls[1].index("--payload") + 1])
+    assert event["info"] == {"fieldName": "createUser"}
+    assert event["arguments"] == {"email": "e"}
+    assert event["identity"]["claims"]["cognito:groups"] == ["Admin"]
+    assert calls[1][calls[1].index("--function-name") + 1] == (
+        "idp-ux-nightly-UserManagementFunction-1"
+    )
+
+    answer.update(
+        meta={"StatusCode": 200, "FunctionError": "Unhandled"},
+        body={"errorMessage": "User with email e already exists"},
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        module._user_management(dict(_CTX), "createUser", {"email": "e"})
+    assert "already exists" in str(excinfo.value)
+
+
+@pytest.mark.unit
+def test_the_users_row_is_found_by_its_email(monkeypatch):
+    module = _load_module()
+    seen: list[tuple[str, ...]] = []
+
+    def fake_aws(*args: str, region: str | None = None) -> object:
+        seen.append(args)
+        return {"Items": [{"userId": {"S": "user-9"}}]}
+
+    monkeypatch.setattr(module, "aws", fake_aws)
+
+    assert module._users_row_id(dict(_CTX), "x@example.invalid") == "user-9"
+    (args,) = seen
+    assert args[:2] == ("dynamodb", "query")
+    assert args[args.index("--index-name") + 1] == "EmailIndex"
+    monkeypatch.setattr(module, "aws", lambda *a, region=None: {"Items": []})
+    assert module._users_row_id(dict(_CTX), "x@example.invalid") is None
+
+
+@pytest.mark.unit
 def test_teardown_of_a_throwaway_user_needs_no_flag(monkeypatch):
     pool = _Pool()
     module = _module_with(pool, monkeypatch)
@@ -470,6 +638,27 @@ def test_the_command_line_offers_long_lived_and_rotate_on_setup(monkeypatch):
     assert (args.long_lived, args.rotate, args.group) == (True, True, "Admin")
     default = _parsed(_load_module(), monkeypatch, ["setup", "idp-ux-nightly"])
     assert (default.long_lived, default.rotate) == (False, False)
+    assert (default.key, default.profiles) == (None, None)
+    second = _parsed(
+        _load_module(),
+        monkeypatch,
+        [
+            "setup",
+            "idp-ux-nightly",
+            "--group",
+            "Annotator",
+            "--long-lived",
+            "--key",
+            "Annotator-scoped",
+            "--profiles",
+            "ux-fixture-hitl",
+        ],
+    )
+    assert (second.group, second.key, second.profiles) == (
+        "Annotator",
+        "Annotator-scoped",
+        "ux-fixture-hitl",
+    )
 
 
 @pytest.mark.unit

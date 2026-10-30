@@ -377,7 +377,7 @@ _OVER_LIMIT_LINE = (
     "artifacts._"
 )
 _NOT_RENDERED_LINE = "_The video of `{key}` could not be rendered._"
-_DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {group} persona"
+_DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {key} entry"
 _SINCE_CAVEAT = (
     "the stack's version could not be read, so no story's `since` was checked"
 )
@@ -1146,7 +1146,8 @@ def _web_url(args: argparse.Namespace, environ: Mapping[str, str]) -> str | None
 
 
 def _groups(environ: Mapping[str, str]) -> frozenset[str]:
-    """The Cognito groups ``UX_TEST_PERSONAS`` can sign in as; empty when unreadable."""
+    """The ``UX_TEST_PERSONAS`` entries a run can sign in with, each a Cognito
+    group or a persona's own ``credentials``; empty when unreadable."""
     try:
         return frozenset(signin.personas_from_env(environ.get("UX_TEST_PERSONAS", "")))
     except signin.SignInError:
@@ -1189,10 +1190,10 @@ def settings_problem(
         except signin.SignInError as error:
             return str(error)
         wanted = sorted(set(groups))
-        if wanted and not any(group in personas for group in wanted):
+        if wanted and not any(key in personas for key in wanted):
             return (
-                "UX_TEST_PERSONAS holds none of the groups these flows sign in as: "
-                + ", ".join(wanted)
+                "UX_TEST_PERSONAS holds none of the entries these flows sign in "
+                "with: " + ", ".join(wanted)
             )
     expected = environ.get("UX_TEST_AWS_ACCOUNT_ID", "").strip()
     if not expected:
@@ -1363,7 +1364,7 @@ def precheck_flows(
     kind, build, url, problem = _ui_source(args, environ)
     if problem and mode != "watch":
         return Decision(False, "skipped", problem)
-    groups = [catalogue.persona(key.persona).group for key in keys]
+    groups = [catalogue.persona(key.persona).credentials_key for key in keys]
     problem = settings_problem(
         args,
         environ,
@@ -1487,7 +1488,7 @@ def precheck_replay(
                 "pass --web-url",
             )
     run_stack = args.stack or stack or session.REVIEW_STACK
-    groups = [catalogue.persona(key.persona).group for key in keys]
+    groups = [catalogue.persona(key.persona).credentials_key for key in keys]
     problem = settings_problem(
         args, environ, stack=run_stack, web_url=url, groups=groups
     )
@@ -1796,7 +1797,9 @@ def precheck_mr(
         environ,
         stack=args.stack,
         web_url=url,
-        groups=[catalogue.persona(key.persona).group for key in selection.flows],
+        groups=[
+            catalogue.persona(key.persona).credentials_key for key in selection.flows
+        ],
     )
     if problem:
         return Decision(False, "skipped", problem, extra=extra)
@@ -2162,10 +2165,10 @@ class FlowSession:
         except signin.SignInError as error:
             self.harness_error = "sign_in"
             if str(error).startswith(_SIGN_IN_REFUSED):
-                run.refused_groups.add(flow.persona.group)
+                run.refused_groups.add(flow.persona.credentials_key)
                 run.say(
-                    f"sign-in: refused for {flow.persona.group}, so its remaining "
-                    "flows are not run"
+                    f"sign-in: refused for {flow.persona.credentials_key}, so its "
+                    "remaining flows are not run"
                 )
             run.say(f"flow {flow.key}: harness error (sign_in): {error}")
             return
@@ -2177,12 +2180,13 @@ class FlowSession:
         attempt.opened = True
         attempt.facts = opened.facts
         run.note_facts(opened.facts)
+        shown, version = run.stack_facts(flow, opened.facts)
         attempt.withheld = session.review_stack_problem(
-            run.plan_stack, run.ui_env, opened.facts.stack_name
+            run.plan_stack, run.ui_env, shown
         )
         if attempt.withheld:
             run.say(f"video: withheld for {flow.key}, because {attempt.withheld}")
-        reached = stories.since_reached(flow.story.since, opened.facts.version)
+        reached = stories.since_reached(flow.story.since, version)
         if reached is False:
             self.not_run_reason = "since"
             run.say(
@@ -2789,6 +2793,7 @@ class StoryRun:
         self.attempts: list[Attempt] = []
         self.spent = 0.0
         self.refused_groups: set[str] = set()
+        self.stack_checked = False
         self.facts_seen: list[signin.PageFacts] = []
         self.reruns_not_run: list[dict[str, str]] = []
         self.current: FlowSession | WatchSession | None = None
@@ -3088,19 +3093,122 @@ class StoryRun:
 
     def browser_plan(self, flow: Flow, run_dir: Path) -> session.BrowserPlan:
         """The confined browser one attempt of ``flow`` is opened with."""
+        return self._plan(
+            flow.persona.credentials_key,
+            f"{flow.key.persona} ({flow.persona.group})",
+            run_dir,
+            dismiss_welcome=not flow.story.first_visit,
+        )
+
+    def _plan(
+        self, key: str, label: str, run_dir: Path, *, dismiss_welcome: bool
+    ) -> session.BrowserPlan:
         plan = self.planned
-        persona = self.prepared.personas[flow.persona.group]
         return session.BrowserPlan(
             toolchain=self.toolchain,
             run_dir=run_dir,
             ui_env=self.ui_env,
             stack=plan.stack,
-            persona=persona,
-            persona_label=f"{flow.key.persona} ({flow.persona.group})",
+            persona=self.prepared.personas[key],
+            persona_label=label,
             build_dir=plan.build_dir if plan.ui_kind == "build" else None,
             dev_unconfined=self.args.dev_unconfined,
             web_url=plan.web_url if plan.ui_kind == "deployed" else None,
-            dismiss_welcome=not flow.story.first_visit,
+            dismiss_welcome=dismiss_welcome,
+        )
+
+    def stack_facts(
+        self, flow: Flow, facts: signin.PageFacts
+    ) -> tuple[str | None, str | None]:
+        """The stack name and version an attempt is judged by.
+
+        A page reports both from its sidebar's Deployment Info, which the
+        navigation of a group in ``session.HIDDEN_DEPLOYMENT_INFO_GROUPS`` does not
+        render. For such a persona only, a stack and version another persona's page
+        confirmed earlier in this run stand in, since every attempt of the run
+        shares one ``UX_TEST_UI_ENV`` and one user pool. A page that does report a
+        stack is always judged by its own answer.
+        """
+        if (
+            facts.stack_name is not None
+            or flow.persona.group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
+        ):
+            return facts.stack_name, facts.version
+        confirmed = self.confirmed_facts()
+        if confirmed is None:
+            return None, facts.version
+        return confirmed.stack_name, facts.version or confirmed.version
+
+    def confirmed_facts(self) -> signin.PageFacts | None:
+        """The latest page facts of this run that name the review stack."""
+        return next(
+            (
+                facts
+                for facts in reversed(self.facts_seen)
+                if facts.stack_name == session.REVIEW_STACK
+            ),
+            None,
+        )
+
+    def confirm_stack(self, flow: Flow) -> None:
+        """Sign in once as a persona whose page shows the stack, before ``flow``.
+
+        Only for a flow whose group's navigation hides Deployment Info, and only
+        when no attempt of this run has confirmed the stack yet: the facts it reads
+        are noted for :meth:`stack_facts` when its socket audit is clean, and its
+        browser is closed before ``flow`` starts.
+        """
+        if (
+            flow.persona.group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
+            or self.confirmed_facts() is not None
+            or self.stack_checked
+        ):
+            return
+        self.stack_checked = True
+        key = next(
+            (
+                group
+                for group in stories.SIGN_IN_GROUPS
+                if group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
+                and group in self.prepared.personas
+            ),
+            None,
+        )
+        if key is None:
+            self.say("stack check: no persona whose page shows the stack")
+            return
+        base = "/tmp" if os.path.isdir("/tmp") else None  # nosec B108 - see FlowSession
+        run_dir = Path(tempfile.mkdtemp(prefix="ux-stack-check-", dir=base))
+        os.chmod(run_dir, 0o711)  # nosec B103 - traverse-only, no listing
+        browser = session.ConfinedBrowser(self.runtime, say=self.say)
+        audits: list[chrome.SocketAudit] = []
+        facts: signin.PageFacts | None = None
+        try:
+            facts = browser.open(
+                self._plan(key, f"stack check ({key})", run_dir, dismiss_welcome=True)
+            ).facts
+        except (signin.SignInError, *_STEP_FAILURES) as error:
+            self.say(f"stack check: {type(error).__name__}")
+        finally:
+            for step in (
+                browser.close_session,
+                browser.stop_chrome,
+                lambda: browser.stop_watch(on_audit=audits.append),
+                browser.stop_proxy,
+            ):
+                try:
+                    step()
+                except Exception as error:  # noqa: BLE001
+                    self.say(f"stack check: cleanup: {type(error).__name__}")
+            shutil.rmtree(run_dir, ignore_errors=True)
+        if facts is None:
+            return
+        if not audits or audits[-1].state != "clean":
+            self.say("stack check: socket audit not clean, so its facts are not used")
+            return
+        self.note_facts(facts)
+        self.say(
+            f"stack check: signed in as {key}; the page reports {facts.stack_name}"
         )
 
     def note_facts(self, facts: signin.PageFacts) -> None:
@@ -3315,10 +3423,10 @@ class StoryRun:
     def _not_run_reason(self, attempt: Attempt) -> str | None:
         """Why an attempt does not start, in the order the run learns each reason."""
         flow = attempt.flow
-        group = flow.persona.group
-        if group in self.refused_groups:
+        key = flow.persona.credentials_key
+        if key in self.refused_groups:
             return "sign_in_refused"
-        if group not in self.prepared.personas:
+        if key not in self.prepared.personas:
             return "persona"
         version = self._stack_version()
         if (
@@ -3362,6 +3470,7 @@ class StoryRun:
         in, whose answer is never read, counts at its whole cap.
         """
         self.attempts.append(attempt)
+        self.confirm_stack(attempt.flow)
         flow_session = FlowSession(self, attempt)
         self.current = flow_session
         try:
@@ -3705,8 +3814,8 @@ class StoryRun:
             ]
         if plan.selection is not None:
             for persona in plan.selection.dropped_personas:
-                group = self.catalogue.persona(persona).group
-                caveats.append(_DROPPED_CAVEAT.format(persona=persona, group=group))
+                key = self.catalogue.persona(persona).credentials_key
+                caveats.append(_DROPPED_CAVEAT.format(persona=persona, key=key))
         if self.facts_seen and self._stack_version() is None:
             caveats.append(_SINCE_CAVEAT)
         return caveats

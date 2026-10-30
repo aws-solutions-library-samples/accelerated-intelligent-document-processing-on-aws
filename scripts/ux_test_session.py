@@ -21,6 +21,8 @@ this stack's pool" rather than two that drift.
 Usage:
   ./scripts/ux_test_session.py setup <STACK_NAME> [--group Admin] [--region us-east-1]
   ./scripts/ux_test_session.py setup <STACK_NAME> --group Admin --long-lived [--rotate]
+  ./scripts/ux_test_session.py setup <STACK_NAME> --group Annotator --long-lived \
+      [--key Annotator-scoped --profiles <profile>[,<profile>]] [--rotate]
   ./scripts/ux_test_session.py teardown <STACK_NAME> --email <email> [--region us-east-1]
 
 ``setup`` prints a JSON blob with url / email / password / group. ``teardown``
@@ -35,8 +37,17 @@ variable. The ``--stale`` sweep matches only ``ux-test-`` and so can never selec
 persona. Two refusals keep the variable and the pool in step: setup will not set a
 new password on an existing persona without ``--rotate``, because that breaks the
 variable until somebody updates it, and teardown will not delete one without
-``--long-lived``. Annotator is refused for now, because an annotator also needs a
-UsersTable row this option does not create.
+``--long-lived``.
+
+An Annotator, and any persona given ``--profiles``, is created through the stack's
+own user management, the Lambda ``createUser`` reaches through the API, invoked
+directly with the operator's AWS credentials as an Admin. That writes the
+users-table row an Annotator and a profile limit are read from, so this script
+never re-implements it, and ``teardown --long-lived`` removes such a persona the
+same way, with ``deleteUser``. ``--key`` names a second persona of one group, such
+as an Annotator limited to one profile: its address is
+``ux-persona-<key>@example.invalid`` and its ``UX_TEST_PERSONAS`` entry is ``<key>``,
+which its catalogue persona names as ``credentials``.
 
 The app client's auth flows are deliberately NOT modified. Setting a known
 password non-interactively needs only ``admin-set-user-password --permanent``,
@@ -56,9 +67,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import string
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -177,8 +190,17 @@ def _resolve_or_explain(stack: str, region: str):
 UX_PERSONA_PREFIX = "ux-persona-"
 
 
+USER_MANAGEMENT_FUNCTION = "UserManagementFunction"
+PERSONA_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
+PERSONA_KEY_CHARS = 40
+_OPERATOR_IDENTITY = {
+    "claims": {"cognito:groups": ["Admin"], "cognito:username": "ux-test-session"}
+}
+
+
 def persona_email(group: str) -> str:
-    """The fixed address of the long-lived persona for one Cognito group.
+    """The fixed address of the long-lived persona for one Cognito group, or for
+    the ``--key`` of a second persona of one group.
 
     Fixed rather than random, so the CI variable holding its password names the
     same user on every run, and a second setup finds the first persona instead of
@@ -186,6 +208,104 @@ def persona_email(group: str) -> str:
     real mailbox.
     """
     return f"{UX_PERSONA_PREFIX}{group.lower()}@example.invalid"
+
+
+def _user_management(ctx: dict, field: str, arguments: dict) -> object:
+    """Call the stack's user-management resolver directly, as an Admin.
+
+    The event has the shape the API's dispatcher passes the same Lambda, so the
+    product's own code checks the arguments and writes the users-table row, the
+    Cognito user and its group. A refusal stops the command with its message.
+    """
+    function = aws(
+        "cloudformation",
+        "describe-stack-resource",
+        "--stack-name",
+        ctx["stack"],
+        "--logical-resource-id",
+        USER_MANAGEMENT_FUNCTION,
+        "--query",
+        "StackResourceDetail.PhysicalResourceId",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    event = {
+        "info": {"fieldName": field},
+        "arguments": arguments,
+        "identity": _OPERATOR_IDENTITY,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        response = Path(tmp) / "response.json"
+        meta = aws(
+            "lambda",
+            "invoke",
+            "--function-name",
+            str(function),
+            "--cli-binary-format",
+            "raw-in-base64-out",
+            "--payload",
+            json.dumps(event),
+            str(response),
+            region=ctx["region"],
+        )
+        text = response.read_text(encoding="utf-8") if response.exists() else ""
+    body = json.loads(text) if text.strip() else None
+    if isinstance(meta, dict) and meta.get("FunctionError"):
+        message = body.get("errorMessage") if isinstance(body, dict) else body
+        raise SystemExit(f"the stack's user management refused {field}: {message}")
+    return body
+
+
+def _users_row_id(ctx: dict, email: str) -> str | None:
+    """The ``userId`` of the users-table row holding ``email``, or None."""
+    found = aws(
+        "dynamodb",
+        "query",
+        "--table-name",
+        ctx["users_table"],
+        "--index-name",
+        "EmailIndex",
+        "--key-condition-expression",
+        "email = :email",
+        "--expression-attribute-values",
+        json.dumps({":email": {"S": email}}),
+        region=ctx["region"],
+    )
+    items = (found or {}).get("Items") if isinstance(found, dict) else None
+    for item in items or []:
+        user_id = (item.get("userId") or {}).get("S")
+        if user_id:
+            return user_id
+    return None
+
+
+def _persona_key(args: argparse.Namespace) -> str:
+    """The ``--key`` of a second persona of one group, or the group itself."""
+    key = getattr(args, "key", None)
+    if key is None or key == "":
+        return args.group
+    if (
+        not isinstance(key, str)
+        or len(key) > PERSONA_KEY_CHARS
+        or not PERSONA_KEY_RE.fullmatch(key)
+    ):
+        raise SystemExit(
+            "--key must be letters, digits and single hyphens, at most "
+            f"{PERSONA_KEY_CHARS} characters"
+        )
+    return key
+
+
+def _profiles(args: argparse.Namespace) -> list[str] | None:
+    """The ``--profiles`` a persona is limited to, or None for no limit."""
+    value = getattr(args, "profiles", None)
+    if not isinstance(value, str):
+        return None
+    names = [name.strip() for name in value.split(",") if name.strip()]
+    if not names:
+        raise SystemExit("--profiles names no profile")
+    return names
 
 
 def persona_display_name(group: str) -> tuple[str, str]:
@@ -253,24 +373,26 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
     password has to live in a masked CI variable rather than in a session that
     ends. Setting a new password on an existing persona is therefore an explicit
     act, --rotate, because until the variable is updated every MR UX test fails to
-    sign in. Annotator is refused: an annotator needs a UsersTable row as well as
-    the group, and this option creates only the Cognito user. The persona is given
+    sign in. An Annotator, or a persona given ``--profiles``, is created through the
+    stack's user management (:func:`_user_management`), which writes the
+    users-table row the product reads either from. The persona is given
     a display name (:func:`persona_display_name`), so the UI's top bar shows that
     rather than the sign-in address. An existing persona is given it too before
     the refusal, since naming does not touch the password: one made before the
     display name existed would otherwise keep showing its address.
     """
-    if args.group == "Annotator":
-        supported = ", ".join(group for group in VALID_GROUPS if group != "Annotator")
+    key = _persona_key(args)
+    profiles = _profiles(args)
+    if profiles is not None and args.group == "Admin":
         raise SystemExit(
-            "--long-lived does not support Annotator yet: an annotator also needs a "
-            f"UsersTable row, which this option does not create. Use one of "
-            f"{supported}."
+            "--profiles limits a non-Admin persona; an Admin is never limited to "
+            "profiles"
         )
-    email = persona_email(args.group)
-    if _user_exists(ctx, email) and getattr(args, "rotate", False) is not True:
-        _name_persona(ctx, email, args.group)
-        shown = " ".join(persona_display_name(args.group))
+    email = persona_email(key)
+    exists = _user_exists(ctx, email)
+    if exists and getattr(args, "rotate", False) is not True:
+        _name_persona(ctx, email, key)
+        shown = " ".join(persona_display_name(key))
         raise SystemExit(
             f"{email} already exists in {args.stack}; its display name is now "
             f"{shown!r} and its password is unchanged. That password lives in the CI "
@@ -278,26 +400,38 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
             "until it is updated. Re-run with --rotate to do that deliberately."
         )
     password = _password()
+    if not exists and (args.group == "Annotator" or profiles is not None):
+        arguments: dict[str, object] = {"email": email, "persona": args.group}
+        if profiles is not None:
+            arguments["allowedConfigVersions"] = profiles
+        _user_management(ctx, "createUser", arguments)
     create_cognito_user(ctx, email, args.group, password)
-    _name_persona(ctx, email, args.group)
+    _name_persona(ctx, email, key)
 
+    next_step = (
+        "merge this entry into the JSON object of every persona, base64 it, and "
+        "store it as the CI variable UX_TEST_PERSONAS: masked, not protected, "
+        "environment scope ux-review by its exact name, not a wildcard, which "
+        "would also match ux-review-build, where the MR's npm ci runs; and no "
+        "copy left at the default scope, which reaches every job"
+    )
+    if key != args.group:
+        next_step += (
+            f'; and give its persona in scripts/ux_stories.toml credentials = "{key}"'
+        )
     session = {
         "url": url,
         "email": email,
         "password": password,
-        "display_name": " ".join(persona_display_name(args.group)),
+        "display_name": " ".join(persona_display_name(key)),
         "group": args.group,
         "stack": args.stack,
         "region": args.region,
-        "persona": {args.group: {"username": email, "password": password}},
-        "next": (
-            "merge this entry into the JSON object of every persona, base64 it, and "
-            "store it as the CI variable UX_TEST_PERSONAS: masked, not protected, "
-            "environment scope ux-review by its exact name, not a wildcard, which "
-            "would also match ux-review-build, where the MR's npm ci runs; and no "
-            "copy left at the default scope, which reaches every job"
-        ),
+        "persona": {key: {"username": email, "password": password}},
+        "next": next_step,
     }
+    if profiles is not None:
+        session["profiles"] = profiles
     print(json.dumps(session, indent=2))
     return 0
 
@@ -422,6 +556,12 @@ def cmd_teardown(args: argparse.Namespace) -> int:
     if not args.email:
         raise SystemExit("teardown needs --email, or --stale to sweep abandoned users")
 
+    if args.email.lower().startswith(UX_PERSONA_PREFIX):
+        user_id = _users_row_id(ctx, args.email)
+        if user_id is not None:
+            _user_management(ctx, "deleteUser", {"userId": user_id})
+            print(f"Deleted {args.email} and its users-table row.")
+            return 0
     delete_cognito_user(ctx, args.email)
     # Nothing to restore: setup never widened the client.
     print(f"Deleted {args.email}.")
@@ -447,7 +587,22 @@ def main() -> int:
         help=(
             "Instead of a throwaway user, create the group's standing persona "
             "ux-persona-<group>@example.invalid for the CI review stack, and print "
-            "its UX_TEST_PERSONAS entry. Not for Annotator"
+            "its UX_TEST_PERSONAS entry. An Annotator, or a persona given "
+            "--profiles, is created through the stack's user management"
+        ),
+    )
+    setup.add_argument(
+        "--key",
+        help=(
+            "With --long-lived, a second persona of the group: its address is "
+            "ux-persona-<key>@example.invalid and its UX_TEST_PERSONAS entry <key>"
+        ),
+    )
+    setup.add_argument(
+        "--profiles",
+        help=(
+            "With --long-lived, the comma-separated configuration profiles a "
+            "non-Admin persona is limited to (its allowedConfigVersions)"
         ),
     )
     setup.add_argument(

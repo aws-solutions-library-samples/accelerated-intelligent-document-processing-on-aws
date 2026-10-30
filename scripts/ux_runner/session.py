@@ -40,6 +40,7 @@ from . import account, chrome, egress, paths, processes, signin
 #: A test pins it equal to ``codebuild_deployment.UX_NIGHTLY_STACK_NAME``, the
 #: stack the nightly updates.
 REVIEW_STACK = "idp-ux-nightly"
+HIDDEN_DEPLOYMENT_INFO_GROUPS: tuple[str, ...] = ("Annotator",)
 
 
 class SessionError(Exception):

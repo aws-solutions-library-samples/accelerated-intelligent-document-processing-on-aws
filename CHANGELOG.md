@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Added
+
+- **First-time-user stories run as an Annotator, and cover review queues, the Inbox and the edit page.** New stories, in the extra tier until they run stable, cover setting review up, assigning and taking work, why a document is in review, finishing or handing back a review, the assignment message, checking test labels, who is reviewing, correcting a value and the Inbox, and the find-work and take-work stories also run as an Annotator limited to one profile. `scripts/ux_test_session.py setup --long-lived` now creates an Annotator, and a persona limited to profiles (`--key`, `--profiles`), through the stack's own user management. An Annotator's page has no Deployment Info, so the run checks the stack once as another persona and the Annotator's flows keep their videos. The MR UX test keeps its section and video when the model's report labels a flow with an outcome outside the schema. **Action:** add the `Annotator` and `Annotator-scoped` entries to `UX_TEST_PERSONAS` to run them in CI. See [first-time-user stories](.claude/skills/ux-test-stories.md#the-review-stack-once-by-its-operator).
+
 ## [0.6.13]
 
 ### Added
