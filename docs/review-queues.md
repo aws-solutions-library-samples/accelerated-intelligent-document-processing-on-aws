@@ -150,9 +150,10 @@ notifications bell, and opens a document only through its edit page
     Page Grouping**, on the **Document Editor** panel, corrects
     how the document is split into sections as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
-    (a section you remove takes its draft with it). Only an Admin holding the item
-    can regroup it (for an Annotator it is disabled, with the reason); an Admin's
-    first regroup assigns an unassigned item to them.
+    (a section you remove takes its draft with it). The item's holder
+    can regroup it, an Annotator it is assigned to or an Admin; an Annotator claims
+    an unassigned item first, and an Admin's first regroup assigns an unassigned item
+    to them.
   - **Test Studio item**: correct the labels and choose **Process Changes**, which
     saves the open section, applies every section and reprocesses the document's
     review copy. Authored ground truth has no review copy, so for it **Process Changes** only

@@ -104,6 +104,17 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   const editorReadOnly = !editFlags || editFlags.isReadOnly || !mayWork;
   const mayChangeClass = !!editFlags && mayChangeClassFor(editFlags.canChangeClass && mayWork, editorReadOnly);
   const sections = doc?.sections ?? [];
+  // Who may regroup: the document's holder (an Annotator it is assigned to), an Admin or
+  // an Author; an Annotator who doesn't hold it claims it first.
+  const regroupReason: string | undefined = !doc
+    ? undefined
+    : !mayWork
+      ? doc.assignedTo
+        ? `Assigned to ${doc.assignedTo}`
+        : 'Claim this document first to change its page grouping'
+      : !mayChangeClass || !testSetId
+        ? 'Your role cannot change this document’s page grouping'
+        : undefined;
 
   const slots = useTestSetEditorSlots({
     bucket: testSetBucket ?? '',
@@ -296,7 +307,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         showRefresh: true,
         refreshDisabledReason: saving ? 'Saving your changes…' : loading ? 'Loading…' : undefined,
         showRegroup: true,
-        regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
+        regroupDisabledReason: regroupReason,
         showClaim: canClaim,
         offerHistory: true,
       },

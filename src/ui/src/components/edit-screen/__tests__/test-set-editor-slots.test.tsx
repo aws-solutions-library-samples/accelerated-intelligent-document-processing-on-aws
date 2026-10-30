@@ -265,12 +265,11 @@ describe('a Test Studio section with no field values', () => {
       />,
     );
     await waitFor(() => expect(screen.getByText(/No field values for this section/i)).toBeInTheDocument());
-    const select = createWrapper(document.body).findSelect()!;
+    const select = createWrapper(document.body)
+      .findAllButtonDropdowns()
+      .find((d) => (d.findNativeButton().getElement().getAttribute('aria-label') ?? '').startsWith('Section:'))!;
     act(() => select.openDropdown());
-    const labels = select
-      .findDropdown()
-      .findOptions()
-      .map((o) => o.getElement().textContent);
+    const labels = select.findItems().map((o) => o.getElement().textContent);
     expect(labels).toEqual(['Section 1 (no class)', 'Section 2 (Invoice)']);
   });
 

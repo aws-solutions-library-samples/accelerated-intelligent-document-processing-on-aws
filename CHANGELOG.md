@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **An Annotator holding a Production review item can edit its page grouping.** **Edit Page Grouping** on the edit page was Admin-only for a queue item; the item's holder, Annotator or Admin, can now correct the document's split, within their configuration-profile scope, and the server's `updateDocumentSections` admits an Annotator only as the holder of the document's claimed item. Where it is unavailable the button says why: "Claim this item first" or "Assigned to …". The Document Editor's **Section** and **Show Fields** filters are dropdown buttons, as **More Actions** is, each showing its current choice. See [Review queues](docs/review-queues.md#annotator-guide). **Action:** none.
+
 ## [0.6.13]
 
 ### Added

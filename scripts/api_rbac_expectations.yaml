@@ -987,7 +987,11 @@ operations:
     note: >-
       As completeSectionReview, and for the same reason: the group list admits
       Annotator, and `_assert_annotator_scope` in the same resolver then confines an
-      Annotator to the test sets in their `allowedTestSets`. The group list was copied
+      Annotator to the test sets in their `allowedTestSets`, or, for a production
+      document, to one whose review-queue item they hold (CLAIMED, by their owner key
+      from verified claims) with the item's own profile in their
+      allowedConfigVersions (`_assert_holds_review_item`); `regroup_refusal` then
+      decides an in-review document as for every caller. The group list was copied
       from that sibling and the per-object check was not, so the operation admitted
       the role without confining it; this entry is what makes the omission a failure
       rather than a silence. `__nonexistent__.pdf` names no document, so it carries no
@@ -996,11 +1000,10 @@ operations:
       (`authzControl: "resource"`), not this resolver's `PermissionError` group floor,
       so the two are distinguishable — which they must be here, since a floor-labelled
       refusal on this operation would mean the manifest stopped admitting Annotator.
-      ⚠️ Resolving `allowedTestSets` reads the users table via `USERS_TABLE_NAME`.
-      ProcessChangesResolverFunction does not yet set it, so until it does the check
-      refuses every Annotator: fail-closed, and the right direction to fail in, but
-      the role's legitimate use is unavailable until that variable and a read grant on
-      the users table reach the function.
+      Resolving `allowedTestSets` and allowedConfigVersions reads the users table via
+      `USERS_TABLE_NAME`, and the review item is read from HITLTable via
+      `HITL_TABLE_NAME`; ProcessChangesResolverFunction has both, with read grants. A
+      lookup that cannot be answered refuses the Annotator (fail-closed).
 
   processChanges:
     groups: [Admin, Reviewer]
