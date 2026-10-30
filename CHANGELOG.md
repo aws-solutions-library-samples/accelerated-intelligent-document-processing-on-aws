@@ -76,6 +76,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **The dependency audit passes again after a new `joserfc` advisory.** GHSA-jpxq-7h8p-2q76 (high), published 2026-10-30, affects `joserfc` below 1.7.5; `lib/idp_common_pkg/uv.lock` now locks 1.7.7. `joserfc` reaches the repository only through `moto`, a test dependency, so no deployed component ran it. **Action:** none.
+
 - **Review-queue listings apply per-item profile scope, and page through every queue.** A queue holds items of several configuration profiles, so a caller with `allowedConfigVersions` is now shown, in every queue listing, in **Tasks** and by **Claim next**, only the items whose own profile is in that scope, as when an item is opened or claimed; an item with no profile is shown to no scoped caller. Listing all of the caller's queues now pages through every queue, where a later page could leave out a lower-priority queue. See [Review queues](docs/review-queues.md#turning-review-queues-on). **Action:** none.
 
 - **The documentation site builds again.** Its lockfile was missing the `@emnapi/core` and `@emnapi/wasi-threads` entries, so `npm ci` in `docs-site` failed with `Missing: ... from lock file`. Both are now present. **Action:** none.
