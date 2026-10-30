@@ -9,8 +9,6 @@ SPDX-License-Identifier: MIT-0
 
 - **Reviewers work the review queues.** A Reviewer now has **Home › Tasks** and **Queues**, and works every Production queue and every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` (every one when they have no restriction), without being listed or assigned: they claim, save, skip, finish and reject items and correct classes and page grouping, as an Annotator does. Reviewers claim their own work and are never assigned it; Annotators are unchanged. A test set's profile is resolved once and recorded on the set (`ScopeProfile`), so every check agrees, and is resolved again after a new drafting run; a set drafted under several profiles is shown only to Reviewers with no profile restriction. See [Test Studio](docs/test-studio.md) and [Review queues](docs/review-queues.md#annotator-guide). **Action:** none.
 
-- **An Annotator holding a Production review item can edit its page grouping.** **Edit Page Grouping** on the edit page was Admin-only for a queue item; the item's holder, Annotator or Admin, can now correct the document's split, within their configuration-profile scope, and the server's `updateDocumentSections` admits an Annotator only as the holder of the document's claimed item. Where it is unavailable the button says why: "Claim this item first" or "Assigned to …". The Document Editor's **Section** and **Show Fields** filters are dropdown buttons, as **More Actions** is, each showing its current choice. See [Review queues](docs/review-queues.md#annotator-guide). **Action:** none.
-
 ## [0.6.13]
 
 ### Added
