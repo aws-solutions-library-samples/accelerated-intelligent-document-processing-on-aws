@@ -124,13 +124,6 @@ global_settings:
         SheetJS ReDoS, affected range "< 0.20.2". src/ui pins exactly 0.20.2 from
         cdn.sheetjs.com — the version the advisory names as the fix. Same
         open-ended-range artifact as GHSA-4r6h-8v6p-xvw6.
-    - rule_id: 'GHSA-vfj7-8cjw-p6xm'
-      path: 'src/ui/**'
-      reason: >-
-        braces: not reachable. It reaches src/ui only as a development dependency
-        of micromatch (build and lint tooling); the browser bundle does not include
-        it, and the patterns it expands come from this repository's configuration.
-        No fixed release exists yet.
     - rule_id: 'GHSA-c4qx-w738-7hr3'
       path: 'src/ui/**'
       reason: >-

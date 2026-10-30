@@ -1594,11 +1594,13 @@ dep-manifest: ## Generate dependency manifests for artifact repository mirroring
 # pin. This target closes that gap by matching the generated manifests against
 # OSV. Findings that are genuinely unreachable go in
 # scripts/security/dep_audit_allowlist.json WITH a justification.
+# DEP_AUDIT_ARGS passes flags through, e.g. DEP_AUDIT_ARGS=--no-unmapped to skip
+# the unmapped-advisory report and its ~330 GitHub API requests.
 dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on HIGH+)
-	@$(PYTHON) scripts/security/dep_audit.py
+	@$(PYTHON) scripts/security/dep_audit.py $(DEP_AUDIT_ARGS)
 
 dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
-	@$(PYTHON) scripts/security/dep_audit.py --no-generate
+	@$(PYTHON) scripts/security/dep_audit.py --no-generate $(DEP_AUDIT_ARGS)
 
 ##@ Automated review (advisory — reviews an MR, gates nothing)
 # Runs Claude Code over open GitLab MRs or GitHub PRs with

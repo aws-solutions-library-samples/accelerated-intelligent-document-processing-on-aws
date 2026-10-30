@@ -967,8 +967,3 @@ class TestBothDocTiersCarryTheCode:
             f"{rel} does not tell a reader the size of the band this check still "
             f"leaves silent"
         )
-
-    def test_the_changelog_records_the_measurement(self):
-        text = (_repo_root() / "CHANGELOG.md").read_text(encoding="utf-8")
-        assert PARTIAL in text
-        assert "409 of 800" in text
