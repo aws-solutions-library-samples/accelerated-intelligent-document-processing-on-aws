@@ -346,6 +346,35 @@ def test_a_probe_join_that_outlives_its_deadline_is_reported_not_waited_for(cbd)
     assert executor.shutdowns == [False]
 
 
+def test_a_timed_out_join_keeps_the_probes_that_finished(cbd):
+    from concurrent.futures import Future
+
+    finished = [{"probe": "waf", "success": True}]
+    now = iter([cbd.PROBE_JOIN_DEADLINE_SECONDS + 1.0] * 2)
+
+    results = cbd.join_variant_probes(
+        Future(), _Executor(), started=0.0, clock=lambda: next(now), finished=finished
+    )
+
+    assert [row["probe"] for row in results] == ["waf", "probe supervisor"]
+
+
+def test_each_probe_lands_in_the_callers_list_as_it_finishes(cbd, monkeypatch):
+    monkeypatch.setenv("IDP_PROBE_LAUNCH_STAGGER_SECS", "0")
+    monkeypatch.setattr(
+        cbd,
+        "deploy_and_test_probe",
+        lambda probe, *_: {"probe": probe.name, "success": True},
+    )
+    probes = [p for p in cbd.PROBE_VARIANTS if p.stack_suffix != "zapdast"][:2]
+    held: list[dict] = []
+
+    returned = cbd.run_variant_probes("a@example.com", "url", probes, results=held)
+
+    assert returned is held
+    assert sorted(row["probe"] for row in held) == sorted(p.name for p in probes)
+
+
 def test_a_finished_probe_join_hands_back_every_result(cbd):
     from concurrent.futures import Future
 
@@ -386,12 +415,18 @@ def test_the_deadlines_nest_with_headroom(cbd, itd):
     The join deadline counts from main()'s start, CodeBuild's timeout from the
     build's start, and the monitor from the pipeline's start, so each outer bound
     keeps an unmeasured allowance for the phases between those starts. The
-    allowances are pinned here so narrowing one is deliberate.
+    allowances are pinned here so narrowing one is deliberate. The 30 minutes
+    below CodeBuild's timeout is mostly the install phase before main() starts,
+    plus the Bedrock summary and the email after the join.
     """
     template = BUILDSPEC_TEMPLATE.read_text(encoding="utf-8")
-    (timeout_minutes,) = re.findall(
-        r"^\s*TimeoutInMinutes:\s*(\d+)\s*$", template, re.MULTILINE
+    timeouts = re.findall(r"^\s*TimeoutInMinutes:\s*(\d+)\s*$", template, re.MULTILINE)
+    assert len(timeouts) == 1, (
+        f"expected one TimeoutInMinutes (the app-sdlc project) in "
+        f"{BUILDSPEC_TEMPLATE.name}, found {len(timeouts)}; anchor this read to "
+        "the project's logical id"
     )
+    (timeout_minutes,) = timeouts
     job = yaml.safe_load(CI_CONFIG.read_text(encoding="utf-8"))["integration_tests"]
 
     join = cbd.PROBE_JOIN_DEADLINE_SECONDS

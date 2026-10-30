@@ -8662,7 +8662,7 @@ def resolve_probe_concurrency(num_probes):
     return max(1, min(cap, num_probes))
 
 
-def run_variant_probes(admin_email, template_url, probes=None):
+def run_variant_probes(admin_email, template_url, probes=None, results=None):
     """Run the deployment-variant probes concurrently, capped at the quota budget.
 
     Intended to run on its OWN supervisor thread so its probe deploys overlap
@@ -8677,6 +8677,10 @@ def run_variant_probes(admin_email, template_url, probes=None):
     failing) never affects the others. Returns a list of per-probe result dicts
     (order not significant; each carries its own "probe" label; VPC-requiring
     probes with no test VPC configured come back skipped=True).
+
+    `results`, when given, is the list each finished probe is appended to as it
+    finishes, so a caller that stops waiting (join_variant_probes at its
+    deadline) still holds the probes that completed.
     """
     probes = PROBE_VARIANTS if probes is None else probes
     # The ZAP DAST probe is individually gateable (it needs Docker/PrivilegedMode
@@ -8717,7 +8721,7 @@ def run_variant_probes(admin_email, template_url, probes=None):
             time.sleep(launch_index * stagger)
         return deploy_and_test_probe(probe, admin_email, template_url)
 
-    results = []
+    results = [] if results is None else results
     # No `with`: match the primary suite's pattern — shutdown(wait=True) in a
     # finally, never an implicit join that could burn the job timeout.
     executor = ThreadPoolExecutor(max_workers=cap)
@@ -9058,11 +9062,13 @@ def join_variant_probes(
     started: float,
     clock: Callable[[], float] = time.monotonic,
     deadline: float = PROBE_JOIN_DEADLINE_SECONDS,
+    finished: list[dict] | None = None,
 ) -> list[dict]:
     """The probes' results, waiting at most until `deadline` after `started`.
 
-    A supervisor still running at the deadline is reported as one failed entry
-    rather than waited for: the build would otherwise reach CodeBuild's timeout
+    A supervisor still running at the deadline is reported as one failed entry,
+    after the probes in `finished` (the list run_variant_probes appends to as
+    each probe completes), rather than waited for: the build would otherwise reach CodeBuild's timeout
     mid-join and be killed before the final summary and failure email exist. Its
     probe stacks are left to the startup reapers, and its threads end with the
     process at os._exit. A supervisor that died is reported the same way.
@@ -9076,7 +9082,7 @@ def join_variant_probes(
     except FuturesTimeoutError:
         executor.shutdown(wait=False)
         minutes = round((clock() - started) / 60, 1)
-        return [
+        return list(finished or []) + [
             {
                 "stack_name": "<probe supervisor>",
                 "success": False,
@@ -9542,14 +9548,24 @@ def main():
         )
         probes_future = None
         probes_executor = None
+        probes_finished: list[dict] = []
         if probes_enabled:
             print(
                 "\n🚀 Launching deployment-variant probes concurrently with "
                 "the primary suite...\n"
             )
+            if not variant_probe_run():
+                print(
+                    "⚠️ Probes enabled by the legacy IDP_TEST_APIGW_HOSTING alias, "
+                    "not the weekly schedule: the run is not labelled as the weekly "
+                    "variant-probe run"
+                )
             probes_executor = ThreadPoolExecutor(max_workers=1)
             probes_future = probes_executor.submit(
-                run_variant_probes, admin_email, template_url
+                run_variant_probes,
+                admin_email,
+                template_url,
+                results=probes_finished,
             )
         else:
             print("ℹ️ Skipping deployment-variant probes (disabled)")
@@ -9675,7 +9691,10 @@ def main():
             print("Waiting for deployment-variant probes...")
             print(f"{'=' * 80}\n")
             probe_results = join_variant_probes(
-                probes_future, probes_executor, started=main_started
+                probes_future,
+                probes_executor,
+                started=main_started,
+                finished=probes_finished,
             )
 
             for probe_result in probe_results:
