@@ -130,7 +130,7 @@ from .models import (
     classify_document_state,
 )
 
-__version__ = "0.6.12"
+__version__ = "0.6.13"
 
 from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 
