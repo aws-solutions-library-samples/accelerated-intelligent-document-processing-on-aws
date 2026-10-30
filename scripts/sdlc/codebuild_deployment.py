@@ -9100,7 +9100,7 @@ def join_variant_probes(
         # if the supervisor thread itself died.
         executor.shutdown(wait=False)
         print(f"❌ Deployment-variant probe supervisor exception: {e}")
-        return [
+        return list(finished or []) + [
             {
                 "stack_name": "<probe supervisor>",
                 "success": False,

@@ -8,8 +8,12 @@ used to run automatically on every integration pipeline; they were moved to
 on-demand `make stacktest-*` targets because standing up ~6 stacks at once in one
 pipeline burst the account-wide AWS control planes (CloudWatch Logs
 create-consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
-limit) and caused flaky failures unrelated to the code under test. In CI they
-run only on the **weekly variant-probe schedule**, never on the nightly; see
+limit) and caused flaky failures unrelated to the code under test. In CI the
+deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API)
+run only on the **weekly variant-probe schedule**, never on the nightly;
+`stacktest-rbac` is `make api-test`, which every integration run already executes
+as a step of the primary suite, and the other `stacktest-*` targets run only by
+hand; see
 `scripts/sdlc/docs/CI_TEST_COVERAGE.md` (Pipeline stages & triggers).
 
 ## The stacktest family

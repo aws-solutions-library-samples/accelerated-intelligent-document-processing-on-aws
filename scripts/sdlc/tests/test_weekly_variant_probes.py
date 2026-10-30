@@ -396,7 +396,11 @@ def test_a_dead_probe_supervisor_is_one_failed_row(cbd):
     died: Future = Future()
     died.set_exception(RuntimeError("boom"))
 
-    (row,) = cbd.join_variant_probes(died, executor, started=0.0, clock=lambda: 0.0)
+    finished = [{"probe": "waf", "success": True}]
+    *kept, row = cbd.join_variant_probes(
+        died, executor, started=0.0, clock=lambda: 0.0, finished=finished
+    )
+    assert kept == finished
     assert row["success"] is False
     assert row["error"] == "boom"
 
