@@ -524,7 +524,9 @@ integration_tests:
   # it can watch that long — plus before_script (~5 min) and after_script log
   # capture (~2 min), so the SCRIPT owns the deadline and always exits cleanly.
   # When this equalled the monitor's deadline, GitLab hard-killed the job first
-  # and after_script never captured logs.
+  # and after_script never captured logs. A runner's maximum_timeout would cap this
+  # silently; the fleet that ran these jobs set none (checked 2026-10-31), so recheck
+  # it if integration_tests moves to other runners.
   timeout: 3h30m
   # Serialize deploys. The resource_group is a size-1 mutex; it is now scoped to a
   # single SHARED group rather than per-branch, which is the right choice once the
