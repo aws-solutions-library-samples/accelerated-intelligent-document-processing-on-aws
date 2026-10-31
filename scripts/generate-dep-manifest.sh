@@ -57,12 +57,15 @@ def repo_files(pattern: str) -> list[Path]:
     A walk of the disk cannot tell those apart, so outside a git checkout this
     fails rather than guessing. Issue #1675.
     """
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "ls-files", "-z", "--cached", "--others",
-         "--exclude-standard", "--", f":(glob)**/{pattern}"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard", "--", f":(glob)**/{pattern}"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        sys.exit("ERROR: `git ls-files` cannot run: git is not on PATH.")
     if proc.returncode != 0:
         sys.exit(
             f"ERROR: `git ls-files` failed in {repo_root}, so the dependency files "
@@ -103,7 +106,11 @@ EXACT_PIN = re.compile(
 
 
 def record(name: str, version: str) -> None:
-    pinned.setdefault((normalize(name), version), f"{name}=={version}")
+    # Written normalized, because the shell merge below finds a name already in
+    # the manifest by its normalized spelling; `Foo_Bar==1.0` written verbatim
+    # would let the resolver's `foo-bar` be appended beside it as a phantom pair.
+    key = normalize(name)
+    pinned.setdefault((key, version), f"{key}=={version}")
 
 # 1. Parse all existing uv.lock files (already resolved, no conflicts)
 for lockfile in repo_files("uv.lock"):
@@ -122,6 +129,10 @@ for lockfile in repo_files("uv.lock"):
 # 2. Collect additional packages from pyproject.toml and requirements.txt
 #    that no lockfile resolves
 additional: set[str] = set()
+# Normalized names that some file asks for without an exact pin. For these the
+# resolver's version is roughly what that consumer installs, so the merge adds
+# it even when an exact pin of the same name elsewhere is already listed.
+loose: set[str] = set()
 
 
 def extract_pkg_name(spec: str) -> str:
@@ -134,43 +145,57 @@ def is_path_ref(line: str) -> bool:
     return stripped.startswith((".", "/", "../../"))
 
 
+def consider(spec: str) -> None:
+    """Record ``spec`` as a pin if it is exact; queue its name for the resolver."""
+    if is_path_ref(spec):
+        return
+    pkg = extract_pkg_name(spec)
+    if not pkg or is_internal(pkg):
+        return
+    pin = EXACT_PIN.match(spec)
+    if pin:
+        record(pin.group(1), pin.group(2))
+    if normalize(pkg) in locked:
+        return
+    # A pinned name not in a lockfile still goes to the resolver, so its
+    # transitive dependencies are found; the merge below skips the resolver's
+    # version of the name itself unless some other file asks for it loosely.
+    additional.add(pkg)
+    if not pin:
+        loose.add(normalize(pkg))
+
+
+def requirement_lines(text: str) -> list[str]:
+    """Logical requirement lines: continuations joined, comments and hashes dropped.
+
+    `pip-compile --generate-hashes` writes `foo==1.0 \\` followed by indented
+    `--hash=...` lines; read physically, the pin carries a trailing backslash and
+    the hashes look like options, so the pin would not be recognised as exact.
+    """
+    out = []
+    for line in re.sub(r"\\\r?\n", " ", text).splitlines():
+        line = line.split("#")[0]
+        line = " ".join(t for t in line.split() if not t.startswith("--hash"))
+        if line and not line.startswith("-"):
+            out.append(line)
+    return out
+
+
 # From pyproject.toml files
 for toml_path in sorted(repo_root.glob("lib/*/pyproject.toml")):
     with open(toml_path, "rb") as f:
         data = tomllib.load(f)
     project = data.get("project", {})
     for dep in project.get("dependencies", []):
-        pkg = extract_pkg_name(dep)
-        if not is_internal(pkg) and normalize(pkg) not in locked:
-            additional.add(pkg)
+        consider(dep)
     for group_deps in project.get("optional-dependencies", {}).values():
         for dep in group_deps:
-            if is_path_ref(dep):
-                continue
-            pkg = extract_pkg_name(dep)
-            if not is_internal(pkg) and normalize(pkg) not in locked:
-                additional.add(pkg)
+            consider(dep)
 
 # From requirements.txt files
 for req_path in repo_files("requirements*.txt"):
-    with open(req_path) as f:
-        for line in f:
-            line = line.split("#")[0].strip()
-            if not line or line.startswith("-"):
-                continue
-            if is_path_ref(line):
-                continue
-            pkg = extract_pkg_name(line)
-            if is_internal(pkg):
-                continue
-            pin = EXACT_PIN.match(line)
-            if pin:
-                record(pin.group(1), pin.group(2))
-            # A pinned name not in a lockfile still goes to the resolver, so its
-            # transitive dependencies are found; the merge below skips the name
-            # itself because the pin is already in the manifest.
-            if normalize(pkg) not in locked:
-                additional.add(pkg)
+    for line in requirement_lines(req_path.read_text()):
+        consider(line)
 
 
 def version_order(pair: tuple[str, str]) -> tuple:
@@ -184,6 +209,10 @@ def version_order(pair: tuple[str, str]) -> tuple:
 with open(output_file, "w") as f:
     for key in sorted(pinned, key=version_order):
         f.write(pinned[key] + "\n")
+
+# Names asked for loosely, for the shell merge
+loose_file = Path(sys.argv[2]).parent / ".loose-names.txt"
+loose_file.write_text("".join(f"{name}\n" for name in sorted(loose)))
 
 # Write additional packages to a temp file so the shell can resolve them
 additional_file = Path(sys.argv[2]).parent / ".additional-reqs.txt"
@@ -200,6 +229,7 @@ PYTHON_SCRIPT
 
 # Resolve additional packages (not in lockfiles) with uv pip compile
 ADDITIONAL_REQS="$OUTPUT_DIR/.additional-reqs.txt"
+LOOSE_NAMES="$OUTPUT_DIR/.loose-names.txt"
 if [ -f "$ADDITIONAL_REQS" ]; then
     echo "  Resolving additional packages with uv pip compile..."
     ADDITIONAL_RESOLVED="$OUTPUT_DIR/.additional-resolved.txt"
@@ -209,12 +239,21 @@ if [ -f "$ADDITIONAL_REQS" ]; then
         --no-header \
         --no-annotate \
         --quiet 2>/dev/null; then
-        # Merge: add only packages not already in the manifest
+        # Merge. A resolved pair already listed is skipped. A name some file asks
+        # for loosely is added at the resolved version, since that is roughly
+        # what the loose consumer installs. Any other name already listed (from
+        # a lockfile or an exact pin) is skipped: its listed versions are the
+        # ones that ship. Everything else is a new transitive dependency.
         BEFORE=$(wc -l < "$OUTPUT_DIR/python-packages.txt" | tr -d ' ')
         while IFS= read -r line; do
             pkg_name=$(echo "$line" | cut -d'=' -f1 | tr '[:upper:]' '[:lower:]' | tr '_.' '-')
-            if ! grep -qi "^${pkg_name}==" "$OUTPUT_DIR/python-packages.txt" 2>/dev/null; then
-                echo "$line" >> "$OUTPUT_DIR/python-packages.txt"
+            pkg_version=${line#*==}
+            if grep -qixF "${pkg_name}==${pkg_version}" "$OUTPUT_DIR/python-packages.txt"; then
+                continue
+            fi
+            if grep -qxF "$pkg_name" "$LOOSE_NAMES" \
+                || ! grep -qi "^${pkg_name}==" "$OUTPUT_DIR/python-packages.txt"; then
+                echo "${pkg_name}==${pkg_version}" >> "$OUTPUT_DIR/python-packages.txt"
             fi
         done < "$ADDITIONAL_RESOLVED"
         AFTER=$(wc -l < "$OUTPUT_DIR/python-packages.txt" | tr -d ' ')
@@ -228,6 +267,7 @@ if [ -f "$ADDITIONAL_REQS" ]; then
     fi
     rm -f "$ADDITIONAL_REQS"
 fi
+rm -f "$LOOSE_NAMES"
 
 PYTHON_COUNT=$(wc -l < "$OUTPUT_DIR/python-packages.txt" | tr -d ' ')
 echo "  -> $OUTPUT_DIR/python-packages.txt ($PYTHON_COUNT packages)"

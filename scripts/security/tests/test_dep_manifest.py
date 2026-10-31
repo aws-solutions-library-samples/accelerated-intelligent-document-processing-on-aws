@@ -146,6 +146,20 @@ class TestDiscovery:
         assert proc.returncode != 0
         assert "git ls-files" in proc.stderr
 
+    def test_without_git_it_fails_with_a_message_not_a_traceback(self, repo, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        proc = subprocess.run(
+            [sys.executable, "-", str(repo), str(out / "python-packages.txt")],
+            input=generator_python(),
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": str(tmp_path / "empty")},
+        )
+        assert proc.returncode != 0
+        assert "git is not on PATH" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
 
 class TestEveryPinIsAudited:
     def test_a_requirements_pin_of_a_locked_package_is_kept_beside_the_lock(
@@ -191,3 +205,150 @@ class TestEveryPinIsAudited:
         proc, manifest, _ = run_generator(repo, tmp_path / "out")
         assert proc.returncode == 0, proc.stderr
         assert {"odd-pkg==1.0", "odd-pkg==vendor-build"} <= manifest_lines(manifest)
+
+
+class TestRequirementShapes:
+    def test_hash_pinned_lines_are_exact_pins(self, repo, tmp_path):
+        write(
+            repo,
+            "hashed/requirements.txt",
+            "hashed-a==1.0 \\\n"
+            "    --hash=sha256:aaaa \\\n"
+            "    --hash=sha256:bbbb\n"
+            "hashed-b==2.0 --hash=sha256:cccc\n",
+        )
+        git(repo, "add", "hashed")
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert {"hashed-a==1.0", "hashed-b==2.0"} <= manifest_lines(manifest)
+
+    def test_pins_are_written_with_normalized_names(self, repo, tmp_path):
+        write(repo, "odd/requirements.txt", "Mixed_Case.Pkg==3.0\n")
+        git(repo, "add", "odd")
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert "mixed-case-pkg==3.0" in manifest_lines(manifest)
+
+    def test_first_party_names_reach_neither_the_manifest_nor_the_resolver(
+        self, repo, tmp_path
+    ):
+        write(repo, "fp/requirements.txt", "idp-common==0.1\nidp_sdk>=1.0\n")
+        git(repo, "add", "fp")
+        proc, manifest, additional = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        text = manifest.read_text() + additional.read_text()
+        assert "idp" not in text.replace("_", "-")
+
+    def test_a_locked_name_is_not_sent_to_the_resolver(self, repo, tmp_path):
+        write(repo, "lk/requirements.txt", "bar>=0.5\n")
+        git(repo, "add", "lk")
+        proc, _, additional = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        names = set(additional.read_text().split())
+        assert "bar" not in names and "foo" not in names
+
+    def test_a_tracked_file_deleted_from_the_working_tree_is_skipped(
+        self, repo, tmp_path
+    ):
+        (repo / "svc" / "requirements.txt").unlink()
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert "pin-only==0.3" not in manifest_lines(manifest)
+
+    def test_pyproject_dependencies_are_read_the_same_way(self, repo, tmp_path):
+        write(
+            repo,
+            "lib/b/pyproject.toml",
+            '[project]\nname = "b"\nversion = "1"\n'
+            'dependencies = ["pyp-loose>=1", "pyp-pin==2.0", "idp-common"]\n'
+            '[project.optional-dependencies]\nx = ["../a", "pyp-opt>=1"]\n',
+        )
+        git(repo, "add", "lib/b")
+        proc, manifest, additional = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert "pyp-pin==2.0" in manifest_lines(manifest)
+        names = set(additional.read_text().split())
+        assert {"pyp-loose", "pyp-opt", "pyp-pin"} <= names
+        assert not {"idp-common", "../a"} & names
+
+
+FAKE_UV = """#!/usr/bin/env bash
+# Stand-in for uv: `uv run ... python3 ARGS` runs the real interpreter, and
+# `uv pip compile IN ... --output-file OUT` copies IN to $FAKE_SEEN and writes
+# $FAKE_RESOLVED to OUT, so the merge can be driven without the network.
+if [ "$1" = run ]; then
+    while [ "$1" != python3 ]; do shift; done
+    shift
+    exec "$REAL_PYTHON" "$@"
+fi
+if [ "$1" = pip ]; then
+    cp "$3" "$FAKE_SEEN"
+    while [ $# -gt 0 ]; do
+        [ "$1" = --output-file ] && out=$2
+        shift
+    done
+    printf '%s' "$FAKE_RESOLVED" > "$out"
+    exit 0
+fi
+exit 1
+"""
+
+
+class TestShellMerge:
+    """The whole script, with `uv` replaced so the resolver's answer is chosen."""
+
+    def run_script(self, repo, tmp_path, resolved):
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts" / GENERATOR.name).write_text(GENERATOR.read_text())
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "uv").write_text(FAKE_UV)
+        (fake_bin / "uv").chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_PYTHON": sys.executable,
+            "FAKE_RESOLVED": resolved,
+            "FAKE_SEEN": str(tmp_path / "seen.txt"),
+        }
+        proc = subprocess.run(
+            ["bash", str(repo / "scripts" / GENERATOR.name)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        manifest = repo / "dist" / "manifests" / "python-packages.txt"
+        return [line for line in manifest.read_text().splitlines() if line]
+
+    def test_the_resolver_adds_what_ships_and_nothing_else(self, repo, tmp_path):
+        write(repo, "a1/requirements.txt", "shared-loose==4.0\nMixed_Case==1.0\n")
+        write(repo, "a2/requirements.txt", "shared-loose>=4.0\n")
+        git(repo, "add", "a1", "a2")
+        lines = self.run_script(
+            repo,
+            tmp_path,
+            "foo==3.0\n"  # locked: the lock's version ships
+            "pin-only==9.0\n"  # only ever pinned: the pin ships
+            "mixed-case==9.0\n"  # pinned under another spelling
+            "loose-pkg==2.0\n"  # asked for loosely: this is what it gets
+            "shared-loose==5.0\n"  # pinned in one file, loose in another
+            "new-trans==1.0\n",  # a transitive dependency nothing names
+        )
+        assert len(lines) == len(set(lines)), lines
+        assert {
+            "loose-pkg==2.0",
+            "shared-loose==4.0",
+            "shared-loose==5.0",
+            "new-trans==1.0",
+            "pin-only==0.3",
+            "mixed-case==1.0",
+        } <= set(lines)
+        assert not {"foo==3.0", "pin-only==9.0", "mixed-case==9.0"} & set(lines)
+
+    def test_a_resolved_pair_already_listed_is_not_repeated(self, repo, tmp_path):
+        write(repo, "a1/requirements.txt", "shared-loose==4.0\n")
+        write(repo, "a2/requirements.txt", "shared-loose>=4.0\n")
+        git(repo, "add", "a1", "a2")
+        lines = self.run_script(repo, tmp_path, "shared-loose==4.0\n")
+        assert lines.count("shared-loose==4.0") == 1
