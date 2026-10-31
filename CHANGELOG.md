@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Reprocessing a Pipeline-mode document no longer multiplies its cost.** When a finished document was resubmitted — by **Process Changes**, **Skip All Reviews**, or completing the last pending section of a review — every section whose extraction was skipped passed the document's whole stored metering on as its own, and the results step added each copy to the document's total. A document with N sections showed about N+1 times its real cost in **Estimated Cost**, and the same inflated figures went to every consumer of the document's metering, although no model or OCR call was repeated. A skipped section now reports only the Lambda time it used, so the total after a reprocess is the stored cost plus that reprocess's own charges. **Action:** none; documents reprocessed before the update keep the figures they were saved with.
+
 - **Reprocessing a Pipeline-mode document keeps every section, and does not re-extract sharded sections.** On a reprocess where extraction was skipped but the assessment step still ran (for example with confidence scoring off), the rebuilt document listed the first section once for every section, losing the others. And with the Step Functions extraction runtime (`extraction.agentic.runtime: step_functions`), a section large enough to shard was extracted again from scratch, paying for its extraction twice, because the shard planner did not check for existing extraction output. Both now behave as a reprocess should: every section is kept, and an already-extracted section is skipped. **Action:** none.
 
 ## [0.6.13]
