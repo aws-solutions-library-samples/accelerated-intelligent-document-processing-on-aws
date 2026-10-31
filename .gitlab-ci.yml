@@ -586,8 +586,8 @@ integration_tests:
   #     paths and is still the right definition of "touches the deploy path" — it is
   #     no longer wired to a `changes:` rule here, because a manual button you click
   #     deliberately should always be available.
-  #   - A nightly failure is triaged by bisecting the day's merges, not by reading
-  #     the pipeline's own commit.
+  #   - A scheduled failure is triaged by bisecting the merges since the last green
+  #     run, not by reading the pipeline's own commit.
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
@@ -866,8 +866,8 @@ integration_tests:
       )
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
-      # monitor stopped before the pipeline reached a terminal state, on the
-      # 110-min deadline or on a credential expiry it could not refresh), and it
+      # monitor stopped before the pipeline reached a terminal state, on its
+      # handoff deadline or on a credential expiry it could not refresh), and it
       # drops this marker when it does. Reporting that as ✅ PASSED asserts
       # something nobody checked.
       handed_off = pathlib.Path("monitor_handoff.txt").is_file()
@@ -884,8 +884,8 @@ integration_tests:
       # attached, so a long summary can never push the handoff warning off the end
       # — that warning is the part a reader most needs.
       if not ok:
-          summary += ("\n\nTriage by bisecting the day's merges: the pipeline's own "
-                      "commit is not necessarily the cause.")
+          summary += ("\n\nTriage by bisecting the merges since the last green run: "
+                      "the pipeline's own commit is not necessarily the cause.")
       elif handed_off:
           summary = (
               pathlib.Path("monitor_handoff.txt").read_text(errors="replace").strip()

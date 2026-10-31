@@ -125,6 +125,9 @@ primary suite only.
 **Why a separate schedule.** A probe failure fails the run it is in. On the nightly
 it would be read as a product regression, and the nightly is the run somebody has to
 triage. On its own schedule a red run is a probe result, labelled as one.
+Both schedules run the one `integration_tests` job, whose timeout is sized for the
+probe run, and it holds the size-1 `integration_deploy` resource group; space the
+two schedules so one cannot queue behind the other.
 The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
 carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
 only while it exists and is active.
@@ -433,8 +436,8 @@ catches it.
   now **documentation rather than configuration**: it gates nothing, because a
   manual button you click deliberately should always be available. It is the
   definition of "touches the deploy path" to apply by hand.
-- **Triage a nightly failure by bisecting the day's merges**, not by reading the
-  pipeline's own commit.
+- **Triage a scheduled failure by bisecting the merges since the last green run**,
+  not by reading the pipeline's own commit.
 
 ² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
 runs Claude Code (via Bedrock) over the MR diff with
@@ -1762,7 +1765,9 @@ high enough to run the whole default table in parallel.
 
 **Gating**: the probes run only on the weekly variant-probe schedule, which carries
 `IDP_RUN_PROBES=true`; the variable counts only on a scheduled pipeline.
-`IDP_TEST_APIGW_HOSTING=true` is still honoured as a legacy alias that turns them on.
+`IDP_TEST_APIGW_HOSTING=true` is still honoured as a legacy alias that turns them on,
+and a run it enables is held to the same probe-run timeout: on a project below 180
+minutes it is refused, and the run is red, rather than launching the probes.
 **Implementation** in `scripts/sdlc/codebuild_deployment.py`: `PROBE_VARIANTS`
 (the table), `deploy_and_test_probe()` (one probe's lifecycle, incl. VPC-param
 injection + skip), `run_variant_probes()` (the concurrent launcher),
