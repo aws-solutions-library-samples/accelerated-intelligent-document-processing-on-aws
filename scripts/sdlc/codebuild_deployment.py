@@ -973,7 +973,13 @@ UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS = 85 * 60
 #: timeout (scripts/sdlc/cfn/codepipeline-s3.yml), so the final summary and the
 #: failure email are written even when a probe hangs; without it the build is
 #: killed mid-join and neither is. test_weekly_variant_probes.py pins the headroom.
+#: The 30 minutes is an unmeasured, reviewed allowance for the install phase before
+#: main() starts plus the summary, email and Slack post after the join; it is the
+#: number with the least slack of the five deadlines that test pins.
 PROBE_JOIN_DEADLINE_SECONDS = 150 * 60
+#: The project timeout a probe run needs: the join deadline plus that allowance.
+#: probe_run_timeout_shortfall() checks the running build against it.
+PROBE_RUN_MIN_TIMEOUT_MINUTES = PROBE_JOIN_DEADLINE_SECONDS // 60 + 30
 #: Set to false/0/no/off, or to an empty value, to turn the update off without a
 #: commit; unset, the schedule decides. An empty value is off, as it is for
 #: IDP_KEEP_FAILED_STACK, so an entry declared with a blank value cannot leave the
@@ -8692,7 +8698,7 @@ def run_variant_probes(admin_email, template_url, probes=None, results=None):
             print(f"⏭️  Skipping probe [{name}] (IDP_TEST_ZAP=false)")
     if not probes:
         print("ℹ️ No deployment-variant probes configured")
-        return []
+        return [] if results is None else results
 
     cap = resolve_probe_concurrency(len(probes))
     print(
@@ -9052,6 +9058,35 @@ def join_ux_nightly_update(
     if isinstance(outcome, dict):
         return outcome
     return {"state": "failed", "phase": "thread"}
+
+
+def probe_run_timeout_shortfall(codebuild=None) -> str | None:
+    """Why this build's timeout cannot hold a probe run, or None.
+
+    The template carries the timeout a probe run needs, but the live project keeps
+    whatever its stack was last updated to, and a project left short is killed
+    mid-join with no summary written. Reading the build's own timeout lets the run
+    say so at the start instead. Unreadable (no build id, no permission) is None:
+    the check reports a known shortfall, it does not refuse an unknown.
+    """
+    build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
+    if not build_id:
+        return None
+    try:
+        client = codebuild or boto3.client("codebuild")
+        minutes = int(
+            client.batch_get_builds(ids=[build_id])["builds"][0]["timeoutInMinutes"]
+        )
+    except Exception as error:  # noqa: BLE001
+        print(f"⚠️ Could not read this build's timeout ({error}); not checking it")
+        return None
+    if minutes >= PROBE_RUN_MIN_TIMEOUT_MINUTES:
+        return None
+    return (
+        f"this build's timeout is {minutes} min, and a probe run needs at least "
+        f"{PROBE_RUN_MIN_TIMEOUT_MINUTES}; update the CI account's codepipeline "
+        "stack (scripts/sdlc/cfn/codepipeline-s3.yml) before the next probe run"
+    )
 
 
 def join_variant_probes(
@@ -9560,12 +9595,30 @@ def main():
                     "variant-probe run"
                 )
             probes_executor = ThreadPoolExecutor(max_workers=1)
-            probes_future = probes_executor.submit(
-                run_variant_probes,
-                admin_email,
-                template_url,
-                results=probes_finished,
-            )
+            shortfall = probe_run_timeout_shortfall()
+            if shortfall:
+                # Reported through the join like any probe failure, so the run is
+                # red and the summary says why, without launching probe stacks
+                # CodeBuild would kill before their results are written.
+                print(f"❌ Not launching the probes: {shortfall}")
+                probes_future = probes_executor.submit(
+                    lambda: [
+                        {
+                            "stack_name": "<probe supervisor>",
+                            "success": False,
+                            "error": shortfall,
+                            "failure_type": "deploy",
+                            "probe": "probe supervisor",
+                        }
+                    ]
+                )
+            else:
+                probes_future = probes_executor.submit(
+                    run_variant_probes,
+                    admin_email,
+                    template_url,
+                    results=probes_finished,
+                )
         else:
             print("ℹ️ Skipping deployment-variant probes (disabled)")
 
