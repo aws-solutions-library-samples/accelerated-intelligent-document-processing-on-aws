@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reprocessing a Pipeline-mode document keeps every section, and does not re-extract sharded sections.** On a reprocess where extraction was skipped but the assessment step still ran (for example with confidence scoring off), the rebuilt document listed the first section once for every section, losing the others. And with the Step Functions extraction runtime (`extraction.agentic.runtime: step_functions`), a section large enough to shard was extracted again from scratch, paying for its extraction twice, because the shard planner did not check for existing extraction output. Both now behave as a reprocess should: every section is kept, and an already-extracted section is skipped. **Action:** none.
+
 ## [0.6.13]
 
 ### Added
