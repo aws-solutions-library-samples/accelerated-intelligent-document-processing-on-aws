@@ -314,3 +314,140 @@ class TestTheRootCauseIsBoundedAndCorrectlyAttributed:
             0
         ].root_cause
         assert len(root_cause) < 1000
+
+
+@pytest.mark.unit
+class TestAPageWithNoTextDoesNotFailTheDocument:
+    """#1677: text-only page classification and one page with no OCR text.
+
+    The page used to become an entry in ``document.errors`` as well as an issue,
+    and ``processresults`` fails the whole document on any entry there, so one
+    blank separator sheet discarded every other page's classification. Driven
+    through the real ``classify_page_bedrock`` (only S3 and the model call are
+    faked), because that is where the no-content result is produced.
+    """
+
+    TEXT = {"1": "INVOICE no. 7", "2": "", "3": "INVOICE page 2"}
+
+    def _classify(
+        self,
+        *,
+        text=None,
+        images: bool = False,
+        prepare_image=None,
+        missing=(),
+    ):
+        text = dict(self.TEXT if text is None else text)
+        config = {
+            **_CONFIG,
+            "classification": {
+                **_CONFIG["classification"],
+                "modality": {"text": True, "images": images},
+            },
+        }
+        with patch("boto3.Session"):
+            service = ClassificationService(region="us-west-2", config=config)
+        doc = Document(id="doc.pdf", input_key="doc.pdf", status=Status.CLASSIFYING)
+        for i in ("1", "2", "3"):
+            doc.pages[i] = Page(
+                page_id=i,
+                image_uri=None
+                if (i, "image") in missing
+                else f"s3://bucket/doc.pdf/pages/{i}/image.jpg",
+                parsed_text_uri=None
+                if (i, "text") in missing
+                else f"s3://bucket/doc.pdf/pages/{i}/text.txt",
+            )
+        reply = {
+            "response": {
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "text": '{"class": "invoice", "document_boundary": "continue"}'
+                            }
+                        ]
+                    }
+                }
+            },
+            "metering": {},
+        }
+
+        def get_text(uri):
+            value = text[uri.split("/")[-2]]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with (
+            patch("idp_common.s3.get_text_content", side_effect=get_text),
+            patch(
+                "idp_common.image.prepare_image", side_effect=prepare_image
+            ) as prepare_image,
+            patch.object(
+                service, "_invoke_bedrock_model", return_value=reply
+            ) as invoke,
+        ):
+            result = service.classify_document(doc)
+        return result, invoke, prepare_image
+
+    def test_the_document_is_not_failed(self):
+        result, invoke, prepare_image = self._classify()
+
+        assert result.errors == []
+        assert result.status != Status.FAILED
+        # Pages with text were classified; the empty one cost no model call.
+        assert invoke.call_count == 2
+        prepare_image.assert_not_called()
+        assert result.pages["1"].classification == "invoice"
+        assert result.pages["3"].classification == "invoice"
+
+    def test_the_empty_page_is_unclassified_and_reported_as_a_warning(self):
+        result, _, _ = self._classify()
+
+        assert result.pages["2"].classification == "unclassified"
+        issues = _issues(result, "classification_page_no_content")
+        assert len(issues) == 1
+        assert issues[0].severity == "warning"
+        assert issues[0].details["page_ids"] == ["2"]
+        # Text-only modality never loads the image, so the reason says that
+        # rather than sending the reader to look for a missing image.
+        assert "modality.images is off" in issues[0].root_cause
+        assert not _issues(result, "classification_failed")
+
+    def test_a_failed_text_read_still_fails_the_document(self):
+        """A read that failed is not an empty page: the page may have content
+        nobody looked at, so it keeps failing the document as before."""
+        result, _, _ = self._classify(text={**self.TEXT, "2": RuntimeError("SlowDown")})
+
+        assert any("page text could not be read: SlowDown" in e for e in result.errors)
+        # And the section says it failed, not that the page was empty.
+        assert not _issues(result, "classification_page_no_content")
+        failed = _issues(result, "classification_failed")
+        assert len(failed) == 1 and failed[0].severity == "error"
+        assert "SlowDown" in failed[0].root_cause
+
+    def test_with_images_on_a_failed_image_read_still_fails_the_document(self):
+        def prepare_image(uri, *_):
+            if "/2/" in uri:
+                raise RuntimeError("NoSuchKey")
+            return b"img"
+
+        result, _, _ = self._classify(images=True, prepare_image=prepare_image)
+
+        assert any(
+            "page image could not be read: NoSuchKey" in e for e in result.errors
+        )
+
+    def test_a_page_with_no_text_artifact_still_fails_the_document(self):
+        """No text URI at all is a missing artifact, not an empty page."""
+        result, _, _ = self._classify(missing={("2", "text")})
+        assert any("Error classifying page 2" in e for e in result.errors)
+
+    def test_with_images_on_a_missing_image_still_fails_the_document(self):
+        """With images on, an empty page normally still has an image, so a page
+        with neither is missing an artifact rather than empty."""
+        result, _, _ = self._classify(
+            images=True, prepare_image=lambda *_: b"img", missing={("2", "image")}
+        )
+        assert any("Error classifying page 2" in e for e in result.errors)
