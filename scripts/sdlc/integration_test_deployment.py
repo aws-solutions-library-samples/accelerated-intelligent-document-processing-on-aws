@@ -624,8 +624,9 @@ def monitor_pipeline_execution(
               a failure. The caller exits neutrally and the run's real result
               surfaces via the S3 summary + SNS.
 
-    max_wait (135 min) is a hard backstop below the GitLab job's 3h30m ceiling;
-    handoff_after (110 min) is the normal exit for a still-running pipeline.
+    max_wait (default 135 min) is a hard backstop below the GitLab job's ceiling;
+    handoff_after (default 110 min) is the normal exit for a still-running
+    pipeline. A probe run passes larger budgets for both.
     The monitor refreshes its 1h-capped creds every ~50 min (see
     _CredentialRefresher), so it can watch past the single-credential lifetime.
     """

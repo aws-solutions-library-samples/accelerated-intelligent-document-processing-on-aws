@@ -31,8 +31,8 @@ record of its last run.
 | [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
-| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **nightly** + manual button — not a merge gate | pipeline `integration_tests` |
-| [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual | see the table |
+| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **scheduled** (primary suite nightly) + manual button — not a merge gate | pipeline `integration_tests` |
+| [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual, except the ZAP DAST and deploy-variant rows (GitLab weekly schedule) | see the table |
 | [7. Benchmarks](#7-benchmarks) | **yes** | ❌ manual | `make benchmark-release` |
 
 `make test` and `make lint` are the two commands to run before opening a pull
