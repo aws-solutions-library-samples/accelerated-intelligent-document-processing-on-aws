@@ -198,6 +198,67 @@ monitor watches a probe run for longer than a nightly
 job's verdict and Slack post come from that final summary rather than from the
 interim one.
 
+### Weekly region runs: the primary suite outside us-east-1
+
+The nightly, the probe run and every button press deploy in `us-east-1`. Two more
+weekly schedules run the **primary suite** in `eu-central-1` and `ca-central-1`, so
+the regions the release publishes to are deployed and tested too. A schedule
+carries `IDP_TEST_REGION=<region>`, and
+`region_run_requested` in `scripts/sdlc/integration_test_deployment.py` honours it
+only on a scheduled pipeline and only for a region in `REGION_RUN_REGIONS`, the
+regions with CI infrastructure. Any other value on a schedule **fails the job**
+rather than testing `us-east-1` under another region's name.
+
+| Pipeline | `IDP_TEST_REGION` | Runs |
+|---|---|---|
+| Nightly, probe run, buttons | not set (ignored off a schedule) | `us-east-1` |
+| Weekly region schedule | `eu-central-1` or `ca-central-1` | primary suite in that region; labelled `WEEKLY REGION RUN · <region>` in the summary, the failure email and Slack; leaves the UX review stack and the nightly story jobs alone |
+
+How the region reaches each part of the run:
+
+- **The GitLab job.** Its `script` and `after_script` are separate shells, so both
+  evaluate `integration_test_deployment.py --region-env`. That command exports
+  `AWS_DEFAULT_REGION` and `AWS_REGION` (the CLI and boto3 prefer the latter). Both
+  Slack posts label the run from the schedule's own `IDP_TEST_REGION`, so a run
+  refused for a bad value still says which it was. The source bucket
+  `genaiic-sdlc-sourcecode-<account>-<region>` and the pipeline follow from the
+  region.
+- **The build.** CodeBuild runs in its pipeline's region, and only a region
+  schedule uploads to a pipeline outside `us-east-1`, so `region_run` in
+  `codebuild_deployment.py` reads the build's own region and needs no flag in the
+  zip.
+- **Models.** A stack deployed in the EU or Canada swaps its shipped defaults to
+  models the region can call, but a configuration uploaded afterwards is stored as
+  written. Every `idp-cli config-upload` in the harness therefore goes through
+  `regional_config_file`, which applies the product's own `swap_model_ids` from
+  `src/lambda/update_configuration/index.py`. The failure analysis and the failure
+  agent call the model the product's own region mapping gives their `us.` Claude
+  profile in the EU (`regional_model_id`, through `get_model_mapping`), which is
+  sometimes a different model rather than the same one re-prefixed. Canada calls
+  the `us.` Claude profiles directly.
+- **The startup sweeps.** They reap **global** IAM roles and policies whose run
+  has no stack left, so `_live_idp_run_prefixes` lists stacks in every region in
+  `CI_INFRA_REGIONS`. Listing only the build's own region would read every
+  `us-east-1` run, a retained failed stack included, as over and reap its IAM.
+
+All runs share `resource_group: integration_deploy`. IAM is global: the
+`CreatePolicy` rate limit is one of the bursts that made concurrent deploys flaky,
+and each run's sweep touches account-wide IAM, so a region run must not overlap
+another run. A queued run waits for the group without its job timeout running.
+
+⚠️ **BDA as an OCR backend is unavailable in `ca-central-1`**
+([Canada region model support](../../../docs/canada-region-model-support.md#bedrock-data-automation)).
+No suite step selects `ocr.backend: bda`, so the suite runs unchanged there. The
+stack logs one expected ERROR line when BDA refuses its OCR project. BDA mode
+(`use_bda`, Step 4) works in both regions.
+
+**Standing up a region.** See [`scripts/sdlc/cfn/README.md`](../cfn/README.md#a-second-ci-region).
+For whoever operates the CI account, in this order: grant the GitLab role
+`s3:PutObject` on the region's source bucket, confirm that region's failure-email
+subscription, then create the region's schedule carrying `IDP_TEST_REGION`.
+Add the region to both `REGION_RUN_REGIONS` and `CI_INFRA_REGIONS`;
+`test_weekly_region_runs.py` fails if the two disagree.
+
 ### Why fast_checks is seven jobs
 
 It was one `static_checks` job that ran lint, typecheck and every pytest suite in
@@ -365,6 +426,7 @@ GitHub's own Merge button runs no code from this tree.
 | Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** | — | — | ▶️ **manual** |
 | **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — | — | ✅ auto |
 | **Weekly variant-probe schedule** | ✅ | — | ✅ auto | ✅ auto¹, plus the probes | — | — | — |
+| **Weekly region schedule** (eu-central-1, ca-central-1) | ✅ | — | ✅ auto | ✅ auto¹, in that region | — | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied

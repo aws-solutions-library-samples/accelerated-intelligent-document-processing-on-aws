@@ -1194,7 +1194,7 @@ def test_the_history_reads_each_scheduled_nights_digest_by_job_id(
 def test_a_schedule_that_never_runs_the_job_is_not_a_night(
     gitlab: _FakeGitlab,
 ) -> None:
-    """The weekly probe run carries no story job: left out, not a gap."""
+    """The weekly probe and region runs carry no story job: left out, not gaps."""
     gitlab.answer("GET", PIPELINES, [_pipeline(29), _pipeline(28), _pipeline(27)])
     gitlab.answer("GET", _jobs(29), [_job(2901)])
     gitlab.answer("GET", _artifact(2901), raw=b"{}")

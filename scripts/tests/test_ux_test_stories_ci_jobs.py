@@ -625,6 +625,11 @@ _NIGHTLY_CASES = [
         "never",
     ),
     (
+        "a weekly region schedule",
+        _branch_pipeline("schedule", IDP_TEST_REGION="eu-central-1"),
+        "never",
+    ),
+    (
         "the weekly variant-probe schedule, capitalised",
         _branch_pipeline("schedule", IDP_RUN_PROBES="True"),
         "never",

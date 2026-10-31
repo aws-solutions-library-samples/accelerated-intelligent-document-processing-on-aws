@@ -7,7 +7,9 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
-- **The deployment-variant probes run on their own weekly scheduled pipeline.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
+- **The primary integration suite runs weekly in `eu-central-1` and `ca-central-1` as well as nightly in `us-east-1`.** Each region has its own source bucket and CI pipeline stack and runs from a weekly schedule carrying `IDP_TEST_REGION` (a GitLab project setting, while it is active), and its result is labelled `WEEKLY REGION RUN · <region>` in the summary, failure email and Slack. The harness swaps the model ids of the configurations it uploads, and of its failure analysis, to ones the region can call, and the startup sweeps now look for a run's stacks in every CI region before reaping its global IAM. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#weekly-region-runs-the-primary-suite-outside-us-east-1).
+
+- **The deployment-variant probes run on their own weekly scheduled pipeline, once that schedule is turned on.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
 
 ## [0.6.13]
 

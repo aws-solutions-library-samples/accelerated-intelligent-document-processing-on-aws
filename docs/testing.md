@@ -464,6 +464,9 @@ the deploy variants in [section 6](#6-live-stack-tiers-manual-plus-the-weekly-pr
 The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
 carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
 only while it exists and is active.
+Two more weekly schedules, while they are active, run the primary suite in
+`eu-central-1` and `ca-central-1`; each result is labelled with its region, in the
+same Slack channel.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
