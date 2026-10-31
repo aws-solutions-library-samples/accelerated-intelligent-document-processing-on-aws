@@ -391,6 +391,36 @@
       "memberKind": "path",
       "ratchetEvidence": "lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py"
     },
+    "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES": {
+      "kind": "exemption",
+      "memberKind": "dotted configuration path, matching the path and every field under it",
+      "turnsOff": "the 'every classification model field has an entry in base-classification.yaml' direction of the defaults/model parity gate, for a subtree and everything below it. The other direction -- every key in the YAML is a field the models define -- and the shipped-value-equals-field-default check exempt nothing at all",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py",
+      "reason": "Five subtrees, each with its own sentence in the constant, and subtree granularity is right for all five because the reason is a property of the whole subtree rather than of any field in it. Four are the blocks declared for unimplemented classification methods (#1329): boundary_model, embeddings, decision_model and low_confidence. One is postHook, whose contents the Feature Platform registers at install time. The premise for every member is evaluated PER MEMBER in the gate rather than written down here -- the four declared blocks are each driven through the `method` value that would reach them and the gate requires the model to refuse it, and postHook's field is required to default to an empty collection, which is a default with nothing to put in a file. Those computations do not live in scripts/tests/gate_premises.py because the facts are about this repository's configuration model rather than about paths, templates or builds, and that module is imported by the registry meta-test, which must not grow a dependency on idp_common to run. What bounds the list is the closure: the parity direction derives the universe from the model's own fields and fails by name for any field in neither the YAML nor one of the two tables, so neither table can quietly stop covering it. Two staleness checks run per member as well -- the path must still be a model field, and it must still have no entry in the YAML -- so an entry cannot outlive what it describes or pre-excuse whatever next takes the path.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_FIELDS",
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_FIELDS": {
+      "kind": "exemption",
+      "memberKind": "dotted configuration path naming exactly one leaf field",
+      "turnsOff": "the same direction of the same gate, for one exact field per entry",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py",
+      "reason": "Eight fields, no subtree: a field is the smallest thing that will do here, so no entry answers for a sibling it has not examined -- which matters most for image, where target_width and target_height ARE shipped on every classification call and only dpi and preprocessing are not. Two kinds, each with its premise computed per member. Six are ImageConfig's dpi and preprocessing on the three classification calls: ImageConfig is shared by every stage's image panel, but both govern the PDF-to-raster render that happens once during OCR, so the gate requires base-ocr.yaml to ship ocr.image.<field> -- if OCR stops shipping it the setting has no default anywhere and the recorded reason is false. Two are the per-segment confidence prompt blocks on the section-classification call, which is one call per section and returns one class: the gate composes the real section classification prompt with a marker in the key and requires the marker not to appear, with a control that the page-shaped key's marker DOES appear, because 'the key is not read' and 'nothing was read' are indistinguishable from one assertion. Both kinds also carry the two per-member staleness checks and sit inside the same universe closure as the sibling entry. The same six image fields and the same two confidence keys are carved out of the model-to-UI parity gate for the same reasons, which is why that constant is cross-referenced: auditing one has to reach the other.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES",
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE"
+      ]
+    },
     "lib/idp_common_pkg/tests/unit/config/test_config_migration_hardening.py::_NON_CONFIG_YAMLS": {
       "kind": "exemption",
       "turnsOff": "the config-migration hardening scan, for named YAML files under config_library/ that are not IDPConfig documents",
@@ -1270,6 +1300,18 @@
       "ratchetGap": "A probe that silently stops running is reported but does not fail the harness, so coverage can shrink without a failure.",
       "memberKind": "probe name"
     },
+    "scripts/sdlc/codebuild_deployment.py::SWEEP_EXEMPT_STACK_NAMES": {
+      "kind": "exemption",
+      "turnsOff": "reaping by two of the integration harness's Step 0 sweeps, for each member stack: by cleanup_stale_idp_stacks, of the member and its <member>-iam pre-stack and of no other stack; and by cleanup_stale_idp_buckets, of every bucket whose name opens with the member and a hyphen. Each sweep sets those names aside before whichever of a retention marker, the run-prefix protection or an age gate it applies, so none of those is consulted for them, and counts them as not examined, on a log line of its own; that includes the age gates that fail closed on an undated listing entry (#1445), so such an entry for one of those names is never reported as an item whose age could not be established",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One member, idp-ux-nightly: the name reserved for a long-lived IDP stack in the CI account, updated in place rather than created per run, and intended as the review stack for an automatic MR UX test. Without this, the stack and bucket sweeps each take it in their own way. The stack sweep deletes the stack and its -iam pre-stack once they pass IDP_STACK_STALE_AGE_SECONDS in any status it lists, UPDATE_COMPLETE and UPDATE_ROLLBACK_COMPLETE among them, and while it lists them the only thing that defers that is a retention marker, which expires. The bucket sweep empties and deletes its buckets once they pass IDP_BUCKET_STALE_AGE_SECONDS even while the stack is up, because its live-stack protection is read through a run's idp-MMDD-HHMMSS prefix (_IDP_RUN_PREFIX_RE), which that name does not carry. Those two are the only sweeps that read the set. The BDA, IAM-role and IAM-policy sweeps delete only names carrying a run prefix whose run has no surviving stack, so they pass this stack's BDA projects and blueprints, roles and managed policies over -- its BDA-as-OCR project idp-ux-nightly_OCR_StdOutput, its -iam pre-stack's idp-ux-nightly-iam-CFServiceRole and, where it deploys a bastion host, that host's idp-ux-nightlyBastionHost-Role, named with no separator, included -- and do not read the set: scripts/sdlc/tests/test_startup_sweep_outcomes.py computes for every member that no name opening with it carries a run prefix, and measures on each of the three sweeps that none of those names is reaped with no run live. The BDA sweep reads the account's stacks only when a name it listed carries a run prefix, so a stack enumeration that fails reports only the run-prefixed names it left undecided, none of them this stack's. Whether a stack is meant to outlive every run is a decision about how the CI account is used, recorded nowhere else in this tree, so the premise is JUDGEMENT. The bucket sweep matches the name followed by a hyphen: the shape of every bucket name of the stack, since every bucket it has is declared, unnamed, in template.yaml, the one template it deploys that declares any, and CloudFormation names each <stack>-<LogicalId>-<suffix>, lowercased, shortening only a name that would run past S3's 63 characters; so no bucket of it is named the member alone, and the match is known to reach those names only while the member has no capital letter and is short enough for every one of them to fit whole, both of which scripts/sdlc/tests/test_startup_sweep_outcomes.py computes for every member. The stack sweep matches the member and <member>-iam exactly: it asks only about top-level stacks, and any other top-level stack named <member>-<x> is a stack of its own, which spared would hold its IAM roles until somebody removed it by hand, so it is reaped once it passes IDP_STACK_STALE_AGE_SECONDS. Either way the set spares no lookalike such as idp-ux-nightly2.",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/sdlc/tests/test_startup_sweep_outcomes.py",
+      "ratchetGap": "The pin bounds which names are covered, not what each one covers: every bucket named <member>-* escapes the bucket sweep at any age, the BDA, role and policy sweeps reap nothing whose name opens with the member's, none of which carries a run prefix, and the member and <member>-iam escape the stack sweep, so a leak of the long-lived stack's own -- a bucket an in-place update orphaned, the stack or its pre-stack left in DELETE_FAILED -- is reaped by none of them and is removed by hand. The stack sweep's match, two names where the bucket sweep's takes every <member>-*, leaves the opposite exposure: a top-level stack somebody names <member>-<x> is reaped once it passes that sweep's age gate, but what its deletion leaves behind under that name -- its retained buckets, empty or not, and its retained roles, since that sweep deletes with a plain DeleteStack -- is still spared, the buckets by the bucket sweep and the roles, which carry no run prefix, by the role sweep, and is removed by hand; and a stack deployed beside the member under its default name is reaped like a throwaway unless it is given a name outside idp-: a feature extension's <member>-feature-<id>, which idp-feature-cli deploy and a console install from the web UI both propose, and the <member>-VPCEndpoints stack scripts/deploy-vpc-endpoints.py deploys for a private network. Renaming a feature extension costs its update link in the web UI, which falls back to the create form and so fails for a stack that already exists, because getFeatureLaunchUrl may call DescribeStacks only on <member>-feature-*. The apigw test-VPC sweep does not consult the set, so it still takes an idp-ux-nightly*-apigw-vpc stack. A run's own teardown is not a Step 0 sweep and does not consult the set either, but idp-cli delete --force-delete-all acts only on the CloudFront distributions and response headers policy its own stack's resource list records, so it cannot reach the member's. Nor does the set protect what the stack depends on without being named for it: a run's -iam service role and permissions boundary go at that run's teardown, which first deletes every idp- role that names the boundary, so a stack deployed under a run's boundary loses its own roles with it; the region's API Gateway logging role is an account setting naming the ApiGatewayCloudWatchRole of the last stack to create one at INFO or DEBUG, and a run's teardown and the role sweep both delete a run's copy, so if the setting names one, a member running at INFO or DEBUG stops getting API Gateway logs once that copy is gone (CI deploys at WARN, which creates neither); and the idp-cli-config-* bucket a custom configuration is uploaded to goes once it passes the bucket sweep's age gate. Which Step 0 sweeps consult the set is closed over STARTUP_SWEEPS in scripts/sdlc/tests/test_startup_sweep_outcomes.py: a sweep added later fails there until it either reads the set, and is then driven against the member's resources, or is named with a one-line reason for not reading it; whether such a reason is true is a judgement no test computes, except for the BDA, role and policy sweeps, whose reasons rest on a premise that module computes for every member and measures on each of those sweeps, and a reaper outside Step 0, such as the teardown above, is outside that closure. There is no non-vacuity ratchet either: whether the member still names a deployed stack is a fact about the CI account that no offline gate can read, so this entry outlives a retired stack unless it is removed with it.",
+      "memberKind": "CloudFormation stack name"
+    },
     "scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS": {
       "kind": "capability",
       "turnsOff": "nothing in any gate; it grants an agent read-only AWS verbs at runtime",
@@ -1364,6 +1406,21 @@
       "ratchetGap": "A pattern that matches nothing makes the scan silently vacuous for that rule.",
       "memberKind": "detection pattern"
     },
+    "scripts/sdlc/tests/test_api_rbac_refusal_attribution.py::_DECLARED_RESOURCE_REFUSALS": {
+      "kind": "enforced-universe",
+      "memberKind": "a refusal SITE: (source file relative to the resolver root or to lib/idp_common_pkg, top-level function name) naming one place a resolver raises",
+      "turnsOff": "nothing in a gate, and it cannot: the list names the per-object refusal sites asserted to raise ResourceAccessDenied, and a site left OFF it is treated MORE harshly rather than waved through. An undeclared refusal reaches the client as authzControl 'resolver', and refusal_is_resource_level() is fail-closed, so the live RBAC harness applies the strict verdict to it. The risk this entry records is therefore omission in the other direction -- a per-object control the harness can provoke and that does not declare itself turns a correct refusal into a hard failure (#1308).",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/sdlc/tests/test_api_rbac_refusal_attribution.py",
+      "issues": [
+        1308,
+        1478
+      ],
+      "reason": "Discovered through the prose route, on the comment bounding the list -- it argues in words that certain refusals stay unattributed, which reads to the matcher as an exemption rationale and is close to the opposite: unattributed is the strict side here. The judgement that cannot be computed is the membership criterion itself, 'is this refusal a decision about the OBJECT the caller named, as opposed to a fact about the deployment or about the principal', which is a question about what a branch means and not about any path, file or template property; no predicate in gate_premises.py has that subject, and the members are function names rather than paths a predicate could be aimed at. The ratchet is per member and live: test_a_converted_per_object_control_still_declares_itself parses each named function and fails if it stops raising the class, and _raised_names raises outright if the function has been renamed or removed, so an entry whose site has gone away fails rather than going quiet -- which matters because the consequence of a dead entry here is a per-object control silently reverting to the strict label. The refusal sites in get_file_contents_resolver that are deliberately absent are each bounded to one member in the comment, and each is ratcheted on the other side rather than only argued for: document_scope's throttled tracking-table read and _DocumentScope's unwired table name in _UNATTRIBUTED_REFUSAL_CLASSES, resolve_caller_scope and key_scope._claims and key_scope._assert_test_set_allowed in _UNATTRIBUTED_REFUSAL_SITES, and the two functions that legitimately raise both classes in _MIXED_REFUSAL_SITES with the per-class count pinned -- which is the only form that holds a mixed site, since a presence assertion is satisfied by converting the other branch and an absence assertion is false by construction. What this entry does NOT claim is closure over every per-object control in the tree: there is no derivation of that universe, the comment says so, and the bound is 'the live harness can provoke it' -- which is why the arm that provokes these members is itself asserted to exist and to turn on the label, by test_the_document_bytes_suite_exists_and_is_invoked_from_main -- which reads main()'s own body, so a call left in a dead helper does not satisfy it -- and test_the_document_bytes_suite_demands_the_resource_label. Registered rather than reworded: rewording the comment to slip past discovery is the failure this registry exists to prevent."
+    },
     "scripts/sdlc/tests/test_api_rbac_verdicts.py::ALLOWED": {
       "kind": "fixture",
       "memberKind": "literal string",
@@ -1385,7 +1442,8 @@
       "reason": "Per subtree, and the comment justifies subtree granularity: the reason is a property of the subtree, not the field. Two of five members rest on checkable code facts; three are product decisions.",
       "crossReferences": [
         "scripts/sdlc/tests/test_config_ui_schema_parity.py::KNOWN_UI_GAPS",
-        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE"
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE",
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES"
       ],
       "memberKind": "config-schema path",
       "ratchetEvidence": "scripts/sdlc/tests/test_config_ui_schema_parity.py"
@@ -1413,7 +1471,8 @@
       "ratchet": "staleness",
       "reason": "Same family as its two siblings, and policed by the same staleness test. Found by comment rather than name.",
       "crossReferences": [
-        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES"
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES",
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_FIELDS"
       ],
       "memberKind": "config-schema path",
       "ratchetEvidence": "scripts/sdlc/tests/test_config_ui_schema_parity.py"
@@ -1591,7 +1650,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Advisories triaged as unreachable, each with a justification. Mirrored by .ash/.ash.yaml, and scripts/security/tests/test_dep_audit.py fails on an ASH entry with no allowlist twin.",
+      "reason": "Advisories triaged as unreachable, each with a justification. dep_audit.py fails the run on an entry that matched no finding, because a dead entry pre-approves its advisory id if it is ever reissued; scripts/security/tests/test_dep_audit.py asserts that, and also fails on an ASH entry in .ash/.ash.yaml with no allowlist twin.",
       "crossReferences": [
         ".ash/.ash.yaml::suppressions",
         "scripts/security/dep_audit.py::suppressed"
@@ -1783,6 +1842,27 @@
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_gate_exemption_registry.py",
       "ratchetGap": "Closure runs one way only: nothing fails for a DEAD member. This table can therefore carry a predicate no registry entry names, and file_absent_or_untracked is in that state today -- nothing in this registry rests on it. (That is a weaker statement than 'nothing calls it': the CLAUDE.md rule about an uncalled predicate bites on one an ENTRY names -- enforced by test_a_computable_premise_is_actually_computed -- not on an unnamed table member.) No premise distribution is quoted here on purpose: the figure that was written down went stale inside one release cycle, so derive it from this file if you need it. Note also that the ratchetEvidence above is the meta-test itself, and the marker the evidence check greps for is in that file's own RATCHET_EVIDENCE_MARKERS table, so for THIS entry the marker is self-satisfying: read the named test, not the marker."
+    },
+    "scripts/tests/nested_parameter_defaults_baseline.json::nested_parameter_defaults_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "nested stack logical id + parameter name",
+      "turnsOff": "the report of a parameter of a nested stack that declares a Default which the parent template never overrides, per (logical id, parameter) pair. An `accepted` member stops being reported because the nested default is the value this solution intends; a `knownDefects` member stops being reported while staying labelled a defect, which is what let the check ship before the fixes for issues 1553 and 1558 did; that section is empty while no unfixed defect of this shape is known.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered as a JSON registry (the `*_baseline.json` glob) and it is one: every member is a finding the gate agrees not to fail on. Whether a given default is the intended value is the judgement, and it is not computable -- a verified defect and a deliberate knob are structurally identical, both being a declared Default no caller overrides. What is computable, and is computed per member, is the FINDING: scripts/tests/nested_parameter_defaults.py derives the set from the templates on every run, so a member cannot be recorded that the tree does not exhibit. The one-reason-per-set failure this registry exists to prevent is addressed inside the file rather than here, because that is where a member lives: each entry carries its own sentence about what reads the parameter and what the default means to it, and test_each_baseline_entry_answers_for_itself fails on an empty one, so every name sharing one sentence about defaults usually being deliberate is a test failure rather than a review question. The file is also not a laundering step: --write refuses to add a member, or to record one whose template has started reading it, without --allow-new-unpassed \"<reason>\", which is stored in the file -- without that refusal the gate would redden on a newly self-disabled feature, print 'record it or pass it', and --write would record it with nothing attached.",
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "It answers the opposite question and would hold for no member here. Every member belongs to a template that template.yaml deploys as an AWS::CloudFormation::Stack -- which is the precondition for being a finding at all, since the scan derives its universe from gate_premises.nested_stack_sources(). A member for which this predicate held could not be in the file."
+      },
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_nested_stack_parameters.py",
+        "scripts/tests/nested_parameter_defaults.py"
+      ],
+      "ratchetGap": "Closure and staleness are both enforced -- a finding in neither section fails, and a recorded member the scan no longer produces fails -- but nothing can check that a member is in the RIGHT section. Recording a real defect in `accepted` with a plausible sentence passes every test here; what it costs is a visible diff on a reasoned entry, which is the control, and it is a review control rather than a gate. The scan is also one level deep: it reads the AWS::CloudFormation::Stack resources of template.yaml, and a nested template declaring one of its own would not be followed. Measured on this tree, none does, so the gap is forward-looking rather than live.",
+      "issues": [
+        "1553"
+      ]
     },
     "scripts/tests/repo_files.py::FALLBACK_PRUNE_DIRS": {
       "kind": "prune",
@@ -2472,7 +2552,7 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
+      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml, and the root parameter template.yaml passes to it, which the test derives from the wiring rather than by name), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
       "ratchet": "staleness",
       "ratchetEvidence": [
         "scripts/tests/test_model_surface_consistency.py"
@@ -2739,7 +2819,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Live tiers that drive real stacks. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
+      "reason": "Each row carries its own reason. The live tiers drive real stacks; ux-test-stories.md is Claude Code only, because its pair mode starts a claude --mcp-config session and its unattended runs go through run_in_background. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_repo_quality_review_skill.py"
     },
@@ -3001,6 +3081,89 @@
         "983"
       ]
     },
+    "scripts/tests/test_ux_story_relay.py::MUTATIONS_WITHOUT_A_GUARDED_CONTROL": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that the story relay's commit guard refuses the shipped control that sends the mutation, for a GraphQL mutation src/ui declares and no component or hook sends",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
+      "reason": "The suite derives every mutation src/ui/src declares and fails on one that is in neither MUTATION_CONTROLS, which names the shipped controls that send it and checks that each is still in its file and refused by the guard, nor this list, so a mutation the UI gains reaches the relay's owners as an unaccounted one. Three members, RejectReviewItem, RenewReviewLease and UpdateChatSessionTitle, each of which the UI declares among its operations and sends from no component or hook; the same suite checks per member that no file outside src/ui/src/graphql calls it, so a caller added later fails there and the mutation has to move to MUTATION_CONTROLS with its control.",
+      "memberKind": "GraphQL mutation name"
+    },
+    "scripts/ux_runner/agent.py::CHILD_ENV_ALLOWLIST": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it names the only variables copied from the job's environment into the UX session's claude process, which otherwise receives the harness's fixed settings and a Bedrock-scoped AWS session",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "An allowlist rather than ai_mr_review's denylist, because the UX job's environment holds GITLAB_REVIEW_TOKEN, the persona passwords in UX_TEST_PERSONAS and the job's own AWS credential, and a denylist passes every variable nobody thought to name. Pinned to its exact members, and the test builds the environment from a parent holding every ai_mr_review.SECRET_ENV_KEYS name, the UX_TEST_* variables and proxy variables, and asserts none of them comes through.",
+      "memberKind": "environment variable name"
+    },
+    "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox the advisory MR UX test's Claude Code session runs inside, granting twelve chrome-devtools-mcp navigation, input, snapshot and screenshot tools and the four recorder tools of scripts/ux_recorder_mcp.py",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "A capability grant, not a gate exemption: it is what the UX session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, so every tool that server offers is either granted here or denied by name in EXPERT_DISALLOWED_TOOLS, and a tool added by a version bump fails the closure until somebody decides which. Same shape as scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/ux_runner/tool_profiles.py::EXPERT_DISALLOWED_TOOLS"
+      ]
+    },
+    "scripts/ux_runner/tool_profiles.py::EXPERT_DISALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing; it is the deny half of the same sandbox, and every entry REMOVES a capability",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "Discovered through its attached comment rather than its name, which the polarity guard correctly refuses to read as an allowlist. Every entry removes a capability: the eight Claude Code built-ins scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS denies and seven more that read, search, keep a task list, load a skill, delegate or ask, as backup rather than the CLI's whole built-in set, which the session's --tools '' removes outright; and the chrome-devtools-mcp tools that run page JavaScript, upload a file, list, open, close or switch tabs, change the viewport or device, profile or audit the page, inspect an element's CSS rules, or read console and network traffic. A missing entry is the risk and an extra one is free, so the ratchet is an audited count: changing the list is a deliberate edit, which is the moment to ask whether it still denies everything that could act outside the recorded tab.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS"
+      ]
+    },
+    "scripts/ux_runner/tool_profiles.py::STORY_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox a first-time-user story flow's Claude Code session runs inside, granting the twelve browser tools the ux-story server relays from the pinned chrome-devtools-mcp and the seven tools of the ux-story server itself, all under mcp__ux-story__",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_story_relay.py",
+      "reason": "A capability grant, not a gate exemption: it is what a story session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, which the suite also checks against the server's own recorded tools/list under default flags: every one of those tools is either granted under mcp__ux-story__ or denied there by name in STORY_DISALLOWED_TOOLS, and every mcp__chrome-devtools__ name is denied because that server is never registered in a story flow, so a tool added by a version bump fails the closure until somebody decides which. The relay serves only STORY_BROWSER_TOOLS whatever the lists say, a second layer the same suite pins against the recorded server. Same shape as EXPERT_ALLOWED_TOOLS.",
+      "memberKind": "tool name"
+    },
+    "scripts/ux_test_proxy.py::EGRESS_ALLOWED_STATIC_HOSTS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the part of the UX browser's egress allowlist that is not derived from the review stack's own UI environment",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_test_proxy.py",
+      "reason": "The confined Chrome's only network path is this proxy, which tunnels CONNECT only to the hosts the stack's UI environment names (its Cognito pools, SSM, execute-api and Function URL hosts, and its buckets by exact name) plus this list. One member, cdn.jsdelivr.net, from which @monaco-editor/react loads the editor at run time. Pinned to its exact members, because a host added here becomes reachable by the MR's own UI code running in that browser, so adding one is a deliberate edit to the pin rather than a one-word change.",
+      "memberKind": "CONNECT host:port"
+    },
+    "scripts/ux_test_proxy.py::VPC_ENDPOINT_ALLOWED_NETWORKS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the one relaxation of the UX browser's egress proxy refusing a name whose answers are not public, and it applies only to an allowlisted AWS service name",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_test_proxy.py",
+      "reason": "An interface VPC endpoint with private DNS answers its service's public name, such as ssm.<region>.amazonaws.com, with the endpoint's private address inside the VPC, and the CI runners have one for SSM, so a proxy refusing every non-public answer refused the UI's settings lookup and the MR UX test reviewed nothing. Four members: RFC 1918's three ranges and the shared 100.64.0.0/10 a VPC may also be given. They are accepted only for a name that is on the stack's exact allowlist and ends in amazonaws.com, and only when every answer is in them, never in a mix with public answers; loopback, link-local (instance metadata included), unique-local IPv6 and every other address stay refused for every name, and the browser still checks the service's TLS certificate through the tunnel. Pinned to its exact members, because a range added here becomes reachable by the MR's own UI code wherever an AWS name resolves into it.",
+      "memberKind": "IPv4 network"
+    },
     "security/threat-modeling/scripts/build_threat_model.py::SKIP_MARKERS": {
       "kind": "exemption",
       "memberKind": "literal string",
@@ -3022,6 +3185,70 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py::GOVCLOUD_UNAVAILABLE_MODEL_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "(dotted configuration path, exact model id) pair in the merged GovCloud preset",
+      "turnsOff": "the 'every merged model value is GovCloud-verified' check for one setting holding one specific value: discovery.multi_document.embedding_model_id = us.cohere.embed-v4:0. Any other value at that path, or that id at any other path, is still reported",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py",
+      "issues": [
+        1529
+      ],
+      "reason": "Whether a model exists in GovCloud is a fact about live Bedrock, not about this tree. Multi-Doc Discovery needs a multimodal embedding model, the preset's own comment records that GovCloud offered none when it was checked, the setting has no enable flag the preset could turn off, and pinning an id nobody has confirmed with a Converse call would contradict the preset header. So the preset leaves the system default in place and says so. test_each_exempt_value_is_still_needed fails when the merged value at the path is no longer the excused one, so the entry goes stale the moment the default or the preset changes rather than excusing whatever lands there next."
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py::GOVCLOUD_ALLOWED_MODELS": {
+      "kind": "exemption",
+      "memberKind": "Bedrock model id",
+      "turnsOff": "the 'every merged model value in the GovCloud preset is GovCloud-available' check, for each listed model id at any configuration path",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_govcloud_preset_models.py",
+      "issues": [
+        1529
+      ],
+      "reason": "Whether a model id can be invoked in GovCloud is a fact about live Bedrock that this tree cannot compute, and the preset header admits a model only after a real Converse call succeeds in us-gov-west-1. Per member: amazon.nova-pro-v1:0 and amazon.nova-lite-v1:0 are the in-region Nova ids the preset already pinned for classification, extraction and confidence under the header's 2026-07-17 Converse verification; us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0 is the GovCloud inference profile the preset's chat comment records as verified with Converse, including tool use, on the same date (the bare anthropic. id is rejected for on-demand use). test_the_verified_list_is_exactly_what_the_preset_pins asserts this set equals the set the raw preset pins in both directions, so an id cannot be allowed here without being shipped, and a dropped id leaves no dead allowance. What it cannot check is that a newly added id was actually verified; that remains the reviewer's judgement on this entry."
+    },
+    "scripts/tests/test_classification_flat_keys_ui_parity.py::_NON_FINITE_PAGE_LIMITS": {
+      "kind": "enforced-universe",
+      "memberKind": "a non-finite float spelling of maxPagesForClassification",
+      "turnsOff": "nothing. It is the universe the two parametrised tests beside it are driven over, so a member being in it is what makes that member asserted about rather than what excuses it. Both tests require the value to be ANSWERED rather than to raise -- _is_page_limit truncates, and int(inf) raises OverflowError while int(nan) raises ValueError -- and the second requires DocumentShapeConfig to normalise the same value to 'ALL', so the two predicates are pinned to agree about it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_classification_flat_keys_ui_parity.py",
+      "reason": "Discovered through the name route, on the NON_ fragment, and it is not a carve-out: these three values are the cases the shared parity table in src/ui/src/utils/__tests__/page-limit.fixtures.json cannot carry, because JSON has no spelling for Infinity or NaN. Registered rather than renamed, since renaming a constant to slip past discovery is the failure this registry exists to prevent and 'not an exemption at all' is a decision it is built to record. The closure is what makes the split safe and it is asserted rather than assumed, in test_no_float_spelling_is_unaccounted_for_by_both_case_sets: every member here is non-finite so none belongs in the table, nothing in the table is non-finite so none belongs here, and math.isfinite partitions float on exactly inf, -inf and nan, which is why three is all of them. No per-member fact is computed because there is none to compute -- which float spellings Python calls non-finite is a property of the language. What a reviewer should check instead is that the assertions are real: remove the math.isfinite guard from _is_page_limit and all three cases go red, which is how the guard was verified when it was written."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/error_analyzer/test_prompt_tool_names.py::NON_TOOL_IDENTIFIERS": {
+      "kind": "exemption",
+      "memberKind": "a snake_case identifier a shipped error-analyzer system prompt quotes as data rather than as a tool",
+      "turnsOff": "test_prompt_names_no_unregistered_tool for one named identifier. Without the entry that test fails on it, because it is neither a registered error-analyzer tool nor a parameter of one.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/error_analyzer/test_prompt_tool_names.py",
+      "issues": [
+        1555
+      ],
+      "reason": "Four members, each with its own reason beside it in the constant. status_reason is a Document attribute the summarization Lambda sets when the stage fails, which the prompt names as where the generic wrapper message shows up; assessment_incomplete is a ProcessingIssue code the prompt names as a non-fatal example; log_group and log_stream are keys of search_cloudwatch_logs results that the evidence template asks the model to quote in full. Whether an identifier in prose is data or a tool reference is a reading of the sentence, not a property of the tree, so it is JUDGEMENT. test_no_non_tool_identifier_is_stale fails on a member no shipped prompt contains, and test_no_non_tool_identifier_is_a_tool fails if a member collides with a registered tool or parameter name."
+    },
+    "scripts/tests/test_test_set_label_writers.py::ALLOWED": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that no handler, resolver or library module sets labelSource to reviewed-human itself -- for each named file, whose match is not a label write",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Each member carries its own reason in the dict: testset_labels.py is the one writer the scan exists to make the only one, and testset_summaries.py derives a document summary from labels rather than writing a label. Whether a match is a label write is a reading of what the line does, which the regex cannot compute. test_every_allowed_file_still_matches fails on a stale entry whose file no longer matches, so an entry cannot outlive its reason and pre-approve a future writer at that path.",
+      "memberKind": "path",
+      "ratchetEvidence": "scripts/tests/test_test_set_label_writers.py"
     }
   }
 }

@@ -696,7 +696,7 @@ class TestRefusals:
             )
         assert result.exit_code == 1, result.output
         assert "no longer a stack parameter" in result.output
-        assert "Assessment & HITL Configuration" in result.output
+        assert "Human-in-the-Loop (HITL) Review" in result.output
         assert api_calls.of("CreateStack") == []
 
     def test_enable_hitl_false_is_still_accepted_and_submits_no_parameter(

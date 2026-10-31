@@ -175,12 +175,20 @@ RUN_ROOTS = [
     # date-range list, and the reviewer-owner matching that an absent email claim
     # would otherwise widen.
     "nested/api-resolvers/src/lambda/list_documents_range_resolver",
+    # Inbox and review-queue resolvers: the dispatcher contract (group gate,
+    # caller from verified claims, exact error classes) over a stub service.
+    "nested/api-resolvers/src/lambda/notifications_resolver",
+    "nested/api-resolvers/src/lambda/review_queues_resolver",
     # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
     # caller whose scope cannot be resolved must be refused in-band.
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
     # Configuration-revision pinning on a test run.
     "nested/api-resolvers/src/lambda/test_runner",
+    # The other half of that: a stored run's configuration is read back in the
+    # current config format, the same way on both storage shapes, so comparing two
+    # runs captured either side of a format change reports only real differences.
+    "nested/api-resolvers/src/lambda/test_results_resolver",
     "nested/api-resolvers/src/lambda/test_set_resolver",
     # Reprocess resolver: output-data deletion on reprocess (nested-stack
     # namespace handling). Arrived with #719 unregistered, which made `make test`
@@ -214,7 +222,13 @@ RUN_ROOTS = [
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
+    # Review queue sweeper: the no-table path, the deadline and the wiring.
+    "src/lambda/review_queue_sweeper",
     "src/lambda/save_reporting_data",
+    # Test run sweeper: admission, the deadline bound, and the enqueue throttle
+    # it shares with the read resolver. The derivation it calls is tested in
+    # idp_common; this suite pins that a sweep which does nothing fails (#1620).
+    "src/lambda/test_run_sweeper",
     # DockerBuildRun's ECR image verification: the bounded image-scan wait and the
     # presence poll. An unbounded wait here fails the stack at CloudFormation's
     # one-hour custom-resource limit with an error that names the cfn-response

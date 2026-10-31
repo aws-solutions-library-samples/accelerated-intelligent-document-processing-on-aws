@@ -309,9 +309,11 @@ class TestRowsWrittenBeforeTheKeyExisted:
 
     @pytest.mark.parametrize("metric", EXACT_KEY_FAMILY)
     def test_any_exact_key_metric_identifies_the_exact_truth_scorer(self, metric):
-        """Keyed on PRESENCE, not value: ``cells_compared`` is null on a document
-        with no list and ``cell_accuracy`` is null when nothing compared, so
-        truthiness would send those rows back to "unknown"."""
+        """Keyed on PRESENCE, not value: on a document that has a list and returned
+        none of its rows, ``cell_accuracy`` is null and ``cells_compared`` is ``0``,
+        and both of those are falsy, so truthiness would send that row back to
+        "unknown". A document with no list at all carries neither key (#1497), which
+        is why the fallback is ``any`` over the family rather than all of it."""
         row = {"doc": "tiny_form.pdf", "sub_doc": None, metric: None}
         assert aggregate.row_scored_against(row) == analyze.SCORED_EXACT_TRUTH
 

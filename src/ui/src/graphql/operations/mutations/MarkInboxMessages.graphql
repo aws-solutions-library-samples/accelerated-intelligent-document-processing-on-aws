@@ -1,0 +1,7 @@
+mutation MarkInboxMessages($ids: [ID!]!, $read: Boolean!) {
+  markInboxMessages(ids: $ids, read: $read) {
+    updated
+    notFoundIds
+    unreadCount
+  }
+}

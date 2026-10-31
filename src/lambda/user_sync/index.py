@@ -15,7 +15,28 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 cognito = boto3.client("cognito-idp")
 USER_POOL_ID = os.environ.get("USER_POOL_ID", "")
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
+AUTHOR_GROUP = os.environ.get("AUTHOR_GROUP", "Author")
 REVIEWER_GROUP = os.environ.get("REVIEWER_GROUP", "Reviewer")
+ANNOTATOR_GROUP = os.environ.get("ANNOTATOR_GROUP", "Annotator")
+VIEWER_GROUP = os.environ.get("VIEWER_GROUP", "Viewer")
+
+#: Persona (case-insensitive) -> the Cognito group it grants. Every persona maps
+#: to its own group; an unknown persona grants none (never a fallback group).
+PERSONA_GROUPS = {
+    "admin": ADMIN_GROUP,
+    "author": AUTHOR_GROUP,
+    "reviewer": REVIEWER_GROUP,
+    "annotator": ANNOTATOR_GROUP,
+    "viewer": VIEWER_GROUP,
+}
+
+
+def group_for_persona(persona):
+    """The Cognito group for ``persona``, or ``None`` (logged) when unknown."""
+    group = PERSONA_GROUPS.get(str(persona or "").strip().lower())
+    if group is None:
+        logger.warning(f"Unknown persona {persona!r}: no Cognito group assigned")
+    return group
 
 
 def handler(event, context):
@@ -58,6 +79,13 @@ def handle_user_created(record):
     
     if not is_user_record(new_image):
         return
+    # A record written FROM an existing Cognito account (User Management's sync, or
+    # assigning HITL work to a user added in Cognito directly) has nothing to create:
+    # with a username other than the email, creating one would add a second account
+    # and email it an invitation.
+    if get_attribute_value(new_image, "source") == "cognito":
+        logger.info("Skipping a user record created from an existing Cognito account")
+        return
     
     user_id = get_attribute_value(new_image, "userId")
     email = get_attribute_value(new_image, "email")
@@ -78,13 +106,14 @@ def handle_user_created(record):
             DesiredDeliveryMediums=["EMAIL"],
         )
 
-        # Add to appropriate group
-        group_name = ADMIN_GROUP if persona.lower() == "admin" else REVIEWER_GROUP
-        cognito.admin_add_user_to_group(
-            UserPoolId=USER_POOL_ID, 
-            Username=email, 
-            GroupName=group_name
-        )
+        # Add to the persona's group
+        group_name = group_for_persona(persona)
+        if group_name:
+            cognito.admin_add_user_to_group(
+                UserPoolId=USER_POOL_ID,
+                Username=email,
+                GroupName=group_name
+            )
         
         logger.info(f"User {email} created in Cognito and added to group {group_name}")
         
@@ -134,23 +163,25 @@ def handle_user_modified(record):
         
         try:
             # Remove from old group
-            old_group = ADMIN_GROUP if old_persona.lower() == "admin" else REVIEWER_GROUP
-            try:
-                cognito.admin_remove_user_from_group(
-                    UserPoolId=USER_POOL_ID,
-                    Username=email,
-                    GroupName=old_group
-                )
-            except Exception as e:
-                logger.warning(f"Failed to remove user {email} from group {old_group}: {e}")
+            old_group = group_for_persona(old_persona)
+            if old_group:
+                try:
+                    cognito.admin_remove_user_from_group(
+                        UserPoolId=USER_POOL_ID,
+                        Username=email,
+                        GroupName=old_group
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to remove user {email} from group {old_group}: {e}")
             
             # Add to new group
-            new_group = ADMIN_GROUP if new_persona.lower() == "admin" else REVIEWER_GROUP
-            cognito.admin_add_user_to_group(
-                UserPoolId=USER_POOL_ID,
-                Username=email,
-                GroupName=new_group
-            )
+            new_group = group_for_persona(new_persona)
+            if new_group:
+                cognito.admin_add_user_to_group(
+                    UserPoolId=USER_POOL_ID,
+                    Username=email,
+                    GroupName=new_group
+                )
             
             logger.info(f"User {email} moved from group {old_group} to {new_group}")
             

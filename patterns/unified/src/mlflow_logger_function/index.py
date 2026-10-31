@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 import time
+
 import mlflow
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
@@ -98,6 +99,55 @@ def _extract_field_metrics(field_metrics):
     return flat
 
 
+def _dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _classification_view(cls_cfg):
+    """The classification settings that actually run, as one flat dict.
+
+    Since config format 0.9 each classification setting lives inside the call
+    that uses it (``combined``, ``split_then_classify.splitting.llm``,
+    ``split_then_classify.section_classification.llm``). The parameter names logged
+    here stay the ones every earlier run carries — ``classification.model``,
+    ``classification.temperature``, ``classification.modality.*`` — and describe
+    the call that assigns the class under the active strategy, so a run before
+    and after the change can be compared on one axis. A split-then-classify run
+    also gets ``splitting`` (its splitting call's model and prompts).
+
+    A dict with no nested blocks is returned as it is, so a flat config still
+    logs what it holds.
+    """
+    if "combined" not in cls_cfg and "split_then_classify" not in cls_cfg:
+        return cls_cfg
+    strategy = str(cls_cfg.get("strategy") or "combined").strip().lower()
+    view = {"strategy": cls_cfg.get("strategy")}
+    if strategy == "split_then_classify":
+        split_then_classify = _dict(cls_cfg.get("split_then_classify"))
+        seg = _dict(_dict(split_then_classify.get("splitting")).get("llm"))
+        call = _dict(
+            _dict(split_then_classify.get("section_classification")).get("llm")
+        )
+        granularity = seg.get("granularity") or "page"
+        reader = _dict(seg.get("packet" if granularity == "packet" else "page"))
+        view.update(call)
+        view["granularity"] = granularity
+        view["splitting"] = {
+            "model": seg.get("model"),
+            "system_prompt": reader.get("system_prompt"),
+            "task_prompt": reader.get("task_prompt"),
+        }
+        return view
+    combined = _dict(cls_cfg.get("combined"))
+    granularity = combined.get("granularity") or "page"
+    reader = _dict(combined.get("packet" if granularity == "packet" else "page"))
+    view.update(_dict(combined.get("llm")))
+    view["granularity"] = granularity
+    view["system_prompt"] = reader.get("system_prompt")
+    view["task_prompt"] = reader.get("task_prompt")
+    return view
+
+
 def _extract_config_params(config):
     """Extract model IDs, inference params, and flags from IDP config as MLflow params.
 
@@ -127,6 +177,8 @@ def _extract_config_params(config):
         stage_cfg = config.get(config_key)
         if not isinstance(stage_cfg, dict):
             continue
+        if stage_name == "classification":
+            stage_cfg = _classification_view(stage_cfg)
 
         # Model ID
         model = stage_cfg.get("model")
@@ -171,12 +223,59 @@ def _extract_config_params(config):
     if use_bda is not None:
         params["use_bda"] = str(use_bda)
 
-    # Classification method
+    # Classification settings. These are what make one experiment
+    # distinguishable from another: `granularity` decides how many calls are
+    # made, `modality` what each call sees, and `strategy` whether boundaries
+    # and classes come from one call or two.
+    #
+    # Read through `_classification_view`, so these are the active strategy's
+    # values whichever config format the dict is in.
+    #
+    # This logged `classification.method` from `classificationMethod`, which was
+    # removed in config format 0.8 and is migrated away on read — so the
+    # parameter would have silently disappeared from every run with nothing
+    # replacing it, which is worse than not logging it at all: an old run and a
+    # new one would look identically configured.
     cls_cfg = config.get("classification")
     if isinstance(cls_cfg, dict):
-        cls_method = cls_cfg.get("classificationMethod")
-        if cls_method:
-            params["classification.method"] = str(cls_method)
+        cls_view = _classification_view(cls_cfg)
+        for key, param in (
+            ("granularity", "classification.granularity"),
+            ("strategy", "classification.strategy"),
+        ):
+            value = cls_view.get(key)
+            if value:
+                params[param] = str(value)
+        splitting = cls_view.get("splitting")
+        if isinstance(splitting, dict):
+            # The split-then-classify splitting call: its own model, so its own
+            # parameter.
+            model = splitting.get("model")
+            if model:
+                params["classification.splitting.model"] = str(model)
+            for prompt_key in ("system_prompt", "task_prompt"):
+                prompt_val = splitting.get(prompt_key)
+                if prompt_val:
+                    prompts[f"classification.splitting.{prompt_key}"] = prompt_val
+        modality = cls_view.get("modality")
+        if isinstance(modality, dict):
+            for flag in ("text", "images"):
+                value = modality.get(flag)
+                # An UNSET flag is "infer from the prompt's placeholders", which
+                # is a real setting rather than an absent one — logged as `infer`
+                # so a run using the inference is not indistinguishable from one
+                # where the key was never written.
+                #
+                # ⚠️ Unset has two spellings and both have to land here. The raw
+                # YAML and the config form carry `""`; a config that has been
+                # through `IDPConfig(...).model_dump()` carries `None`, because
+                # `ClassificationModalityConfig` types both flags as
+                # `Optional[bool]`. Skipping `None` — the obvious guard — logs
+                # nothing for exactly the validated-dump shape the resolver
+                # sends, which is the outcome this block exists to prevent.
+                params[f"classification.modality.{flag}"] = (
+                    "infer" if value is None or value == "" else str(value)
+                )
 
     # HITL threshold (v0.6: top-level hitl) + confidence list batching (v0.6:
     # extraction.confidence.list_batch_size — granular assessment is retired)

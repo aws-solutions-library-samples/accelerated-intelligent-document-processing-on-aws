@@ -78,7 +78,9 @@ class BatchStatusTool(IDPTool):
                     {
                         "document_id": doc.document_id,
                         "status": doc.status.value,
-                        "duration_seconds": doc.duration_seconds
+                        "duration_seconds": doc.duration_seconds,
+                        # in_review / complete / rejected (review queues), or None
+                        "review_status": getattr(doc.review_status, "value", doc.review_status),
                     }
                     for doc in status.documents
                 ]

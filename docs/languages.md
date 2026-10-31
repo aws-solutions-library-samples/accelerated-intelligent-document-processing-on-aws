@@ -13,21 +13,25 @@ When implementing Intelligent Document Processing solutions, language support is
 
 Below is the decision tree illustrating the suggested decision process:
 
+Both processing modes are present in every deployment, so this is a configuration
+decision rather than a deployment one: the `use_bda` flag selects the mode, and
+switching costs a configuration change rather than a redeployment.
+
 ```mermaid
 flowchart TD
     Start[Documents] --> Q1{Language supported by<br/>Bedrock Data Automation - BDA?}
   
     Q1 -->|Yes| BDACheck{Document quality<br/>and structure<br/>suitable for BDA?}
-    Q1 -->|No| Pattern2Direct[Pattern 2<br/>Bedrock FMs]
+    Q1 -->|No| PipelineDirect[Pipeline mode<br/>use_bda false]
   
-    BDACheck -->|Yes| Pattern1[Pattern 1<br/>Bedrock Data Automation - BDA]
-    BDACheck -->|No| Pattern2Alt1[Pattern 2<br/>Bedrock FMs]
+    BDACheck -->|Yes| BDAMode[BDA mode<br/>use_bda true]
+    BDACheck -->|No| PipelineAlt[Pipeline mode<br/>use_bda false]
   
-    Pattern1 --> Accuracy1{Accuracy meets<br/>requirements?}
-    Pattern2Direct --> Accuracy2{Accuracy meets<br/>requirements?}
-    Pattern2Alt1 --> Accuracy3{Accuracy meets<br/>requirements?}
+    BDAMode --> Accuracy1{Accuracy meets<br/>requirements?}
+    PipelineDirect --> Accuracy2{Accuracy meets<br/>requirements?}
+    PipelineAlt --> Accuracy3{Accuracy meets<br/>requirements?}
   
-    Accuracy1 -->|No| Pattern2Fallback[Pattern 2<br/>Bedrock FMs]
+    Accuracy1 -->|No| PipelineFallback[Switch to pipeline mode<br/>use_bda false]
     Accuracy1 -->|Yes| Deploy1[Deploy]
   
     Accuracy2 -->|No| OptimizePath2{Issue source:<br/>Classification or Extraction?}
@@ -35,20 +39,24 @@ flowchart TD
   
     Accuracy3 -->|No| OptimizePath3{Issue source:<br/>Classification or Extraction?}
     Accuracy3 -->|Yes| Deploy3[Deploy]
-    OptimizePath2 -->|Extraction| FineTuning2[Pattern 2<br/>And model fine-tuning]
-    OptimizePath3 -->|Extraction| FineTuning3[Pattern 2<br/>And model fine-tuning]
+
+    OptimizePath2 -->|Extraction| Tune2[Tune prompts and models<br/>then consider fine-tuning]
+    OptimizePath3 -->|Extraction| Tune3[Tune prompts and models<br/>then consider fine-tuning]
+    OptimizePath2 -->|Classification| Hook2[Custom classifier via<br/>Lambda Inference Hook]
+    OptimizePath3 -->|Classification| Hook3[Custom classifier via<br/>Lambda Inference Hook]
   
-    Pattern2Fallback --> Accuracy4{Accuracy meets<br/>requirements?}
+    PipelineFallback --> Accuracy4{Accuracy meets<br/>requirements?}
     Accuracy4 -->|Yes| Deploy4[Deploy]
     Accuracy4 -->|No| OptimizePath4{Issue source:<br/>Classification or Extraction?}
-    OptimizePath4 -->|Extraction| FineTuning4[Pattern 2<br/>And model fine-tuning]
+    OptimizePath4 -->|Extraction| Tune4[Tune prompts and models<br/>then consider fine-tuning]
+    OptimizePath4 -->|Classification| Hook4[Custom classifier via<br/>Lambda Inference Hook]
 ```
 
-## Pattern 1
+## BDA Mode
 
-> Pattern 1: Packet or Media processing with Bedrock Data Automation (BDA)
+> BDA mode (`use_bda: true`): packet or media processing with Bedrock Data Automation (BDA)
 
-First, verify if your documents' language is supported by Amazon Bedrock Data Automation (BDA). If your language is supported by BDA, begin with Pattern 1 (BDA).
+First, verify if your documents' language is supported by Amazon Bedrock Data Automation (BDA). If your language is supported by BDA, begin with BDA mode.
 
 At the time of writing (Sep 19, 2025) BDA supports the following languages:
 
@@ -61,17 +69,17 @@ At the time of writing (Sep 19, 2025) BDA supports the following languages:
 
 > Important Note: BDA currently does not support vertical text orientation (commonly found in Japanese and Chinese documents). For the most up-to-date information, please consult the [BDA documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/bda-limits.html).
 
-If BDA's accuracy doesn't meet your requirements for your specific scenario or language, proceed to Pattern 2.
+If BDA's accuracy doesn't meet your requirements for your specific scenario or language, switch `use_bda` to `false` and work through pipeline mode below.
 
-## Pattern 2
+## Pipeline Mode
 
-> Pattern 2: OCR → Bedrock Classification (page-level or holistic) → Bedrock Extraction
+> Pipeline mode (`use_bda: false`, the default): OCR → Bedrock Classification (combined or split-then-classify, at page or packet granularity) → Bedrock Extraction
 
-For this pattern, follow this structured implementation approach:
+For this mode, follow this structured implementation approach:
 
 ```mermaid
 flowchart TD
-    Start[Pattern 2] --> Q1{Is full OCR transcription required<br/>for your use case?}
+    Start[Pipeline mode] --> Q1{Is full OCR transcription required<br/>for your use case?}
   
     Q1 -->|Yes| RequiredOCR[Step 1A: Select required OCR backend]
     Q1 -->|No| OptionalOCR[Step 1B: Optional OCR path]
@@ -158,8 +166,36 @@ Other considerations:
 - For documents with poor quality (e.g., handwritten text) consider alternative Bedrock Backend instead of Textract
 - If accuracy requirements aren't met, explore model fine-tuning options
 
-## Pattern 3
+## When Bedrock Classification Is Not Enough
 
-> Pattern 3: OCR → UDOP Classification (SageMaker) → Bedrock Extraction
+If Bedrock-based classification does not meet your requirements for a given
+language — typically a low-resource language where no available foundation model
+classifies your document types reliably — the route is a custom classification
+model reached through [Lambda Inference Hooks](./lambda-hook-inference.md), not a
+different deployment of the accelerator.
 
-If Bedrock-based classification doesn't meet your requirements, implement Pattern 3 using Unified Document Processing (UDOP) classification.
+A hook is a Lambda function you own that the pipeline calls in place of the
+built-in model. Because the contract is a Lambda invocation, what sits behind it is
+yours to choose: a document-understanding model such as UDOP on an inference
+endpoint you host, a classifier fine-tuned on your own labelled documents, or a
+rules engine for document types that are structurally predictable enough not to
+need a model. You select it by setting the model for that call to the `LambdaHook`
+sentinel and setting `model_lambda_hook_arn` to your function's ARN; the rest of the
+workflow — OCR, extraction, assessment and the shared tail — is unchanged.
+
+⚠️ Classification is configured per model call rather than once, so hooking "the
+classifier" can mean more than one setting: combined classification has a single
+call, while split-then-classify has a splitting call and a section-classification call, and
+replacing only one of them leaves the other on its Bedrock model. The
+[Lambda Inference Hooks](./lambda-hook-inference.md) page carries the exact
+configuration key per call and the context value your hook receives for each.
+
+> **Note**: the separate Pattern-3 configuration (Textract, a SageMaker UDOP
+> endpoint, and Bedrock) was removed in v0.5.0. Custom classification models such
+> as UDOP are integrated through Lambda Inference Hooks, which means the endpoint is
+> one you provision and operate rather than one the accelerator creates — budget and
+> capacity planning for it are yours.
+
+For a worked starting point, `samples/lambda-hook-inference/` includes a hook that
+forwards its payload to a SageMaker real-time inference endpoint you name, alongside
+hooks for other third-party model providers.

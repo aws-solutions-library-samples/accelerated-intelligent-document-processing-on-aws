@@ -94,14 +94,19 @@ Procedure (drive it yourself — several steps need judgment):
    agentic outcome is indistinguishable from a regression. The v0.6.5 verification
    reported a new FAILURE and a −0.143 accuracy drop from a `repeats: 1` grid and
    **neither reproduced** — do not lower this to save time.
-3. **Run on PREV with `--native-upload`** (`run_matrix.py --suite corefast --native-upload`).
-   Native-upload is REQUIRED: idp-cli's config-upload force-migrates v0.5→v0.6 and drops
-   the top-level `assessment` block older stacks need.
+3. **Run on PREV with `--native-upload`** (`run_matrix.py --suite corefast --native-upload
+   --validate-against-release v<PREV>`). Native-upload is REQUIRED: idp-cli's
+   config-upload migrates the file to the current format, which drops the top-level
+   `assessment` block older stacks need and leaves classification in the nested 0.9
+   shape a pre-0.9 release cannot read. `--native-upload` refuses to run without
+   `--validate-against-release`; see the compatibility list below for what both do.
 4. **Score** → `benchmarks/results/v<PREV>/corefast/`; **promote to baseline.json**.
 5. **Upgrade the SAME stack in place**: `idp-cli deploy --stack-name <S> --from-code .
    --clean-build --region us-west-2 --wait`. Verify `UPDATE_COMPLETE` + Description shows
    `v<NEW>`.
-6. **Re-run `corefast` on the upgraded stack** (`--native-upload`, identical config files).
+6. **Re-run `corefast` on the upgraded stack** (`--native-upload
+   --validate-against-release v<PREV>`, identical config files, so both sides receive
+   the same back-compat bytes).
 7. **Score** → `benchmarks/results/v<NEW>/corefast/`; **compare** (`aggregate.py --compare` new vs
    PREV) + `--figures`; copy cited charts to `images/benchmark-v<NEW>-*.png`.
 8. **Write `docs/benchmarking/releases/v<NEW>.md`** (use the previous release file as the
@@ -123,10 +128,46 @@ harness — verify they still hold when the schema evolves:
   non-positive `max_tokens`/`shard_token_budget` (old validators enforce `gt=0`), and
   disables summarization (unscored; its default model hits the temperature bug).
 - **`compat/native_upload.py`** writes configs verbatim (bypasses idp-cli migration).
+- **Classification back-compat copy (`compat/classification_flat.py`).** Config format
+  0.9 nests classification by model call (`combined.*`, `split_then_classify.*`, `document_shape.*`,
+  `strategy`, `fallback_class`). A release that predates it (v0.6.12 reads format 0.7:
+  flat keys plus `classificationMethod`) drops those blocks without an error and runs
+  classification on its code defaults — a `split-disabled` cell would run
+  `llm_determined`, on the code-default model, with an empty task prompt. So
+  `--native-upload` uploads a copy carrying the equivalent flat keys as well, derived
+  from the combined block: model and parameters, the selected granularity's prompts,
+  `classificationMethod` (`page` → `multimodalPageLevelClassification`, `packet` →
+  `textbasedHolisticClassification` with the packet prompts as the flat prompts),
+  `contextPagesCount`, validation, `invalidClassFallback` from `fallback_class`, the
+  page-level confidence keys, `image`, `sectionSplitting` and
+  `maxPagesForClassification`. The current reader treats the copy as a hybrid in which
+  the flat key wins, and resolves it to the same combined classification as the
+  nested original, so one file serves both sides. Two subtrees a combined run does
+  not read do change on the current reader — the `split_then_classify` blocks take the combined
+  model, parameters and confidence, and at packet granularity `combined.page` takes
+  the packet prompts — and `benchmarks/tests/test_release_compat_classification.py`
+  pins that boundary exactly. A `split_then_classify` cell is **refused** (there is no split-then-classify
+  strategy before 0.9), as is an explicit `combined.llm.modality` flag that
+  disagrees with the prompt's placeholders. At packet granularity the run prints a
+  `!!` note for the packet window (the old holistic method sends the whole file in one
+  call) and for class confidence (the old release only composes it at page level);
+  report those as findings if a document is longer than the window or the cell asks
+  for confidence.
 - **`run_matrix.launch()`** invokes the TestRunner Lambda directly (finds it whether it's
   under the pre-migration `APPSYNCSTACK` (v0.5.x) or `APIRESOLVERSTACK` (v0.6)).
-- **Validate against the OLD model** before running: `git worktree add -f --detach <wt>
-  v<PREV>` then `IDPConfig.model_validate(cfg)` from `<wt>/lib/idp_common_pkg`.
+- **Validation against the OLD model is a hard stop, in code
+  (`compat/release_model_check.py`).** `--validate-against-release v<PREV>` extracts
+  `lib/idp_common_pkg` at that tag with `git archive`, imports it in an isolated
+  interpreter (which confirms it imported the extracted copy, not this checkout), runs
+  that release's own migration and `IDPConfig`, and fails the run before any test set
+  is registered or config uploaded if the release rejects a config, drops any
+  `classification` key, or resolves a flat classification setting to a value other
+  than the one the file's nested combined blocks ask for. The v0.9 blocks themselves
+  are expected to be dropped in a file that carries the flat keys; every other dropped
+  key is an error. The same check runs standalone:
+  `python3 benchmarks/harness/compat/release_model_check.py --release v<PREV>
+  <config.yaml>...`. It needs the tag locally (`git fetch --tags`). It covers
+  `classification` only; other sections are not compared.
 - **Honesty:** report any cell that can't complete on a version (e.g. old-release
   advanced+large-list timeouts) as a finding, not a silent omission.
 
@@ -277,10 +318,11 @@ Two calibration separations are tracked, on the same −0.03 threshold:
 `calibration_separation` (extracted FIELDS) and `class_calibration_separation`
 (the CLASSIFICATION, from the eval report's per-page `predicted_confidence` vs
 `correct`). Both are `mean(conf | right) − mean(conf | wrong)`; both are `None`
-when that dimension was not scored, which is the default for classification
-(`classification.confidence.mode: off`) — a `None` there means "not measured",
-not "perfect". Turn the mode on for any run whose point is to judge whether
-classification confidence is worth acting on, and report `class_accuracy` and
+when that dimension was not scored — for classification, when the run sets
+`classification.combined.llm.confidence.mode: off` (the shipped default is
+`topk`) — and a `None` there means "not measured", not "perfect". Keep the mode on
+for any run whose point is to judge whether classification confidence is worth
+acting on, and report `class_accuracy` and
 `n_class_scored_pages` alongside it so a separation computed from three pages
 is not read as a result.
 

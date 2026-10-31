@@ -110,7 +110,7 @@ def build_multi_instance_hint(
         "classification. Discovery only suggests this; it did not change the class."
     )
     if already:
-        message += " Several documents per section is already enabled on this class."
+        message += " Several records per section is already enabled on this class."
     return {
         "instance_count": instance_count,
         "class_name": class_name,

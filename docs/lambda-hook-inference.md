@@ -27,12 +27,16 @@ flowchart LR
 
 ## Supported Steps
 
-The LambdaHook option is available for the following pipeline steps in Pattern-1 and Pattern-2:
+The LambdaHook option is available for the following steps. The first four run
+only in **pipeline mode** — BDA mode performs OCR, classification and extraction
+inside Amazon Bedrock Data Automation, so those steps and their confidence pass
+are never reached and a hook configured on them never fires. **Summarization runs
+in both processing modes**, so a hook there applies to BDA mode as well:
 
 | Step | Config Field | Description |
 |------|-------------|-------------|
 | **OCR** (Bedrock backend) | `ocr.model_id` | LLM-based OCR when `backend=bedrock` |
-| **Classification** | `classification.model` | Document type classification |
+| **Classification** | `classification.combined.llm.model` (or the `model` of either split-then-classify call) | Document type classification |
 | **Extraction** | `extraction.model` | Structured data extraction |
 | **Assessment** | `extraction.confidence.model` | Confidence scoring |
 | **Summarization** | `summarization.model` | Document summarization |
@@ -44,8 +48,17 @@ The LambdaHook option is available for the following pipeline steps in Pattern-1
 1. Navigate to the **Configuration** page
 2. Select the step you want to customize (e.g., Extraction)
 3. In the **Model** dropdown, select **"LambdaHook"** (first option)
-4. Enter your Lambda function ARN in the **Model Lambda Hook ARN** field
+4. Enter your Lambda function ARN in the **Model Lambda hook ARN** field
 5. Save the configuration
+
+For **Classification** there is one *Model* dropdown per model call, and which
+ones appear depends on **Strategy**: *Split and classify together (one call)*
+(`strategy: combined` in the JSON and YAML views) shows one, and *Split first, then
+classify each section* (`strategy: split_then_classify`) shows one under *Splitting*
+and one under *Section classification*. Hooking only one of
+the two leaves the other on its Bedrock model, which is a supported
+configuration — the hook receives a different `context` for each, so one Lambda
+can serve both.
 
 ### Config YAML
 
@@ -119,7 +132,15 @@ Your Lambda function receives a **Converse API-compatible** payload:
 
 2. **`<<CACHEPOINT>>` tags are stripped** — These Bedrock-specific tags are removed from text content before sending to your Lambda.
 
-3. **`context` field is added** — Indicates which pipeline step is calling (OCR, Classification, Extraction, Assessment, Summarization).
+3. **`context` field is added** — Indicates which stage is calling: `OCR`,
+   `Classification`, `Splitting`, `SectionClassification`, `Extraction`,
+   `Assessment` or `Summarization`. ⚠️ Classification contributes **three**
+   possible values, because the context names the stage rather than the step. A
+   `combined` configuration calls your hook with `Classification`; a
+   `split_then_classify` configuration calls it with `Splitting` for the splitting call
+   and `SectionClassification` for section classification, and never with
+   `Classification`. A hook that branches on `context == "Classification"` falls
+   through under split-then-classify — match all three.
 
 ## Expected Response
 

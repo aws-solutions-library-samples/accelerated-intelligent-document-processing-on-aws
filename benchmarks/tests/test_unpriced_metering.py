@@ -925,7 +925,7 @@ class TestTheOtherCallSites:
     def test_classification_cost_withholds_the_cost_and_keeps_the_tokens(
         self, unpriced_model
     ):
-        cost, tokens, why = run_classification_bench.classification_cost(
+        cost, tokens, why, _by_context = run_classification_bench.classification_cost(
             {
                 f"Classification/bedrock/{unpriced_model}": {
                     "inputTokens": 3000,
@@ -938,7 +938,7 @@ class TestTheOtherCallSites:
         assert tokens["inputTokens"] == 3000
 
     def test_classification_cost_prices_a_known_model(self):
-        cost, tokens, why = run_classification_bench.classification_cost(
+        cost, tokens, why, _by_context = run_classification_bench.classification_cost(
             {f"Classification/{REAL_MODEL}": {"inputTokens": 3000}}
         )
         assert why is None
@@ -946,9 +946,17 @@ class TestTheOtherCallSites:
         assert tokens["inputTokens"] == 3000
 
     def test_classification_cost_ignores_other_phases(self, unpriced_model):
-        """Only the Classification step is priced here, so an unpriced model in
-        another phase is not this function's business."""
-        cost, _tokens, why = run_classification_bench.classification_cost(
+        """Only the classification step is priced here, so an unpriced model in
+        another phase is not this function's business.
+
+        ⚠️ "The classification step" is three metering contexts, not one:
+        `combined` bills under `Classification/` while `split_then_classify` bills
+        under `Splitting/` and `SectionClassification/` (GitHub #1329).
+        `Extraction/` is the other-phase case this asserts about; the
+        split-then-classify contexts are covered in `test_classification_variants.py`,
+        which also pins that a split-then-classify run is not reported as free.
+        """
+        cost, _tokens, why, _by_context = run_classification_bench.classification_cost(
             {
                 f"Classification/{REAL_MODEL}": {"inputTokens": 100},
                 f"Extraction/bedrock/{unpriced_model}": {"inputTokens": 100},
@@ -956,6 +964,25 @@ class TestTheOtherCallSites:
         )
         assert why is None
         assert cost is not None
+
+    def test_classification_cost_withholds_when_a_split_then_classify_half_is_unpriced(
+        self, unpriced_model
+    ):
+        """The same withholding rule across the new contexts. A
+        `SectionClassification/` model with no price would otherwise contribute
+        nothing — arithmetically a zero — and report a split-then-classify run as cheaper than it was."""
+        cost, tokens, why, by_context = run_classification_bench.classification_cost(
+            {
+                f"Splitting/{REAL_MODEL}": {"inputTokens": 100},
+                f"SectionClassification/bedrock/{unpriced_model}": {"inputTokens": 900},
+            }
+        )
+        assert cost is None
+        assert why and unpriced_model in why
+        # Tokens were read, not priced, so they stay.
+        assert tokens["inputTokens"] == 1000
+        assert by_context["SectionClassification"]["cost"] is None
+        assert by_context["Splitting"]["cost"] is not None
 
     def test_score_run_reports_no_pooled_cost_when_one_document_is_unpriced(
         self, monkeypatch, unpriced_model, capsys

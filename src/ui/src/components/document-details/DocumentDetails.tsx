@@ -1,13 +1,13 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import useDocumentsContext from '../../contexts/documents';
-import useSettingsContext from '../../contexts/settings';
-import useUserRole from '../../hooks/use-user-role';
 
+import LoadState from '../common/LoadState';
+import { documentFailedModel, documentMissingModel, loadingDocumentModel } from '../edit-screen/edit-mode-states';
 import mapDocumentsAttributes from '../common/map-document-attributes';
 import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
@@ -29,30 +29,26 @@ interface AbortableItem {
   objectStatus?: string;
 }
 
+/** The page's first read of its document: until it settles, the page shows a spinner. */
+type Read = { kind: 'loading' } | { kind: 'missing' } | { kind: 'failed'; error: unknown } | { kind: 'ready' };
+
 const logger = new ConsoleLogger('documentDetails');
 
 const DocumentDetails = (): React.JSX.Element => {
   const params = useParams();
   const navigate = useNavigate();
 
-  // Get the objectKey from the wildcard route parameter '*'
-  // This captures the full path including any embedded slashes (e.g., folder/filename.pdf)
-  let objectKey = params['*'] ?? '';
+  // The objectKey is the wildcard route parameter '*', the full path including any
+  // embedded slashes (e.g., folder/filename.pdf). The router has already decoded it once;
+  // decoding it again would break a key that contains `%`.
+  const objectKey = params['*'] ?? '';
 
-  // Ensure we properly decode the objectKey from the URL parameter
-  // It may be already decoded or still encoded depending on browser behavior with refreshes
-  try {
-    objectKey = decodeURIComponent(objectKey);
-  } catch (e) {
-    // If it fails, it might be already decoded
-    logger.debug('Error decoding objectKey, using as is', e);
-  }
-
-  const { documents, getDocumentDetailsFromIds, setToolsOpen, deleteDocuments, reprocessDocuments, abortWorkflows } = useDocumentsContext();
-  const { settings: _settings } = useSettingsContext();
-  const { canWrite } = useUserRole();
+  const { documents, getDocumentDetailsFromIds, deleteDocuments, reprocessDocuments, abortWorkflows } = useDocumentsContext();
 
   const [document, setDocument] = useState<MappedDocument | null>(null);
+  const [read, setRead] = useState<Read>({ kind: 'loading' });
+  // The latest read wins: one for a key the page has left is dropped.
+  const readId = useRef(0);
   const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
   const [isReprocessModalVisible, setIsReprocessModalVisible] = useState(false);
   const [isAbortModalVisible, setIsAbortModalVisible] = useState(false);
@@ -60,23 +56,36 @@ const DocumentDetails = (): React.JSX.Element => {
   const [isReprocessLoading, setIsReprocessLoading] = useState(false);
   const [isAbortLoading, setIsAbortLoading] = useState(false);
 
-  const sendInitDocumentRequests = async (): Promise<void> => {
-    const response = await getDocumentDetailsFromIds([objectKey]);
+  // The rich read (sections, pages, cost). A failed read is shown here with Retry, not
+  // in the shared banner; a document that does not exist reads as nothing.
+  const readDocument = useCallback(async (): Promise<void> => {
+    const id = ++readId.current;
+    setRead({ kind: 'loading' });
+    let failure: { error: unknown } | null = null;
+    const response = await getDocumentDetailsFromIds([objectKey], {
+      reportErrors: false,
+      onError: (_key, error) => {
+        failure = { error };
+      },
+    });
+    if (id !== readId.current) return;
     logger.debug('document detail response', response);
-    const documentsMap = mapDocumentsAttributes(response as unknown as { ObjectKey: string }[]) as MappedDocument[];
-    const documentDetails = documentsMap[0];
+    const documentDetails = (mapDocumentsAttributes(response as unknown as { ObjectKey: string }[]) as MappedDocument[])[0];
     if (documentDetails) {
       setDocument(documentDetails);
+      setRead({ kind: 'ready' });
+    } else if (failure) {
+      setRead({ kind: 'failed', error: (failure as { error: unknown }).error });
+    } else {
+      setRead({ kind: 'missing' });
     }
-  };
+  }, [objectKey, getDocumentDetailsFromIds]);
 
-  // Initial load
+  // Initial load, and again for each key the page opens.
   useEffect(() => {
-    if (!objectKey) {
-      return () => {};
-    }
-    sendInitDocumentRequests();
-    return () => {};
+    setDocument(null);
+    if (!objectKey) return;
+    void readDocument();
   }, [objectKey]);
 
   // Handle updates from subscription or document list context.
@@ -85,7 +94,9 @@ const DocumentDetails = (): React.JSX.Element => {
   // Lightweight list data (from listDocuments — no 'sections' key) preserves
   // existing rich fields to avoid wiping detail data.
   useEffect(() => {
-    if (!objectKey || !documents?.length) {
+    // List rows are partial: until the first rich read settles they would flash a
+    // half-filled page, so they are ignored.
+    if (!objectKey || !documents?.length || read.kind !== 'ready') {
       return;
     }
 
@@ -174,7 +185,7 @@ const DocumentDetails = (): React.JSX.Element => {
         setDocument(merged as MappedDocument);
       }
     }
-  }, [documents, objectKey]);
+  }, [documents, objectKey, read.kind]);
 
   logger.debug('Document details render:', objectKey, document, documents);
 
@@ -186,8 +197,8 @@ const DocumentDetails = (): React.JSX.Element => {
       const result = await deleteDocuments([objectKey]);
       logger.debug('Delete result', result);
 
-      // Navigate back to document list
-      navigate(DOCUMENTS_PATH);
+      // Back to the document list, once the document is gone (a failure is reported by the call).
+      if (result !== false) navigate(DOCUMENTS_PATH);
     } finally {
       setIsDeleteLoading(false);
     }
@@ -215,7 +226,8 @@ const DocumentDetails = (): React.JSX.Element => {
 
       // Immediately clear stale sections/pages so the UI doesn't show old data
       // while waiting for the backend pipeline to start and send subscription updates.
-      if (document) {
+      // Not when the call failed (it reports why): the document is unchanged.
+      if (document && result !== false) {
         setDocument({
           ...document,
           objectStatus: 'QUEUED',
@@ -253,16 +265,19 @@ const DocumentDetails = (): React.JSX.Element => {
     }
   };
 
+  if (read.kind === 'loading' || (read.kind === 'ready' && !document)) return <LoadState state={loadingDocumentModel().state} />;
+  if (read.kind === 'missing') return <LoadState state={documentMissingModel(false).state} />;
+  if (read.kind === 'failed') return <LoadState state={documentFailedModel(read.error, () => void readDocument(), false).state} />;
+
   return (
     <>
       {document && (
         <DocumentPanel
           item={document}
-          setToolsOpen={setToolsOpen}
           getDocumentDetailsFromIds={getDocumentDetailsFromIds}
-          onDelete={canWrite ? handleDeleteClick : null}
-          onReprocess={canWrite ? handleReprocessClick : null}
-          onAbort={canWrite ? handleAbortClick : null}
+          onDelete={handleDeleteClick}
+          onReprocess={handleReprocessClick}
+          onAbort={handleAbortClick}
         />
       )}
 

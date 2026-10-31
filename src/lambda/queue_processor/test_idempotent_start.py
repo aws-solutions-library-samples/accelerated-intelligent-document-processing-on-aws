@@ -262,7 +262,7 @@ class TestPerMessageAck:
             order.append("start") or {"executionArn": "arn:e1"}
         )
         index_module.sqs.delete_message.side_effect = lambda **kw: order.append("ack")
-        index_module.document_service.update_document.side_effect = lambda d: (
+        index_module.document_service.update_document.side_effect = lambda d, **kw: (
             order.append("track") or d
         )
 
@@ -333,3 +333,76 @@ class TestHandler:
         ]
         assert [n.rsplit("-", 1)[-1] for n in names] == ["m1", "m2", "m3"]
         assert index_module.sqs.delete_message.call_count == 3
+
+
+FINALIZE_TOKEN = "rvw-" + "0123456789abcdef" * 2
+
+
+def _finalize_record(token, message_id=MESSAGE_ID):
+    record = _record(message_id=message_id)
+    record["messageAttributes"] = {
+        "ReviewFinalizeToken": {"stringValue": token, "dataType": "String"}
+    }
+    return record
+
+
+class TestReviewFinalizeToken:
+    """A review-queue finalize message is named from its token, not its message id.
+
+    The sweeper may re-send a finalize message under a new message id; naming the
+    execution from the token is what collapses that re-send into
+    ``ExecutionAlreadyExists`` instead of a second finalize run.
+    """
+
+    def test_a_valid_token_is_returned(self, index_module):
+        assert (
+            index_module.review_finalize_token_of(_finalize_record(FINALIZE_TOKEN))
+            == FINALIZE_TOKEN
+        )
+
+    def test_a_message_without_the_attribute_has_no_token(self, index_module):
+        assert index_module.review_finalize_token_of(_record()) is None
+
+    @pytest.mark.parametrize(
+        "token", ["rvw-short", "RVW-" + "0" * 32, FINALIZE_TOKEN + "x", 7]
+    )
+    def test_an_invalid_token_is_ignored_with_a_warning(self, index_module, token):
+        with patch.object(index_module.logger, "warning") as warning:
+            assert (
+                index_module.review_finalize_token_of(_finalize_record(token)) is None
+            )
+        warning.assert_called_once_with(
+            "Ignoring an invalid ReviewFinalizeToken message attribute"
+        )
+
+    def test_the_token_names_the_execution_and_reaches_the_workflow_input(
+        self, index_module
+    ):
+        first, _ = index_module.process_message(
+            _finalize_record(FINALIZE_TOKEN, message_id="m-1")
+        )
+        second, _ = index_module.process_message(
+            _finalize_record(FINALIZE_TOKEN, message_id="m-2")
+        )
+
+        assert (first, second) == (True, True)
+        calls = index_module.sfn.start_execution.call_args_list
+        names = [c.kwargs["name"] for c in calls]
+        assert names[0] == names[1]
+        assert names[0].endswith(FINALIZE_TOKEN)
+        payload = json.loads(calls[0].kwargs["input"])
+        assert payload["review"] == {"finalizeToken": FINALIZE_TOKEN}
+
+    def test_an_ordinary_message_carries_no_review_block(self, index_module):
+        index_module.process_message(_record())
+        kwargs = index_module.sfn.start_execution.call_args.kwargs
+        assert "review" not in json.loads(kwargs["input"])
+        assert kwargs["name"].endswith(MESSAGE_ID)
+
+
+class TestStartWorkflowNonClientError:
+    def test_an_unexpected_error_leaves_a_string_arn_and_propagates(self, index_module):
+        index_module.sfn.start_execution.side_effect = RuntimeError("socket closed")
+        with pytest.raises(RuntimeError, match="socket closed"):
+            index_module.start_workflow(index_module._doc, "b.pdf-abc")
+        assert index_module._doc.workflow_execution_arn == ""

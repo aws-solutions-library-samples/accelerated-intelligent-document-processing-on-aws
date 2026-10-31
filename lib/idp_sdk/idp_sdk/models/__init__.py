@@ -3,6 +3,8 @@
 
 """IDP SDK Models - Pydantic models for typed responses."""
 
+from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
+
 from .assessment import (
     AssessmentConfidenceResult,
     AssessmentFieldConfidence,
@@ -61,6 +63,7 @@ from .document import (
     DocumentRerunResult,
     DocumentStatus,
     DocumentUploadResult,
+    ReviewInfo,
 )
 from .evaluation import (
     BaselineInfo,
@@ -132,6 +135,8 @@ __all__ = [
     "BatchDeletionResult",
     # Document models
     "DocumentStatus",
+    "ReviewInfo",
+    "ReviewStatus",
     "DocumentUploadResult",
     "DocumentDownloadResult",
     "DocumentRerunResult",

@@ -16,13 +16,12 @@
  * it had just saved for the better part of ten seconds, which reads as a save
  * that did nothing.
  *
- * The queue in hand already names the next document, so the advance no longer
- * waits for anything. The two functions below are what it advances with, and the
- * source-level checks pin the ways the fix can be undone: re-awaiting the reload,
- * retiring a document the reviewer only skipped or only part-reviewed, and
- * letting an overlapping background reload replace the queue with rows that
- * predate the save that triggered it, which would make the save undo itself on
- * screen a few seconds later.
+ * The edit screen now leaves the document as soon as its mutation lands and
+ * the queue page reads the queue on arrival, so nothing waits on that reply. The
+ * source-level checks pin the ways the fix can be undone: re-awaiting a reload
+ * before leaving, announcing a document reviewed after only part of it was saved,
+ * and letting an overlapping reload of the queue page replace its rows with an
+ * older reply.
  *
  * Asserted at source level rather than by rendering, for the reason given in
  * AnnotationWorkspace.editGating.test.ts: the component needs the GraphQL
@@ -34,182 +33,60 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { applyReviewedToQueue, nextAvailableAfter, type QueueItem, type QueueState } from '../AnnotationWorkspace';
-
 const SOURCE = readFileSync(join(__dirname, '..', 'AnnotationWorkspace.tsx'), 'utf-8');
+// The per-document screen this page opens (its Test Studio model). Saving, completing and skipping happen
+// there, not in an in-page rail, so that is where the #1321 behaviour lives now.
+const SCREEN = readFileSync(join(__dirname, '..', '..', 'edit-screen', 'test-set-item-edit-model.tsx'), 'utf-8');
 
-const doc = (objectKey: string, overrides: Partial<QueueItem> = {}): QueueItem => ({
-  objectKey,
-  inputKey: `set/input/${objectKey}`,
-  sectionCount: 1,
-  claimedByMe: false,
-  reviewed: false,
-  available: true,
-  labelSource: 'draft-machine',
-  ...overrides,
-});
-
-const queueOf = (documents: QueueItem[], overrides: Partial<QueueState> = {}): QueueState => ({
-  totalDocs: documents.length,
-  reviewedDocs: 0,
-  remainingDocs: documents.length,
-  claimedByOthers: 0,
-  documents,
-  ...overrides,
-});
-
-describe('nextAvailableAfter', () => {
-  it('does not reopen the document just finished, even though it is still first', () => {
-    // The queue is ordered worst-first and the reply has not been refreshed, so
-    // the document just saved is still at the head of the list. Taking the head
-    // would hand the reviewer back the document they had finished.
-    const documents = [doc('worst.pdf'), doc('next.pdf')];
-    expect(nextAvailableAfter(documents, 'worst.pdf')).toBe('next.pdf');
-  });
-
-  it('skips documents the server says are not available', () => {
-    // Reviewed, or claimed by another annotator: `available` already carries both.
-    const documents = [doc('taken.pdf', { available: false }), doc('done.pdf', { available: false, reviewed: true }), doc('free.pdf')];
-    expect(nextAvailableAfter(documents, null)).toBe('free.pdf');
-  });
-
-  it('reaches every document when skipping repeatedly, rather than bouncing between two', () => {
-    // Searching from the head for "the first available document that is not the
-    // open one" cannot advance: with A open it gives B, and from B it gives A
-    // again, so skipping oscillates and the third document is unreachable. The
-    // search runs forward from where the open document sits instead.
-    const documents = [doc('A'), doc('B'), doc('C')];
-    const visited: (string | null)[] = [];
-    let current: string | null = 'A';
-    for (let i = 0; i < 4; i += 1) {
-      current = nextAvailableAfter(documents, current);
-      visited.push(current);
-    }
-    expect(visited).toEqual(['B', 'C', 'A', 'B']);
-  });
-
-  it('wraps past the end instead of stranding the reviewer', () => {
-    // The last document in the rail is not the end of the work: everything before
-    // it is still unreviewed, and returning null there would empty the editor pane
-    // while the queue still held documents.
-    expect(nextAvailableAfter([doc('A'), doc('B'), doc('C')], 'C')).toBe('A');
-  });
-
-  it('searches from the head once the open document has left the queue', () => {
-    // A save retires it, so `current` names a document the list no longer holds.
-    // The head is then the right answer rather than a repeat of what was saved.
-    expect(nextAvailableAfter([doc('B'), doc('C')], 'A')).toBe('B');
-  });
-
-  it('reports no next document rather than falling back to an unavailable one', () => {
-    // Null closes the editor pane, which is honest. Returning a claimed document
-    // would open one whose save the server refuses.
-    expect(nextAvailableAfter([doc('taken.pdf', { available: false })], null)).toBeNull();
-    expect(nextAvailableAfter([], null)).toBeNull();
-    expect(nextAvailableAfter([doc('only.pdf')], 'only.pdf')).toBeNull();
-  });
-});
-
-describe('applyReviewedToQueue', () => {
-  it('retires the reviewed document from the rail and moves the counters', () => {
-    const before = queueOf([doc('done.pdf'), doc('todo.pdf')]);
-    const after = applyReviewedToQueue(before, 'done.pdf', false);
-
-    expect(after.documents.map((d) => d.objectKey)).toEqual(['todo.pdf']);
-    expect(after.reviewedDocs).toBe(1);
-    expect(after.remainingDocs).toBe(1);
-  });
-
-  it('ticks it in place instead of hiding it when reviewed documents are shown', () => {
-    // Mirrors the server's own filter: it omits reviewed documents unless
-    // includeCompleted was asked for, so the rail must behave the same whether
-    // this update or the reply produced the rows.
-    const after = applyReviewedToQueue(queueOf([doc('done.pdf')]), 'done.pdf', true);
-
-    expect(after.documents).toHaveLength(1);
-    expect(after.documents[0]).toMatchObject({ reviewed: true, available: false, labelSource: 'reviewed-human' });
-    expect(after.reviewedDocs).toBe(1);
-  });
-
-  it('leaves the queue alone for a document it does not hold', () => {
-    // The rail is capped at one page, so a document reviewed from a shared ?doc=
-    // link need not be on it. Counting it here would report progress against rows
-    // this queue cannot show.
-    const before = queueOf([doc('todo.pdf')]);
-    expect(applyReviewedToQueue(before, 'elsewhere.pdf', false)).toBe(before);
-  });
-
-  it('does not move the counters twice when an already-reviewed document is saved again', () => {
-    // Reopening a confirmed label and saving it is supported, and it is not new
-    // progress.
-    const before = queueOf([doc('done.pdf', { reviewed: true, available: false, labelSource: 'reviewed-human' })], {
-      reviewedDocs: 1,
-      remainingDocs: 0,
-    });
-    expect(applyReviewedToQueue(before, 'done.pdf', true)).toBe(before);
-  });
-
-  it('floors remaining at zero rather than reporting a negative count', () => {
-    // totalDocs counts the whole set while the rail is one page, so the two can
-    // disagree about how much is left.
-    const after = applyReviewedToQueue(queueOf([doc('last.pdf')], { remainingDocs: 0 }), 'last.pdf', false);
-    expect(after.remainingDocs).toBe(0);
-  });
-});
-
-describe('the advance does not wait for the queue reload', () => {
-  const body = SOURCE.slice(
-    SOURCE.indexOf('const advanceToNext = useCallback('),
-    SOURCE.indexOf('[loadQueue, loadImpact, selectedKey, showReviewed]'),
-  );
+/*
+ * Develop's `nextAvailableAfter` / `applyReviewedToQueue` unit tests are not carried
+ * here. They pinned the in-page "Save & next in queue" rail, which this page no longer
+ * has: it is a queue table, and each row opens the per-document edit screen
+ * (edit-screen/TestSetItemEdit.tsx, whose model is test-set-item-edit-model.tsx), which returns to the queue (or Home › Tasks)
+ * after Complete, Skip or the last section's save. There is no in-page advance, no
+ * local next-document choice and no local retirement of a row left to test. The
+ * intent of those tests — leave the saved document at once, and never claim a
+ * part-reviewed packet as reviewed — is pinned below against the screen that owns it.
+ */
+describe('leaving a document does not wait for the queue reload', () => {
+  // The model's Skip and Process Changes handlers.
+  const handleAction = SCREEN.slice(SCREEN.indexOf('      skip: {'), SCREEN.indexOf('      cancelTo:'));
+  const processChanges = handleAction.slice(handleAction.indexOf('      process: {'));
 
   it('is positioned in the source where this test expects to find it', () => {
-    // Guards the two assertions below from silently passing on an empty slice.
-    expect(body).toContain('setSelectedKey(nextAvailableAfter(');
+    // Guards the assertions below from silently passing on an empty slice.
+    expect(handleAction).toContain('await adapter.skip(reason, note)');
+    expect(processChanges).toContain('await adapter.applyAndComplete()');
   });
 
-  it('refreshes in the background instead of awaiting it', () => {
-    // `loadQueue(true, true)` — preserve the selection this function just made,
-    // and do not touch isLoading. An `await` here is the #1321 regression: the
-    // selection would once again change only after a ~9s round trip.
-    expect(body).toContain('loadQueue(true, true)');
-    expect(body).not.toContain('await loadQueue');
+  it('exits as soon as the mutation lands, without awaiting a queue reload', () => {
+    // The #1321 regression was the editor sitting on the document it had just saved
+    // while a ~9s getAnnotationQueue reply came back. The exit navigates straight
+    // away; the queue page reads the queue itself on arrival.
+    expect(handleAction).toMatch(/return \{\s*to: leavePath\(queuePath\),/);
+    expect(handleAction).not.toContain('await reload');
   });
 
-  it('skips a document without retiring it as reviewed, and without a reload', () => {
-    // Two mistakes type checking cannot see, both well-typed. `reviewedKey` would
-    // mark a document the reviewer deliberately skipped as reviewed and hide it
-    // from the queue. And a skip changes nothing server-side, so a reload could
-    // only report another annotator's claim while costing a full LIST of the
-    // baseline prefix plus a read of every section of 200 documents — paid once
-    // per click, since nothing serialises them any more.
-    expect(SOURCE).toContain('onClick={() => advanceToNext({ refresh: false })}');
+  it('claims a document as reviewed only on the server’s word', () => {
+    // The server marks a document reviewed only once every section carries a human
+    // verdict, so the page leaves, saying "reviewed", only when the server says so —
+    // never on what this session saved, the claim the test set's own Review state
+    // column once contradicted.
+    const verdictAt = processChanges.indexOf('if (!reviewed) throw new NotReviewedYet(notReviewedMessage(name));');
+    expect(verdictAt).toBeGreaterThan(-1);
+    expect(processChanges.indexOf('labels are marked reviewed')).toBeGreaterThan(verdictAt);
+    expect(SCREEN).toContain('Check its sections and choose Process Changes again.');
   });
 
-  it('claims a document as reviewed only where every section of it is', () => {
-    // applyReviewedToQueue's contract is a precondition on its caller, and this
-    // is the caller: `isMultiSection` is what decides whether the document is
-    // retired from the rail. Passing `documentName` unconditionally would tick a
-    // packet after one of its sections was saved — the state the save
-    // confirmation used to claim and the test set's Review state column denied.
-    expect(SOURCE).toContain('advanceToNext({ reviewedKey: isMultiSection ? undefined : documentName })');
-  });
-
-  it('refreshes after a save and a confirmation, which do change server state', () => {
-    // The counterpart to the skip: these two have something to collect — the
-    // server's verdict on a document whose sections may now all be reviewed, and
-    // the counters past the inspected page — so they must not be given the
-    // skip's treatment.
-    expect(SOURCE).toContain('advanceToNext({ reviewedKey: selected.objectKey })');
-    expect(SOURCE).not.toMatch(/advanceToNext\(\{[^}]*refresh: false[^}]*reviewedKey/);
+  it('does not report a skipped document as reviewed', () => {
+    // A skip is not a verdict: it gives the document back to its queue.
+    expect(handleAction).toContain('returned to the queue.');
+    expect(handleAction).not.toContain('is complete (skipped).');
   });
 });
 
 describe('an overlapping reload cannot undo a save', () => {
-  const body = SOURCE.slice(
-    SOURCE.indexOf('const loadQueue = useCallback('),
-    SOURCE.indexOf('[testSetId, requestedDoc, showReviewed, responseGuard]'),
-  );
+  const body = SOURCE.slice(SOURCE.indexOf('const loadQueue = useCallback('), SOURCE.indexOf('[testSetId, showReviewed, responseGuard]'));
 
   it('is positioned in the source where this test expects to find it', () => {
     // Guards the assertions below from passing vacuously on an empty slice, and
@@ -235,7 +112,7 @@ describe('an overlapping reload cannot undo a save', () => {
   it('does not raise the page banner for a refresh nobody asked for', () => {
     // The error Alert is not dismissible and the "Queue complete" alert is gated
     // on there being no error, so a background failure would sit over the
-    // document being worked on, offering no action, and hide the completion
+    // queue being worked on, offering no action, and hide the completion
     // message. Every setError on this path is therefore conditional.
     expect(body).toMatch(/if \(!background\) \{\s*foregroundLoads\.current \+= 1;\s*setIsLoading\(true\);\s*setError\(null\);\s*\}/);
     expect(body).toContain("if (!background) setError('The annotation queue could not be loaded.')");

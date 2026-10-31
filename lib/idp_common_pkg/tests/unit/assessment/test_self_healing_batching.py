@@ -17,6 +17,8 @@ adaptive splitter recovered 0 rows.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from idp_common.assessment import batching as mod
@@ -29,6 +31,7 @@ from idp_common.assessment.service import AssessmentCoreResult
 NOVA_LITE = "us.amazon.nova-lite-v1:0"
 NOVA_PRO = "us.amazon.nova-pro-v1:0"  # 10K output cap
 CLAUDE_SONNET = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # 64K output cap
+CLAUDE3_HAIKU = "us.anthropic.claude-3-haiku-20240307-v1:0"  # 8,192 output cap
 
 
 def _rows(n: int) -> list[dict]:
@@ -123,9 +126,140 @@ def test_token_aware_sizes_by_column_count_not_value_length():
     # The 2-column row is NOT shrunk more than the 6-column row, even though its
     # values are far longer — value length no longer drives the estimate.
     assert narrow >= wide
-    # Nested/list sub-fields are NOT counted as scalar confidence columns.
+    # Nested/list sub-fields ARE counted, leaf by leaf: the model scores a nested
+    # group and each item of a nested list. 6 + 1 + 3 = 10 leaves -> 5000/400 = 12.
     with_nested = {**wide_short, "extra": {"nested": "obj"}, "items": [1, 2, 3]}
-    assert compute_token_aware_batch_size(NOVA_PRO, with_nested, "ocr_only", 25) == wide
+    assert compute_token_aware_batch_size(NOVA_PRO, with_nested, "ocr_only", 25) == 12
+
+
+def _scalar_heavy_section(n_rows: int) -> tuple[dict, dict]:
+    """A section whose scalars, which ride every slice unsliced, carry more output
+    than the half of a 10,000-token cap the safety fraction leaves free once each
+    leaf also emits a bounding box: 60 x 40 x 3 = 7,200 tokens."""
+    scalars = {f"Field{i}": f"value {i}" for i in range(60)}
+    return {"transactions": _rows(n_rows), **scalars}, scalars
+
+
+class _RowCountingService:
+    """Scores every row cleanly and records how many rows each call carried."""
+
+    def __init__(self, list_field: str):
+        self.list_field = list_field
+        self.calls: list[int] = []
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.calls.append(len(rows))
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: [{"amount": {"confidence": 0.9}} for _ in rows],
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=1.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 5}},
+        )
+
+
+def test_batched_path_reserves_the_output_that_rides_every_slice():
+    """The primary pass must size its batch against what is left of the cap after
+    the scalars that every slice repeats — not against the full safety fraction."""
+    data, scalars = _scalar_heavy_section(60)
+    rows = data["transactions"]
+    reserved = compute_token_aware_batch_size(
+        NOVA_PRO, rows, "llm_grounded", 25, fixed_results=scalars
+    )
+    unreserved = compute_token_aware_batch_size(NOVA_PRO, rows, "llm_grounded", 25)
+    # 2 leaves x 120 per row: (10,000 - 7,200 - 1,500) // 240 = 5, against
+    # 5,000 // 240 = 20 with nothing reserved.
+    assert (reserved, unreserved) == (5, 20)
+
+    svc = _RowCountingService("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results=data,
+        document_text="...",
+        page_images=[],
+        batch_size=25,
+        confidence_model_id=NOVA_PRO,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+    )
+    assert result["split_stats"]["derived_batch_size"] == reserved
+    assert svc.calls and max(svc.calls) == reserved
+
+
+def test_escalation_rung_reserves_the_output_that_rides_every_slice():
+    """The escalation batch is sized the same way: the scalars ride the stronger
+    model's calls too, and they are sized for the ESCALATION model's cap, not the
+    primary's. Nova Pro as the escalation model keeps the cap small enough for the
+    reserve to bind; Claude 3 Haiku as the primary has a smaller cap that, with the
+    same reserve, leaves room for only one row, so sizing the escalation batch off
+    the primary model would show up as one-row escalation calls."""
+    data, scalars = _scalar_heavy_section(12)
+    svc = LadderService("transactions", NOVA_PRO, primary_max_rows=0)
+    assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results=data,
+        document_text="...",
+        page_images=[],
+        batch_size=25,
+        confidence_model_id=CLAUDE3_HAIKU,
+        geometry_mode="llm_grounded",
+        escalation_enabled=True,
+        escalation_model=NOVA_PRO,
+        max_escalation_rounds=1,
+    )
+    expected = compute_token_aware_batch_size(
+        NOVA_PRO, data["transactions"], "llm_grounded", 25, fixed_results=scalars
+    )
+    assert expected == 5
+    assert (
+        compute_token_aware_batch_size(
+            CLAUDE3_HAIKU,
+            data["transactions"],
+            "llm_grounded",
+            25,
+            fixed_results=scalars,
+        )
+        == 1
+    )
+    assert svc.escalation_calls and max(svc.escalation_calls) == expected
+
+
+def test_the_longest_list_is_sliced_and_every_other_list_is_reserved():
+    """With two lists the longest is the one sliced, so it is the other one — not
+    the longest — that rides every call and is reserved. Reserving the wrong one
+    would size a 200-row list's batch as if 200 rows rode with every slice."""
+    data = {
+        "fees": [{"label": f"fee {i}", "amount": "1.00"} for i in range(10)],
+        "transactions": _rows(200),
+    }
+    svc = _RowCountingService("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results=data,
+        document_text="...",
+        page_images=[],
+        batch_size=25,
+        confidence_model_id=NOVA_PRO,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+    )
+    expected = compute_token_aware_batch_size(
+        NOVA_PRO,
+        data["transactions"],
+        "llm_grounded",
+        25,
+        fixed_results={"fees": data["fees"]},
+    )
+    # 20 fee leaves x 120 = 2,400 reserved: min(5,000, 10,000 - 2,400 - 1,500)
+    # // 240 = 20.
+    assert expected == 20
+    assert result["split_stats"]["derived_batch_size"] == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -365,23 +499,93 @@ def test_deadline_stops_adaptive_split_recursion():
     assert len(svc.primary_calls) < 10
 
 
-def test_deadline_reached_propagates_from_concurrent_workers():
+class WarmThenTruncatingService:
+    """Scores the first call cleanly and truncates every later one, on a clock.
+
+    The shape a test of the concurrent fan-out needs. A clean FIRST call keeps the
+    cache-warm batch from bisecting, so ``min_batch_size_used`` stays at the
+    configured size and B3 does not re-chunk the fan-out down to single rows —
+    single-row chunks cannot bisect, so a worker could never reach its own
+    wall-clock guard. Every later call truncates with more than one row in it,
+    which is exactly the condition that guard tests.
+
+    Each call charges the driven clock ``_ESTIMATED_MODEL_CALL_SECONDS``, i.e. what
+    the guards budget for a call, so a budget is spent by doing work rather than by
+    wall-clock luck. ``duration_seconds`` is 0 so the guard prices a call at the
+    floor rather than at a measured value.
+    """
+
+    def __init__(self, list_field: str, clock: dict):
+        self.list_field = list_field
+        self.clock = clock
+        self.calls: list[int] = []
+        # Called from several fan-out threads at once; see PartialProgressService.
+        self._lock = threading.Lock()
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        with self._lock:
+            first = not self.calls
+            self.calls.append(len(rows))
+            self.clock["now"] += mod._ESTIMATED_MODEL_CALL_SECONDS
+        if first:
+            return AssessmentCoreResult(
+                enhanced_assessment={
+                    self.list_field: [{"amount": {"confidence": 0.9}} for _ in rows],
+                    "account_holder": {"confidence": 0.95},
+                },
+                parsing_succeeded=True,
+                truncated=False,
+                duration_seconds=0.0,
+                metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+            )
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: [],
+                "account_holder": {"confidence": 0.5},
+            },
+            parsing_succeeded=False,
+            truncated=True,
+            duration_seconds=0.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 10000}},
+        )
+
+
+def test_deadline_reached_propagates_from_concurrent_workers(monkeypatch):
     """A wall-clock cutoff hit inside a CONCURRENT fan-out worker must survive the
     post-join merge and still set deadline_reached (regression: the merge loop
     summed counters but dropped the deadline_reached bool, so
-    assessment_deadline_reached never fired on the concurrent path)."""
-    import time as _time
+    assessment_deadline_reached never fired on the concurrent path).
 
-    # Always-truncating primary, no escalation → the adaptive splitter in each
-    # worker hits the deadline guard. Many rows + concurrency forces multiple
-    # fanned-out workers (not just the cache-warm batch).
-    svc = LadderService("transactions", CLAUDE_SONNET, primary_max_rows=0)
-    data = {"transactions": _rows(60)}
+    ⚠️ **The budget has to be spent by the work, not by the wall clock.** Every
+    guard in this module measures `deadline_epoch - time.time()` against the same
+    per-call estimate, and no real time passes in a run with a stand-in model — so
+    a fixed near-now deadline refuses the cache-warm batch and nothing is ever
+    dispatched concurrently, while a generous one refuses nothing anywhere. The
+    driven clock below charges each call what the guards budget for it, which puts
+    the cutoff inside the workers: the budget covers the warm batch and the single
+    fan-out wave, and the wave's own calls then consume it, so each worker's
+    bisection guard refuses to split.
 
+    The assertions pin that the flag came through the **merge** and not from the
+    fan-out's own guard: all six batches ran, so nothing was refused at wave level,
+    and `splits == 0`, so the refusal happened where a worker was about to bisect.
+    """
+    clock = {"now": 6_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    # 60 rows at batch 10 is 6 batches: 1 to warm the cache and 5 fanned out
+    # across 5 workers, i.e. one wave. Budget: the warm call plus that wave.
+    deadline = (
+        clock["now"]
+        + (2 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    svc = WarmThenTruncatingService("transactions", clock)
     result = assess_results_batched(
         svc,
         class_label="bank-statement",
-        extraction_results=data,
+        extraction_results={"transactions": _rows(60), "account_holder": "Jane Doe"},
         document_text="...",
         page_images=[],
         batch_size=10,
@@ -389,12 +593,20 @@ def test_deadline_reached_propagates_from_concurrent_workers():
         geometry_mode="llm_grounded",
         escalation_enabled=False,
         max_concurrent_batches=5,  # force concurrent fan-out
-        deadline_epoch=_time.time() + 1.0,  # below the 90s reserve
+        max_retries=0,  # no recovery rung, so only a worker can set the flag
+        deadline_epoch=deadline,
     )
 
-    assert result["split_stats"]["concurrent_batches"] and (
-        result["split_stats"]["concurrent_batches"] > 1
-    )
+    # The fan-out must actually have run concurrently, or the merge this test is
+    # about never happened.
+    assert result["split_stats"]["concurrent_batches"] == 5
+    # Every planned batch was dispatched: the fan-out's own wave guard refused
+    # nothing, so it is not the thing that set the flag below.
+    assert len(svc.calls) == 6
+    # The workers were refused a BISECTION rather than performing one — that
+    # refusal is the cutoff, and it happened inside a worker's own stats dict.
+    assert result["split_stats"]["splits"] == 0
+    assert result["split_stats"]["truncated_calls"] == 5
     # The flag set inside a worker must survive the merge.
     assert result["split_stats"]["deadline_reached"] is True
 
@@ -452,12 +664,18 @@ class PartialProgressService:
         self.clock = clock
         self.seconds_per_call = seconds_per_call
         self.primary_calls: list[int] = []
+        # The concurrent fan-out calls this from several threads at once, where
+        # `clock["now"] += x` is a read-modify-write and can lose an update. A lost
+        # update advances the clock LESS than the work cost, which makes a deadline
+        # test pass for the wrong reason, so the increment is serialized.
+        self._lock = threading.Lock()
 
     def assess_results(self, **kw):
         rows = kw["extraction_results"].get(self.list_field, [])
-        self.primary_calls.append(len(rows))
-        if self.clock is not None and self.seconds_per_call:
-            self.clock["now"] += self.seconds_per_call
+        with self._lock:
+            self.primary_calls.append(len(rows))
+            if self.clock is not None and self.seconds_per_call:
+                self.clock["now"] += self.seconds_per_call
         scored = [
             {"amount": {"confidence": 0.9 if i < self.scored_per_call else None}}
             for i in range(len(rows))
@@ -492,21 +710,62 @@ def _partial_progress_run(deadline_epoch, *, max_retries=4, rows=12):
     return svc, result
 
 
-def test_deadline_stops_a_retry_round_that_is_still_making_progress():
+def test_deadline_stops_a_retry_round_that_is_still_making_progress(monkeypatch):
     """#958: the same-model retry rung consults the wall-clock deadline too.
 
     The stand-in recovers a row on every call and never truncates, so neither of
     the rung's pre-existing stopping conditions applies — before this change the
     rung ran all ``max_retries`` rounds however little time the Lambda had left.
-    With a near-now deadline it must now stop at the round boundary, flag
-    ``deadline_reached`` and return cleanly.
-    """
-    import time as _time
+    It must stop at the round boundary, flag ``deadline_reached`` and return
+    cleanly.
 
-    svc, result = _partial_progress_run(_time.time() + 1.0)  # below the 90s reserve
+    ⚠️ **The clock has to advance with the work for this to test anything.** Every
+    deadline guard in this module measures `deadline_epoch - time.time()` against
+    the same per-call estimate, and in a test with stand-in model calls no real
+    time passes — so a fixed near-now deadline refuses the *first pass* as well
+    (#1488 made that pass consult the deadline too, which is the whole point of
+    it) and a generous one refuses nothing. Neither isolates the rung. The clock
+    below reads `start + _ESTIMATED_MODEL_CALL_SECONDS × calls_made`, i.e. it
+    charges each model call exactly what the guards budget for it, so the first
+    pass legitimately consumes the budget and the retry round is refused for the
+    reason it would be refused in a Lambda.
+    """
+    start = 1_000_000.0
+    svc_holder: dict = {}
+
+    def _clock():
+        svc = svc_holder.get("svc")
+        calls = len(svc.primary_calls) if svc is not None else 0
+        return start + (mod._ESTIMATED_MODEL_CALL_SECONDS * calls)
+
+    monkeypatch.setattr(mod.time, "time", _clock)
+
+    # 3 first-pass batches cost 3 × 60 = 180s. Allow those plus the reserve, and
+    # nothing more: the retry round's next call cannot fit.
+    deadline = (
+        start
+        + (3 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + (mod._DEADLINE_SAFETY_RESERVE_SECONDS)
+    )
+
+    svc = PartialProgressService("transactions")
+    svc_holder["svc"] = svc
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(12), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=4,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,  # isolate rung 1: only its own guard can stop it
+        deadline_epoch=deadline,
+    )
 
     assert result["split_stats"]["deadline_reached"] is True
-    # Only the first pass ran: 12 rows at batch 4 → 3 batches. No retry round.
+    # The whole first pass ran: 12 rows at batch 4 → 3 batches. No retry round.
     assert len(svc.primary_calls) == 3
     # Rows stay unscored and are REPORTED as such, rather than the call raising.
     assert result["split_stats"]["unrecoverable_rows"] > 0
@@ -1018,6 +1277,375 @@ def test_validly_typed_list_field_still_escalates():
     assert svc.escalation_calls  # escalation still happened for the valid list
     assert result["split_stats"]["rows_recovered_by_escalation"] == 8
     assert not result["split_stats"]["schema_mismatch_fields"]
+
+
+# --------------------------------------------------------------------------- #
+# #1488 — the primary fan-out must not start work the invocation cannot hold
+# --------------------------------------------------------------------------- #
+
+
+def _clean_scorer_run(
+    deadline_epoch,
+    *,
+    clock,
+    rows=50,
+    batch_size=10,
+    max_concurrent_batches=1,
+    seconds_per_call=None,
+):
+    """A run whose stand-in scores every row it is handed, with a driven clock.
+
+    `scored_per_call >= batch_size` makes every row of each slice come back with a
+    real confidence, so "which rows were scored" is readable from the output — the
+    property these tests are about. `seconds_per_call` charges each model call a
+    fixed cost, defaulting to exactly what the deadline guards budget for it, so
+    the budget below is spent by doing the work rather than by wall-clock luck. A
+    test that wants a model FASTER than the estimate passes a smaller value.
+    """
+    svc = PartialProgressService(
+        "transactions",
+        scored_per_call=batch_size,
+        clock=clock,
+        seconds_per_call=(
+            mod._ESTIMATED_MODEL_CALL_SECONDS
+            if seconds_per_call is None
+            else seconds_per_call
+        ),
+    )
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(rows), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=batch_size,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        max_concurrent_batches=max_concurrent_batches,
+        deadline_epoch=deadline_epoch,
+        max_retries=0,  # isolate the first pass; no recovery rung
+    )
+    return svc, result
+
+
+def _scored_flags(result):
+    """Per row, whether the output carries a real confidence."""
+    return [
+        row.get("amount", {}).get("confidence") is not None
+        for row in result["assessment"]["transactions"]
+    ]
+
+
+def test_primary_batches_stop_at_the_deadline_instead_of_overrunning(monkeypatch):
+    """The first pass is bounded, and the rows it skips are a reported suffix.
+
+    #1488: a Lambda killed on the wall clock raises no exception, so the handler's
+    deterministic-failure degrade path (#901) never runs and a complete, validated,
+    already-persisted extraction is discarded along with the document. The fan-out
+    therefore has to refuse a batch it cannot finish rather than start it.
+    """
+    clock = {"now": 2_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    # Budget for exactly two of the five batches.
+    deadline = (
+        clock["now"]
+        + (2 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    _svc, result = _clean_scorer_run(deadline, clock=clock)
+
+    assert result["split_stats"]["deadline_reached"] is True
+
+    # The skipped rows are a TRAILING suffix: rows accumulate positionally, so
+    # dropping a middle batch would slide later rows' confidence and bounding boxes
+    # onto earlier rows — the defect 0.6.12 closed by making partial per-shard
+    # collation discard rather than emit.
+    flags = _scored_flags(result)
+    assert flags[:20] == [True] * 20, "the batches that DID run must be scored"
+    assert flags[20:] == [False] * 30, (
+        "the skipped rows must be a contiguous unscored suffix, not a hole"
+    )
+
+    # ⚠️ Not asserted on the model-call count: the guard bounds CHUNKS, and the
+    # adaptive splitter can make several calls inside one chunk, so a call count
+    # measures the splitter rather than this guard.
+
+
+def test_no_deadline_leaves_the_primary_fan_out_unbounded(monkeypatch):
+    """With no deadline (local / non-Lambda) every batch still runs.
+
+    The guard must be inert where `deadline_epoch` is None, or it would silently
+    shorten every local run.
+    """
+    clock = {"now": 3_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+
+    _svc, result = _clean_scorer_run(None, clock=clock)
+
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 50
+
+
+def test_the_concurrent_fan_out_stops_at_a_wave_boundary(monkeypatch):
+    """The concurrent path is bounded too, and what it skips is a trailing suffix.
+
+    200 rows at batch 10 is 20 batches: one to warm the cache and 19 fanned out
+    across 2 workers. Each model call costs the full estimate, so the budget below
+    pays for the warm batch and two waves, and the third wave is refused.
+    """
+    clock = {"now": 4_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    # 1 warm call + 2 waves × 2 calls = 5 calls' worth of budget.
+    deadline = (
+        clock["now"]
+        + (5 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    _svc, result = _clean_scorer_run(
+        deadline, clock=clock, rows=200, batch_size=10, max_concurrent_batches=2
+    )
+
+    assert result["split_stats"]["deadline_reached"] is True
+    assert result["split_stats"]["concurrent_batches"] == 2
+
+    # Warm batch + 4 fanned-out batches = 50 rows scored, and the 150 unscored
+    # rows are a contiguous suffix rather than a hole: rows accumulate
+    # positionally, so dropping a middle batch would slide later rows' confidence
+    # and bounding boxes onto earlier rows.
+    flags = _scored_flags(result)
+    assert flags[:50] == [True] * 50, "every dispatched batch must be scored"
+    assert flags[50:] == [False] * 150, (
+        "the skipped rows must be a contiguous unscored suffix, not a hole"
+    )
+
+
+def test_a_fast_model_is_not_refused_work_the_clock_allowed(monkeypatch):
+    """The fan-out is bounded by TIME, not by a chunk count priced up front.
+
+    This is the #958 argument applied one level up. Pricing the whole fan-out
+    before dispatching any of it means pricing it at a worst case —
+    `(budget // one_call) × workers` chunks — which is a cap on chunk COUNT, not a
+    bound on time: here 19 batches across 5 workers against a 180s budget prices
+    out at 2 waves, so 9 batches (90 rows) would be refused. The model in this run
+    answers in 1s, so all 19 fit in 19s with 161s to spare, and re-reading the
+    clock per wave is what lets the later waves run on that evidence. Those 90 rows
+    coming back `confidence: null` is what trips the coverage check's error rung on
+    a section that scored completely.
+    """
+    clock = {"now": 5_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    deadline = (
+        clock["now"]
+        + (3 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    svc, result = _clean_scorer_run(
+        deadline,
+        clock=clock,
+        rows=200,
+        batch_size=10,
+        max_concurrent_batches=5,
+        seconds_per_call=1.0,
+    )
+
+    # 20 batches: the whole fan-out ran, so no row is left unscored and the
+    # deadline flag never had to be set.
+    assert len(svc.primary_calls) == 20
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 200
+    # The budget really was tight relative to the chunk COUNT — the point of the
+    # test is that the count is not what the guard measures.
+    assert (deadline - clock["now"]) > mod._DEADLINE_SAFETY_RESERVE_SECONDS
+
+
+class ShortAnswerService:
+    """Answers about only the first ``answered`` rows of every slice handed to it.
+
+    A genuinely SHORT response rather than a truncated one: ``truncated`` is False,
+    so the adaptive splitter does not bisect and reconciliation is what pads the
+    rows the model skipped. That is the other cause of an unscored row, and the
+    point of the service is to produce it in the SAME run as a deadline stop, so
+    the two per-row reasons can be told apart by index.
+    """
+
+    def __init__(self, list_field: str, clock: dict, answered: int):
+        self.list_field = list_field
+        self.clock = clock
+        self.answered = answered
+        self.calls: list[int] = []
+        self._lock = threading.Lock()
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        with self._lock:
+            self.calls.append(len(rows))
+            self.clock["now"] += mod._ESTIMATED_MODEL_CALL_SECONDS
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: [
+                    {"amount": {"confidence": 0.9}} for _ in rows[: self.answered]
+                ],
+                "account_holder": {"confidence": 0.95},
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=0.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+        )
+
+
+def test_a_skipped_row_says_the_time_budget_and_not_a_short_response(monkeypatch):
+    """The per-row reason names the cause that applies to THAT row.
+
+    ``confidence_reason`` is the string an operator reads per field in the UI, and
+    the two causes of an empty confidence have different remedies: a model that
+    answered about fewer rows than it was asked about points at the output budget,
+    where a batch that was never dispatched points at the time budget. Reporting
+    the first for the second sends an operator to the wrong knob, and the
+    section-level issue naming the time budget one level up does not undo a row-level
+    string that contradicts it.
+
+    One run produces both: the model answers about 6 rows of every 10-row batch,
+    and the budget covers only 2 of the 5 batches.
+    """
+    clock = {"now": 7_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    deadline = (
+        clock["now"]
+        + (2 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    svc = ShortAnswerService("transactions", clock, answered=6)
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(50), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=10,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        max_concurrent_batches=1,
+        max_retries=0,  # no recovery rung: every unscored row stays unscored
+        deadline_epoch=deadline,
+    )
+
+    assert result["split_stats"]["deadline_reached"] is True
+    # Two batches ran, and `batch_count` reports what RAN rather than what was
+    # planned — the processing report and the UI both render it as batches the
+    # confidence pass ran in.
+    assert len(svc.calls) == 2
+    assert result["split_stats"]["batch_count"] == 2
+
+    rows_out = result["assessment"]["transactions"]
+    assert len(rows_out) == 50
+
+    def _reason(i: int) -> str | None:
+        return rows_out[i]["amount"].get("confidence_reason")
+
+    # Rows the model answered about.
+    for i in (0, 5, 10, 15):
+        assert rows_out[i]["amount"]["confidence"] == 0.9
+
+    # Rows inside a DISPATCHED batch that the model's answer did not cover: the
+    # model really did return fewer items than were extracted.
+    for i in (6, 9, 16, 19):
+        assert rows_out[i]["amount"]["confidence"] is None
+        assert _reason(i) == mod._UNASSESSED_SHORT_RESPONSE_REASON
+
+    # Rows whose batch was never dispatched. No call was made for them, so the
+    # reason above would be false; the deadline reason names the time budget and
+    # its levers.
+    for i in (20, 35, 49):
+        assert rows_out[i]["amount"]["confidence"] is None
+        assert _reason(i) == mod._UNASSESSED_DEADLINE_REASON
+        assert "time budget" in (_reason(i) or "")
+        assert "returned fewer items" not in (_reason(i) or "")
+
+    # Every never-dispatched row carries the deadline reason, and no dispatched
+    # row does — the boundary is the last dispatched chunk, not a guess.
+    deadline_reason_rows = [
+        i for i in range(50) if _reason(i) == mod._UNASSESSED_DEADLINE_REASON
+    ]
+    assert deadline_reason_rows == list(range(20, 50))
+
+
+def _map_counting_pool_class(record: list):
+    """A ThreadPoolExecutor that records how many times ``map`` was called."""
+    import concurrent.futures as _cf
+
+    class _Counting(_cf.ThreadPoolExecutor):
+        def map(self, *args, **kwargs):
+            record.append(1)
+            return super().map(*args, **kwargs)
+
+    return _Counting
+
+
+def test_a_deadline_free_fan_out_keeps_one_continuous_map(monkeypatch):
+    """With no deadline the fan-out is NOT dispatched in waves.
+
+    A wave boundary costs a straggler — the wave is only as fast as its slowest
+    call, where one continuous ``pool.map`` refills a free worker the moment it
+    frees up. That cost buys the observation point the budget needs, so a caller
+    with no ``deadline_epoch`` must not pay it: there is nothing to re-read and
+    nothing it could refuse. 20 batches, 19 of them fanned out, must therefore
+    reach the pool in ONE map call rather than ten.
+    """
+    clock = {"now": 8_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    maps: list[int] = []
+    monkeypatch.setattr(
+        "concurrent.futures.ThreadPoolExecutor", _map_counting_pool_class(maps)
+    )
+
+    svc, result = _clean_scorer_run(
+        None, clock=clock, rows=200, batch_size=10, max_concurrent_batches=2
+    )
+
+    assert len(maps) == 1
+    assert len(svc.primary_calls) == 20  # 1 cache-warm + 19 fanned out
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 200
+
+
+def test_a_deadline_bearing_fan_out_dispatches_in_waves(monkeypatch):
+    """The other side of the branch above: with a deadline, one map per wave.
+
+    Same shape and a budget nothing is refused on, so the two tests differ only in
+    whether a deadline was threaded in. 19 fanned-out batches across 2 workers is
+    10 waves, so a single map call here would mean the clock is read once and the
+    guard cannot stop anything after the first wave.
+    """
+    clock = {"now": 9_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    maps: list[int] = []
+    monkeypatch.setattr(
+        "concurrent.futures.ThreadPoolExecutor", _map_counting_pool_class(maps)
+    )
+    deadline = (
+        clock["now"] + 10_000.0 + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )  # generous: nothing is refused
+
+    svc, result = _clean_scorer_run(
+        deadline,
+        clock=clock,
+        rows=200,
+        batch_size=10,
+        max_concurrent_batches=2,
+        seconds_per_call=1.0,
+    )
+
+    assert len(maps) == 10  # ceil(19 / 2)
+    assert len(svc.primary_calls) == 20
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 200
 
 
 if __name__ == "__main__":

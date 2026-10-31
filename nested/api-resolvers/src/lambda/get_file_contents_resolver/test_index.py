@@ -417,6 +417,13 @@ class TestRefusalsAreDistinguishableFromFaults:
         )
         assert "Access Denied" not in str(excinfo.value)
         assert "AccessDenied" not in str(excinfo.value)
+        # The class the dispatcher passes a 500 message through for; any other
+        # class now reaches the caller as a generic message with a request id.
+        assert type(excinfo.value).__name__ == "ReportedServerError"
+        assert str(excinfo.value) == (
+            "This deployment could not read the requested file. "
+            "Contact an administrator."
+        )
 
     def test_a_403_from_head_object_stays_a_fault(self, resolver, monkeypatch):
         """S3 answers a MISSING key with 403 when the reader lacks ListBucket, so

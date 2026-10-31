@@ -547,10 +547,12 @@ class TestAnnotatorObjectScope:
         service.update_document.assert_not_called()
 
     def test_a_document_in_no_test_set_is_refused(self, resolver, document):
-        """Production HITL work, not annotation work. Refused rather than read as
-        unscoped — a record with no `TestSetId` is the shape every non-test-set
-        document in the deployment has, so treating absence as "no restriction"
-        would make the check a no-op for all of them."""
+        """Production HITL work, admitted only to the Annotator holding its review
+        item (TestAnnotatorHoldingAProductionItem). Here the stack has no review
+        queues, so it is refused rather than read as unscoped — a record with no
+        `TestSetId` is the shape every non-test-set document in the deployment has,
+        so treating absence as "no restriction" would make the check a no-op for all
+        of them."""
         tracking = _FakeTable(item={"ObjectKey": "packet.pdf"})
         users = _FakeTable(allowed_test_sets=["set-a"])
 
@@ -788,3 +790,266 @@ class TestAnnotatorObjectScope:
                 tracking=tracking,
                 users=users,
             )
+
+
+@pytest.mark.unit
+class TestUnknownGroupRefused:
+    """A caller in none of the operation's groups is refused before any write."""
+
+    def test_update_document_sections_refuses_an_unknown_group(self, resolver):
+        document = _document(resolver, [_section(resolver, "1", [1], "Invoice")])
+        event = _event(
+            sections=[{"sectionId": "1", "pageIds": ["1"]}], groups=("SomeOtherGroup",)
+        )
+
+        with pytest.raises(PermissionError, match="updateDocumentSections"):
+            _call(resolver, document, event)
+
+
+@pytest.mark.unit
+class TestRegroupInReview:
+    """A document in a review queue is regrouped only by the holder of its item.
+
+    Regrouping is part of review. Phase 1 has ended and the finalize run hasn't
+    started, so nothing is running on the document; the finalize run reprocesses the
+    tracked document, so the grouping saved here is the one it finishes with. Anyone
+    but the holder is refused, so a regroup never lands on work someone else holds.
+    """
+
+    HOLDER = "ann@example.com"
+
+    @staticmethod
+    def _in_review(module, hitl_status="in_review"):
+        document = _document(
+            module,
+            [_section(module, "1", [1, 2], "Invoice")],
+            status="HITL_IN_PROGRESS",
+        )
+        document.hitl_status = hitl_status
+        return document
+
+    def _event(self, email=HOLDER, groups=("Admin",)):
+        event = _event(
+            sections=[{"sectionId": "1", "pageIds": ["2", "1"]}], groups=groups
+        )
+        event["identity"]["claims"]["email"] = email
+        return event
+
+    @staticmethod
+    def _store(state, owner_key=None, missing=False):
+        from types import SimpleNamespace
+
+        store = MagicMock()
+        store.get_item.return_value = (
+            None if missing else SimpleNamespace(state=state, owner_key=owner_key)
+        )
+        return store
+
+    def _run(self, module, document, event, store):
+        with patch.object(module, "_REVIEW_STORE", store):
+            return _call(module, document, event)
+
+    def test_the_holder_may_regroup(self, resolver):
+        store = self._store("CLAIMED", self.HOLDER)
+        result, service = self._run(
+            resolver, self._in_review(resolver), self._event(), store
+        )
+        assert result["success"] is True, result
+        service.update_document.assert_called_once()
+        store.get_item.assert_called_once_with("packet.pdf")
+
+    @pytest.mark.parametrize(
+        ("state", "owner", "code"),
+        [
+            ("OPEN", None, "NOT_ASSIGNED"),
+            ("CLAIMED", "someone@example.com", "NOT_LEASE_HOLDER"),
+            ("FINALIZING", HOLDER, "FINALIZING"),
+        ],
+    )
+    def test_anyone_but_the_holder_is_refused_and_nothing_is_written(
+        self, resolver, state, owner, code
+    ):
+        result, service = self._run(
+            resolver,
+            self._in_review(resolver),
+            self._event(),
+            self._store(state, owner),
+        )
+        assert result["success"] is False
+        assert result["message"].startswith(code)
+        service.update_document.assert_not_called()
+
+    def test_a_missing_review_item_is_refused(self, resolver):
+        result, service = self._run(
+            resolver,
+            self._in_review(resolver),
+            self._event(),
+            self._store(None, missing=True),
+        )
+        assert result["message"].startswith("NO_REVIEW_ITEM")
+        service.update_document.assert_not_called()
+
+    def test_a_stack_without_review_queues_is_refused(self, resolver):
+        result, service = self._run(
+            resolver, self._in_review(resolver), self._event(), None
+        )
+        assert result["message"].startswith("REVIEW_UNAVAILABLE")
+        service.update_document.assert_not_called()
+
+    def test_a_legacy_review_in_progress_is_still_refused_as_in_flight(self, resolver):
+        """Only queue-managed review is regroupable; the legacy flow is unchanged."""
+        store = self._store("CLAIMED", self.HOLDER)
+        result, service = self._run(
+            resolver,
+            self._in_review(resolver, hitl_status="InProgress"),
+            self._event(),
+            store,
+        )
+        assert result["success"] is False
+        assert "Wait for processing to finish" in result["message"]
+        store.get_item.assert_not_called()
+        service.update_document.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# A production document in review: the Annotator holding its item may regroup it
+# ---------------------------------------------------------------------------
+#
+# Regrouping is part of review. An Annotator may re-group a production document only
+# while holding its review-queue item (CLAIMED, by their owner key from verified
+# claims) and only within their configuration-profile scope; `regroup_refusal` then
+# decides the in-review document as for every caller. The review store is faked; the
+# scope rule (`scope_allows`) is the real one.
+class _FakeReviewStore:
+    def __init__(self, item=None, raises=None):
+        self._item = item
+        self._raises = raises
+
+    def get_item(self, doc_key):
+        if self._raises is not None:
+            raise self._raises
+        return self._item
+
+
+def _review_item(
+    owner_key="annotator@example.com", state="CLAIMED", profile="profile-a"
+):
+    item = MagicMock()
+    item.owner_key = owner_key
+    item.state = state
+    item.profile = profile
+    return item
+
+
+@pytest.mark.unit
+class TestAnnotatorHoldingAProductionItem:
+    @pytest.fixture
+    def document(self, resolver):
+        doc = _document(
+            resolver,
+            [
+                _section(resolver, "1", [1], "Invoice"),
+                _section(resolver, "2", [2], "W2"),
+            ],
+            status="HITL_IN_PROGRESS",
+        )
+        doc.hitl_status = "in_review"
+        return doc
+
+    @staticmethod
+    def _regroup():
+        return [{"sectionId": "1", "pageIds": ["1", "2"]}]
+
+    def _call(self, resolver, document, *, store, scope=None, scope_raises=None):
+        tracking = _FakeTable(item={"ObjectKey": "packet.pdf"})
+        users = _FakeTable(allowed_test_sets=[])
+
+        def scope_of(_claims):
+            if scope_raises is not None:
+                raise scope_raises
+            return scope
+
+        with patch.object(resolver, "_REVIEW_STORE", store):
+            with patch.object(resolver, "_caller_config_scope", side_effect=scope_of):
+                return _call_scoped(
+                    resolver,
+                    document,
+                    _annotator_event(sections=self._regroup()),
+                    tracking=tracking,
+                    users=users,
+                )
+
+    def test_the_holder_may_regroup_and_the_grouping_is_saved(self, resolver, document):
+        result, service = self._call(
+            resolver,
+            document,
+            store=_FakeReviewStore(_review_item()),
+            scope=["profile-a"],
+        )
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+
+    def test_an_unscoped_holder_may_regroup(self, resolver, document):
+        result, service = self._call(
+            resolver, document, store=_FakeReviewStore(_review_item())
+        )
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            _review_item(owner_key="someone@example.com"),
+            _review_item(state="OPEN", owner_key=None),
+            _review_item(state="FINALIZING"),
+            None,
+        ],
+        ids=["held-by-someone-else", "unclaimed", "finalizing", "no-review-item"],
+    )
+    def test_anyone_but_the_holder_is_refused_and_nothing_is_written(
+        self, resolver, document, item
+    ):
+        service = MagicMock()
+        service.get_document.return_value = document
+        with patch.object(resolver, "create_document_service", return_value=service):
+            with pytest.raises(resolver.ResourceAccessDenied):
+                self._call(resolver, document, store=_FakeReviewStore(item))
+        service.update_document.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "profile", ["profile-b", ""], ids=["other-profile", "no-profile"]
+    )
+    def test_a_held_item_outside_the_callers_scope_is_refused(
+        self, resolver, document, profile
+    ):
+        with pytest.raises(resolver.ResourceAccessDenied) as exc:
+            self._call(
+                resolver,
+                document,
+                store=_FakeReviewStore(_review_item(profile=profile)),
+                scope=["profile-a"],
+            )
+        assert "configuration scope" in str(exc.value)
+
+    def test_a_failed_review_item_read_refuses(self, resolver, document):
+        with pytest.raises(resolver.ResourceAccessDenied) as exc:
+            self._call(
+                resolver, document, store=_FakeReviewStore(raises=RuntimeError("down"))
+            )
+        assert "could not be verified" in str(exc.value)
+
+    def test_a_failed_scope_lookup_refuses(self, resolver, document):
+        from idp_common.config_scope import ScopeLookupError
+
+        with pytest.raises(resolver.ResourceAccessDenied) as exc:
+            self._call(
+                resolver,
+                document,
+                store=_FakeReviewStore(_review_item()),
+                scope_raises=ScopeLookupError("users table unavailable"),
+            )
+        assert "could not be verified" in str(exc.value)
+
+    def test_a_stack_with_no_review_queues_refuses(self, resolver, document):
+        with pytest.raises(resolver.ResourceAccessDenied):
+            self._call(resolver, document, store=None)

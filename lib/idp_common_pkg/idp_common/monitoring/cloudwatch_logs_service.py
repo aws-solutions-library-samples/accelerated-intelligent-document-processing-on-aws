@@ -38,6 +38,11 @@ from idp_common.monitoring.settings_cache import SettingsCache
 
 logger = logging.getLogger(__name__)
 
+#: The range the CloudWatch Logs ``FilterLogEvents`` service model declares for
+#: ``limit`` (its ``EventsLimit`` shape). A test asserts these against botocore.
+FILTER_LOG_EVENTS_MIN_LIMIT = 1
+FILTER_LOG_EVENTS_MAX_LIMIT = 10000
+
 # ---------------------------------------------------------------------------
 # Module-level SettingsCache singleton (replaced in tests via reset_settings_cache)
 #
@@ -267,6 +272,15 @@ def search_log_group(
             if filter_pattern
             in ["[ERROR]", "[WARN]", "ERROR:", "WARN:", "Exception", "Failed"]
             else int(max_events)
+        )
+
+        # Keep the request inside the range the FilterLogEvents service model
+        # declares. Below the minimum, botocore rejects the call before sending it
+        # and the handler below reports the rejection as a group with no events.
+        # botocore does not check the maximum, so a larger value would reach the
+        # service; the cap keeps the request within the declared range regardless.
+        search_limit = min(
+            max(search_limit, FILTER_LOG_EVENTS_MIN_LIMIT), FILTER_LOG_EVENTS_MAX_LIMIT
         )
 
         params: Dict[str, Any] = {

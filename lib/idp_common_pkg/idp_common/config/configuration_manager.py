@@ -9,9 +9,10 @@ import gzip
 import hashlib
 import json
 import os
-from typing import Dict, Any, Optional, Union, List
+from typing import Callable, Dict, Any, Optional, Tuple, Union, List
 from botocore.exceptions import ClientError
 import logging
+from dataclasses import dataclass
 from boto3.dynamodb.types import Binary
 
 from idp_common.ddb_numbers import coerce_int
@@ -43,6 +44,21 @@ from .constants import (
 from .revisions import ConfigRevisionStore
 
 logger = logging.getLogger(__name__)
+
+
+class ConfigurationValidationError(ValueError):
+    """A configuration write breaks a rule checked at the write boundary.
+
+    Raised for cross-field rules that are deliberately not model validators, so a
+    stored configuration that breaks them still loads.
+    """
+
+
+#: Called before every configuration-profile save with
+#: ``(config before the write or None, config about to be saved, profile)``.
+#: It raises to refuse the write. ``handle_update_custom_configuration`` and
+#: ``restore_revision`` accept one.
+WriteGuard = Callable[[Optional[IDPConfig], IDPConfig, str], None]
 
 # Marker field added to full-format config versions in DynamoDB
 _FULL_CONFIG_MARKER = "_config_format"
@@ -154,13 +170,17 @@ class ConfigurationManager:
     Manages IDP configurations stored in DynamoDB.
 
     Configuration versions store FULL configurations (not sparse deltas).
-    Each version is a complete, self-contained configuration snapshot.
+    Each version is a complete, self-contained configuration snapshot *as of the
+    schema it was saved under*.
 
     The UI can compute diffs between a version and the default for display purposes,
     but storage is always the complete configuration.
 
-    Legacy sparse delta configs (from older versions) are auto-detected and
-    migrated to full format on first read.
+    ⚠️ Being stored in full does not make a profile complete against the CURRENT
+    schema, so every profile is resolved against `default` on read: keys it holds
+    win, keys it lacks are backfilled. That is what gives a field added in a later
+    release its shipped value on an older profile. See
+    `get_merged_configuration`.
 
     Example:
         manager = ConfigurationManager()
@@ -261,6 +281,17 @@ class ConfigurationManager:
 
         Supports both compressed and legacy inline storage formats.
 
+        The head item's metadata attributes (`_DYNAMODB_METADATA_FIELDS`) are not
+        part of the result, `Managed` included. Its result is the editor's
+        `Custom` delta, which the UI merges into what it sends back on Save as
+        Profile and Save as default, so the result is kept free of record
+        metadata; `handle_update_custom_configuration` also drops any `managed`
+        it is sent, so a copy of a stack-managed profile is a user profile.
+        Saving this result back to the profile it was read from does not
+        un-manage it: `save_configuration` keeps the flag on a profile stored
+        as managed. `get_merged_configuration` needs the attribute and reads it
+        through `_read_raw_configuration`.
+
         Args:
             config_type: Configuration type
             version: Version identifier
@@ -270,6 +301,18 @@ class ConfigurationManager:
 
         Raises:
             ClientError: If DynamoDB operation fails
+        """
+        read = self._read_raw_configuration(config_type, version)
+        return read[0] if read is not None else None
+
+    def _read_raw_configuration(
+        self, config_type: str, version: str
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """`get_raw_configuration`, plus the head item's metadata attributes.
+
+        Returns ``(config_data, metadata)``, where ``metadata`` holds the keys of
+        the decompressed item that are in `_DYNAMODB_METADATA_FIELDS`, or None if
+        the item does not exist.
         """
         try:
             if version:
@@ -292,6 +335,9 @@ class ConfigurationManager:
             # Remove DynamoDB partition key and metadata fields - return only config data
             config_data = {
                 k: v for k, v in item.items() if k not in _DYNAMODB_METADATA_FIELDS
+            }
+            metadata = {
+                k: v for k, v in item.items() if k in _DYNAMODB_METADATA_FIELDS
             }
 
             # Relocate legacy-shaped keys to their current paths.
@@ -327,7 +373,7 @@ class ConfigurationManager:
             logger.info(
                 f"Retrieved raw configuration for {config_type}, version: {version}"
             )
-            return config_data
+            return config_data, metadata
 
         except ClientError as e:
             logger.error(f"Error retrieving raw configuration {config_type}: {e}")
@@ -339,13 +385,20 @@ class ConfigurationManager:
         """
         Get the full configuration for a profile, ready for runtime processing.
 
-        NEW BEHAVIOR (full config format):
-        - Each profile stores a complete configuration
-        - Simply read and return the profile's config
+        EVERY profile is resolved against the `default` profile: start from
+        `default`, then let every key the profile HAS override it. A key it holds
+        wins even when empty (absent is not cleared); a key it LACKS is
+        backfilled. The resolved configuration is saved back so the next read is a
+        direct one — see `_backfill_may_be_persisted` for when that is skipped.
 
-        LEGACY SUPPORT (sparse delta format):
-        - If a profile is detected as sparse (missing key sections), merge with default
-        - Auto-migrate the sparse config to full format for future reads
+        ⚠️ Resolving applies to a "full" profile too, and that is the point rather
+        than an accident: "full" means it carried every section AT THE TIME IT WAS
+        SAVED, which says nothing about fields added since. Returned unresolved,
+        every such field arrives from its Pydantic default — empty, for a prompt.
+
+        The full/sparse distinction survives only as a fallback: a full profile
+        validates on its own, so if the resolved configuration fails a cross-field
+        validator the profile is returned unresolved rather than failing the read.
 
         Args:
             version: Configuration Profile to load. If None/empty, uses the active one.
@@ -384,39 +437,82 @@ class ConfigurationManager:
                 logger.warning("No active version found, using default")
                 version = DEFAULT_VERSION
 
-        # Try reading as a full config first (new format + default version)
+        # ⚠️ A FULL config is merged onto `default` too, and that is the whole
+        # point of this branch no longer returning early.
+        #
+        # "Full" means "has every top-level section", which is a statement about
+        # the schema AT THE TIME IT WAS SAVED. It says nothing about fields added
+        # since. Returned directly, every such field arrives from its **Pydantic**
+        # default rather than the shipped one — and for a prompt the Pydantic
+        # default is `""`.
+        #
+        # That shipped as a failure an operator could not diagnose: a profile
+        # saved before `classification.packet` / `.segmentation` / `.labeling`
+        # existed read back with all three prompts EMPTY, so switching it to
+        # `strategy: split_then_classify` + `granularity: packet` fell back to the page
+        # prompt, the model answered in page shape, the segments parser found
+        # nothing, and every document FAILED in ~28s. A profile created after the
+        # upgrade worked, which makes it look like the feature works and the
+        # profile is cursed. The UI's only hint was an empty box with a "Restore
+        # default" button beside it.
+        #
+        # So the two paths now differ only in a log line. `deep_update` keeps every
+        # key the stored config HAS — including one deliberately set empty — and
+        # fills only what it LACKS, which is exactly the distinction that matters:
+        # absent is not cleared. This is a defect class rather than one field, and
+        # it recurs on every future field that is added with a non-empty shipped
+        # default.
+        full_config_fallback: Optional[IDPConfig] = None
+        raw_read: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
+        raw_version: Optional[Dict[str, Any]] = None
         try:
             config = self.get_configuration(CONFIG_TYPE_CONFIG, version)
             if config is not None and isinstance(config, IDPConfig):
-                # Check if this is truly a full config by examining the raw data
-                raw = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
-                if raw and _is_full_config(raw):
-                    logger.info(f"Loaded full configuration for version: {version}")
-                    return config
-                # else: Pydantic filled defaults - it's actually sparse, fall through to legacy path
+                # Kept and reused below rather than re-fetched: this record is
+                # gzip-compressed precisely because it is large, and nothing on
+                # this path is cached — `get_config()` builds a fresh manager per
+                # call — so a second `get_item` is paid per invocation.
+                raw_read = self._read_raw_configuration(CONFIG_TYPE_CONFIG, version)
+                raw_version = raw_read[0] if raw_read is not None else None
+                if raw_version and _is_full_config(raw_version):
+                    # Keep it, in case `default` cannot be read below: returning a
+                    # usable config beats returning None, which is what the merge
+                    # path does when the default profile is missing.
+                    full_config_fallback = config
         except Exception as e:
             logger.debug(f"Could not load version {version} as full config: {e}")
 
-        # LEGACY PATH: sparse delta config - merge with default
-        logger.info(
-            f"Version {version} appears to be legacy sparse format, merging with default"
-        )
+        if full_config_fallback is not None:
+            logger.info(f"Loaded full configuration for version: {version}")
+        else:
+            logger.info(
+                f"Version {version} appears to be legacy sparse format, merging with default"
+            )
 
         default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
-        if default_config is None:
+        if default_config is None or not isinstance(default_config, IDPConfig):
+            if full_config_fallback is not None:
+                # A full config with no backfill is what every release before this
+                # one returned, so it is the right answer when there is nothing to
+                # backfill from.
+                logger.warning(
+                    "Default configuration not readable; returning version %s "
+                    "without backfilling fields added since it was saved",
+                    version,
+                )
+                return full_config_fallback
             logger.warning(
                 "Default configuration not found - cannot create merged config"
             )
             return None
 
-        if not isinstance(default_config, IDPConfig):
-            logger.error(f"Default config is not IDPConfig: {type(default_config)}")
-            return None
-
-        # Get version as RAW dict (no Pydantic defaults)
-        version_dict = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
-        if not version_dict:
+        # Get version as RAW dict (no Pydantic defaults), reusing the read above
+        # when it succeeded.
+        if raw_read is None:
+            raw_read = self._read_raw_configuration(CONFIG_TYPE_CONFIG, version)
+        if raw_read is None or not raw_read[0]:
             raise ValueError(f"No Version {version} configuration found")
+        version_dict, stored_metadata = raw_read
 
         # Remove format marker if present (shouldn't be in sparse, but just in case)
         version_dict.pop(_FULL_CONFIG_MARKER, None)
@@ -431,18 +527,117 @@ class ConfigurationManager:
 
         version_dict = migrate_config(version_dict)
 
-        # Merge: Start with Default, deep update with version deltas
+        # ⚠️ `managed` is the one `IDPConfig` field stored as a head-item
+        # attribute (`Managed`) rather than in the body, so the raw read above
+        # does not carry it. Left out, the merge fills it from `default`, which
+        # is not managed: a stack-managed profile then never compares equal to
+        # its stored self, and the write-back below fires on EVERY unpinned read
+        # — persisting `Managed=False`, which un-manages the profile, wherever the
+        # role can write the table, and failing with AccessDenied wherever it
+        # cannot. It is record metadata, not a setting to inherit, so it is
+        # resolved exactly as `ConfigurationRecord.from_dynamodb_item` resolves
+        # it for the validated read the comparison is made against: the head
+        # attribute when present, else a body key (older writers left it there),
+        # else the field default. Issue #1613.
+        if "Managed" in stored_metadata:
+            version_dict["managed"] = stored_metadata["Managed"]
+        else:
+            version_dict.setdefault(
+                "managed", IDPConfig.model_fields["managed"].default
+            )
+
+        # Merge: start from the default profile, then let every key the stored
+        # config HAS override it. A key it lacks is backfilled; a key it holds
+        # wins even when the value is empty, because absent is not cleared.
         default_dict = default_config.model_dump(mode="python")
         merged_dict = deepcopy(default_dict)
         deep_update(merged_dict, version_dict)
 
-        merged_config = IDPConfig(**merged_dict)
-        logger.info(f"Merged default + version (legacy sparse) for version: {version}")
+        # ⚠️ A merge of two individually VALID configurations can be invalid, so
+        # this validation is guarded. `IDPConfig` has cross-field validators, and
+        # one side of the merge supplies a field the other does not: a profile
+        # holding `packet.overlap_pages: 15` validates alone (against the model's
+        # `window_pages` default of 20) and so does a default holding
+        # `window_pages: 10` (against the `overlap_pages` default of 2), but
+        # merged they trip `overlap_pages >= window_pages`. Measured, not
+        # supposed.
+        #
+        # `ConfigurationReader.get_merged_configuration` re-raises, so an
+        # unguarded failure here would fail documents on a configuration that
+        # read cleanly before this change — "upgrade, then everything stops", on
+        # a path EVERY configuration read now takes. Backfilling is a
+        # convenience; never being worse than not backfilling is the requirement.
+        # So a profile that validates on its own is returned on its own, and the
+        # refusal is logged loudly enough to act on.
+        try:
+            merged_config = IDPConfig(**merged_dict)
+        except Exception as exc:
+            if full_config_fallback is not None:
+                logger.warning(
+                    "Version %s does not validate when resolved against the "
+                    "default profile (%s); returning it unresolved. Fields it "
+                    "does not carry will fall back to their code defaults, which "
+                    "for a prompt is empty — reconcile the two configurations.",
+                    version,
+                    exc,
+                    exc_info=True,
+                )
+                return full_config_fallback
+            # A sparse profile has never been usable unmerged, so there is no
+            # better answer than the error the caller already handles.
+            raise
 
-        # Auto-migrate: save the merged full config back so future reads are fast.
+        # ⚠️ Top-level SECTIONS only. In the case that motivates this — a nested
+        # key such as `classification.packet.task_prompt` appearing while
+        # `classification` itself is present — this list is empty, so an empty
+        # list does not mean nothing was backfilled.
+        backfilled = sorted(set(default_dict) - set(version_dict))
+        logger.info(
+            "Resolved version %s against the default profile%s",
+            version,
+            f"; backfilled absent top-level section(s): {backfilled}"
+            if backfilled
+            else "",
+        )
+
+        # ⚠️ Persist only when the resolution CHANGED something. Every read now
+        # goes through the merge, so an unconditional save would rewrite every
+        # profile head on every read — churning the record and its content hash
+        # for nothing.
+        # Compare the VALIDATED forms, not `merged_dict`: that one is still the
+        # pre-validation dict, so it carries DynamoDB `Decimal`s and whatever the
+        # raw record held, and would never equal a model dump.
+        if full_config_fallback is not None and merged_config.model_dump(
+            mode="python"
+        ) == full_config_fallback.model_dump(mode="python"):
+            return merged_config
+
+        # ⚠️ A `cut_revision=False` save rewrites the head WITHOUT refreshing the
+        # published revision's `storedHash`, and for one kind of published
+        # revision that destroys its only integrity proof. See
+        # `config/README.md`: a revision cut before `storedHash` existed is proven
+        # only by the legacy `UpdatedAt <= createdAt` comparison, "and that proof
+        # is gone the first time anything rewrites the head" — after which a
+        # pinned read of it raises once its body expires.
+        #
+        # That hazard existed before this change, but only for legacy sparse
+        # profiles. Resolving every profile against the default would take it to
+        # every profile, once, after any field-adding upgrade — so the write-back
+        # is skipped exactly when it could destroy a proof. Correctness does not
+        # depend on it: the resolution happens on every read regardless, and all
+        # that is lost in the skipped case is the stored record catching up, which
+        # is a convenience for the form.
+        if not self._backfill_may_be_persisted(version):
+            return merged_config
+
+        # Save the resolved config back, so the next read is a direct one and so
+        # the UI shows the fields that were backfilled instead of empty boxes —
+        # which is what made the split-then-classify failure undiagnosable.
+        #
         # Not a revision: this is a storage-format rewrite, not a user's edit, and
         # recording it would make every legacy profile's history start with a
-        # revision nobody made.
+        # revision nobody made. The same reasoning covers a backfill, which is the
+        # shipped default arriving where there was previously nothing at all.
         try:
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
@@ -456,6 +651,58 @@ class ConfigurationManager:
             logger.warning(f"Failed to auto-migrate version {version}: {e}")
 
         return merged_config
+
+    def _backfill_may_be_persisted(self, version: str) -> bool:
+        """Whether the resolved configuration may be written back to the head.
+
+        ⚠️ **The one case it must not be is a published revision whose only proof
+        is the legacy one.** A save that cuts no revision does not refresh the
+        published entry's ``storedHash``, so for a revision cut before that field
+        existed, rewriting the head destroys the ``UpdatedAt <= createdAt``
+        comparison that is its sole proof — and a pinned read of it then raises
+        once its body expires (``config/README.md``).
+
+        A published entry that already carries ``storedHash`` is unaffected: its
+        proof is the hash, which does not depend on the head's timestamp. No
+        published revision at all means there is nothing to lose. History being
+        disabled means the same.
+
+        Fails CLOSED on an unreadable index: skipping a convenience write is
+        always recoverable, destroying a proof is not.
+        """
+        try:
+            if not self.revisions.enabled:
+                return True
+            head = self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item", {})
+            published = head.get("PublishedRevision")
+            if published is None:
+                return True
+            entry = self.revisions.get_entry(version, int(published))
+            if entry is None:
+                # Not retained, so there is no index entry to invalidate.
+                return True
+            if entry.get("storedHash"):
+                return True
+            logger.info(
+                "Not writing the resolved configuration of %s back: its published "
+                "revision r%s predates storedHash, and rewriting the head would "
+                "destroy the only proof it has. The resolution still applies to "
+                "this read.",
+                version,
+                published,
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not establish whether %s's head may be rewritten (%s); "
+                "not writing it back",
+                version,
+                exc,
+            )
+            return False
 
     def save_configuration(
         self,
@@ -541,6 +788,29 @@ class ConfigurationManager:
                 else None
             )
             is_active_status = existing_record.is_active if existing_record else False
+
+            # ⚠️ A save never clears `managed` on a profile stored as
+            # stack-managed. The flag is the head's `Managed` attribute, not part
+            # of the body, so every caller that reads a profile raw
+            # (`get_raw_configuration`, which the discovery, BDA, bootstrap and
+            # editor-update paths all use) and saves it back passes a body
+            # without it — and the model's `False` default then un-managed the
+            # profile on every such save. A save CAN set it: the stack's own
+            # presets carry `managed: true`. The rule is a property of the
+            # profile, not of the save, so it applies to a body that spells out
+            # `managed: false` and to the stack's own saves too. "Stored as
+            # managed" is what the validated read says (`from_dynamodb_item`:
+            # the attribute, else a body key an older writer left), so a head
+            # written by such a writer is kept managed and gains the attribute.
+            # A new profile name has no head, so a copy takes the body's value.
+            # Issue #1613.
+            if (
+                isinstance(config, IDPConfig)
+                and not config.managed
+                and existing_record is not None
+                and getattr(existing_record.config, "managed", False) is True
+            ):
+                config = config.model_copy(update={"managed": True})
 
             if existing_record:
                 # Existing config - preserve created_at, update updated_at
@@ -718,15 +988,24 @@ class ConfigurationManager:
         return entries
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
-        """Full configuration recorded in one revision, or None if not retained."""
+        """
+        Full configuration recorded in one revision, or None if not retained.
+
+        In the current config format, like every other read of a stored
+        configuration: a revision cut before the 0.9 classification nesting is
+        stored flat, so returned raw it gives `config-download --config-revision
+        N` a different shape from `config-download` of the profile head and from
+        what Revision History shows for the same revision. The stored body is
+        never rewritten (`_read_revision_body`).
+        """
         return self._read_revision_body(profile, revision)
 
     def _read_revision_body(
         self, profile: str, revision: int
     ) -> Optional[Dict[str, Any]]:
         """
-        A revision's body, rebuilt from the profile head if it is the published
-        revision and its object has expired.
+        A revision's body in the current config format, rebuilt from the profile
+        head if it is the published revision and its object has expired.
 
         Revision bodies live in the Configuration bucket, whose lifecycle rule
         expires every object after DataRetentionInDays, while every new document is
@@ -734,11 +1013,76 @@ class ConfigurationManager:
         published revision was cut more than DataRetentionInDays ago stops
         processing new documents. The head stands in only when it is provably that
         revision (`_head_is_revision`); any other missing body stays missing.
+
+        Both sources are migrated, so one revision number does not change shape
+        when its stored object expires: the head rebuild goes through
+        `ConfigurationRecord`/`IDPConfig` and is therefore already current, while a
+        stored body is in whatever format the release that cut it wrote.
+
+        Migrated **in memory only**, never written back. A revision is an immutable
+        record of the configuration that actually ran, which is why the pinned read
+        (`_load_revision_config`) migrates the same way.
         """
         body = self.revisions.get_body(profile, revision)
-        if body is not None or not self.revisions.enabled:
+        if body is None and self.revisions.enabled:
+            body = self._published_body_from_head(profile, int(revision))
+        return self._migrated_body(body)
+
+    @staticmethod
+    def _migrated_body(
+        body: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        `body` in the current config format, leaving the stored object alone.
+
+        A body the chain cannot convert is returned **as stored**, with a warning,
+        rather than raising. The revision was read; only its normalisation failed,
+        and every consumer of a converted body here is reading for the record, for
+        display or for download.
+
+        What decides it is the cost of each answer. `_capture_config` in the test
+        runner reaches a pinned revision through `get_revision` and re-raises
+        anything it throws as "Could not read revision r<n>", so raising here
+        would fail a whole `startTestRun` over a body the caller only wanted to
+        record — and the two sites that convert a *captured run* configuration
+        (`test_runner._current_format` on the way in,
+        `test_results_resolver._migrated_run_config` on the way back out) both
+        record such a body as stored, so raising would also defeat a contract they
+        state. Tolerating it, on the other hand, cannot let a document run under
+        an unconverted configuration: every path that *executes* a configuration
+        builds an `IDPConfig` (`_load_revision_config`, `restore_revision`), whose
+        validator calls the same chain and raises on the same body. So the
+        tolerance is confined to paths that only ever show or record what a
+        revision held.
+
+        ⚠️ Do not read this as the house style for `migrate_config`: callers over a
+        stored configuration do both, and most of the ones outside the captured-run
+        pair propagate. `configuration_resolver.handle_get_profile_revision`
+        converts *this same body* a layer up and answers an error response. The
+        closest precedent for tolerating is
+        `update_configuration._migrated_or_original`, which does it in this shape
+        on the deploy-time write path.
+        """
+        if body is None:
+            return None
+        from copy import deepcopy
+
+        from .migrations import migrate_config
+
+        # The deepcopy is belt-and-braces, not a guard against a known mutation:
+        # every hop in the chain already copies before it transforms and returns
+        # its input unchanged when it does not. Both of this function's callers
+        # pass a freshly deserialised body, so there is nothing to protect today.
+
+        try:
+            return migrate_config(deepcopy(body))
+        except Exception as e:  # noqa: BLE001 — a read must not fail on this
+            logger.warning(
+                f"Could not convert a stored configuration to the current format; "
+                f"returning it as stored: {e}",
+                exc_info=True,
+            )
             return body
-        return self._published_body_from_head(profile, int(revision))
 
     def _published_body_from_head(
         self, profile: str, revision: int
@@ -898,7 +1242,12 @@ class ConfigurationManager:
         return int(published) if published is not None else None
 
     def restore_revision(
-        self, profile: str, revision: int, created_by: Optional[str] = None
+        self,
+        profile: str,
+        revision: int,
+        created_by: Optional[str] = None,
+        *,
+        write_guard: Optional[WriteGuard] = None,
     ) -> int:
         """
         Restore an earlier revision by saving it as the profile's newest revision.
@@ -914,6 +1263,9 @@ class ConfigurationManager:
         unrestorable with no way to edit it first. The dispatcher's runtime audit
         still reports an inert hook on every document.
 
+        ``write_guard`` (see :data:`WriteGuard`) is called with the profile's current
+        configuration and the restored one before anything is saved.
+
         Raises:
             ValueError: If the revision is not retained or is unreadable
         """
@@ -923,9 +1275,12 @@ class ConfigurationManager:
                 f"Revision r{revision} of profile '{profile}' is no longer available"
             )
         config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
+        restored = IDPConfig(**config_dict)
+        if write_guard is not None:
+            write_guard(self._get_full_config_for_version(profile), restored, profile)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
-            IDPConfig(**config_dict),
+            restored,
             version=profile,
             created_by=created_by,
             revision_notes=f"Restored from r{revision}",
@@ -1049,7 +1404,7 @@ class ConfigurationManager:
             # Non-fatal: resolution falls back to the scan.
             logger.warning(f"Could not write the active-profile pointer: {e}")
 
-    def resolve_active_version(self) -> str:
+    def resolve_active_version(self, raise_errors: bool = False) -> str:
         """
         Resolve the configuration version a new document should be processed under.
 
@@ -1072,6 +1427,14 @@ class ConfigurationManager:
         next activation writes it. The fallback paginates, so it cannot miss an
         active row that sorts late.
 
+        Args:
+            raise_errors: Raise when the profiles cannot be read instead of
+                degrading to DEFAULT_VERSION. For a caller that must know the
+                answer rather than have a usable one — `bda_routing` on behalf of
+                the processChanges resolver, which refuses rather than guesses.
+                A failed pointer read still falls back to the scan, which reads
+                the same answer from the profiles.
+
         Returns:
             The active version name, or DEFAULT_VERSION if none is active.
         """
@@ -1083,17 +1446,21 @@ class ConfigurationManager:
             if pointer and pointer.get("ActiveVersion"):
                 return str(pointer["ActiveVersion"])
         except Exception as e:  # noqa: BLE001
+            # Not raised even under `raise_errors`: the scan below reads the same
+            # answer from the profiles themselves, and raises if IT fails.
             logger.warning(
                 f"Could not read the active-profile pointer ({e}); scanning instead"
             )
 
         try:
-            for version_dict in self.list_config_versions():
+            for version_dict in self.list_config_versions(raise_errors=raise_errors):
                 if version_dict.get("isActive"):
                     name = version_dict.get("versionName")
                     if name:
                         return name
         except Exception as e:  # noqa: BLE001
+            if raise_errors:
+                raise
             # Never fail a document over this — the default is always readable.
             logger.warning(
                 f"Could not resolve the active config version ({e}); "
@@ -1107,7 +1474,7 @@ class ConfigurationManager:
         logger.info(f"No active config version is set; using '{DEFAULT_VERSION}'")
         return DEFAULT_VERSION
 
-    def list_config_versions(self) -> List[Dict[str, Any]]:
+    def list_config_versions(self, raise_errors: bool = False) -> List[Dict[str, Any]]:
         """
         List all Configuration Profiles.
 
@@ -1173,16 +1540,24 @@ class ConfigurationManager:
 
         except ClientError as e:
             logger.error(f"Error listing config versions: {e}")
+            # Callers that must tell "no profiles" from "could not read" (the review
+            # queue directory fails closed) ask for the error instead of [].
+            if raise_errors:
+                raise
             return []
 
     # ===== BDA Project Tracking Methods =====
 
-    def get_bda_project_arn(self, version: str) -> Optional[str]:
+    def get_bda_project_arn(
+        self, version: str, raise_errors: bool = False
+    ) -> Optional[str]:
         """
         Get the BDA project ARN linked to a config version.
 
         Args:
             version: Config version name
+            raise_errors: Raise a failed read instead of answering None, which
+                reads as "no project linked" and so as pipeline mode.
 
         Returns:
             BDA project ARN string, or None if no project is linked
@@ -1197,6 +1572,8 @@ class ConfigurationManager:
                 return item.get("BdaProjectArn")
             return None
         except ClientError as e:
+            if raise_errors:
+                raise
             logger.error(f"Error getting BDA project ARN for version {version}: {e}")
             return None
 
@@ -1462,6 +1839,8 @@ class ConfigurationManager:
         description: Optional[str] = None,
         created_by: Optional[str] = None,
         revision_notes: Optional[str] = None,
+        *,
+        write_guard: Optional[WriteGuard] = None,
     ) -> bool:
         """
         Handle the updateConfiguration GraphQL mutation.
@@ -1491,6 +1870,12 @@ class ConfigurationManager:
                 profile-created paths; the operation-specific notes ("Reset to
                 default", "Saved as default", "Promoted from profile ...") are
                 left as they are, since those describe what the operation WAS.
+            write_guard: Called before EVERY save this operation makes, with the
+                configuration before the write (``None`` when there is none), the
+                configuration about to be saved and the profile it is saved to.
+                It raises to refuse the write (see :data:`WriteGuard`). Without one
+                the write is not role-checked, which is the case for IAM callers
+                (CLI, SDK); the cross-field checks run either way.
 
         Returns:
             True on success
@@ -1526,6 +1911,13 @@ class ConfigurationManager:
         if isinstance(config_dict, dict):
             config_dict.pop("pricing", None)
             config_dict.pop(_FULL_CONFIG_MARKER, None)
+            # Whether a profile is stack-managed is decided by the stack, which
+            # writes through `save_configuration` directly, and is kept by that
+            # method on a profile already stored as managed. It is not a setting
+            # this operation edits: honoured here, a delta or a Save as carrying
+            # `managed: true` would make a user profile, or a copy of a managed
+            # one, stack-managed and undeletable in the web UI (#1613).
+            config_dict.pop("managed", None)
 
         # Migrate an incoming legacy-shaped config/delta to the current format BEFORE
         # it is merged onto a v0.6 default/current config below. If a v0.5-shaped upload
@@ -1536,10 +1928,15 @@ class ConfigurationManager:
         # reverting to default). Migration is idempotent, so this is a no-op for v0.6
         # input. (saveAsVersion/saveAsDefault/normal-update all merge, so migrate once
         # here at the single choke point.)
+        #
+        # `unstamped_is_current`: the input is a configuration being saved now. An
+        # editor delta never carries `config_format_version`, so without it a
+        # `max_log_events: 5` typed today would go through the v0.10 hop and be
+        # saved as 10; see `migrations.migrate_config`.
         if isinstance(config_dict, dict) and config_dict:
             from .migrations import migrate_config
 
-            config_dict = migrate_config(config_dict)
+            config_dict = migrate_config(config_dict, unstamped_is_current=True)
 
         # === Reset to default ===
         #
@@ -1555,6 +1952,9 @@ class ConfigurationManager:
             logger.info(f"Resetting version {version} to default")
             default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
             if default_config and isinstance(default_config, IDPConfig):
+                if write_guard is not None:
+                    before = self._get_full_config_for_version(version) or default_config
+                    write_guard(before, default_config, version)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     default_config,
@@ -1575,6 +1975,13 @@ class ConfigurationManager:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
             self._reject_inert_gating_hooks(config, config_dict)
+            if write_guard is not None:
+                write_guard(
+                    self._get_full_config_for_version(DEFAULT_VERSION),
+                    config,
+                    DEFAULT_VERSION,
+                )
+                write_guard(self._get_full_config_for_version(version), config, version)
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
                 config,
@@ -1609,6 +2016,12 @@ class ConfigurationManager:
                 # Validate
                 full_config = IDPConfig(**full_dict)
                 self._reject_inert_gating_hooks(full_config, config_dict)
+                if write_guard is not None:
+                    write_guard(
+                        self._get_full_config_for_version(version) or default_config,
+                        full_config,
+                        version,
+                    )
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     full_config,
@@ -1622,6 +2035,8 @@ class ConfigurationManager:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
                 self._reject_inert_gating_hooks(config, config_dict)
+                if write_guard is not None:
+                    write_guard(self._get_full_config_for_version(version), config, version)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     config,
@@ -1662,12 +2077,22 @@ class ConfigurationManager:
         else:
             current_dict = current_config.model_dump(mode="python")
 
+        # The state before this write, for the write guard. With no stored config
+        # the version starts from the default, so that is what it is compared to.
+        before_config = (
+            current_config
+            if current_config is not None or write_guard is None
+            else IDPConfig(**deepcopy(current_dict))
+        )
+
         # Apply deltas: handle null values as "restore to default"
         self._apply_deltas_with_default_restore(current_dict, config_dict, version)
 
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
         self._reject_inert_gating_hooks(updated_config, config_dict)
+        if write_guard is not None:
+            write_guard(before_config, updated_config, version)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
             updated_config,
@@ -2127,3 +2552,90 @@ class ConfigurationManager:
         """
         logger.info("sync_custom_with_new_default called (no-op in full config mode)")
         return old_custom
+
+
+@dataclass(frozen=True)
+class BdaRouting:
+    """Which branch of the unified workflow a document is routed to.
+
+    ``version`` is the profile the routing was read for, ``requested`` that
+    profile's ``use_bda``, and ``project_arn`` the BDA project linked to it (read
+    only when BDA is requested).
+    """
+
+    version: str
+    requested: bool
+    project_arn: Optional[str] = None
+
+    @property
+    def bda(self) -> bool:
+        """True when the run goes down the BDA branch."""
+        return self.requested and bool(self.project_arn)
+
+
+def bda_routing(
+    manager: "ConfigurationManager",
+    config_version: Optional[str],
+    raise_errors: bool = False,
+    config_revision: Optional[int] = None,
+) -> BdaRouting:
+    """How a document processed under ``config_version`` is routed.
+
+    The queue processor's routing rule (``start_workflow`` and
+    ``routing_configuration`` in ``src/lambda/queue_processor/index.py``), stated
+    once for the processChanges resolver, which must know before it requeues a
+    document whether the run will be a BDA one: a BDA run keeps the sections a
+    document already has, so an edit that clears a section's values is not carried
+    through it. The queue processor still carries the rule inline; its unit suites
+    stub ``idp_common.config`` as a plain module, so routing it through here is a
+    change to those suites.
+
+    The rule: an unpinned document is processed under the ACTIVE profile (the
+    queue processor pins it before routing). ``use_bda`` is read from the revision
+    the document is pinned to (``config_revision``), or from the profile head when
+    it has none, and the run goes down the BDA branch when it is set and a BDA
+    project is linked to the profile — a profile that asks for BDA with no project
+    falls back to the pipeline.
+
+    A pinned revision that cannot be read is where the two callers differ. Lenient
+    (the queue processor's behaviour), the profile head is read instead. Strict
+    (``raise_errors``), the failure is raised: the head may disagree with the
+    revision the requeued run will route by whenever the revision becomes readable
+    again, so it is not an answer a caller that refuses rather than guesses can
+    use.
+
+    Args:
+        manager: A ``ConfigurationManager`` for the configuration table.
+        config_version: The profile the document is pinned to, or None.
+        raise_errors: Raise on any failed read instead of degrading to an answer.
+            The queue processor degrades to the pipeline; the resolver refuses.
+        config_revision: The revision of that profile the document is pinned to,
+            or None to read the profile head.
+    """
+    version = config_version or manager.resolve_active_version(
+        raise_errors=raise_errors
+    )
+    if config_revision is None:
+        config = manager.get_merged_configuration(version)
+    else:
+        try:
+            config = manager.get_merged_configuration(
+                version, revision=config_revision
+            )
+        except Exception as e:  # noqa: BLE001 — strict raises, lenient reads the head
+            if raise_errors:
+                raise
+            logger.warning(
+                f"Could not read revision r{config_revision} of configuration "
+                f"profile '{version}' for routing: {e}. Routing from the profile head."
+            )
+            config = manager.get_merged_configuration(version)
+    requested = bool(getattr(config, "use_bda", False)) if config else False
+    if not requested:
+        return BdaRouting(version=version, requested=False)
+    return BdaRouting(
+        version=version,
+        requested=True,
+        project_arn=manager.get_bda_project_arn(version, raise_errors=raise_errors)
+        or None,
+    )

@@ -141,7 +141,7 @@ extraction:
     reasoning_effort: low               # only if a reasoning-capable model is selected
     list_batch_size: 25                 # CEILING on rows per batch; the size used is
                                         # derived from the confidence model's output
-                                        # cap, column count and geometry mode
+                                        # cap, row width and geometry mode
     # NOTE: no max_tokens knob — each confidence call requests an OUTPUT BUDGET:
     # what a correct answer over its fields needs (one leaf per scalar and per list
     # cell, ~40 tokens each, x3 with LLM bounding boxes, plus 1,500 overhead),
@@ -203,8 +203,8 @@ depend on granular assessment for large lists.
 `idp_common.assessment.batching.assess_results_batched`, which:
 
 1. Finds the single largest list field whose length exceeds the effective batch
-   size (derived from the confidence model's output cap, the row's column count and
-   the geometry mode; never larger than the `extraction.confidence.list_batch_size`
+   size (derived from the confidence model's output cap, the row's width in
+   confidence leaves, the geometry mode and the fields every batch repeats; never larger than the `extraction.confidence.list_batch_size`
    ceiling, default 25; and never larger than a **per-family loop ceiling** where one
    was measured — 12 rows for Amazon Nova Lite/Micro, see
    `bedrock.sizing._MODEL_LIST_BATCH_CEILINGS`).
@@ -284,13 +284,25 @@ left 34/68 transaction rows with `confidence: null`). Two additions make advance
 mode complete correctly on the first try:
 
 1. **Token-aware first-pass sizing** (`compute_token_aware_batch_size`). Before
-   the first call the batch size is derived from three inputs: the confidence
+   the first call the batch size is derived from four inputs: the confidence
    model's output cap (`bedrock.model_utils.get_model_max_output_tokens`), the
-   **column count** of the list's widest sampled row, and whether `geometry.mode`
+   **confidence-leaf count** of the list's widest row, whether `geometry.mode`
    is `llm`/`llm_grounded` (a per-cell bounding box roughly triples per-row
-   output). The estimator itself lives in `bedrock.sizing`
+   output), and the estimated output of **everything else the call carries**.
+   The estimator itself lives in `bedrock.sizing`
    (`confidence_rows_per_call`) so this module and `compute_sizing_plan` cannot
    drift apart. Recorded as `derived_batch_size`.
+
+   A row's width is counted at every depth (`bedrock.sizing.confidence_leaf_count`,
+   the same count `confidence_output_budget` uses): the model scores a nested group
+   field by field and a nested list item by item, so a line item holding six scalars
+   and a seven-field group is thirteen wide, not six. And every batch repeats the
+   section's scalars, groups and every other list unsliced, so their output is
+   reserved first: the rows must fit both in the safety fraction of the cap and in
+   what the cap leaves after that fixed part and the per-call overhead. When the
+   fixed part is small the fraction is the tighter bound and nothing changes; a
+   section heavy in scalars, or carrying a second list, gets a smaller batch instead
+   of one planned to overrun the cap.
 
    There is no correct fixed value. On a 10,000-token-cap model without a loop
    ceiling (Nova Pro) with bounding boxes the batch that fits is 41 rows for a
@@ -388,11 +400,12 @@ cannot fire; the condition is detected inside the first retry round instead. The
 count there is unchanged (2 before, 2 after) and the gain is purely diagnostic.
 
 The observed trigger is a class marked `x-aws-idp-multi-instance: true`: the wrapper
-makes the *instance list* the outer list field, so one "row" is a whole document
-instance carrying its own long inner list (a 100-row `Transactions` table). The
-sizer reports that row as `cols=2 per_row~80` and derives a 12-row batch, which is
-wrong by orders of magnitude — **that sizing bug is not fixed** and #894 stays open
-for it.
+makes the *instance list* the outer list field, so one "row" is a whole instance
+(record) carrying its own long inner list (a 100-row `Transactions` table). The
+sizer counts such a row by every leaf it emits, inner cells included, so it is sized
+as the 201-leaf row it is rather than as a one-column one. That makes the first pass
+batch it correctly; it cannot make a single instance whose own output exceeds the
+cap fit, which is the case this guard reports.
 
 ⚠️ **The 900s timeout reported on #894 is not explained by this loop.** The observed
 failure was an Assessment Lambda hitting its 900s wall three times
@@ -410,7 +423,7 @@ bisection did, so a sequence of rounds that each recovered *something* while nev
 bisecting was bounded only by `max_retries`, at a real model call per round. All
 three rungs now consult the deadline before starting work. Whether that was the
 cause of the observed 900s timeouts is still **not established** — no reproduction
-exists — so #894 remains open for it, and for the batch sizer.
+exists.
 
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
@@ -447,6 +460,98 @@ the standalone and in-shard paths: it confirms every extracted value has a real
 box, emitting `assessment_confidence_out_of_range` / `assessment_geometry_incomplete`
 for anything structurally wrong.
 
+The geometry half asks a **different question of a list row than of a scalar
+field**, and the asymmetry is deliberate:
+
+| Shape | Reports when |
+|---|---|
+| List row | **any** scored row holding a populated value carries no box |
+| Scalar / group field | **no populated field** in the section carries a box |
+
+Both halves test the **leaf's own** value, so a scored but empty cell counts for
+neither: an absent value has no place on the page for a box to sit, and a missing
+box is the correct outcome rather than a finding. ⚠️ That narrows the list half as
+well — a section whose only box-less scored leaves sit in empty cells reported
+before and is silent now. Under `ocr_only`, neither half reports when no page carried
+OCR geometry: that mode derives every box from value-matching, so a box-less leaf
+means no match was attempted rather than that one failed. Both callers — the
+assessment service and the extraction service — pass that fact through.
+
+⚠️ The suppression is scoped to `ocr_only` because only there is the premise true.
+Under `llm_grounded` the model emits the boxes and OCR only corrects them, so a
+box-less leaf on a backend carrying no geometry is a genuine model omission — and
+it still reports, with `root_cause` naming the model rather than the match.
+
+The scalar side was counted in neither half before
+([#1520](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1520)) —
+the counter lived inside the `isinstance(data_val, list)` branch — so the rung
+could not fire for a section whose fields are all scalars, which is most of them.
+Measured over 571 real sections: **no** list leaf was scored-but-box-less, while
+495 scalar ones were, across 222 sections. The rung was counting the case that does
+not arise and was blind to the one that does.
+
+⚠️ **The scalar threshold is "nothing was located", not "something is missing",
+and loosening it is not the harmless improvement it looks like.** Reporting per
+leaf fires on 40% of real sections, and the largest single contributor is
+`Language` — values like "English" — followed by `LetterType`, `MemoType` and
+`FormType`. Those values are the model's characterization of the document rather
+than text on the page, so no box can exist for them and their absence is the
+correct outcome rather than a defect. An `info` note that is usually about nothing
+teaches an operator to ignore the surface. "No populated field in this section
+carries a box" is a different statement and worth making: the highlight feature
+produced nothing there at all, which a reviewer opening the section sees and cannot
+otherwise explain. It fires on 2% of the same corpus, and the shape mirrors the
+`scored_fields <= 0` condition one rung down so the two read alike.
+
+### Omitted fields, as distinct from unscored rows
+
+The recovery and reporting above are built around list **rows**, and a populated
+**non-list** field the response omitted outright was invisible to all of it
+([#1474](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1474)).
+Three separate mechanisms each stopped short of it, which is why a section could
+record confidence for 3 of its 6 populated fields and still report unqualified
+success with a tick beside Confidence:
+
+- `reconcile_assessment_to_data` padded list fields only, so the field got no
+  placeholder — and since geometry grounding attaches a box per confidence leaf,
+  no leaf meant no bounding box either.
+- Both recovery call sites gate the ladder on there being a list field to retry
+  rows *of* (`if all_list_fields:` in `assess_results_batched`; an early return
+  whose own comment said "scalar-only classes always land here" in the integrated
+  path), so this shape reached **no** rung at all.
+- The gate's scalar branch range-checked the leaves it *found*, and an omitted
+  field yields none. The coverage rung below it could not reach the section
+  either: its denominator counts list rows and it is gated on that being
+  non-zero, so a form with no list attribute has a zero denominator.
+
+The cause measured was not truncation — the response was valid JSON carrying the
+first three keys, and the same model on the same class answered about all ten
+fields for the next section of the same packet. So `_retry_missing_scalars` is one
+same-model rung asking about only the still-missing fields, bounded by
+`max_retries` and stopping on a round that recovers nothing; it does **not**
+escalate, because `escalation_rounds` is a bound shared with the row ladder and
+the evidence is that the same model can answer. Whatever survives it is reported
+as `assessment_fields_unscored` (**warning**; **error** when no populated field in
+the section is scored) and counted in `split_stats` as `scalar_retry_calls`,
+`fields_recovered_by_retry` and `unrecoverable_fields`.
+
+Two design points worth not re-deciding by accident:
+
+- **The findings stay out of `gaps`.** That dict is keyed field → row *index* and
+  its lengths are the numerator `coverage_from_gaps` divides by a list-row
+  denominator, so a scalar entry there makes `unscored_rows` exceed
+  `expected_rows` and drives `scored_rows` negative. The coverage denominator is
+  therefore **unchanged**, and `conf_coverage` still means what the benchmark
+  grids measured; whether it should also count scalar leaves is a separate
+  decision with a published-metric consequence.
+- **Scalar padding belongs to the final assembly only.** `reconcile_assessment_to_data`
+  takes `pad_missing_scalars`, and the intermediate reconciles reach it through
+  `_reconcile_rows_only` with padding off. Those callers hand their non-big fields
+  on as a slice's `scalars`, and the batched path takes the first slice whose
+  `scalars` is non-empty — so padding per chunk would let a first chunk that
+  omitted a scalar shadow a later chunk's real score with a null placeholder,
+  losing data the pipeline already had.
+
 It also reports **partial coverage**
 ([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)
 item 3). The gate already computed which rows carry no confidence, but every
@@ -454,14 +559,15 @@ caller discarded that, so a section could return a fraction of its rows scored a
 still report unqualified success (one run scored 1,146 leaves where 5-page shards
 scored 4,807 — ~24% coverage, no issue raised; the *reason* coverage fell rather
 than failing was never established, and this issue makes no claim about it). When
-unscored rows exceed **5%** of the extracted list rows the gate emits
+unscored rows reach **5%** of the extracted list rows **or 10 unscored rows in
+absolute terms**, whichever comes first, the gate emits
 `assessment_coverage_incomplete` — **warning** up to 25% unscored, **error** at or
 above 25% **and** at least **10 unscored rows**, and **error** at any list length
 when *no* row was scored — carrying `expected_rows`, `scored_rows`,
 `unscored_rows` and a per-field breakdown of both the unscored rows and the
 expected ones.
 
-Four deliberate choices in those thresholds:
+Five deliberate choices in those thresholds:
 
 - **5%, not 0%.** Reconciliation pads one assessment entry per extracted row, so a
   run whose model scored every row lands at 0%. Small residual shortfalls are also
@@ -472,6 +578,15 @@ Four deliberate choices in those thresholds:
   any section totalling 20 list rows or fewer**. Whether a healthy run ever produces
   that single unscored row is measured, not reasoned, and the answer is that it does
   not — see *Coverage: measured* below.
+- **An absolute ceiling of 10 unscored rows on the warning rung.** The 5% above is a
+  share, and the second half of its justification — "a 1-2 row gap is
+  `assessment_incomplete`'s business" — is not: it names an absolute quantity, which a
+  ratio then scales with the document. Expressed only as a fraction the rung passes 39
+  unscored rows in silence at 800 rows and 159 at 3,200. So the shortfall is read both
+  ways and whichever rung speaks first wins. The ceiling is the error rung's absolute
+  floor read in the other direction rather than a second tuned number, and what it
+  costs is measured — see *The shape of the warning fraction, and the ceiling under
+  it* below.
 - **An absolute floor of 10 unscored rows on the error rung.** A fraction alone makes
   short lists fire hardest: one unscored row in a four-row list is 25%, and an error
   renders the section red ("Incomplete") in the Sections panel. Short list attributes
@@ -496,7 +611,16 @@ Four deliberate choices in those thresholds:
   list field), and it would break `assessment_schema_mismatch`'s "emitted alone"
   contract by appending a coverage note under it. Callers pass the ladder's issues in
   as `audit_explainability(..., ladder_issues=...)`; a `warning`/`info` ladder issue
-  does not suppress it.
+  does not suppress it. The absolute ceiling widens that last overlap, and it is
+  accepted rather than overlooked: a shortfall of 10 rows or more on a long list now
+  emits a coverage warning where the fraction alone was silent, so a section can
+  carry both a `warning`-severity `assessment_incomplete` and a coverage warning
+  about the same rows. The double-count argument above is about an **error** the
+  ladder has already diagnosed; two warnings naming the same rows cost a reader
+  nothing they cannot reconcile. How often the pair actually occurs is not answerable
+  from the grids measured below — 6 runs cross the ceiling without crossing 5%, and
+  `processing_issues` is null on every one of those grids, so whether any of the 6
+  also carried a ladder warning is unrecorded.
 
 Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
@@ -509,17 +633,40 @@ and rendered in the extraction processing report.
 It calls `audit_explainability` rather than re-deriving "is this row scored?", so a
 measurement and the guard that ships are one computation; `audit_explainability`
 puts the very same dict in the issue's `details`. Use it whenever you want the
-number unconditionally, because the issue only carries it once the shortfall has
-already crossed 5%, which is the reason nothing recorded coverage on healthy runs
-before it existed.
+number unconditionally, because the issue only carries it once one of the rungs has
+fired, which is the reason nothing recorded coverage on healthy runs before it
+existed.
 
 `expected_rows == 0` (a section with no list attribute) means coverage is
 **undefined**, not perfect: `scored_fraction` is `None` so an aggregate drops it. A
 corpus mean that scored those as 1.0 would be reporting the share of list-free
 documents. The gate declines to fire there for the same reason — there is nothing to
-score, and in the committed grids every such run also records `rows_extracted == 0`,
-i.e. extraction returned no list at all, which is an extraction finding rather than
-a coverage one.
+score, which is an extraction finding rather than a coverage one.
+
+⚠️ **An undefined denominator means there was no list to walk, and that is not the
+same as nothing having gone wrong.** The walk counts the rows of list-valued
+attributes, so it reports no denominator precisely when the attribute holds no
+list — which happens both on a document that legitimately has no rows and on one
+where the model returned something else entirely in a field the schema declares as
+an array. The coverage rung cannot tell those apart and is right to stay quiet in
+both: the finding belongs to extraction, and
+`extraction_list_field_not_a_list` is what reports it
+([#1505](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1505)).
+
+The worked case is worth knowing because the figure beside it misleads. Four
+`coresynth__extraction-model-sonnet55` runs on `med_narrow.pdf` carry an undefined
+denominator while `rows_extracted` reads **2 of 400** — which looks like rows the
+walk could not see, and is not: `Transactions` came back as a prose refusal naming
+`SEQ00000` and `SEQ00399`, and the benchmark scorer's identifier scan counted those
+two quoted ids as rows. Zero rows were extracted, so `expected_rows == 0` is the
+correct answer and the row count is the wrong one. ⚠️ **Do not read a non-zero
+`rows_extracted` beside an undefined denominator as a coverage gap** — check what
+the field actually holds first.
+`benchmarks/tests/test_coverage_threshold_evidence.py::test_an_undefined_coverage_run_extracted_nothing`
+carves those four out by grid **and** count, so a fifth instance or the same shape on
+another model fails there, and
+`test_row_identity_collapse.py::test_a_prose_refusal_inflates_the_row_count`
+executes the scan to show where the 2 comes from.
 
 The benchmark harness records it per document
 (`benchmarks/harness/analyze.py::score_confidence_coverage` → `conf_rows_expected`,
@@ -532,22 +679,36 @@ one document at 0.
 ##### The observed distribution
 
 Computed over every committed `benchmarks/results/*/*/summary.json` row that
-carries the metric — 6,672 coverage-bearing document-runs across 38 grids,
-v0.6.8 → v0.6.11, on Claude and Nova extraction and confidence models — and
+carries the metric — **10,240 coverage-bearing document-runs across 150 grids,
+v0.6.8 → v0.6.12**, on Claude, Nova and GPT extraction and confidence models — and
 re-derived on every test run by
 `benchmarks/tests/test_coverage_threshold_evidence.py`, which classifies each
 recorded `(expected, unscored)` pair by calling `audit_explainability` itself rather
 than re-stating the rungs:
 
+Shares are over the **10,033 runs where coverage is defined**; the other 207 record an
+undefined denominator and are counted in neither column (see the warning above for what
+that does and does not mean).
+
 | Shortfall | Runs | Share |
 |---|---|---|
-| exactly 0 unscored rows — no issue | 6,493 | 97.32% |
-| above 0 but below the 5% rung — no issue | 135 | 2.02% |
-| the rung fires | 44 | 0.66% |
-| …of those, at **warning** severity | 16 | 0.24% |
-| …of those, at **error** severity | 28 | 0.42% |
-| ……by the fraction **and** the 10-row floor | 7 | 0.10% |
-| ……by having no scored row at all | 21 | 0.31% |
+| exactly 0 unscored rows — no issue | 9,769 | 97.37% |
+| above 0 but below both warning rungs — no issue | 200 | 1.99% |
+| the gate fires | 64 | 0.64% |
+| …of those, at **warning** severity | 27 | 0.27% |
+| ……reported by the 10-row ceiling alone, under 5% | 6 | 0.06% |
+| …of those, at **error** severity | 37 | 0.37% |
+| ……by the fraction **and** the 10-row floor | 9 | 0.09% |
+| ……by having no scored row at all | 28 | 0.28% |
+
+⚠️ **The residual the warning rung leaves is now bounded in rows, not proportional.**
+Before the ceiling, the largest shortfall this rung said nothing about was **115
+unscored rows of 3,200** (3.6%) on `scale_3200.pdf`, against 24 of 800 (3.0%) when it
+was last measured — the share barely moved while the row count grew 4.8×, because the
+document grew 4×, which is what a purely multiplicative rung does. With the 10-row
+ceiling the largest silent shortfall over this whole corpus is **6 unscored rows of
+400** (1.5%), and it cannot exceed 9 whatever the list's length
+([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The two error paths are disjoint on this corpus, and together they account for
 every run at or above 25%. The median, p90 and p95 are all exactly 0; p99 is
@@ -557,10 +718,10 @@ reconciliation pads one assessment entry per extracted row — holds as an obser
 property, not only a code-path reading.
 
 **On short lists, which is the regime #997 asked about, the warning rung has not
-been observed firing on a partial gap at all.** 2,452 single-section runs extracted
+been observed firing on a partial gap at all.** 3,511 runs extracted
 20 rows or fewer, the range where one unscored row crosses 5%. The number of those
 showing a *partial* shortfall — some rows scored, at least one not — is **zero**.
-The 21 that do fire there have `scored_rows == 0`: no confidence anywhere in the
+The 28 that do fire there have `scored_rows == 0`: no confidence anywhere in the
 section, each one `realkie`'s `LineItems` with the document's scalar block scored
 and the list not. Those are the strongest true positives the gate can report, and
 they are why `scored_rows == 0` is now an error rather than being held at warning by
@@ -585,14 +746,19 @@ would score the same section at `(cells − 1) / cells`. A list nested *inside* 
 group attribute is not a top-level list and so contributes to neither the numerator
 nor the denominator.
 
-##### The shape of the warning fraction, and the residual it leaves
+##### The shape of the warning fraction, and the ceiling under it
 
-The 5% rung is purely multiplicative, and one half of its justification is not: "a
-1-2 row gap on an 800-row table is `assessment_incomplete`'s business" names an
-**absolute** quantity, which a ratio then scales with the list. The number of
-unscored rows that emits no coverage issue is therefore 0 at `N ≤ 20`, 19 at
-`N = 400`, 39 at `N = 800` and 199 at `N = 4,000`. Measured, 135 runs sit in that
-band and the largest is **24 unscored rows of 800** (3.0%).
+The 5% rung is multiplicative and one half of its justification is not: "a 1-2 row
+gap on an 800-row table is `assessment_incomplete`'s business" names an **absolute**
+quantity, which a ratio then scales with the list. A rung expressed only as a
+fraction therefore leaves a silent band proportional to the section — 0 rows at
+`N ≤ 20`, 19 at `N = 400`, 39 at `N = 800`, 159 at `N = 3,200`, 199 at
+`N = 4,000` — and that band was observed growing exactly that way: the largest silent
+shortfall in the committed grids was **24 unscored rows of 800** (3.0%) until a
+3,200-row document was benchmarked, at which point it was **115 of 3,200** (3.6%).
+The count grew 4.8× on a 4× larger document at a near-identical share, so 115 is the
+same state of the world as 24 rather than a worse one
+([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The additive backstop the sentence relies on is real but narrower than it reads:
 `split_stats["unrecoverable_rows"]` is computed for the **largest** list field only,
@@ -600,23 +766,63 @@ so a residual confined to a smaller list attribute reaches neither
 `assessment_incomplete` nor — being divided by the section-wide total — the 5% rung.
 `expected_rows_by_field` exists so a recorded run can be read for that case.
 
-That residual is left as-is rather than fixed with a second constant, because
-choosing an absolute warning ceiling would mean picking a number the available data
-cannot distinguish: the committed grids do not say whether those 135 runs were
-already reported by the ladder. `processing_issues` postdates every one of them
-(null on all rows), so the recorded shortfall is the symptom without the product's
-verdict beside it, and the firing shares in the table are an **upper bound** on how
-often the rung actually spoke — `_ladder_reported_error` suppresses it whenever the
-ladder got there first. The `processing_issues`/`processing_issue_codes` columns
-added in #1378 answer this directly on the next grid, at no extra cost.
+So the warning rung reads the shortfall in absolute rows as well, at a ceiling of
+**10 unscored rows**, and the band is now bounded at 9 rows whatever the document's
+size. The number is **derived, not tuned**:
+`_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS` already names "more unscored rows than
+a reviewer can be assumed to spot-check by hand", which the error rung reads in one
+direction (below it, a large proportion of a tiny list must not render a section red)
+and the warning rung needs in the other (at or above it, that much unreviewable data
+is worth saying whatever the list length). This is the move
+[#1361](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1361)
+made for the sibling check in `extraction/service.py`, where `_OCR_ROW_GAP_MIN` is
+defined as `_OCR_ROW_ESTIMATE_MIN` for the same reason.
+
+What the derived value costs is measured over the same artifacts, at 10,033 runs with
+coverage defined once the v0.6.12 grids are included (PR #1487, where the 3,200-row
+document lives). 206 runs sit in the silent band, distributed by unscored rows as 1
+(62 runs), 2 (18), 3 (94), 4 (17), 5 (7), 6 (2), 12 (4), 24 (1), 115 (1) — **empty
+between 7 and 11**, so the data cannot distinguish any ceiling in `[7, 12]` and the
+derived 10 falls inside that band. The curve of what each candidate would newly
+report:
+
+| Ceiling | Newly reported runs | Share of defined runs | Warning-rung firing rate after | Largest silent shortfall after |
+|---:|---:|---:|---:|---:|
+| 3 | 126 | 1.2559% | 1.4652% | 2 |
+| 5 | 15 | 0.1495% | 0.3588% | 4 |
+| **10** (shipped) | **6** | **0.0598%** | **0.2691%** | **6** |
+| 30 | 1 | 0.0100% | 0.2193% | 24 |
+| none | 0 | 0 | 0.2093% | 115 |
+
+The mass is at 1–4 unscored rows, which is the band the fraction deliberately leaves
+to `assessment_incomplete`, so a ceiling of 5 would buy a 4-row band at 2.5× the new
+firing and one of 3 a 2-row band at 21× it, where 10 closes the part that grows with
+the document for 6 runs. 30 — the sibling check's own constant, `_OCR_ROW_GAP_MIN`,
+which leaves it a silent band of 29 rows — would leave the 24-of-800 shortfall
+silent; that one absorbs an additive OCR imprecision (a column heading reprinted per
+page) and this one absorbs nothing comparable, because reconciliation pads one
+assessment entry per extracted row and healthy runs land at exactly 0.
+
+Severity at the ceiling is always `warning`, structurally: a run crossing the ceiling
+without crossing 5% is below the 25% error fraction by arithmetic, and
+`scored_rows == 0` implies a shortfall of 1.0, so neither error path is reachable
+from the ceiling alone. `extraction.row_shortfall_action` does not govern this code
+either, so no deployment can turn it into a failure.
+
+One limit on every firing share above. `processing_issues` postdates every grid
+measured here (null on all rows), so the recorded shortfall is the symptom without
+the product's verdict beside it, and the shares are an **upper bound** on how often
+the gate actually spoke — `_ladder_reported_error` suppresses it whenever the ladder
+got there first. The `processing_issues`/`processing_issue_codes` columns added in
+#1378 answer this directly on the next grid, at no extra cost.
 
 ##### The other limits on the figures above
 
 - **A document-level ratio can dilute a per-section one.** The harness sums over a
-  document's sections; the gate runs per section. 6,228 of the 6,672 runs are
+  document's sections; the gate runs per section. 9,992 of the 10,033 runs are
   single-section (or record no section count), where the two coincide, and a 0
-  aggregate implies 0 in every section — so the 97.32% figure is exact rather than
-  averaged. For the 179 nonzero runs the recorded ratio is a *lower* bound on the
+  aggregate implies 0 in every section — so the 97.37% figure is exact rather than
+  averaged. For the 264 nonzero runs the recorded ratio is a *lower* bound on the
   worst section's.
 - **No multi-record corpus has been run.** The measured row shapes are flat (three
   or eight scalar cells from
@@ -634,36 +840,69 @@ added in #1378 answer this directly on the next grid, at no extra cost.
 
 ### Lambda wall-clock budget & resume safety
 
-The escalation ladder adds sequential model calls inside the 900s
-Extraction/Assessment Lambdas. To avoid a hard timeout, both handlers thread the
-Lambda's `context.get_remaining_time_in_millis()` down as an absolute
-`deadline_epoch`. Every path that can spend a model call consults it, and all of
-them price a call at `_ESTIMATED_MODEL_CALL_SECONDS` (60s) or the last measured
-duration, whichever is larger, against the remaining time minus a 90s safety
-reserve:
+The primary confidence pass and the escalation ladder behind it both spend model
+calls inside the 900s Extraction/Assessment Lambdas. To avoid a hard timeout, both
+handlers thread the Lambda's `context.get_remaining_time_in_millis()` down as an
+absolute `deadline_epoch`. Every path that can spend a model call consults it
+against the remaining time minus a 90s safety reserve, pricing one call at
+`_ESTIMATED_MODEL_CALL_SECONDS` (60s):
 
-| Where | Granularity | Added |
-|---|---|---|
-| Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | 1.5 |
-| Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | #958 |
-| Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | 1.5 |
+| Where | Granularity | Price of one call | Added |
+|---|---|---|---|
+| Every batch of the primary pass's sequential loop (`assess_results_batched`) | per batch | flat 60s | #1488 |
+| The cache-warming batch that precedes a concurrent fan-out | per pass | flat 60s | #1488 |
+| Each wave of the concurrent fan-out (up to `max_concurrent_batches` batches) | **per wave** | flat 60s | #1488 |
+| Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | `max(measured, 60s)` | 1.5 |
+| Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | `max(measured, 60s)` | #958 |
+| Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | flat 60s | 1.5 |
 
-When a check fails the ladder stops, keeps everything already recovered, and sets
-`deadline_reached` — converting a would-be timeout into a soft, flagged, complete
-document.
+**60s is a floor, not a ceiling.** Which rows have more than the floor to work
+with is a property of where the check sits.
+The two `max(measured, 60s)` rows have a just-completed
+call of their own to measure — the call that truncated, and the previous recovery
+chunk — and they floor it because the next call is the one that matters and these
+guards exist for the slow shapes. The four flat rows have no measurement in hand:
+the primary pass's first batch has made no call yet, and the fan-out's waves and
+the escalation round are priced before they start. On those paths under-pricing a
+slow model is self-correcting rather than unbounded, because each one re-reads the
+clock before its next dispatch, so a model that ran long is charged in full on the
+next decision.
 
-The retry rung was the last to be covered: until #958 it stopped only after
-`max_retries` rounds or on a round that recovered nothing, so rounds that each made
-partial progress were unbounded in wall-clock terms. Note **why that check is per
-chunk and not per round.** A round-level check has to price a whole round before
-making any of its calls, and the only safe price is a worst case — chunks × 60s.
-That is not a bound on time, it is a cap on chunk COUNT: with 800s remaining it
-refuses any round past 11 chunks however fast the model actually is, which for a
-200-row list at a token-aware batch size of 4 discarded recovery that measurably
-took under a second and turned a clean section into an error-severity
-`assessment_incomplete`. Pricing one call at a time bounds the wall clock exactly,
-keeps every row the budget did cover, and treats both rungs alike — before #958 the
-cheap same-model rung could be refused while the slower, dearer escalation rung
+When a check fails the pass or the ladder stops, keeps everything already scored or
+recovered, and sets `deadline_reached` — converting a would-be timeout into a soft,
+flagged, complete document. On the primary pass the batches it does not run are
+always a **trailing suffix**, because rows accumulate positionally and dropping a
+middle batch would slide later rows' confidence and bounding boxes onto earlier
+rows.
+
+The granularity column is the honest unit: the check bounds a **dispatch unit**,
+not a call. Every path reaches the model through `_assess_slice_adaptive`, whose
+first call is unconditional once the unit has been cleared, and a truncating model
+bisects from there — each further split is checked, but a cleared split makes two
+calls. So a chunk the model keeps truncating can finish roughly (bisection depth ×
+one call) past the point it was cleared for. That residual is deliberate; pricing a
+prospective bisection tree would reintroduce the count cap described next.
+
+**Why none of these checks prices more than one call at a time.** A check that
+covers a whole round, or a whole fan-out, has to price it before making any of its
+calls, and the only safe price is a worst case — chunks × 60s. That is not a bound
+on time, it is a cap on chunk COUNT: with 800s remaining it refuses any round past
+11 chunks however fast the model actually is, which for a 200-row list at a
+token-aware batch size of 4 discarded recovery that measurably took under a second
+and turned a clean section into an error-severity `assessment_incomplete`. Pricing
+one call at a time bounds the wall clock exactly and keeps every row the budget did
+cover. The concurrent fan-out is held to the same rule, which is why it dispatches
+in waves and re-reads the clock before each: a wave runs concurrently so it costs
+about one call, and calls that return faster than the estimate leave the budget
+intact, so the next wave is allowed on the evidence instead of refused on the
+guess. The price of the wave boundary is the straggler — a wave is only as fast as
+its slowest call, where one continuous `pool.map` refills a free worker the moment
+it frees up — which buys the observation point that makes the budget
+self-correcting. That price is paid only where there is a budget to observe: a
+caller with no `deadline_epoch` (a local run, a notebook) keeps the single
+continuous map, because for it the guard is inert and there is nothing to re-read.
+The rule also treats the rungs alike: before #958 the cheap
+same-model rung could be refused while the slower, dearer escalation rung
 proceeded, because the two sized their chunks differently.
 
 **What an operator sees.** With rows still unscored the section reports
@@ -671,7 +910,28 @@ proceeded, because the two sized their chunks differently.
 remedy — more Lambda time, or less work per section. It does **not** report
 `assessment_deadline_reached`: that rung sits below `assessment_incomplete` in the
 severity ladder and the guard only fires while rows are missing, so the warning is
-reachable only when a later rung went on to score every row anyway. As defense in depth, the Step Functions
+reachable only when a later rung went on to score every row anyway.
+
+Per row, the text an operator reads beside the empty confidence in the UI names
+the same cause: a row whose batch was never dispatched carries
+`_UNASSESSED_DEADLINE_REASON` ("the Lambda invocation time budget was reached
+before this row's confidence batch was dispatched"), where a row the model was
+asked about and answered short carries `_UNASSESSED_SHORT_RESPONSE_REASON`
+("assessment returned fewer items than were extracted"). The boundary is exact
+rather than inferred — everything past the last dispatched chunk is the
+never-dispatched suffix — and the distinction matters because the two have
+different remedies: the first is the time budget, the second is the model's
+output budget.
+
+`batch_count` in `metadata.assessment_batch_split_stats` counts the batches that
+were **dispatched**, not the batches that were planned, which is how it stays
+consistent with `deadline_reached`; the processing report renders it as
+"Confidence list batches: N" and the UI as "ran in N batch(es)". `0` is the
+honest value for a pass whose cache-warming batch was already refused. Note that
+`assessment_parsing_succeeded` is about whether the model's JSON could be *read*
+and is `True` on such a pass — it is not evidence that any call was made.
+
+As defense in depth, the Step Functions
 `ExtractionStep`/`AssessmentStep`/`ShardExtractionStep` retry sets include
 `States.Timeout` / `Lambda.Unknown`, so a genuine timeout is retried and resumes
 via the per-shard S3 persistence and the Assessment step's "skip if
@@ -968,15 +1228,112 @@ enhanced_assessment = ground_assessment_geometry(
 Key behaviors:
 
 - **Tiered matching** of each extracted value to OCR `lines[]`: exact → value-in-line →
-  multi-line span (boxes unioned) → line fragment → token-overlap fuzzy (≥ 0.6).
+  **number found only inside a longer number** → multi-line span (boxes unioned) →
+  same date/number/phone by type → line fragment covering at least half the value →
+  token-overlap fuzzy (≥ 0.6) → character similarity (≥ 0.8) → **fragment covering less
+  than half the value**, ranked last.
+
+  That last tier is the whole of
+  [#1519](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1519).
+  A fragment used to rank as an ordinary line-fragment match with no size
+  requirement, which put boxes on a single digit for a form id, on a single letter
+  for an author name, and on a different author entirely. It also *suppressed* the
+  right answer: any candidate short-circuits the fuzzy and character passes, so
+  where OCR had misread one character inside a sentence, a 29%-coverage column
+  header won and the line resembling the whole value — 0.9706 similarity — was never
+  computed.
+
+  **It is demoted rather than dropped, and that is measured.** Dropping sub-half
+  fragments removes 14 wrong boxes and 48 right ones: most of them point at a value
+  that genuinely is on the page, spread over several lines (a three-line address, a
+  specification assembled from consecutive rows). No absolute-size rule does better
+  than break-even, because short real content is indistinguishable from short junk —
+  the property that separates them is spatial. Ranking the fragment below the
+  whole-string tiers instead loses **no** box and moves 10 onto a better line, over
+  50 measured sections.
+
+  ⚠️ The cost is real and is paid elsewhere: the character-similarity pass now runs
+  whenever no whole-string candidate exists, and it is an O(n·m) dynamic program per
+  line. `_levenshtein_can_reach` is an **exact** O(1) ceiling in front of it
+  (`similarity ≤ min(len)/max(len)`, computed over the same stripping the scorer
+  applies), without which grounding went from 4.6s to 25.4s over those sections, 98%
+  of it in that one function. Keep the guard if you touch the tiers.
+
+  The **number inside a longer number** tier (`_TIER_SUBSTRING_EMBEDDED`) is
+  [#1565](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1565).
+  A number value is searched in several surface forms (`75.0` also as `75` and
+  `75.00`), and a short form is contained by coincidence in any longer number — `75`
+  in an invoice id `08337510`, `6.0` in `126.00`. As an ordinary value-in-line hit it
+  tied with the line that prints the value, so reading order or proximity to the LLM
+  box chose between them. A hit now counts as a whole token only when neither
+  neighbour continues a digit run: an ASCII digit, or a `.` `,` or date `/`
+  followed by a digit, joins the run; a space, `$`, `%`, a unit, a sign, a hyphen, a
+  colon, a ratio's slash or closing punctuation does not. Three refinements keep
+  correct boxes that rule alone would demote:
+
+  - A comma followed by one or two digits is a **decimal comma**, so `1250` in
+    `1250,00` is whole. No surface form renders a decimal comma, so for a European
+    amount the integer part is the only form that matches at all.
+  - An occurrence inside a longer number that *is* the value with more zeros
+    (`075.00`, `75.000`, an item number `0075`; compared unsigned) is whole.
+  - Only a **date's slash** joins: two slashes (`12/17/2024`), or one beside a
+    four-digit year (`12/2024`). `120/80`, `75/100`, `10/325` and `3/12` print
+    numbers that are values in their own right, so their slash is a boundary.
+
+  **It is demoted by exactly one place, not rejected.** A digit run holding the value
+  is sometimes the right line — the model dropped the cents (`272243` for
+  `272243.34`) or misread one digit of a long number — and there the box is how a
+  reviewer finds the error. Placed directly below value-in-line and above span, the
+  tier changes one comparison only: a whole-token line beats an embedded one. With
+  nothing better the embedded line still supplies the box, and the same passes are
+  skipped as for any value-in-line hit. A date's slash is in the joining set because
+  a date component is not a free-standing number; without it, `17` for `$17.49` found
+  a "whole" `17` inside `12/17/2024`. A colon (times) was measured in the joining set
+  as well and did worse, so it is a boundary.
+
+  ⚠️ **The rule reads one line at a time, so it has a known cost.** Where the right
+  line holds the value embedded and another line prints the same digits whole, the
+  whole line now wins even when the LLM box points at the right one. That is the
+  intended outcome for a coincidence, and the wrong one for three shapes the rule
+  cannot tell apart from it: a list written without spaces (`20` in `10,20,30` reads
+  as part of one number), a value that is itself a date component (a month `12` in
+  `12/2024`), and a value the model truncated (`14` for `14.8` beside `14 days`).
+  The date-slash test also accepts a residual: a ratio written in a date's shape
+  (`1/1000`, `FY 2024/25`) is read as a date, so in a section that also prints a
+  date with a slash suffix it can lose its box to that line.
+
+  **Measured on lines derived from the PDF text layer of the repository's sample
+  documents, not on Textract output.** Over the text-layer PDFs in `samples/` (97
+  pages, cut into sections of up to 3 pages), every printed number of two or more
+  digits outside a date was grounded as a value, as a string and as a float, with
+  `schema_hint={"type": "number"}`, plus two perturbed sets — decimals dropped, and a
+  long number missing a digit — that model values no line prints. With no
+  disambiguator 1,608 boxes moved onto a line printing the value and 4 moved off
+  one; with a noisy LLM box (proximity), 70 moved on and 31 off. Every loss was a
+  perturbed value. That zero for printed values is weak evidence on its own: the
+  measurement judges a box by whether its line prints the value as a whole token,
+  so it cannot tell two lines printing the same number apart, and its value set has
+  no space-free lists, date components, ratios, European decimal commas or
+  zero-padded amounts. Those shapes are pinned by the tests in
+  `test_ocr_grounding.py` instead. The harness was ad hoc and is not kept in the
+  repository.
+
+  `geometry_source` changes only where a line holds the value's own form embedded
+  and another of its forms whole (`1250` against `Ref 12500 total 1,250`): the box is
+  the same, and the tag now names the form that matched whole, `"ocr-normalized"`.
+  Over the same sample documents (all but the 17-page fund factsheet, left out of
+  that pass for time) none of 11,466 unchanged boxes changed tag.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).
 - **Coordinates stay 0–1**: `pageData` geometry is already normalized, so grounded boxes skip
   the 0–1000 → 0–1 rescale that LLM boxes go through. No mixed scales in `explainability_info`.
-- **Additive output**: a matched field gets `geometry_source` (`"ocr"`/`"ocr-paragraph"`/
-  `"llm"`) and, when available, `ocr_confidence` (0–1). The LLM `confidence`/`confidence_reason`
-  are never modified, so HITL and confidence alerts are unaffected.
+- **Additive output**: a matched field gets `geometry_source`
+  (`"ocr"`/`"ocr-paragraph"`/`"ocr-normalized"`/`"ocr-fuzzy"`/`"ocr-weak"`/`"llm"`) and, when available,
+  `ocr_confidence` (0–1). `"ocr-weak"` marks a box whose matched line covers less than
+  half the value, which is how to count such boxes in a stored artifact without
+  re-deriving the tiers. The LLM `confidence`/`confidence_reason` are never modified,
+  so HITL and confidence alerts are unaffected.
 - **Config gate**: `extraction.geometry.mode` (`ocr_only` default | `llm_grounded` | `llm` | `off`). The legacy `assessment.ground_geometry_in_ocr: false` maps to `llm`; old configs are migrated on read.
 - **Safe fallback**: absent `pageData.json`, `geometryAvailable: false`, or no value match →
   keep the LLM-estimated box (identical to prior behavior). `pageData.json` is read from S3, so

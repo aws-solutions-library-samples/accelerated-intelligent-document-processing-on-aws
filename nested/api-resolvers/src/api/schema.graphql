@@ -453,6 +453,7 @@ type UpdateConfigurationResponse @aws_cognito_user_pools @aws_iam {
   message: String
   versionName: String
   error: ConfigurationError
+  warnings: [String!]
 }
 
 type GenerateRuleJsonResponse @aws_cognito_user_pools {
@@ -1024,6 +1025,16 @@ type TestSet @aws_cognito_user_pools @aws_iam {
   error: String
   lastAddResult: String
   documentClassType: DocumentClassType
+  # Documents whose every section is human-reviewed, stored when the set's
+  # annotation queue is opened and kept current by completeSectionReview. Absent
+  # until the queue is first opened.
+  reviewedDocs: Int
+  queueCountsAt: AWSDateTime
+  # READY when the set's queue summaries are current; BUILDING while they are built
+  # in the background (listing the sets requests the build).
+  summaryStatus: String
+  # How long an annotation claim lasts before it returns to the queue.
+  claimLeaseMinutes: Int
   # Configuration version Test Studio should preselect when this test set is
   # chosen for a run. Optional: when absent, the UI falls back to matching a
   # config version whose name equals the test set id (the convention the
@@ -1282,6 +1293,16 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   # sets, where the estimate extrapolates from a sample — surfaced so the UI can
   # say so instead of implying every document was inspected.
   sampledDocs: Int
+  # How many documents the sample read, ground truth included, and the set's size
+  # it was scaled to. totalDocs applies the sample's reviewable fraction to
+  # setDocs, so a totalDocs of 0 describes the whole set only when
+  # wholeSetInspected is true.
+  inspectedDocs: Int
+  setDocs: Int
+  # True only when the sample read the set's listing to its end. This, not
+  # inspectedDocs against setDocs, decides whether a totalDocs of 0 may be reported
+  # as the whole set: setDocs rests on a stored counter that can be stale.
+  wholeSetInspected: Boolean
   # Confidence value at the boundary of the reviewed set.
   impliedCutoff: Float
   residualError: Float!
@@ -1330,19 +1351,180 @@ type AnnotationQueueItem @aws_cognito_user_pools @aws_iam {
   # Ground-truth sections, so the queue can hand them straight to the editor
   # without a second round-trip per document.
   sections: [TestSetDocumentSection!]
-  # Claim state, so several annotators can work one set without colliding.
-  # claimReview is what enforces exclusivity; this only reflects it.
+  # The Annotator an Admin assigned this document to (assignTestSetDocuments);
+  # only the assignee may save it. Null when unassigned.
+  assignedTo: String
+  assignedAt: AWSDateTime
+  # Sections already reviewed; with some but not all, the document is in progress.
+  reviewedSections: Int
+  # Completed with Skip: the task is done but its labels were not reviewed.
+  skipped: Boolean
+  # The assignee again, and whether it is the caller (kept for older clients).
   claimedBy: String
   claimedByMe: Boolean!
+  # Always null: an assignment does not expire.
+  leaseExpiresAt: AWSDateTime
   reviewStatus: String
   reviewed: Boolean!
-  # True when this caller could claim it next (unreviewed, and unclaimed or
-  # already theirs).
+  # False when the document is assigned to someone other than the caller.
+  # Saved, unreviewed section drafts (saveTestSetDocumentSectionDraft), which the
+  # editor opens with; Process Changes applies them.
+  draftSections: [TestSetSectionDraft!]
   available: Boolean!
+}
+
+# One test-set document's assignment (assignTestSetDocuments / unassignTestSetDocuments).
+type TestSetDocumentAssignment @aws_cognito_user_pools {
+  testSetId: String!
+  objectKey: String!
+  # Null after an unassign.
+  assignedTo: String
+  assignedAt: AWSDateTime
+}
+
+# One test set as a Test Studio queue in HITL › Queue Management, read from the
+# set's metadata alone (counts kept by summary builds, assignments and reviews).
+type TestSetQueueSummary @aws_cognito_user_pools {
+  id: String!
+  name: String!
+  status: String
+  fileCount: Int
+  reviewedDocs: Int
+  # Not reviewed and unassigned.
+  pendingDocs: Int
+  # Assigned, no section reviewed yet.
+  assignedDocs: Int
+  # Assigned with some sections reviewed.
+  inProgressDocs: Int
+  # Distinct Annotators holding the set's assigned documents.
+  annotators: Int
+  # READY, or BUILDING while the set's document summaries are built in the background.
+  summaryStatus: String
+  # The queue settings (updateTestSetQueue).
+  description: String
+  priority: Int
+  eligibleAnnotators: [String!]
+  checklist: [String!]
+  # What an Annotator chooses from to give a document back unfinished (Skip).
+  skipReasons: [String!]
+  claimLeaseMinutes: Int
+  queueCountsAt: AWSDateTime
+  updatedAt: AWSDateTime
+}
+
+# The result of saving or confirming one test-set section (saveTestSetDocumentSection).
+type TestSetSectionSaveResult @aws_cognito_user_pools {
+  testSetId: String!
+  objectKey: String!
+  sectionId: String!
+  # True once every section of the document is reviewed; its assignment then ends.
+  reviewed: Boolean!
+}
+
+# One section's draft of a test-set document (saveTestSetDocumentSectionDraft): saved
+# edits that are not reviewed and start nothing, until Process Changes applies them.
+type TestSetSectionDraft @aws_cognito_user_pools {
+  sectionId: String!
+  # Pass back as baseRevision on the next save; a stale one fails STALE_DRAFT.
+  revision: Int!
+  # Where the draft is (s3://<TestSetBucket>/<set>/drafts/...), read like a section result.
+  draftUri: String!
+  updatedAt: AWSDateTime!
+  updatedBy: String
+}
+
+# The result of skipping a test-set document (skipTestSetDocument).
+type TestSetDocumentSkipResult @aws_cognito_user_pools {
+  testSetId: String!
+  objectKey: String!
+  skipped: Boolean!
+}
+
+# A test set's queue settings (HITL › Queue Management › Settings).
+type TestSetQueueSettings @aws_cognito_user_pools {
+  testSetId: String!
+  description: String
+  priority: Int
+  # Reminder time limit in minutes.
+  claimLeaseMinutes: Int
+  # Annotators who work this queue; empty means none (Admins only).
+  eligibleAnnotators: [String!]!
+  checklist: [String!]!
+  skipReasons: [String!]!
+}
+
+input TestSetQueueSettingsInput {
+  testSetId: String!
+  description: String
+  priority: Int
+  timeLimitMinutes: Int
+  eligibleAnnotators: [String!]
+  checklist: [String!]
+  # Omitted, the set keeps its list (the review queues' defaults until one is saved).
+  skipReasons: [String!]
+}
+
+# A Test Studio document assigned to the caller (My Work › Tasks).
+type TestSetTask @aws_cognito_user_pools {
+  testSetId: String!
+  objectKey: String!
+  assignedTo: String
+  assignedAt: AWSDateTime
+  labelSource: String
+  alertCount: Int
+  documentClasses: [String!]
+}
+
+# A system-wide production review queue (HITL › Queue Management). Documents are
+# routed to the Default queue when HITL is enabled in their configuration, the
+# Default queue is enabled, and they raised confidence alerts. Admins move items
+# between queues and assign them to Annotators.
+type ReviewQueueDefinition @aws_cognito_user_pools {
+  id: String!
+  name: String!
+  description: String
+  priority: Int!
+  checklist: [String!]!
+  rejectReasons: [String!]!
+  # Why an Annotator gives an item back unfinished (Skip); one is required to skip.
+  skipReasons: [String!]!
+  # An assigned item still open after this long sends its Annotator a reminder.
+  timeLimitMinutes: Int!
+  # Annotators (by email) who work this queue; empty means none (Admins only).
+  eligibleAnnotators: [String!]!
+  isDefaultQueue: Boolean!
+  # When false, no documents are added to this queue.
+  enabled: Boolean
+}
+
+input ReviewQueueDefinitionInput {
+  id: String!
+  name: String
+  description: String
+  priority: Int
+  checklist: [String!]
+  rejectReasons: [String!]
+  # An update keeps the stored list when omitted; a new queue gets the defaults.
+  skipReasons: [String!]
+  timeLimitMinutes: Int
+  eligibleAnnotators: [String!]
+  # A new queue defaults to true, an update keeps the stored value when omitted.
+  enabled: Boolean
 }
 
 type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   testSetId: String!
+  # The test set's display name.
+  name: String
+  # The set's time limit in minutes: an assigned document still open after this
+  # long sends its Annotator a reminder. Assignments do not expire.
+  claimLeaseMinutes: Int
+  # What a Skip may give as its reason (skipTestSetDocument).
+  skipReasons: [String!]
+  # BUILDING while the set's document summaries are built in the background
+  # (documents listed so far are returned meanwhile); READY once current.
+  summaryStatus: String
+  summaryCount: Int
   totalDocs: Int!
   # How many documents were actually examined for this response. Below totalDocs
   # on large sets, where the queue reads a bounded page — so the UI can say the
@@ -1350,6 +1532,8 @@ type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   inspectedDocs: Int
   # Shared progress across every annotator working this set.
   reviewedDocs: Int!
+  # Reviewed or skipped: the documents whose task is complete.
+  completedDocs: Int
   remainingDocs: Int!
   claimedByOthers: Int!
   documents: [AnnotationQueueItem!]!
@@ -1458,6 +1642,8 @@ input UpdateTestSetInput {
   id: String!
   description: String
   documentClassType: DocumentClassType
+  # How long an annotation claim lasts before it returns to the queue (1-480).
+  claimLeaseMinutes: Int
 }
 
 input FileUploadInfo {
@@ -1565,6 +1751,189 @@ type ChatSession @aws_cognito_user_pools @aws_iam {
 type ChatSessionConnection @aws_cognito_user_pools @aws_iam {
   items: [ChatSession]
   nextToken: String
+}
+
+# =========================================================================
+# Inbox Types (idp_common.notifications; the caller's own messages)
+# =========================================================================
+
+# HITL review queues (idp_common.review_queues). Field names match the API views
+# in idp_common/review_queues/api_models.py.
+type ReviewReason @aws_cognito_user_pools {
+  kind: String!
+  sectionId: String!
+  field: String
+  label: String
+  score: Float!
+  threshold: Float!
+}
+
+type ReviewQueueSummary @aws_cognito_user_pools {
+  profile: String!
+  # The queue id, which items, links and queue arguments use.
+  name: String!
+  # The display name, e.g. Loan Review for the queue id loan_review.
+  displayName: String!
+  description: String
+  priority: Int!
+  depth: Int!
+  unclaimed: Int!
+  claimed: Int!
+  claimedByMe: Int!
+  # Assigned items whose Annotator has saved work (getReviewQueuesOverview only).
+  inProgress: Int
+  # Distinct Annotators holding the queue's assigned items (getReviewQueuesOverview only).
+  annotators: Int
+  oldestEnqueuedAt: AWSDateTime
+  isDefaultQueue: Boolean!
+  enabled: Boolean
+  claimCap: Int!
+  checklist: [String!]!
+  definedInConfig: Boolean!
+}
+
+type ReviewItem @aws_cognito_user_pools {
+  objectKey: String!
+  cycleId: String!
+  profile: String!
+  queue: String!
+  priority: Int!
+  state: String!
+  reviewStatus: String!
+  enqueuedAt: AWSDateTime!
+  reasons: [ReviewReason!]!
+  reasonCount: Int!
+  sections: [String!]!
+  ownerEmail: String
+  claimedAt: AWSDateTime
+  leaseExpiresAt: AWSDateTime
+  isMine: Boolean!
+  hasDraft: Boolean!
+  draftUpdatedAt: AWSDateTime
+  draftUpdatedBy: String
+  escalated: Boolean!
+  escalationNote: String
+  disposition: String
+  disposedBy: String
+  disposedAt: AWSDateTime
+  rejectReason: String
+  version: Int!
+}
+
+type ReviewItemPage @aws_cognito_user_pools {
+  items: [ReviewItem!]!
+  nextToken: String
+}
+
+type MyReviewQueues @aws_cognito_user_pools {
+  queues: [ReviewQueueSummary!]!
+  myClaimCount: Int!
+  enabledProfiles: [String!]!
+  items: ReviewItemPage!
+}
+
+type ReviewSectionDetail @aws_cognito_user_pools {
+  sectionId: String!
+  documentClass: String
+  resultUri: String
+  draftUri: String
+  draftRevision: Int
+  draftUpdatedBy: String
+  draftUpdatedAt: AWSDateTime
+  pageIds: [String!]!
+  reasons: [ReviewReason!]!
+}
+
+type ReviewHistoryEntry @aws_cognito_user_pools {
+  at: AWSDateTime!
+  event: String!
+  actor: String
+  details: AWSJSON
+}
+
+type ReviewItemDetail @aws_cognito_user_pools {
+  item: ReviewItem!
+  # The item's queue as people see it: its name, or a readable form of its id when
+  # the queue is no longer defined.
+  queueName: String
+  sections: [ReviewSectionDetail!]!
+  checklist: [String!]!
+  rejectReasons: [String!]!
+  skipReasons: [String!]!
+  claimCap: Int!
+  myClaimCount: Int!
+  history: [ReviewHistoryEntry!]!
+  machineOutputManifestUri: String
+  canClaim: Boolean!
+  claimBlockedReason: String
+}
+
+type ClaimNextResult @aws_cognito_user_pools {
+  item: ReviewItem
+  reason: String
+}
+
+type ReviewDraft @aws_cognito_user_pools {
+  sectionId: String!
+  revision: Int!
+  draftUri: String!
+  updatedAt: AWSDateTime!
+  leaseExpiresAt: AWSDateTime
+  changedFieldCount: Int!
+}
+
+type ReviewerLoad @aws_cognito_user_pools {
+  email: String!
+  claimed: Int!
+}
+
+type ReviewQueueHealth @aws_cognito_user_pools {
+  summary: ReviewQueueSummary!
+  reviewers: [ReviewerLoad!]!
+}
+
+type ReviewQueuesOverview @aws_cognito_user_pools {
+  queues: [ReviewQueueHealth!]!
+}
+
+type InboxMessage @aws_cognito_user_pools {
+  id: ID!
+  type: String!
+  title: String!
+  body: String!
+  severity: String!
+  link: String
+  source: String!
+  createdAt: AWSDateTime!
+  read: Boolean!
+  readAt: AWSDateTime
+  metadata: AWSJSON
+}
+
+type InboxMessagePage @aws_cognito_user_pools {
+  items: [InboxMessage!]!
+  nextToken: String
+  unreadCount: Int!
+}
+
+type InboxMutationResult @aws_cognito_user_pools {
+  updated: Int!
+  notFoundIds: [ID!]!
+  unreadCount: Int!
+}
+
+type InboxMessageType @aws_cognito_user_pools {
+  id: String!
+  displayName: String!
+  description: String!
+  defaultSeverity: String!
+  muted: Boolean!
+}
+
+type InboxPreferences @aws_cognito_user_pools {
+  types: [InboxMessageType!]!
+  mutedTypes: [String!]!
+  updatedAt: AWSDateTime
 }
 
 type MessageContent {
@@ -1821,7 +2190,7 @@ type Mutation {
   # Annotator-reachable: correcting a misclassified document is annotation work,
   # scoped per test set by the resolver via allowedTestSets.
   reextractTestSetDocument(input: ReextractTestSetDocumentInput!): DraftLabelJob
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
   # Re-group a document's pages into sections, correcting a wrong packet split.
   # Annotator-reachable for the same reason as reextractTestSetDocument: it is
   # annotation work, scoped per test set by the resolver via allowedTestSets.
@@ -1831,7 +2200,7 @@ type Mutation {
   # never discarded — the fields may no longer match their pages afterwards, which is
   # what the UI warns about while offering an opt-in re-extract.
   updateTestSetDocumentSections(input: UpdateTestSetDocumentSectionsInput!): TestSetDocumentSections
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
   # Open the version transition that annotating a test set commits to, preserving the
   # state being left. Idempotent: an already-open draft is returned unchanged.
   #
@@ -1844,7 +2213,7 @@ type Mutation {
   # the resolver, since group membership alone would let one annotator open a transition
   # on a set they were never assigned.
   openTestSetAnnotationDraft(input: OpenTestSetAnnotationDraftInput!): TestSetAnnotationDraft
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
   sendTestRunToReview(testRunId: String!): SendTestRunToReviewResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   # Fine-Tuning (Admin + Author)
@@ -1889,10 +2258,41 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
-  skipAllSectionsReview(objectKey: String!): Document
+  skipAllSectionsReview(objectKey: String!, reason: String!, note: String): Document
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Save a reviewer's edits to one section without completing its review: the
+  # review stays In Progress until processChanges or skipAllSectionsReview.
+  saveSectionReviewEdits(objectKey: String!, sectionId: String!, editedData: AWSJSON!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   claimReview(objectKey: String!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
+  # Admin: assign test-set documents to an Annotator listed on the set's queue (adds
+  # the set to their allowedTestSets), or unassign them.
+  assignTestSetDocuments(testSetId: String!, objectKeys: [String!]!, assigneeEmail: String!): [TestSetDocumentAssignment!]
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  unassignTestSetDocuments(testSetId: String!, objectKeys: [String!]!): [TestSetDocumentAssignment!]
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  updateTestSetQueue(input: TestSetQueueSettingsInput!): TestSetQueueSettings
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Save one section's labels (or, without data, confirm them) on a test-set document
+  # that has no review copy, e.g. authored ground truth. Annotators may save only
+  # documents assigned to them; the label is stamped reviewed-human server-side.
+  saveTestSetDocumentSection(testSetId: String!, objectKey: String!, sectionId: String!, data: AWSJSON): TestSetSectionSaveResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
+  # Save one section's edits as a draft that is not reviewed and starts nothing. Process
+  # Changes applies drafts through completeSectionReview or saveTestSetDocumentSection.
+  # Annotators may save only documents assigned to them; an Author only authored ground truth.
+  saveTestSetDocumentSectionDraft(testSetId: String!, objectKey: String!, sectionId: String!, data: AWSJSON!, baseRevision: Int): TestSetSectionDraft
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
+  # Hand a test-set document back to its queue: the assignment ends and the document
+  # is unassigned again, not completed. Annotators may skip only documents assigned
+  # to them.
+  skipTestSetDocument(testSetId: String!, objectKey: String!, reason: String!, note: String): TestSetDocumentSkipResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
+  # An Annotator listed on a set's queue takes one of its unassigned, unreviewed
+  # documents: it is assigned to them and appears in My Work › Tasks.
+  claimTestSetDocument(testSetId: String!, objectKey: String!): TestSetDocumentAssignment
+    @aws_cognito_user_pools(cognito_groups: ["Annotator", "Reviewer"])
   releaseReview(objectKey: String!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
 
@@ -1931,6 +2331,99 @@ type Mutation {
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
     @aws_iam
+  # Inbox: every operation is scoped to the caller's own messages, keyed by the
+  # verified identity; another user's message id is not found.
+  markInboxMessages(ids: [ID!]!, read: Boolean!): InboxMutationResult
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  markAllInboxMessagesRead: InboxMutationResult
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  deleteInboxMessages(ids: [ID!]!): InboxMutationResult
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  clearReadInboxMessages: InboxMutationResult
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  updateInboxPreferences(mutedTypes: [String!]!): InboxPreferences
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # HITL review queues (ReviewQueuesResolverFunction). Annotators work the queues
+  # that list them, and Reviewers every Production queue: they claim an item
+  # (assigning it to themselves), work their own items (saveReviewDraft,
+  # completeReviewItem, rejectReviewItem) and release one (Skip). Queue management,
+  # assignment and supervision are Admin only.
+  claimReviewItem(objectKey: String!, cycleId: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  claimNextReviewItem(queueProfile: String, queueName: String): ClaimNextResult
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  renewReviewLease(objectKey: String!, cycleId: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  releaseReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  saveReviewDraft(objectKey: String!, cycleId: String!, sectionId: String!, data: AWSJSON!, baseRevision: Int): ReviewDraft
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  completeReviewItem(objectKey: String!, cycleId: String!, checklist: [Boolean!], note: String): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  rejectReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  # Takes an OPEN or assigned item out of review: the document completes with its
+  # machine results and its review status object is removed.
+  removeReviewItem(objectKey: String!, cycleId: String!, note: String): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  forceReleaseReviewItem(objectKey: String!, cycleId: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  reassignReviewItem(objectKey: String!, cycleId: String!, assigneeEmail: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  # An Admin takes an item assigned to someone else so they can edit and complete
+  # it; the draft stays with the item and the former assignee is notified.
+  takeOverReviewItem(objectKey: String!, cycleId: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  moveReviewItem(objectKey: String!, cycleId: String!, targetQueue: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  # System-wide queue definitions. Default can't be deleted; deleting another
+  # queue moves its items to Default (refused while one is being finalized).
+  createReviewQueue(input: ReviewQueueDefinitionInput!): ReviewQueueDefinition
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  updateReviewQueue(input: ReviewQueueDefinitionInput!): ReviewQueueDefinition
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  deleteReviewQueue(id: String!): Boolean
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
   updateChatSessionTitle(sessionId: ID!, title: String!): ChatSession
     @aws_cognito_user_pools
     @aws_iam
@@ -2203,7 +2696,7 @@ type Query @aws_cognito_user_pools @aws_iam {
   # (see _class_vocabulary_only), so prompts, model ids and every other setting stay
   # out of reach of the lowest-privilege role.
   getConfigVersion(versionName: String!): ConfigurationResponse
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer", "Annotator", "Reviewer"])
 
   # Configuration Profile revision history, scope-checked against the caller's
   # allowedConfigVersions in the resolver.
@@ -2276,6 +2769,50 @@ type Query @aws_cognito_user_pools @aws_iam {
     )
     @aws_iam
 
+  # Inbox: the caller's own messages and mute settings, for every assigned group.
+  listInboxMessages(read: Boolean, types: [String!], severities: [String!], limit: Int, nextToken: String): InboxMessagePage
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  getInboxUnreadCount: Int
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  getInboxPreferences: InboxPreferences
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # HITL review queues (ReviewQueuesResolverFunction).
+  getMyReviewQueues(itemLimit: Int): MyReviewQueues
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  listReviewQueueItems(queueProfile: String, queueName: String, claimable: Boolean, limit: Int, nextToken: String): ReviewItemPage
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  listMyReviewWork(limit: Int, nextToken: String): ReviewItemPage
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  getReviewItem(objectKey: String!): ReviewItemDetail
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Reviewer"]
+    )
+  getReviewQueuesOverview: ReviewQueuesOverview
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  listReviewQueues: [ReviewQueueDefinition!]
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  # Emails of the Cognito Annotator group's members: who HITL work can be assigned to.
+  listAnnotators: [String!]
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+
   # Knowledge base query. An assigned group is required: the knowledge base is
   # built from processed document content, so an answer returns that content in
   # synthesised form, and the call bills Bedrock inference. The resolver itself
@@ -2321,7 +2858,7 @@ type Query @aws_cognito_user_pools @aws_iam {
   # would answer about 50 documents while appearing to answer about the set.
   # `objectKey` wins if both are given.
   getTestSetDocuments(testSetId: String!, limit: Int, nextToken: String, objectKey: String, search: String): TestSetDocumentsPage
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
   getTestSetVersions(testSetId: String!): [TestSetVersion]
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   # Annotator included: the ground-truth editor polls this for the outcome of the
@@ -2329,16 +2866,25 @@ type Query @aws_cognito_user_pools @aws_iam {
   # Without it the job ran and the UI reported failure. Scoped per test set by the
   # resolver via allowedTestSets.
   getDraftLabelJob(testSetId: String!, jobId: String!): DraftLabelJob
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
   # Annotator included so the workspace can show what their review is buying; the
   # resolver additionally enforces allowedTestSets per set.
   estimateReviewEffort(testSetId: String!, targetAccuracy: Float, configVersion: String): ReviewEffortEstimate
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
   # Annotator is included so a scoped annotator can read their own queue; the
   # resolver additionally requires the test set to be in their allowedTestSets,
   # so group membership alone grants nothing.
-  getAnnotationQueue(testSetId: String!, limit: Int, includeCompleted: Boolean): AnnotationQueue
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
+  getAnnotationQueue(testSetId: String!, limit: Int, includeCompleted: Boolean, objectKey: String, mineOnly: Boolean): AnnotationQueue
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
+  # The Test Studio documents assigned to the caller, across every set (one Query
+  # on the assignee key), for My Work › Tasks.
+  listMyTestSetTasks: [TestSetTask!]
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator", "Reviewer"])
+  # Test Studio queues, from DynamoDB only (no S3 reads): every set for an Admin
+  # (HITL › Queue Management), only the sets whose queue lists them for an Annotator
+  # (My Work › Queues).
+  listTestSetQueues: [TestSetQueueSummary!]
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Annotator", "Reviewer"])
   listBucketFiles(bucketType: String!, filePattern: String!, modifiedAfter: String): [String]
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   validateTestFileName(fileName: String!): TestSetValidationResponse

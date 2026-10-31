@@ -19,6 +19,13 @@ from idp_common.document_failure import (
     summarize_errors,
 )
 from idp_common.models import Document, HitlMetadata, Status
+from idp_common.review_queues.routing import (
+    legacy_section_triggers,
+    review_mode,
+    route_for_review,
+)
+from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
+from idp_common.review_queues.store import create_review_store
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -29,15 +36,30 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 # Initialize AWS clients
 s3_client = boto3.client("s3")
 
+# Review queues (idp_common.review_queues): None when HITL_TABLE_NAME is
+# unset (headless), which keeps every profile on the legacy HITL flow.
+_REVIEW_STORE = create_review_store()
 
-def is_hitl_enabled(config_version=None, config_revision=None):
-    """Check if HITL is enabled from configuration."""
-    try:
-        config = get_config(as_model=True, version=config_version, revision=config_revision)
-        return config.hitl.enabled
-    except Exception as e:
-        logger.warning(f"Failed to get HITL config: {e}")
-        return False  # Default to disabled if config unavailable
+
+def legacy_review_finished(hitl_status):
+    """True when a stored ``HITLStatus`` records a finished legacy review.
+
+    Finishing a legacy review (completed or skipped) triggers a reprocess, so the
+    run it starts must keep that status rather than ask for the review again. The
+    status is read through ``normalize_hitl_status`` rather than a list of spellings:
+    a legacy (not queue-managed) completed or skipped review is finished.
+    ``COMPLETED`` is the one finished spelling a real writer stored that the
+    exact-match normaliser does not know: the earlier A2I flow wrote it, and
+    retained rows may still carry it. ``process_changes_resolver`` makes the same
+    exception, but it also counts a queue outcome as finished, which this does not.
+    A queue outcome (``complete`` / ``rejected``) is not a legacy review: in the
+    legacy flow such a document is asked for a review again, as reprocessing it
+    under review queues starts a fresh cycle.
+    """
+    view = normalize_hitl_status(hitl_status)
+    return (
+        not view.queue_managed and view.kind in ("complete", "skipped")
+    ) or hitl_status == "COMPLETED"
 
 
 def handler(event, context):
@@ -70,6 +92,10 @@ def handler(event, context):
     extraction_results = event.get("ExtractionResults", [])
     execution_arn = event.get("execution_arn", "")
     execution_id = execution_arn.split(":")[-1] if execution_arn else "unknown"
+
+    # HITL settings are read once per invocation from the config loaded above.
+    hitl_enabled = bool(config.hitl.enabled)
+    route_mode = review_mode(config, _REVIEW_STORE, document)
 
     # Get confidence threshold from configuration
     confidence_threshold = config.hitl.confidence_threshold
@@ -110,12 +136,14 @@ def handler(event, context):
                 logger.info(
                     f"section.confidence_threshold_alerts: {section.confidence_threshold_alerts}"
                 )
-                hitl_enabled = is_hitl_enabled(config_version, config_revision)
                 logger.info(f"is_hitl_enabled: {hitl_enabled}")
                 document.sections.append(section)
 
-                # Check if HITL review is needed for this section
-                if hitl_enabled and section.confidence_threshold_alerts:
+                # Check if HITL review is needed for this section (legacy flow;
+                # with review queues the routing below decides instead)
+                if route_mode == "legacy" and legacy_section_triggers(
+                    section, hitl_enabled=hitl_enabled
+                ):
                     logger.info(
                         f"Section {section.section_id} has {len(section.confidence_threshold_alerts)} confidence threshold alerts - marking for HITL review"
                     )
@@ -180,12 +208,12 @@ def handler(event, context):
     if hitl_triggered:
         document.hitl_triggered = True
         existing_status = document.hitl_status
-        if existing_status not in ("Review Completed", "Review Skipped", "Completed", "Skipped"):
+        if not legacy_review_finished(existing_status):
             for section in document.sections:
                 if section.confidence_threshold_alerts:
                     hitl_sections_pending.append(section.section_id)
             # Set Review Status on document model
-            document.hitl_status = "PendingReview"
+            document.hitl_status = LegacyHitlStatus.PENDING_REVIEW.value
             document.hitl_sections_pending = hitl_sections_pending
             document.hitl_sections_completed = []
             logger.info(f"Document requires human review. Sections pending: {hitl_sections_pending}")
@@ -263,6 +291,23 @@ def handler(event, context):
             diagnoses=section_diagnoses,
         )
         raise failure
+
+    # Review queues: enqueue last, after the validation raise above, so a failed
+    # run never leaves a claimable item (feature off adds no keys).
+    if route_mode == "queues":
+        decision = route_for_review(
+            document,
+            config,
+            mode="pipeline",
+            execution_arn=execution_arn,
+            store=_REVIEW_STORE,
+            document_service=document_service,
+            output_bucket=document.output_bucket or os.environ.get("OUTPUT_BUCKET"),
+        )
+        if decision.hold:
+            response["review_hold"] = True
+        if decision.outcome:
+            response["review_outcome"] = decision.outcome
 
     return response
 

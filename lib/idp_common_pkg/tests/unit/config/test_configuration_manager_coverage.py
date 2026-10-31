@@ -59,10 +59,12 @@ from idp_common.config.constants import (
     DEFAULT_VERSION,
 )
 from idp_common.config.models import (
+    DEFAULT_CLASSIFICATION_MODEL,
     IDPConfig,
     ModelConfigLimitsConfig,
     PricingConfig,
     SchemaConfig,
+    SummarizationConfig,
 )
 
 TABLE = "cfgmgr-coverage-table"
@@ -71,7 +73,12 @@ BUCKET = "cfgmgr-coverage-bucket"
 # A model id that no Pydantic default uses, so "the seeded default was read"
 # cannot be confused with "Pydantic filled its own default".
 SEEDED_MODEL = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-PYDANTIC_DEFAULT_MODEL = "us.amazon.nova-pro-v1:0"
+# Read from the models rather than written out: what these assertions mean is "the
+# field default, whatever it is", and a literal copy of it silently becomes a
+# different claim the moment the default moves — which is what happened when the
+# classification default was reconciled with the shipped one.
+PYDANTIC_DEFAULT_MODEL = DEFAULT_CLASSIFICATION_MODEL
+PYDANTIC_DEFAULT_SUMMARIZATION_MODEL = SummarizationConfig.model_fields["model"].default
 
 
 def _make_table(with_bucket: bool = False):
@@ -344,11 +351,11 @@ class TestMergedConfigurationLegacySparsePath:
 
         assert merged is not None
         assert merged.notes == "profile-note", "the delta must win"
-        assert merged.classification.model == SEEDED_MODEL, (
+        assert merged.classification.combined.llm.model == SEEDED_MODEL, (
             "unset keys must come from Config#default, not from IDPConfig's "
             "field defaults"
         )
-        assert merged.classification.model != PYDANTIC_DEFAULT_MODEL
+        assert merged.classification.combined.llm.model != PYDANTIC_DEFAULT_MODEL
 
     def test_the_delta_overrides_the_default_within_a_nested_section(self, monkeypatch):
         """Sibling keys inside an overridden section survive the merge."""
@@ -362,8 +369,8 @@ class TestMergedConfigurationLegacySparsePath:
         merged = manager.get_merged_configuration("legacy")
 
         assert merged is not None
-        assert merged.classification.temperature == pytest.approx(0.7)
-        assert merged.classification.model == SEEDED_MODEL, (
+        assert merged.classification.combined.llm.temperature == pytest.approx(0.7)
+        assert merged.classification.combined.llm.model == SEEDED_MODEL, (
             "overriding one key in `classification` must not drop the rest of "
             "the section"
         )
@@ -382,7 +389,7 @@ class TestMergedConfigurationLegacySparsePath:
         raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, "legacy")
         assert raw is not None
         assert _is_full_config(raw) is True
-        assert raw["classification"]["model"] == SEEDED_MODEL
+        assert raw["classification"]["combined"]["llm"]["model"] == SEEDED_MODEL
 
         # Second read must not rewrite the record.
         with patch.object(manager, "save_configuration") as spy:
@@ -414,7 +421,7 @@ class TestMergedConfigurationLegacySparsePath:
 
         assert merged is not None
         assert merged.notes == "profile-note"
-        assert merged.classification.model == SEEDED_MODEL
+        assert merged.classification.combined.llm.model == SEEDED_MODEL
 
     def test_a_non_idpconfig_default_record_returns_none_not_a_partial_merge(
         self, monkeypatch
@@ -454,7 +461,7 @@ class TestMergedConfigurationLegacySparsePath:
 
         assert merged is not None
         assert merged.notes == "profile-note"
-        assert merged.classification.model == SEEDED_MODEL
+        assert merged.classification.combined.llm.model == SEEDED_MODEL
 
     def test_a_sparse_profile_with_no_default_returns_none(self, monkeypatch):
         """Not a half-merged config: None, so the caller fails loudly."""
@@ -1397,7 +1404,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "seeded-default-notes"
-        assert loaded.classification.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
 
     def test_reset_to_default_with_no_default_leaves_the_profile_untouched(
         self, monkeypatch
@@ -1473,7 +1480,7 @@ class TestHandleUpdateCustomConfiguration:
 
         promoted = manager.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
         assert isinstance(promoted, IDPConfig)
-        assert promoted.classification.model == PYDANTIC_DEFAULT_MODEL, (
+        assert promoted.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL, (
             "saveAsDefault replaces the default wholesale; unsent keys revert "
             "to IDPConfig's field defaults rather than being preserved"
         )
@@ -1490,7 +1497,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "new-profile"
-        assert loaded.classification.model == SEEDED_MODEL, (
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL, (
             "a new profile inherits the stack default for keys it did not send"
         )
 
@@ -1507,7 +1514,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "new-profile"
-        assert loaded.classification.model == PYDANTIC_DEFAULT_MODEL
+        assert loaded.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL
 
     def test_a_json_string_payload_is_parsed(self, monkeypatch):
         _make_table()
@@ -1608,7 +1615,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "brand-new"
-        assert loaded.classification.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
 
     def test_an_update_with_neither_profile_nor_default_starts_from_empty(
         self, monkeypatch
@@ -1624,7 +1631,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "brand-new"
-        assert loaded.classification.model == PYDANTIC_DEFAULT_MODEL
+        assert loaded.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL
 
     def test_a_normal_update_leaves_untouched_sections_alone(self, monkeypatch):
         """The delta is applied over the profile's *current* full config, not
@@ -1644,7 +1651,7 @@ class TestHandleUpdateCustomConfiguration:
 
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
-        assert loaded.classification.temperature == pytest.approx(0.25)
+        assert loaded.classification.combined.llm.temperature == pytest.approx(0.25)
         assert loaded.summarization.model == "pinned-summ-model"
         assert loaded.notes == "mine"
 
@@ -1730,8 +1737,8 @@ class TestNullMeansRestoreToDefault:
         )
 
         assert target["classification"] == expected
-        assert target["classification"]["model"] == SEEDED_MODEL
-        assert target["classification"]["temperature"] != 0.99
+        assert target["classification"]["combined"]["llm"]["model"] == SEEDED_MODEL
+        assert target["classification"]["combined"]["llm"]["temperature"] != 0.99
 
     @pytest.mark.parametrize("falsy", [False, 0, "", []])
     def test_a_falsy_value_is_applied_and_is_not_treated_as_a_restore(
@@ -1854,8 +1861,8 @@ class TestGetFullConfigForVersion:
 
         assert result is not None
         assert result.notes == "delta-only"
-        assert result.classification.model == SEEDED_MODEL
-        assert result.classification.model != PYDANTIC_DEFAULT_MODEL
+        assert result.classification.combined.llm.model == SEEDED_MODEL
+        assert result.classification.combined.llm.model != PYDANTIC_DEFAULT_MODEL
 
     def test_a_full_marked_body_that_cannot_be_validated_returns_none(
         self, monkeypatch
@@ -1931,7 +1938,7 @@ class TestSaveRawConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "seeded-default-notes"
-        assert loaded.classification.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
 
     def test_an_empty_body_with_no_default_writes_nothing(self, monkeypatch):
         """No default to copy, so the profile must be left as it was rather
@@ -1969,7 +1976,7 @@ class TestSaveRawConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "uploaded"
-        assert loaded.classification.model == PYDANTIC_DEFAULT_MODEL, (
+        assert loaded.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL, (
             "a full upload is authoritative; it does not inherit the default"
         )
 
@@ -1987,7 +1994,7 @@ class TestSaveRawConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "delta-only"
-        assert loaded.classification.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
         assert loaded.summarization.model == SEEDED_MODEL
 
     def test_what_is_stored_is_the_full_merged_config_not_the_delta(self, monkeypatch):
@@ -2647,3 +2654,440 @@ class TestSyncCustomWithNewDefault:
 
         assert result is old_custom
         assert result.notes == "mine"
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
+    """⚠️ "Full" is a statement about the schema AT THE TIME OF SAVING.
+
+    A profile is routed as "full" when it carries enough top-level sections, and
+    it used to be returned to the runtime directly. That says nothing about
+    fields added to the model since: every one of them arrived from **Pydantic's**
+    field default rather than from the stack's shipped one.
+
+    Reported from a live stack, and the reason this class exists: a Custom
+    profile saved before `classification.packet` / `.segmentation` / `.labeling`
+    existed read those prompts back EMPTY, so switching it to `strategy:
+    split_then_classify` + `granularity: packet` made the splitting call send the page prompt, the
+    model answer in page shape, and the segments parser find nothing — every
+    document FAILED in ~28s with "produced no segments". A profile created after
+    the upgrade worked, so the feature looked fine and the profile looked cursed.
+    The web UI's only hint was an empty prompt box with a "Restore default"
+    button beside it.
+
+    **This is a defect class, not a field.** It recurs for every future field
+    added with a non-empty shipped default, which is why the tests below assert
+    on an arbitrary new field as well as on the three that were reported.
+
+    The rule: a key the stored profile HAS wins, including one deliberately set
+    empty; only a key it LACKS is backfilled. Absent is not cleared.
+    """
+
+    @staticmethod
+    def _put_full(table, version: str, body: dict):
+        """A profile with every top-level section, so `_is_full_config` is true,
+        but missing whichever nested field the test is about."""
+        item = {
+            "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}",
+            "ocr": {"backend": "textract"},
+            "classification": {"model": "us.amazon.nova-2-lite-v1:0"},
+            "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+            "classes": [],
+            "summarization": {"model": "us.amazon.nova-2-lite-v1:0"},
+        }
+        for key, value in body.items():
+            if value == "__omit__":
+                item.pop(key, None)
+            elif isinstance(value, dict) and isinstance(item.get(key), dict):
+                item[key] = {**item[key], **value}
+            else:
+                item[key] = value
+        table.put_item(Item=item)
+        assert _is_full_config(
+            {k: v for k, v in item.items() if k != "Configuration"}
+        ), "the fixture must be routed as a FULL config or it tests nothing"
+
+    def _default_with_stage_prompts(self, manager):
+        """A `default` carrying the prompts the shipped defaults carry."""
+        default = IDPConfig(
+            notes="seeded-default-notes",
+            classification={
+                "model": SEEDED_MODEL,
+                "packet": {
+                    "task_prompt": "SHIPPED PACKET: segments ordinal_start_page"
+                },
+                "segmentation": {
+                    "task_prompt": "SHIPPED SPLITTING",
+                    "packet": {"task_prompt": "SHIPPED SPLITTING PACKET"},
+                },
+                "labeling": {"task_prompt": "SHIPPED SECTION CLASSIFICATION"},
+            },
+            summarization={"model": SEEDED_MODEL},
+        )
+        manager.save_configuration(CONFIG_TYPE_CONFIG, default, version=DEFAULT_VERSION)
+        return default
+
+    def test_the_reported_stage_prompts_are_backfilled(self, monkeypatch):
+        """The exact failure: all three empty on a pre-upgrade full profile."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(table, "pre-upgrade", {})
+
+        merged = manager.get_merged_configuration("pre-upgrade")
+
+        assert merged is not None
+        cls = merged.classification
+        seg = cls.split_then_classify.splitting.llm
+        assert (
+            cls.combined.packet.task_prompt
+            == "SHIPPED PACKET: segments ordinal_start_page"
+        )
+        assert seg.packet.task_prompt == "SHIPPED SPLITTING PACKET"
+        assert seg.page.task_prompt == "SHIPPED SPLITTING"
+        assert (
+            cls.split_then_classify.section_classification.llm.task_prompt
+            == "SHIPPED SECTION CLASSIFICATION"
+        )
+
+    def test_the_profiles_own_value_still_wins(self, monkeypatch):
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(
+            table,
+            "mine",
+            {"classification": {"packet": {"task_prompt": "MY OWN PACKET PROMPT"}}},
+        )
+
+        merged = manager.get_merged_configuration("mine")
+
+        assert merged is not None
+        assert (
+            merged.classification.combined.packet.task_prompt == "MY OWN PACKET PROMPT"
+        )
+
+    def test_a_value_deliberately_set_empty_is_not_overwritten(self, monkeypatch):
+        """⚠️ Absent is not cleared, and the difference is the operator's
+        intent. A stored empty string is a decision; a missing key is not."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(
+            table, "cleared", {"classification": {"packet": {"task_prompt": ""}}}
+        )
+
+        merged = manager.get_merged_configuration("cleared")
+
+        assert merged is not None
+        assert merged.classification.combined.packet.task_prompt == ""
+
+    def test_any_field_added_later_is_backfilled_not_only_the_reported_ones(
+        self, monkeypatch
+    ):
+        """The class, not the instance. `summarization.model` stands in for "a
+        field this profile does not carry": if backfill only covered the three
+        classification prompts, this would read Pydantic's default instead of
+        the stack's."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        # `__omit__` drops the key entirely, which is what "a field added after
+        # this profile was saved" looks like on disk. Passing `{}` would merge
+        # into the fixture's own section and leave the model present, so the
+        # assertion would pass without any backfill happening.
+        self._put_full(table, "partial", {"summarization": "__omit__"})
+
+        merged = manager.get_merged_configuration("partial")
+
+        assert merged is not None
+        assert merged.summarization.model == SEEDED_MODEL
+        assert merged.summarization.model != PYDANTIC_DEFAULT_SUMMARIZATION_MODEL
+
+    def test_the_backfill_is_persisted_so_the_ui_stops_showing_empty_boxes(
+        self, monkeypatch
+    ):
+        """One of the reported symptoms was the UI: the operator saw an empty
+        "Packet task prompt" with no indication why."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(table, "pre-upgrade", {})
+
+        manager.get_merged_configuration("pre-upgrade")
+
+        raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, "pre-upgrade")
+        assert raw is not None
+        assert raw["classification"]["combined"]["packet"]["task_prompt"].startswith(
+            "SHIPPED PACKET"
+        )
+
+    def test_a_second_read_does_not_rewrite_the_record(self, monkeypatch):
+        """Every read goes through the merge now, so an unconditional save would
+        rewrite every profile head on every read."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(table, "pre-upgrade", {})
+        manager.get_merged_configuration("pre-upgrade")
+
+        with patch.object(manager, "save_configuration") as spy:
+            again = manager.get_merged_configuration("pre-upgrade")
+        spy.assert_not_called()
+        assert again is not None
+        assert again.classification.combined.packet.task_prompt.startswith(
+            "SHIPPED PACKET"
+        )
+
+    def test_an_unreadable_default_returns_the_profile_rather_than_none(
+        self, monkeypatch
+    ):
+        """Behaviour before this change was to return the full config directly,
+        so that is the right answer when there is nothing to backfill from.
+        Returning None here would fail every document instead."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._put_full(table, "orphan", {})  # no Config#default seeded
+
+        merged = manager.get_merged_configuration("orphan")
+
+        assert merged is not None
+        assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
+
+
+@pytest.mark.unit
+@mock_aws
+class TestTheBackfillWriteBackPreservesRevisionProofs:
+    """⚠️ A save that cuts no revision rewrites the head without refreshing the
+    published entry's ``storedHash``, and for one kind of published revision that
+    destroys its only integrity proof.
+
+    ``config/README.md``: a revision cut before ``storedHash`` existed is proven
+    only by the legacy ``UpdatedAt <= createdAt`` comparison, "and that proof is
+    gone the first time anything rewrites the head" — after which a pinned read of
+    it raises once its body expires.
+
+    The hazard predates the backfill, but only for legacy sparse profiles.
+    Resolving **every** profile against the default would take it to every
+    profile, once, after any field-adding upgrade. So the write-back is skipped
+    exactly where it could destroy a proof, and nowhere else: correctness never
+    depended on it, since the resolution happens on every read regardless.
+    """
+
+    @staticmethod
+    def _put_full(table, version: str):
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}",
+                "ocr": {"backend": "textract"},
+                "classification": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+                # `summarization` is deliberately ABSENT: four sections still
+                # route this as full, and it gives the backfill something to do,
+                # which is what the "resolved on this read even when nothing is
+                # persisted" assertion needs.
+                "classes": [],
+                "PublishedRevision": 1,
+            }
+        )
+
+    @staticmethod
+    def _index(table, version: str, entry: dict):
+        table.put_item(
+            Item={
+                "Configuration": f"ConfigRevIndex#{version}",
+                "IndexSeq": 1,
+                "Revisions": [entry],
+            }
+        )
+
+    def _run(self, monkeypatch, entry: dict | None):
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        if entry is not None:
+            self._index(table, "p", entry)
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            merged = manager.get_merged_configuration("p")
+        return merged, spy
+
+    def test_a_published_revision_with_a_hash_is_written_back(self, monkeypatch):
+        """Its proof is the hash, which does not depend on the head's timestamp,
+        so the convenience write is safe."""
+        merged, spy = self._run(
+            monkeypatch,
+            {"revision": 1, "createdAt": "2026-01-01T00:00:00Z", "storedHash": "abc"},
+        )
+        assert merged is not None
+        assert spy.called, "a hashed published revision should not block the write-back"
+
+    def test_a_published_revision_without_a_hash_is_not_written_back(self, monkeypatch):
+        """⚠️ The case the guard exists for. The resolution must still apply to
+        this read — only the stored record is left alone."""
+        merged, spy = self._run(
+            monkeypatch, {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"}
+        )
+        assert merged is not None
+        assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
+        # Backfilled on THIS read even though nothing was persisted.
+        assert merged.summarization.model == SEEDED_MODEL
+        spy.assert_not_called()
+
+    def test_no_published_revision_is_written_back(self, monkeypatch):
+        """Nothing to lose."""
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#p",
+                "ocr": {"backend": "textract"},
+                "classification": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "classes": [],
+                "summarization": {"model": "us.amazon.nova-2-lite-v1:0"},
+            }
+        )
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            manager.get_merged_configuration("p")
+        assert spy.called
+
+    def test_a_retired_published_revision_is_written_back(self, monkeypatch):
+        """No index entry means no entry to invalidate."""
+        merged, spy = self._run(monkeypatch, {"revision": 7, "storedHash": "x"})
+        assert merged is not None
+        assert spy.called
+
+    def test_history_disabled_is_written_back(self, monkeypatch):
+        """With no bucket there is no revision history to protect, and this is
+        the pre-existing behaviour for a sparse profile."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            manager.get_merged_configuration("p")
+        assert spy.called
+
+    def test_an_unreadable_index_fails_closed(self, monkeypatch):
+        """Skipping a convenience write is recoverable; destroying a proof is
+        not. So the unknown answer is 'do not write'."""
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        with patch.object(
+            manager.revisions, "get_entry", side_effect=RuntimeError("index unreadable")
+        ):
+            with patch.object(
+                manager, "save_configuration", wraps=manager.save_configuration
+            ) as spy:
+                merged = manager.get_merged_configuration("p")
+        assert merged is not None, "the read must still succeed"
+        spy.assert_not_called()
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAnUnmergeableProfileIsReturnedUnresolved:
+    """⚠️ A merge of two individually VALID configurations can be invalid.
+
+    ``IDPConfig`` has cross-field validators, and each side of the merge supplies
+    a field the other leaves at a default. A profile holding
+    ``packet.overlap_pages: 15`` validates alone, against the model's
+    ``window_pages`` default of 20; a default holding ``window_pages: 10``
+    validates alone, against the ``overlap_pages`` default of 2. Merged, they trip
+    ``overlap_pages >= window_pages``.
+
+    ``ConfigurationReader.get_merged_configuration`` re-raises, so letting that
+    propagate would fail documents on a configuration that read cleanly before —
+    "upgrade, then everything stops", on the path every configuration read now
+    takes. **Backfilling is a convenience; never being worse than not backfilling
+    is the requirement.**
+    """
+
+    @staticmethod
+    def _put_full(table, version: str, classification: dict):
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}",
+                "ocr": {"backend": "textract"},
+                "classification": classification,
+                "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "classes": [],
+            }
+        )
+
+    def _seed_default_with(self, manager, classification: dict):
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(notes="seeded", classification=classification),
+            version=DEFAULT_VERSION,
+        )
+
+    def test_each_side_is_valid_alone(self):
+        """The premise. If either side were invalid on its own this would be
+        testing a different thing."""
+        IDPConfig(classification={"packet": {"overlap_pages": 15}})
+        IDPConfig(classification={"packet": {"window_pages": 10}})
+        with pytest.raises(Exception):
+            IDPConfig(
+                classification={"packet": {"window_pages": 10, "overlap_pages": 15}}
+            )
+
+    def test_the_profile_is_returned_unresolved_rather_than_raising(
+        self, monkeypatch, caplog
+    ):
+        import logging
+
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._seed_default_with(manager, {"packet": {"window_pages": 10}})
+        self._put_full(
+            table,
+            "clash",
+            {"model": "us.amazon.nova-2-lite-v1:0", "packet": {"overlap_pages": 15}},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            merged = manager.get_merged_configuration("clash")
+
+        assert merged is not None, "the read must not fail the document"
+        assert merged.classification.combined.packet.overlap_pages == 15
+        assert "returning it unresolved" in caplog.text
+
+    def test_a_sparse_profile_that_cannot_merge_still_raises(self, monkeypatch):
+        """A sparse profile has never been usable unmerged, so there is no better
+        answer than the error the caller already handles — and swallowing it
+        would return a configuration with no models in it."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._seed_default_with(manager, {"packet": {"window_pages": 10}})
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#sparse",
+                "classification": {"packet": {"overlap_pages": 15}},
+            }
+        )
+        with pytest.raises(Exception):
+            manager.get_merged_configuration("sparse")
+
+    def test_a_profile_that_merges_cleanly_is_still_resolved(self, monkeypatch):
+        """The guard must not swallow the ordinary case."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        _seed_default(manager)
+        self._put_full(table, "fine", {"model": "us.amazon.nova-2-lite-v1:0"})
+
+        merged = manager.get_merged_configuration("fine")
+
+        assert merged is not None
+        assert merged.summarization.model == SEEDED_MODEL

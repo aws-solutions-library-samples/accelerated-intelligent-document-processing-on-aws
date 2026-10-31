@@ -258,14 +258,147 @@ class TestExtractConfigParams:
         params, _, _ = mlflow_logger._extract_config_params(config)
         assert params["use_bda"] == "False"
 
-    def test_classification_method(self):
+    def test_classification_settings(self):
+        """The settings that make one experiment distinguishable from another.
+
+        ⚠️ **The config handed in here has to be one production can produce.** A
+        test that passes `classificationMethod` and asserts a
+        `classification.method` parameter keeps passing after the key is removed,
+        because it exercises a shape no deployment stores — and the parameter it
+        checks for can be absent from every real run with nothing noticing. These
+        three are what a stored config carries.
+        """
+        config = {
+            "classification": {
+                "granularity": "packet",
+                "strategy": "split_then_classify",
+                "modality": {"text": True, "images": False},
+            }
+        }
+        params, _, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.granularity"] == "packet"
+        assert params["classification.strategy"] == "split_then_classify"
+        assert params["classification.modality.text"] == "True"
+        assert params["classification.modality.images"] == "False"
+
+    @pytest.mark.parametrize(
+        "modality",
+        [
+            # The raw YAML and config-form spelling.
+            {"text": "", "images": ""},
+            # ⚠️ The spelling a VALIDATED config carries, and the one that
+            # matters: `ClassificationModalityConfig` types both flags as
+            # `Optional[bool]`, so `IDPConfig(...).model_dump()` writes `None`.
+            # A guard of `if value is not None` logs nothing for exactly this
+            # shape — which is what the resolver sends — so the inferring run
+            # becomes indistinguishable from one where the key was never
+            # written, the outcome this parameter exists to prevent.
+            {"text": None, "images": None},
+            # Mixed, for the same reason in one flag.
+            {"text": None, "images": ""},
+        ],
+    )
+    def test_an_inferred_modality_is_logged_as_inferred(self, modality):
+        """An unset flag means "infer from the prompt's placeholders", which is a
+        real setting rather than an absent one — so a run using the inference
+        must not look identical to one where the key was never written."""
+        params, _, _ = mlflow_logger._extract_config_params(
+            {"classification": {"modality": modality}}
+        )
+        assert params["classification.modality.text"] == "infer"
+        assert params["classification.modality.images"] == "infer"
+
+    def test_a_validated_config_dump_logs_both_flags(self):
+        """End to end against the real model, so the shape is not guessed."""
+        from idp_common.config.merge_utils import merge_config_with_defaults
+        from idp_common.config.models import IDPConfig
+
+        dumped = IDPConfig(**merge_config_with_defaults({}, validate=False)).model_dump(
+            mode="python"
+        )
+        params, _, _ = mlflow_logger._extract_config_params(dumped)
+        assert params["classification.modality.text"] == "infer"
+        assert params["classification.modality.images"] == "infer"
+        assert params["classification.granularity"] == "page"
+
+    def test_a_combined_config_logs_the_combined_call(self):
+        config = {
+            "classification": {
+                "strategy": "combined",
+                "combined": {
+                    "granularity": "packet",
+                    "page": {"task_prompt": "PAGE"},
+                    "packet": {"task_prompt": "PACKET", "system_prompt": "SYS"},
+                    "llm": {
+                        "model": "combined-model",
+                        "temperature": 0.0,
+                        "modality": {"text": True, "images": None},
+                    },
+                },
+                "split_then_classify": {
+                    "section_classification": {"llm": {"model": "unused-model"}}
+                },
+            }
+        }
+        params, prompts, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.model"] == "combined-model"
+        assert params["classification.temperature"] == "0.0"
+        assert params["classification.granularity"] == "packet"
+        assert params["classification.modality.text"] == "True"
+        assert params["classification.modality.images"] == "infer"
+        assert "classification.splitting.model" not in params
+        # The prompt the active granularity sends, not the other one.
+        assert prompts["classification.task_prompt"] == "PACKET"
+        assert prompts["classification.system_prompt"] == "SYS"
+
+    def test_a_split_then_classify_config_logs_both_calls(self):
+        """`classification.model` is the call that assigns the class, so a run
+        is comparable with a combined run on that axis; the splitting call is
+        logged under its own name."""
+        config = {
+            "classification": {
+                "strategy": "split_then_classify",
+                "combined": {"llm": {"model": "unused-model"}},
+                "split_then_classify": {
+                    "splitting": {
+                        "llm": {
+                            "model": "boundary-model",
+                            "granularity": "page",
+                            "page": {"task_prompt": "BOUNDARIES"},
+                        }
+                    },
+                    "section_classification": {
+                        "llm": {
+                            "model": "section-model",
+                            "task_prompt": "LABEL",
+                            "modality": {"text": False, "images": True},
+                        }
+                    },
+                },
+            }
+        }
+        params, prompts, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.strategy"] == "split_then_classify"
+        assert params["classification.model"] == "section-model"
+        assert params["classification.splitting.model"] == "boundary-model"
+        assert params["classification.granularity"] == "page"
+        assert params["classification.modality.text"] == "False"
+        assert params["classification.modality.images"] == "True"
+        assert prompts["classification.task_prompt"] == "LABEL"
+        assert prompts["classification.splitting.task_prompt"] == "BOUNDARIES"
+
+    def test_the_removed_key_logs_nothing(self):
+        """A config still carrying `classificationMethod` reaches this function
+        only if it bypassed the migration; it must not resurrect the old
+        parameter name, which would make two differently-configured runs look
+        the same."""
         config = {
             "classification": {
                 "classificationMethod": "multimodalPageLevelClassification"
             }
         }
         params, _, _ = mlflow_logger._extract_config_params(config)
-        assert params["classification.method"] == "multimodalPageLevelClassification"
+        assert "classification.method" not in params
 
     def test_assessment_confidence_params(self):
         # v0.6: HITL threshold is top-level; confidence knobs live under

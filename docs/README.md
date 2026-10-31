@@ -23,6 +23,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [IDP CLI](./idp-cli.md) - Command line interface for batch processing and evaluation workflows
 - [IDP SDK](./idp-sdk.md) - Python SDK for programmatic access
 - [Demo Videos](./demo-videos.md) - Comprehensive collection of feature demonstration videos
+- [Hands-on Workshops](./workshops.md) - The GenAI IDP Workshop on AWS Workshop Studio and the self-guided Amazon Quick integration workshop
 - [Troubleshooting](./troubleshooting.md) - Troubleshooting and performance guides
 - [Error Analyzer](./error-analyzer.md) - AI-powered error diagnosis
 
@@ -39,8 +40,8 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Extraction Scaling Guide](./extraction-scaling-guide.md) - Simple vs advanced (agentic) mode limits by document/list size; where each hits limits and how to choose
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
+- [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
-- [Criteria Validation](./criteria-validation.md) - Document validation against dynamic business rules using LLMs
 - [OCR Image Sizing Guide](./ocr-image-sizing-guide.md) - Optimizing image sizes for OCR processing
 - [Languages](./languages.md) - Multi-language support
 
@@ -77,7 +78,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
-- [Release Runbook](./release-runbook.md) - Publishing a release to the four public S3 regions: preconditions, ordered steps, failure and recovery paths, what is not automated, post-release verification
+- [Release Runbook](./release-runbook.md) - How a release is built and published to S3, for publishing releases to buckets in your own account: preconditions, ordered steps, failure and recovery, post-release verification
 
 ## Planning & Security
 
@@ -98,6 +99,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Migration
 
+- [Migration v0.6.12 to v0.6.13](./migration-v0612-to-v0613.md) - Classification settings nested by model call (config format 0.9)
 - [Migration v0.4 to v0.5](./migration-v04-to-v05.md) - Upgrading from v0.4.x to v0.5.x (Unified Pattern)
 
 ### GovCloud

@@ -305,6 +305,10 @@ class ExtractionService:
         # current section, emitted as explainability_info by _save_results.
         # Reset per section. None when in-shard assessment did not run.
         self._grounded_assessment: dict[str, Any] | None = None
+        #: Whether any page carried OCR geometry on the last grounding pass.
+        #: ``None`` until one runs. audit_explainability needs it to tell
+        #: "nothing matched" from "nothing was available to match against".
+        self._ocr_geometry_available: bool | None = None
         # Wall-clock deadline (epoch seconds) for the in-shard assessment ladder
         # (1.5). Set per-invocation from the Lambda context; None = no guard.
         self._assessment_deadline_epoch: float | None = None
@@ -1362,6 +1366,7 @@ class ExtractionService:
         self._pending_image_fit_metadata = None
         self._pending_cache_marker_seen = False
         self._grounded_assessment = None
+        self._ocr_geometry_available = None
         # Top-level fields the simple-extraction schema-compliance filter dropped
         # because the class schema does not define them (off-schema/hallucinated).
         # Set by _filter_extracted_to_schema, surfaced by _build_extraction_issues.
@@ -1872,7 +1877,7 @@ class ExtractionService:
         * the label resolves to a class in configuration →
           ``EMPTY_SCHEMA_NO_ATTRIBUTES``;
         * the label is the ``unclassified`` sentinel (or the configured
-          ``classification.invalidClassFallback``, which defaults to it) →
+          ``classification.fallback_class``, which defaults to it) →
           ``EMPTY_SCHEMA_UNCLASSIFIED``. Classification determined no class,
           which is an ordinary outcome for a blank page and a reportable failure
           for a page whose classification errored — a distinction only
@@ -1899,7 +1904,7 @@ class ExtractionService:
         """
         if self._get_class_schema(class_label):
             return EMPTY_SCHEMA_NO_ATTRIBUTES
-        fallback = self.config.classification.invalidClassFallback
+        fallback = self.config.classification.fallback_class
         if class_label in {UNCLASSIFIED_CLASS, fallback}:
             return EMPTY_SCHEMA_UNCLASSIFIED
         return EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
@@ -1994,8 +1999,7 @@ class ExtractionService:
                     "that no longer defines its class; or the classifier returned a "
                     "class outside the configured vocabulary and the "
                     "classification path in use does not enforce one "
-                    "(textbasedHolisticClassification, or "
-                    "multimodalPageLevelClassification with "
+                    "(granularity: packet, or granularity: page with "
                     "enforceValidClasses: false). Add the class to the "
                     "configuration, reclassify the document under the current one, "
                     "or turn vocabulary enforcement on."
@@ -2365,6 +2369,100 @@ class ExtractionService:
     #: what is fixed here; the consequence is unchanged.
     PARTIAL_ROW_SHORTFALL_CODE = "extraction_partial_row_shortfall"
 
+    #: The ``ProcessingIssue.code`` for "this check did not run", as distinct from
+    #: "this check ran and found nothing". Both row checks above need OCR tables
+    #: whose column count EQUALS the item schema's property count, and below
+    #: ``_OCR_ROW_ESTIMATE_MIN`` matched rows neither can say anything either way —
+    #: at zero matched rows they are structurally unable to fire at all. Until this
+    #: code existed that produced the same output as a verified-complete list:
+    #: no issue, and a processing report reading ``Status: SUCCESS``. A reader who
+    #: knows about ``ROW_SHORTFALL_CODE`` reads that as a checked list, which is the
+    #: defect — the checks being unable to fire is tolerable, appearing to have
+    #: fired is not (#1489).
+    #:
+    #: ``info`` severity, always, and NOT governed by
+    #: ``extraction.row_shortfall_action`` — for the reason neither
+    #: ``OUTPUT_TRUNCATED_CODE`` nor ``PARTIAL_ROW_SHORTFALL_CODE`` is. It is also
+    #: ``info`` rather than ``warning`` because of how often it is the CORRECT
+    #: answer rather than a finding: an item schema carrying a property the table
+    #: lacks (a derived Balance) and an OCR configuration that renders no pipe
+    #: tables at all both reach it on a perfectly complete extraction, so at
+    #: ``warning`` it would flip those runs' reports from ``SUCCESS`` to
+    #: ``COMPLETED WITH WARNINGS`` for a condition that is a statement about the
+    #: EVIDENCE and not about the result. ``info`` keeps the status line and still
+    #: puts the code in ``processing_issues``, in the processing report's issue
+    #: list and in the UI's — which is the whole of what distinguishability needs.
+    #: ``extraction_sparse`` is ``info`` for the same reason.
+    NO_OCR_EVIDENCE_CODE = "extraction_row_count_unverified"
+
+    #: The ``ProcessingIssue.code`` for a field the class schema declares as an
+    #: array that came back as something else — a string, a number, a bool or an
+    #: object. The whole list is lost, and unlike every other code in this family
+    #: that is not an estimate: the declared type and the returned value are both
+    #: in hand, so there is nothing to infer (#1505).
+    #:
+    #: The shape that motivated it is a model declining *inside the field*.
+    #: Measured on the v0.6.12 benchmark grid, ``Transactions`` came back as
+    #: ``'The statement contains 400 transactions (SEQ00000 to SEQ00399). They are
+    #: too many to list in full here without risking errors, so this field is not
+    #: populated.'`` — 400 rows of 400 lost on a run reporting ``COMPLETED``.
+    #:
+    #: ⚠️ **Detected here rather than left to validation, because validation is a
+    #: toggle and this loss is not conditional on it.** Full-schema validation does
+    #: report it, as ``extraction_validation_failed`` — but only when
+    #: ``extraction.validation.enabled`` is true, and at ``warning`` severity with
+    #: a message ("N schema violation(s) remain ... The values are stored as
+    #: extracted") that reads the same for a total loss as for a coerced date. On
+    #: the grid, the one affected run that recorded **no issue of any kind** was
+    #: the one with enforcement off. Coercion sees it too and correctly refuses
+    #: (cross-family coercion is forbidden by design), which is likewise gated on
+    #: ``extraction.coercion.enabled`` and emits no issue. This check reads the
+    #: class schema against the final extracted fields, so it needs neither.
+    #:
+    #: ``error`` severity, unconditionally. That is a statement about the RESULT
+    #: and not about the evidence — the distinction that keeps
+    #: ``NO_OCR_EVIDENCE_CODE`` and ``extraction_sparse`` at ``info`` — and it puts
+    #: the section's processing report at ``COMPLETED WITH ERRORS``. It does NOT
+    #: fail the section: the only issue this service fails a section on is
+    #: ``ROW_SHORTFALL_CODE`` at ``error``, which
+    #: :meth:`_fail_on_row_shortfall` raises on, and
+    #: ``extraction.row_shortfall_action`` deliberately does not govern this code,
+    #: for the reason it governs neither ``OUTPUT_TRUNCATED_CODE`` nor
+    #: ``PARTIAL_ROW_SHORTFALL_CODE``: widening that knob would start failing runs
+    #: that complete today on a deployment that has already opted into ``fail``.
+    #: Whether a lost list should fail the section is a product decision;
+    #: detection is what is fixed here.
+    #:
+    #: ⚠️ **A BLANK value is deliberately not this code.** ``""`` or ``"   "`` in
+    #: an array field says what ``[]`` says — there were no rows — and a genuinely
+    #: empty section is legitimate, which is the stated reason the empty-list
+    #: signal is a ``warning``. The ``error`` rationale above ("a declared type
+    #: and a returned value leave nothing to estimate") holds for a refusal
+    #: sentence and does not hold for a blank, so a blank is routed to
+    #: ``extraction_incomplete`` instead and only a value carrying content
+    #: reaches this code.
+    #:
+    #: Scope is :meth:`_declared_array_non_lists`, which matches
+    #: :meth:`_object_list_targets` — top-level declared arrays plus one level
+    #: into an array of instances — rather than top-level ``properties`` alone,
+    #: because the nested shape ships (``checkpoints[].items``,
+    #: ``glossarySections[].terms``, ``employees[].shifts`` in both
+    #: ``ocr-benchmark`` presets). Two levels down is not reached, and no shipped
+    #: preset declares one.
+    LIST_FIELD_NOT_A_LIST_CODE = "extraction_list_field_not_a_list"
+
+    #: How much of the offending value to carry in the issue's ``details``. The
+    #: value IS the diagnostic for this code — a refusal sentence says why the
+    #: model declined, which nothing else in the pipeline records — but it is
+    #: model-authored text, so it is truncated rather than trusted.
+    #:
+    #: This is a READABILITY bound rather than the DynamoDB defence:
+    #: ``ProcessingIssue._bound_details`` already caps every string leaf in
+    #: ``details`` at ``MAX_DETAIL_STRING_BYTES`` (1024), so the item ceiling is
+    #: defended there whatever this value is. 300 is chosen so the issue reads as
+    #: one sentence in a report, not so that it fits.
+    _NOT_A_LIST_PREVIEW_CHARS = 300
+
     def _row_shortfall_action(self) -> str:
         """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
 
@@ -2459,6 +2557,73 @@ class ExtractionService:
         except Exception:  # noqa: BLE001 - see the contract in the docstring
             return None
         return as_int if exact and as_int >= 0 else None
+
+    @classmethod
+    def _declared_array_non_lists(
+        cls, schema: dict[str, Any], values: Any
+    ) -> dict[str, Any]:
+        """``{label: value}`` for every declared array that came back as a non-list.
+
+        The traversal deliberately matches :meth:`_object_list_targets` — top-level
+        declared arrays, ``items`` resolved through ``$ref``, and one level into an
+        array of instances — rather than reading top-level ``properties`` alone.
+        The nested shape is live in shipped configuration, not hypothetical: both
+        ``ocr-benchmark`` presets declare ``checkpoints[].items``,
+        ``glossarySections[].terms`` and ``employees[].shifts``, so a model
+        declining inside one of those would be exactly as silent as the top-level
+        case this check was written for (#1505).
+
+        Only *values* are judged here; the schema side decides which locations are
+        looked at. A location whose value is absent, ``None`` or a genuine list is
+        not returned — those belong to the empty-list signal, which this is
+        disjoint from by construction.
+
+        An instance array reports one label per inner list, with the FIRST
+        offending value: the label is the thing an operator acts on, and a model
+        that answers in prose for one instance's list has generally done it for
+        every instance.
+        """
+        from idp_common.config.schema_utils import deref_schema
+
+        root = schema or {}
+        out: dict[str, Any] = {}
+        props = root.get("properties") or {}
+
+        def _items_props(spec: dict[str, Any]) -> dict[str, Any] | None:
+            items = spec.get("items")
+            if not isinstance(items, dict):
+                return None
+            items = deref_schema(items, root)
+            iprops = items.get("properties") if isinstance(items, dict) else None
+            return iprops if isinstance(iprops, dict) and iprops else None
+
+        def _offending(value: Any) -> bool:
+            return value is not None and not isinstance(value, list)
+
+        for name, spec in props.items():
+            if not isinstance(spec, dict) or spec.get("type") != "array":
+                continue
+            present = isinstance(values, dict) and name in values
+            value = values.get(name) if present else None
+            if present and _offending(value):
+                out[str(name)] = value
+                continue
+            # The outer list came back as a list, so its instances can be read for
+            # an inner list that did not.
+            iprops = _items_props(spec)
+            if not iprops or not isinstance(value, list):
+                continue
+            for iname, ispec in iprops.items():
+                ispec = deref_schema(ispec, root) if isinstance(ispec, dict) else ispec
+                if not isinstance(ispec, dict) or ispec.get("type") != "array":
+                    continue
+                for inst in value:
+                    if not isinstance(inst, dict) or iname not in inst:
+                        continue
+                    if _offending(inst.get(iname)):
+                        out.setdefault(f"{name}[].{iname}", inst[iname])
+                        break
+        return out
 
     @classmethod
     def _object_list_targets(
@@ -3729,8 +3894,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """Detect extraction shortfalls and emit structured ProcessingIssues.
 
         Runs for BOTH traditional (simple) and agentic extraction so an
-        under-produced extraction is never silently reported as SUCCESS. Two
-        signals:
+        under-produced extraction is never silently reported as SUCCESS. The
+        signals below are the ones about a list's SHAPE and population; the three
+        OCR-grounded row-count checks are built further down the same method and
+        are described at their own constants (``ROW_SHORTFALL_CODE``,
+        ``PARTIAL_ROW_SHORTFALL_CODE``, ``NO_OCR_EVIDENCE_CODE``):
 
         - **Empty schema-defined list fields** (``extraction_incomplete``,
           warning): a field the schema declares as an array came back empty. This
@@ -3738,15 +3906,41 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           on a 25-page statement). When extraction is NOT already agentic, the
           message recommends toggling to Advanced (agentic) extraction, whose
           deterministic table parser is built for exactly this.
+        - **A list field that is not a list** (``extraction_list_field_not_a_list``,
+          error): a field the schema declares as an array came back as a string
+          carrying content, a number, a bool or an object — the live shape is a
+          model declining inside the field ("too many to list in full here"). None
+          of that field's rows reaches anything downstream, and this is the one
+          signal here that is not an estimate. A BLANK string joins the
+          empty-list signal above instead. See
+          :data:`LIST_FIELD_NOT_A_LIST_CODE` for why it is detected here rather
+          than left to full-schema validation, which reports it only when enabled.
         - **Below-threshold population** (``extraction_sparse``, info): reuses the
           existing ``population_check`` heuristic when present.
         - **A response the model did not finish** (``extraction_output_truncated``,
           warning): ``metadata["output_truncated"]``, set from the response's own
           ``stopReason`` or from the JSON repair reader. The only certain signal
           here; the others are estimates.
+        - **A row count nothing could check** (``extraction_row_count_unverified``,
+          info): a list of objects came back with at least
+          ``_OCR_ROW_ESTIMATE_MIN`` rows while the section's OCR text holds fewer
+          than that many rows in tables of the list's own width, so neither
+          OCR-grounded row check was applicable. It reports the ABSENCE of
+          evidence, never a shortfall, and it is the signal that keeps "could not
+          check" distinguishable from "checked and found complete".
 
-        Best-effort and advisory: a genuinely empty section (no such data in the
-        document) will also flag, so these are warning/info, never hard errors.
+        The estimates in the bullets above are best-effort and advisory: a genuinely
+        empty section (no such data in the document) will also flag, so they are
+        warning/info. ``extraction_list_field_not_a_list`` is the exception and is
+        ``error``, because a declared type and a returned value leave nothing to
+        estimate.
+
+        ⚠️ **One issue this method builds does fail the section, and it is not one of
+        those.** Under ``extraction.row_shortfall_action: fail`` the row-shortfall
+        code is emitted at ``error`` and :meth:`_fail_on_row_shortfall` — reached
+        from ``_save_results`` after the report is written — raises. Everything else
+        here, this code included, leaves the section standing;
+        :meth:`_generate_processing_report` only writes the status line that says so.
         """
         from idp_common.config.schema_constants import (
             SCHEMA_PROPERTIES,
@@ -3788,6 +3982,33 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 self._integrated_downgrade_reason
             )
 
+        # Declared arrays that came back as something other than a list, split by
+        # whether the value carries content (#1505). A BLANK string is not a lost
+        # list: `""` or `"   "` says the same thing `[]` says — there were no rows —
+        # and a genuinely empty section is legitimate (an account with no fees, a
+        # period with no deposits), which is the stated reason the empty-list signal
+        # is a `warning`. So a blank joins that signal rather than reporting an
+        # error, and only a value holding content reaches the error below.
+        #
+        # Note what is NOT widened here: a blank is added to `empty_lists`, but a
+        # nested EMPTY LIST is not. `empty_lists` has always been top-level and
+        # list-valued, and pulling nested empty lists into it would fire
+        # `extraction_incomplete` on runs that complete today — a change to that
+        # code's population, which is not this one's business.
+        non_lists = self._declared_array_non_lists(
+            self._class_schema or {}, extracted_fields
+        )
+        blank_values = {
+            label: value
+            for label, value in non_lists.items()
+            if isinstance(value, str) and not value.strip()
+        }
+        not_a_list = {
+            label: value
+            for label, value in non_lists.items()
+            if label not in blank_values
+        }
+
         empty_lists = [
             name
             for name in array_fields
@@ -3797,6 +4018,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 isinstance(extracted_fields.get(name), list)
                 and len(extracted_fields[name]) == 0
             )
+        ]
+        # Compared through `str` because `array_fields` carries whatever the schema
+        # had — a YAML schema can hold a bare numeric key, which arrives as an
+        # `int` — while a label from `_declared_array_non_lists` is always a string.
+        # A top-level blank is NOT already in the list above (it is present,
+        # non-`None` and not a list), so this is what adds it.
+        _already = {str(name) for name in empty_lists}
+        empty_lists = empty_lists + [
+            label for label in blank_values if label not in _already
         ]
         if empty_lists:
             # `map(str, ...)` because these names come from the class SCHEMA, not
@@ -3834,6 +4064,82 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     ),
                     section_id=section_id,
                     details={"empty_list_fields": empty_lists, "agentic": is_agentic},
+                )
+            )
+
+        # 1a) A declared array field that came back holding something that is not a
+        # list at all (#1505). Computed above, with the blanks already routed to the
+        # empty-list signal.
+        #
+        # Disjoint from `empty_lists` by construction: that set is the absent, the
+        # `None` and the empty-list cases, so a value reaching here is present,
+        # non-`None` and not a list.
+        #
+        # The live shape is a model declining inside the field: a sentence
+        # explaining that the list was too long to reproduce, sitting where 400
+        # rows belong. A dict is included too (`{"0": {...}, "1": {...}}` for an
+        # array is the other shape that reaches here) because the consequence is
+        # identical: the assessment coverage walk finds no rows to score, both
+        # OCR-grounded row checks have no count to compare, and
+        # `extraction_incomplete` does not fire because the key is present and
+        # non-empty.
+        if not_a_list:
+            # Labels here are already strings (`_declared_array_non_lists` casts
+            # them), which matters for the same reason the join above does it: a
+            # schema read from YAML can carry a bare numeric key, and this function
+            # runs with no enclosing `try`.
+            fields_str = ", ".join(not_a_list)
+            returned = {
+                label: type(value).__name__ for label, value in not_a_list.items()
+            }
+            previews = {
+                label: (
+                    value
+                    if len(value) <= self._NOT_A_LIST_PREVIEW_CHARS
+                    else value[: self._NOT_A_LIST_PREVIEW_CHARS] + "…"
+                )
+                for label, value in not_a_list.items()
+                if isinstance(value, str)
+            }
+            rec = (
+                " This document has large/tabular fields; Advanced (agentic) "
+                "extraction with table parsing is recommended for it."
+                if not is_agentic
+                else ""
+            )
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="error",
+                    code=self.LIST_FIELD_NOT_A_LIST_CODE,
+                    message=(
+                        f"List field(s) {fields_str} came back as "
+                        f"{', '.join(sorted(set(returned.values())))} rather than a "
+                        f"list, so none of their rows is available to anything "
+                        f"downstream — confidence scoring, evaluation and every "
+                        f"consumer of the result read no rows there. The usual cause "
+                        f"is the model answering in the field instead of filling it; "
+                        f"the value it returned is in this issue's details, and "
+                        f"reading it is how to tell that apart from a row payload "
+                        f"that arrived in the wrong shape. Scalar fields are "
+                        f"unaffected and can still score perfectly, and the "
+                        f"row-count checks have no list to count, so no other signal "
+                        f"flags this unless schema validation happens to be "
+                        f"enabled.{rec}"
+                    ),
+                    root_cause=(
+                        f"{'agentic' if is_agentic else 'traditional'} extraction "
+                        f"with model "
+                        f"{self._pending_extraction_model or self.config.extraction.model}; "
+                        f"array field(s) returned as a non-list: {fields_str}"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "not_a_list_fields": sorted(returned),
+                        "returned_types": returned,
+                        "returned_values": previews,
+                        "agentic": is_agentic,
+                    },
                 )
             )
 
@@ -4038,7 +4344,157 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     1 for _lb, rows, _mx in members for r in rows if isinstance(r, dict)
                 )
                 if expected < self._OCR_ROW_ESTIMATE_MIN:
-                    continue  # too little evidence to say anything either way
+                    # Too little evidence to say anything either way — so SAY THAT,
+                    # rather than emitting nothing and leaving this
+                    # indistinguishable from a list the checks read and found
+                    # complete (#1489).
+                    #
+                    # Measured, not assumed: on a 3-property item schema,
+                    # `_ocr_tables` + the exact-width match return 0 rows of
+                    # evidence for a GitHub-legal Markdown table written without
+                    # leading pipes, for the same table rendered with a 4th column
+                    # the schema does not carry, for one carrying an added
+                    # row-number column, and for a list rendered as bullets — four
+                    # renderings an LLM OCR backend can produce where textractor
+                    # produces none of them. At 0 evidence `expected < 30` holds
+                    # unconditionally, so both checks above are not merely quiet,
+                    # they are unreachable.
+                    #
+                    # Gated on the EXTRACTED side, because the OCR side is exactly
+                    # what is missing. `extracted >= _OCR_ROW_ESTIMATE_MIN` is the
+                    # same floor the checks themselves use, read against the only
+                    # count available here: a list that came back with 30+ rows is
+                    # one where a row-completeness answer would have been worth
+                    # having. ⚠️ The residual is the other end — a list that came
+                    # back with FEWER than that floor and has no evidence either
+                    # (5 rows where the document held 400) still reports nothing
+                    # here, because without evidence a 5-row list cannot be told
+                    # from a correct one, and `extraction_incomplete` /
+                    # `extraction_sparse` / a declared `minItems` are the signals
+                    # that cover a list that small.
+                    #
+                    # The widths that WERE found travel in the details rather than
+                    # being tolerated into the sum. That is the deliberate smaller
+                    # change: a width-tolerant count reachable only when the
+                    # exact-width evidence is empty would still let a two-column
+                    # key/value block stand in for a three-column list and report a
+                    # shortfall that is not one, where `ocr_table_widths` lets a
+                    # reader see a 4-vs-3 mismatch and fix the schema or the OCR
+                    # backend with no false finding anywhere.
+                    #
+                    # ⚠️ Read against `ocr_rows`, NOT against the `expected` the
+                    # branch itself is gated on. `expected` is
+                    # `min(ocr_rows, group_cap)`, so this branch is also reached
+                    # with the OCR evidence PLENTIFUL and the group's summed
+                    # declared `maxItems` under the floor — 400 matched rows
+                    # against `maxItems: 20`. Every string below describes the
+                    # absent-evidence half of that disjunction, so emitting there
+                    # would state a contradiction ("the OCR text holds only 400
+                    # row(s) ... under the 30-row floor"), and the condition is
+                    # genuinely different: the evidence is present and it is the
+                    # author's own ceiling that makes the comparison inapplicable.
+                    # That case is reachable rather than hypothetical, because
+                    # `shard_validation_schema` strips `maxItems` for a shard on
+                    # purpose ("a shard whose pages hold more rows than the
+                    # section's maxItems must not be told to drop rows before the
+                    # merge counts them"), so a merged section can carry more rows
+                    # than the cap. It stays silent here, exactly as it was before
+                    # this code existed — the residual this narrowing accepts.
+                    # Narrowing rather than widening is also what keeps the change
+                    # additive: this condition is strictly inside the branch's own
+                    # gate, since `ocr_rows < 30` forces `expected < 30`.
+                    if (
+                        extracted >= self._OCR_ROW_ESTIMATE_MIN
+                        and ocr_rows < self._OCR_ROW_ESTIMATE_MIN
+                    ):
+                        fields_str = ", ".join(labels)
+                        widths = sorted({tb["cols"] for tb in tables})
+                        evidence_clause = (
+                            f"no {n_props}-column table at all"
+                            + (
+                                f" (the table(s) found are "
+                                f"{', '.join(str(w) for w in widths)} columns wide)"
+                                if widths
+                                else " (no Markdown table was found in the section's "
+                                "OCR text)"
+                            )
+                            if ocr_rows == 0
+                            else f"only {ocr_rows} row(s) in {n_props}-column "
+                            f"table(s) of that shape"
+                        )
+                        # "Equally consistent with a complete list" is true of
+                        # THIS issue's own evidence and false of the section when
+                        # the response is known to have stopped early. Nothing
+                        # suppresses either issue, so without this clause a reader
+                        # gets one issue saying the output certainly stopped early
+                        # and another saying the row count is as likely complete as
+                        # not. `extraction_output_truncated` is the one certain
+                        # completeness signal here, so defer to it by name.
+                        truncated_clause = (
+                            f" ⚠️ This section also reports "
+                            f"{self.OUTPUT_TRUNCATED_CODE}: the response stopped "
+                            "before it finished, so every list in it is a prefix. "
+                            "That is a certain signal and it governs — read the "
+                            "'equally consistent' statement above as being about "
+                            "this check's evidence, not about the section."
+                            if metadata.get("output_truncated")
+                            else ""
+                        )
+                        issues.append(
+                            ProcessingIssue(
+                                stage="extraction",
+                                severity="info",
+                                code=self.NO_OCR_EVIDENCE_CODE,
+                                message=(
+                                    f"Extracted {extracted} row(s) for list field(s) "
+                                    f"{fields_str}, but the section's OCR text holds "
+                                    f"{evidence_clause} — under the "
+                                    f"{self._OCR_ROW_ESTIMATE_MIN}-row floor both "
+                                    f"OCR-grounded row checks need, so "
+                                    f"{self.ROW_SHORTFALL_CODE} and "
+                                    f"{self.PARTIAL_ROW_SHORTFALL_CODE} did not run "
+                                    "for this field. This is NOT a report of a "
+                                    "shortfall: the row count is UNVERIFIED, and it "
+                                    "is equally consistent with a complete list. "
+                                    "The evidence is matched on column width, so an "
+                                    "item schema carrying a property the table does "
+                                    "not have (a derived Balance) reaches this, as "
+                                    "does an OCR configuration that emits no "
+                                    "Markdown tables. To restore the check, use an "
+                                    "OCR backend that renders tables (Textract with "
+                                    "the TABLES feature, or BDA) and give the item "
+                                    "schema one property per rendered column."
+                                    + truncated_clause
+                                ),
+                                root_cause=(
+                                    f"{'agentic' if is_agentic else 'traditional'} "
+                                    f"extraction with model "
+                                    f"{self._pending_extraction_model or self.config.extraction.model}; "
+                                    f"{ocr_rows} matching OCR table row(s) for "
+                                    f"{n_props}-column {fields_str} — below the "
+                                    f"{self._OCR_ROW_ESTIMATE_MIN}-row floor, so the "
+                                    "row-completeness checks were not applicable"
+                                ),
+                                section_id=section_id,
+                                details={
+                                    "list_fields": labels,
+                                    "item_property_count": n_props,
+                                    "extracted_rows": extracted,
+                                    "ocr_matched_table_rows": ocr_rows,
+                                    # The diagnostic the width match otherwise
+                                    # throws away: every table width `_ocr_tables`
+                                    # DID find in the section, so a reader can see
+                                    # whether the evidence is absent (empty) or
+                                    # merely the wrong shape ([4] against 3).
+                                    "ocr_table_widths": widths,
+                                    "ocr_evidence_floor": self._OCR_ROW_ESTIMATE_MIN,
+                                    "declared_max_items": group_cap,
+                                    "ocr_tables": tables,
+                                    "agentic": is_agentic,
+                                },
+                            )
+                        )
+                    continue
                 if extracted >= expected * self._OCR_ROW_SHORTFALL_RATIO:
                     # The band #843's half ratio left silent. At 409 extracted of
                     # 817 summed OCR rows — 409 of the document's 800 real rows,
@@ -4352,18 +4808,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     code="extraction_multi_instance_suspected",
                     message=(
                         f"These pages appear to contain {instance_count} separate "
-                        f"'{self._class_label}' documents, but extraction returned "
-                        f"{extracted_n}. {missing} document(s) are NOT in the "
+                        f"'{self._class_label}' records, but extraction returned "
+                        f"{extracted_n}. {missing} record(s) are NOT in the "
                         f"result. Review the section, then either split it "
                         f"(classification sectionSplitting) or turn on "
                         f"multi-instance extraction for this class so every "
-                        f"document is extracted."
+                        f"record is extracted."
                     ),
                     root_cause=(
-                        f"the extraction model reported {instance_count} document "
+                        f"the extraction model reported {instance_count} "
                         f"instance(s) in this section while returning "
                         f"{extracted_n}; the class schema describes a single "
-                        f"document, so the additional records had nowhere to go "
+                        f"record, so the additional records had nowhere to go "
                         f"(model "
                         f"{self._pending_extraction_model or self.config.extraction.model})"
                     ),
@@ -6953,6 +7409,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 page_data_by_page = load_page_ocr_data(
                     document.pages, section_info.sorted_page_ids
                 )
+                self._ocr_geometry_available = any(
+                    isinstance(pd, dict) and pd.get("geometryAvailable")
+                    for pd in (page_data_by_page or {}).values()
+                )
                 if page_data_by_page:
                     # skip_grounded: in the sharded path each shard already
                     # grounded its own rows against its own pages (in
@@ -7033,8 +7493,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """
         from idp_common.assessment.batching import (
             _missing_row_indices,
+            _missing_scalar_fields,
             _new_split_stats,
             _retry_missing_rows,
+            _retry_missing_scalars,
             compute_token_aware_batch_size,
             enrich_assessment_with_thresholds,
         )
@@ -7046,13 +7508,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             for f, v in extracted_fields.items()
             if isinstance(v, list) and _missing_row_indices(merged_assessment.get(f), v)
         }
-        if not targets:
+        # ...and which POPULATED non-list fields have no confidence (#1474). The
+        # early return below used to be reached whenever ``targets`` was empty,
+        # and its own comment named the consequence — "scalar-only classes always
+        # land here" — so on this path too the ladder that exists to rescue
+        # unscored data was never offered a scalar omission. Integrated mode is
+        # the likelier place to meet one, since a single-shot call crams values
+        # and confidence together and drops whatever does not fit.
+        missing_scalars = _missing_scalar_fields(merged_assessment, extracted_fields)
+        if not targets and not missing_scalars:
             # Nothing to retry — but the caller REPLACES its alert surface with
             # what this returns (#813), so an empty list here would leave every
             # fully-scored integrated section with no confidence alerts at all
-            # (the common case; scalar-only classes always land here). Rebuild
-            # the surface from the merged assessment exactly as the retry path
-            # does below, so the replace is always a globally-indexed surface.
+            # (the common case). Rebuild the surface from the merged assessment
+            # exactly as the retry path does below, so the replace is always a
+            # globally-indexed surface.
             merged_assessment, regenerated_alerts = enrich_assessment_with_thresholds(
                 merged_assessment,
                 self._class_schema,
@@ -7108,15 +7578,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             rows = extracted_fields[field]
             # 1.1 Token-aware first-pass size for this field's confidence model.
             # Pass the whole row list — the widest row governs the batch, and rows
-            # are not guaranteed to carry the same keys.
+            # are not guaranteed to carry the same keys. Every retry call carries the
+            # rest of ``extracted_fields`` unsliced, so that is reserved as the fixed
+            # part of each call's output.
+            fixed_results = {k: v for k, v in extracted_fields.items() if k != field}
             batch_size = compute_token_aware_batch_size(
-                confidence_cfg.model, rows, geometry_mode, configured_batch_size
+                confidence_cfg.model,
+                rows,
+                geometry_mode,
+                configured_batch_size,
+                fixed_results=fixed_results,
             )
             if split_stats["derived_batch_size"] is None:
                 split_stats["derived_batch_size"] = batch_size
             esc_batch = (
                 compute_token_aware_batch_size(
-                    escalation_model, rows, geometry_mode, configured_batch_size
+                    escalation_model,
+                    rows,
+                    geometry_mode,
+                    configured_batch_size,
+                    fixed_results=fixed_results,
                 )
                 if escalation_one_call is not None
                 else batch_size
@@ -7143,6 +7624,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             split_stats["unrecoverable_rows"] += len(
                 _missing_row_indices(merged_assessment.get(field), rows)
             )
+
+        # #1474 scalar rung, OUTSIDE the per-list-field loop above — that loop is
+        # what a scalar-only class has no iteration of. Same model, bounded, and
+        # free when there is nothing missing.
+        merged_assessment, _scalar_alerts, _scalar_metering, _scalar_dur = (
+            _retry_missing_scalars(
+                _one_call,
+                extraction_results=extracted_fields,
+                merged_assessment=merged_assessment,
+                merged_alerts=new_alerts,
+                merged_metering={},
+                max_retries=2,
+                split_stats=split_stats,
+                deadline_epoch=self._assessment_deadline_epoch,
+            )
+        )
+        split_stats["unrecoverable_fields"] = len(
+            _missing_scalar_fields(merged_assessment, extracted_fields)
+        )
 
         # #894: name the class alongside the oversized-row field(s) so the emitted
         # issue points at the class whose list item does not fit the model's output
@@ -7545,6 +8045,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 geometry_mode=geometry_mode,
                 section_id=section_id,
                 ladder_issues=ladder_issues,
+                geometry_available=self._ocr_geometry_available,
             )
             section_issues = ladder_issues + audit_issues
 

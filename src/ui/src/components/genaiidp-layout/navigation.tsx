@@ -10,6 +10,10 @@ import useInstalledFeatures from '../../hooks/use-installed-features';
 import useCatalogFeatures from '../../hooks/use-catalog-features';
 import { buildFeaturesNavSection, COMING_SOON_HREF } from './feature-platform-nav-items';
 import useLatestVersion from '../../hooks/use-latest-version';
+import useInbox from '../../hooks/use-inbox';
+import { buildInboxNavLink } from '../inbox/inbox-nav-link';
+import { useOptionalReviewWork } from '../../hooks/use-review-work';
+import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
 import './navigation.css';
 
 const isQuickStartWidgetEnabled = (): boolean => {
@@ -33,11 +37,12 @@ import {
   CAPACITY_PLANNING_PATH,
   CUSTOM_MODELS_PATH,
   FEATURES_PATH_PREFIX,
-  ANNOTATE_LANDING_PATH,
-  testSetAnnotateHref,
+  INBOX_PATH,
+  MY_QUEUES_PATH,
+  MY_TASKS_PATH,
+  MY_WORK_PATH,
+  REVIEW_QUEUES_PATH,
 } from '../../routes/constants';
-
-export const documentsNavHeader = { text: 'Tools', href: `#${DEFAULT_PATH}` };
 
 const NAV_HOTSPOTS: Record<string, string> = {
   [`#${DOCUMENTS_PATH}`]: 'nav-documents',
@@ -84,10 +89,30 @@ const withNavHotspots = (items: readonly SideNavigationProps.Item[]): SideNaviga
 
 // Full navigation items for Admin users (all features)
 export const adminNavItems = [
-  { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
-  { type: 'link', text: 'Upload Document(s)', href: `#${UPLOAD_DOCUMENT_PATH}` },
-  { type: 'link', text: 'Document KB', href: `#${DOCUMENTS_KB_QUERY_PATH}` },
-  { type: 'link', text: 'Agent Companion Chat', href: `#${AGENT_CHAT_PATH}` },
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [
+      { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
+      { type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Assistants',
+    items: [
+      { type: 'link', text: 'Knowledge Base', href: `#${DOCUMENTS_KB_QUERY_PATH}` },
+      { type: 'link', text: 'Agent Chat', href: `#${AGENT_CHAT_PATH}` },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Test Studio',
+    items: [
+      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
+      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
+    ],
+  },
   {
     type: 'section',
     text: 'Configuration',
@@ -103,14 +128,6 @@ export const adminNavItems = [
       { type: 'link', text: 'Prefix Mappings', href: `#${CONFIG_PREFIX_MAPPINGS_PATH}` },
       { type: 'link', text: 'View / Edit Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View / Edit Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
-    ],
-  },
-  {
-    type: 'section',
-    text: 'Test Studio',
-    items: [
-      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
-      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
     ],
   },
   {
@@ -151,10 +168,24 @@ export const adminNavItems = [
   },
 ];
 
-// Author navigation: same as admin but without User Management, Document KB, or Agent Chat (not yet config-version scoped)
+// Author navigation: same as admin but without User Management or the Assistants section (Knowledge Base, Agent Chat) (not yet config-version scoped)
 export const authorNavItems = [
-  { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
-  { type: 'link', text: 'Upload Document(s)', href: `#${UPLOAD_DOCUMENT_PATH}` },
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [
+      { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
+      { type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Test Studio',
+    items: [
+      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
+      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
+    ],
+  },
   {
     type: 'section',
     text: 'Configuration',
@@ -165,14 +196,6 @@ export const authorNavItems = [
       { type: 'link', text: 'Capacity Planning', href: `#${CAPACITY_PLANNING_PATH}` },
       { type: 'link', text: 'View Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
-    ],
-  },
-  {
-    type: 'section',
-    text: 'Test Studio',
-    items: [
-      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
-      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
     ],
   },
   {
@@ -215,7 +238,11 @@ export const authorNavItems = [
 
 // Viewer navigation: read-only access to documents, config, capacity planning (no KB or Agent Chat — not yet config-version scoped)
 export const viewerNavItems = [
-  { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }],
+  },
   {
     type: 'section',
     text: 'Configuration',
@@ -264,28 +291,6 @@ export const viewerNavItems = [
   },
 ];
 
-// Limited navigation items for Reviewer-only users (HITL review only)
-export const reviewerNavItems = [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }];
-
-/**
- * Navigation for Annotator-only users: their assigned test set's queue and nothing
- * else. Built from the user's allowedTestSets so a single-set annotator lands
- * straight in the queue rather than on a chooser. With several sets, or none
- * resolved yet, falls back to the queue landing page, which handles both cases.
- */
-export const buildAnnotatorNavItems = (allowedTestSets: string[] | null): Array<Record<string, unknown>> => {
-  const items: Array<Record<string, unknown>> = [];
-  if (allowedTestSets && allowedTestSets.length === 1) {
-    items.push({ type: 'link', text: 'My annotation queue', href: testSetAnnotateHref(allowedTestSets[0]) });
-    // Kept even alongside the single-set shortcut: scope is fetched once on mount,
-    // so an annotator assigned a second set mid-session needs a way to reach it
-    // without reloading.
-    items.push({ type: 'link', text: 'All my assignments', href: `#${ANNOTATE_LANDING_PATH}` });
-    return items;
-  }
-  return [{ type: 'link', text: 'My annotation queues', href: `#${ANNOTATE_LANDING_PATH}` }];
-};
-
 // Keep for backward compatibility
 export const documentsNavItems = adminNavItems;
 
@@ -313,7 +318,16 @@ interface NavigationProps {
   header?: { text: string; href: string };
   items?: SideNavigationProps.Item[];
   onFollowHandler?: (ev: CustomEvent<SideNavigationProps.FollowDetail>) => void;
+  /**
+   * The entry to highlight, set by a page whose URL does not say (the edit page, from its
+   * mode). `null` highlights nothing; omitted, the entry is derived from the URL.
+   */
+  activeHref?: string | null;
 }
+
+/** The page's override, or the entry derived from the URL. */
+const resolveActiveHref = (override: string | null | undefined, computed: string): string | undefined =>
+  override === undefined ? computed : (override ?? undefined);
 
 /**
  * Build the AWS CloudFormation "Update stack" deep-link for the current
@@ -334,159 +348,19 @@ const buildCfnUpdateStackUrl = (region: string | undefined, stackName: string | 
   );
 };
 
-const Navigation = ({
-  header = documentsNavHeader,
-  items,
-  onFollowHandler = defaultOnFollowHandler,
-}: NavigationProps): React.JSX.Element => {
-  const location = useLocation();
-  const path = location.pathname;
-  let activeHref = `#${DEFAULT_PATH}`;
+/**
+ * The "Deployment Info" section (stack, version with its "Update" badge, build, pattern,
+ * region), shared by every navigation. Null until any of it is known. The release check
+ * it reads is open to every signed-in user; only the popover's CloudFormation link is
+ * Admin's.
+ */
+const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isReviewerOnly, isAnnotatorOnly, isViewerOnly, allowedTestSets } = useUserRole();
-  const { features: installedFeatures } = useInstalledFeatures();
-  const { features: catalogFeatures } = useCatalogFeatures();
-
-  // Dynamic "Extensions" section: installed features plus catalog features
-  // with showInNav !== false, ending with a "Browse catalog" link. Always
-  // visible per the feature platform plan. Catalog entries with
-  // showInNav: false (the bundled reference samples) are reachable from the
-  // catalog browser at /features, not from their own nav links.
-  // isAdmin gates the badge wording only: installing is Admin-only, so a
-  // non-admin reads lifecycle state rather than an action they cannot take.
-  const featuresSection = useMemo(
-    () => buildFeaturesNavSection(installedFeatures, catalogFeatures, isAdmin),
-    [installedFeatures, catalogFeatures, isAdmin],
-  );
-
+  const { isAdmin } = useUserRole();
   // Version-check for the "Update available" indicator. Returns
   // isUpdateAvailable=false until settings.Version is loaded.
   const currentVersion = settings?.Version as string | undefined;
   const { latestVersion, templateUrl, isUpdateAvailable } = useLatestVersion(currentVersion);
-
-  // Select navigation items based on user role (highest privilege wins)
-  const baseItems = useMemo(() => {
-    if (items) return items;
-    let roleItems: Array<Record<string, unknown>>;
-    if (isAdmin) roleItems = adminNavItems;
-    else if (isAuthor) roleItems = authorNavItems;
-    else if (isViewerOnly) roleItems = viewerNavItems;
-    else if (isReviewerOnly) roleItems = reviewerNavItems;
-    // Before the viewer fallback: an Annotator-only user must land in their queue,
-    // not on a document list they cannot read.
-    else if (isAnnotatorOnly) roleItems = buildAnnotatorNavItems(allowedTestSets);
-    else roleItems = viewerNavItems; // Default: if user has Viewer + Reviewer, show viewer nav (union)
-
-    // Insert the dynamic Extensions section just before Resources
-    // (or at the end if Resources isn't present, e.g. reviewer nav).
-    const resourcesIdx = roleItems.findIndex(
-      (i) => (i as { type?: string }).type === 'section' && (i as { text?: string }).text === 'Resources',
-    );
-    if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
-    return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, isAnnotatorOnly, allowedTestSets, featuresSection]);
-
-  // Filter out navigation items based on deployment context:
-  // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
-  // - Custom Models: hidden if deployed region is not us-east-1
-  const filteredItems = useMemo(() => {
-    const pattern = (settings?.IDPPattern as string | undefined)?.toLowerCase();
-
-    // Check for Pattern-2 or Unified in various formats
-    const isCapacityPlanningSupported =
-      !pattern || // Show if pattern not loaded yet (fail-safe)
-      pattern.includes('pattern-2') ||
-      pattern.includes('pattern 2') ||
-      pattern.includes('pattern_2') ||
-      pattern.includes('pattern2') ||
-      pattern.includes('unified') ||
-      /pattern[\s\-_]?2/.test(pattern); // Regex: "pattern" followed by optional separator, then "2"
-
-    // Custom Models is only available in us-east-1 (Nova fine-tuning region requirement)
-    const deployedRegion = import.meta.env.VITE_AWS_REGION as string | undefined;
-    const isCustomModelsSupported = deployedRegion === 'us-east-1';
-
-    // Build list of items to hide from the Configuration section
-    const hiddenConfigItems = new Set<string>();
-    if (!isCapacityPlanningSupported) {
-      hiddenConfigItems.add('Capacity Planning');
-    }
-
-    // Transform navigation items: hide unsupported items, grey out region-restricted items
-    return baseItems
-      .map((rawItem) => {
-        const item = rawItem as { type?: string; text?: string; items?: unknown[] };
-        if (item.type === 'section' && item.text === 'Configuration') {
-          const section = item as unknown as SideNavigationProps.Section;
-          return {
-            ...item,
-            items: section.items
-              .filter((subItem) => !hiddenConfigItems.has((subItem as { text?: string }).text ?? ''))
-              .map((subItem) => {
-                const link = subItem as SideNavigationProps.Link;
-                // Grey out Custom Models with region badge when not in us-east-1
-                if (link.text === 'Custom Models' && !isCustomModelsSupported) {
-                  return {
-                    ...link,
-                    href: '#custom-models-unavailable',
-                    info: React.createElement(
-                      Popover,
-                      {
-                        dismissButton: false,
-                        position: 'right',
-                        size: 'medium',
-                        triggerType: 'custom',
-                        content:
-                          'Custom Models requires Amazon Nova fine-tuning, which is currently available in us-east-1 only. Deploy your stack in us-east-1 to use this feature.',
-                      },
-                      React.createElement(Badge, { color: 'grey' }, 'us-east-1 only'),
-                    ),
-                  };
-                }
-                return subItem;
-              }),
-          };
-        }
-        return item;
-      })
-      .filter((item) => !hiddenConfigItems.has((item as { text?: string }).text ?? ''));
-  }, [baseItems, settings?.IDPPattern]);
-
-  // Determine active link based on current path
-  if (path.includes(PRICING_PATH)) {
-    activeHref = `#${PRICING_PATH}`;
-  } else if (path.includes(MODEL_CONFIG_LIMITS_PATH)) {
-    activeHref = `#${MODEL_CONFIG_LIMITS_PATH}`;
-  } else if (path.includes(CONFIGURATION_PATH)) {
-    activeHref = `#${CONFIGURATION_PATH}`;
-  } else if (path.includes(DOCUMENTS_KB_QUERY_PATH)) {
-    activeHref = `#${DOCUMENTS_KB_QUERY_PATH}`;
-  } else if (path.includes(TEST_STUDIO_PATH)) {
-    const urlParams = new URLSearchParams(location.search);
-    const tab = urlParams.get('tab');
-    activeHref = tab ? `#${TEST_STUDIO_PATH}?tab=${tab}` : `#${TEST_STUDIO_PATH}?tab=sets`;
-  } else if (path.includes(UPLOAD_DOCUMENT_PATH)) {
-    activeHref = `#${UPLOAD_DOCUMENT_PATH}`;
-  } else if (path.includes(DISCOVERY_PATH)) {
-    activeHref = `#${DISCOVERY_PATH}`;
-  } else if (path.includes(USER_MANAGEMENT_PATH)) {
-    activeHref = `#${USER_MANAGEMENT_PATH}`;
-  } else if (path.includes(CONFIG_PREFIX_MAPPINGS_PATH)) {
-    activeHref = `#${CONFIG_PREFIX_MAPPINGS_PATH}`;
-  } else if (path.includes(CUSTOM_MODELS_PATH)) {
-    activeHref = `#${CUSTOM_MODELS_PATH}`;
-  } else if (path.includes(CAPACITY_PLANNING_PATH)) {
-    activeHref = `#${CAPACITY_PLANNING_PATH}`;
-  } else if (path.includes(DOCUMENTS_PATH)) {
-    activeHref = `#${DOCUMENTS_PATH}`;
-  } else if (path === AGENT_CHAT_PATH) {
-    activeHref = `#${AGENT_CHAT_PATH}`;
-  } else if (path.startsWith(FEATURES_PATH_PREFIX)) {
-    activeHref = `#${path}`;
-  }
-
-  // Create navigation items with deployment info
-  const navigationItems: SideNavigationProps.Item[] = [...filteredItems] as SideNavigationProps.Item[];
 
   const deployedRegion = import.meta.env.VITE_AWS_REGION as string | undefined;
   const stackName = settings?.StackName as string | undefined;
@@ -569,19 +443,198 @@ const Navigation = ({
       deploymentInfoItems.push({ type: 'link', text: `Region: ${deployedRegion}`, href: '#region' });
     }
 
-    navigationItems.push({
+    return {
       type: 'section',
       text: 'Deployment Info',
       items: deploymentInfoItems,
-    } as SideNavigationProps.Item);
+    } as SideNavigationProps.Item;
   }
+  return null;
+};
+
+const FullNavigation = ({
+  header,
+  items,
+  onFollowHandler = defaultOnFollowHandler,
+  activeHref: pinned,
+}: NavigationProps): React.JSX.Element => {
+  const location = useLocation();
+  const path = location.pathname;
+  let activeHref = `#${DEFAULT_PATH}`;
+  const { settings } = useSettingsContext();
+  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker } = useUserRole();
+  const reviewWork = useOptionalReviewWork();
+  const reviewCount = reviewWork?.count ?? null;
+  // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
+  // assigned HITL work. Review Studio › Review Management is Admin-only.
+  const showHitl = isAdmin;
+  const { features: installedFeatures } = useInstalledFeatures();
+  const { features: catalogFeatures } = useCatalogFeatures();
+  const { unreadCount } = useInbox();
+
+  // Dynamic "Extensions" section: installed features plus catalog features
+  // with showInNav !== false, ending with a "Browse catalog" link. Always
+  // visible per the feature platform plan. Catalog entries with
+  // showInNav: false (the bundled reference samples) are reachable from the
+  // catalog browser at /features, not from their own nav links.
+  // isAdmin gates the badge wording only: installing is Admin-only, so a
+  // non-admin reads lifecycle state rather than an action they cannot take.
+  const featuresSection = useMemo(
+    () => buildFeaturesNavSection(installedFeatures, catalogFeatures, isAdmin),
+    [installedFeatures, catalogFeatures, isAdmin],
+  );
+
+  // Select navigation items based on user role (highest privilege wins)
+  const baseItems = useMemo(() => {
+    if (items) return items;
+    let roleItems: Array<Record<string, unknown>>;
+    if (isAdmin) roleItems = adminNavItems;
+    else if (isAuthor) roleItems = authorNavItems;
+    else if (isViewerOnly) roleItems = viewerNavItems;
+    else roleItems = viewerNavItems; // Viewer, and Viewer + Reviewer (the union)
+
+    // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isQueueWorker, taskCount: reviewCount });
+    roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
+    if (showHitl) {
+      // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
+      const section = buildReviewStudioNavSection() as unknown as Record<string, unknown>;
+      const isSection = (i: Record<string, unknown>, text: string) => i.type === 'section' && i.text === text;
+      const testStudioIdx = roleItems.findIndex((i) => isSection(i, 'Test Studio'));
+      const resourcesIdx = roleItems.findIndex((i) => isSection(i, 'Resources'));
+      const at = testStudioIdx >= 0 ? testStudioIdx + 1 : resourcesIdx >= 0 ? resourcesIdx : roleItems.length;
+      roleItems = [...roleItems.slice(0, at), section, ...roleItems.slice(at)];
+    }
+
+    // Insert the dynamic Extensions section just before Resources
+    // (or at the end if Resources isn't present).
+    const resourcesIdx = roleItems.findIndex(
+      (i) => (i as { type?: string }).type === 'section' && (i as { text?: string }).text === 'Resources',
+    );
+    if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
+    return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
+  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount]);
+
+  // Filter out navigation items based on deployment context:
+  // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
+  // - Custom Models: hidden if deployed region is not us-east-1
+  const filteredItems = useMemo(() => {
+    const pattern = (settings?.IDPPattern as string | undefined)?.toLowerCase();
+
+    // Check for Pattern-2 or Unified in various formats
+    const isCapacityPlanningSupported =
+      !pattern || // Show if pattern not loaded yet (fail-safe)
+      pattern.includes('pattern-2') ||
+      pattern.includes('pattern 2') ||
+      pattern.includes('pattern_2') ||
+      pattern.includes('pattern2') ||
+      pattern.includes('unified') ||
+      /pattern[\s\-_]?2/.test(pattern); // Regex: "pattern" followed by optional separator, then "2"
+
+    // Custom Models is only available in us-east-1 (Nova fine-tuning region requirement)
+    const deployedRegion = import.meta.env.VITE_AWS_REGION as string | undefined;
+    const isCustomModelsSupported = deployedRegion === 'us-east-1';
+
+    // Build list of items to hide from the Configuration section
+    const hiddenConfigItems = new Set<string>();
+    if (!isCapacityPlanningSupported) {
+      hiddenConfigItems.add('Capacity Planning');
+    }
+
+    // Transform navigation items: hide unsupported items, grey out region-restricted items
+    return baseItems
+      .map((rawItem) => {
+        const item = rawItem as { type?: string; text?: string; items?: unknown[] };
+        if (item.type === 'section' && item.text === 'Configuration') {
+          const section = item as unknown as SideNavigationProps.Section;
+          return {
+            ...item,
+            items: section.items
+              .filter((subItem) => !hiddenConfigItems.has((subItem as { text?: string }).text ?? ''))
+              .map((subItem) => {
+                const link = subItem as SideNavigationProps.Link;
+                // Grey out Custom Models with region badge when not in us-east-1
+                if (link.text === 'Custom Models' && !isCustomModelsSupported) {
+                  return {
+                    ...link,
+                    href: '#custom-models-unavailable',
+                    info: React.createElement(
+                      Popover,
+                      {
+                        dismissButton: false,
+                        position: 'right',
+                        size: 'medium',
+                        triggerType: 'custom',
+                        content:
+                          'Custom Models requires Amazon Nova fine-tuning, which is currently available in us-east-1 only. Deploy your stack in us-east-1 to use this feature.',
+                      },
+                      React.createElement(Badge, { color: 'grey' }, 'us-east-1 only'),
+                    ),
+                  };
+                }
+                return subItem;
+              }),
+          };
+        }
+        return item;
+      })
+      .filter((item) => !hiddenConfigItems.has((item as { text?: string }).text ?? ''));
+  }, [baseItems, settings?.IDPPattern]);
+
+  // Determine active link based on current path
+  if (path.includes(PRICING_PATH)) {
+    activeHref = `#${PRICING_PATH}`;
+  } else if (path.includes(MODEL_CONFIG_LIMITS_PATH)) {
+    activeHref = `#${MODEL_CONFIG_LIMITS_PATH}`;
+  } else if (path.includes(CONFIGURATION_PATH)) {
+    activeHref = `#${CONFIGURATION_PATH}`;
+  } else if (path.includes(DOCUMENTS_KB_QUERY_PATH)) {
+    activeHref = `#${DOCUMENTS_KB_QUERY_PATH}`;
+  } else if (path.includes(TEST_STUDIO_PATH) && path.includes('/annotate')) {
+    // Test-set annotation is HITL work.
+    activeHref = `#${REVIEW_QUEUES_PATH}`;
+  } else if (path.includes(TEST_STUDIO_PATH)) {
+    const urlParams = new URLSearchParams(location.search);
+    const tab = urlParams.get('tab');
+    activeHref = tab ? `#${TEST_STUDIO_PATH}?tab=${tab}` : `#${TEST_STUDIO_PATH}?tab=sets`;
+  } else if (path.includes(UPLOAD_DOCUMENT_PATH)) {
+    activeHref = `#${UPLOAD_DOCUMENT_PATH}`;
+  } else if (path.includes(DISCOVERY_PATH)) {
+    activeHref = `#${DISCOVERY_PATH}`;
+  } else if (path.includes(USER_MANAGEMENT_PATH)) {
+    activeHref = `#${USER_MANAGEMENT_PATH}`;
+  } else if (path.includes(CONFIG_PREFIX_MAPPINGS_PATH)) {
+    activeHref = `#${CONFIG_PREFIX_MAPPINGS_PATH}`;
+  } else if (path.includes(CUSTOM_MODELS_PATH)) {
+    activeHref = `#${CUSTOM_MODELS_PATH}`;
+  } else if (path.includes(CAPACITY_PLANNING_PATH)) {
+    activeHref = `#${CAPACITY_PLANNING_PATH}`;
+  } else if (path.startsWith(MY_QUEUES_PATH)) {
+    activeHref = `#${MY_QUEUES_PATH}`;
+  } else if (path.startsWith(MY_WORK_PATH)) {
+    activeHref = `#${MY_TASKS_PATH}`;
+  } else if (path.startsWith(REVIEW_QUEUES_PATH)) {
+    activeHref = `#${REVIEW_QUEUES_PATH}`;
+  } else if (path.startsWith(INBOX_PATH)) {
+    activeHref = `#${INBOX_PATH}`;
+  } else if (path.includes(DOCUMENTS_PATH)) {
+    activeHref = `#${DOCUMENTS_PATH}`;
+  } else if (path === AGENT_CHAT_PATH) {
+    activeHref = `#${AGENT_CHAT_PATH}`;
+  } else if (path.startsWith(FEATURES_PATH_PREFIX)) {
+    activeHref = `#${path}`;
+  }
+
+  // Create navigation items with deployment info
+  const navigationItems: SideNavigationProps.Item[] = [...filteredItems] as SideNavigationProps.Item[];
+
+  const deploymentInfo = useDeploymentInfoNavSection();
+  if (deploymentInfo) navigationItems.push(deploymentInfo);
 
   return (
     <div className="idp-side-nav">
-      {/* Quick Start drives discovery and document upload, outside what an
-          Annotator is scoped to. Hidden rather than left to fail server-side, so the
-          UI does not advertise a capability the role does not have. */}
-      {isQuickStartWidgetEnabled() && !isAnnotatorOnly && (
+      {/* Annotator-only and Reviewer-only users get QueueWorkerNavigation, which has no Quick Start. */}
+      {isQuickStartWidgetEnabled() && (
         <div className="nav-quick-start">
           <Hotspot hotspotId="nav-quick-start" side="right">
             <Button variant="primary" iconName="gen-ai" onClick={() => window.dispatchEvent(new CustomEvent('openQuickStart'))}>
@@ -592,12 +645,56 @@ const Navigation = ({
       )}
       <SideNavigation
         items={withNavHotspots(navigationItems)}
-        header={header || documentsNavHeader}
-        activeHref={activeHref}
+        header={header}
+        activeHref={resolveActiveHref(pinned, activeHref)}
         onFollow={onFollowHandler}
       />
     </div>
   );
+};
+
+/**
+ * Navigation for a user whose only work is the review queues — Annotator-only, or a
+ * Reviewer with no Admin, Author or Viewer role: Home (Inbox, Tasks, Queues) and
+ * Deployment Info. No Documents or Extensions: their work is reached from Home.
+ * Mounts no feature or catalog hooks.
+ */
+const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
+  const location = useLocation();
+  const path = location.pathname;
+  const { unreadCount } = useInbox();
+  const reviewWork = useOptionalReviewWork();
+  const deploymentInfo = useDeploymentInfoNavSection();
+  const items: SideNavigationProps.Item[] = [
+    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
+    ...(deploymentInfo ? [deploymentInfo] : []),
+  ];
+  // The edit pages (a Test Studio item under /review-queues/.../items, or a document's
+  // edit page, which sets the entry itself) are opened from Tasks; a queue's own page
+  // (under /review-queues) from Queues.
+  let activeHref = `#${MY_TASKS_PATH}`;
+  if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
+  else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
+    activeHref = `#${MY_QUEUES_PATH}`;
+  return (
+    <div className="idp-side-nav">
+      <SideNavigation items={items} activeHref={resolveActiveHref(pinned, activeHref)} onFollow={onFollowHandler} />
+    </div>
+  );
+};
+
+/** Picks the navigation for the caller's role; renders only a header until the role is known. */
+const Navigation = (props: NavigationProps): React.JSX.Element => {
+  const { loading, isAnnotatorOnly, isReviewerOnly } = useUserRole();
+  if (loading) {
+    return (
+      <div className="idp-side-nav">
+        <SideNavigation items={[]} header={props.header} />
+      </div>
+    );
+  }
+  if (isAnnotatorOnly || isReviewerOnly) return <QueueWorkerNavigation {...props} />;
+  return <FullNavigation {...props} />;
 };
 
 export default Navigation;

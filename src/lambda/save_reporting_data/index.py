@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import traceback
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from idp_common.config import get_config
 from idp_common.config.configuration_manager import ConfigurationManager
@@ -19,6 +19,45 @@ from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+def _document_config(
+    config_table_name: str,
+    config_version: Optional[str],
+    config_revision: Optional[int],
+):
+    """The configuration a document's report is built from.
+
+    The revision the document was pinned to when it has one, so the report's
+    classes and the rest of the pipeline come from one configuration (#1619);
+    a pinned read also never attempts the head's configuration write-back, which
+    this role cannot make. With no pin, the profile head, as before.
+
+    A pinned read that fails falls back to the head with a WARNING, rather than
+    leaving the report without its configuration: the head is what every report
+    was built from before this read was pinned. A head read that fails as well
+    raises, into the handling every head-read failure has always had.
+    """
+    if config_revision is None:
+        return get_config(
+            table_name=config_table_name, as_model=True, version=config_version
+        )
+    try:
+        return get_config(
+            table_name=config_table_name,
+            as_model=True,
+            version=config_version,
+            revision=config_revision,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read revision r{config_revision} of configuration profile "
+            f"'{config_version}': {e}. Building the report from the profile head.",
+            exc_info=True,
+        )
+        return get_config(
+            table_name=config_table_name, as_model=True, version=config_version
+        )
 
 
 def handler(event, context):
@@ -89,7 +128,9 @@ def handler(event, context):
                 if config_version:
                     logger.info(f"Using document config_version: {config_version}")
                 
-                config = get_config(table_name=config_table_name, as_model=True, version=config_version)
+                config = _document_config(
+                    config_table_name, config_version, document.config_revision
+                )
 
                 # Also load pricing separately and attach it to the config
                 config_manager = ConfigurationManager(table_name=config_table_name)
@@ -113,7 +154,13 @@ def handler(event, context):
         # Pass database_name to enable automatic Glue table creation
         # Pass config dictionary to enable dynamic pricing from configuration
         reporter = SaveReportingData(reporting_bucket, database_name, config)
-        results = reporter.save(document, data_to_save)
+        # Review-queue reporting info (routed documents only; validated).
+        review = None
+        if event.get("review"):
+            from idp_common.review_queues.models import ReviewReportingInfo
+
+            review = ReviewReportingInfo.model_validate(event["review"])
+        results = reporter.save(document, data_to_save, review=review)
 
         # If no data was processed, return a warning
         if not results:

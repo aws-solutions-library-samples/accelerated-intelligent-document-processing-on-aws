@@ -19,6 +19,7 @@ import type { IconProps } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
 import { getTestRuns, deleteTests, abortTestRuns } from '../../graphql/generated';
+import { abortSuccessMessages } from './abortResultMessages';
 import DeleteTestModal from './DeleteTestModal';
 import AbortTestModal from './AbortTestModal';
 import DateRangeModal from '../common/DateRangeModal';
@@ -402,12 +403,13 @@ const TestResultsList = ({
 
       const abortResult = result.data.abortTestRuns;
       if (abortResult.success) {
-        const { abortedCount, failedCount } = abortResult;
-        let message = `Successfully aborted ${abortedCount} test run${abortedCount > 1 ? 's' : ''}`;
-        if (failedCount > 0) {
-          message += `, ${failedCount} failed`;
+        const { success, warning } = abortSuccessMessages(abortResult);
+        setSuccessMessage(success);
+        if (warning) {
+          // Documents the abort could not confirm stopped may still be running.
+          setErrorMessage(warning);
+          setTimeout(() => setErrorMessage(null), 15000);
         }
-        setSuccessMessage(message);
         setSelectedItems([]);
         setIsAbortModalVisible(false);
         fetchTestRuns(); // Refresh the list

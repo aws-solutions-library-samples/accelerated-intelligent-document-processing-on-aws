@@ -346,30 +346,34 @@ class TestNewerStampIsNotDowngraded:
     """
 
     def test_newer_stamp_survives_a_pure_read(self):
-        cfg = {"config_format_version": "0.9", "extraction": {"mode": "simple"}}
+        cfg = {"config_format_version": "1.0", "extraction": {"mode": "simple"}}
         out = migrate_config(cfg)
-        assert out["config_format_version"] == "0.9"
+        assert out["config_format_version"] == "1.0"
 
     def test_newer_stamp_survives_even_when_legacy_markers_force_a_run(self):
         """The hybrid case: current-stamped dict carrying a legacy delta."""
         cfg = {
-            "config_format_version": "0.9",
+            "config_format_version": "1.0",
             "extraction": {"agentic": {"validation": {"fail_action": "reject"}}},
         }
         out = migrate_config(cfg)
         # The relocation still happens -- that is what the marker check is for.
         assert out["extraction"]["validation"] == {"fail_action": "reject"}
         # ...but the stamp is left alone.
-        assert out["config_format_version"] == "0.9"
+        assert out["config_format_version"] == "1.0"
 
     def test_older_stamp_is_still_advanced(self):
+        # CONFIG_FORMAT_VERSION, not this step's TARGET_VERSION: these drive the
+        # WHOLE chain, so the stamp they should see is its end state. Asserting
+        # one step's target here made the test fail on the next hop being added
+        # rather than on anything being wrong.
         for stamp in ("0.5", "0.6"):
             out = migrate_config({"config_format_version": stamp})
-            assert out["config_format_version"] == TARGET_VERSION, stamp
+            assert out["config_format_version"] == CONFIG_FORMAT_VERSION, stamp
 
     def test_absent_stamp_is_still_advanced(self):
         out = migrate_config({"extraction": {"mode": "simple"}})
-        assert out["config_format_version"] == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
 
     def test_two_digit_minor_is_ordered_numerically_not_lexically(self):
         """'0.10' > '0.7' numerically but '0.10' < '0.7' as strings.
@@ -381,7 +385,7 @@ class TestNewerStampIsNotDowngraded:
 
     def test_unparseable_stamp_is_treated_as_predating_versioning(self):
         out = migrate_config({"config_format_version": "not-a-version"})
-        assert out["config_format_version"] == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
 
 
 class TestVersionComparatorIsShared:
@@ -414,7 +418,7 @@ class TestVersionComparatorIsShared:
         spec = importlib.util.spec_from_file_location("_uc_index", path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
-        # cfnresponse ships with the Lambda runtime, not with the test env, so it
+        # cfnresponse (vendored beside index.py) would PUT to a real URL, so it
         # is stubbed for the exec. Scoped rather than left in sys.modules: a
         # global stub made this test pass only when some earlier test in the same
         # worker happened to install one.
@@ -458,7 +462,7 @@ class TestFloatStampIsNotGuessedAt:
 
     def test_a_float_stamped_config_is_normalized_to_a_string(self):
         out = migrate_config({"config_format_version": 0.10})
-        assert out["config_format_version"] == TARGET_VERSION
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
         assert isinstance(out["config_format_version"], str)
 
     def test_ten_is_ordered_above_seven_when_quoted(self):

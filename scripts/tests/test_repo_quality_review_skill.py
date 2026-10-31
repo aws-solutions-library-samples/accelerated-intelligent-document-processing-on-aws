@@ -76,6 +76,8 @@ CLINE_EXEMPT = {
     "run-stack-tests.md": "live tier: deploy-variant stack tests against a live stack",
     "test-upgrade.md": "live tier: deploys and upgrades real CloudFormation stacks",
     "transform-deploy-test.md": "live tier: deploys a transformed template",
+    "ux-test-stories.md": "Claude Code only: pair mode starts a claude --mcp-config "
+    "session, and unattended runs go to run_in_background",
 }
 
 

@@ -36,6 +36,7 @@ export default defineConfig({
               label: "Blogs, Customer Stories & Research",
               slug: "references",
             },
+            { label: "Hands-on Workshops", slug: "workshops" },
           ],
         },
         {
@@ -111,8 +112,8 @@ export default defineConfig({
             },
             { label: "Few-Shot Examples", slug: "few-shot-examples" },
             { label: "Human-in-the-Loop Review", slug: "human-review" },
+            { label: "Review Queues", slug: "review-queues" },
             { label: "Rule Validation", slug: "rule-validation" },
-            { label: "Criteria Validation", slug: "criteria-validation" },
             { label: "Missing Page Handling", slug: "missing-page-handling" },
             {
               label: "OCR Image Sizing Guide",
@@ -315,6 +316,10 @@ export default defineConfig({
         {
           label: "Migration",
           items: [
+            {
+              label: "v0.6.12 → v0.6.13 Migration",
+              slug: "migration-v0612-to-v0613",
+            },
             { label: "v0.5 → v0.6 Migration", slug: "migration-v05-to-v06" },
             { label: "v0.4 → v0.5 Migration", slug: "migration-v04-to-v05" },
             {

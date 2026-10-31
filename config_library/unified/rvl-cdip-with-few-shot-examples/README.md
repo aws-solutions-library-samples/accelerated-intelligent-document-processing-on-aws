@@ -69,17 +69,26 @@ classes:
 
 ### Classification Settings
 
-- **Model**: Amazon Nova Pro
-- **Method**: Multimodal page based classification with few-shot examples
+This preset overrides only the classification task prompt, so the rest comes from the
+system defaults in `lib/idp_common_pkg/idp_common/config/system_defaults/`.
+
+- **Strategy**: Combined (`classification.strategy: combined`) — a single call
+  returns both the section boundaries and the classes
+- **Granularity**: page (`classification.combined.granularity`) — one classification
+  per page rather than per packet
+- **Model**: `us.amazon.nova-2-lite-v1:0`
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
+- **Modality**: `modality.text` and `modality.images` are both empty, so each is
+  inferred from the placeholders the call's task prompt uses
 - **Few-shot support**: Uses `{FEW_SHOT_EXAMPLES}` placeholder in task_prompt
 
 The classification task prompt includes few-shot examples from ALL classes to help the model distinguish between different document types.
 
 ### Extraction Settings
 
-- **Model**: Amazon Nova Pro  
+- **Model**: `us.anthropic.claude-sonnet-5` (from the system defaults — this preset
+  pins no extraction model)
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 - **Few-shot support**: Uses `{FEW_SHOT_EXAMPLES}` placeholder in task_prompt
@@ -106,7 +115,7 @@ Other classes (form, invoice, resume, etc.) are defined but don't have examples 
 
 ### For Extraction  
 
-1. When extracting from a document of class X, the system includes examples ONLY from class X
+1. When extracting from a section of class X, the system includes examples ONLY from class X
 2. Each example shows the expected attribute extraction for that document type
 3. Uses `x-aws-idp-attributes-prompt` text and document images from the examples
 4. Provides concrete guidance on what attributes to extract and their expected format

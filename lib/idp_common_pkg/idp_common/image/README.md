@@ -221,9 +221,11 @@ Image dimensions are configurable per service (OCR, classification, extraction, 
 
 ```yaml
 classification:
-  image:
-    target_width: ""     # Preserve original (recommended for accuracy)
-    target_height: ""
+  combined:
+    llm:
+      image:
+        target_width: ""     # Preserve original (recommended for accuracy)
+        target_height: ""
 
 extraction:
   image:

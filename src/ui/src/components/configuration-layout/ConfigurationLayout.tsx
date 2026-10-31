@@ -39,9 +39,18 @@ import ConfigurationVersionsTable from './ConfigurationVersionsTable';
 import ConfigRevisionHistoryPanel from './ConfigRevisionHistoryPanel';
 import ConfigurationComparison from './ConfigurationComparison';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
+import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
 import { deepMerge } from '../../utils/configUtils';
+import { chooseOpeningProfile } from '../../utils/readable-profile';
 import { syncBdaIdp } from '../../graphql/generated';
 import { parseConfigurationData } from '../../graphql/awsjson-parsers';
+import {
+  DEFAULT_SECTION_SPLITTING,
+  SECTION_SPLITTING_VALUES,
+  flatClassificationKeysIn,
+  pageLimitBecomesOneDocument,
+  unknownSectionSplittingIn,
+} from '../../utils/classification-config';
 
 const client = generateClient();
 const logger = new ConsoleLogger('ConfigurationLayout');
@@ -178,6 +187,9 @@ const ConfigurationLayout = (): React.JSX.Element => {
 
   // Import as new version state
   const [importedConfigForNewVersion, setImportedConfigForNewVersion] = useState<Record<string, unknown> | null>(null);
+  // Derived once: the import dialog's warning condition and the value it shows
+  // must be the same answer, which two calls in one render cannot guarantee.
+  const unknownSectionSplitting = unknownSectionSplittingIn(importedConfigForNewVersion);
   const [newVersionName, setNewVersionName] = useState('');
   const [newVersionDescription, setNewVersionDescription] = useState('');
   const [importSource, setImportSource] = useState<string | null>(null); // Track import source: 'file', 'library', 'migration'
@@ -194,6 +206,8 @@ const ConfigurationLayout = (): React.JSX.Element => {
   const {
     versions,
     loading: versionsLoading,
+    loaded: versionsLoaded,
+    error: versionsError,
     fetchVersions,
     fetchVersion,
     setActiveVersion,
@@ -202,21 +216,21 @@ const ConfigurationLayout = (): React.JSX.Element => {
   } = useConfigurationVersions();
 
   // Get user role for scope and permissions
-  const { isAdmin, canWrite } = useUserRole();
+  const { isAdmin, canWrite, allowedConfigVersions, loading: roleLoading } = useUserRole();
 
   // App-wide success toast (sticky Flashbar region) so save confirmation is
   // visible even when the user is scrolled deep into a long config form (C1).
   const { setSuccessMessage } = useAppContext();
 
-  // Get active version name — prefer first scoped version over system active
-  const activeVersionName = useMemo(() => {
-    if (versions.length > 0) {
-      // If versions are scope-filtered, prefer the first one (or the active one if in scope)
-      const activeVersion = versions.find((v) => v.isActive);
-      return activeVersion?.versionName || versions[0].versionName;
-    }
-    return 'default';
-  }, [versions]);
+  const openingProfile = useMemo(
+    () =>
+      chooseOpeningProfile(
+        { versions, loaded: versionsLoaded, loading: versionsLoading, error: versionsError },
+        { allowedConfigVersions, loading: roleLoading },
+      ),
+    [versions, versionsLoaded, versionsLoading, versionsError, allowedConfigVersions, roleLoading],
+  );
+  const activeVersionName = openingProfile.status === 'ready' ? openingProfile.versionName : '';
 
   // Version description state
   const currentVersionName = selectedVersion || activeVersionName;
@@ -272,7 +286,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
     fetchConfiguration,
     isCustomized,
     resetToDefault,
-  } = useConfiguration(selectedVersion || activeVersionName); // Pass version to hook
+  } = useConfiguration(currentVersionName || null); // Pass version to hook
 
   // Handle version selection
   const handleVersionSelect = async (versionName: string): Promise<void> => {
@@ -1965,7 +1979,32 @@ const ConfigurationLayout = (): React.JSX.Element => {
     }
   };
 
-  if (loading) {
+  if (!currentVersionName && openingProfile.status === 'none') {
+    return (
+      <Container header={<Header variant="h2">Configuration</Header>}>
+        <NoConfigProfilesInScopeAlert />
+      </Container>
+    );
+  }
+
+  if (!currentVersionName && openingProfile.status === 'error') {
+    return (
+      <Container header={<Header variant="h2">Configuration</Header>}>
+        <Alert type="error" header="Error loading configuration profiles">
+          <SpaceBetween size="s">
+            <div>{openingProfile.message}</div>
+            <Box>
+              <Button variant="primary" onClick={() => fetchVersions()}>
+                Retry
+              </Button>
+            </Box>
+          </SpaceBetween>
+        </Alert>
+      </Container>
+    );
+  }
+
+  if (!currentVersionName || loading) {
     return (
       <Container header={<Header variant="h2">Configuration</Header>}>
         <Box textAlign="center" padding="l">
@@ -2889,6 +2928,25 @@ const ConfigurationLayout = (): React.JSX.Element => {
           <Alert type="success" header="Configuration Loaded">
             Configuration successfully loaded and ready to be saved as a new version.
           </Alert>
+          {flatClassificationKeysIn(importedConfigForNewVersion).length > 0 && (
+            <Alert type="info" header="Classification settings will be converted">
+              This file uses the classification layout from v0.6.12 or earlier (
+              {flatClassificationKeysIn(importedConfigForNewVersion).join(', ')}). Each setting is moved into the model call that uses it
+              when the profile is created, and behaves as before
+              {pageLimitBecomesOneDocument(importedConfigForNewVersion)
+                ? ' with one exception: its page limit is combined with boundary detection, so it is converted to one section per document, and a short packet holding several sections becomes one section'
+                : ''}
+              . Download the profile afterwards to get a file in the current layout.
+            </Alert>
+          )}
+          {unknownSectionSplitting !== null && (
+            <Alert type="warning" header="Section splitting value will be rejected">
+              This file sets section splitting to &quot;{unknownSectionSplitting}&quot;, which is not one of{' '}
+              {SECTION_SPLITTING_VALUES.join(', ')}. Saving it will be refused, because the value decides whether section boundaries are
+              detected at all and choosing one for you would change where sections start. Correct it in the file, or clear it to use{' '}
+              {DEFAULT_SECTION_SPLITTING}.
+            </Alert>
+          )}
 
           <FormField
             label="Profile Name"

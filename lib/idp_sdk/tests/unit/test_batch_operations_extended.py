@@ -339,22 +339,11 @@ class TestProcessConfigPinning:
             "config-revision": "4",
         }
 
-    def test_a_directory_batch_forwards_the_revision_and_still_loses_it(
+    def test_a_directory_batch_keeps_both_profile_and_revision(
         self, client, s3, tmp_path
     ):
-        """DEFECT, pinned as-is: ``batch_processor.py:242`` seen from the public API.
-
-        ``process`` does its part — ``process_batch_from_directory`` accepts
-        ``config_revision``, so the signature check passes and the value is
-        forwarded. The processor then calls ``_process_documents`` positionally and
-        never passes it on, so the uploaded object carries the profile without the
-        revision, and the batch runs under whatever revision the profile currently
-        holds. Compare the manifest case directly above, which keeps both.
-
-        The failure is silent by construction: nothing raises, the counts are
-        right, and only the object's user metadata shows it. When the processor is
-        fixed, this test fails and the expectation becomes the two-key dict.
-        """
+        """The revision reaches the uploaded object on the directory path, as it
+        does for a manifest, so the batch runs the revision asked for."""
         _write_pdf(tmp_path, "a.pdf")
 
         client.batch.process(
@@ -364,18 +353,25 @@ class TestProcessConfigPinning:
             config_revision=4,
         )
 
-        assert _metadata(s3, "b/a.pdf") == {"config-version": "tuned"}
+        assert _metadata(s3, "b/a.pdf") == {
+            "config-version": "tuned",
+            "config-revision": "4",
+        }
 
-    def test_an_s3_uri_batch_silently_ignores_the_pinned_profile(self, client, s3):
-        """Pinned as current behaviour, and it is a trap.
+    def test_an_s3_uri_batch_honours_number_of_files(self, client, s3):
+        for name in ("a", "b", "c"):
+            s3.put_object(Bucket=SOURCE_BUCKET, Key=f"in/{name}.pdf", Body=b"x")
 
-        ``process`` passes ``config_version`` only if the target method's
-        signature accepts it, and ``process_batch_from_s3_uri`` takes neither
-        ``config_version`` nor ``config_revision``. So a caller who pins a profile
-        for an S3-sourced batch gets no error and no metadata: the batch runs
-        under whatever the default configuration is. If that method gains the
-        parameters, this test fails and the expectation becomes the pinned values.
-        """
+        result = client.batch.process(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/", batch_id="b", number_of_files=2
+        )
+
+        assert result.documents_queued == 2
+
+    def test_an_s3_uri_batch_keeps_both_profile_and_revision(self, client, s3):
+        """An S3-sourced batch honours a pinned profile and revision. ``process``
+        forwards them only when the target method accepts them, so this also
+        guards against ``process_batch_from_s3_uri`` losing the parameters."""
         s3.put_object(Bucket=SOURCE_BUCKET, Key="in/a.pdf", Body=b"x")
 
         client.batch.process(
@@ -385,7 +381,10 @@ class TestProcessConfigPinning:
             config_revision=4,
         )
 
-        assert _metadata(s3, "b/a.pdf") == {}
+        assert _metadata(s3, "b/a.pdf") == {
+            "config-version": "tuned",
+            "config-revision": "4",
+        }
 
 
 @pytest.mark.unit
@@ -1564,6 +1563,121 @@ class TestGetResults:
         document = client.batch.get_results("b")["documents"][0]
 
         assert document["confidence"] == {"address": {"city": None}}
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_null_valued_field_reports_the_stored_score_unaltered(
+        self, monitor_cls, client, s3
+    ):
+        """A field with no extracted value keeps whatever score was stored for it,
+        and a stored ``null`` score stays ``null``. docs/mcp-server.md tells a
+        consumer the tool substitutes nothing, so a 0.0 here was stored upstream,
+        not written by the tool as an absence marker. A ``null`` must not become
+        0.0 either: the stored alert surface skips a null score and alerts on a
+        0.0, so the substitution would turn a non-alert into an apparent breach."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf"])
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "inference_result": {"title": None, "doi": None, "issn": None},
+                    "explainability_info": [
+                        {
+                            "title": {"confidence": 0.0},
+                            "doi": {"confidence": None},
+                            "issn": {"confidence": 0.95},
+                        }
+                    ],
+                }
+            ),
+        )
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["fields"] == {"title": None, "doi": None, "issn": None}
+        assert document["confidence"] == {"title": 0.0, "doi": None, "issn": 0.95}
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_field_with_no_stored_entry_is_left_out(self, monitor_cls, client, s3):
+        """The pipeline does not pad an absent value the model skipped, so a
+        null-valued field can have no entry in ``explainability_info``. The tool
+        must leave it out rather than invent one: a 0.0 here would be the very
+        "null values score 0.0" behaviour docs/mcp-server.md no longer claims, and
+        a ``None`` would claim a stored entry that does not exist. An empty stored
+        assessment likewise reports ``{}``, not ``null``."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf", "b/c.pdf"])
+        for key, explainability in (
+            ("b/a.pdf", [{"title": {"confidence": 0.9}}]),
+            ("b/c.pdf", [{}]),
+        ):
+            s3.put_object(
+                Bucket=OUTPUT_BUCKET,
+                Key=f"{key}/sections/1/result.json",
+                Body=json.dumps(
+                    {
+                        "inference_result": {"title": "T", "doi": None},
+                        "explainability_info": explainability,
+                    }
+                ),
+            )
+
+        documents = {
+            d["document_id"]: d for d in client.batch.get_results("b")["documents"]
+        }
+
+        assert documents["b/a.pdf"]["confidence"] == {"title": 0.9}
+        assert documents["b/c.pdf"]["confidence"] == {}
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_list_of_plain_values_mirrors_one_score_per_item(
+        self, monitor_cls, client, s3
+    ):
+        """docs/mcp-server.md says a list of plain values maps to one bare score
+        per item, in item order, with an unscored item as ``None``."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf"])
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "inference_result": {"tags": ["a", "b"]},
+                    "explainability_info": [
+                        {"tags": [{"confidence": 0.7}, {"confidence": None}]}
+                    ],
+                }
+            ),
+        )
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["confidence"] == {"tags": [0.7, None]}
+
+    @pytest.mark.parametrize("explainability", [[], None])
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_section_with_no_confidence_data_reports_null(
+        self, monitor_cls, explainability, client, s3
+    ):
+        """docs/mcp-server.md says ``confidence`` is ``null`` when a section has
+        no confidence data. An empty ``{}`` would read as "scored, and every
+        field absent", which is a different statement."""
+        monitor_cls.return_value = _completed_monitor()
+        _store_batch(s3, "b", ["b/a.pdf"])
+        body = {"inference_result": {"title": None}}
+        if explainability is not None:
+            body["explainability_info"] = explainability
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/sections/1/result.json",
+            Body=json.dumps(body),
+        )
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["fields"] == {"title": None}
+        assert document["confidence"] is None
 
     @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
     def test_a_multi_instance_section_reports_its_instances(

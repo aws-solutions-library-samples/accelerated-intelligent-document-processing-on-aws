@@ -18,7 +18,7 @@ classification A/B benchmark, and they are installed by naming them explicitly �
 `idp-cli config-upload -f <path>`, `idp-cli deploy --custom-config <path>`, or a
 **Custom Configuration Path** S3 URI.
 
-| File | `classification.model` | Purpose |
+| File | `classification.combined.llm.model` | Purpose |
 |---|---|---|
 | `config.yaml` | preset default | The selectable preset |
 | `docsplit_base_model_config.yaml` | `us.amazon.nova-2-lite-v1:0` | Base-model arm of the A/B |
@@ -34,7 +34,7 @@ account that owns the deployment, and from anywhere else Bedrock answers
 so the classification stage fails outright rather than degrading. The file therefore
 cannot ship a working one.
 
-It ships with `classification.model` set to the base model, so it runs as-is and is
+It ships with `classification.combined.llm.model` set to the base model, so it runs as-is and is
 priced and limit-checked correctly.
 
 ⚠️ **As shipped, the two arms of this A/B are the same configuration, so running both
@@ -48,7 +48,7 @@ To run the fine-tuned arm:
 
 1. Fine-tune `amazon.nova-2-lite-v1:0` on your own classification data.
 2. Create a custom model deployment for the result and note its ARN.
-3. Replace `classification.model` in your copy of the file with that ARN. The line is
+3. Replace `classification.combined.llm.model` in your copy of the file with that ARN. The line is
    marked with a comment showing the shape:
    `arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>`.
 4. Add a `bedrock/<that ARN>` entry to your pricing configuration if you want cost
@@ -111,11 +111,11 @@ The configuration defines 13 document classes, each with specific attributes to 
 ### Classification Settings
 
 - **Model**: Amazon Nova2 Lite
-- **Method**: multimodalPageLevelClassification
+- **Strategy / granularity**: Combined, page granularity
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
-The classification component analyzes document content and structure to determine the document type and page boundaries within multi-page documents.
+The classification component analyzes document content and structure to determine each section's class and the section boundaries within multi-page documents.
 
 ### Extraction Settings
 
@@ -123,7 +123,7 @@ The classification component analyzes document content and structure to determin
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
-The extraction component identifies and extracts specific attributes from each document based on its classified type.
+The extraction component identifies and extracts specific attributes from each section based on its class.
 
 ### Summarization Settings
 
@@ -139,9 +139,9 @@ This configuration is designed to work with the **DocSplit-Poly-Seq** test set:
 
 - **500 multi-page packets** containing 2-10 distinct documents each
 - **7,330 total pages** across all packets
-- **2,027 document sections** for classification and splitting evaluation
+- **2,027 sections** for classification and splitting evaluation
 - **Automatic deployment** during stack creation
-- **Complete ground truth** for evaluation of page-level classification and document splitting accuracy
+- **Complete ground truth** for evaluation of page-level classification and section splitting accuracy
 
 The test set is automatically available in the Test Studio UI after stack deployment. See the [Test Studio documentation](../../../docs/test-studio.md) for usage instructions.
 
@@ -150,7 +150,7 @@ The test set is automatically available in the Test Studio UI after stack deploy
 - **DocSplit Dataset**: https://huggingface.co/datasets/amazon/doc_split
 - **Documents Source**: https://huggingface.co/datasets/jordyvl/rvl_cdip_n_mp
 
-The DocSplit dataset uses documents sourced from the RVL-CDIP-N-MP dataset, which are combined into multi-page packets for document splitting and classification evaluation.
+The DocSplit dataset uses documents sourced from the RVL-CDIP-N-MP dataset, which are combined into multi-page packets for section splitting and classification evaluation.
 
 ## How to Use
 

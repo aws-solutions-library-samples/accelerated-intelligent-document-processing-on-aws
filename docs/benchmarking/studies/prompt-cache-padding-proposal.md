@@ -5,7 +5,7 @@ title: "Should we pad prompts to clear the cache minimum?"
 <!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
 <!-- SPDX-License-Identifier: MIT-0 -->
 
-# Should we pad prompts to clear the cache minimum? — measured, with a proposal
+# Should we pad prompts to clear the cache minimum?
 
 **Short answer: the arithmetic says yes, the measurement agrees, and we should still not
 do it automatically.** Padding is a real ~20% saving on extraction *input* cost for an
@@ -19,7 +19,7 @@ on stack `IDPBench` at the v0.6.7 tag. Data: `benchmarks/results/v0.6.7/prompt-c
 
 ---
 
-## 1. How many classes are affected — measured across 32 shipped classes
+## 1. How many shipped classes are affected
 
 A `<<CACHEPOINT>>` only creates an entry if the prefix before it clears the model's
 minimum. Measured prefix token counts for every class in five shipped presets
@@ -63,7 +63,7 @@ The arithmetic favours padding at *every* tier — even 4,096, because 4096 × 0
 still less than a ~1,000-token full-price prefix. **The pad *size* is what disqualifies the
 upper tiers**: tripling a prompt to win a cache is a different prompt, not an optimisation.
 
-## 3. Measured, end to end
+## 3. End-to-end measurement
 
 A 201-token block of generic extraction guidance appended before the marker, applied to
 **only** the two sub-minimum `ocr-benchmark` classes via `x-aws-idp-extraction-task-prompt`
@@ -100,7 +100,7 @@ The 95% CI still admits a **2.4pp regression**. Bounding a 1pp regression needs 
 paired documents of the treated classes; the corpus contains **49**. *No corpus we own can
 tighten this*, which matters for the proposal.
 
-## 4. The sign flips on workload shape
+## 4. How the result depends on workload shape
 
 The TTL is 5 minutes. The relevant quantity is *documents of that class per 5 minutes* — a
 property of the workload, not the configuration:
@@ -124,7 +124,7 @@ it.
 
 ## 5. Proposal
 
-### 5.1 Do — make it visible (no risk, unblocks everything else)
+### 5.1 Recommended: report when a prompt is too short to cache
 
 1. **Warn at configuration-validate time.** For each class, compute the prompt prefix and
    compare against the *configured extraction model's* minimum. Emit:
@@ -140,7 +140,7 @@ it.
 3. **Document the per-model minimum table** next to `extraction.model`, and state that it is
    **not monotonic** across generations (512 → 4,096 → 1,024 as you move Opus 4.6 → 4.8).
 
-### 5.2 Do — offer better levers than padding
+### 5.2 Recommended: offer alternatives to padding
 
 4. **Model choice is the strongest lever and touches no prompt.** Opus 5 / Fable 5 have a
    512-token minimum: *all 32* shipped classes cache. If the concern is caching, that is a
@@ -154,14 +154,14 @@ it.
    [config-guidance §7](../config-guidance.md)). Note it *taxes* already-caching classes
    (+6% to +23% prefix cost), so it is a per-config decision, not a per-class one.
 
-### 5.3 Do — add the knob that is currently missing
+### 5.3 Recommended: add a missing configuration setting
 
 7. **`extraction.prompt_cache: auto | off`.** Today the cachePoint is unconditional, and for
    a one-off document that is a measured **+24.9%** on the prefix (write 1.25×, no read
    follows). A low-volume or interactive deployment has no way to turn that off. This is the
    one place where the product actively costs money it needn't, and the fix is a flag.
 
-### 5.4 Do NOT — pad automatically
+### 5.4 Not recommended: automatic padding
 
 8. **No auto-injected padding**, filler or guidance. Three reasons, in order of weight:
    - **The sign flips on workload shape** (§4) and the config cannot see it. Auto-padding
@@ -176,7 +176,7 @@ it.
 9. **Never pad at the 2,048 / 4,096 tiers.** The pad would be 74%–246% of the prompt.
    Document that caching is effectively unavailable there and move on.
 
-### 5.5 Optional — explicit, per-class, opt-in
+### 5.5 Optional: explicit per-class padding
 
 10. If 4–6 do not fit, a documented recipe (not a feature): append your own content to that
     class's `x-aws-idp-extraction-task-prompt` until the prefix clears the minimum, then

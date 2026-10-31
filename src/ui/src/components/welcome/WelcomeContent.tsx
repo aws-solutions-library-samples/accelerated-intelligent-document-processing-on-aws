@@ -3,13 +3,7 @@
 import React, { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, Button, Container, Header, SpaceBetween, Link } from '@cloudscape-design/components';
-import {
-  DOCUMENTS_PATH,
-  CONFIGURATION_PATH,
-  UPLOAD_DOCUMENT_PATH,
-  WELCOME_DISMISSED_KEY,
-  ANNOTATE_LANDING_PATH,
-} from '../../routes/constants';
+import { DOCUMENTS_PATH, MY_TASKS_PATH, CONFIGURATION_PATH, UPLOAD_DOCUMENT_PATH, WELCOME_DISMISSED_KEY } from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 
@@ -41,7 +35,7 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
   const enterConsole = useCallback(() => {
     // An Annotator cannot read the document list, so sending them there would be
     // a dead end. Their queue is the equivalent destination.
-    navigate(isAnnotatorOnly ? ANNOTATE_LANDING_PATH : DOCUMENTS_PATH);
+    navigate(isAnnotatorOnly ? MY_TASKS_PATH : DOCUMENTS_PATH);
   }, [navigate, isAnnotatorOnly]);
 
   return (

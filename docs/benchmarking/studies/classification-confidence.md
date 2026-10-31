@@ -14,7 +14,7 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 **Region:** us-west-2 · **Stack:** `IDPBench066`
 **Test set:** `docsplit` (DocSplit-Poly-Seq — RVL-CDIP-derived packets, 13 classes)
 · first **20 packets**, **298 pages** per model per mode, one run each, no failures
-**Config:** `config_library/unified/docsplit/config.yaml`, `classification.confidence.mode`
+**Config:** `config_library/unified/docsplit/config.yaml`, `classification.combined.llm.confidence.mode`
 ∈ {`topk` (`top_k_candidates: 3`), `off`}, everything else at system defaults;
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
@@ -59,8 +59,10 @@ threshold, Haiku catches **73 % of misclassifications by reviewing 11 % of pages
 errors sit at 0.95 where nothing distinguishes them from correct pages.
 
 Classification confidence therefore costs 6.4× more per page on the model where it
-is actually informative. That is the trade to decide deliberately — which is why the
-feature is opt-in and why this page exists.
+is actually informative. That is the trade to decide deliberately, rather than one
+the default can make for you — which is why this page exists. The default gives you
+the signal; whether to pay for a model that makes it actionable, or to set
+`mode: off` and keep neither, is the decision left open.
 
 ---
 
@@ -92,7 +94,7 @@ of scans per packet, with extraction and assessment dominating). A deployment wi
 very cheap extraction and very long documents will see classification — and this
 setting — take a larger share.
 
-## 2. Headline numbers
+## 2. Results
 
 | Metric | Nova 2 Lite (default) | Claude Haiku 4.5 |
 |---|---|---|
@@ -112,7 +114,7 @@ Accuracy being equal is itself worth noting: on this corpus the cheaper default
 classifies as well as the 6× model. The difference is entirely in *knowing when it
 is wrong*.
 
-## 3. The failure mode, quantified
+## 3. How confidence is distributed across pages
 
 Confidence distribution over all 298 pages:
 
@@ -135,7 +137,7 @@ wrong), so the signal is a coarse two-level flag rather than a probability.
 
 Haiku 4.5's distribution is graded, and its errors concentrate in the low bins.
 
-## 4. What it buys you: escalation at a threshold
+## 4. Escalating low-confidence pages at a threshold
 
 Flag pages below a confidence threshold for review. *Error recall* = share of the
 model's misclassifications caught; *precision* = share of flagged pages that really
@@ -163,7 +165,7 @@ Haiku dominates on both axes at its best operating point: fewer *wasted* reviews
 Nova's ceiling is structural — 23 errors are indistinguishable at 0.95, so no
 threshold can reach them.
 
-## 5. Prompt caching does not engage for Haiku here
+## 5. Prompt caching with Haiku
 
 Measured per page: Nova 2 Lite served **~934 input tokens/page from prompt cache**;
 Haiku 4.5 reported **zero** cache reads and zero cache writes, paying its full
@@ -183,6 +185,19 @@ cost of an Anthropic classifier. The 6.4× figure above is what you actually pay
 
 ## 6. Guidance
 
+⚠️ **Every path on this page is the `combined` one, and under `split_then_classify` the
+block you must edit is a different one.** This study ran
+`classification.strategy: combined`, so `mode` and the threshold below mean
+`classification.combined.llm.confidence.…`. Under `classification.strategy:
+split_then_classify` the call that assigns a class is section classification, so the same
+settings live at
+`classification.split_then_classify.section_classification.llm.confidence.…` and the
+`combined` block is not read at all — editing it there changes nothing and
+produces no error. The splitting call has no confidence block, because it
+assigns no class. The cost figures also assume combined metering: a split-then-classify
+run's classification spend is reported under `Splitting/` and
+`SectionClassification/` rather than `Classification/`.
+
 1. **`topk` is on by default, and that is the right default** — ~0.5 % of the bill
    for a signal that catches 43 % of the default model's errors from 8 % of pages.
    Set `mode: off` if you process very long documents where classification is a
@@ -199,7 +214,7 @@ cost of an Anthropic classifier. The 6.4× figure above is what you actually pay
    The harness prints `class_calibration_separation`, `class_accuracy` and
    `n_class_scored_pages` for exactly this purpose.
 
-## 7. Honesty / limits
+## 7. Limitations
 
 - **One run per model per mode, 20 packets, 298 pages.** No repeats, so neither the
   0.7-point between-model accuracy gap nor the ±1-point off-vs-topk deltas are claims

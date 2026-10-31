@@ -112,7 +112,7 @@ The module includes CloudFormation templates for creating BDA resources:
 
 ### Creating a BDA Project and Blueprint
 
-Use the provided CloudFormation template in `notebooks/bda/cfn/bda-project.yml`:
+Use the provided CloudFormation template in `notebooks/misc/bda/cfn/bda-project.yml`:
 
 ```bash
 # Deploy the CloudFormation stack
@@ -221,7 +221,7 @@ reads the recording in force, from a module-level `contextvars.ContextVar`.
 defect it replaced. A label on the instance is shared by every worker
 `_process_classes_parallel` starts, and the collection *filtered* a shared list on that
 label — so a drop labelled with a sibling's name did not arrive misfiled, it arrived
-nowhere, and the class came back `success` with no warnings while a whole section had
+nowhere, and the class came back `success` with no warnings while a whole group of fields had
 left its extraction contract. A new thread starts with an empty context, so a worker
 cannot see or overwrite a sibling's label; resetting the token on exit is what stops one
 worker's second class inheriting its first class's drops, which is the part a

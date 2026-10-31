@@ -77,6 +77,7 @@ from moto import mock_aws  # noqa: E402
 # The real scope and curve modules, imported before any suite in this directory
 # installs a MagicMock stub for the `idp_common` package. See the module docstring.
 import idp_common.evaluation.curve_store as curve_store  # noqa: E402
+import idp_common.review_queues.testset_labels  # noqa: E402,F401 — the label writer the resolver calls
 import idp_common.testset_scope as testset_scope  # noqa: E402
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -271,11 +272,17 @@ class LogSpy:
 
 @contextmanager
 def log_spy(mod):
+    # The resolver's lines, and the shared label writer's (it now owns the label
+    # write, the curve observations and the draft cleanup).
+    labels_logger = idp_common.review_queues.testset_labels.logger
     spy = LogSpy()
     with (
         patch.object(mod.logger, "info", spy.record),
         patch.object(mod.logger, "warning", spy.record),
         patch.object(mod.logger, "error", spy.record),
+        patch.object(labels_logger, "info", spy.record),
+        patch.object(labels_logger, "warning", spy.record),
+        patch.object(labels_logger, "error", spy.record),
     ):
         yield spy
 
@@ -316,6 +323,7 @@ def recorded(target, name):
         "claimReview",
         "releaseReview",
         "skipAllSectionsReview",
+        "saveSectionReviewEdits",
     ],
 )
 @pytest.mark.parametrize("group", ["Viewer", "Author", "SomeOtherGroup"])
@@ -329,7 +337,7 @@ def test_a_caller_outside_the_three_review_groups_reaches_no_operation(
     already changed the document.
     """
     put_doc(table, HITLStatus="Review Pending", HITLSectionsPending=["sec-1"])
-    with pytest.raises(ValueError, match="Admin, Reviewer or Annotator"):
+    with pytest.raises(PermissionError, match="Admin, Reviewer or Annotator"):
         mod.handler(event(field_name, [group]), None)
     assert read_doc(table)["HITLStatus"] == "Review Pending"
     assert read_doc(table)["HITLSectionsPending"] == ["sec-1"]
@@ -343,7 +351,7 @@ def test_a_groups_claim_delivered_as_a_bare_string_still_authorizes(mod, table):
     intersects a set of words with a set of characters and comes back empty, so a
     legitimate reviewer would be refused every operation.
     """
-    put_doc(table, HITLReviewOwner="")
+    put_doc(table, HITLStatus="Review Pending", HITLReviewOwner="")
     with patch.object(
         mod,
         "create_document_service",
@@ -363,7 +371,7 @@ def test_an_annotator_may_not_skip_a_document_without_looking_at_it(mod, table):
     would write unverified labels into a golden dataset.
     """
     put_doc(table)
-    with pytest.raises(ValueError, match="administrators and reviewers"):
+    with pytest.raises(PermissionError, match="administrators and reviewers"):
         mod.handler(
             event(
                 "skipAllSectionsReview",
@@ -409,7 +417,7 @@ def test_an_annotator_who_also_holds_reviewer_stays_test_set_scoped(mod, table):
     """
     put_doc(table, TestSetId="ts-other")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
-    with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+    with pytest.raises(PermissionError, match="not assigned to test set 'ts-other'"):
         mod.handler(event("completeSectionReview", ["Annotator", "Reviewer"]), None)
 
 
@@ -457,7 +465,7 @@ def test_an_annotator_may_not_review_a_production_document(mod, table):
     """A document with no `TestSetId` is production HITL work, not annotation."""
     put_doc(table)  # no TestSetId
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
-    with pytest.raises(ValueError, match="only review test-set documents"):
+    with pytest.raises(PermissionError, match="only review test-set documents"):
         mod._assert_annotator_scope(
             event("completeSectionReview", ["Annotator"]), OBJECT_KEY
         )
@@ -469,7 +477,7 @@ def test_an_annotator_with_no_scope_at_all_is_denied_rather_than_unrestricted(
 ):
     """Fails closed: a half-created annotator must not inherit every test set."""
     put_doc(table, TestSetId="ts-mine")  # users table left empty
-    with pytest.raises(ValueError, match="not assigned to any test set"):
+    with pytest.raises(PermissionError, match="not assigned to any test set"):
         mod._assert_annotator_scope(
             event("completeSectionReview", ["Annotator"]), OBJECT_KEY
         )
@@ -499,7 +507,9 @@ def test_claiming_and_releasing_are_test_set_scoped_for_an_annotator(
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+        with pytest.raises(
+            PermissionError, match="not assigned to test set 'ts-other'"
+        ):
             mod.handler(
                 event(field_name, ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
                 None,
@@ -521,7 +531,7 @@ def test_an_annotator_can_neither_claim_nor_release_a_production_document(
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError, match="only review test-set documents"):
+        with pytest.raises(PermissionError, match="only review test-set documents"):
             mod.handler(
                 event(field_name, ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
                 None,
@@ -554,10 +564,11 @@ def test_an_annotator_is_refused_a_document_that_does_not_exist(
 
     * the refusal happens at all — an annotator reaching a review mutation on a
       document outside every test set of theirs is the escalation;
-    * the message keeps the `Unauthorized` prefix, which is the ONLY thing that
-      makes the dispatcher map this `ValueError` to 403 rather than to 400. Reword
-      it and the live cell sees a 400, reads "not refused", and reports a leak —
-      while this suite, matching on the sentence, would stay green.
+    * the refusal is a `PermissionError`, which the dispatcher maps to 403 by
+      class name; a `ValueError` would be a 400, which the live cell reads as "not
+      refused" and reports as a leak. The `Unauthorized` prefix is kept as well,
+      because the dispatcher's message-prefix fallback maps it to 403 even for a
+      resolver deployed ahead of the class change.
 
     The two neighbouring tests cover a document that exists and carries no
     `TestSetId`; this one covers a document that is not there, which is a different
@@ -568,7 +579,7 @@ def test_an_annotator_is_refused_a_document_that_does_not_exist(
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError) as refused:
+        with pytest.raises(PermissionError) as refused:
             mod.handler(
                 event(field_name, ["Annotator"], arguments=arguments),
                 None,
@@ -587,7 +598,7 @@ def test_an_in_scope_annotator_may_claim_a_document_from_their_own_test_set(mod,
     A scope check that refused every annotator would satisfy both of them and break
     the collaborative labelling queue outright.
     """
-    put_doc(table, TestSetId="ts-mine", HITLReviewOwner="")
+    put_doc(table, TestSetId="ts-mine", HITLStatus="Review Pending", HITLReviewOwner="")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
     document = FakeDocument([FakeSection("sec-1")])
     with patch.object(
@@ -643,18 +654,27 @@ def test_the_set_of_handler_branches_that_assert_annotator_scope_is_pinned():
     annotator. The three tests above close that, and this one closes the class — a
     fifth `fieldName` added later without the call fails here rather than shipping.
 
-    `skipAllSectionsReview` is deliberately not in the set: `Annotator` is refused
-    that operation outright a few lines earlier, so no scoped caller survives to be
-    narrowed. `completeSectionReview` is the dispatcher's fall-through rather than a
-    `field_name ==` branch, and is asserted separately below.
+    `skipAllSectionsReview` and `saveSectionReviewEdits` are deliberately not in the
+    set: `Annotator` is refused both outright at the top of their branch, so no
+    scoped caller survives to be narrowed (pinned behaviourally by
+    `test_an_annotator_may_not_skip_a_document_without_looking_at_it` and
+    `test_an_annotator_may_not_use_the_save_only_path`). `completeSectionReview` is
+    the dispatcher's fall-through rather than a `field_name ==` branch, and is
+    asserted separately below.
     """
     branches = _handler_field_branches()
-    assert set(branches) == {"claimReview", "releaseReview", "skipAllSectionsReview"}
+    assert set(branches) == {
+        "claimReview",
+        "releaseReview",
+        "skipAllSectionsReview",
+        "saveSectionReviewEdits",
+    }
     scoped = {
         field for field, calls in branches.items() if "_assert_annotator_scope" in calls
     }
     assert scoped == {"claimReview", "releaseReview"}
     assert "skip_all_sections_review" in branches["skipAllSectionsReview"]
+    assert "save_section_review_edits" in branches["saveSectionReviewEdits"]
 
 
 @pytest.mark.unit
@@ -667,7 +687,9 @@ def test_the_fall_through_route_to_completion_also_asserts_scope(mod, table):
     put_doc(table, TestSetId="ts-other")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
     with patch.object(mod, "complete_section_review") as completion:
-        with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+        with pytest.raises(
+            PermissionError, match="not assigned to test set 'ts-other'"
+        ):
             mod.handler(event("completeSectionReview", ["Annotator"]), None)
     completion.assert_not_called()
 
@@ -703,7 +725,13 @@ def test_finishing_the_last_pending_section_completes_the_document_and_reprocess
         pending=["sec-2"],
         completed=["sec-1"],
     )
-    service, reprocess, _ = run_complete(mod, document, section_id="sec-2")
+    service, reprocess, _ = run_complete(
+        mod,
+        document,
+        section_id="sec-2",
+        username="rev",
+        user_email="rev@example.com",
+    )
 
     assert document.hitl_status == "Completed"
     assert document.hitl_sections_pending == []
@@ -712,6 +740,9 @@ def test_finishing_the_last_pending_section_completes_the_document_and_reprocess
     stored = read_doc(table)
     assert stored["HITLCompleted"] is True
     assert "HITLPendingReview" not in stored
+    # "Review Completed By" reads these; a completed review with neither renders blank.
+    assert stored["HITLReviewedBy"] == "rev"
+    assert stored["HITLReviewedByEmail"] == "rev@example.com"
     reprocess.assert_called_once_with(OBJECT_KEY)
 
 
@@ -814,9 +845,10 @@ def test_an_incomplete_document_does_not_gain_the_completed_flag(mod, table):
         [FakeSection("sec-1", "s3://out/1.json"), FakeSection("sec-2")],
         pending=["sec-1", "sec-2"],
     )
-    _, reprocess, _ = run_complete(mod, document, section_id="sec-1")
+    _, reprocess, _ = run_complete(mod, document, section_id="sec-1", username="rev")
     stored = read_doc(table)
     assert "HITLCompleted" not in stored
+    assert "HITLReviewedBy" not in stored
     assert stored["HITLPendingReview"] == "true"
     reprocess.assert_not_called()
 
@@ -827,6 +859,196 @@ def test_reviewing_a_document_the_loader_cannot_find_raises(mod, table):
     with patch.object(mod, "create_document_service", return_value=service):
         with pytest.raises(ValueError, match="not found"):
             mod.complete_section_review(OBJECT_KEY, "sec-1")
+
+
+# --------------------------------------------------------------------------
+# saveSectionReviewEdits: saving without completing the review
+# --------------------------------------------------------------------------
+
+EDITED_RESULT = {"inference_result": {"total": "42.00"}}
+OUTPUT_KEY = "run-7/invoice.pdf/sections/sec-1/result.json"
+
+
+def save_event(groups, *, email="rev@example.com", edited=EDITED_RESULT):
+    return event(
+        "saveSectionReviewEdits",
+        groups,
+        arguments={
+            "objectKey": OBJECT_KEY,
+            "sectionId": "sec-1",
+            "editedData": json.dumps(edited),
+        },
+        email=email,
+    )
+
+
+def run_save(mod, groups, document=None, **kwargs):
+    document = document or FakeDocument(
+        [FakeSection("sec-1", f"s3://{OUTPUT_BUCKET}/{OUTPUT_KEY}")],
+        pending=["sec-1"],
+        hitl_status="InProgress",
+    )
+    service = FakeDocumentService(document)
+    with (
+        patch.object(mod, "create_document_service", return_value=service),
+        patch.object(mod, "trigger_reprocessing") as reprocess,
+    ):
+        result = mod.handler(save_event(groups, **kwargs), None)
+    return service, reprocess, result
+
+
+@pytest.mark.unit
+def test_saving_edits_on_a_single_section_document_keeps_the_review_in_progress(
+    mod, table
+):
+    """The reported bug: one Save finished the review and left Completed By blank.
+
+    On a document whose only pending section is the one being edited, the old
+    path (completeSectionReview) emptied the pending list and completed the
+    document. Saving must write the edits and change nothing else.
+    """
+    put_doc(
+        table,
+        HITLStatus="InProgress",
+        HITLReviewOwner="rev",
+        HITLReviewOwnerEmail="rev@example.com",
+        HITLSectionsPending=["sec-1"],
+        HITLPendingReview="true",
+    )
+    service, reprocess, result = run_save(mod, ["Reviewer"])
+
+    assert s3_json(mod, OUTPUT_BUCKET, OUTPUT_KEY) == EDITED_RESULT
+    stored = read_doc(table)
+    assert stored["HITLStatus"] == "InProgress"
+    assert stored["HITLSectionsPending"] == ["sec-1"]
+    assert stored["HITLPendingReview"] == "true"
+    assert stored["HITLReviewOwner"] == "rev"
+    for absent in ("HITLCompleted", "HITLReviewedBy", "HITLReviewHistory"):
+        assert absent not in stored
+    assert service.updated == []
+    reprocess.assert_not_called()
+    assert result["HITLStatus"] == "InProgress"
+
+
+@pytest.mark.unit
+def test_saving_edits_writes_no_test_set_baseline(mod, table):
+    """Tagging a baseline reviewed-human is a completion; a save is not one."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev", TestSetId="ts-1")
+    with recorded(mod, "write_correction_to_test_set_baseline") as calls:
+        run_save(mod, ["Reviewer"])
+    assert calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("owner", ["someone-else", ""])
+def test_a_reviewer_who_does_not_own_the_review_may_not_save(mod, table, owner):
+    """Start Review assigns the review; only its owner edits it."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner=owner)
+    with pytest.raises(PermissionError, match="review owner"):
+        run_save(mod, ["Reviewer"])
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+def test_an_admin_may_save_edits_on_a_review_owned_by_someone_else(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="someone-else")
+    run_save(mod, ["Admin"], email="admin@example.com")
+    assert s3_json(mod, OUTPUT_BUCKET, OUTPUT_KEY) == EDITED_RESULT
+    assert read_doc(table)["HITLReviewOwner"] == "someone-else"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status",
+    # COMPLETED is the earlier A2I flow's finished spelling.
+    ["Completed", "Review Completed", "Skipped", "Review Skipped", "COMPLETED"],
+)
+def test_edits_may_not_be_saved_once_the_review_is_finished(mod, table, status):
+    put_doc(table, HITLStatus=status, HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="already finished"):
+        run_save(mod, ["Reviewer"])
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["Review Completed", "COMPLETED"])
+def test_an_admin_may_not_save_edits_once_the_review_is_finished(mod, table, status):
+    """The finished check comes before the owner check, so Admin is refused too."""
+    put_doc(table, HITLStatus=status, HITLReviewOwner="someone-else")
+    with pytest.raises(ValueError, match="already finished"):
+        run_save(mod, ["Admin"], email="admin@example.com")
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["InProgress", "PendingReview", "Review Pending"])
+def test_the_owner_may_save_edits_while_the_review_is_open(mod, table, status):
+    put_doc(table, HITLStatus=status, HITLReviewOwner="rev")
+    run_save(mod, ["Reviewer"])
+    assert s3_json(mod, OUTPUT_BUCKET, OUTPUT_KEY) == EDITED_RESULT
+
+
+@pytest.mark.unit
+def test_an_annotator_may_not_use_the_save_only_path(mod, table):
+    """Test Studio annotation completes on save through completeSectionReview."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(PermissionError, match="administrators and reviewers"):
+        run_save(mod, ["Annotator"])
+
+
+@pytest.mark.unit
+def test_a_queue_managed_document_refuses_the_save_only_path(mod, table):
+    put_doc(table, HITLStatus="in_review", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="QUEUE_MANAGED"):
+        run_save(mod, ["Reviewer"])
+
+
+@pytest.mark.unit
+def test_saving_edits_to_a_section_with_no_output_uri_fails_loudly(mod, table):
+    """Returning success with the edits dropped would lose the reviewer's work."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    document = FakeDocument([FakeSection("sec-1")], hitl_status="InProgress")
+    with pytest.raises(ValueError, match="no output URI"):
+        run_save(mod, ["Reviewer"], document=document)
+
+
+@pytest.mark.unit
+def test_saving_requires_edited_data(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="editedData is required"):
+        mod.handler(
+            event(
+                "saveSectionReviewEdits",
+                ["Reviewer"],
+                arguments={"objectKey": OBJECT_KEY, "sectionId": "sec-1"},
+            ),
+            None,
+        )
+
+
+@pytest.mark.unit
+def test_saving_requires_a_section_id(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="objectKey and sectionId are required"):
+        mod.handler(
+            event(
+                "saveSectionReviewEdits",
+                ["Reviewer"],
+                arguments={"objectKey": OBJECT_KEY, "editedData": "{}"},
+            ),
+            None,
+        )
+
+
+@pytest.mark.unit
+def test_saving_edits_on_an_unknown_document_is_refused(mod, table):
+    service = FakeDocumentService(None)
+    with (
+        patch.object(mod, "create_document_service", return_value=service),
+        pytest.raises(ValueError, match="not found"),
+    ):
+        mod.save_section_review_edits(OBJECT_KEY, "sec-1", "{}", "rev", False)
+    assert service.updated == []
 
 
 # --------------------------------------------------------------------------
@@ -954,6 +1176,26 @@ def test_an_object_key_with_no_run_prefix_uses_the_whole_key_as_the_filename(
 
 
 @pytest.mark.unit
+def test_a_correction_that_is_not_an_object_writes_no_baseline(mod, table, caplog):
+    """A list or a scalar is not a label; it is set aside, not tried and failed."""
+    put_doc(table, TestSetId="ts-1")
+    with caplog.at_level("WARNING"):
+        mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", "[1, 2]")
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
+    assert "Ignoring a non-object correction" in caplog.text
+    assert "Failed to write correction" not in caplog.text
+
+
+@pytest.mark.unit
+def test_an_absent_label_reads_as_none(mod):
+    """A sibling section with no label yet is not reviewed, rather than an error."""
+    assert (
+        mod._read_json(TEST_SET_BUCKET, "ts-1/baseline/x.pdf/sections/9/result.json")
+        is None
+    )
+
+
+@pytest.mark.unit
 def test_a_document_outside_a_test_set_writes_no_baseline(mod, table):
     put_doc(table)  # no TestSetId
     mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", {"x": 1})
@@ -1054,125 +1296,6 @@ def test_a_client_holding_more_history_than_the_server_is_preferred(mod, table):
     assert [e.get("editedBy") for e in history] == ["a", "b", "c"]
 
 
-@pytest.mark.unit
-def test_a_capped_edit_history_drops_the_oldest_entries_and_keeps_this_review(
-    mod, table
-):
-    """Keeping the head instead of the tail would silently stop recording reviews."""
-    put_doc(table, TestSetId="ts-1")
-    key = baseline_key("ts-1", "invoice.pdf", "sec-1")
-    stored = [{"editedBy": f"r{i}"} for i in range(mod.MAX_EDIT_HISTORY_ENTRIES)]
-    mod.s3_client.put_object(
-        Bucket=TEST_SET_BUCKET, Key=key, Body=json.dumps({"_editHistory": stored})
-    )
-    mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", {}, "newest")
-
-    history = s3_json(mod, TEST_SET_BUCKET, key)["_editHistory"]
-    assert len(history) == mod.MAX_EDIT_HISTORY_ENTRIES
-    assert history[-1]["editedBy"] == "newest"
-    assert history[0]["editedBy"] == "r1"  # r0 dropped
-
-
-@pytest.mark.unit
-def test_the_edit_history_entry_names_the_changed_field_paths_and_both_values(mod):
-    """The diff is what a later auditor reads to see whether the model was right.
-
-    Flattened with the same helper the confidence curve uses, so "changed" means
-    the same thing to the audit trail and to the calibration signal. Nested and
-    list-indexed paths are included because a corrected table row is the common
-    case.
-    """
-    previous = {
-        "inference_result": {
-            "total": "100.00",
-            "vendor": {"name": "ACME"},
-            "lines": [{"amount": "1.00"}, {"amount": "2.00"}],
-        }
-    }
-    saved = {
-        "inference_result": {
-            "total": "105.00",
-            "vendor": {"name": "ACME"},
-            "lines": [{"amount": "1.00"}, {"amount": "9.99"}],
-        }
-    }
-    mod.append_edit_history(previous, saved, "alice", "alice@example.com")
-
-    entry = saved["_editHistory"][-1]
-    assert entry["editedBy"] == "alice"
-    assert entry["editedByEmail"] == "alice@example.com"
-    assert entry["source"] == "annotation-review"
-    edits = entry["baselineEdits"]
-    assert sorted(edits["changedFields"]) == ["lines[1].amount", "total"]
-    assert edits["changeCount"] == 2
-    assert edits["diffs"]["total"] == {"originalValue": "100.00", "newValue": "105.00"}
-    assert edits["diffs"]["lines[1].amount"] == {
-        "originalValue": "2.00",
-        "newValue": "9.99",
-    }
-
-
-@pytest.mark.unit
-def test_a_review_that_changed_nothing_records_no_baseline_edits(mod):
-    """`baselineEdits` absent is how a confirmation is distinguished from a fix."""
-    label = {"inference_result": {"total": "1"}}
-    saved = {"inference_result": {"total": "1"}}
-    mod.append_edit_history(label, saved, "alice", "")
-    assert "baselineEdits" not in saved["_editHistory"][-1]
-
-
-@pytest.mark.unit
-def test_a_diff_that_cannot_be_computed_still_records_who_reviewed(mod):
-    """Provenance must not fail the save when the flattener cannot be used.
-
-    The diff is taken with a helper from the layer-delivered `idp_common`, so the
-    two can be at different versions in a partially-updated deployment. Losing the
-    field-level detail is acceptable; losing the reviewer's edit is not, so the
-    entry is still written without `baselineEdits`.
-
-    The warning is asserted here, which is the other half of the pair described in
-    `test_a_first_review_with_no_prior_label_records_no_diff`: this input is the one
-    that must produce the line, that one the one that must not.
-    """
-    saved = {"inference_result": {"total": "2"}}
-    with (
-        log_spy(mod) as log,
-        patch.object(
-            curve_store, "flatten_values", side_effect=TypeError("incompatible layer")
-        ),
-    ):
-        mod.append_edit_history(
-            {"inference_result": {"total": "1"}}, saved, "alice", ""
-        )
-    assert "Could not diff review changes" in log.text
-    assert "incompatible layer" in log.text
-    assert "baselineEdits" not in saved["_editHistory"][-1]
-    assert saved["_editHistory"][-1]["editedBy"] == "alice"
-
-
-@pytest.mark.unit
-def test_a_first_review_with_no_prior_label_records_no_diff(mod):
-    """Nothing to diff against, and that is recognised rather than crashed into.
-
-    An absent `baselineEdits` does not distinguish the guard from its removal:
-    without it, `previous.get(...)` on `None` raises `AttributeError` into the diff
-    helper's own `except`, which returns the same empty diff. Asserting that
-    `flatten_values` was not called does not distinguish them either — the attribute
-    access raises one expression *before* the call, so it is unmade in both cases.
-
-    What differs is the warning: the `except` logs "Could not diff review changes",
-    and the guard does not. The pair of tests holds that line in both directions —
-    absent here, present in `test_a_diff_that_cannot_be_computed_still_records_who
-    _reviewed` — so neither passes on a change that stops emitting it.
-    """
-    saved = {"inference_result": {"total": "1"}}
-    with log_spy(mod) as log:
-        mod.append_edit_history(None, saved, "alice", "")
-    assert "Could not diff review changes" not in log.text
-    assert "baselineEdits" not in saved["_editHistory"][-1]
-    assert len(saved["_editHistory"]) == 1
-
-
 # --------------------------------------------------------------------------
 # Confirming an unchanged review
 # --------------------------------------------------------------------------
@@ -1236,7 +1359,7 @@ def test_confirming_a_section_with_no_baseline_yet_writes_nothing(mod, table):
     put_doc(table, TestSetId="ts-1")
     with log_spy(mod) as log:
         mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
-    assert "No baseline to confirm" in log.text
+    assert "No label to confirm" in log.text
     assert "Failed to confirm" not in log.text
     assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
 
@@ -1308,87 +1431,6 @@ def curve_item(table, test_set_id, sk):
 
 
 @pytest.mark.unit
-def test_a_review_records_which_confidence_was_earned_and_which_was_not(mod, table):
-    """The calibration signal, asserted per bin rather than "the store was called".
-
-    A field the reviewer left alone was predicted correctly; one they changed was
-    not. Here `total` was claimed at 0.95 and kept (bin 9, correct) and `date` at
-    0.30 and changed (bin 2, incorrect). Inverting that sense would teach the
-    review-effort estimator to trust exactly the predictions a human rejected.
-    """
-    mod.record_curve_observations("ts-1", CURVE_PREVIOUS, CURVE_SAVED)
-
-    item = curve_item(table, "ts-1", "curve#_aggregate")
-    assert item is not None
-    assert item["total9"] == Decimal("1") and item["correct9"] == Decimal("1")
-    assert item["total2"] == Decimal("1") and item["correct2"] == Decimal("0")
-    assert item["reviewObservations"] == Decimal("2")
-    assert item["ItemType"] == "confidence_curve"
-
-
-@pytest.mark.unit
-def test_observations_are_keyed_by_the_config_and_fingerprint_that_drafted_the_label(
-    mod, table
-):
-    """Keyed from the *replaced* label's metadata, not the saved one.
-
-    A curve measured under one extraction model must not be inherited by another,
-    so the revision fingerprint on the drafted label decides the sort key. Reading
-    the config version from the reviewer's payload instead — which carries no
-    metadata — would pool every revision into one curve and make a model swap
-    invisible to the estimator.
-    """
-    mod.record_curve_observations("ts-1", CURVE_PREVIOUS, CURVE_SAVED)
-
-    assert curve_item(table, "ts-1", "curve#profileA@fp1") is not None
-    assert curve_item(table, "ts-1", "curve#profileA") is not None
-    assert curve_item(table, "ts-1", "curve#_aggregate") is not None
-    prior = table.get_item(
-        Key={"PK": curve_store.GLOBAL_PRIOR_PK, "SK": "curve#_aggregate"}
-    ).get("Item")
-    assert prior is not None, "a new test set should inherit the global prior"
-
-
-@pytest.mark.unit
-def test_a_label_without_a_fingerprint_writes_no_revision_scoped_curve(mod, table):
-    previous = dict(CURVE_PREVIOUS, metadata={"config_version": "profileA"})
-    mod.record_curve_observations("ts-1", previous, CURVE_SAVED)
-    assert curve_item(table, "ts-1", "curve#profileA") is not None
-    assert curve_item(table, "ts-1", "curve#profileA@fp1") is None
-
-
-@pytest.mark.unit
-def test_no_curve_is_recorded_when_there_was_no_prior_prediction(mod, table):
-    """With nothing predicted there is no verdict for the reviewer to deliver.
-
-    Asserted on the observation builder not being reached. Without the guard it is
-    called with `None`, raises into the blanket `except`, and leaves exactly the
-    same absent curve item.
-    """
-    with recorded(curve_store, "observations_from_baseline_review") as built:
-        mod.record_curve_observations("ts-1", None, CURVE_SAVED)
-    assert built == []
-    assert curve_item(table, "ts-1", "curve#_aggregate") is None
-
-
-@pytest.mark.unit
-def test_a_label_with_no_recorded_confidences_records_nothing(mod, table):
-    """No claimed confidence means no `(confidence, correct)` pair to learn from.
-
-    Asserted on the store not being written to. `add_observations` with an empty
-    list writes nothing either, so an absent curve item cannot tell the guard from
-    the call it prevents.
-    """
-    previous = {"inference_result": {"total": "1"}, "metadata": {}}
-    with recorded(curve_store.CurveStore, "add_observations") as added:
-        mod.record_curve_observations(
-            "ts-1", previous, {"inference_result": {"total": "2"}}
-        )
-    assert added == []
-    assert curve_item(table, "ts-1", "curve#_aggregate") is None
-
-
-@pytest.mark.unit
 def test_a_curve_write_failure_does_not_fail_the_review(mod, table):
     """The curve is an optimization; a reviewer's save outranks it.
 
@@ -1443,7 +1485,7 @@ def test_claiming_an_unowned_document_records_the_owner_and_starts_the_review(
 
 @pytest.mark.unit
 def test_a_document_already_owned_by_someone_else_cannot_be_claimed(mod, table):
-    put_doc(table, HITLReviewOwner="bob")
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="bob")
     document = FakeDocument([FakeSection("sec-1")])
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
@@ -1468,7 +1510,7 @@ def test_reclaiming_your_own_document_is_allowed(mod, table):
 @pytest.mark.unit
 def test_an_empty_owner_attribute_does_not_block_a_claim(mod, table):
     """A released document stores `""` rather than dropping the attribute."""
-    put_doc(table, HITLReviewOwner="")
+    put_doc(table, HITLStatus="Review Pending", HITLReviewOwner="")
     document = FakeDocument([FakeSection("sec-1")])
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
@@ -1617,7 +1659,7 @@ def test_a_third_party_cannot_release_someone_elses_review(mod, table):
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError, match="owner or an admin"):
+        with pytest.raises(PermissionError, match="owner or an admin"):
             mod.release_review(OBJECT_KEY, "alice", is_admin=False)
     assert read_doc(table)["HITLReviewOwner"] == "bob"
 
@@ -1632,6 +1674,40 @@ def test_an_admin_can_release_a_review_abandoned_by_its_owner(mod, table):
     ):
         mod.release_review(OBJECT_KEY, "admin", is_admin=True)
     assert "HITLReviewOwner" not in read_doc(table)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {},
+        {"HITLStatus": "N/A"},
+        {"HITLStatus": "PendingReview"},
+        {"HITLStatus": "Review Pending"},
+        {"HITLTriggered": True},
+        {"HITLStatus": "COMPLETED"},
+        {"HITLStatus": "Completed", "HITLCompleted": True},
+        {"HITLStatus": "InProgress", "HITLReviewOwner": ""},
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("is_admin", [False, True])
+def test_a_document_nobody_has_claimed_cannot_be_released(
+    mod, table, attributes, is_admin
+):
+    """Release gives up a claim and writes Review Pending, which lists the document
+    for every Reviewer. With no owner there is no claim, and the row may be one no
+    review was raised on or a finished review recognised only by its status, so it
+    is refused and left as it was."""
+    put_doc(table, **attributes)
+    before = read_doc(table)
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        with pytest.raises(ValueError, match="^NOT_CLAIMED: "):
+            mod.release_review(OBJECT_KEY, "alice", is_admin=is_admin)
+    assert read_doc(table) == before
 
 
 @pytest.mark.unit
@@ -1673,7 +1749,9 @@ def test_skip_all_skips_only_the_sections_nobody_has_reviewed(mod, table):
         ),
         patch.object(mod, "trigger_reprocessing") as reprocess,
     ):
-        mod.skip_all_sections_review(OBJECT_KEY, "admin", "admin@example.com")
+        mod.skip_all_sections_review(
+            OBJECT_KEY, "admin", "admin@example.com", is_admin=True
+        )
 
     stored = read_doc(table)
     assert sorted(stored["HITLSectionsSkipped"]) == ["sec-2", "sec-3", "sec-4"]
@@ -1692,13 +1770,56 @@ def test_skip_all_skips_only_the_sections_nobody_has_reviewed(mod, table):
     reprocess.assert_called_once_with(OBJECT_KEY)
 
 
+def skip_all_event(arguments):
+    return event(
+        "skipAllSectionsReview",
+        ["Reviewer"],
+        arguments={"objectKey": OBJECT_KEY, **arguments},
+    )
+
+
+@pytest.mark.unit
+def test_skip_all_records_why_nobody_checked_the_document(mod, table):
+    """The reason and note travel with the skip into the review history."""
+    put_doc(table, HITLStatus="PendingReview", HITLPendingReview="true")
+    document = FakeDocument([FakeSection("sec-1")])
+    with (
+        patch.object(
+            mod, "create_document_service", return_value=FakeDocumentService(document)
+        ),
+        patch.object(mod, "trigger_reprocessing"),
+    ):
+        mod.handler(
+            skip_all_event(
+                {"reason": "Duplicate document", "note": "  same as invoice-2  "}
+            ),
+            None,
+        )
+    entry = read_doc(table)["HITLReviewHistory"][-1]
+    assert entry["action"] == "skip_all"
+    assert entry["reason"] == "Duplicate document"
+    assert entry["note"] == "same as invoice-2"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("arguments", [{}, {"reason": ""}, {"reason": "Lunch"}])
+def test_skip_all_needs_a_reason_from_the_list(mod, table, arguments):
+    """Refused before anything is read or written."""
+    put_doc(table, HITLPendingReview="true")
+    with patch.object(mod, "skip_all_sections_review") as skip:
+        with pytest.raises(ValueError, match="reason is required"):
+            mod.handler(skip_all_event(arguments), None)
+    skip.assert_not_called()
+    assert read_doc(table)["HITLPendingReview"] == "true"
+
+
 @pytest.mark.unit
 def test_skip_all_on_a_missing_document_raises(mod, table):
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(None)
     ):
         with pytest.raises(ValueError, match="not found"):
-            mod.skip_all_sections_review(OBJECT_KEY, "admin")
+            mod.skip_all_sections_review(OBJECT_KEY, "admin", is_admin=True)
 
 
 # --------------------------------------------------------------------------
@@ -1909,8 +2030,11 @@ def test_a_dynamodb_string_set_is_flattened_to_a_list(mod):
     ],
 )
 def test_the_handler_routes_each_field_name_to_its_operation(mod, field_name, target):
+    arguments = {"objectKey": OBJECT_KEY, "sectionId": "sec-1"}
+    if field_name == "skipAllSectionsReview":
+        arguments["reason"] = "Other (see note)"
     with patch.object(mod, target, return_value={"ok": True}) as op:
-        result = mod.handler(event(field_name, ["Admin"]), None)
+        result = mod.handler(event(field_name, ["Admin"], arguments=arguments), None)
     assert result == {"ok": True}
     assert op.call_count == 1
 
@@ -1965,3 +2089,288 @@ def test_the_handler_forwards_the_caller_identity_to_the_operation(mod):
         "alice",
         "alice@example.com",
     )
+
+
+# --------------------------------------------------------------------------
+# Test Studio tasks: assignment and the queue summary after a review
+# --------------------------------------------------------------------------
+
+HITL_TABLE = "review-hitl"
+TSDOC_KEY = {"PK": "TSDOC#ts-1", "SK": "D#invoice.pdf"}
+
+
+@pytest.fixture
+def hitl_table(mod, monkeypatch):
+    """The HITL table holding Test Studio document items, wired into the resolver."""
+    created = mod.dynamodb.create_table(
+        TableName=HITL_TABLE,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    monkeypatch.setattr(mod, "HITL_TABLE_NAME", HITL_TABLE)
+    return created
+
+
+def put_baseline(mod, section_id, label_source):
+    mod.s3_client.put_object(
+        Bucket=TEST_SET_BUCKET,
+        Key=baseline_key("ts-1", "invoice.pdf", section_id),
+        Body=json.dumps({"inference_result": {}, "labelSource": label_source}),
+    )
+
+
+@pytest.mark.unit
+def test_the_last_reviewed_section_ends_the_annotators_task(mod, table, hitl_table):
+    """Every section reviewed: the item is marked reviewed and leaves My Work › Tasks.
+
+    The set's metadata is recounted too, so Queue Management stops listing the
+    document as assigned.
+    """
+    put_doc(table, TestSetId="ts-1")
+    table.put_item(Item={"PK": "testset#ts-1", "SK": "metadata"})
+    hitl_table.put_item(
+        Item={
+            **TSDOC_KEY,
+            "Assignee": "ann@example.com",
+            "OwnerPK": "RT#ann",
+            "AssignedBy": "admin@example.com",
+            "AssignedAtMs": 1,
+        }
+    )
+    put_baseline(mod, "sec-1", "reviewed-human")
+
+    with log_spy(mod) as spy:
+        mod._finish_test_set_task(OBJECT_KEY, "ann@example.com")
+
+    item = hitl_table.get_item(Key=TSDOC_KEY)["Item"]
+    assert item["Reviewed"] is True
+    assert item["LabelSource"] == "reviewed-human"
+    assert "Assignee" not in item and "OwnerPK" not in item
+    # Only mark_reviewed ends the assignment record itself; the summary keeps it.
+    assert "AssignedBy" not in item and "AssignedAtMs" not in item
+    assert "Task complete: ts-1/invoice.pdf by ann@example.com" in spy.text
+    meta = table.get_item(Key={"PK": "testset#ts-1", "SK": "metadata"})["Item"]
+    assert meta["QueueAssignedDocs"] == 0
+    assert meta["QueuePendingDocs"] == 0
+
+
+@pytest.mark.unit
+def test_a_partly_reviewed_document_keeps_its_assignment(mod, table, hitl_table):
+    """One section still a draft: the summary refreshes, the task stays open."""
+    put_doc(table, TestSetId="ts-1")
+    table.put_item(Item={"PK": "testset#ts-1", "SK": "metadata"})
+    hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "ann@example.com"})
+    put_baseline(mod, "sec-1", "reviewed-human")
+    put_baseline(mod, "sec-2", "draft-machine")
+
+    with recorded(mod.TestSetDocStore, "mark_reviewed") as marks:
+        mod._finish_test_set_task(OBJECT_KEY, "ann@example.com")
+
+    assert marks == []
+    item = hitl_table.get_item(Key=TSDOC_KEY)["Item"]
+    assert item["Reviewed"] is False
+    assert item["Assignee"] == "ann@example.com"
+    meta = table.get_item(Key={"PK": "testset#ts-1", "SK": "metadata"})["Item"]
+    # Assigned with one section reviewed: in progress, not merely assigned.
+    assert (meta["QueueInProgressDocs"], meta["QueueAssignedDocs"]) == (1, 0)
+
+
+@pytest.mark.unit
+def test_a_failed_queue_summary_refresh_does_not_fail_the_review(
+    mod, table, hitl_table
+):
+    put_doc(table, TestSetId="ts-1")
+    with (
+        patch.object(
+            mod, "summarize_document", side_effect=RuntimeError("s3 throttled")
+        ),
+        log_spy(mod) as spy,
+    ):
+        mod._finish_test_set_task(OBJECT_KEY, "ann@example.com")
+    assert "not refreshed after review: s3 throttled" in spy.text
+    assert "Item" not in hitl_table.get_item(Key=TSDOC_KEY)
+
+
+@pytest.mark.unit
+def test_completing_a_review_refreshes_the_test_set_task(mod, table, hitl_table):
+    """The handler's completion route finishes the task after the review succeeds."""
+    put_doc(table, TestSetId="ts-1")
+    hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "rev@example.com"})
+    with (
+        patch.object(mod, "complete_section_review", return_value={"ok": 1}),
+        patch.object(mod, "_finish_test_set_task") as finish,
+    ):
+        result = mod.handler(event("completeSectionReview", ["Reviewer"]), None)
+    assert result == {"ok": 1}
+    finish.assert_called_once_with(OBJECT_KEY, "rev@example.com")
+
+
+@pytest.mark.unit
+def test_a_reviewer_may_not_save_a_document_assigned_to_someone_else(
+    mod, table, hitl_table
+):
+    put_doc(table, TestSetId="ts-1")
+    hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "bob@example.com"})
+    with patch.object(mod, "complete_section_review") as completion:
+        with pytest.raises(ValueError, match="assigned to bob@example.com"):
+            mod.handler(event("completeSectionReview", ["Reviewer"]), None)
+    completion.assert_not_called()
+
+
+@pytest.mark.unit
+def test_an_unassigned_test_set_document_is_refused_with_not_assigned(
+    mod, table, hitl_table
+):
+    put_doc(table, TestSetId="ts-1")
+    with pytest.raises(ValueError, match="^NOT_ASSIGNED:"):
+        mod._assert_test_set_assignee(
+            event("completeSectionReview", ["Reviewer"]), OBJECT_KEY, "rev@example.com"
+        )
+
+
+@pytest.mark.unit
+def test_the_assignee_may_save_their_own_document(mod, table, hitl_table):
+    put_doc(table, TestSetId="ts-1")
+    hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "rev@example.com"})
+    mod._assert_test_set_assignee(
+        event("completeSectionReview", ["Reviewer"]), OBJECT_KEY, "Rev@example.com"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("groups", [["Admin"], ["Author", "Reviewer"], "Admin"])
+def test_admins_and_authors_are_not_held_to_the_assignment(
+    mod, table, hitl_table, groups
+):
+    """They assign the work, so the assignment is not looked up for them at all."""
+    put_doc(table, TestSetId="ts-1")
+    hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "bob@example.com"})
+    with recorded(mod, "_test_set_of") as lookups:
+        mod._assert_test_set_assignee(
+            event("completeSectionReview", groups), OBJECT_KEY, "rev@example.com"
+        )
+    assert lookups == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["in_review", "complete", "rejected"])
+@pytest.mark.parametrize(
+    "field_name", ["completeSectionReview", "claimReview", "skipAllSectionsReview"]
+)
+def test_a_queue_managed_document_refuses_every_legacy_operation(
+    mod, table, status, field_name
+):
+    """A document routed to a review queue is worked only from Review Queues."""
+    put_doc(table, HITLStatus=status)
+    with patch.object(mod, "complete_section_review") as completion:
+        with pytest.raises(ValueError, match="^QUEUE_MANAGED:"):
+            mod.handler(event(field_name, ["Admin"]), None)
+    completion.assert_not_called()
+
+
+def _reviewed_docs(table):
+    meta = table.get_item(Key={"PK": "testset#ts-1", "SK": "metadata"})["Item"]
+    return meta["QueueReviewedDocs"]
+
+
+@pytest.mark.unit
+def test_the_last_section_reviewed_counts_the_document_once(mod, table):
+    table.put_item(
+        Item={"PK": "testset#ts-1", "SK": "metadata", "QueueReviewedDocs": 2}
+    )
+    put_baseline(mod, "sec-2", "reviewed-human")
+    sections = [{"Id": "sec-1"}, {"Id": "sec-2"}, "not-a-section", {"Id": None}]
+    with recorded(mod, "_read_json") as reads:
+        mod.count_document_if_fully_reviewed(
+            table, "ts-1", "invoice.pdf", "sec-1", sections
+        )
+    assert [args[1] for args, _ in reads] == [
+        baseline_key("ts-1", "invoice.pdf", "sec-2")
+    ]
+    assert _reviewed_docs(table) == 3
+
+
+@pytest.mark.unit
+def test_a_document_with_an_unreviewed_section_is_not_counted(mod, table):
+    table.put_item(
+        Item={"PK": "testset#ts-1", "SK": "metadata", "QueueReviewedDocs": 2}
+    )
+    put_baseline(mod, "sec-2", "draft-machine")
+    with recorded(table, "update_item") as updates:
+        mod.count_document_if_fully_reviewed(
+            table, "ts-1", "invoice.pdf", "sec-1", [{"Id": "sec-1"}, {"Id": "sec-2"}]
+        )
+    assert updates == []
+    assert _reviewed_docs(table) == 2
+
+
+# --------------------------------------------------------------------------
+# Drafts: a correction applies the section's draft, which then goes
+# --------------------------------------------------------------------------
+
+
+def _draft(mod, test_set_id="ts-1", filename="invoice.pdf", section_id="sec-1"):
+    """A saved draft of the section, through the shared label writer."""
+    from idp_common.review_queues import testset_docs
+    from idp_common.review_queues.testset_labels import LabelEditor
+
+    hitl = mod.dynamodb.Table(HITL_TABLE)
+    testset_docs.TestSetDocStore(hitl).upsert_summary(
+        test_set_id, {"objectKey": filename, "labelSource": "draft-machine"}
+    )
+    mod._test_set_labels = None
+    return mod._labels().save_draft(
+        test_set_id,
+        filename,
+        section_id,
+        {"inference_result": {"total": "draft"}},
+        0,
+        editor=LabelEditor(name="alice"),
+    )
+
+
+@pytest.mark.unit
+def test_a_correction_deletes_the_sections_draft(mod, table, hitl_table):
+    put_doc(table, TestSetId="ts-1")
+    key = baseline_key("ts-1", "invoice.pdf", "sec-1")
+    mod.s3_client.put_object(
+        Bucket=TEST_SET_BUCKET, Key=key, Body=json.dumps({"inference_result": {}})
+    )
+    draft = _draft(mod)
+    mod.write_correction_to_test_set_baseline(
+        OBJECT_KEY, "sec-1", {"inference_result": {"total": "draft"}}, "alice"
+    )
+    assert s3_json(mod, TEST_SET_BUCKET, key)["labelSource"] == "reviewed-human"
+    assert mod._labels().drafts("ts-1", "invoice.pdf") == []
+    listed = mod.s3_client.list_objects_v2(
+        Bucket=TEST_SET_BUCKET, Prefix="ts-1/drafts/"
+    )
+    assert draft.s3_key not in [o["Key"] for o in listed.get("Contents", [])]
+
+
+@pytest.mark.unit
+def test_a_draft_delete_failure_does_not_fail_the_review(mod, table, hitl_table):
+    put_doc(table, TestSetId="ts-1")
+    key = baseline_key("ts-1", "invoice.pdf", "sec-1")
+    mod.s3_client.put_object(
+        Bucket=TEST_SET_BUCKET, Key=key, Body=json.dumps({"inference_result": {}})
+    )
+    _draft(mod)
+    with (
+        log_spy(mod) as log,
+        patch.object(
+            type(mod._labels()), "delete_draft", side_effect=RuntimeError("boom")
+        ),
+    ):
+        mod.write_correction_to_test_set_baseline(
+            OBJECT_KEY, "sec-1", {"inference_result": {"total": "1"}}, "alice"
+        )
+    assert s3_json(mod, TEST_SET_BUCKET, key)["labelSource"] == "reviewed-human"
+    assert "Failed to write correction" not in log.text

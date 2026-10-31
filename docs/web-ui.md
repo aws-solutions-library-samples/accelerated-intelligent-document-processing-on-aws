@@ -9,9 +9,9 @@ SPDX-License-Identifier: MIT-0
 
 The solution includes a responsive web-based user interface built with React that provides comprehensive document management and monitoring capabilities.
 
-![Web UI Screenshot](../images/WebUI.png)
+![Document List filtered to a folder of processed sample documents](../images/WebUI.png)
 
-_The GenAIIDP Web Interface showing the document tracking dashboard with status information, classification results, and extracted data._
+_The Document List, filtered to a folder of processed sample documents, with status, configuration profile, duration and confidence-alert columns._
 
 ## Features
 
@@ -20,17 +20,19 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - Secure authentication using Amazon Cognito
 - Searchable document history
 - Detailed document processing metrics and status information
-- Inspection of processing outputs for section classification and information extraction
+- Inspection of processing outputs for section classification and information extraction, with every action on a document in one bar (see [Document Details](#document-details))
 - Accuracy evaluation reports when baseline data is provided
 - View and edit pattern configuration, including document classes, prompt engineering, and model settings
 - Manage multiple configuration profiles — create, compare, activate, and delete profiles, and view/compare/restore each profile's revision history (see [configuration-profiles.md](configuration-profiles.md))
 - Retain, view, compare, and delete **document versions** — every processing run of a document is kept and viewable read-only (see [document-versions.md](document-versions.md))
-- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the Assessment & HITL Configuration section
+- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the **Human-in-the-Loop (HITL) Review (Optional)** configuration section
 - Document upload from your local computer, or from the **bundled sample documents** shipped with the deployment (no local download needed)
 - Knowledge base querying for document collections
 - "Chat with document" from the detailed view of the document
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
+- **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -103,22 +105,99 @@ The **Upload Documents** panel accepts documents from two sources, selected with
 - **From my computer** — pick one or more files with the file picker (or drag-and-drop). Files are uploaded directly to the InputBucket via a presigned POST and processed automatically.
 - **Sample documents** — choose from the sample documents bundled with the deployment (e.g. a multi-page bank statement, a lending package, a batch of W-2 forms). Selecting a sample copies it server-side into the InputBucket — no local download required. This is the easiest way to try the accelerator or evaluate a configuration preset end-to-end.
 
-In both modes you can set an optional **folder prefix** and pick the **Configuration Version** used to process the document(s).
+In both modes you can set an optional **folder prefix** and pick the **Configuration Profile** and **Configuration revision** used to process the document(s).
+
+![Upload Documents panel with a folder prefix, configuration profile and revision selected, and three files queued](../images/webui-upload.png)
 
 ### One-click config for samples
 
 Many bundled samples are tuned for a specific configuration preset in the [Configuration Library](configuration-profiles.md) (for example, the bank-statement sample pairs with the `bank-statement-sample` config). When you select such a sample:
 
-- If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration version and processes the sample with it. Uncheck it to process the sample under the currently selected version instead.
-- If the associated configuration is **already imported**, that version is preselected automatically.
-- Samples with no associated configuration are simply uploaded under the selected version.
+- If the associated configuration is **not yet imported**, a pre-checked **"Also import and use its configuration"** checkbox appears. Leaving it checked imports the preset from the library as a new (non-active) configuration profile and processes the sample with it. Uncheck it to process the sample under the currently selected profile instead.
+- If the associated configuration is **already imported**, that profile is preselected automatically.
+- Samples with no associated configuration are simply uploaded under the selected profile.
 
 The bundled sample documents and their config associations are published to the deployment's ConfigurationBucket at deploy time (under `samples/`, described by `config_library/samples-manifest.json`).
 
+## Document Details
+
+Opening a document from the Document List shows its Document Details page
+(`#/documents/<document>`). The page title is the document's name with its status in
+parentheses, over the full object key, and every action on the page is in one bar
+beside it, left to right:
+
+- **Details | Source** — Source shows the original file in place of the page's panels;
+  Details brings them back, as you left them.
+- **Reports** — read-only views, each in a dialog: **Summary**, **Evaluation Report**
+  (see [Evaluation report](#evaluation-report)), **Rule Validation Summary**,
+  **Estimated Cost** (the document's metering, priced, with the cost per page in the
+  dialog's title; for the roles that may read the pricing, Admin, Author and Viewer) and
+  **Processing Flow** (see
+  [Document Process Flow Visualization](#document-process-flow-visualization)).
+- **More Actions** — the changes, then the downloads, then Reprocess, Abort and Delete,
+  each group set apart by a separator:
+  - **Edit Page Grouping** — move pages between sections and change a section's class
+    (see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages)).
+  - **Re-extract Sections** — extract chosen sections again (see
+    [Re-extract Sections](#re-extract-sections)).
+  - **Edit Page Text** and **Reset Page Class** (see [Edit Pages](#edit-pages)).
+  - **Use As Evaluation Baseline** — copy the document's results into the evaluation
+    baseline. The **Evaluation** field shows the copy while it runs and when it is done
+    or has failed, and a failed copy is reported.
+  - **Skip All Reviews** — finish a pending review without checking it, with a reason
+    (see [Human review](human-review.md)).
+  - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
+    (ZIP)** — the document's outputs as a ZIP (see
+    [Download Document Data](#download-document-data)).
+  - **Reprocess**, **Abort** and **Delete**, Delete last.
+- **Refresh** — read the document again.
+- **Troubleshoot** — an AI analysis of what went wrong with the document. Reopened on
+  the same document it shows the last result; **Run again** starts a new analysis.
+- **Start Review** — claim a pending review, where a document has one nobody holds yet.
+- **Edit** — the primary action: the document's edit page (see [Review Studio](#review-studio)), or its
+  queue item while it is in a review queue and you work queues.
+
+An action your role can never perform is not shown. One your role may perform but that
+doesn't apply now is shown disabled, and hovering it says why: you are viewing a past
+version, the document is in a review queue or still processing, its configuration is
+still loading, it ran in BDA mode, or there is no report to show. Who may do what:
+
+| Action | Roles |
+|---|---|
+| Reports (except Estimated Cost), the downloads, Refresh, Details \| Source | every role |
+| Estimated Cost | Admin, Author, Viewer (it reads the stack's pricing) |
+| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
+| Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
+| Troubleshoot | Admin, Author, Viewer |
+| Edit | Admin, Author, Reviewer; and Admins and Annotators on a document in a review queue |
+
+A Reviewer, or any caller who isn't an Admin, may run Re-extract Sections, Reset Page
+Class and Edit Page Grouping's **Save and Re-extract** only while holding the document's
+open review: they are disabled on a finished review, on one not yet started (choose
+**Start Review** first), and on one someone else holds.
+
+The server enforces the same rules; see [RBAC](rbac.md).
+
+Below the bar, **Document Details** lists the document's fields in four aligned columns,
+fewer on a narrow screen. Then come **Document Sections** (Section ID, Class/Type, Page
+IDs, Low Confidence Fields, Status) and **Document Pages** (Page ID, Class/Type, Class
+Confidence, Thumbnail). Both tables share one format: the data columns share the
+table's width evenly, and the **Actions** column is fixed at the right. The **⚙** icon
+on each table chooses which data columns are shown, and the choice is remembered in the
+browser. Each row has a **⋮** menu for that row:
+a section's **Edit Data** (**View Data** for a role that can't edit), **Download Data**
+and **Download Baseline**; a page's **View Page Text** and, for Admins, **Edit Page
+Text**. **Version History** and **Chat with Document** follow.
+
+A document that no longer exists shows "Document not found"; one that can't be read shows
+the reason with **Retry**.
+
 ## Evaluation report
 
-On a document that was evaluated against a baseline, **View Evaluation Report**
-opens a summary that leads with the figures the report exists to answer:
+On a document that was evaluated against a baseline, **Reports › Evaluation Report** on
+the document page opens a summary that leads with the figures the report exists to
+answer:
 
 - **Extraction accuracy** — weighted by field importance when the configuration
   assigns weights, otherwise the plain proportion of fields that matched (the
@@ -178,8 +257,8 @@ markdown automatically.
 
 ## Comparing a document against its baseline
 
-On a document that has an evaluation baseline, **View Data** shows the
-**document class** comparison straight away — predicted, expected, and a verdict
+On a document that has an evaluation baseline, **Edit Data** (or **View Data**) in a
+section row's ⋮ menu opens the edit screen, which shows the **document class** comparison straight away — predicted, expected, and a verdict
 — and **Show evaluation** adds the field-by-field comparison, highlighting
 mismatched fields with their scores and reasons. The class is
 model output like any other, and getting it wrong invalidates everything beneath
@@ -206,11 +285,14 @@ set, see
 
 ## Re-grouping a processed document's pages
 
-**Document Sections → Edit page grouping** opens a board with every section side by
-side and each page as a thumbnail. Drag pages between sections, or use a page's **Move
-to section** menu — the keyboard and screen-reader route to the same operation.
+**More Actions › Edit Page Grouping** on the document page, or **Edit Page Grouping** on
+the edit page's **Document Editor** panel (**Edit** on the document page), opens a board with every section
+side by side and each page as a thumbnail. Drag pages between sections, or use a page's
+**Move to section** menu — the keyboard and screen-reader route to the same operation.
 Shift-click selects a run of pages so they move together, which is usually what a wrong
-split needs.
+split needs. A section's class can be changed from its column, except that a user who is
+only a Reviewer can't change it once the document's review has finished, while the
+document is processing, or before they hold its review.
 
 Pages within a section can also be **reordered**: drop a page onto another to place it
 immediately before that one, or use **Order within this section → Move earlier / Move
@@ -225,30 +307,34 @@ One caveat specific to this surface: extraction sorts a section's pages before r
 them, so reordering here does not change what the pipeline extracts. It is stored and it
 matters if the document is used as the prediction side of an evaluation.
 
-**The extracted values are kept and the document is not reprocessed.** Saving writes
-the page grouping and the section classes and nothing else, so extracted fields and any
-a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes** afterwards if you
-would rather the pipeline redo them.
+The board has two saves:
 
-That is the difference between the two routes, and it is the reason both exist:
-
-| | Edit page grouping | Edit Mode → Process Changes |
+| | Save page grouping | Save and Re-extract (document page only) |
 |---|---|---|
-| Page assignments | drag and drop | comma-separated text |
-| Page order within a section | drag, or Move earlier / later | order of the ids you type |
-| Section ids | not editable | editable |
-| Extracted values | **kept** | cleared and regenerated |
-| Reprocessing | none | the document is requeued |
-| Roles | Admin, Reviewer, Annotator | Admin, Reviewer |
+| Page assignments and classes | saved | saved |
+| Extracted values | **kept**, including any a reviewer corrected | **replaced** for the sections whose class or pages changed |
+| Reprocessing | none | the changed sections are extracted again; OCR and classification are not repeated |
+| A pending review | unchanged | marked as completed |
+| Rule validation results | unchanged | cleared |
+| Roles | Admin, Reviewer | Admin, Reviewer |
 
-**Refused while the document is processing.** `Edit Mode → Process Changes` is safe to
-use mid-run because it never writes the document itself — it hands it to the pipeline,
-which saves it. A grouping-only save writes directly, so it would race a run in
-progress; if the document is queued or running the save is refused with a message, and
-the arrangement you made is left on screen rather than discarded.
+**Save page grouping** writes the page grouping and the section classes and nothing else.
+The extracted values were extracted from a different set of pages, so they may no longer
+match. **Save and Re-extract** first lists the sections it will extract again and asks
+you to confirm, then saves the grouping and re-extracts those sections; their classes are
+recorded as confirmed. If the grouping is saved but the re-extract fails, a dialog says
+so, with **Re-extract again**. It is unavailable when only the page order changed (there
+is nothing to re-extract), while a changed section has no class, and in BDA mode, where
+the pipeline's extraction does not run. The edit page's own **Process Changes** re-runs
+evaluation and summarization only, so it keeps the values too.
 
-Not available for Pattern-1, where BDA owns the section structure.
+**Refused while the document is processing, in a review queue, or under a review in
+progress.** A grouping save writes the document directly, so it would race a run in
+progress; on the document page Edit Page Grouping is disabled with the reason, and if the
+server refuses a save anyway, the arrangement you made stays on the board with the
+message.
+
+In BDA mode Edit Page Grouping is disabled with the reason; see [BDA-mode documents](#bda-mode-documents-offer-data-only-editing).
 
 Every page must end up in exactly one section, and a section with no pages blocks the
 save rather than vanishing — deleting a section discards its extracted values, so it
@@ -257,161 +343,138 @@ truth; see
 [test-studio.md](test-studio.md#correcting-a-wrong-packet-split), where the values
 being preserved matters most because they are the annotations being built.
 
-## Edit Sections
+## Re-extract Sections
 
-The Edit Sections feature provides an intelligent interface for modifying document section classifications and page assignments, with automatic reprocessing optimization for Pattern-2 and Pattern-3 workflows.
+**More Actions › Re-extract Sections** on the document page extracts chosen sections
+again, each with its current class and pages, without regrouping anything — for values
+that look wrong while the grouping is right. Choose the sections in the dialog; a section
+with no class, and one its configuration skips, can't be chosen. Before you commit, the
+dialog says what re-extracting does: the sections' extracted values, including any
+corrected by hand, are replaced, and their classes are recorded as confirmed; a pending
+review is marked as completed and rule validation results are cleared; the other
+sections keep their values, and OCR and classification are not repeated.
 
-### Key Capabilities
+![Document Details page for a six-page lending package, showing the Document Sections panel with each section's class, pages, low-confidence field count and status](../images/webui-document-sections.png)
 
-- **Section Management**: Create, update, and delete document sections with validation
-- **Classification Updates**: Change section document types with real-time validation
-- **Page Reassignment**: Move pages between sections with overlap detection (as comma-separated ids; for drag and drop that keeps the extracted values, see [Re-grouping a processed document's pages](#re-grouping-a-processed-documents-pages) above)
-- **Intelligent Reprocessing**: Only modified sections are reprocessed, preserving existing data
-- **Immediate Feedback**: Status updates appear instantly in the UI
-- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+Admins and Reviewers can re-extract. It is disabled with the reason for a past version,
+for a document in a review queue or still processing, and in BDA mode: there, Bedrock
+Data Automation produced the values, and the workflow skips it for any document that
+still has sections, so a re-extracted section would come back with no values. To correct
+a value in any mode, use **Edit Data** in the section row's ⋮ menu: it opens the edit
+screen on the section and writes the value without reprocessing anything.
 
-### How to Use
+## BDA-mode documents offer data-only editing
 
-1. Navigate to a completed document's detail page
-2. In the "Document Sections" panel, click the "Edit Sections" button
-3. **For Pattern-2/Pattern-3**: Enter edit mode with inline editing capabilities
-4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+A document is in **BDA mode** when its configuration profile routes it to Bedrock Data
+Automation: the profile sets `use_bda` and a BDA project is linked to it. A profile that
+sets `use_bda` with no linked project processes in pipeline mode. The Web UI reads the
+profile's `use_bda` alone, so for such a profile it offers data-only editing although the
+server would accept the change. The Web UI reads the profile as it is now. The server
+reads `use_bda` from the configuration revision the document is pinned to, which is the
+revision the requeued run is routed by, and reads the profile as it is now only for a
+document with no pinned revision. So after a profile's `use_bda` changes, the Web UI can
+offer or withhold an edit that the server decides the other way for a document pinned to
+an earlier revision. For a BDA-mode document the Web UI disables, with the reason, the
+edits that change its structure or text:
 
-#### Editing Workflow (Pattern-2/Pattern-3)
+- **Edit Page Grouping**, on the document page's **More Actions** and on the edit page.
+- **Re-extract Sections**, **Edit Page Text** and **Reset Page Class**, and **Save and
+  Re-extract** on the Edit Page Grouping board.
 
-1. **Edit Section Classifications**: Use dropdowns to change document types
-2. **Modify Page Assignments**: Edit comma-separated page IDs (e.g., "1, 2, 3")
-3. **Add New Sections**: Click "Add Section" for new document boundaries
-4. **Delete Sections**: Use remove buttons to delete unnecessary sections
-5. **Validation**: Real-time validation prevents overlapping pages and invalid configurations
-6. **Submit Changes**: Click "Save & Process Changes" to trigger selective reprocessing
+Field values stay editable everywhere: **Edit Data** on a section row, and the edit
+page's **Save** and **Process Changes**.
 
-### Processing Optimization
+The server applies the same rule. `processChanges` refuses any section or page change to
+a document whose profile routes it to BDA, for every role including Admin, with an error
+beginning `BDA_MODE:`, and nothing about the document is changed. A request with no
+section or page changes — field values already saved, reprocessed for evaluation and
+summarization — is accepted. The mode is the one the requeued run will take, so a
+document whose profile sets `use_bda` with no BDA project linked takes section and page
+changes. If the profile or the document's pinned revision cannot be read, a section or
+page change is refused rather than assumed to be safe.
 
-The Edit Sections feature uses **2-phase schema knowledge optimization**:
+The reason is how a BDA-mode document is reprocessed. Bedrock Data Automation decided the
+section boundaries and the extracted values in the first place, and a structural or text
+edit clears the values of the sections it touches before the document is requeued. The
+workflow then skips Bedrock Data Automation for any document that still has at least one
+section, whatever state that section's extraction data is in, and nothing else in the
+BDA branch extracts values. So an edited section would come back with its values gone and
+nothing to replace them.
 
-#### Phase 1: Frontend
+⚠️ **The Web UI can only tell that a document is in BDA mode when it can read the
+document's configuration profile.** Users in none of the **Admin**, **Author** and
+**Viewer** groups — a **Reviewer**, for example, or a **Reviewer** who is also an
+**Annotator** — receive only a profile's class list, so for them these actions stay
+enabled, and the server then refuses the reprocess with the `BDA_MODE:` error, which the
+page shows; nothing is lost. A reviewer correcting a BDA-mode document should use **Edit
+Data** on the section row, which writes the value without touching the structure. The
+page-grouping save keeps the extracted values and does not reprocess, and the server does
+not refuse it.
 
-- **Selective Payload**: Only sends sections that actually changed
-- **Validation Engine**: Prevents invalid configurations before submission
-
-#### Phase 2: Backend
-
-- **Pipeline**: Processing functions automatically skip redundant operations
-  - **OCR**: Skips if pages already have OCR data
-  - **Classification**: Skips if pages already classified
-  - **Extraction**: Skips if sections have extraction data
-  - **Assessment**: Skips if extraction results contain assessment data
-- **Selective Reprocessing**: Only modified sections lose their data and get reprocessed
-
-### Pattern Compatibility
-
-#### Pattern-2 and Pattern-3 Support
-
-- **Full Functionality**: Complete edit capabilities with intelligent reprocessing
-- **Performance Optimization**: Automatic selective processing for efficiency
-- **Data Preservation**: Unmodified sections retain all processing results
-
-#### Pattern-1 Support (Data-Only Edit Mode)
-
-Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic section management. Edit Mode in Pattern-1 provides **data-only editing**:
-
-- **Data Editing**: Edit extraction data (predictions and ground truth) via the "Edit Data" button for each section
-- **Section Structure**: Read-only - section boundaries, classifications, and page assignments are managed by BDA
-- **Reprocessing**: "Save and Reprocess" triggers evaluation and summarization steps without re-invoking BDA
-- **BDA Skip Logic**: When reprocessing with existing pages/sections data, BDA invocation is automatically skipped
-
-**Note**: Pattern-2 and Pattern-3 offer full section structure editing. Pattern-1 maintains BDA-managed section boundaries while allowing extraction data modifications.
 
 ## Edit Pages
 
-The Edit Pages feature provides an intelligent interface for modifying individual page classifications and text content, with automatic selective reprocessing for Pattern-2 and Pattern-3 workflows.
+Each row of **Document Pages** has a ⋮ menu with **View Page Text**, and the document
+page's **More Actions** has **Edit Page Text** and **Reset Page Class**.
 
-### Key Capabilities
+![Document Pages panel listing each page with its class, classification confidence and thumbnail](../images/webui-document-pages.png)
 
-- **View Page Text**: Access clean, readable page text without JSON formatting in a modal editor
-- **Visual Editor**: The page image is shown on the left (when available) alongside a right-pane toggle between **OCR Lines** and **Markdown**. In OCR Lines, click a line to highlight its bounding box on the image (when the OCR backend provides geometry). Supports mouse-wheel zoom, click-drag pan, and Next/Previous page navigation across the document
-- **Markdown view**: Read the page's extracted markdown with a Rendered ↔ Raw toggle; the Raw view is the editable surface in edit mode
-- **Classification Reset**: Reset page classifications to force reclassification during reprocessing
-- **Text Editing**: Modify page OCR text (via the Raw markdown editor) with immediate S3 saves to prevent data loss
-- **Intelligent Reprocessing**: Only affected sections are reprocessed based on modification type
-- **Pattern Compatibility**: Available for Pattern-2 and Pattern-3, with informative guidance for Pattern-1
+### View Page Text
 
-### How to Use
+**View Page Text** opens the page's text read-only. The page image is shown on the left
+(when available), with a right-pane toggle. **OCR Lines** (the default) lists the OCR
+text lines with per-line confidence; click a line to draw its bounding box on the image;
+zoom with the mouse wheel, pan by dragging, and move between pages with **Previous Page**
+and **Next Page**. (Bounding boxes require an OCR backend that provides geometry, e.g.
+Textract or the Mistral hook — the Cohere Parse hook boxes tables and figures only;
+otherwise the lines are shown without overlays.) **Markdown** shows the page's extracted
+markdown, with a Rendered ↔ Raw toggle.
 
-1. Navigate to a completed document's detail page
-2. In the "Document Pages" panel, click the "Edit Pages" button
-3. **For Pattern-2/Pattern-3**: Enter edit mode with page-level editing capabilities
-4. **For Pattern-1**: View informative modal explaining BDA architecture differences
+The text is stored as `{"text": "..."}`; the editor shows and edits the plain text.
 
-#### Editing Workflow (Pattern-2/Pattern-3)
+### Edit Page Text
 
-##### View Mode (Default)
-- Click "View Page Text" button to view page content in read-only mode
-- The page image is shown on the left, with a right-pane toggle. **OCR Lines** (the default) lists the OCR text lines with per-line confidence; click a text line to draw its bounding box on the image; zoom with the mouse wheel, pan by dragging, and move between pages with the Next/Previous arrows. (Bounding boxes require an OCR backend that provides geometry, e.g. Textract or the Mistral hook — the Cohere Parse hook boxes tables and figures only; otherwise the lines are shown without overlays.)
-- Switch the right pane to **Markdown** to read the page's extracted markdown, with a Rendered ↔ Raw toggle
+**Edit Page Text** (More Actions, or a page row's ⋮ menu) opens the same viewer for
+editing, at the first page with text or at the row's page. Switch the right pane to
+**Markdown** and choose **Raw (editable)** to edit the text, then **Save and Reprocess**:
+it saves the page's text, then extracts again the sections that hold the page, replacing
+their values, including any corrected by hand. A pending review is marked as completed
+and rule validation results are cleared. Moving to another page with unsaved edits is
+disabled until you save or discard them.
 
-##### Edit Mode
-1. **Click "Edit Pages"**: Activates edit mode for all pages
-2. **Reset Page Classification** (optional):
-   - Click the  button next to page Class/Type
-   - Page becomes "Unclassified" and will be reclassified during reprocessing
-3. **Edit Page Text**:
-   - Click "Edit Page Text" button to open modal editor
-   - Switch the right pane to **Markdown** and choose **Raw (editable)** to edit the page text; use **Rendered** to preview
-   - Click "Save" to write changes to S3 immediately
-   - Unsaved changes warning prevents data loss
-4. **Submit Changes**: Click "Save & Process Changes" to trigger reprocessing
-5. **Review Impact**: Confirmation modal shows how many pages will trigger reclassification vs re-extraction
-6. **Confirm**: Click "Confirm & Process" to submit document for selective reprocessing
+If the text is saved but the reprocess fails, the dialog says so and offers **Retry
+reprocess** (reprocess again, without saving the text again) and **Restore original
+text** (put back the text as you opened it; nothing is reprocessed). Closing it then
+leaves a notice on the page with **Retry reprocess**, so the text is never left changed
+without saying so.
 
-### Processing Optimization
+Only Admins can edit page text: it saves the text and reprocesses the document, and
+Admin is the only role allowed both.
 
-The Edit Pages feature uses intelligent selective reprocessing:
+### Reset Page Class
 
-#### Page Classification Reset
-- **Impact**: Removes all sections containing the page
-- **Triggers**: Full reclassification and re-extraction
-- **Use Case**: When page was incorrectly classified
+**Reset Page Class** clears the class of the pages you choose and reprocesses the
+document. ⚠️ **It classifies the whole document again**, not only those pages: every page
+is classified again, so pages can move to other sections and sections can be added or
+removed, and every section is rebuilt and extracted again, so values corrected by hand
+in any section are replaced. A pending review is marked as completed and rule validation
+results are cleared. The dialog says so before anything is sent. Admins and Reviewers can
+reset; a user who is only a Reviewer can't once the review has finished, or before they
+hold it.
 
-#### Page Text Modification
-- **Impact**: Clears extraction results for sections containing the page
-- **Preserves**: Sections and classifications remain intact
-- **Triggers**: Re-extraction only (skips OCR and classification)
-- **Use Case**: Correcting OCR errors to improve extraction accuracy
+### When they are unavailable
 
-#### Backend Processing
-- **OCR**: Automatically skipped (page text already updated)
-- **Classification**: Skipped for text-only modifications, runs for class resets
-- **Extraction**: Runs for all affected sections
-- **Assessment**: Runs if extraction completes
-
-### Text Format Handling
-
-- **Display**: Plain text extracted from JSON wrapper - no raw JSON visible to users
-- **Editing**: User edits plain text in a clean Monaco editor
-- **Storage**: Text wrapped back in `{"text": "..."}` format for backward compatibility
-- **Confidence**: Markdown table format for readability (Text | Confidence columns)
-
-### Pattern Compatibility
-
-#### Pattern-2 and Pattern-3 Support
-
-- **Full Functionality**: Complete page editing capabilities with intelligent reprocessing
-- **Performance Optimization**: Automatic selective processing based on modification type
-- **Data Preservation**: Unmodified pages and sections retain all processing results
-
-#### Pattern-1 Information
-
-Pattern-1 uses **Bedrock Data Automation (BDA)** with automatic page management. When Edit Pages is clicked, users see an informative modal explaining:
-
-- **Architecture Differences**: BDA handles page processing automatically
-- **Alternative Workflows**: Available options like "View Page Text", Configuration updates, and document reprocessing
-- **Future Considerations**: Guidance on using Pattern-2/Pattern-3 for fine-grained page control
+Edit Page Text and Reset Page Class are disabled with the reason for a past version, for
+a document in a review queue or still processing, and in BDA mode: Bedrock Data
+Automation produced the values, and the workflow skips it for any document that still
+has sections, so the affected sections would come back empty. **View Page Text** is
+always available and changes nothing.
 
 ## Document Schema Builder
 
 The **Document Schema** tab on the Configuration page provides a visual **Schema Builder** for defining the document types (classes) and fields (attributes) that extraction produces — a JSON Schema Draft 2020-12 editor that requires no hand-editing of JSON. (The same builder powers the **Policy Schema** tab for rule validation.)
+
+![Schema Builder with the Payslip document type selected: the class list, its attributes, and the class inspector](../images/webui-schema-builder.png)
 
 ### Layout
 
@@ -434,10 +497,12 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 
 The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
 
+![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
+
 ### Key Capabilities
 
-- **Step Selection**: Preview prompts for Classification, Extraction, Assessment, or Summarization
-- **Class Selection**: For Extraction and Assessment, select a specific document class to see how its JSON Schema appears in the prompt
+- **Step Selection**: Preview prompts for each classification call, Extraction, Confidence Assessment, or Summarization. The classification steps follow `classification.strategy`: under `combined` there is one, *Classification: split and classify together*; under `split_then_classify` there are two, *Classification: splitting (split then classify)* and *Classification: section classification (split then classify)*
+- **Class Selection**: For Extraction and Confidence Assessment, select a specific document class to see how its JSON Schema appears in the prompt
 - **Filled Placeholders**: Config-derived values (`{CLASS_NAMES_AND_DESCRIPTIONS}`, `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`, `{DOCUMENT_CLASS}`) are replaced with actual values from your configuration
 - **Runtime Markers**: Document-specific placeholders (`{DOCUMENT_TEXT}`, `{DOCUMENT_IMAGE}`, etc.) are shown as highlighted yellow markers indicating where document content will be inserted at processing time
 - **Token Estimates**: Approximate token counts for the system prompt, task prompt and — when Schema Enforcement is on — the tool schema, so the total reflects everything your configuration puts on the wire
@@ -450,8 +515,8 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 
 1. Navigate to the Configuration page
 2. Click the **Prompt Preview** tab (alongside Configuration, Document Schema, Rule Schema)
-3. Select a **Processing Step** from the dropdown (Classification, Extraction, Assessment, Summarization)
-4. For Extraction or Assessment, select a **Document Class** to preview its schema in the prompt
+3. Select a **Processing Step** from the dropdown: the classification step or steps your configured strategy makes (see above), Extraction, Confidence Assessment, or Summarization
+4. For Extraction or Confidence Assessment, select a **Document Class** to preview its schema in the prompt
 5. View the rendered prompts in the Task Prompt and System Prompt sub-tabs
 6. Use the Raw Task Template and Raw System Template sub-tabs to see the unprocessed templates with placeholder syntax
 
@@ -513,7 +578,7 @@ _The Document Process Flow visualization showing the execution steps, status, an
 ### How to Use
 
 1. Navigate to a document's detail page
-2. Click the "View Processing Flow" button in the document details header
+2. Choose **Reports › Processing Flow** in the page's action bar
 3. The flow diagram will display all steps in the document's processing workflow
 4. Click on any step to view its detailed information including:
    - Input/output data
@@ -534,7 +599,7 @@ The Document Process Flow visualization is particularly useful for troubleshooti
 
 ## Download Document Data
 
-The Document Details page exposes a **Download** dropdown in the page header that packages the document's outputs into a single ZIP archive, suitable for sharing, archival, or downstream analysis outside the IDP console. The same three scopes are available in bulk from the document list — see [Bulk download from the document list](#bulk-download-from-the-document-list) below.
+The Document Details page's **More Actions** menu has a group of downloads that packages the document's outputs into a single ZIP archive, suitable for sharing, archival, or downstream analysis outside the IDP console. The same three scopes are available in bulk from the document list — see [Bulk download from the document list](#bulk-download-from-the-document-list) below.
 
 ### Folder layout
 
@@ -558,7 +623,7 @@ A self-describing `manifest.json` is written at the ZIP root capturing the expor
 
 ### Fetching mechanics
 
-Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. **Every URL is signed by the backend**, through the `getFilePresignedUrl` resolver, whichever bucket the file is in — the **OutputBucket** and **InputBucket** included. Your browser's Cognito credentials grant **nothing** on the document buckets, so a URL signed in the browser would fail with HTTP 403 at fetch time; routing the signature through the resolver is also what puts a group check and the caller's configuration-profile scope in front of the bytes. Up to 5 files are fetched in parallel. The surfaces that show many pages at once — the page-image viewer and the page thumbnails — use the batch form, `getFilePresignedUrls`, so opening a document asks for its page URLs in a single call — or, for a document of more than 250 pages, in one call per 250 — rather than one call per page. A progress modal reports status during the download and offers a **Cancel** button for large documents. The per-section **Download Data** / **Download Baseline** buttons in the Sections panel remain available for single-file downloads.
+Every file in the archive is fetched directly from S3 using a short-lived presigned URL, preserving binary content byte-for-byte. **Every URL is signed by the backend**, through the `getFilePresignedUrl` resolver, whichever bucket the file is in — the **OutputBucket** and **InputBucket** included. Your browser's Cognito credentials grant **nothing** on the document buckets, so a URL signed in the browser would fail with HTTP 403 at fetch time; routing the signature through the resolver is also what puts a group check and the caller's configuration-profile scope in front of the bytes. Up to 5 files are fetched in parallel. The surfaces that show many pages at once — the page-image viewer and the page thumbnails — use the batch form, `getFilePresignedUrls`, so opening a document asks for its page URLs in a single call — or, for a document of more than 250 pages, in one call per 250 — rather than one call per page. A progress modal reports status during the download and offers a **Cancel** button for large documents. A section row's ⋮ menu has **Download Data** and **Download Baseline** for single-file downloads.
 
 ### Bulk download from the document list
 
@@ -582,17 +647,21 @@ For unattended or very large extractions, use the CLI instead — `idp-cli downl
 
 The Document Details page includes a **Version History** panel listing every retained processing run of the document, newest first (with the current run badged). Re-uploading a document under the same key — or reprocessing it — no longer discards the prior results; each successful run is kept as an immutable version whose exact output bytes are pinned by S3 object version.
 
-From the panel you can:
+From the panel you can, using each row's **⋮** menu:
 
-- **View** any past version's outputs read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. Editing is disabled while viewing history; a banner offers **Return to current version**.
+- **View** any past version's outputs (the version shown reads **Viewing**) read-only — its sections, page text/images, extraction results, and summary/evaluation reports are fetched from that run's pinned S3 versions, so you see exactly what that run produced even after later runs overwrote the outputs. While you view a past version, every action that changes the document is disabled with the reason, as are **Refresh** and **Edit**, and **Rule Validation Summary** is unavailable because rule validation isn't kept for past versions; a banner offers **Return to current version**.
 - **Compare** any two versions — a section-by-section, field-level diff of their extraction results.
 - **Delete** a version (Admin only) — permanently removes that run's pinned object versions; the current version cannot be deleted, and versions still referenced by another retained run are preserved.
+
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
 
 See the [Document Versions guide](document-versions.md) for how versioning works, retention, the CLI/API surfaces, and caveats.
 
 ## Chat with Document
 
 The "Chat with Document" feature is available at the bottom of the Document Detail view. It provides an interactive Q&A interface grounded in the text of the single document you are viewing — no other documents are considered. The feature is only available after the document's status is **COMPLETE**.
+
+![Chat with the Document panel answering a question that compares the payslip and W-2 in a lending package](../images/webui-chat-with-document.png)
 
 ### Model selection
 
@@ -631,6 +700,157 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 
 1. Navigate to a document's detail page and scroll to the bottom
 2. In the text area, type in your question and you'll see an answer pop up after the document is analyzed with the Nova Pro model
+
+## Review Studio
+
+**Review Studio** (human-in-the-loop, or HITL, review) brings every kind of human review work into one place:
+production documents held in review queues, and test sets that need ground truth.
+The pages are described in [review-queues.md](review-queues.md). In outline:
+
+- **Navigation.** A user whose only role is Annotator, and a Reviewer with no Admin,
+  Author or Viewer role, sees exactly **Home** (**Inbox**, **Tasks**, **Queues**) and
+  **Deployment Info**: no **Documents** and no **Extensions**. A Reviewer finds their
+  work in Home › Queues and Home › Tasks, and works every Production queue. A Reviewer
+  who also holds another role keeps that role's navigation, with Tasks and Queues
+  added under **Home**. Other users have **Home** with the **Inbox** only, then the
+  usual sections their roles allow: **Documents**, **Assistants**, **Test Studio**,
+  **Configuration**, **Extensions**, **Resources** and **Deployment Info**. Admins also
+  see **Review Studio › Review Management**.
+- **Review Management** (Admins) has two tables, **Production Queues** and **Test Studio
+  Queues** (one per test set), one at a time: the **Production | Test Studio** switch
+  beside **Refresh** chooses which. Each lists Queue, Items, Pending, Assigned and
+  Annotators with an actions menu. Admins edit and delete Production queues here,
+  setting each one's name, priority, time limit, eligible Annotators (who works the
+  queue) and **Enabled** switch in its **Settings**; there is no **Create queue**.
+  When HITL is enabled in a document's configuration and the Default queue is
+  enabled, a production document that raised confidence alerts goes to the Default
+  queue. Queues have no threshold of their own: the alerts use each field's own
+  threshold, otherwise `hitl.confidence_threshold`. Deleting a queue moves its
+  items to Default; Default itself can't be deleted. On each queue's page, Admins
+  select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
+  to another queue, or **Remove from queue** (the document completes with
+  its machine output).
+- **Home › Queues** lists the queues you're listed on. On a queue's page you can
+  open any item read-only and **Claim** one nobody holds, which assigns it to you.
+- **Home › Tasks** lists everything assigned to you, both Production review items
+  and Test Studio documents, with their document, source, queue and age. Selecting
+  one opens it. The **Tasks** badge counts them; completing or skipping an item
+  removes it from the list and the count straight away (**Skip** gives the item back
+  to its queue, unassigned and not finished), and work assigned to you by an Admin
+  appears within about 30 seconds.
+- **The edit page** is the same for every edit, whether you open a queue item from
+  Tasks, an Inbox message or Review Management, or edit a document directly.
+  - A document's edit page is `#/documents/<document>/edit`. It opens the
+    document's review-queue item while the document is in review and you are an
+    Admin or an Annotator; for anyone else, and for a document that is not in review,
+    it opens the direct edit. A document in review opens read-only in the direct
+    edit, saying it is edited in its queue. **Edit** on the document page, **Edit
+    Data** in a section row's ⋮ menu, **In Review** in the Document List, Home › Tasks and
+    Inbox messages all open it. Annotators whose only role is Annotator can open it
+    too, although they have no Documents.
+  - A Test Studio document's edit page is `#/review-queues/test-sets/<id>/items/<document>`.
+  - `?section=<id>` opens a section, `?field=<path>` selects a field and
+    `?view=source` opens the original file, on either page. An older Production item
+    link, `#/review-queues/items/<document>`, opens the document's edit page with the
+    same query, and an older Test Studio document link,
+    `#/test-studio/sets/<id>/doc/<document>`, opens its Test Studio item.
+
+  The breadcrumbs follow where the page was opened from:
+  **Document Processing › Documents › {document} › Edit** from the document page or the
+  Document List; **Review Studio › Review Management › {queue or test set} ›
+  {document}** from Review Management; **Home › Queues › {queue} › {document}** from an
+  Annotator's Queues; **Home › Tasks › {document}** from Tasks; **Test Studio › {test
+  set} › {document}** from Test Studio; and **Home › Inbox › {document}** from an Inbox
+  message. A link that doesn't say where it came from, such as a bookmark or a copied
+  field link, gets the role's usual trail: Review Management for an Admin's queue item,
+  Tasks for an Annotator, Test Studio for an Author's test set item, and the document
+  page for a direct edit. The title is the document's name with its status in
+  parentheses, over the full object key; a queue item's **Review Reason** follows, then
+  the **Document Editor** panel. Its own buttons are right of its title: **Show
+  Evaluation** (where the document has an evaluation baseline), the **Section**
+  dropdown, **Show Fields** (all fields, confidence alerts only, or evaluation mismatches
+  only; for the Visual Editor, so disabled on the JSON tab) and **Edit Page Grouping**
+  (each section's pages and class, for the roles that may change them: an Admin or a
+  Reviewer on a direct edit, the item's holder on a queue item, Annotator or Admin;
+  disabled with the reason otherwise, for example "Claim this item first"). They are hidden while the original file is shown.
+  The page's actions are in one bar at the top, left to right: **Edit | View** (the original
+  file in the editor's place); **Reports** (**History**, field edits and review
+  activity; **Summary**; **Processing Report**); **More Actions** (**Use As Evaluation
+  Baseline**, for Admins and Authors); **Refresh** (read the document again, asking first when there
+  are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
+  (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
+  menu item that doesn't apply yet, such as Summary before a document is finished, is
+  disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes re-runs
+  evaluation and summarization on the corrected document, and OCR, classification and
+  extraction are not repeated. It finishes a queue item, and on a direct edit saves
+  the edits and confirms first. For a Test Studio document with authored ground truth,
+  which has no review copy, it only marks the labels reviewed. A direct edit also shows the evaluation
+  baseline when the document has one: the class comparison, **Show Evaluation** to
+  compare every field, and baseline editing. An Admin edits an unassigned Production
+  item directly (the first saved edit, or Process Changes, assigns it to them) and
+  uses **Take over** on one assigned to someone else.
+- The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
+  **Review Status** as **In Review**, which for Admins and Annotators links to the
+  document's edit page (its queue item). A queued document is reviewed only from that
+  item, and the server refuses a direct upload of its section results meanwhile; the legacy Reviewer flow
+  (**Start Review**) applies to documents outside the queues.
+
+## Inbox
+
+Every user has an **Inbox**, in **Home**: messages that platform components post to you,
+either by name or to a Cognito group you belong to. Messages are private to you;
+marking, deleting or muting them does not affect anyone else's copy. There are three
+entry points:
+
+- **Bell (top navigation).** The bell shows a badge while you have unread messages and
+  opens a menu with your five most recent messages, read and unread, with unread ones
+  flagged. Choosing a message opens the page it links to (or the Inbox page when it has
+  no link) and marks it read. The menu also offers **Mark all as read** and
+  **View all in Inbox**.
+- **Inbox (left navigation).** **Inbox** is the first entry of **Home**, with a badge
+  showing the unread count, for every user.
+- **Inbox page.** The Inbox page lists your messages with when they were received,
+  their title (bold while unread; long titles are shortened, with the full title on
+  hover), type and severity. Find messages by text, or filter by read
+  state (**All** or **Unread**), type and severity, and sort by any column (severity
+  sorts from success to error). Select messages to **Mark as read**, **Mark as unread**
+  or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
+  (which deletes every read message) without a selection. Each row's actions menu
+  (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
+  and marks it read; **Open related page** follows its link.
+
+**Settings.** The settings button (gear icon) at the top right of the Inbox page opens
+**Inbox settings**, which lists the message types and lets you turn off the ones you
+don't want. A muted type isn't delivered to you at all:
+it is not stored and not counted. Turning a type back on affects new messages only.
+
+**How quickly messages appear.** The bell, the navigation badge and the Inbox page
+share one check for new messages, about every 60 seconds while the browser tab is
+visible. Checking pauses while the tab is hidden and resumes when you return to it.
+New messages update the badges and never raise a pop-up notification. Your own
+actions (marking messages read or unread, deleting them) update the unread count
+on the bell and the navigation badge straight away.
+
+**Retention.** Messages are kept for a limited time and up to a per-user cap; when
+the cap is reached, the oldest read messages are removed first. Administrators set
+both in the configuration — see
+[Inbox message retention](configuration.md#inbox-message-retention).
+
+**What arrives in the Inbox.** HITL review queues post three kinds of message to the
+Annotator concerned, for production items and Test Studio documents alike:
+
+| Type (Inbox settings) | Sent when |
+|---|---|
+| **Review item assigned to you** | An Admin assigns an item or document to you. |
+| **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
+| **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+
+Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
+**Review claim expired**. This release does not send them: arrivals in a queue are
+announced to nobody (Admins see waiting work in Review Management), and assignments do
+not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+posting messages should read the
+[notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
 ## Feedback & Issue Reporting
 

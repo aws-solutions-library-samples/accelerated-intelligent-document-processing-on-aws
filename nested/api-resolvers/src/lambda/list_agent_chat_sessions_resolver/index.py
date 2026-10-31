@@ -18,6 +18,15 @@ from log_sanitizer import sanitize_event_for_logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+
+class ReportedServerError(RuntimeError):
+    """A 500 whose message is written for the caller, so the dispatcher passes it on.
+
+    Declared locally because this resolver does not import ``idp_common``; the
+    dispatcher matches the class by name. The canonical class, and the rule for
+    when to raise it, is ``idp_common.api_adapter.ReportedServerError``.
+    """
+
 # Initialize AWS clients
 dynamodb = boto3.resource("dynamodb")
 
@@ -151,13 +160,12 @@ def handler(event, context):
         return result
         
     except ClientError as e:
-        # Logged in full, returned generically. The class name is `Exception`, so the
-        # dispatcher relays this message verbatim into the 500 body — and a botocore
-        # authorization message names the assumed-role ARN and the table ARN. Same
-        # disclosure the S3 path in get_file_contents_resolver closes, and the same
-        # remedy: detail to the operator, not to the caller.
+        # Logged in full, returned as this message, which is written for the caller:
+        # a botocore authorization message names the assumed-role ARN and the table
+        # ARN, so the detail goes to the operator. `ReportedServerError` is the class
+        # the dispatcher passes a 500 message through for.
         logger.error("DynamoDB error: %s", e, exc_info=True)
-        raise Exception(
+        raise ReportedServerError(
             "This deployment could not read the chat data. Contact an administrator."
         ) from e
     except Exception as e:

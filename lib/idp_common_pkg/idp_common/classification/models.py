@@ -24,7 +24,7 @@ class DocumentType:
     """Optional regex pattern to match against document ID/name. When matched, all pages are classified as this type (single-class configurations only)."""
 
     document_page_content_regex: Optional[str] = None
-    """Optional regex pattern to match against page content text. When matched during multi-modal page-level classification, the page is classified as this type."""
+    """Optional regex pattern to match against page content text. When matched during page-granularity classification under the combined strategy, the page is classified as this type."""
 
     excluded: bool = False
     """When True, sections classified as this document type are skipped by
@@ -151,6 +151,75 @@ class DocumentSection:
             "id": self.section_id,
             "class": self.classification.doc_type,
             "pages": [page.to_dict() for page in self.pages],
+        }
+
+
+@dataclass
+class Segment:
+    """One contiguous run of pages forming a single document instance.
+
+    **The intermediate result every classification path produces**, and the only
+    thing section forming reads. Before this existed, each path built
+    ``document.sections`` itself: the page-level path folded per-page
+    ``start``/``continue`` verdicts, the packet path turned the model's segment
+    list into sections, and each had its own copy of all three
+    ``sectionSplitting`` strategies — six implementations of three behaviours,
+    which is how the two paths came to disagree about what
+    ``sectionSplitting: disabled`` means.
+
+    ``doc_class`` is **optional on purpose**. A splitting-only stage (the first
+    call of split-then-classify) emits segments with no class, and a labeling
+    stage fills them in. Nothing downstream of section forming needs to
+    know which produced it.
+
+    Page identity is carried as ``page_ids``, not as an integer range, because
+    page IDs are strings throughout the pipeline and a packet's pages are not
+    guaranteed to be a contiguous integer run — ``maxPagesForClassification``
+    and windowing both produce documents whose page set is a subset.
+    ``start_page``/``end_page`` are reads over it, matching the names the
+    configuration and documentation use.
+    """
+
+    page_ids: List[str]
+    """Ordered page IDs in this segment. Never empty."""
+
+    doc_class: Optional[str] = None
+    """The segment's document class, or None when it has not been labeled yet."""
+
+    confidence: Optional[float] = None
+    """Confidence in ``doc_class``, or None for not scored."""
+
+    candidates: List[Dict[str, Any]] = field(default_factory=list)
+    """Ranked runner-up classes with probabilities, when the model reported them.
+
+    Carried on the segment rather than being dropped at the parse, because
+    ``confidence.mode: topk`` *asks* for them and they are the thing that makes
+    the score interpretable — "80% W-2, 15% 1099" says what else the pages could
+    have been, which a bare number does not. The page-level path has persisted
+    these onto ``Page.classification_candidates`` since GitHub #673; a
+    packet-level call asks for them per segment and must not be the path that
+    buys the output tokens and discards the answer.
+    """
+
+    @property
+    def start_page(self) -> str:
+        """First page ID in the segment."""
+        return self.page_ids[0]
+
+    @property
+    def end_page(self) -> str:
+        """Last page ID in the segment."""
+        return self.page_ids[-1]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation."""
+        return {
+            "start_page": self.start_page,
+            "end_page": self.end_page,
+            "page_ids": list(self.page_ids),
+            "class": self.doc_class,
+            "confidence": self.confidence,
+            "candidates": list(self.candidates),
         }
 
 

@@ -70,6 +70,12 @@ interface DocumentVersionsPanelProps {
    * return to the current version.
    */
   onViewVersion?: (runId: string | null, detail: DocumentVersionDetail | null) => void;
+  /**
+   * When the document's current run finished. A run is recorded as a version when
+   * it completes, so a change here means the list on screen is out of date: a
+   * document reprocessed while its page was open finished with the old list shown.
+   */
+  completionTime?: string | null;
 }
 
 /** Full run detail returned by getDocumentVersion (Sections/Pages + Files). */
@@ -102,7 +108,12 @@ const statusIndicator = (status: string): React.JSX.Element => {
   }
 };
 
-const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }: DocumentVersionsPanelProps): React.JSX.Element => {
+const DocumentVersionsPanel = ({
+  objectKey,
+  viewingRunId = null,
+  onViewVersion,
+  completionTime = null,
+}: DocumentVersionsPanelProps): React.JSX.Element => {
   const { isAdmin } = useUserRole();
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [loading, setLoading] = useState(false);
@@ -135,7 +146,7 @@ const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }
 
   useEffect(() => {
     loadVersions();
-  }, [loadVersions]);
+  }, [loadVersions, completionTime]);
 
   const handleCompare = async () => {
     if (selectedForCompare.length !== 2) return;
@@ -290,39 +301,42 @@ const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }
             {
               id: 'actions',
               header: 'Actions',
+              // One ⋮ menu per row: View (or Viewing, on the version shown) and, for an
+              // Admin, Delete version.
+              width: 100,
               cell: (item: DocumentVersion) => {
                 const isViewing = viewingRunId === item.RunId || (viewingRunId === null && item.RunId === currentRunId);
                 return (
-                  <SpaceBetween direction="horizontal" size="xs">
-                    <Button
-                      variant="inline-link"
-                      loading={loadingVersionId === item.RunId}
-                      disabled={isViewing || !onViewVersion}
-                      onClick={() => handleView(item)}
-                    >
-                      {isViewing ? 'Viewing' : 'View'}
-                    </Button>
-                    {isAdmin && (
-                      <ButtonDropdown
-                        variant="inline-icon"
-                        // Render the menu in a portal so it isn't clipped by the
-                        // table row/container overflow.
-                        expandToViewport
-                        ariaLabel={`Actions for version ${item.RunId}`}
-                        items={[
-                          {
-                            id: 'delete',
-                            text: 'Delete version',
-                            disabled: item.RunId === currentRunId,
-                            disabledReason: 'Cannot delete the current version',
-                          },
-                        ]}
-                        onItemClick={({ detail }) => {
-                          if (detail.id === 'delete') setDeleteTarget(item);
-                        }}
-                      />
-                    )}
-                  </SpaceBetween>
+                  <ButtonDropdown
+                    variant="inline-icon"
+                    // Render the menu in a portal so it isn't clipped by the
+                    // table row/container overflow.
+                    expandToViewport
+                    loading={loadingVersionId === item.RunId}
+                    ariaLabel={`Actions for version ${item.RunId}`}
+                    items={[
+                      {
+                        id: 'view',
+                        text: isViewing ? 'Viewing' : 'View',
+                        disabled: isViewing || !onViewVersion,
+                        disabledReason: isViewing ? 'This version is shown' : undefined,
+                      },
+                      ...(isAdmin
+                        ? [
+                            {
+                              id: 'delete',
+                              text: 'Delete version',
+                              disabled: item.RunId === currentRunId,
+                              disabledReason: 'Cannot delete the current version',
+                            },
+                          ]
+                        : []),
+                    ]}
+                    onItemClick={({ detail }) => {
+                      if (detail.id === 'view') handleView(item);
+                      else if (detail.id === 'delete') setDeleteTarget(item);
+                    }}
+                  />
                 );
               },
             },

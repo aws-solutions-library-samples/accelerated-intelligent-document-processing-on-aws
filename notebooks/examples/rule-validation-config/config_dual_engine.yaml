@@ -4,22 +4,43 @@
 # ============================================================================
 # Classification (minimal — single doc type for testing)
 # ============================================================================
-classificationMethod: textbasedHolisticClassification
 classification:
-  model: us.anthropic.claude-sonnet-4-6
-  temperature: "0"
-  top_p: "0"
-  top_k: "20"
-  max_tokens: "4096"
-  system_prompt: |
-    You are a document classifier. Classify each page of the document.
-  task_prompt: |
-    Classify the following document pages. Each page belongs to one class.
-    Available classes: invoice
-    
-    {DOCUMENT_TEXT}
-    
-    Return JSON: {"pages": [{"page_id": "1", "classification": "invoice", "confidence": 0.99}]}
+  # No `combined.granularity` here on purpose, so this runs at the default
+  # page granularity. The task prompt below asks for a `pages` array that
+  # neither the page nor the packet parser reads, and the notebook using this
+  # file does not classify, so the classification settings are placeholders.
+  combined:
+    llm:
+      model: us.anthropic.claude-sonnet-4-6
+      temperature: '0'
+      top_p: '0'
+      top_k: '20'
+      max_tokens: '4096'
+    page:
+      system_prompt: |
+        You are a document classifier. Classify each page of the document.
+      task_prompt: |
+        Classify the following document pages. Each page belongs to one class.
+        Available classes: invoice
+
+        {DOCUMENT_TEXT}
+
+        Return JSON: {"pages": [{"page_id": "1", "classification": "invoice", "confidence": 0.99}]}
+  split_then_classify:
+    splitting:
+      llm:
+        model: us.anthropic.claude-sonnet-4-6
+        temperature: '0'
+        top_p: '0'
+        top_k: '20'
+        max_tokens: '4096'
+    section_classification:
+      llm:
+        model: us.anthropic.claude-sonnet-4-6
+        temperature: '0'
+        top_p: '0'
+        top_k: '20'
+        max_tokens: '4096'
 
 # ============================================================================
 # Extraction (simple invoice fields)

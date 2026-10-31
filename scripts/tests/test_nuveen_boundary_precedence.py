@@ -41,6 +41,14 @@ DEFAULTS = (
 )
 
 
+def _page_prompt(classification: dict) -> str:
+    """The combined page task prompt: nested in config format 0.9, flat before."""
+    nested = ((classification.get("combined") or {}).get("page") or {}).get(
+        "task_prompt"
+    )
+    return nested if nested is not None else classification["task_prompt"]
+
+
 @pytest.fixture(scope="module")
 def nuveen_class() -> dict:
     classes = yaml.safe_load(NUVEEN.read_text())["classes"]
@@ -82,7 +90,7 @@ def test_the_prompt_still_lets_a_class_description_win(nuveen_class):
     behaviour that produced "expected 532 fund items, got 193", with the
     description still sitting there looking like it does something.
     """
-    prompt = yaml.safe_load(DEFAULTS.read_text())["classification"]["task_prompt"]
+    prompt = _page_prompt(yaml.safe_load(DEFAULTS.read_text())["classification"])
     assert "PRECEDENCE:" in prompt
     assert "boundary or page-ordering instructions" in prompt, (
         "the PRECEDENCE clause no longer promotes a document type's own boundary "
@@ -99,5 +107,5 @@ def test_the_pinned_copy_agrees_with_the_default_on_precedence():
     the clause were dropped from the default AND every copy together, and this
     config would then break with no failure pointing at it.
     """
-    prompt = yaml.safe_load(NUVEEN.read_text())["classification"]["task_prompt"]
+    prompt = _page_prompt(yaml.safe_load(NUVEEN.read_text())["classification"])
     assert "PRECEDENCE:" in prompt

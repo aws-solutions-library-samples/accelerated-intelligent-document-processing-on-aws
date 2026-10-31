@@ -29,8 +29,8 @@ through moto.
 **Configuration pinning is checked on both paths that accept it.** A batch run
 under the wrong configuration revision does not fail; it silently produces
 results the caller then compares against something else. The manifest path and
-the directory path both take ``config_revision``, so both are asserted, and they
-do not agree — see ``test_a_directory_batch_silently_drops_the_pinned_config_revision``.
+the directory path and the S3-URI path all take ``config_version`` and
+``config_revision``, and each is asserted to stamp both onto the object.
 """
 
 import csv
@@ -461,28 +461,12 @@ class TestLocalUploadAndConfigPinning:
             "config-revision": "7",
         }
 
-    def test_a_directory_batch_silently_drops_the_pinned_config_revision(
+    def test_a_directory_batch_stamps_both_profile_and_revision(
         self, processor, s3, tmp_path
     ):
-        """DEFECT, pinned as-is: ``batch_processor.py:242``.
-
-        ``process_batch_from_directory`` accepts ``config_revision`` and forwards
-        its arguments to ``_process_documents`` positionally — ``documents,
-        batch_id, output_prefix, dir_path, config_version, base_dir=dir_path`` —
-        so ``config_revision`` is never passed on and defaults to ``None``. The
-        uploaded object therefore carries ``config-version`` but no
-        ``config-revision``, and the queue processor pins the profile's *current*
-        revision instead of the one the caller asked for.
-
-        The consequence is a silently wrong answer rather than a failure: the run
-        succeeds, and the caller believes they scored revision 7 while the work
-        ran under whatever the profile holds now. The manifest path, asserted
-        directly above, forwards it correctly, which is what makes this a defect
-        and not a design decision.
-
-        When it is fixed, this test fails and the expected metadata becomes the
-        two-key dict the manifest test asserts.
-        """
+        """A pinned revision reaches the object on the directory path too, so the
+        queue processor runs the revision asked for rather than the profile's
+        current one — the silently wrong answer this path used to give."""
         _write_pdf(tmp_path, "a.pdf")
 
         processor.process_batch_from_directory(
@@ -493,7 +477,8 @@ class TestLocalUploadAndConfigPinning:
         )
 
         assert s3.head_object(Bucket=INPUT_BUCKET, Key="b/a.pdf")["Metadata"] == {
-            "config-version": "tuned-profile"
+            "config-version": "tuned-profile",
+            "config-revision": "7",
         }
 
 
@@ -606,6 +591,50 @@ class TestS3SourceScanAndCopy:
             "config-version": "fresh-profile",
             "config-revision": "3",
         }
+
+    def test_an_s3_uri_batch_stamps_both_profile_and_revision(self, processor, s3):
+        """The S3-URI scan forwards the profile and revision to the copy, so
+        ``--s3-uri`` honours ``--config-profile`` and ``--config-revision``."""
+        s3.put_object(Bucket=SOURCE_BUCKET, Key="in/a.pdf", Body=b"a")
+
+        processor.process_batch_from_s3_uri(
+            f"s3://{SOURCE_BUCKET}/in/",
+            batch_id="b",
+            config_version="tuned-profile",
+            config_revision=7,
+        )
+
+        assert s3.head_object(Bucket=INPUT_BUCKET, Key="b/a.pdf")["Metadata"] == {
+            "config-version": "tuned-profile",
+            "config-revision": "7",
+        }
+
+    def test_process_batch_pins_profile_and_revision_for_an_s3_uri(self, processor, s3):
+        """``process_batch`` is the general entry point, so its S3 branch must
+        forward the pin as the manifest and directory branches do."""
+        s3.put_object(Bucket=SOURCE_BUCKET, Key="in/a.pdf", Body=b"a")
+
+        processor.process_batch(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/",
+            batch_id="b",
+            config_version="tuned-profile",
+            config_revision=7,
+        )
+
+        assert s3.head_object(Bucket=INPUT_BUCKET, Key="b/a.pdf")["Metadata"] == {
+            "config-version": "tuned-profile",
+            "config-revision": "7",
+        }
+
+    def test_number_of_files_caps_an_s3_uri_batch(self, processor, s3):
+        for name in ("a", "b", "c"):
+            s3.put_object(Bucket=SOURCE_BUCKET, Key=f"in/{name}.pdf", Body=b"x")
+
+        result = processor.process_batch(
+            s3_uri=f"s3://{SOURCE_BUCKET}/in/", batch_id="b", number_of_files=2
+        )
+
+        assert len(result["document_ids"]) == 2
 
     def test_a_copy_without_a_profile_keeps_the_source_metadata(self, processor, s3):
         s3.put_object(

@@ -22,7 +22,8 @@ Design notes (see scratch/assessment-ocr-grounding-plan.md):
 - **explainability_info contract:** the grounded box *replaces* the contents of the
   existing ``geometry`` array (same shape, ``[{boundingBox:{left,top,width,height},
   page}]``, 0-1, 1-indexed page). Two additive keys are written on the field
-  assessment: ``geometry_source`` ("ocr" | "ocr-paragraph" | "llm") and, when a
+  assessment: ``geometry_source`` ("ocr" | "ocr-paragraph" | "ocr-normalized" |
+  "ocr-fuzzy" | "ocr-weak" | "llm") and, when a
   matched line carries OCR confidence, ``ocr_confidence`` (0-1). The LLM
   ``confidence`` / ``confidence_reason`` are never overwritten, so HITL thresholds
   and ``confidence_threshold_alerts`` are unaffected.
@@ -49,12 +50,50 @@ _LEVENSHTEIN_MATCH_THRESHOLD = 0.8
 # Keeps unions tight; multi-line addresses/cells are typically 2-4 lines.
 _MAX_SPAN_LINES = 6
 
+#: Separator punctuation collapsed to a space *inside* a string before matching.
+#:
+#: The defect this closes is in the SPAN tier rather than in anything about lists
+#: (#1520). A value written across two OCR lines carries a separator **at the line
+#: break that the page does not have**: the document reads ``"510 W. 24th Street,
+#: #2"`` then ``"Sioux Falls, SD 57105"``, and extraction returns the two joined by
+#: ``", "``. :func:`_collect_span_candidates` joins consecutive lines with a single
+#: space and requires exact equality, so that one extra comma defeats the span and
+#: the field falls back to whatever fragment matched — measured cases include a box
+#: on the OCR line ``"1"`` for a full street address and on ``"A."`` for a thesis
+#: title. Collapsing the separators on both sides makes the two agree.
+#:
+#: ⚠️ **Only ``,`` and ``;``, and the exclusions are measured rather than cautious.**
+#: Adding ``/`` and ``|`` was tried over the same corpus and is worse on both counts:
+#: it loses a box, and it moves five date boxes to a *different* rendering of the
+#: same date (two of them onto another page), because ``/`` is the separator
+#: :func:`_value_variants` builds its ``%m/%d/%Y`` forms from — so stripping it lets
+#: a reformatted variant outrank the line carrying the value verbatim. ``/`` is also
+#: how a model composes a label that is nowhere on the page (``"Request/Approval"``,
+#: ``"Yes/No"``), and giving those a box is the #1519 harm rather than a fix.
+#:
+#: ⚠️ **The trailing ``\s`` is the load-bearing part, not a tidiness detail.** A
+#: separator a model inserted at a join is followed by whitespace (``", "``); one
+#: *inside* a token is digit grouping or OCR noise and must be left alone. Collapsing
+#: those too costs 60 boxes on a deliberately-garbled OCR corpus: the line
+#: ``"2,6,6914"`` is a mangled ``"2,669.14"`` that the Levenshtein tier matches at
+#: 0.875, and substituting a space **adds a character that was never there**, pushing
+#: the character distance past the threshold. Those boxes were correct — they sat on
+#: the amount — so the narrower rule keeps a tier this one has no business touching.
+#:
+#: This runs on **both** an extracted value and an OCR line, since one function
+#: normalizes both. It can therefore only make the two *agree* about punctuation
+#: they already differ on; it never adds text to either side.
+_INTERNAL_SEPARATORS = re.compile(r"[,;]+\s")
+
 
 def _normalize(text: Any) -> str:
-    """Casefold, collapse whitespace, and strip surrounding punctuation."""
+    """Casefold, collapse separators and whitespace, strip surrounding punctuation."""
     if text is None:
         return ""
     s = str(text).casefold()
+    # Internal separator punctuation -> space, so a value and the OCR line it came
+    # from compare equal when only their separators differ (see the constant).
+    s = _INTERNAL_SEPARATORS.sub(" ", s)
     # Collapse all whitespace runs to single spaces.
     s = re.sub(r"\s+", " ", s).strip()
     # Strip leading/trailing punctuation that commonly differs between an
@@ -166,6 +205,68 @@ def _levenshtein_sim(a: str, b: str) -> float:
         return fuzz_score(a, b)
     except Exception:  # noqa: BLE001 - keep grounding resilient if eval is absent
         return 0.0
+
+
+def _stripped_len(text: str) -> Optional[int]:
+    """Length of ``text`` after the stripping :func:`fuzz_score` applies.
+
+    Split out so a caller sweeping many lines against ONE value can compute the
+    value's length once instead of per line — see the ``a_stripped_len`` argument
+    of :func:`_levenshtein_can_reach`. None when the evaluation module is absent,
+    which callers must read as "cannot bound" rather than as a length of zero.
+    """
+    try:
+        from idp_common.evaluation.text_matching import strip_punctuation_space
+
+        return len(strip_punctuation_space(text))
+    except Exception:  # noqa: BLE001 - keep grounding resilient if eval is absent
+        return None
+
+
+def _levenshtein_can_reach(
+    a: str, b: str, threshold: float, a_stripped_len: Optional[int] = None
+) -> bool:
+    """Could character similarity between ``a`` and ``b`` reach ``threshold``?
+
+    An **exact** bound, not a heuristic, so skipping on a False answer cannot
+    change any result. :func:`fuzz_score` is ``1 - distance / max(len)`` over
+    punctuation-stripped strings, and Levenshtein distance is at least the
+    difference in length, so::
+
+        similarity <= 1 - |la - lb| / max(la, lb) == min(la, lb) / max(la, lb)
+
+    When that ceiling is below the threshold the O(n·m) dynamic program cannot
+    produce a match and is pure cost. It is computed over the SAME stripping
+    ``fuzz_score`` applies, because stripping changes both lengths and a bound
+    taken before it is not a bound after it.
+
+    Why it is worth having: this sweep runs whenever no whole-string candidate
+    exists, and #1519 made that far more common by stopping a ``_TIER_WEAK_PARTIAL``
+    fragment from short-circuiting it. Reaching the verdict "nothing here resembles
+    this value" then means a full DP against every line on the page, for every long
+    value. Measured over 50 real sections, grounding went from 4.6s to 25.4s with
+    98% of it inside ``fuzz_score`` at 165M inner comparisons; with this guard it is
+    0.5s and the grounding results are identical. That cost lands in the Assessment
+    Lambda, which has a wall-clock budget, so leaving it would trade wrong boxes for
+    unscored rows.
+
+    Returns True when the bound cannot be computed, so a missing evaluation
+    module leaves behaviour unchanged rather than silently narrowing the tier.
+    """
+    if not a or not b:
+        return False
+    try:
+        from idp_common.evaluation.text_matching import strip_punctuation_space
+
+        la = _stripped_len(a) if a_stripped_len is None else a_stripped_len
+        lb = len(strip_punctuation_space(b))
+    except Exception:  # noqa: BLE001 - keep grounding resilient if eval is absent
+        return True
+    if la is None:
+        return True
+    if not la or not lb:
+        return False
+    return min(la, lb) / max(la, lb) >= threshold
 
 
 def _infer_hint(value: Any) -> str:
@@ -295,6 +396,146 @@ def _type_equal(value: Any, line_text: Any, hint: str) -> bool:
     return False
 
 
+def _is_digit(ch: str) -> bool:
+    """An ASCII digit. ``str.isdigit`` also accepts superscripts such as ``"²"``."""
+    return "0" <= ch <= "9"
+
+
+#: A date written with slashes: two slashes (``12/17/2024``, ``2024/12/17``), or
+#: one slash beside a four-digit year (``12/2024``). Matched against the whole
+#: maximal run of digits and slashes around a slash.
+_SLASH_DATE = re.compile(r"\d{1,4}/\d{1,2}/\d{1,4}|\d{1,2}/\d{4}|\d{4}/\d{1,2}")
+#: The longest such run (``2024/12/17``); a longer run is not a date.
+_SLASH_DATE_MAX_LEN = 10
+
+
+def _slash_in_date(text: str, i: int) -> bool:
+    """Is the slash at ``text[i]`` part of a date, rather than a ratio or fraction?
+
+    Only a date's slash joins digits into one run. ``120/80`` (blood pressure),
+    ``75/100`` (a score), ``10/325`` (a dose) and ``3/12`` (page 3 of 12) print
+    numbers that are values in their own right. The scan is bounded by the
+    longest date, so it costs the same however long the line is.
+    """
+    lo = i
+    while lo > 0 and i - lo <= _SLASH_DATE_MAX_LEN and text[lo - 1] in "0123456789/":
+        lo -= 1
+    hi = i + 1
+    while (
+        hi < len(text) and hi - i <= _SLASH_DATE_MAX_LEN and text[hi] in "0123456789/"
+    ):
+        hi += 1
+    run = text[lo:hi]
+    return len(run) <= _SLASH_DATE_MAX_LEN and _SLASH_DATE.fullmatch(run) is not None
+
+
+def _joins_digit(text: str, i: int, step: int) -> bool:
+    """Does the character at ``text[i]`` continue a digit run, reading by ``step``?
+
+    True for a digit, and for a decimal point, thousands comma or date slash whose
+    next character in the same direction is a digit (``"75"`` in ``"75.34"``,
+    ``"1,275"`` or the date ``"12/17/2024"``). Anything else — space, ``$``,
+    ``%``, a unit, a sign, a hyphen, a colon, a ratio's slash, closing punctuation,
+    the end of the line — is a token boundary.
+
+    A date's slash is there because a date component is part of a date, not a
+    number printed on its own: without it a value with its decimals dropped (``17``
+    for ``$17.49``) found a "whole" ``17`` inside ``12/17/2024``, which then
+    outranked the line that really holds the amount. Only a date's slash joins —
+    see :func:`_slash_in_date`.
+
+    One exception, reading rightwards: a comma followed by one or two digits and
+    then a non-digit is a **decimal comma** (``"1250,00"``), since a thousands group
+    is always three digits. The integer part ends there, so it is a boundary. No
+    surface form of a number renders a decimal comma, so for a European amount the
+    integer part is the only form that can match at all, and demoting it would
+    hand the box to any other line printing that integer.
+    """
+    if not 0 <= i < len(text):
+        return False
+    ch = text[i]
+    if _is_digit(ch):
+        return True
+    j = i + step
+    if not (ch in ".,/" and 0 <= j < len(text) and _is_digit(text[j])):
+        return False
+    if ch == "/":
+        return _slash_in_date(text, i)
+    if ch == "," and step > 0:
+        run = 0
+        while j + run < len(text) and _is_digit(text[j + run]):
+            run += 1
+        return run not in (1, 2)
+    return True
+
+
+def _containing_number(text: str, start: int, end: int) -> Tuple[int, int]:
+    """Bounds of the run of digits joined by ``.`` or ``,`` holding ``[start:end]``."""
+    while start > 0 and (
+        _is_digit(text[start - 1])
+        or (text[start - 1] in ".," and start >= 2 and _is_digit(text[start - 2]))
+    ):
+        start -= 1
+    while end < len(text) and (
+        _is_digit(text[end])
+        or (text[end] in ".," and end + 1 < len(text) and _is_digit(text[end + 1]))
+    ):
+        end += 1
+    return start, end
+
+
+def _only_inside_longer_number(
+    norm_variant: str, norm_text: str, value_number: Optional[float] = None
+) -> bool:
+    """True when every occurrence of a numeric variant in a line is digit-embedded.
+
+    The question is whether the line prints the number as a whole token, or only
+    contains its digits inside a longer number. An occurrence counts as whole when
+    neither neighbour continues a digit run (see :func:`_joins_digit`); one whole
+    occurrence anywhere in the line is enough. A side is only checked where the
+    variant itself ends in a digit, so a sign or symbol that is part of the variant
+    is never mistaken for a neighbour. Callers apply this to NUMBER values only.
+
+    An occurrence also counts as whole when the longer number around it is the
+    value itself written with more zeros (``"075.00"``, ``"75.000"``, or an item
+    number ``"0075"`` for 75), compared via ``value_number`` (unsigned, as the
+    unsigned variant already matches a value printed without its sign). Only a
+    number joined by ``.`` or ``,`` is read this way, so a date component still
+    counts as embedded.
+    """
+    if not norm_variant:
+        return False
+    check_left = _is_digit(norm_variant[0])
+    check_right = _is_digit(norm_variant[-1])
+    # The skip below relies on the longer number around an occurrence holding only
+    # digits, "." and ",", which holds only when the variant itself does ("10 10"
+    # can recur just past the number around its first occurrence).
+    can_skip = all(_is_digit(c) or c in ".," for c in norm_variant)
+    start = norm_text.find(norm_variant)
+    if start == -1:
+        return False
+    while start != -1:
+        end = start + len(norm_variant)
+        left_joined = check_left and _joins_digit(norm_text, start - 1, -1)
+        right_joined = check_right and _joins_digit(norm_text, end, 1)
+        if not left_joined and not right_joined:
+            return False
+        resume = start + 1
+        if value_number is not None:
+            lo, hi = _containing_number(norm_text, start, end)
+            if hi - lo > len(norm_variant) and _parse_number(norm_text[lo:hi]) == abs(
+                value_number
+            ):
+                return False
+            # Every later occurrence inside the same longer number is joined on
+            # its left and has the same number around it, so it cannot decide
+            # anything; skipping it keeps a long digit run linear, not quadratic.
+            if can_skip:
+                resume = max(resume, hi)
+        start = norm_text.find(norm_variant, resume)
+    return True
+
+
 def load_page_ocr_data(
     pages: Dict[str, Any], page_ids: List[str], page_offset: int = 0
 ) -> Dict[int, Dict[str, Any]]:
@@ -391,6 +632,8 @@ def _line_box(line: Dict[str, Any]) -> Optional[Dict[str, float]]:
 # that matched, then disambiguates ties spatially. Ordering rationale:
 #   EXACT     - line text equals the value
 #   SUBSTRING - value contained in a single line (whole value covered)
+#   SUBSTRING_EMBEDDED - a NUMBER contained in a single line only inside a longer
+#               digit run ("75" in "08337510"); see _TIER_SUBSTRING_EMBEDDED
 #   SPAN      - value reconstructed by joining consecutive lines (whole value covered)
 #   PARTIAL   - a single line is a fragment of the value (partial coverage)
 #   FUZZY     - token-overlap only
@@ -398,22 +641,93 @@ def _line_box(line: Dict[str, Any]) -> Optional[Dict[str, float]]:
 # value grounds to the unioned span rather than to one of its individual fragments.
 _TIER_EXACT = 1
 _TIER_SUBSTRING = 2
-_TIER_SPAN = 3
+#: A NUMBER found in a line only as part of a longer digit run — ``"75"`` inside
+#: the invoice id ``"08337510"``, ``"6.0"`` inside ``"126.00 total"`` (#1565).
+#:
+#: Number values are searched in several surface forms (``75.0`` is also tried as
+#: ``"75"`` and ``"75.00"``), and a short form is contained by coincidence in any
+#: longer number. Ranked at ``_TIER_SUBSTRING``, such a hit would tie with the line
+#: that genuinely prints the value, and which box won would be decided by reading
+#: order or by proximity to the LLM's estimate rather than by evidence.
+#:
+#: **Demotion by exactly one place, not rejection.** A digit run containing the
+#: value is not always a coincidence: a model that drops the cents (``272243`` for
+#: ``272243.34``) or misreads one digit of a long number still points at the right
+#: line, and that is the case where a box matters most — the value is wrong and the
+#: box is how a reviewer finds out. Rejecting the hit would remove those boxes.
+#: Ranking it immediately below ``_TIER_SUBSTRING`` changes exactly one thing: a
+#: line printing the number as a whole token now beats one where it is embedded.
+#: Every other comparison is as before — this tier sits above SPAN, so the same
+#: sweeps are skipped as for a substring hit, and an embedded hit still supplies
+#: the box wherever it did when nothing better exists.
+_TIER_SUBSTRING_EMBEDDED = 3
+_TIER_SPAN = 4
 # Type-aware equality (date/number/phone parse to the same value) — high
 # precision (both sides must parse), ranks just below direct text coverage and
 # above partial/token/char fuzzy. This is what bridges format reformatting
 # (e.g. 2022-04-04 == 04/04/2022) that text similarity cannot.
-_TIER_TYPED = 4
-_TIER_PARTIAL = 5
-_TIER_FUZZY = 6
+_TIER_TYPED = 5
+_TIER_PARTIAL = 6
+_TIER_FUZZY = 7
 # Character-level Levenshtein near-miss (OCR noise) — last resort.
-_TIER_LEVENSHTEIN = 7
+_TIER_LEVENSHTEIN = 8
+# A substring match covering less than _PARTIAL_MIN_COVERAGE of the value — a
+# FRAGMENT. Ranked last, BELOW the whole-string fuzzy tiers, because a line
+# accounting for a tenth of a value is weaker evidence of where that value sits
+# than a line resembling the whole of it (#1519).
+_TIER_WEAK_PARTIAL = 9
+
+#: Coverage below which a substring match is demoted to ``_TIER_WEAK_PARTIAL``
+#: rather than ranked as a real ``_TIER_PARTIAL`` hit (#1519).
+#:
+#: ``_TIER_PARTIAL`` asked only "is this line a substring of the value", with no
+#: floor, and that caused two separate failures. A fragment was **accepted** as the
+#: value's location — a box sat on a single digit for a form id, on a single letter
+#: for an author name, and on a different author entirely. And because any
+#: candidate at all short-circuits the fuzzy and Levenshtein sweeps, a fragment also
+#: **suppressed** the match that was right: where OCR misread one character inside a
+#: sentence, the 10-character column header ``"IDENTIFIED"`` (29% coverage) won over
+#: the correct whole line at 0.9706 similarity, which was never computed.
+#:
+#: **Demotion, not rejection — and that choice is measured.** Rejecting a sub-floor
+#: match looks safer and does more harm than good. Over 265 populated non-list
+#: fields across five real documents, 83 ground via ``_TIER_PARTIAL``; of the 62
+#: below half coverage, **48 matched a line whose value genuinely is on the page**,
+#: spread across several lines (a 3-line address, a specification assembled from
+#: consecutive rows), and only 14 were coincidences. Rejecting them all removes 14
+#: wrong boxes at the cost of 48 right ones. No absolute-size rule does better: the
+#: best tested — at least 2 tokens and 8 characters — reaches exactly break-even, 8
+#: removed for 8 lost, because short real content (``"Carbon plate"``, ``"12
+#: inches"``) is lexically indistinguishable from short junk (``"UN 173"``). The
+#: property that separates them is spatial, not lexical.
+#:
+#: So a fragment is kept and ranked **last** instead. A whole-string match outranks
+#: it where one exists, and it still supplies the only box where one does not.
+#: Measured over 50 sections through the full grounding path: **no box is lost**, 10
+#: move to a better match, and the rest are unchanged.
+#:
+#: 0.5 is where the measured distribution splits. At or above it, matches are
+#: correct prefixes and suffixes of a value spanning two OCR lines — ``"PO Box 307,
+#: Shortland Street"`` for a value continuing ``", Auckland 1140"``. Below it they
+#: are fragments, which may still be the best available evidence but should never
+#: beat a line resembling the whole value.
+_PARTIAL_MIN_COVERAGE = 0.5
 
 # geometry_source tags for the format-bridged tiers (distinct from "ocr" so they
 # are auditable). _TIER_TYPED / variant matches -> "ocr-normalized";
 # _TIER_LEVENSHTEIN -> "ocr-fuzzy".
 _SOURCE_NORMALIZED = "ocr-normalized"
 _SOURCE_FUZZY = "ocr-fuzzy"
+#: Provenance for a ``_TIER_WEAK_PARTIAL`` box — the matched line covers less than
+#: half the value, so this is the weakest evidence of location the ladder emits and
+#: is only ever used when nothing better matched (#1519).
+#:
+#: It exists to make the box **auditable in an artifact**. Without a distinct tag a
+#: fragment-based box is recorded as plain ``"ocr"``, identical to a verbatim match,
+#: so neither a reviewer nor a later measurement can tell how much of the value a
+#: box actually rests on. Counting this value over a corpus is how to answer "how
+#: many boxes are standing on a fragment" without re-deriving the tiers.
+_SOURCE_WEAK = "ocr-weak"
 
 
 def _dedup_norm_variants(variants: Optional[List[str]], norm_value: str) -> List[str]:
@@ -460,6 +774,12 @@ def _ensure_page_indexes(page_data: Dict[str, Any]) -> Dict[str, List[Dict[str, 
         else []
     )
     page_data["__norm_lines_cache__"] = norm_lines
+    # Token sets per line, cached for the same reason the normalized lines are: the
+    # token-overlap sweep runs once per VALUE, so recomputing them there is
+    # O(values x lines). That sweep used to be reached rarely — any candidate at all
+    # short-circuited it — and #1519 made it reachable for every value whose best
+    # match is a fragment, which is a large minority of fields.
+    page_data["__norm_tokens_cache__"] = [_tokens(nt) for nt, _ln in norm_lines]
     idx = {}
     for nt, ln in norm_lines:
         if nt:
@@ -483,7 +803,13 @@ def _collect_candidates_in_page(
     Matching layers (best tier wins; the caller filters to the most precise):
       1. EXACT/SUBSTRING/PARTIAL on the value AND its format variants (``norm_variants``)
          — variants bridge reformatting (e.g. "04/04/2022" for value "2022-04-04").
-         A variant hit is tagged ``ocr-normalized``.
+         A variant hit is tagged ``ocr-normalized``. A substring match covering
+         less than ``_PARTIAL_MIN_COVERAGE`` of the value is a FRAGMENT and is
+         recorded as ``_TIER_WEAK_PARTIAL`` — still a candidate, but ranked below
+         every whole-string tier, and no longer able to short-circuit the sweeps
+         below (#1519). Read that constant before changing either. A NUMBER found
+         only inside a longer digit run is ``_TIER_SUBSTRING_EMBEDDED``, one place
+         below a substring hit on a whole numeric token (#1565).
       2. SPAN — value text reconstructed across consecutive lines.
       3. TYPED — date/number/phone parse to the SAME logical value (``hint``); the
          robust bridge for reformatting that text similarity misses. Tagged
@@ -511,6 +837,7 @@ def _collect_candidates_in_page(
     norm_lines = page_data.get("__norm_lines_cache__") or []
 
     candidates: List[Tuple[int, Dict[str, Any], str, Optional[float]]] = []
+    value_number = _parse_number(raw_value) if hint == HINT_NUMBER else None
 
     for norm_text, line in norm_lines:
         if not norm_text:
@@ -521,9 +848,26 @@ def _collect_candidates_in_page(
             if norm_text == nv:
                 tier = _TIER_EXACT
             elif nv in norm_text:
-                tier = _TIER_SUBSTRING
+                # A number found only inside a longer digit run is demoted one
+                # place, not rejected — see _TIER_SUBSTRING_EMBEDDED (#1565). A
+                # longer number that is the value with more zeros ("075.00" for
+                # 75) is the value, so it keeps the substring tier.
+                tier = (
+                    _TIER_SUBSTRING_EMBEDDED
+                    if hint == HINT_NUMBER
+                    and _only_inside_longer_number(nv, norm_text, value_number)
+                    else _TIER_SUBSTRING
+                )
             elif norm_text in nv:
-                tier = _TIER_PARTIAL
+                # A line covering less than half the value is a fragment. It is
+                # DEMOTED rather than rejected — see _TIER_WEAK_PARTIAL — so a
+                # whole-string match can outrank it where one exists, and it still
+                # supplies the only box where one does not.
+                tier = (
+                    _TIER_PARTIAL
+                    if len(norm_text) >= _PARTIAL_MIN_COVERAGE * len(nv)
+                    else _TIER_WEAK_PARTIAL
+                )
             else:
                 continue
             if best_tier is None or tier < best_tier:
@@ -548,35 +892,66 @@ def _collect_candidates_in_page(
 
     # Tier-aware early-out. The caller keeps only the MOST PRECISE tier that
     # matched, so a pass that can only produce a WORSE tier than what we already
-    # have is pure waste. Tiers: EXACT=1 < SUBSTRING=2 < SPAN=3 < TYPED=4 <
-    # PARTIAL=5 < FUZZY=6 < LEVENSHTEIN=7.
-    #   • SPAN (3): skip only if we already have EXACT/SUBSTRING (≤ SPAN). A mere
-    #     PARTIAL/TYPED (>SPAN) must NOT skip it — a multi-line span can still win.
-    #   • FUZZY/LEVENSHTEIN (6/7): skip whenever ANY candidate exists — they can
-    #     never beat tiers 1-5. Skipping these O(lines) sweeps is the bulk of the
-    #     speed-up for real documents.
+    # have is pure waste. Tiers: EXACT=1 < SUBSTRING=2 < SUBSTRING_EMBEDDED=3 <
+    # SPAN=4 < TYPED=5 < PARTIAL=6 < FUZZY=7 < LEVENSHTEIN=8 < WEAK_PARTIAL=9.
+    #   • SPAN (4): skip only if we already have EXACT/SUBSTRING/SUBSTRING_EMBEDDED
+    #     (≤ SPAN). A mere PARTIAL/TYPED/WEAK_PARTIAL (>SPAN) must NOT skip it — a
+    #     multi-line span can still win.
+    #   • FUZZY/LEVENSHTEIN (7/8): skip whenever a candidate BETTER THAN FUZZY
+    #     exists — those they can never beat. A ``_TIER_WEAK_PARTIAL`` (9)
+    #     candidate must fall through to them, since they outrank it; that is the
+    #     substance of #1519 and the condition below is written on the tier for
+    #     exactly this reason. Skipping these O(lines) sweeps where they cannot
+    #     win is still the bulk of the speed-up for real documents.
     best_so_far = min((t for t, *_ in candidates), default=None)
     if best_so_far is None or best_so_far > _TIER_SPAN:
         # Multi-line spans (value == concatenation of consecutive lines).
         candidates.extend(_collect_span_candidates(norm_value, norm_lines, page_num))
         best_so_far = min((t for t, *_ in candidates), default=None)
 
-    if candidates:
-        # Have at least a PARTIAL/TYPED/SPAN hit → fuzzy/Levenshtein can't improve.
+    if candidates and min(t for t, *_ in candidates) < _TIER_FUZZY:
+        # Have a PARTIAL-or-better hit → fuzzy/Levenshtein cannot improve on it.
+        #
+        # ⚠️ The condition is on the tier, not merely on ``candidates`` being
+        # non-empty, and that distinction is the whole of #1519. A bare ``if
+        # candidates`` let a FRAGMENT short-circuit these sweeps: a line covering
+        # 29% of the value returned here, and the line resembling the whole of it
+        # at 0.9706 similarity was never computed, so the box landed on a column
+        # header. A ``_TIER_WEAK_PARTIAL`` candidate must therefore fall through —
+        # it is kept, and a whole-string match simply outranks it.
         return candidates
 
-    # Token-overlap fuzzy.
-    for norm_text, line in norm_lines:
+    # Token-overlap fuzzy. Line token sets come from the page cache (see
+    # _ensure_page_indexes) rather than being rebuilt per value.
+    line_tokens = page_data.get("__norm_tokens_cache__") or [
+        _tokens(nt) for nt, _ln in norm_lines
+    ]
+    for (norm_text, line), tokens in zip(norm_lines, line_tokens):
         if not norm_text:
             continue
-        if _jaccard(value_tokens, _tokens(norm_text)) >= _FUZZY_MATCH_THRESHOLD:
+        if _jaccard(value_tokens, tokens) >= _FUZZY_MATCH_THRESHOLD:
             match = _build_match(line, page_num, _TIER_FUZZY)
             if match is not None:
                 candidates.append(match)
 
-    # Character-level Levenshtein near-miss (last resort; OCR noise).
+    # Character-level Levenshtein near-miss (last resort; OCR noise). The value's
+    # stripped length is computed ONCE here: it is the same for every line, and
+    # recomputing it inside the loop put two regex passes over the value on every
+    # line of the page — in the loop the guard exists to make cheap.
+    value_stripped_len = _stripped_len(norm_value)
     for norm_text, line in norm_lines:
         if not norm_text:
+            continue
+        # O(1) exact ceiling before the O(n·m) dynamic program — see
+        # _levenshtein_can_reach. This sweep reaches far more values since the
+        # _PARTIAL_MIN_COVERAGE floor stopped fragments from short-circuiting it,
+        # and the DP against every line on a page is what made that expensive.
+        if not _levenshtein_can_reach(
+            norm_value,
+            norm_text,
+            _LEVENSHTEIN_MATCH_THRESHOLD,
+            a_stripped_len=value_stripped_len,
+        ):
             continue
         if _levenshtein_sim(norm_value, norm_text) >= _LEVENSHTEIN_MATCH_THRESHOLD:
             match = _build_match(line, page_num, _TIER_LEVENSHTEIN, _SOURCE_FUZZY)
@@ -646,11 +1021,18 @@ def _build_match(
 
     ``source_override`` tags format-bridged matches ("ocr-normalized"/"ocr-fuzzy")
     distinctly; otherwise provenance is "ocr"/"ocr-paragraph" from the line.
+
+    A ``_TIER_WEAK_PARTIAL`` match is always tagged ``"ocr-weak"``, overriding both,
+    because how little of the value the box rests on is the more important fact
+    about it than which surface form matched — and it is the only way to tell such
+    a box from a verbatim one in a stored artifact.
     """
     box = _line_box(line)
     if box is None:
         return None
-    if source_override is not None:
+    if tier == _TIER_WEAK_PARTIAL:
+        source = _SOURCE_WEAK
+    elif source_override is not None:
         source = source_override
     else:
         source = "ocr-paragraph" if line.get("geometrySource") == "paragraph" else "ocr"
@@ -801,6 +1183,48 @@ def match_value_to_geometry(
     # span beats fuzzy), so a high-precision hit is never displaced by fuzzy noise.
     best_tier = min(tier for tier, *_ in candidates)
     best = [c for c in candidates if c[0] == best_tier]
+
+    # At the best matching tier the tie is about provenance rather than precision, so
+    # prefer the line carrying the value as extracted over a format-bridged rendering
+    # of it. Without this the tie-break below is positional, and collapsing a
+    # separator can promote a variant to EXACT alongside the verbatim hit: a
+    # ``"4-15-11"`` whose own line sits on page 2 is then grounded on page 1's
+    # ``"APR 15 2011"`` stamp, which reading order reaches first (#1520).
+    #
+    # ⚠️ **Never when a row mapping is in play.** With ``occurrence_index`` set, row
+    # *i* is the *i*-th candidate in reading order, so the position in this list IS
+    # the row correspondence — and filtering by provenance destroys it. A column
+    # where one occurrence is rendered verbatim and the others only match through a
+    # variant then narrows to the single verbatim candidate, the ``len(best) == 1``
+    # return below fires, and **every row is handed the same box**; with several
+    # survivors, row *i* indexes a pool that no longer contains row *i*. Row order
+    # already disambiguates those rows, so the preference has nothing to add there —
+    # it exists for the scalar case, which passes no index.
+    #
+    # ⚠️ **Nor when a spatial signal exists.** Under ``llm_grounded`` the model's own
+    # box arrives as ``preferred_geometry`` and the branch below picks the candidate
+    # nearest it. Filtering first could discard a separator-bridged candidate sitting
+    # exactly where the model said the value was, in favour of a verbatim one
+    # elsewhere on the page — which is the opposite of what that signal is for. So the
+    # preference runs only when neither disambiguator is present, which is the
+    # ``ocr_only`` scalar case it was measured on.
+    #
+    # ⚠️ **It settles provenance, not candidacy — and needs the demotion above to
+    # be sound.** For a number the primary rendering is arbitrary: ``str(6.0)`` is
+    # ``"6.0"``, a substring of ``"126.00 total"``. Preferring it over a variant
+    # would favour a coincidence if such a hit still ranked equal to the line holding
+    # the value, which is what the embedded-number demotion prevents (#1565) — a
+    # short number joined to further digits ranks below a whole numeric token, so it
+    # is no longer in the tie this block resolves. Bounding the preference from this
+    # side instead was tried twice and measured net-negative over an
+    # 18,177-section corpus: an EXACT-tier gate cost 15 correct rate boxes, and a
+    # token-boundary rejection cost 73 account numbers the model had transcribed one
+    # digit short — where the box was on the right field and the highlight is what
+    # would have caught the error. Demotion, not rejection, is why those keep a box.
+    if occurrence_index is None and ref is None:
+        verbatim_at_tier = [c for c in best if c[2] != _SOURCE_NORMALIZED]
+        if verbatim_at_tier:
+            best = verbatim_at_tier
 
     if len(best) == 1:
         _, geometry, source, ocr_conf = best[0]

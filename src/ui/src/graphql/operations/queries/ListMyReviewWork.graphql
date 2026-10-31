@@ -1,0 +1,39 @@
+query ListMyReviewWork($limit: Int, $nextToken: String) {
+  listMyReviewWork(limit: $limit, nextToken: $nextToken) {
+    items {
+      objectKey
+      cycleId
+      profile
+      queue
+      priority
+      state
+      reviewStatus
+      enqueuedAt
+      reasons {
+        kind
+        sectionId
+        field
+        label
+        score
+        threshold
+      }
+      reasonCount
+      sections
+      ownerEmail
+      claimedAt
+      leaseExpiresAt
+      isMine
+      hasDraft
+      draftUpdatedAt
+      draftUpdatedBy
+      escalated
+      escalationNote
+      disposition
+      disposedBy
+      disposedAt
+      rejectReason
+      version
+    }
+    nextToken
+  }
+}

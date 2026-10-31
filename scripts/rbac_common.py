@@ -23,6 +23,7 @@ read (the deploy-account creds are enough).
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 # Prefer AWS CLI v2 if installed at the standard location (the ambient `aws` on
@@ -31,6 +32,29 @@ from pathlib import Path
 AWS_BIN = os.environ.get("AWS_CLI_BIN") or (
     "/usr/local/bin/aws" if Path("/usr/local/bin/aws").exists() else "aws"
 )
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def template_group_names(template_path=None):
+    """Every Cognito group ``template.yaml`` creates, ``Admin`` first, then sorted.
+
+    The one place harnesses get their role list from, so a new group joins every
+    matrix and session tool without anyone editing a hardcoded list. It reuses
+    ``generate_api_rbac_manifest.cognito_group_names``, the extraction the
+    dispatcher's manifest is built with, loaded by path.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_rbac_manifest_generator",
+        _REPO_ROOT / "scripts" / "sdlc" / "generate_api_rbac_manifest.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    text = Path(template_path or _REPO_ROOT / "template.yaml").read_text()
+    return sorted(module.cognito_group_names(text), key=lambda n: (n != "Admin", n))
+
 
 # The one auth flow the token helpers add (and always remove) on the UI app
 # client so admin-initiate-auth can mint a token with just a username/password.
@@ -327,12 +351,20 @@ def delete_cognito_user(ctx, email):
     )
 
 
-def get_id_token(ctx, email, password):
-    """Mint a Cognito ID token via ADMIN_USER_PASSWORD_AUTH. The app client must
-    already have ALLOW_ADMIN_USER_PASSWORD_AUTH enabled (see enable_admin_auth).
-    The ID token is the bearer the API Gateway COGNITO_USER_POOLS authorizer
-    expects in the raw `Authorization` header (no `Bearer ` prefix)."""
-    return aws(
+# UpdateUserPoolClient is eventually consistent: the client describes with the
+# new flow at once, but AdminInitiateAuth can still answer "Auth flow not
+# enabled for this client" for a few seconds after enable_admin_auth. The
+# nightly of 2026-10-29 failed Step 12 on exactly that, on the first token
+# minted, with every authorization assertion still unrun. Only that one
+# message is retried — anything else (a wrong password, a missing user) is a
+# real failure and raises at once — and the wait is bounded, so a flow that
+# genuinely never took effect still fails, just later.
+AUTH_FLOW_NOT_PROPAGATED = "Auth flow not enabled for this client"
+AUTH_FLOW_RETRY_DELAYS = (1, 2, 4, 8, 15, 30)
+
+
+def _admin_initiate_auth(ctx, email, password, query, *extra):
+    args = (
         "cognito-idp",
         "admin-initiate-auth",
         "--user-pool-id",
@@ -344,10 +376,29 @@ def get_id_token(ctx, email, password):
         "--auth-parameters",
         f"USERNAME={email},PASSWORD={password}",
         "--query",
-        "AuthenticationResult.IdToken",
-        "--output",
-        "text",
-        region=ctx["region"],
+        query,
+        *extra,
+    )
+    for delay in (*AUTH_FLOW_RETRY_DELAYS, None):
+        try:
+            return aws(*args, region=ctx["region"])
+        except RuntimeError as exc:
+            if delay is None or AUTH_FLOW_NOT_PROPAGATED not in str(exc):
+                raise
+            print(
+                f"  auth flow not yet active on {ctx['client']}; retrying in {delay}s"
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def get_id_token(ctx, email, password):
+    """Mint a Cognito ID token via ADMIN_USER_PASSWORD_AUTH. The app client must
+    already have ALLOW_ADMIN_USER_PASSWORD_AUTH enabled (see enable_admin_auth).
+    The ID token is the bearer the API Gateway COGNITO_USER_POOLS authorizer
+    expects in the raw `Authorization` header (no `Bearer ` prefix)."""
+    return _admin_initiate_auth(
+        ctx, email, password, "AuthenticationResult.IdToken", "--output", "text"
     )
 
 
@@ -357,21 +408,7 @@ def get_auth_result(ctx, email, password):
     need the AccessToken (for global-sign-out revocation checks) alongside the
     IdToken (the API bearer). Returns the AuthenticationResult dict, or {} on
     failure."""
-    res = aws(
-        "cognito-idp",
-        "admin-initiate-auth",
-        "--user-pool-id",
-        ctx["user_pool"],
-        "--client-id",
-        ctx["client"],
-        "--auth-flow",
-        "ADMIN_USER_PASSWORD_AUTH",
-        "--auth-parameters",
-        f"USERNAME={email},PASSWORD={password}",
-        "--query",
-        "AuthenticationResult",
-        region=ctx["region"],
-    )
+    res = _admin_initiate_auth(ctx, email, password, "AuthenticationResult")
     return res or {}
 
 

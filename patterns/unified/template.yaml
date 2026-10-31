@@ -38,6 +38,13 @@ Parameters:
   TrackingTable:
     Type: String
 
+  HITLTableName:
+    Type: String
+    Default: ""
+    Description: >-
+      DynamoDB table holding HITL review queue items (idp_common.review_queues).
+      Empty (headless) keeps every profile on the legacy HITL flow.
+
   CustomerManagedEncryptionKeyArn:
     Type: String
 
@@ -298,6 +305,7 @@ Conditions:
   HasCustomExtractionModelARN:
     !Not [!Equals [!Ref CustomExtractionModelARN, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  HasHITLTable: !Not [!Equals [!Ref HITLTableName, ""]]
   IsECRImageScanningEnabled: !Equals [!Ref EnableECRImageScanning, "true"]
   IsPrivateApi: !Equals [!Ref UsePrivateApi, "true"]
   IsMLflowEnabled: !Equals [!Ref EnableMLflow, "true"]
@@ -366,6 +374,7 @@ Resources:
               on_unscannable:
                 type: string
                 enum: ["block", "allow"]
+                enumLabels: { "block": "Block — stop the document (default)", "allow": "Allow — also needs the stack parameter" }
                 default: block
                 title: When a document cannot be scanned
                 description: >-
@@ -415,6 +424,7 @@ Resources:
                 # config stores it (it falls through to the continue path).
                 type: string
                 enum: ["continue", "fail"]
+                enumLabels: { "continue": "Continue with the original document (default)", "fail": "Fail the document" }
                 default: continue
                 description: >-
                   Behavior when the hook errors. `fail` STOPS the execution in a
@@ -513,6 +523,7 @@ Resources:
                   predictable pricing without composing Textract features.
                   'bedrock': LLM-based OCR. 'none': image-only, no OCR.
                 enum: ["textract", "bedrock", "bda", "none"]
+                enumLabels: { "textract": "Amazon Textract (default)", "bedrock": "Bedrock LLM", "bda": "Bedrock Data Automation", "none": "None — images only" }
                 default: "textract"
                 order: 1
               model_id:
@@ -702,6 +713,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -1038,284 +1050,1022 @@ Resources:
             collapsible: true
             defaultExpanded: false
             sectionLabel: Classification
-            description: "Assigns a class to each page/section. LLM-powered classification is skipped when only a single class is defined in the Document Schema (all pages are assigned to that class), or when a document name or page content matches a class's RegEx rule."
+            # Kept to one sentence, matching the other top-level sections. Every
+            # setting below sits inside the call that uses it, so a block the selected
+            # strategy does not run is not shown. docs/classification.md has the detail.
+            #
+            # ⚠️ Do NOT restore the old claim that classification "is skipped when only a
+            # single class is defined, or when a document name matches a RegEx rule".
+            # Under the default `sectionSplitting: llm_determined` a multi-page document is still classified,
+            # because knowing WHAT a packet contains says nothing about WHERE each section
+            # starts.
+            description: "Splits the document into sections and assigns a class to each section. Strategy decides how many model calls are made; each call's settings sit inside it."
             dependsOn: { field: "use_bda", value: false }
-            required:
-              - model
-              - temperature
-              - top_k
-              - top_p
-              - system_prompt
-              - task_prompt
             properties:
-              image:
-                type: object
-                sectionLabel: Image Processing Settings
-                description: Configure image resolution and processing options for image attachments in classification
+              strategy:
+                type: string
+                title: Strategy
+                description: "'Split and classify together' (stored as strategy: combined, the default): one call returns both the section boundaries and the classes — best for single-page documents and short packets. 'Split first, then classify each section' (stored as strategy: split_then_classify): a splitting call first finds the boundaries with no class list in the prompt, then one classification call is made per section — cheaper on long documents with few sections, lets each call use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy) · [How split then classify works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#the-split-then-classify-strategy)"
+                enum: ["combined", "split_then_classify"]
+                enumLabels: { combined: "Split and classify together (one call)", split_then_classify: "Split first, then classify each section" }
+                default: "combined"
                 order: 0
-                properties:
-                  target_width:
-                    type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
-                    minimum: 100
-                    maximum: 3500
-                    order: 0
-                  target_height:
-                    type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
-                    minimum: 100
-                    maximum: 3500
-                    order: 1
-              model:
+              fallback_class:
                 type: string
-                title: Model
-                description: "Model identifier. Select 'LambdaHook' to use a custom Lambda function for inference."
-                enum:
-                  - "LambdaHook"
-                  - !If
-                    - HasCustomClassificationModelARN
-                    - !Ref CustomClassificationModelARN
-                    - !Ref AWS::NoValue
-                  - "us.amazon.nova-lite-v1:0"
-                  - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-2-lite-v1:0"
-                  - "us.amazon.nova-2-lite-v1:0:priority"
-                  - "us.amazon.nova-2-lite-v1:0:flex"
-                  - "global.amazon.nova-2-lite-v1:0"
-                  - "global.amazon.nova-2-lite-v1:0:priority"
-                  - "global.amazon.nova-2-lite-v1:0:flex"
-                  - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  - "us.anthropic.claude-haiku-5-5"
-                  - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                  - "us.anthropic.claude-sonnet-4-6"
-                  - "us.anthropic.claude-sonnet-4-6:1m"
-                  - "us.anthropic.claude-sonnet-5"
-                  - "us.anthropic.claude-sonnet-5:1m"
-                  - "us.anthropic.claude-sonnet-5-5"
-                  - "us.anthropic.claude-opus-4-5-20251101-v1:0"
-                  - "us.anthropic.claude-opus-4-6-v1"
-                  - "us.anthropic.claude-opus-4-6-v1:1m"
-                  - "us.anthropic.claude-opus-4-7"
-                  - "us.anthropic.claude-opus-4-7:1m"
-                  - "us.anthropic.claude-opus-4-8"
-                  - "us.anthropic.claude-opus-4-8:1m"
-                  - "us.anthropic.claude-opus-5"
-                  - "us.anthropic.claude-opus-5:1m"
-                  - "us.anthropic.claude-opus-5-5"
-                  - "us.anthropic.claude-opus-5-5:1m"
-                  - "openai.gpt-5.4"
-                  - "openai.gpt-5.5"
-                  - "openai.gpt-5.6-sol"
-                  - "openai.gpt-5.6-terra"
-                  - "openai.gpt-5.6-luna"
-                  - "eu.amazon.nova-lite-v1:0"
-                  - "ca.amazon.nova-lite-v1:0"
-                  - "eu.amazon.nova-pro-v1:0"
-                  - "eu.amazon.nova-2-lite-v1:0"
-                  - "eu.amazon.nova-2-lite-v1:0:priority"
-                  - "eu.amazon.nova-2-lite-v1:0:flex"
-                  - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  - "eu.anthropic.claude-haiku-5-5"
-                  - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                  - "eu.anthropic.claude-sonnet-4-6"
-                  - "eu.anthropic.claude-sonnet-4-6:1m"
-                  - "eu.anthropic.claude-sonnet-5"
-                  - "eu.anthropic.claude-sonnet-5:1m"
-                  - "eu.anthropic.claude-sonnet-5-5"
-                  - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
-                  - "eu.anthropic.claude-opus-4-6-v1"
-                  - "eu.anthropic.claude-opus-4-6-v1:1m"
-                  - "eu.anthropic.claude-opus-4-7"
-                  - "eu.anthropic.claude-opus-4-7:1m"
-                  - "eu.anthropic.claude-opus-4-8"
-                  - "eu.anthropic.claude-opus-4-8:1m"
-                  - "eu.anthropic.claude-opus-5"
-                  - "eu.anthropic.claude-opus-5:1m"
-                  - "eu.anthropic.claude-opus-5-5"
-                  - "eu.anthropic.claude-opus-5-5:1m"
-                  - "qwen.qwen3-vl-235b-a22b"
-                  - "us.meta.llama4-maverick-17b-instruct-v1:0"
-                  - "us.meta.llama4-scout-17b-instruct-v1:0"
-                  - "us.xai.grok-4.6"
-                  - "us.openai.gpt-6-astra"
-                  - "google.gemma-3-27b-it"
-                  - "nvidia.nemotron-nano-12b-v2"
-                  - "global.amazon.nova-2-lite-v1:0"
-                  - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  - "global.anthropic.claude-haiku-5-5"
-                  - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                  - "global.anthropic.claude-sonnet-4-6"
-                  - "global.anthropic.claude-sonnet-4-6:1m"
-                  - "global.anthropic.claude-sonnet-5"
-                  - "global.anthropic.claude-sonnet-5:1m"
-                  - "global.anthropic.claude-sonnet-5-5"
-                  - "global.anthropic.claude-opus-4-5-20251101-v1:0"
-                  - "global.anthropic.claude-opus-4-6-v1"
-                  - "global.anthropic.claude-opus-4-6-v1:1m"
-                  - "global.anthropic.claude-opus-4-7"
-                  - "global.anthropic.claude-opus-4-7:1m"
-                  - "global.anthropic.claude-opus-4-8"
-                  - "global.anthropic.claude-opus-4-8:1m"
-                  - "global.anthropic.claude-opus-5"
-                  - "global.anthropic.claude-opus-5:1m"
-                  - "global.anthropic.claude-opus-5-5"
-                  - "global.anthropic.claude-opus-5-5:1m"
-                  - "global.xai.grok-4.6"
-                  - "global.openai.gpt-6-astra"
-                order: 1
-              model_lambda_hook_arn:
-                type: string
-                title: Model Lambda hook ARN
-                description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
-                default: ""
-                order: 3
-                dependsOn: { field: "model", value: "LambdaHook" }
-              model_params:
+                title: Fallback class
+                description: "The class assigned when a class cannot be decided — for example once validation retries run out. One of your classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction. Extraction reads it too. [Pages classification could not classify](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#pages-classification-could-not-classify)"
+                default: "unclassified"
+                order: 0.5
+              combined:
                 type: object
-                title: Model parameters
-                sectionLabel: Model parameters
-                # ghostGroup => children save at the PARENT path (classification.temperature,
-                # classification.max_tokens, ...), so this is a purely visual grouping.
-                ghostGroup: true
+                sectionLabel: Split and classify together
+                collapsible: false
+                description: "One call returns both where each section starts and its class."
+                order: 1
+                showWhen: [{ field: "strategy", notValues: ["split_then_classify"] }]
+                properties:
+                  granularity:
+                    type: string
+                    title: Granularity
+                    description: "How many calls are made. Page gives each page its own verdict and confidence score. Packet pays the class list and examples once instead of per page, and lets the model see the whole packet when placing boundaries. Image tokens are the same either way. [Page versus packet](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#page-versus-packet-granularity-opposite-failure-modes)"
+                    enum: ["page", "packet"]
+                    enumLabels: { "page": "Page — one call per page, in parallel (default)", "packet": "Packet — one call for the whole document" }
+                    default: "page"
+                    order: 0
+                  page:
+                    type: object
+                    sectionLabel: Page settings
+                    collapsible: false
+                    description: "One classification call per page."
+                    order: 1
+                    showWhen: [{ field: "granularity", notValues: ["packet"] }]
+                    properties:
+                      contextPagesCount:
+                        type: integer
+                        title: Context pages
+                        description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens. [What each setting costs](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#what-each-setting-costs)"
+                        minimum: 0
+                        maximum: 5
+                        default: 0
+                        order: 0
+                      system_prompt:
+                        type: string
+                        title: System prompt (page)
+                        format: textarea
+                        description: "System prompt for page calls. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.system_prompt`)"
+                        order: 1
+                      task_prompt:
+                        type: string
+                        title: Task prompt (page)
+                        format: textarea
+                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.task_prompt`)"
+                        order: 2
+                  packet:
+                    type: object
+                    sectionLabel: Packet settings
+                    collapsible: false
+                    description: "One classification call per packet, or per window of a long packet."
+                    order: 1.5
+                    showWhen: [{ field: "granularity", value: "packet" }]
+                    properties:
+                      window_pages:
+                        type: integer
+                        title: Window size (pages)
+                        description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution. [Packet windowing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#packet-granularity-images-few-shot-examples-and-windowing)"
+                        minimum: 0
+                        maximum: 200
+                        default: 20
+                        order: 0
+                      overlap_pages:
+                        type: integer
+                        title: Window overlap (pages)
+                        description: "Pages repeated between adjacent windows, so a boundary at a window edge is still seen with the pages before it. Must be smaller than the window size. Adds this many pages to every window after the first."
+                        minimum: 0
+                        maximum: 50
+                        default: 2
+                        order: 1
+                      system_prompt:
+                        type: string
+                        title: System prompt (packet)
+                        format: textarea
+                        description: "System prompt for packet calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.system_prompt`)"
+                        order: 2
+                      task_prompt:
+                        type: string
+                        title: Task prompt (packet)
+                        format: textarea
+                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.task_prompt`)"
+                        order: 3
+                  llm:
+                    type: object
+                    sectionLabel: Inference settings
+                    collapsible: false
+                    description: "The model this call uses, what it is sent, and how its class is checked and scored."
+                    order: 2
+                    properties:
+                      model:
+                        type: string
+                        title: "Model ID"
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                        enum:
+                          - "LambdaHook"
+                          - !If
+                            - HasCustomClassificationModelARN
+                            - !Ref CustomClassificationModelARN
+                            - !Ref AWS::NoValue
+                          - "us.amazon.nova-lite-v1:0"
+                          - "us.amazon.nova-pro-v1:0"
+                          - "us.amazon.nova-2-lite-v1:0"
+                          - "us.amazon.nova-2-lite-v1:0:priority"
+                          - "us.amazon.nova-2-lite-v1:0:flex"
+                          - "global.amazon.nova-2-lite-v1:0"
+                          - "global.amazon.nova-2-lite-v1:0:priority"
+                          - "global.amazon.nova-2-lite-v1:0:flex"
+                          - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                          - "us.anthropic.claude-haiku-5-5"
+                          - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                          - "us.anthropic.claude-sonnet-4-6"
+                          - "us.anthropic.claude-sonnet-4-6:1m"
+                          - "us.anthropic.claude-sonnet-5"
+                          - "us.anthropic.claude-sonnet-5:1m"
+                          - "us.anthropic.claude-sonnet-5-5"
+                          - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                          - "us.anthropic.claude-opus-4-6-v1"
+                          - "us.anthropic.claude-opus-4-6-v1:1m"
+                          - "us.anthropic.claude-opus-4-7"
+                          - "us.anthropic.claude-opus-4-7:1m"
+                          - "us.anthropic.claude-opus-4-8"
+                          - "us.anthropic.claude-opus-4-8:1m"
+                          - "us.anthropic.claude-opus-5"
+                          - "us.anthropic.claude-opus-5:1m"
+                          - "us.anthropic.claude-opus-5-5"
+                          - "us.anthropic.claude-opus-5-5:1m"
+                          - "openai.gpt-5.4"
+                          - "openai.gpt-5.5"
+                          - "openai.gpt-5.6-sol"
+                          - "openai.gpt-5.6-terra"
+                          - "openai.gpt-5.6-luna"
+                          - "eu.amazon.nova-lite-v1:0"
+                          - "ca.amazon.nova-lite-v1:0"
+                          - "eu.amazon.nova-pro-v1:0"
+                          - "eu.amazon.nova-2-lite-v1:0"
+                          - "eu.amazon.nova-2-lite-v1:0:priority"
+                          - "eu.amazon.nova-2-lite-v1:0:flex"
+                          - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                          - "eu.anthropic.claude-haiku-5-5"
+                          - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                          - "eu.anthropic.claude-sonnet-4-6"
+                          - "eu.anthropic.claude-sonnet-4-6:1m"
+                          - "eu.anthropic.claude-sonnet-5"
+                          - "eu.anthropic.claude-sonnet-5:1m"
+                          - "eu.anthropic.claude-sonnet-5-5"
+                          - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                          - "eu.anthropic.claude-opus-4-6-v1"
+                          - "eu.anthropic.claude-opus-4-6-v1:1m"
+                          - "eu.anthropic.claude-opus-4-7"
+                          - "eu.anthropic.claude-opus-4-7:1m"
+                          - "eu.anthropic.claude-opus-4-8"
+                          - "eu.anthropic.claude-opus-4-8:1m"
+                          - "eu.anthropic.claude-opus-5"
+                          - "eu.anthropic.claude-opus-5:1m"
+                          - "eu.anthropic.claude-opus-5-5"
+                          - "eu.anthropic.claude-opus-5-5:1m"
+                          - "qwen.qwen3-vl-235b-a22b"
+                          - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                          - "us.meta.llama4-scout-17b-instruct-v1:0"
+                          - "us.xai.grok-4.6"
+                          - "us.openai.gpt-6-astra"
+                          - "google.gemma-3-27b-it"
+                          - "nvidia.nemotron-nano-12b-v2"
+                          - "global.amazon.nova-2-lite-v1:0"
+                          - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                          - "global.anthropic.claude-haiku-5-5"
+                          - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                          - "global.anthropic.claude-sonnet-4-6"
+                          - "global.anthropic.claude-sonnet-4-6:1m"
+                          - "global.anthropic.claude-sonnet-5"
+                          - "global.anthropic.claude-sonnet-5:1m"
+                          - "global.anthropic.claude-sonnet-5-5"
+                          - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                          - "global.anthropic.claude-opus-4-6-v1"
+                          - "global.anthropic.claude-opus-4-6-v1:1m"
+                          - "global.anthropic.claude-opus-4-7"
+                          - "global.anthropic.claude-opus-4-7:1m"
+                          - "global.anthropic.claude-opus-4-8"
+                          - "global.anthropic.claude-opus-4-8:1m"
+                          - "global.anthropic.claude-opus-5"
+                          - "global.anthropic.claude-opus-5:1m"
+                          - "global.anthropic.claude-opus-5-5"
+                          - "global.anthropic.claude-opus-5-5:1m"
+                          - "global.xai.grok-4.6"
+                          - "global.openai.gpt-6-astra"
+                        order: 0
+                      model_lambda_hook_arn:
+                        type: string
+                        title: Model Lambda hook ARN
+                        description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
+                        default: ""
+                        order: 0.1
+                        dependsOn: { field: "model", value: "LambdaHook" }
+                      modality:
+                        type: object
+                        sectionLabel: Modality
+                        collapsible: false
+                        description: "What each classification call is sent. Both on is the recommended start. Leave a flag on Infer to decide it from this call's task prompt placeholders. Both off is refused when you save. [Modality](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#modality)"
+                        order: 1
+                        properties:
+                          text:
+                            type: string
+                            title: Send page text
+                            description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                            enum: ["", "true", "false"]
+                            enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
+                            default: ""
+                            order: 0
+                          images:
+                            type: string
+                            title: Send page images
+                            description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
+                            enum: ["", "true", "false"]
+                            enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
+                            default: ""
+                            order: 1
+                      image:
+                        type: object
+                        sectionLabel: Image settings
+                        description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger. [Image sizing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#image-processing-configuration)"
+                        order: 2
+                        showWhen: [{ field: "modality.images", notValues: ["false"] }]
+                        properties:
+                          target_width:
+                            type: number
+                            title: "Target width (px)"
+                            description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                            minimum: 100
+                            maximum: 3500
+                            order: 0
+                          target_height:
+                            type: number
+                            title: "Target height (px)"
+                            description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                            minimum: 100
+                            maximum: 3500
+                            order: 1
+                      model_params:
+                        type: object
+                        title: Model parameters
+                        sectionLabel: Model parameters
+                        # ghostGroup => children save at the PARENT path (this call's
+                        # temperature, max_tokens, ...), so this is a purely visual grouping.
+                        ghostGroup: true
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
+                        order: 3
+                        properties:
+                          temperature:
+                            type: number
+                            title: Temperature
+                            minimum: 0
+                            maximum: 1
+                            description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                            order: 1
+                          top_k:
+                            type: integer
+                            title: Top K
+                            minimum: 1
+                            description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                            order: 2
+                          top_p:
+                            type: number
+                            title: Top P
+                            description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                            order: 3
+                          max_tokens:
+                            type: number
+                            title: Max tokens
+                            description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                            order: 4
+                          reasoning_effort:
+                            type: string
+                            title: Reasoning effort
+                            enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                            default: "medium"
+                            description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
+                            order: 5
+                            dependsOn: { field: "model", reasoningCapable: true }
+                      validation:
+                        type: object
+                        sectionLabel: Class validation
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "Re-prompt when the model returns a class that is not one of yours. Costs nothing unless the model goes out of vocabulary."
+                        order: 4
+                        properties:
+                          enforceValidClasses:
+                            type: boolean
+                            title: Enforce valid classes
+                            description: "Re-prompt the model when it returns a class that is not one of yours, and assign the Fallback class after the retries run out. When off, an unknown class is used as-is."
+                            default: true
+                            order: 0
+                          maxValidationRetries:
+                            type: integer
+                            title: Max validation retries
+                            description: "How many times to re-prompt. 0 sends a single invalid prediction straight to the Fallback class. Each retry resends the full request, including the images."
+                            minimum: 0
+                            maximum: 5
+                            default: 2
+                            order: 1
+                            dependsOn: { field: "enforceValidClasses", value: true }
+                      confidence:
+                        type: object
+                        sectionLabel: Class confidence
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per page at page granularity, one per section at packet. Costs output tokens on every call."
+                        order: 5
+                        properties:
+                          mode:
+                            type: string
+                            title: Class confidence mode
+                            description: "Top-K (`topk`) asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the page could have been. Verbalized (`verbalized`) is the cheapest and the most overconfident; Off (`off`) asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                            enum: ["topk", "verbalized", "off"]
+                            enumLabels: { "topk": "Top-K — ranked candidate classes (default)", "verbalized": "Verbalized — one 0–1 score", "off": "Off — no score" }
+                            default: "topk"
+                            order: 0
+                          top_k_candidates:
+                            type: integer
+                            title: Candidates to request
+                            description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
+                            minimum: 2
+                            maximum: 10
+                            default: 3
+                            order: 1
+                            dependsOn: { field: "mode", value: "topk" }
+                          task_prompt_topk:
+                            type: string
+                            title: Top-K instruction block
+                            format: textarea
+                            description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                            order: 2
+                            dependsOn: { field: "mode", value: "topk" }
+                          task_prompt_verbalized:
+                            type: string
+                            title: Verbalized instruction block
+                            format: textarea
+                            description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                            order: 3
+                            dependsOn: { field: "mode", value: "verbalized" }
+                          task_prompt_topk_packet:
+                            type: string
+                            title: Top-K instruction block (packet)
+                            format: textarea
+                            description: "The 'topk' block used at packet granularity, where the unit is a section rather than a page. Empty falls back to the page block above."
+                            order: 4
+                            dependsOn: { field: "mode", value: "topk" }
+                            showWhen: [{ field: "granularity", value: "packet" }]
+                          task_prompt_verbalized_packet:
+                            type: string
+                            title: Verbalized instruction block (packet)
+                            format: textarea
+                            description: "The 'verbalized' block used at packet granularity, on the same per-section rules as the packet Top-K block."
+                            order: 5
+                            dependsOn: { field: "mode", value: "verbalized" }
+                            showWhen: [{ field: "granularity", value: "packet" }]
+              split_then_classify:
+                type: object
+                sectionLabel: Split first, then classify each section
+                collapsible: false
+                description: "Splitting finds where each section starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known document shape declares the shape, splitting makes no calls. [How split then classify works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#the-split-then-classify-strategy)"
+                order: 2
+                showWhen: [{ field: "strategy", value: "split_then_classify" }]
+                properties:
+                  splitting:
+                    type: object
+                    sectionLabel: Splitting
+                    collapsible: true
+                    defaultExpanded: true
+                    description: "Finds where each section starts and ends. Returns page ranges only — no class — so its calls carry no class list, descriptions or examples."
+                    order: 0
+                    properties:
+                      method:
+                        type: string
+                        title: Splitting method
+                        description: "How boundaries are found. 'llm' is the only method today; a boundary-model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
+                        enum: ["llm"]
+                        enumLabels: { "llm": "LLM" }
+                        default: "llm"
+                        order: 0
+                      llm:
+                        type: object
+                        sectionLabel: Inference settings
+                        collapsible: false
+                        description: "The splitting calls: how many are made, their prompts, and the model they use."
+                        order: 1
+                        showWhen: [{ field: "method", value: "llm" }]
+                        properties:
+                          granularity:
+                            type: string
+                            title: Granularity
+                            description: "How many splitting calls are made. Page decides for each page whether it starts a new section. Packet returns page ranges, with the whole packet in view when placing boundaries. [Page versus packet](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#page-versus-packet-granularity-opposite-failure-modes)"
+                            enum: ["page", "packet"]
+                            enumLabels: { "page": "Page — one call per page, in parallel (default)", "packet": "Packet — one call for the whole document" }
+                            default: "page"
+                            order: 0
+                          boundary_hints:
+                            type: string
+                            title: Boundary hints
+                            description: "Whether the splitting calls are told the class names. None (`none`) is the saving; Class names (`class_names`) are worth it when a section's first page is titled like one of your classes."
+                            enum: ["none", "class_names"]
+                            enumLabels: { "none": "None — no class vocabulary (default)", "class_names": "Class names — names only, as a hint" }
+                            default: "none"
+                            order: 0.5
+                          page:
+                            type: object
+                            sectionLabel: Page settings
+                            collapsible: false
+                            description: "One splitting call per page."
+                            order: 1
+                            showWhen: [{ field: "granularity", notValues: ["packet"] }]
+                            properties:
+                              contextPagesCount:
+                                type: integer
+                                title: Context pages
+                                description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens. [What each setting costs](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#what-each-setting-costs)"
+                                minimum: 0
+                                maximum: 5
+                                default: 0
+                                order: 0
+                              system_prompt:
+                                type: string
+                                title: System prompt (page)
+                                format: textarea
+                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.system_prompt`)"
+                                order: 1
+                              task_prompt:
+                                type: string
+                                title: Task prompt (page)
+                                format: textarea
+                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.task_prompt`)"
+                                order: 2
+                          packet:
+                            type: object
+                            sectionLabel: Packet settings
+                            collapsible: false
+                            description: "One splitting call per packet, or per window of a long packet."
+                            order: 1.5
+                            showWhen: [{ field: "granularity", value: "packet" }]
+                            properties:
+                              window_pages:
+                                type: integer
+                                title: Window size (pages)
+                                description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution. [Packet windowing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#packet-granularity-images-few-shot-examples-and-windowing)"
+                                minimum: 0
+                                maximum: 200
+                                default: 20
+                                order: 0
+                              overlap_pages:
+                                type: integer
+                                title: Window overlap (pages)
+                                description: "Pages repeated between adjacent windows, so a boundary at a window edge is still seen with the pages before it. Must be smaller than the window size. Adds this many pages to every window after the first."
+                                minimum: 0
+                                maximum: 50
+                                default: 2
+                                order: 1
+                              system_prompt:
+                                type: string
+                                title: System prompt (packet)
+                                format: textarea
+                                description: "System prompt for the packet splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.system_prompt`)"
+                                order: 2
+                              task_prompt:
+                                type: string
+                                title: Task prompt (packet)
+                                format: textarea
+                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.task_prompt`)"
+                                order: 3
+                          model:
+                            type: string
+                            title: "Model ID"
+                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            enum:
+                              - "LambdaHook"
+                              - !If
+                                - HasCustomClassificationModelARN
+                                - !Ref CustomClassificationModelARN
+                                - !Ref AWS::NoValue
+                              - "us.amazon.nova-lite-v1:0"
+                              - "us.amazon.nova-pro-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0:priority"
+                              - "us.amazon.nova-2-lite-v1:0:flex"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.amazon.nova-2-lite-v1:0:priority"
+                              - "global.amazon.nova-2-lite-v1:0:flex"
+                              - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "us.anthropic.claude-haiku-5-5"
+                              - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "us.anthropic.claude-sonnet-4-6"
+                              - "us.anthropic.claude-sonnet-4-6:1m"
+                              - "us.anthropic.claude-sonnet-5"
+                              - "us.anthropic.claude-sonnet-5:1m"
+                              - "us.anthropic.claude-sonnet-5-5"
+                              - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "us.anthropic.claude-opus-4-6-v1"
+                              - "us.anthropic.claude-opus-4-6-v1:1m"
+                              - "us.anthropic.claude-opus-4-7"
+                              - "us.anthropic.claude-opus-4-7:1m"
+                              - "us.anthropic.claude-opus-4-8"
+                              - "us.anthropic.claude-opus-4-8:1m"
+                              - "us.anthropic.claude-opus-5"
+                              - "us.anthropic.claude-opus-5:1m"
+                              - "us.anthropic.claude-opus-5-5"
+                              - "us.anthropic.claude-opus-5-5:1m"
+                              - "openai.gpt-5.4"
+                              - "openai.gpt-5.5"
+                              - "openai.gpt-5.6-sol"
+                              - "openai.gpt-5.6-terra"
+                              - "openai.gpt-5.6-luna"
+                              - "eu.amazon.nova-lite-v1:0"
+                              - "ca.amazon.nova-lite-v1:0"
+                              - "eu.amazon.nova-pro-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0:priority"
+                              - "eu.amazon.nova-2-lite-v1:0:flex"
+                              - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "eu.anthropic.claude-haiku-5-5"
+                              - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "eu.anthropic.claude-sonnet-4-6"
+                              - "eu.anthropic.claude-sonnet-4-6:1m"
+                              - "eu.anthropic.claude-sonnet-5"
+                              - "eu.anthropic.claude-sonnet-5:1m"
+                              - "eu.anthropic.claude-sonnet-5-5"
+                              - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "eu.anthropic.claude-opus-4-6-v1"
+                              - "eu.anthropic.claude-opus-4-6-v1:1m"
+                              - "eu.anthropic.claude-opus-4-7"
+                              - "eu.anthropic.claude-opus-4-7:1m"
+                              - "eu.anthropic.claude-opus-4-8"
+                              - "eu.anthropic.claude-opus-4-8:1m"
+                              - "eu.anthropic.claude-opus-5"
+                              - "eu.anthropic.claude-opus-5:1m"
+                              - "eu.anthropic.claude-opus-5-5"
+                              - "eu.anthropic.claude-opus-5-5:1m"
+                              - "qwen.qwen3-vl-235b-a22b"
+                              - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                              - "us.meta.llama4-scout-17b-instruct-v1:0"
+                              - "us.xai.grok-4.6"
+                              - "us.openai.gpt-6-astra"
+                              - "google.gemma-3-27b-it"
+                              - "nvidia.nemotron-nano-12b-v2"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "global.anthropic.claude-haiku-5-5"
+                              - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "global.anthropic.claude-sonnet-4-6"
+                              - "global.anthropic.claude-sonnet-4-6:1m"
+                              - "global.anthropic.claude-sonnet-5"
+                              - "global.anthropic.claude-sonnet-5:1m"
+                              - "global.anthropic.claude-sonnet-5-5"
+                              - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "global.anthropic.claude-opus-4-6-v1"
+                              - "global.anthropic.claude-opus-4-6-v1:1m"
+                              - "global.anthropic.claude-opus-4-7"
+                              - "global.anthropic.claude-opus-4-7:1m"
+                              - "global.anthropic.claude-opus-4-8"
+                              - "global.anthropic.claude-opus-4-8:1m"
+                              - "global.anthropic.claude-opus-5"
+                              - "global.anthropic.claude-opus-5:1m"
+                              - "global.anthropic.claude-opus-5-5"
+                              - "global.anthropic.claude-opus-5-5:1m"
+                              - "global.xai.grok-4.6"
+                              - "global.openai.gpt-6-astra"
+                            order: 2
+                          model_lambda_hook_arn:
+                            type: string
+                            title: Model Lambda hook ARN
+                            description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
+                            default: ""
+                            order: 2.1
+                            dependsOn: { field: "model", value: "LambdaHook" }
+                          modality:
+                            type: object
+                            sectionLabel: Modality
+                            collapsible: false
+                            description: "What each splitting call is sent. Both on is the recommended start. Leave a flag on Infer to decide it from this call's task prompt placeholders. Both off is refused when you save. [Modality](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#modality)"
+                            order: 3
+                            properties:
+                              text:
+                                type: string
+                                title: Send page text
+                                description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
+                                default: ""
+                                order: 0
+                              images:
+                                type: string
+                                title: Send page images
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
+                                enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
+                                default: ""
+                                order: 1
+                          image:
+                            type: object
+                            sectionLabel: Image settings
+                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger. [Image sizing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#image-processing-configuration)"
+                            order: 4
+                            showWhen: [{ field: "modality.images", notValues: ["false"] }]
+                            properties:
+                              target_width:
+                                type: number
+                                title: "Target width (px)"
+                                description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 0
+                              target_height:
+                                type: number
+                                title: "Target height (px)"
+                                description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 1
+                          model_params:
+                            type: object
+                            title: Model parameters
+                            sectionLabel: Model parameters
+                            # ghostGroup => children save at the PARENT path (this call's
+                            # temperature, max_tokens, ...), so this is a purely visual grouping.
+                            ghostGroup: true
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
+                            order: 5
+                            properties:
+                              temperature:
+                                type: number
+                                title: Temperature
+                                minimum: 0
+                                maximum: 1
+                                description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 1
+                              top_k:
+                                type: integer
+                                title: Top K
+                                minimum: 1
+                                description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 2
+                              top_p:
+                                type: number
+                                title: Top P
+                                description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 3
+                              max_tokens:
+                                type: number
+                                title: Max tokens
+                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                order: 4
+                              reasoning_effort:
+                                type: string
+                                title: Reasoning effort
+                                enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                                default: "medium"
+                                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
+                                order: 5
+                                dependsOn: { field: "model", reasoningCapable: true }
+                  section_classification:
+                    type: object
+                    sectionLabel: Section classification
+                    collapsible: true
+                    defaultExpanded: true
+                    description: "Gives each section that splitting found one class. One call per section, not per page. Skipped for a section whose class a name RegEx already decided."
+                    order: 1
+                    properties:
+                      method:
+                        type: string
+                        title: Section classification method
+                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show 'embeddings', 'decision_model' and 'low_confidence' blocks with defaults: they belong to those planned methods and are ignored today."
+                        enum: ["llm"]
+                        enumLabels: { "llm": "LLM" }
+                        default: "llm"
+                        order: 0
+                      pages:
+                        type: string
+                        title: Pages per section
+                        description: "Which pages are sent to classify a section. 'First page': its first page only. 'First k pages' (default): its opening pages, where a section's identity almost always is. 'All pages': every page — most accurate on an ambiguous section, but a long section then costs what page-level classification would."
+                        enum: ["first", "first_k", "all"]
+                        enumLabels: { first: "First page", first_k: "First k pages (default)", all: "All pages" }
+                        default: "first_k"
+                        order: 1
+                      k:
+                        type: integer
+                        title: Pages to send (k)
+                        description: "How many opening pages to send. A shorter section sends what it has."
+                        minimum: 1
+                        maximum: 20
+                        default: 2
+                        order: 2
+                        dependsOn: { field: "pages", value: "first_k" }
+                      llm:
+                        type: object
+                        sectionLabel: Inference settings
+                        collapsible: false
+                        description: "The call that names each section: its prompts, its model, and how its class is checked and scored."
+                        order: 3
+                        showWhen: [{ field: "method", value: "llm" }]
+                        properties:
+                          system_prompt:
+                            type: string
+                            title: System prompt
+                            format: textarea
+                            description: "System prompt for the section classification calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.system_prompt`)"
+                            order: 6
+                          task_prompt:
+                            type: string
+                            title: Task prompt
+                            format: textarea
+                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.task_prompt`)"
+                            order: 7
+                          model:
+                            type: string
+                            title: "Model ID"
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            enum:
+                              - "LambdaHook"
+                              - !If
+                                - HasCustomClassificationModelARN
+                                - !Ref CustomClassificationModelARN
+                                - !Ref AWS::NoValue
+                              - "us.amazon.nova-lite-v1:0"
+                              - "us.amazon.nova-pro-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0:priority"
+                              - "us.amazon.nova-2-lite-v1:0:flex"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.amazon.nova-2-lite-v1:0:priority"
+                              - "global.amazon.nova-2-lite-v1:0:flex"
+                              - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "us.anthropic.claude-haiku-5-5"
+                              - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "us.anthropic.claude-sonnet-4-6"
+                              - "us.anthropic.claude-sonnet-4-6:1m"
+                              - "us.anthropic.claude-sonnet-5"
+                              - "us.anthropic.claude-sonnet-5:1m"
+                              - "us.anthropic.claude-sonnet-5-5"
+                              - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "us.anthropic.claude-opus-4-6-v1"
+                              - "us.anthropic.claude-opus-4-6-v1:1m"
+                              - "us.anthropic.claude-opus-4-7"
+                              - "us.anthropic.claude-opus-4-7:1m"
+                              - "us.anthropic.claude-opus-4-8"
+                              - "us.anthropic.claude-opus-4-8:1m"
+                              - "us.anthropic.claude-opus-5"
+                              - "us.anthropic.claude-opus-5:1m"
+                              - "us.anthropic.claude-opus-5-5"
+                              - "us.anthropic.claude-opus-5-5:1m"
+                              - "openai.gpt-5.4"
+                              - "openai.gpt-5.5"
+                              - "openai.gpt-5.6-sol"
+                              - "openai.gpt-5.6-terra"
+                              - "openai.gpt-5.6-luna"
+                              - "eu.amazon.nova-lite-v1:0"
+                              - "ca.amazon.nova-lite-v1:0"
+                              - "eu.amazon.nova-pro-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0:priority"
+                              - "eu.amazon.nova-2-lite-v1:0:flex"
+                              - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "eu.anthropic.claude-haiku-5-5"
+                              - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "eu.anthropic.claude-sonnet-4-6"
+                              - "eu.anthropic.claude-sonnet-4-6:1m"
+                              - "eu.anthropic.claude-sonnet-5"
+                              - "eu.anthropic.claude-sonnet-5:1m"
+                              - "eu.anthropic.claude-sonnet-5-5"
+                              - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "eu.anthropic.claude-opus-4-6-v1"
+                              - "eu.anthropic.claude-opus-4-6-v1:1m"
+                              - "eu.anthropic.claude-opus-4-7"
+                              - "eu.anthropic.claude-opus-4-7:1m"
+                              - "eu.anthropic.claude-opus-4-8"
+                              - "eu.anthropic.claude-opus-4-8:1m"
+                              - "eu.anthropic.claude-opus-5"
+                              - "eu.anthropic.claude-opus-5:1m"
+                              - "eu.anthropic.claude-opus-5-5"
+                              - "eu.anthropic.claude-opus-5-5:1m"
+                              - "qwen.qwen3-vl-235b-a22b"
+                              - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                              - "us.meta.llama4-scout-17b-instruct-v1:0"
+                              - "us.xai.grok-4.6"
+                              - "us.openai.gpt-6-astra"
+                              - "google.gemma-3-27b-it"
+                              - "nvidia.nemotron-nano-12b-v2"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "global.anthropic.claude-haiku-5-5"
+                              - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "global.anthropic.claude-sonnet-4-6"
+                              - "global.anthropic.claude-sonnet-4-6:1m"
+                              - "global.anthropic.claude-sonnet-5"
+                              - "global.anthropic.claude-sonnet-5:1m"
+                              - "global.anthropic.claude-sonnet-5-5"
+                              - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "global.anthropic.claude-opus-4-6-v1"
+                              - "global.anthropic.claude-opus-4-6-v1:1m"
+                              - "global.anthropic.claude-opus-4-7"
+                              - "global.anthropic.claude-opus-4-7:1m"
+                              - "global.anthropic.claude-opus-4-8"
+                              - "global.anthropic.claude-opus-4-8:1m"
+                              - "global.anthropic.claude-opus-5"
+                              - "global.anthropic.claude-opus-5:1m"
+                              - "global.anthropic.claude-opus-5-5"
+                              - "global.anthropic.claude-opus-5-5:1m"
+                              - "global.xai.grok-4.6"
+                              - "global.openai.gpt-6-astra"
+                            order: 0
+                          model_lambda_hook_arn:
+                            type: string
+                            title: Model Lambda hook ARN
+                            description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
+                            default: ""
+                            order: 0.1
+                            dependsOn: { field: "model", value: "LambdaHook" }
+                          modality:
+                            type: object
+                            sectionLabel: Modality
+                            collapsible: false
+                            description: "What each section classification call is sent. Both on is the recommended start. Leave a flag on Infer to decide it from this call's task prompt placeholders. Both off is refused when you save. [Modality](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#modality)"
+                            order: 1
+                            properties:
+                              text:
+                                type: string
+                                title: Send page text
+                                description: "Sends each page's OCR text. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
+                                default: ""
+                                order: 0
+                              images:
+                                type: string
+                                title: Send page images
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Infer (stored as an empty value) sends it when this call's task prompt contains {DOCUMENT_IMAGE}."
+                                enum: ["", "true", "false"]
+                                enumLabels: { "": "Infer from the task prompt (default)", "true": "Yes", "false": "No" }
+                                default: ""
+                                order: 1
+                          image:
+                            type: object
+                            sectionLabel: Image settings
+                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger. [Image sizing](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#image-processing-configuration)"
+                            order: 2
+                            showWhen: [{ field: "modality.images", notValues: ["false"] }]
+                            properties:
+                              target_width:
+                                type: number
+                                title: "Target width (px)"
+                                description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 0
+                              target_height:
+                                type: number
+                                title: "Target height (px)"
+                                description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 1
+                          model_params:
+                            type: object
+                            title: Model parameters
+                            sectionLabel: Model parameters
+                            # ghostGroup => children save at the PARENT path (this call's
+                            # temperature, max_tokens, ...), so this is a purely visual grouping.
+                            ghostGroup: true
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
+                            order: 3
+                            properties:
+                              temperature:
+                                type: number
+                                title: Temperature
+                                minimum: 0
+                                maximum: 1
+                                description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 1
+                              top_k:
+                                type: integer
+                                title: Top K
+                                minimum: 1
+                                description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 2
+                              top_p:
+                                type: number
+                                title: Top P
+                                description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 3
+                              max_tokens:
+                                type: number
+                                title: Max tokens
+                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                order: 4
+                              reasoning_effort:
+                                type: string
+                                title: Reasoning effort
+                                enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                                default: "medium"
+                                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
+                                order: 5
+                                dependsOn: { field: "model", reasoningCapable: true }
+                          validation:
+                            type: object
+                            sectionLabel: Class validation
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "Re-prompt when the model returns a class that is not one of yours. Costs nothing unless the model goes out of vocabulary."
+                            order: 4
+                            properties:
+                              enforceValidClasses:
+                                type: boolean
+                                title: Enforce valid classes
+                                description: "Re-prompt the model when it returns a class that is not one of yours, and assign the Fallback class after the retries run out. When off, an unknown class is used as-is."
+                                default: true
+                                order: 0
+                              maxValidationRetries:
+                                type: integer
+                                title: Max validation retries
+                                description: "How many times to re-prompt. 0 sends a single invalid prediction straight to the Fallback class. Each retry resends the full request, including the images."
+                                minimum: 0
+                                maximum: 5
+                                default: 2
+                                order: 1
+                                dependsOn: { field: "enforceValidClasses", value: true }
+                          confidence:
+                            type: object
+                            sectionLabel: Class confidence
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per section. Costs output tokens on every call."
+                            order: 5
+                            properties:
+                              mode:
+                                type: string
+                                title: Class confidence mode
+                                description: "Top-K (`topk`) asks for ranked candidates with probabilities ('80% W-2, 15% 1099'): better calibrated than one self-reported number, and it shows what else the section could have been. Verbalized (`verbalized`) is the cheapest and the most overconfident; Off (`off`) asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                                enum: ["topk", "verbalized", "off"]
+                                enumLabels: { "topk": "Top-K — ranked candidate classes (default)", "verbalized": "Verbalized — one 0–1 score", "off": "Off — no score" }
+                                default: "topk"
+                                order: 0
+                              top_k_candidates:
+                                type: integer
+                                title: Candidates to request
+                                description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
+                                minimum: 2
+                                maximum: 10
+                                default: 3
+                                order: 1
+                                dependsOn: { field: "mode", value: "topk" }
+                              task_prompt_topk:
+                                type: string
+                                title: Top-K instruction block
+                                format: textarea
+                                description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                                order: 2
+                                dependsOn: { field: "mode", value: "topk" }
+                              task_prompt_verbalized:
+                                type: string
+                                title: Verbalized instruction block
+                                format: textarea
+                                description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                                order: 3
+                                dependsOn: { field: "mode", value: "verbalized" }
+              document_shape:
+                type: object
+                sectionLabel: Advanced — known document shape
                 collapsible: true
                 defaultExpanded: false
-                description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
-                order: 2
+                description: "By default every document is treated as a packet and its section boundaries are detected. Set these only when you already know a document's shape."
+                order: 3
                 properties:
-                  temperature:
-                    type: number
-                    title: Temperature
-                    minimum: 0
-                    maximum: 1
-                    description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
-                    order: 1
-                  top_k:
-                    type: integer
-                    title: Top K
-                    minimum: 1
-                    description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
-                    order: 2
-                  top_p:
-                    type: number
-                    title: Top P
-                    description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
-                    order: 3
-                  max_tokens:
-                    type: number
-                    title: Max tokens
-                    description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
-                    order: 4
-                  reasoning_effort:
+                  sectionSplitting:
                     type: string
-                    title: Reasoning effort
-                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-                    default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
-                    order: 5
-                    dependsOn: { field: "model", reasoningCapable: true }
-              classificationMethod:
-                type: string
-                title: Classification method
-                description: "Classification methodology to use"
-                enum:
-                  [
-                    "multimodalPageLevelClassification",
-                    "textbasedHolisticClassification",
-                  ]
-                order: 3.5
-              maxPagesForClassification:
-                type: string
-                title: Pages to classify
-                description: "Number of pages to use for classification [When set to a number, forces the entire document to be assigned a single class]"
-                enum: ["ALL", "1", "2", "3", "5", "10"]
-                order: 4
-              sectionSplitting:
-                type: string
-                title: Section splitting
-                description: "Section splitting strategy: 'disabled' (entire doc as one section), 'page' (one section per page - prevents joining same-type documents), 'llm_determined' (use LLM boundary detection - default)"
-                enum: ["disabled", "page", "llm_determined"]
-                default: "llm_determined"
-                order: 5
-              contextPagesCount:
-                type: integer
-                title: Context pages
-                description: "Number of surrounding pages to include as context for multi-modal page-level classification. Value of 0 means no additional context (default). Value of 1 includes 1 page before and after. Value of 2 includes 2 pages before and after. Only applies to multimodalPageLevelClassification method."
-                minimum: 0
-                maximum: 5
-                default: 0
-                order: 6
-                dependsOn: { field: "classificationMethod", value: "multimodalPageLevelClassification" }
-              enforceValidClasses:
-                type: boolean
-                title: Enforce valid classes
-                description: "When enabled, the predicted class is validated against the defined class vocabulary. If the model returns a class that is not in the list, it is re-prompted with the valid choices and retried (see Max Validation Retries). If retries are exhausted, the page is assigned the Invalid Class Fallback and flagged with a validation error. When disabled, an out-of-vocabulary prediction is used as-is (legacy behavior). Only applies to multimodalPageLevelClassification."
-                default: true
-                order: 7
-                dependsOn: { field: "classificationMethod", value: "multimodalPageLevelClassification" }
-              maxValidationRetries:
-                type: integer
-                title: Max validation retries
-                description: "Maximum number of times to re-prompt the model when it returns a class outside the defined vocabulary. Only used when Enforce Valid Classes is enabled. 0 disables retries (a single invalid prediction goes straight to the fallback)."
-                minimum: 0
-                maximum: 5
-                default: 2
-                order: 8
-                dependsOn: { field: "enforceValidClasses", value: true }
-              invalidClassFallback:
-                type: string
-                title: Invalid class fallback
-                description: "Class label assigned to a page when all validation retries are exhausted. Should be one of your defined classes, or the built-in 'unclassified'. Only used when Enforce Valid Classes is enabled."
-                default: "unclassified"
-                order: 9
-                dependsOn: { field: "enforceValidClasses", value: true }
-              confidence:
-                type: object
-                sectionLabel: Class confidence
-                description: "How much confidence the classifier reports in the CLASS it chose (not in the extracted fields — that is Extraction > Confidence). Costs output tokens on every page, because page-level classification is one inference per page."
-                order: 10
-                properties:
-                  mode:
-                    type: string
-                    title: Class confidence mode
-                    description: "'topk' (default) asks the model for its ranked candidate classes with probabilities ('80% W-2, 15% 1099') — better calibrated than a single self-reported number, and it shows you what else the page could have been. 'verbalized' asks for one 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. Measured on a 13-class corpus, topk added ~0.5% to total document cost with no consistent accuracy change; how USEFUL the score is depends strongly on the classification model — see the Classification Confidence benchmark page."
-                    enum: ["topk", "verbalized", "off"]
-                    default: "topk"
+                    title: Section splitting
+                    description: "'Detect boundaries': one section per boundary found. 'One section': the whole document is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent one-page sections of the same class being merged into one. Applies to both strategies. [Section splitting](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#section-splitting)"
+                    enum: ["llm_determined", "disabled", "page"]
+                    enumLabels: { llm_determined: "Detect boundaries (default)", disabled: "One section", page: "One per page" }
+                    default: "llm_determined"
                     order: 0
-                  top_k_candidates:
-                    type: integer
-                    title: Candidates to request
-                    description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
-                    minimum: 2
-                    maximum: 10
-                    default: 3
+                  maxPagesForClassification:
+                    type: string
+                    title: Pages to classify
+                    description: "Classify only the first N pages and give the whole document their majority class. Applies only to 'One section'."
+                    enum: ["ALL", "1", "2", "3", "5", "10"]
+                    enumLabels: { "ALL": "All pages (default)" }
+                    default: "ALL"
                     order: 1
-                    dependsOn: { field: "mode", value: "topk" }
-                  task_prompt_topk:
-                    type: string
-                    title: Top-K instruction block
-                    format: textarea
-                    description: "The instruction spliced into the classification Task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix, which matters because classification runs per page). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a Task prompt that already contains one is left alone, which is how you take over the wording completely."
-                    order: 2
-                    dependsOn: { field: "mode", value: "topk" }
-                  task_prompt_verbalized:
-                    type: string
-                    title: Verbalized instruction block
-                    format: textarea
-                    description: "The instruction spliced into the classification Task prompt in 'verbalized' mode, on the same rules as the Top-K block."
-                    order: 3
-                    dependsOn: { field: "mode", value: "verbalized" }
-              system_prompt:
-                type: string
-                title: System prompt
-                format: textarea
-                description: System prompt
-                order: 15
-              task_prompt:
-                type: string
-                title: Task prompt
-                format: textarea
-                description: Task prompt - include placeholders {CLASS_NAMES_AND_DESCRIPTIONS} (replaced with the class names and descriptions for all specified classes), {FEW_SHOT_EXAMPLES} (replaced by the x-aws-idp-class-prompt text and image data from each class's x-aws-idp-examples; renders empty when no class defines examples, so it is safe to leave in), {DOCUMENT_TEXT} (replaced by the OCR output), and for multi-modal classification {DOCUMENT_IMAGE} (replaced by the page image attachment). Optionally include {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} (replaced with class names, descriptions, AND schema attribute field names — useful for disambiguating classes with similar names but different extraction schemas; opt-in and cost-neutral when not referenced). Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
-                order: 16
+                    showWhen: [{ field: "sectionSplitting", value: "disabled" }]
               postHook:
                 type: array
                 collapsible: true
@@ -1362,6 +2112,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -1391,13 +2142,15 @@ Resources:
                 type: string
                 title: Extraction mode
                 enum: ["simple", "advanced"]
+                enumLabels: { "simple": "Simple — single pass (default)", "advanced": "Advanced — sharded, for large documents" }
                 default: "simple"
                 order: 1
-                description: "'simple' (default): single-pass extraction — fast and cheap, best for short documents. 'advanced': the robust, sharded extraction engine for large documents, big tables, and completeness (exposes the Advanced extraction settings below). Recommended with Anthropic Claude models."
+                description: "Simple is fast and cheap, best for short documents. Advanced is the robust engine for large documents, big tables and completeness, and shows the Advanced extraction settings below; recommended with Anthropic Claude models."
               prompt_cache:
                 type: string
                 title: Prompt caching
                 enum: ["auto", "off"]
+                enumLabels: { "auto": "Auto — use cache points (default)", "off": "Off — no cache points" }
                 default: "auto"
                 order: 1.05
                 description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
@@ -1405,6 +2158,7 @@ Resources:
                 type: string
                 title: Truncated list outcome
                 enum: ["warn", "fail"]
+                enumLabels: { "warn": "Warn — report success (default)", "fail": "Fail — mark the section failed" }
                 default: "warn"
                 order: 1.06
                 description: "What the outcome MEANS when extraction returns fewer than half the table rows the section's own OCR text evidences for a list field. 'warn' (default): record the issue and report success. 'fail': the rows that were extracted and the diagnosis are saved, then the section is marked failed - so a document carrying a fraction of a long table cannot be reported as COMPLETED, which is the only signal most consumers read. This does not change WHEN the shortfall is detected, only what it costs, and it applies to both Simple and Advanced extraction. IMPORTANT before choosing 'fail': the check's evidence is OCR tables whose column count equals the list item's property count, summed over the whole section, and a 2- or 3-property array that models an entity GROUP rather than table rows looks identical to one that models rows. A statement's 31-row two-column Daily Balance table is therefore counted as evidence about a 5-row 2-property account summary, and a fully correct extraction scores 0.13. Choose 'fail' for a corpus whose narrow arrays really are table rows - long transaction lists are the case it was built for - after checking your classes for group-shaped arrays."
@@ -1507,19 +2261,19 @@ Resources:
                     dependsOn: { field: "enabled", value: true }
               multi_instance_detection:
                 type: object
-                sectionLabel: Multi-document Section Detection
-                description: "Detects a section that turned out to hold SEVERAL separate documents of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many documents the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every document, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
+                sectionLabel: Multi-instance Section Detection
+                description: "Detects a section that turned out to hold SEVERAL separate instances (records) of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many instances the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every instance, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
                 order: 4.08
                 dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
                   enabled:
                     type: boolean
-                    description: "Warn when a section appears to contain more documents of its class than were extracted - the silent case, where the section reports success with zero issues while holding one record out of three. TURN THIS ON if one section can hold several documents of the same class: measured on 40 real bank-check images with ground truth, it found all 18 multi-check images, raised zero false alarms on the 22 single-check ones, and got the count exactly right every time, for about 2% more input tokens. It is OFF by default only because on a corpus with no multi-record documents to find it is pure cost - one real forms corpus lost about 1.3 accuracy points. It never changes the extracted data."
+                    description: "Warn when a section appears to contain more instances of its class than were extracted - the silent case, where the section reports success with zero issues while holding one record out of three. TURN THIS ON if one section can hold several instances of the same class: measured on 40 real bank-check images with ground truth, it found all 18 multi-check images, raised zero false alarms on the 22 single-check ones, and got the count exactly right every time, for about 2% more input tokens. It is OFF by default only because on a corpus with no multi-record sections to find it is pure cost - one real forms corpus lost about 1.3 accuracy points. It never changes the extracted data."
                     default: false
                     order: 0
                   question:
                     type: string
-                    description: "The question put to the model, as the description of the auxiliary count property. {DOCUMENT_CLASS} is replaced with the section's class name. Leave blank to use the shipped wording. Two clauses are load-bearing and should survive any edit: 'do not count pages, sections or repeated headers' (without it, a document carrying an identical banner on each of four pages reads as four documents), and 'DIAGNOSTIC METADATA, not extracted document data' (so the model does not treat the field as something to extract from the page)."
+                    description: "The question put to the model, as the description of the auxiliary count property. {DOCUMENT_CLASS} is replaced with the section's class name. Leave blank to use the shipped wording. Two clauses are load-bearing and should survive any edit: 'do not count pages, sections or repeated headers' (without it, a section carrying an identical banner on each of four pages reads as four instances), and 'DIAGNOSTIC METADATA, not extracted document data' (so the model does not treat the field as something to extract from the page)."
                     order: 1
                     dependsOn: { field: "enabled", value: true }
               coercion:
@@ -1542,6 +2296,7 @@ Resources:
                     type: string
                     description: "How to read an all-numeric date whose day/month order is ambiguous, e.g. '01/02/2024'. 'auto' (default) refuses to guess and leaves such values untouched, so nothing is silently mis-dated. Choose MDY or DMY only for a corpus whose convention you know - it never overrides a value that is already unambiguous (a 15 cannot be a month whatever this is set to)."
                     enum: ["auto", "MDY", "DMY"]
+                    enumLabels: { "auto": "Auto — leave ambiguous dates (default)", "MDY": "MDY — month/day/year", "DMY": "DMY — day/month/year" }
                     order: 1
                     default: "auto"
                     dependsOn: { field: "enabled", value: true }
@@ -1566,6 +2321,7 @@ Resources:
                     type: string
                     description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': record the result as not parsed, which makes the section's Processing Report read FAILED and raises the issue at error severity; the extracted values are still stored and the document's status is unchanged, so this is a visibility setting rather than a way to reject a section. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
                     enum: ["warn", "escalate", "reject"]
+                    enumLabels: { "warn": "Warn — record and proceed (default)", "escalate": "Escalate — re-extract failing fields", "reject": "Reject — mark as not parsed" }
                     order: 2
                     default: "warn"
                     dependsOn: { field: "enabled", value: true }
@@ -1713,6 +2469,7 @@ Resources:
                     title: Missing field representation
                     description: "Only used when enabled. How a MISSING field appears in the output. 'omit': drop the key entirely. 'null_with_metadata': keep the key as null and list it under a sibling 'missing_fields' array. Default: omit."
                     enum: ["omit", "null_with_metadata"]
+                    enumLabels: { "omit": "Omit the key (default)", "null_with_metadata": "Null, listed in missing_fields" }
                     default: "omit"
                     order: 1
                     dependsOn: { field: "enabled", value: true }
@@ -1901,6 +2658,7 @@ Resources:
                     type: string
                     title: Geometry mode
                     enum: ["ocr_only", "llm_grounded", "llm", "off"]
+                    enumLabels: { "ocr_only": "OCR only — match OCR lines (default)", "llm_grounded": "LLM boxes, corrected by OCR", "llm": "LLM boxes as-is (discouraged)", "off": "Off — no geometry" }
                     default: "ocr_only"
                     description: "A box locates an extracted VALUE on the page, so a field the model returned nothing for is never located under any mode. 'ocr_only' (default): the model is not asked for boxes — each extracted value is matched to real OCR lines. No added prompt tokens, and more accurate than LLM-estimated boxes. 'llm_grounded': the model emits boxes and OCR grounding corrects them; use this when values are not present verbatim in the OCR text (reformatted dates, figures read off a chart). 'llm': the model's boxes as-is — DISCOURAGED, retained for compatibility: same prompt and cost as 'llm_grounded' then skips the correction, so never the better of the two. 'off': no geometry; the viewers stop offering to show fields on the page."
                     order: 0
@@ -1922,6 +2680,7 @@ Resources:
                     type: string
                     title: Confidence scoring mode
                     enum: ["off", "separate", "integrated"]
+                    enumLabels: { "off": "Off — no confidence", "separate": "Separate — its own pass (default)", "integrated": "Integrated — same call as extraction" }
                     default: "separate"
                     description: "How per-field confidence is produced. 'off': no confidence scoring (no extra model pass, no confidence data). 'separate' (default): scored in a distinct inference — a per-shard second pass in Advanced extraction mode, or the standalone Assessment step in Simple mode. 'integrated': the extraction inference emits each value's confidence in one pass (saves a model call). In Simple extraction a class that declares list fields is automatically scored in a separate pass even when integrated is selected, because Simple + integrated loses list rows silently; set x-aws-idp-allow-integrated-lists: true on a class to opt it back in. Confidence drives HITL review and the UI confidence display."
                     order: 0
@@ -2154,6 +2913,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -2183,12 +2943,33 @@ Resources:
               confidence_threshold:
                 type: number
                 title: Confidence threshold
-                description: "Confidence threshold (0.0-1.0). Fields scoring below this trigger HITL review and show confidence alerts."
+                description: "Confidence threshold (0.0-1.0) used for a field with no threshold of its own. Fields scoring below their threshold raise confidence alerts; with HITL enabled they send the document to review."
                 minimum: 0.0
                 maximum: 1.0
                 default: 0.8
                 order: 1
-                hideWhen: { field: "hitl.enabled", value: false }
+              notifications:
+                type: object
+                order: 2
+                sectionLabel: "Inbox messages"
+                description: "Retention and per-user cap for Inbox messages. Applies whether or not HITL review is enabled; changes apply to messages written after the change."
+                properties:
+                  retention_days:
+                    type: number
+                    title: "Retention (days)"
+                    description: "Days an Inbox message is kept before it is removed automatically."
+                    minimum: 1
+                    maximum: 365
+                    default: 30
+                    order: 0
+                  max_per_user:
+                    type: number
+                    title: "Messages kept per user"
+                    description: "When a new message exceeds this, the oldest read message is removed first; only if all are unread is the oldest unread removed."
+                    minimum: 1
+                    maximum: 200
+                    default: 50
+                    order: 1
           summarization:
             order: 7
             type: object
@@ -2403,6 +3184,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -2605,6 +3387,7 @@ Resources:
               onError:
                 type: string
                 enum: ["continue", "fail"]
+                enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document" }
                 default: continue
                 description: >-
                   Behavior when the hook errors. `fail` marks the document FAILED
@@ -3368,7 +4151,7 @@ Resources:
                     order: 0
                   lookback_hours:
                     type: integer
-                    description: How far back the error analyzer searches logs, traces, and execution history (in hours)
+                    description: Default window, in hours, for the error analyzer's CloudWatch log searches when the question names none
                     default: 24
                     order: 1
                   system_prompt:
@@ -3861,6 +4644,7 @@ Resources:
                     onError:
                       type: string
                       enum: ["continue", "fail", "skip-remaining"]
+                      enumLabels: { "continue": "Continue — log and proceed (default)", "fail": "Fail the document", "skip-remaining": "Skip the remaining hooks" }
                       default: continue
                       description: Behavior when this hook errors
                       order: 3
@@ -4376,14 +5160,33 @@ Resources:
           DOCUMENT_TRACKING_MODE: dynamodb
           DB_NAME: !Ref BDAMetadataTable
           WORKING_BUCKET: !Ref WorkingBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           # Read a pinned configuration revision's body when a document or
           # test run is pinned to one (config_revisions/ prefix).
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref BDAProcessResultsFunctionLogGroup
       Policies:
         - AWSLambdaBasicExecutionRole
+        # Review queues: ProcessResults writes the HOLDING item of a document it
+        # routes to a review queue, reads the item of a finalize run and its drafts.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
         - S3ReadPolicy:
             BucketName: !Ref InputBucket
         - S3CrudPolicy:
@@ -5637,10 +6440,28 @@ Resources:
           # Read a pinned configuration revision's body when a document or
           # test run is pinned to one (config_revisions/ prefix).
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref ProcessResultsFunctionLogGroup
       Policies:
         - AWSLambdaBasicExecutionRole
+        # Review queues: ProcessResults writes the HOLDING item of a document it
+        # routes to a review queue, reads the item of a finalize run and its drafts.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
         - !Ref LambdaECRAccessPolicy
         - S3ReadPolicy:
             BucketName: !Ref InputBucket

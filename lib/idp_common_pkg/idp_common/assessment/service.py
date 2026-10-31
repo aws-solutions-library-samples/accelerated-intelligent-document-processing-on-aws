@@ -144,7 +144,12 @@ def _extraction_class_not_configured(extraction_data: Dict[str, Any]) -> bool:
 
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
     """
-    Safely convert a value to float, handling strings and None values.
+    Safely convert a value to float, handling strings, None and non-finite values.
+
+    NaN and the infinities return ``default`` like any other unusable value
+    (``utils.finite_float``): ``json.loads`` accepts them in a model response,
+    and a NaN confidence compared with its threshold raised no alert, because
+    ``nan < threshold`` is False.
 
     Args:
         value: Value to convert to float
@@ -153,32 +158,16 @@ def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
     Returns:
         Float value or default if conversion fails
     """
-    if value is None:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return default
-
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    if isinstance(value, str):
-        # Handle empty strings
-        if not value.strip():
-            return default
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            logger.warning(
-                f"Could not convert string '{value}' to float, using default {default}"
-            )
-            return default
-
-    # Handle other types by attempting conversion
-    try:
-        return float(value)
-    except (ValueError, TypeError):
+    number = utils.finite_float(value)
+    if number is None:
         logger.warning(
-            f"Could not convert {type(value)} '{value}' to float, using default {default}"
+            f"Could not convert {type(value)} '{value}' to a finite float, "
+            f"using default {default}"
         )
         return default
+    return number
 
 
 @dataclass
@@ -273,7 +262,7 @@ class AssessmentService:
         Returns:
             JSON Schema dict for the class, or empty dict if not found
         """
-        from idp_common.assessment.threshold_resolver import find_class_schema
+        from idp_common.config.schema_utils import find_class_schema
         from idp_common.schema.multi_instance import wrap_class_schema
 
         return (
@@ -1763,6 +1752,10 @@ class AssessmentService:
             # produced); in 'llm_grounded' real OCR boxes refine the model's
             # estimates. Skipped for 'llm' (boxes as-is) and 'off' (no geometry).
             geometry_mode = self.config.extraction.geometry.mode
+            # Whether any page actually carried OCR geometry. The audit's rung needs
+            # this to tell "nothing matched" from "nothing was available to match
+            # against" — see audit_explainability's geometry_available.
+            ocr_geometry_available: bool | None = None
             if geometry_mode not in ("llm", "off"):
                 try:
                     from idp_common.assessment.ocr_grounding import (
@@ -1772,6 +1765,10 @@ class AssessmentService:
 
                     page_data_by_page = load_page_ocr_data(
                         document.pages, sorted_page_ids
+                    )
+                    ocr_geometry_available = any(
+                        isinstance(pd, dict) and pd.get("geometryAvailable")
+                        for pd in (page_data_by_page or {}).values()
                     )
                     if page_data_by_page:
                         enhanced_assessment_data = ground_assessment_geometry(
@@ -1825,6 +1822,7 @@ class AssessmentService:
                 geometry_mode=geometry_mode,
                 section_id=section_id,
                 ladder_issues=ladder_issues,
+                geometry_available=ocr_geometry_available,
             )
             processing_issues = ladder_issues + audit_issues
 

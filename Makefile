@@ -872,7 +872,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/review_queue_sweeper && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/test_run_sweeper && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# DockerBuildRun's ECR image verification: the bounded scan wait (#1336) and
 	@# the presence poll (#1310). `crhelper` is a Lambda-layer dependency and not a
 	@# test dependency here, so the suite stubs it in sys.modules before importing
@@ -885,6 +887,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
 	cd nested/api-resolvers/src/lambda/test_runner && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running Test Studio results tests (captured-config format on both storage shapes)..."
+	@# Its own invocation: this directory defines a module named ``index`` too, so a
+	@# combined run collides with test_runner above on the basename.
+	cd nested/api-resolvers/src/lambda/test_results_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running the config-version scope suites for the six API resolvers that enforce it..."
 	@# The fail-closed UsersTable scope lookup: an absent `email` claim or a failed
 	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its
@@ -899,6 +905,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/list_documents_range_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/sync_bda_idp_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
+	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -992,10 +1001,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
-		scripts/tests/test_check_shared_branch.py -v
+		scripts/tests/test_check_shared_branch.py \
+		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -1056,7 +1067,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make api-test STACK_NAME=<stack-name> [REGION=...])
 endif
 	@echo "Running dynamic API RBAC tests against stack $(STACK_NAME)..."
-	$(PYTHON) scripts/test_api_rbac.py \
+	$(RUN_FIRST_PARTY) scripts/test_api_rbac.py \
 	    --stack-name $(STACK_NAME) \
 	    $(if $(REGION),--region $(REGION),) \
 	    --report-dir $(if $(REPORT_DIR),$(REPORT_DIR),./scratch/api-test-results) \
@@ -1065,6 +1076,32 @@ endif
 
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
+
+# Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=<region>]
+# End-to-end Inbox check against a DEPLOYED stack: posts through
+# idp_common.notifications with local credentials (direct, group fan-out,
+# idempotency, dedupe), then reads back through the REST API with real ID tokens.
+# Creates and removes a temporary Cognito group, two temporary users and their
+# Inbox items, and restores the app client's auth flows. Exit 0 = PASS,
+# 1 = FAIL, 2 = a check errored or was skipped (never a pass).
+stacktest-inbox: ## Inbox live check: posts through idp_common.notifications and reads via the API (STACK_NAME=...; creates and removes temporary Cognito users and a group)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(RUN_FIRST_PARTY) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
+
+# Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
+# End-to-end review-queue check against a DEPLOYED stack: routes a sample document
+# under a temporary profile, claims it, saves a draft and completes it through
+# the REST API with a real Annotator ID token, then waits for the finalize
+# run and the final review status object. Creates and removes a temporary
+# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
+# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1557,11 +1594,13 @@ dep-manifest: ## Generate dependency manifests for artifact repository mirroring
 # pin. This target closes that gap by matching the generated manifests against
 # OSV. Findings that are genuinely unreachable go in
 # scripts/security/dep_audit_allowlist.json WITH a justification.
+# DEP_AUDIT_ARGS passes flags through, e.g. DEP_AUDIT_ARGS=--no-unmapped to skip
+# the unmapped-advisory report and its ~330 GitHub API requests.
 dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on HIGH+)
-	@$(PYTHON) scripts/security/dep_audit.py
+	@$(PYTHON) scripts/security/dep_audit.py $(DEP_AUDIT_ARGS)
 
 dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
-	@$(PYTHON) scripts/security/dep_audit.py --no-generate
+	@$(PYTHON) scripts/security/dep_audit.py --no-generate $(DEP_AUDIT_ARGS)
 
 ##@ Automated review (advisory — reviews an MR, gates nothing)
 # Runs Claude Code over open GitLab MRs or GitHub PRs with
@@ -1619,6 +1658,97 @@ ai-pr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
 		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
 		$(if $(PR),--mr $(PR),--all-open) --dry-run $(EXTRA_ARGS)
+
+# The MR UX test locally (scripts/ux_runner/run_in_docker.py), in the Docker image
+# built from scripts/ux_runner/install.sh, the same toolchain definition CI runs:
+# Mac (Apple Silicon too), Windows (Docker Desktop, or call the wrapper with `py`)
+# or a Linux devbox. ai-ux-test-local builds the MR's UI in a container with no
+# credentials, then runs the CI-equivalent test as a DRY RUN: section.md and the
+# mp4 land under scratch/ux-docker/ and nothing is posted. POST=1 (or true, yes,
+# y, on) posts; any other value, POST=0 included, does not.
+# ai-ux-browser starts only the confined headless Chrome, egress proxy and
+# recorder, with DevTools on 127.0.0.1:9222, for an interactive ux-test or
+# product-demo session. Both need host AWS credentials (exported on the host and
+# passed by name), plus UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID.
+.PHONY: ai-ux-test-local ai-ux-browser
+
+ai-ux-test-local: ## Dry-run the MR UX test in the Docker runner (MR=<iid> required; POST=1 posts; STACK=idp-ux-nightly)
+	@$(if $(MR),,$(error set MR=<iid>, e.g. make ai-ux-test-local MR=812))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py review --mr $(MR) \
+		$(if $(STACK),--stack $(STACK)) $(if $(filter 1 true yes y on,$(POST)),--post) \
+		$(EXTRA_ARGS)
+
+ai-ux-browser: ## Start the confined headless Chrome + egress proxy + recorder in Docker, CDP on 127.0.0.1:9222 (STACK=<name>)
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py browser \
+		$(if $(STACK),--stack $(STACK)) $(EXTRA_ARGS)
+
+# First-time-user stories, authored in scripts/ux_stories.toml. Both targets run on
+# the host with no Docker, credentials or stack. JSON=1 prints the flows as one JSON
+# object and nothing after it. Q reaches the search recipe through the environment,
+# because GNU make exports a variable set on its command line, so a quote in the
+# query cannot break the shell line.
+.PHONY: ai-ux-test-stories-list ai-ux-test-stories-search
+
+ai-ux-test-stories-list: ## Validate scripts/ux_stories.toml, list its flows, then the [Unreleased] CHANGELOG leads no story covers (TIER=p0|p1|all; JSON=1 prints one JSON object)
+	@$(PYTHON) scripts/ux_runner/stories.py list \
+		$(if $(TIER),--tier $(TIER)) $(if $(filter 1 true yes y on,$(JSON)),--json) \
+		$(EXTRA_ARGS)
+	$(if $(filter 1 true yes y on,$(JSON)),,@echo "[Unreleased] CHANGELOG leads no story covers:")
+	$(if $(filter 1 true yes y on,$(JSON)),,@$(PYTHON) -B scripts/ux_runner/changelog_select.py nudge)
+
+ai-ux-test-stories-search: ## What a first-time user finds in the published docs (Q="prefix mapping" required)
+	@test -n "$$Q" || { echo 'usage: make ai-ux-test-stories-search Q="what a first-time user would type"'; exit 2; }
+	@$(PYTHON) scripts/ux_runner/docs_index.py search -- "$$Q"
+
+# First-time-user stories in the Docker runner (scripts/ux_runner/run_in_docker.py
+# stories). ai-ux-test-stories-local is a dry run unless POST=1, which posts an MR
+# run's reply against idp-ux-nightly only: STORY=<id> [AS=<persona>], MR=<iid> or
+# ALL=1 [JOBS=n]. INTERACTIVE=1 watches one flow live from a terminal of your own
+# (PORT= when 9222 is taken), and REPLAY=<dir> re-runs a run from its own harness
+# commit. ai-ux-test-stories-pair starts the confined browser and prints the command
+# for a Claude session you start; PAIR=full opts into your whole session and
+# PAIR=keychain keeps a keychain sign-in. ai-ux-test-stories-judge re-judges a run
+# on the host with no Docker, rewriting results.json, section.md and report.html:
+# CHECK=1 writes nothing, SUMMARY=1 prints the table. ai-ux-test-stories-report
+# writes report.html alone, for any run directory, a downloaded CI artifact
+# included, with the standard library only, and prints its path. RUN and REPLAY
+# reach their recipes through the environment, as Q does for the search target, so
+# a path holding a quote or a space arrives whole. AS is one of make's own variables
+# (the assembler, `as` by default), so it is read only when it is set on the
+# command line.
+.PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge ai-ux-test-stories-report
+
+ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run unless POST=1 (STORY=<id> [AS=] | MR=<iid> | ALL=1 [JOBS=n]; INTERACTIVE=1 [PORT=]; REPLAY=<dir>)
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories \
+		$(if $(STORY),--story $(STORY)) $(if $(filter command line,$(origin AS)),--as $(AS)) $(if $(MR),--mr $(MR)) \
+		$(if $(filter 1 true yes y on,$(ALL)),--all) $(if $(JOBS),--jobs $(JOBS)) \
+		$(if $(VIDEO),--video $(VIDEO)) $(if $(filter 1 true yes y on,$(POST)),--post) \
+		$(if $(filter 1 true yes y on,$(INTERACTIVE)),--interactive) \
+		$(if $(PORT),--port $(PORT)) $(if $(REPLAY),--replay "$$REPLAY") \
+		$(if $(STACK),--stack $(STACK)) $(if $(WEB_URL),--web-url $(WEB_URL)) \
+		$(if $(DOCS),--docs $(DOCS)) $(if $(RUN_USD),--run-usd $(RUN_USD)) \
+		$(if $(RERUNS),--reruns $(RERUNS)) \
+		$(if $(filter 1 true yes y on,$(NARRATE)),--narrate-with-own-credentials) $(EXTRA_ARGS)
+
+ai-ux-test-stories-pair: ## Start the confined browser for one flow and print the command for a Claude session you start (STORY=<id> [AS=] [STACK=] [WEB_URL=] [PAIR=full|keychain])
+	@$(if $(STORY),,$(error set STORY=<id>, e.g. make ai-ux-test-stories-pair STORY=route-folder-to-profile AS=platform-admin))
+	@$(if $(filter-out full keychain,$(PAIR)),$(error PAIR is full or keychain, or unset for the confined session))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories --pair --story $(STORY) \
+		$(if $(filter command line,$(origin AS)),--as $(AS)) $(if $(STACK),--stack $(STACK)) \
+		$(if $(WEB_URL),--web-url $(WEB_URL)) $(if $(PORT),--port $(PORT)) \
+		$(if $(filter full,$(PAIR)),--pair-full) \
+		$(if $(filter keychain,$(PAIR)),--pair-keychain) $(EXTRA_ARGS)
+
+ai-ux-test-stories-judge: ## Re-judge a story run on the host, rewriting results.json, section.md and report.html (RUN=<dir holding story-run.json> required; CHECK=1 writes nothing; SUMMARY=1 prints the table; REJUDGE=1 judges a run of another JUDGEMENT_REVISION under this one)
+	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-judge RUN=<dir holding story-run.json> [CHECK=1] [SUMMARY=1] [REJUDGE=1]'; exit 2; }
+	@$(PYTHON) -B scripts/sdlc/ai_ux_test_stories.py --judge "$$RUN" \
+		$(if $(filter 1 true yes y on,$(CHECK)),--check) \
+		$(if $(filter 1 true yes y on,$(SUMMARY)),--summary) \
+		$(if $(filter 1 true yes y on,$(REJUDGE)),--rejudge)
+
+ai-ux-test-stories-report: ## Write report.html, a story run as one page to open in a browser, and print its path (RUN=<dir holding story-run.json> required)
+	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-report RUN=<dir holding story-run.json>'; exit 2; }
+	@$(PYTHON) -B scripts/ux_runner/story_report.py "$$RUN"
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common

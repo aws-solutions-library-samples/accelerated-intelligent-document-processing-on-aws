@@ -1,0 +1,71 @@
+query GetReviewItem($objectKey: String!) {
+  getReviewItem(objectKey: $objectKey) {
+    item {
+      objectKey
+      cycleId
+      profile
+      queue
+      priority
+      state
+      reviewStatus
+      enqueuedAt
+      reasons {
+        kind
+        sectionId
+        field
+        label
+        score
+        threshold
+      }
+      reasonCount
+      sections
+      ownerEmail
+      claimedAt
+      leaseExpiresAt
+      isMine
+      hasDraft
+      draftUpdatedAt
+      draftUpdatedBy
+      escalated
+      escalationNote
+      disposition
+      disposedBy
+      disposedAt
+      rejectReason
+      version
+    }
+    queueName
+    sections {
+      sectionId
+      documentClass
+      resultUri
+      draftUri
+      draftRevision
+      draftUpdatedBy
+      draftUpdatedAt
+      pageIds
+      reasons {
+        kind
+        sectionId
+        field
+        label
+        score
+        threshold
+      }
+    }
+    checklist
+    rejectReasons
+    skipReasons
+    claimCap
+    myClaimCount
+    history {
+      at
+      event
+      actor
+      details
+    }
+    machineOutputManifestUri
+    canClaim
+    claimBlockedReason
+  }
+}
