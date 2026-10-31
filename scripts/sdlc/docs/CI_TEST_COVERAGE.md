@@ -121,6 +121,7 @@ primary suite only.
 | Nightly schedule | not set | primary suite; updates the UX review stack |
 | Weekly variant-probe schedule | `true`, as a schedule variable | primary suite plus the probes; labelled `WEEKLY VARIANT-PROBE RUN` in the summary and the failure email and `WEEKLY VARIANT PROBES` in Slack; leaves the UX review stack alone |
 | Manual button, `web` or any other source | ignored | primary suite |
+| Any schedule, with `IDP_RUN_PROBES=true` set as a **project or group** CI/CD variable | `true`, inherited | the probes too — a nightly included, because GitLab gives every schedule the same source. Set the variable on the weekly schedule only |
 
 **Why a separate schedule.** A probe failure fails the run it is in. On the nightly
 it would be read as a product regression, and the nightly is the run somebody has to
@@ -179,7 +180,9 @@ join needs. Until it is, a weekly run carries the variable and deploys the prima
 suite only, and its summary's probe section reads "None run". Its Slack post is
 labelled, because the label is read in GitLab, but its summary and failure email
 are not, because they read the flag inside CodeBuild. It still leaves the UX review
-stack alone, because that decision is recorded in `ci_run_options.json`.
+stack alone, because that decision is recorded in `ci_run_options.json`. A run
+enabled by the legacy `IDP_TEST_APIGW_HOSTING` alias against such a project is
+refused by the timeout check and goes red, where it used to run the probes.
 
 **How long the weekly run is watched.** The probes are joined after the primary
 suite, so the weekly run's final summary lands later than the nightly's. CodeBuild

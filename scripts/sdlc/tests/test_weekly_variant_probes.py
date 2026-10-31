@@ -284,6 +284,38 @@ def _label_condition(body: str) -> ast.expr:
     raise AssertionError("no probe-run label condition found")
 
 
+def _evaluate(node: ast.expr) -> object:
+    """Evaluate the label condition without eval().
+
+    Only the shapes the condition uses are accepted: ``and``/``or``, ``==``,
+    string constants, and ``os.environ.get(...)`` with ``.strip()``/``.lower()``.
+    Anything else fails the test, so a condition that grows a new shape is read
+    again rather than evaluated blindly.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BoolOp):
+        values = [_evaluate(v) for v in node.values]
+        return all(values) if isinstance(node.op, ast.And) else any(values)
+    if (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.Eq)
+    ):
+        return _evaluate(node.left) == _evaluate(node.comparators[0])
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if ast.unparse(node.func) == "os.environ.get":
+            key, default = (_evaluate(a) for a in node.args)
+            return os.environ.get(str(key), str(default))
+        if node.func.attr in ("strip", "lower") and not node.args:
+            value = _evaluate(node.func.value)
+            assert isinstance(value, str)
+            return value.strip() if node.func.attr == "strip" else value.lower()
+    raise AssertionError(
+        f"unexpected shape in the label condition: {ast.unparse(node)}"
+    )
+
+
 @pytest.mark.parametrize("job", ["integration_tests", "nightly_notification"])
 @pytest.mark.parametrize(
     ("source", "probes", "labelled"),
@@ -303,9 +335,7 @@ def test_the_label_agrees_with_variant_probes_requested(
     monkeypatch.setenv("CI_PIPELINE_SOURCE", source)
     monkeypatch.setenv("IDP_RUN_PROBES", probes)
     condition = _label_condition(_slack_bodies(config)[job])
-    verdict = eval(  # noqa: S307 - the expression is this repo's own CI config
-        compile(ast.Expression(condition), "<label>", "eval"), {"os": os}
-    )
+    verdict = _evaluate(condition)
     assert bool(verdict) is labelled
     assert bool(verdict) is bool(itd.variant_probes_requested())
 
