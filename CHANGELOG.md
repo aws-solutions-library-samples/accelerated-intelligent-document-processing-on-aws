@@ -11,6 +11,12 @@ SPDX-License-Identifier: MIT-0
 
 - **Reprocessing a Pipeline-mode document keeps every section, and does not re-extract sharded sections.** On a reprocess where extraction was skipped but the assessment step still ran (for example with confidence scoring off), the rebuilt document listed the first section once for every section, losing the others. And with the Step Functions extraction runtime (`extraction.agentic.runtime: step_functions`), a section large enough to shard was extracted again from scratch, paying for its extraction twice, because the shard planner did not check for existing extraction output. Both now behave as a reprocess should: every section is kept, and an already-extracted section is skipped. **Action:** none.
 
+- **`config-create` output now passes `config-validate` and `config-upload`.** The template
+  `idp-cli config-create` and the SDK's `config.create` generate used to write a placeholder
+  string into every prompt it left out, which validation and the runtime read as the prompt
+  itself. Those prompts are now omitted, so the prompt the configuration is merged over
+  applies. See [`config-create`](docs/idp-cli.md#config-create).
+
 ## [0.6.13]
 
 ### Added
