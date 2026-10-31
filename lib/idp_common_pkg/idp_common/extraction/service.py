@@ -9024,6 +9024,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         section = self._validate_and_find_section(document, section_id)
         if not section:
             raise ValueError(f"Section {section_id} not found")
+        # A section that already has extraction output (a reprocess) is planned
+        # single-pass, which routes it to the extraction step and its skip branch.
+        # Sharding it would extract it again from scratch: the shard runtime has
+        # no skip of its own (#1686). Same predicate as the extraction handler's.
+        if section.extraction_result_uri and section.extraction_result_uri.strip():
+            logger.info(
+                "plan_section_shards: section %s already has extraction output "
+                "(%s) - single-pass so the extraction step can skip it",
+                section_id,
+                section.extraction_result_uri,
+            )
+            return {"shard_mode": False, "num_shards": 0, "shards": []}
         section_info = self._prepare_section_info(document, section)
         # Diagnostic: what the plan step actually sees for this section — page
         # count on the section, on the resolved section_info, and how many pages

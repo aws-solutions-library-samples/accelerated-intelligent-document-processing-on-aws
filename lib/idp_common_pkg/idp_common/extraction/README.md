@@ -1785,7 +1785,10 @@ Step Functions Distributed Map — one implementation, no behaviour divergence.
   `merge_shard_results`. Because each shard persists its result idempotently to
   S3, SFN's **native per-iteration retry re-runs only the failed/incomplete
   shards** — completed shards load from S3, with no custom near-timeout/reentry
-  code and no 15-minute ceiling for the section as a whole.
+  code and no 15-minute ceiling for the section as a whole. The planning state
+  (`ExtractionService.plan_section_shards`) plans a section that already has an
+  `extraction_result_uri` as single-pass, so on a reprocess it reaches the
+  extraction step's skip branch instead of being sharded and extracted again.
 
 Select the backend with `extraction.agentic.runtime` (`in_process` default, or
 `step_functions`); the `EXTRACTION_RUNTIME` env var and an explicit `override`
