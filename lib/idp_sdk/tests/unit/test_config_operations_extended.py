@@ -614,6 +614,30 @@ class TestUploadWritesRealItems:
         )
 
     @mock_aws
+    @pytest.mark.parametrize("features", ["min", "core", "all"])
+    def test_a_generated_template_validates_and_uploads(
+        self, aws_credentials, config_env, tmp_path, features
+    ):
+        """`create` then `upload(validate=True)`: the SDK accepts its own output.
+
+        The template used to carry a placeholder string in every prompt field it
+        left out, which `validate` read as the prompt and refused (issue #1673).
+        """
+        _create_stack(aws_credentials)
+        client = _client(aws_credentials)
+        out = tmp_path / "generated.yaml"
+        client.config.create(features=features, output=str(out))
+
+        validation = client.config.validate(config_file=str(out))
+        assert validation.valid, validation.errors
+
+        result = client.config.upload(
+            config_file=str(out), config_profile="generated", validate=True
+        )
+        assert result.success is True, result.error
+        assert _item(aws_credentials, "Config#generated") is not None
+
+    @mock_aws
     def test_the_second_upload_of_a_profile_is_not_a_creation(
         self, aws_credentials, config_env, tmp_path
     ):
