@@ -7344,6 +7344,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         document: Document,
         section: Any,
         section_info: SectionInfo,
+        alert_rows_shard_local: bool = False,
     ) -> None:
         """Ground the merged in-shard assessment and stage it for output.
 
@@ -7373,11 +7374,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # integrated large-list coverage reaches 100% like the separate path
         # (which retries inside assess_results_batched). No-op when nothing is
         # missing. Best-effort: never fails extraction.
-        # Whether the alert surface's row indexes are GLOBAL. Only the retry
-        # below rebuilds it from the merged assessment; otherwise the alerts are
-        # the shards' own, whose row indexes count from each shard's first row
-        # (upstream #813), so they cannot be matched against the merged data.
-        alert_rows_are_global = False
+        # Whether the alert surface's row indexes are GLOBAL. They are not when
+        # the surface is the shards' own alerts concatenated (the shard merge
+        # marks it): each row index then counts from its shard's first row
+        # (upstream #813), so it cannot be matched against the merged data. The
+        # retry below rebuilds the surface from the merged assessment, which
+        # makes it global again.
+        alert_rows_are_global = not alert_rows_shard_local
         if self._integrated_assessment_enabled():
             try:
                 merged_assessment, regenerated_alerts, split_stats = (
@@ -7747,6 +7750,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         shard_conflicts = None
         merged_assessment = None
         merged_assessment_alerts = None
+        alert_rows_shard_local = False
         assessment_split_stats = None
         # One of this section's agent runs was cut off at the model's output ceiling
         # and its already-validated extraction was salvaged from agent state rather
@@ -7771,6 +7775,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             merged_assessment = result.metering.pop("_merged_assessment", None)
             merged_assessment_alerts = result.metering.pop(
                 "_merged_assessment_alerts", None
+            )
+            alert_rows_shard_local = bool(
+                result.metering.pop("_merged_assessment_alerts_shard_local", False)
             )
             # Adaptive batch-splitting activity from the in-shard assessment
             # (present only when the confidence model truncated its output and
@@ -8035,6 +8042,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 document=document,
                 section=section,
                 section_info=section_info,
+                alert_rows_shard_local=alert_rows_shard_local,
             )
 
         # Structured issues (1.4) + completeness gate (1.3): translate the

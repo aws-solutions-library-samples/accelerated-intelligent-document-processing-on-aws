@@ -884,25 +884,82 @@ class TestShardLocalRowIndexes:
         )
         assert _names(kept) == ["Rows[0].Amount"]
 
-    def test_the_separate_in_shard_path_keeps_a_shard_local_row_alert(self):
-        """Through the storage point, with the integrated retry off: the alert
-        on shard 2's first row (a populated value) must survive."""
+    def _attach(self, alerts, *, shard_local):
         svc = _extraction_service()
         section = Section(section_id="1", classification="Invoice", page_ids=["1"])
         svc._attach_explainability(
             output_metadata={},
             merged_assessment=self._ASSESSMENT,
-            merged_assessment_alerts=[_alert("Total"), _alert("Rows[0].Amount", 0.2)],
+            merged_assessment_alerts=alerts,
             extracted_fields=self._VALUES,
             document=Document(id="d", input_key="d.pdf"),
             section=section,
             section_info=_section_info(),
+            alert_rows_shard_local=shard_local,
         )
+        return _names(section.confidence_threshold_alerts)
+
+    def test_a_sharded_surface_keeps_its_shard_local_row_alert(self):
+        """The alert names shard 2's first row, a populated value: it survives."""
+        alerts = [_alert("Total"), _alert("Rows[0].Amount", 0.2)]
+        assert self._attach(alerts, shard_local=True) == ["Rows[0].Amount"]
+
+    def test_an_unsharded_surface_has_its_row_alerts_judged(self):
+        """Single-agent ``separate``: the surface came from the batched assessor
+        with the class schema, so its indexes are global and an empty cell's
+        alert is dropped."""
+        alerts = [_alert("Total"), _alert("Rows[0].Amount", 0.1)]
+        assert self._attach(alerts, shard_local=False) == []
+
+    def test_save_results_hands_the_marker_to_the_storage_point(self):
+        from idp_common.extraction.service import ExtractionResult
+
+        svc = _extraction_service()
+        svc.config.extraction.agentic.enabled = True
+        doc = Document(id="d", input_key="d.pdf", status=Status.EXTRACTING)
+        section = Section(section_id="1", classification="Invoice", page_ids=["1"])
+        doc.sections = [section]
+        result = ExtractionResult(
+            extracted_fields=self._VALUES,
+            metering={
+                "_merged_assessment": self._ASSESSMENT,
+                "_merged_assessment_alerts": [_alert("Rows[0].Amount", 0.2)],
+                "_merged_assessment_alerts_shard_local": True,
+            },
+            parsing_succeeded=True,
+            total_duration=1.0,
+        )
+        with patch("idp_common.extraction.service.s3.write_content"):
+            svc._save_results(doc, section, result, _section_info(), "1", time.time())
         assert _names(section.confidence_threshold_alerts) == ["Rows[0].Amount"]
 
+    def test_the_shard_merge_marks_its_surface(self):
+        """Both collation sites in ``extraction/runtime.py`` set the marker the
+        storage point reads; without it a sharded surface would be judged."""
+        import ast
+        import inspect
+
+        from idp_common.extraction import runtime
+
+        tree = ast.parse(inspect.getsource(runtime))
+        marks = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == "_merged_assessment_alerts_shard_local"
+        ]
+        collations = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "collate_shard_assessments"
+        ]
+        assert collations and len(marks) == len(collations)
+
     def test_a_rebuilt_surface_has_its_row_alerts_judged(self):
-        """When the integrated retry rebuilt the surface its indexes are global,
-        so an alert on an empty cell is dropped."""
+        """A sharded surface the integrated retry rebuilt is global again, so an
+        alert on an empty cell is dropped."""
         svc = _extraction_service()
         rebuilt = [_alert("Rows[0].Amount", 0.1), _alert("Rows[1].Amount", 0.2)]
         svc._integrated_assessment_enabled = lambda: True  # type: ignore[method-assign]
@@ -918,6 +975,7 @@ class TestShardLocalRowIndexes:
             document=Document(id="d", input_key="d.pdf"),
             section=section,
             section_info=_section_info(),
+            alert_rows_shard_local=True,
         )
         assert _names(section.confidence_threshold_alerts) == ["Rows[1].Amount"]
 
