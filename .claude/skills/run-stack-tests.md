@@ -125,7 +125,8 @@ over creating one. Procedure:
   its internal deploy-variant table, so results match what CI would have produced
   — no drift.
 - To run all the deploy-variant tests inside a pipeline, press **Run** on the
-  weekly variant-probe schedule. `IDP_RUN_PROBES=true` is honoured only on a
+  weekly variant-probe schedule (a GitLab project setting under **Build › Pipeline
+  schedules**, carrying `IDP_RUN_PROBES=true`; the button exists only once the schedule does). `IDP_RUN_PROBES=true` is honoured only on a
   scheduled pipeline, so setting it on a manual or merge-request run does nothing;
   on the build side it is off unless the buildspec sets it.
 - Permissions boundary is now verified only by the primary suite (Step 13,

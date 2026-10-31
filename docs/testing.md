@@ -461,14 +461,17 @@ nightly schedule, a weekly variant-probe schedule (below), and a **manual play b
 The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and
 the deploy variants in [section 6](#6-live-stack-tiers-manual)) run on a separate
 **weekly** schedule, so a probe failure is never read as a nightly regression.
+The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
+carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
+only while it exists and is active.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
 `lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/` — because
 it is the only pre-merge signal this tier has left. And because a breaking change
-can merge and surface a night later with other merges on top of it, **a nightly
-failure is triaged by bisecting the day's merges**, not by reading the pipeline's
-own commit. The trade is written out in full in
+can merge and surface a night later (a week later, for a variant probe) with other
+merges on top of it, **a scheduled failure is triaged by bisecting the merges since
+the last green run**, not by reading the pipeline's own commit. The trade is written out in full in
 [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 
 Per-step detail, what each step asserts, and how to reproduce a single step by hand

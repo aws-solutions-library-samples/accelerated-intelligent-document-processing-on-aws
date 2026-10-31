@@ -442,9 +442,10 @@ the deployment-variant probes — with a play button on any MR targeting `develo
 **Click that button before merging a change on the deploy path** — `template.yaml`,
 `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
 `feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it
-pre-merge, and a break surfaces a night later with other merges stacked on top, so
-triage means bisecting the day's merges rather than reading the failing pipeline's
-own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
+pre-merge, and a break surfaces a night later (a week later, for a variant probe)
+with other merges stacked on top, so triage means bisecting the merges since the last
+green run rather than reading the failing pipeline's own commit.
+`.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
 maintained definition of that path list, but it now gates nothing and is
 documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 

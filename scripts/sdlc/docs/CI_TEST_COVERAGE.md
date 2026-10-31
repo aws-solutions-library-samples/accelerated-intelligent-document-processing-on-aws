@@ -125,6 +125,9 @@ primary suite only.
 **Why a separate schedule.** A probe failure fails the run it is in. On the nightly
 it would be read as a product regression, and the nightly is the run somebody has to
 triage. On its own schedule a red run is a probe result, labelled as one.
+The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
+carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
+only while it exists and is active.
 
 **The probes are noisy in a way serialising deploys does not fix.** The primary and
 probe stacks deploying **at once, inside one run**, burst account-wide control
