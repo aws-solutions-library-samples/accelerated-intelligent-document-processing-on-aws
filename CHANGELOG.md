@@ -25,6 +25,10 @@ SPDX-License-Identifier: MIT-0
 
 - **A page with no OCR text no longer fails the document in text-only page classification.** With `modality.images` off, a blank separator or signature page was reported as a document error and failed every other page's classification with it. It is now labelled `unclassified` with a warning on its section, and the rest of the document completes. A page whose text or image could not be read still fails the document. **Action:** none; turn `modality.images` on if such pages should be classified. See [Classification](docs/classification.md#pages-classification-could-not-classify) ([#1677](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1677)).
 
+- **`make dep-audit` and `make dep-manifest` read only the dependency files the repository holds** ([#1675](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1675)). Lockfiles and requirements files were found by walking the disk, so a gitignored copy (a staged build tree, a worktree inside the checkout) was audited as if it shipped and a local run could fail where CI passed. They are now found with `git ls-files`, tracked plus untracked-but-not-ignored, and the generator refuses to run outside a git checkout. See [Dependency mirroring](docs/dependency-mirroring.md).
+
+- **`make dep-audit` audits every pinned version, not one version per package.** The Python manifest kept a single version of each package, taken from the lockfiles, so an exact pin in a Lambda's `requirements.txt` was never audited at the version it installs: dropped when a lockfile carried another version, and resolved to the latest release when none did. Every distinct name and version pair is now listed and audited. ⚠️ `python-packages.txt` can therefore name a package more than once, which `pip install -r` refuses; [Dependency mirroring](docs/dependency-mirroring.md) shows the per-line loop to use instead.
+
 ## [0.6.13]
 
 ### Added
