@@ -968,6 +968,31 @@ The BedrockClient automatically handles common failure scenarios:
 - Intelligent classification of retryable vs. non-retryable errors
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
+- A retry frees the attempt it replaces before it starts. Every ladder here
+  (`_invoke_with_retry`, `_generate_embedding_with_retry`,
+  `_invoke_lambda_hook_with_retry`) retries by calling itself, and an `except`
+  handler only records the decision: the call is made after the `try` statement,
+  once the handler has exited. A call made from inside the handler runs while the
+  failure is still being handled, so the exception stays reachable for the rest of
+  the ladder, and through its traceback, its chained exceptions and botocore's
+  `error=` and `request=` kwargs so does the failed attempt's serialised request
+  body, with every attached image base64-encoded: one more copy per retry. Before
+  recording the decision the handler also calls `_drop_failed_attempt(e)`, which
+  detaches the tracebacks along that chain. botocore's `Endpoint._send_request`
+  holds the exception it raises in a local, which makes a reference cycle; without
+  the detach the attempt is unreachable but stays in memory until the cyclic
+  garbage collector next reaches it. The LambdaHook ladder serialises its payload inline, because its
+  function-error retry recurses from inside the `try` body.
+  `tests/unit/bedrock/test_retry_releases_failed_attempts.py` drives every handler
+  that can retry with a stub that fails the way botocore does, and measures the
+  memory still held at each attempt with the cyclic collector off. It also fails
+  when an `except` handler of a ladder calls the ladder by name or contains any
+  `return`, which is how a retry spelled through `getattr`, an alias or
+  `functools.partial` shows up. `_drop_failed_attempt` stops at the exception the
+  caller was already handling when it called in, so a caller's own traceback is
+  left intact. Not covered: a retry started inside a handler through an alias whose
+  result leaves the handler by assignment, on a branch no route drives, and a retry
+  loop placed inside an `except` block (#1678).
 
 ## Configuration Options
 

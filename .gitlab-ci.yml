@@ -518,13 +518,16 @@ deployment_validation:
 
 integration_tests:
   stage: integration_tests
-  # Must exceed the pipeline monitor's max_wait (8100s / 135 min in
-  # integration_test_deployment.py — the monitor refreshes its 1h-capped creds
-  # so it can watch that long) plus before_script (~5 min) and after_script log
+  # Must exceed the pipeline monitor's longest max_wait — 195 min on the weekly
+  # variant-probe run (PROBE_RUN_MONITOR_MAX_WAIT_SECONDS), 135 min otherwise, in
+  # integration_test_deployment.py; the monitor refreshes its 1h-capped creds so
+  # it can watch that long — plus before_script (~5 min) and after_script log
   # capture (~2 min), so the SCRIPT owns the deadline and always exits cleanly.
   # When this equalled the monitor's deadline, GitLab hard-killed the job first
-  # and after_script never captured logs.
-  timeout: 2h30m
+  # and after_script never captured logs. A runner's maximum_timeout would cap this
+  # silently; the fleet that ran these jobs set none (checked 2026-10-31), so recheck
+  # it if integration_tests moves to other runners.
+  timeout: 3h30m
   # Serialize deploys. The resource_group is a size-1 mutex; it is now scoped to a
   # single SHARED group rather than per-branch, which is the right choice once the
   # trigger is a nightly schedule plus occasional manual clicks: the thing it has to
@@ -535,6 +538,13 @@ integration_tests:
   # automatically, to let different MRs deploy concurrently. That concurrency is
   # what used to exhaust account quotas, and it no longer exists to be bounded.)
   interruptible: true
+  # One group for every region, not one per region. The weekly region runs could
+  # overlap the nightly without a per-region quota noticing, but IAM is global:
+  # the IAM CreatePolicy rate limit is one of the bursts that made concurrent
+  # deploys flaky, and every run's startup sweep reaps IAM roles and policies
+  # account-wide. Serialising them keeps one run's deploy out of another's sweep
+  # and rate limit. A queued run waits for the group without its job timeout
+  # running.
   resource_group: integration_deploy
   variables:
     IDP_ADMIN_EMAIL: ${GITLAB_USER_EMAIL}
@@ -545,7 +555,19 @@ integration_tests:
   #   IDP_ACCOUNT_ID: ${IDP_ACCOUNT_ID}
 
   # The expensive (~1h) real-AWS deploy + probe suite. Trigger policy:
-  #   - the nightly schedule                     → auto
+  #   - the nightly schedule                     → auto, primary suite only
+  #   - a weekly region schedule                 → auto, primary suite only, in the
+  #     region its IDP_TEST_REGION names (eu-central-1, ca-central-1), against
+  #     that region's own source bucket and genaiic-sdlc-codepipeline stack
+  #   - the weekly variant-probe schedule        → auto, primary suite plus the
+  #     deployment-variant probes. The schedule carries the pipeline variable
+  #     IDP_RUN_PROBES=true, and integration_test_deployment.py
+  #     (variant_probes_requested) honours it only on a scheduled pipeline. The
+  #     probes are on their own schedule so that a probe failure fails that run
+  #     and cannot be read as a nightly product regression. The resource_group
+  #     below serialises it against the nightly; it does NOT reduce the burst of
+  #     primary + probe stacks inside the run, which codebuild_deployment.py's
+  #     launch stagger, concurrency cap and retry bound instead.
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -560,8 +582,9 @@ integration_tests:
   #
   # What it costs: a change that breaks the deploy, or any of the twelve suite steps
   # or five variant probes the deploy runs, can now MERGE and stay undetected until
-  # the next nightly run — by which time other merges may sit on top of it, so the
-  # nightly failure does not name the commit that caused it. There is no required
+  # the next nightly run (the next weekly run, for a variant probe) — by which time
+  # other merges may sit on top of it, so the failure does not name the commit
+  # that caused it. There is no required
   # status check on this repository to fall back on (issue #933), so nothing else
   # catches it either.
   #
@@ -575,8 +598,8 @@ integration_tests:
   #     paths and is still the right definition of "touches the deploy path" — it is
   #     no longer wired to a `changes:` rule here, because a manual button you click
   #     deliberately should always be available.
-  #   - A nightly failure is triaged by bisecting the day's merges, not by reading
-  #     the pipeline's own commit.
+  #   - A scheduled failure is triaged by bisecting the merges since the last green
+  #     run, not by reading the pipeline's own commit.
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
@@ -608,7 +631,13 @@ integration_tests:
 
     # Set environment variables for Python script
     - export IDP_ACCOUNT_ID=${IDP_ACCOUNT_ID:-020432867916}
-    - export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    # The region: us-east-1, or the IDP_TEST_REGION a weekly region schedule
+    # carries (honoured on a schedule only, and only for a region with CI
+    # infrastructure — see region_run_requested). Two lines, not
+    # `eval "$(...)"`, so an unknown region fails the job here: a failed command
+    # substitution inside eval's argument is invisible to errexit.
+    - REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env)
+    - eval "$REGION_ENV"
     - export IDP_PIPELINE_NAME=genaiic-sdlc-deploy-pipeline
 
     # Run integration test deployment
@@ -636,6 +665,17 @@ integration_tests:
       else
         echo "ℹ️ No persisted credentials — using the job's own (expired past ~1h)"
       fi
+    # The same region the script ran in: after_script is a separate shell, so the
+    # script's exports are gone, and every read below (the pipeline execution, the
+    # build log, the S3 summary) is in that region. An unknown region already
+    # failed the script, so here it falls back to the default rather than ending
+    # after_script before the logs are captured.
+    - |
+      REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env 2>/dev/null) || REGION_ENV=""
+      eval "$REGION_ENV"
+      export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+      export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
+      echo "Region: $AWS_DEFAULT_REGION"
 
     # Display CodeBuild logs directly in GitLab runner console
     - |
@@ -840,13 +880,31 @@ integration_tests:
         # backslashes and newlines, and a hand-built JSON body breaks on all three.
         python3 - "$CI_JOB_STATUS" "$CI_JOB_URL" "$CI_COMMIT_SHA" > slack-payload.json <<'PY'
       import json, pathlib, sys
+      import os
 
       job_status, job_url, sha = sys.argv[1:4]
       ok = job_status == "success"
+      # The weekly variant-probe schedule posts to the same channel, so its result
+      # says so: a probe failure must not be read as a nightly regression.
+      # Keyed like variant_probes_requested(): the variable counts only on a
+      # schedule, so a manual run carrying it (which runs no probes) is not
+      # announced as a probe run.
+      probe_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
+      )
+      # A weekly region run posts to the same channel too, and names its region:
+      # the schedule's own IDP_TEST_REGION, read the same way in
+      # nightly_notification, so a run refused for a bad value is still labelled.
+      region_run = (
+          os.environ.get("IDP_TEST_REGION", "").strip().lower()
+          if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          else ""
+      )
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
-      # monitor stopped before the pipeline reached a terminal state, on the
-      # 110-min deadline or on a credential expiry it could not refresh), and it
+      # monitor stopped before the pipeline reached a terminal state, on its
+      # handoff deadline or on a credential expiry it could not refresh), and it
       # drops this marker when it does. Reporting that as ✅ PASSED asserts
       # something nobody checked.
       handed_off = pathlib.Path("monitor_handoff.txt").is_file()
@@ -863,8 +921,8 @@ integration_tests:
       # attached, so a long summary can never push the handoff warning off the end
       # — that warning is the part a reader most needs.
       if not ok:
-          summary += ("\n\nTriage by bisecting the day's merges: the pipeline's own "
-                      "commit is not necessarily the cause.")
+          summary += ("\n\nTriage by bisecting the merges since the last green run: "
+                      "the pipeline's own commit is not necessarily the cause.")
       elif handed_off:
           summary = (
               pathlib.Path("monitor_handoff.txt").read_text(errors="replace").strip()
@@ -879,6 +937,10 @@ integration_tests:
           status = "⚠️ UNVERIFIED (monitor handed off)"
       else:
           status = "✅ PASSED"
+      if probe_run:
+          status = "🔬 WEEKLY VARIANT PROBES · " + status
+      if region_run:
+          status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -1874,13 +1936,13 @@ nightly_notification:
           if names:
               return (
                   "❌ FAILED BEFORE THE DEPLOY" + status_suffix(names),
-                  "This nightly did not reach the deploy stage, so NOTHING was "
+                  "This scheduled run did not reach the deploy stage, so NOTHING was "
                   "deployed and no integration test ran. GitLab skipped the rest "
                   "of the pipeline because of:\n\n" + causes,
               )
           return (
               "❌ FAILED BEFORE THE DEPLOY",
-              "This nightly did not reach the deploy stage, so NOTHING was "
+              "This scheduled run did not reach the deploy stage, so NOTHING was "
               "deployed and no integration test ran. An earlier stage failed "
               "and GitLab skipped the rest of the pipeline.\n\n"
               "The failed job could not be read from the GitLab API "
@@ -1911,6 +1973,23 @@ nightly_notification:
 
           if len(body) > MAX_BODY:
               body = body[:MAX_BODY] + "\n… (truncated — the rest is in the job logs)"
+
+          # Same label as the post in integration_tests: the weekly variant-probe
+          # schedule shares the channel, and its result must not read as the nightly's.
+          if (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
+          ):
+              status = "🔬 WEEKLY VARIANT PROBES · " + status
+          # And a weekly region run names its region, read exactly as the post in
+          # integration_tests reads it.
+          region_run = (
+              os.environ.get("IDP_TEST_REGION", "").strip().lower()
+              if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              else ""
+          )
+          if region_run:
+              status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -1959,6 +2038,12 @@ nightly_notification:
 #     stack's state, which keeps it out of the comparison;
 #   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
 #   - a push to develop, as a manual button.
+# The weekly region schedules (IDP_TEST_REGION) are excluded for the same reason:
+# the review stack is in us-east-1 and they leave it alone.
+# The weekly variant-probe schedule (IDP_RUN_PROBES=true) is also a scheduled
+# develop pipeline and is excluded: it leaves the review stack alone, so a story
+# run there would re-test the night's stack and add a second "night" to the
+# digest's comparison.
 # integration_tests is in every pipeline those rules admit (scheduled, or a
 # manual job on develop), so `dependencies: [integration_tests]` is always
 # valid.
@@ -1990,6 +2075,10 @@ ai_ux_test_stories_nightly:
   parallel: 5
   rules: &ux_story_nightly_rules
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_PROBES =~ /^\s*true\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_TEST_REGION
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always

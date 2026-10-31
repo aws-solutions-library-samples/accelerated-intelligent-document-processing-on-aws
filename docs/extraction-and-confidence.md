@@ -1528,9 +1528,23 @@ extraction:
 >    extraction. With rows still unscored the section reports
 >    `assessment_incomplete` naming the time budget, and those rows carry a per-row
 >    reason naming it too (the `assessment_deadline_reached` warning is for a run
->    that was cut short and scored every row regardless). ⚠️ Two routes to this
->    symptom are **not** covered: an out-of-memory kill, which is equally
->    exception-free and which nothing here bounds, and the sizing bug itself —
+>    that was cut short and scored every row regardless). An out-of-memory kill is
+>    equally exception-free. Every concurrent batch carries all of the section's
+>    page images, and measured offline each one in flight costs about three times
+>    its serialised request (roughly 90 MB per batch for a 17-page section's 27 MB
+>    request), so memory grows with the request size times
+>    `extraction.agentic.max_concurrent_batches`. Request size grows with page count
+>    up to 20 pages; above that the client shrinks each image to fit Bedrock's
+>    many-image limit, so a 33-page section measured about the same as a 17-page one. A
+>    throttled or timed-out Bedrock call used to keep one more copy of its request
+>    per retry until the whole retry sequence ended. Measured offline on a 17-page
+>    section with the default ten batches, peak memory was about 1.0 GB with no
+>    retries, 3.1 GB with six throttled attempts per call or two timed-out ones, and
+>    7.1 GB with six timed-out ones. A retry now frees the attempt it replaces, and
+>    each of those retry cases measured about 1.1 GB (#1678). Nothing bounds the
+>    concurrency term against the function's memory, so for a section with many
+>    large page images lower `max_concurrent_batches`. ⚠️ One route to this symptom
+>    is **not** covered: the sizing bug itself —
 >    a wrongly large batch size makes the pass issue few big calls rather than many
 >    small ones, which is not the shape a per-dispatch guard refuses. Until #894 is
 >    fixed, score such a class with a large-output-cap confidence model

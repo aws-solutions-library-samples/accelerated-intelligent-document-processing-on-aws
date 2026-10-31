@@ -5,6 +5,7 @@ CodeBuild Deployment Script
 Handles IDP stack deployment and testing in AWS CodeBuild environment.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -44,8 +45,10 @@ sys.path.append(
     )
 )
 from failure_agent import (  # noqa: E402
+    _update_configuration_module,
     build_evidence_brief,
     fetch_full_build_log,
+    regional_model_id,
     run_failure_agent,
 )
 
@@ -940,6 +943,86 @@ MANAGED_STACK_NAME_PREFIX = "idp"
 # create_iam_resources) because test_step13_permission_boundaries asserts against
 # the boundary that stack actually deployed with.
 SHARED_BOUNDARY_POLICY_NAME = "idp-cicd-shared-PermissionsBoundary"
+#: The region the nightly, the probe run and every button press build in. Same
+#: value as integration_test_deployment.PRIMARY_CI_REGION.
+PRIMARY_CI_REGION = "us-east-1"
+#: Every region holding CI infrastructure: PRIMARY_CI_REGION plus
+#: integration_test_deployment.REGION_RUN_REGIONS, which
+#: test_weekly_region_runs.py keeps in step with this. The startup sweeps reap
+#: GLOBAL IAM roles and policies whose run has no stack left, so they must look
+#: for that stack in every region a run can be in, not only the build's own.
+CI_INFRA_REGIONS = ("us-east-1", "eu-central-1", "ca-central-1")
+
+
+def ci_region(environ: dict | None = None) -> str:
+    """The region this build runs in. CodeBuild sets both variables."""
+    env = os.environ if environ is None else environ
+    return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
+
+
+def _model_swapper():
+    """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
+
+    Loaded from source rather than copied, so the harness swaps a config exactly
+    as a stack deploy swaps its shipped defaults.
+    """
+    return _update_configuration_module().swap_model_ids
+
+
+def regional_config_file(config_path: str, environ: dict | None = None) -> str:
+    """`config_path`, or a copy with its model ids swapped for an EU or CA build.
+
+    A stack deployed outside the US has its shipped defaults swapped to models its
+    region can call, but a configuration uploaded afterwards is stored as written,
+    which the product documents (docs/eu-region-model-support.md). A suite config
+    naming `us.` models would then fail on its first Bedrock call in eu-central-1,
+    and on the ones ca-central-1 cannot call. Uploading the swapped copy is what a
+    user in that region would do. In PRIMARY_CI_REGION, and any other region the
+    swap does not cover, the path comes back unchanged.
+
+    It swaps and does not filter: an id the region cannot call that has no swap
+    row (in CA_UNAVAILABLE_MODELS without a CA_MODEL_MAPPINGS entry) is uploaded
+    as written and fails at its first call, and swap_model_ids rewrites ids held
+    as mapping values, not list items. test_weekly_region_runs.py asserts no
+    config the suite uploads names an unavailable id after the swap. One swapped
+    copy is written per config contents and region, and reused.
+    """
+    import yaml
+
+    region = ci_region(environ)
+    region_type = (
+        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
+    )
+    if region_type is None:
+        return config_path
+    with open(config_path, "rb") as f:
+        raw = f.read()
+    # Keyed on the contents, not the path: the harness rewrites some of the
+    # files it uploads (the hook configs in /tmp) between uploads.
+    key = (hashlib.sha256(raw).hexdigest(), region_type)
+    cached = _REGIONAL_CONFIGS.get(key)
+    if cached is not None and os.path.exists(cached):
+        return cached
+    config = yaml.safe_load(raw)
+    swapped = _model_swapper()(config, region_type)
+    if swapped == config:
+        return config_path
+    fd, out_path = tempfile.mkstemp(
+        prefix=f"citest-{region_type}-",
+        suffix=".yaml",
+        dir="/tmp",  # nosec B108
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        yaml.safe_dump(swapped, f, sort_keys=False)
+    print(f"🌍 Swapped model ids in {config_path} for {region} → {out_path}")
+    _REGIONAL_CONFIGS[key] = out_path
+    return out_path
+
+
+#: (sha256 of the config, region type) -> the swapped copy regional_config_file()
+#: wrote.
+_REGIONAL_CONFIGS: dict[tuple[str, str], str] = {}
+
 
 #: The long-lived review stack the MR UX test (scripts/sdlc/ai_ux_test.py) runs
 #: against, updated in place by the SCHEDULED build only. Its membership of
@@ -956,7 +1039,7 @@ CI_RUN_OPTIONS_FILE = "ci_run_options.json"
 #: How long after main() starts it will wait for the update before reporting it as
 #: still running. CloudFormation carries on server-side either way. It counts from
 #: main()'s start, and the two bounds it must stay inside count from earlier ones:
-#: CodeBuild's 120-minute project timeout from the build's start, and the GitLab
+#: CodeBuild's 180-minute project timeout from the build's start, and the GitLab
 #: monitor's 110-minute handoff (MONITOR_HANDOFF_SECONDS) from the monitor's, both
 #: before the pipeline's source stage, the build's provisioning and its install
 #: phase, none of which main() sees. So a slow update leaves the verdict alone only
@@ -966,6 +1049,22 @@ CI_RUN_OPTIONS_FILE = "ci_run_options.json"
 UX_NIGHTLY_JOIN_DEADLINE_SECONDS = 90 * 60
 #: The timeout on the update's `idp-cli deploy --wait`, inside the deadline above.
 UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS = 85 * 60
+#: How long after main() starts it will wait for the deployment-variant probes
+#: before reporting the ones still running as failed. Only the weekly
+#: variant-probe run launches them. Like UX_NIGHTLY_JOIN_DEADLINE_SECONDS it counts
+#: from main()'s start, and it sits 30 minutes below the 180-minute project timeout
+#: the template declares (scripts/sdlc/cfn/codepipeline-s3.yml; a project deployed
+#: from an older template is shorter, and probe_run_timeout_shortfall() refuses a
+#: probe run on one), so the final summary and the
+#: failure email are written even when a probe hangs; without it the build is
+#: killed mid-join and neither is. test_weekly_variant_probes.py pins the headroom.
+#: The 30 minutes is an unmeasured, reviewed allowance for the install phase before
+#: main() starts plus the summary, email and Slack post after the join; it is the
+#: number with the least slack of the five deadlines that test pins.
+PROBE_JOIN_DEADLINE_SECONDS = 150 * 60
+#: The project timeout a probe run needs: the join deadline plus that allowance.
+#: probe_run_timeout_shortfall() checks the running build against it.
+PROBE_RUN_MIN_TIMEOUT_MINUTES = PROBE_JOIN_DEADLINE_SECONDS // 60 + 30
 #: Set to false/0/no/off, or to an empty value, to turn the update off without a
 #: commit; unset, the schedule decides. An empty value is off, as it is for
 #: IDP_KEEP_FAILED_STACK, so an entry declared with a blank value cannot leave the
@@ -983,8 +1082,7 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
     non-adjustable account-wide IAM *mutating* call rate that
     _THROTTLE_RETRY_CONFIG exists to ride out, while iam:GetPolicy does not. For
     the shared probe boundary that makes the steady state after the first run
-    cost zero mutating calls, which is what a concurrent `make probes-all` sweep
-    needs.
+    cost zero mutating calls, which is what concurrently launched probes need.
     """
     boundary_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
 
@@ -1571,7 +1669,7 @@ def test_step4_bda_mode(stack_name):
 
     try:
         print("Uploading BDA config (use_bda: true)")
-        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {bda_config_path} --config-version {config_version}"
+        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(bda_config_path)} --config-version {config_version}"
         run_command(cmd)
 
         print("Syncing BDA config to create blueprints (without activation)")
@@ -1646,7 +1744,7 @@ def test_step5_rule_validation(stack_name):
     content_path = "responses.global_periods.0.policy_type"
 
     print(f"Uploading rule validation config from: {config_path}")
-    cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {config_path} --config-version {config_version}"
+    cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file(config_path)} --config-version {config_version}"
     run_command(cmd)
 
     def verify_rule_results(json_data):
@@ -1899,7 +1997,7 @@ def test_step8_agentic_extraction(stack_name):
 
     try:
         print("Uploading nuveen.yaml configuration...")
-        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file scripts/sdlc/config/nuveen.yaml --config-version agentic-nuveen --no-validate"
+        cmd = f"idp-cli config-upload --stack-name {stack_name} --config-file {regional_config_file('scripts/sdlc/config/nuveen.yaml')} --config-version agentic-nuveen --no-validate"
         run_command(cmd, check=False)
 
         print(
@@ -2556,7 +2654,7 @@ def test_step15_config_prefix_mappings(stack_name):
         # A real second profile, through the product's own path.
         cmd = (
             f"idp-cli config-upload --stack-name {stack_name} "
-            f"--config-file config_library/unified/lending-package-sample/config.yaml "
+            f"--config-file {regional_config_file('config_library/unified/lending-package-sample/config.yaml')} "
             f"--config-version {mapped_profile}"
         )
         run_command(cmd)
@@ -3288,7 +3386,7 @@ def _assert_onerror_fail_aborts(stack_name, sm_arn, hook_arn, base_cfg, suffix):
         yaml.safe_dump(cfg, f, sort_keys=False)
     run_command(
         f"idp-cli config-upload --stack-name {stack_name} "
-        f"--config-file {fail_cfg_path} "
+        f"--config-file {regional_config_file(fail_cfg_path)} "
         f"--config-version {_HOOK_FAIL_CONFIG_VERSION}",
         check=True,
     )
@@ -3538,7 +3636,7 @@ def test_step14_pipeline_hooks(stack_name):
 
         run_command(
             f"idp-cli config-upload --stack-name {stack_name} "
-            f"--config-file {base} --config-version {config_version}",
+            f"--config-file {regional_config_file(base)} --config-version {config_version}",
             check=True,
         )
         # Round-trip check: the flat hook sections must survive the config
@@ -5412,11 +5510,12 @@ def _filter_root_cause_events(failed_events):
 
 def _invoke_bedrock(prompt):
     """Invoke Bedrock with a prompt and return the response text"""
-    bedrock = boto3.client("bedrock-runtime")
+    region = ci_region()
+    bedrock = boto3.client("bedrock-runtime", region_name=region)
     # Opus 4.8 rejects sampling params (temperature/top_p/top_k) with a 400 —
     # do not add them back.
     response = bedrock.invoke_model(
-        modelId="us.anthropic.claude-opus-4-8",
+        modelId=regional_model_id("us.anthropic.claude-opus-4-8", region),
         body=json.dumps(
             {
                 "anthropic_version": "bedrock-2023-05-31",
@@ -5913,17 +6012,19 @@ def teardown_primary_stack(result, stack_name):
 # IDP stack configured for API-Gateway Web UI hosting in its GLOBAL (regional,
 # internet-facing, NO VPC) form: WebUIHosting=APIGateway +
 # ApiGatewayVisibility=GLOBAL. It exercises the S3-proxy REST API hosting code
-# on every run and fetches the UI over HTTP, without consuming VPC quota.
+# and fetches the UI over HTTP, without consuming VPC quota. It is one of the
+# PROBE_VARIANTS, so it runs on the weekly variant-probe run, not every run.
 #
-# The VPC/PRIVATE variant is NOT run in routine CI: it stood up a throwaway VPC
-# per run, which leaked VPCs (Lambda ENIs blocking teardown) and consumed 1 of
-# only 5 VPC slots per concurrent run, exhausting the quota under parallel
-# pipelines. Validate the PRIVATE/VPC path out-of-band (manual/local) instead.
-# The self-contained VPC template (scripts/sdlc/apigw-hosting-test-vpc.yaml) is
-# retained for that manual use. delete_apigw_test_vpc / the startup reaper below
+# The PRIVATE/VPC variant is a probe too (`apigwpriv`), and it deploys into the
+# persistent test VPC (and skips itself when the CI account has none) rather
+# than standing up its own: a throwaway VPC per run
+# leaked VPCs (Lambda ENIs blocking teardown) and exhausted the 5-VPC quota under
+# parallel pipelines. The self-contained VPC template
+# (scripts/sdlc/apigw-hosting-test-vpc.yaml) is retained for manual use. delete_apigw_test_vpc / the startup reaper below
 # remain to clean up any historical *-apigw-vpc stragglers.
 #
-# Gated by IDP_TEST_APIGW_HOSTING (default "true"); set to "false" to skip.
+# Gated by IDP_RUN_PROBES on a scheduled pipeline (variant_probe_run()); the
+# legacy IDP_TEST_APIGW_HOSTING=true also turns the probes on.
 # ---------------------------------------------------------------------------
 
 
@@ -6947,9 +7048,34 @@ def _live_idp_run_prefixes():
     Raises if any page of the listing cannot be read, rather than returning the
     prefixes read so far. Every caller reaps what is NOT in the set, so a partial
     set would read each run on an unread page as over, on a path that deletes.
+
+    The stacks are listed in every region in CI_INFRA_REGIONS, and the build's own
+    region if it is not one of them. IAM roles and policies are global, so a
+    region run's sweep that listed only its own region would read every
+    us-east-1 run, a retained failed stack included, as over and reap its IAM;
+    and the nightly would do the same to a region run's.
     """
     prefixes = set()
-    cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+    for region in _live_run_regions():
+        prefixes |= _live_idp_run_prefixes_in(region)
+    return prefixes
+
+
+def _live_run_regions() -> list[str]:
+    """CI_INFRA_REGIONS, plus the build's own region if it is not one of them."""
+    regions: list[str] = list(CI_INFRA_REGIONS)
+    own = ci_region()
+    if own not in regions:
+        regions.append(own)
+    return regions
+
+
+def _live_idp_run_prefixes_in(region: str) -> set:
+    """The run-prefixes with a stack in `region`; raises on an unread page."""
+    prefixes = set()
+    cf = boto3.client(
+        "cloudformation", region_name=region, config=_THROTTLE_RETRY_CONFIG
+    )
     paginator = cf.get_paginator("list_stacks")
     # All statuses EXCEPT DELETE_COMPLETE (a completed delete means the stack is
     # gone, so its buckets — if any survived — are fair game).
@@ -8300,8 +8426,8 @@ DEFAULT_PROBE_MAX_CONCURRENCY = 8
 # limit) so the same resource types across stacks don't overlap their create
 # windows. 120s × up to 5 probes = at most ~8min added to the LAST probe's start
 # — negligible against a ~30-min deploy, and it prevents the burst rather than
-# recovering from it. Only applies when probes actually run (off by default in
-# CI now; used by `make probes-all` / IDP_RUN_PROBES=true). 0 disables.
+# recovering from it. Only applies when probes actually run (the weekly
+# variant-probe schedule, or IDP_RUN_PROBES=true). 0 disables.
 DEFAULT_PROBE_LAUNCH_STAGGER_SECS = 120
 
 
@@ -8565,8 +8691,8 @@ def _run_probe_attempt(probe, admin_email, template_url, vpc_params):
     finally:
         # A probe's teardown findings are printed by the verification but do NOT
         # change its verdict: a probe uses the shared boundary policy, so it
-        # creates no per-run policy of its own, and probes are off by default in
-        # CI. Folding them into the probe result is a separate change.
+        # creates no per-run policy of its own, and in CI probes run only on the
+        # weekly variant-probe schedule. Folding them into the probe result is a separate change.
         cleanup_stack({"stack_name": stack_name})
 
 
@@ -8654,7 +8780,7 @@ def resolve_probe_concurrency(num_probes):
     return max(1, min(cap, num_probes))
 
 
-def run_variant_probes(admin_email, template_url, probes=None):
+def run_variant_probes(admin_email, template_url, probes=None, results=None):
     """Run the deployment-variant probes concurrently, capped at the quota budget.
 
     Intended to run on its OWN supervisor thread so its probe deploys overlap
@@ -8669,6 +8795,10 @@ def run_variant_probes(admin_email, template_url, probes=None):
     failing) never affects the others. Returns a list of per-probe result dicts
     (order not significant; each carries its own "probe" label; VPC-requiring
     probes with no test VPC configured come back skipped=True).
+
+    `results`, when given, is the list each finished probe is appended to as it
+    finishes, so a caller that stops waiting (join_variant_probes at its
+    deadline) still holds the probes that completed.
     """
     probes = PROBE_VARIANTS if probes is None else probes
     # The ZAP DAST probe is individually gateable (it needs Docker/PrivilegedMode
@@ -8681,7 +8811,7 @@ def run_variant_probes(admin_email, template_url, probes=None):
             print(f"⏭️  Skipping probe [{name}] (IDP_TEST_ZAP=false)")
     if not probes:
         print("ℹ️ No deployment-variant probes configured")
-        return []
+        return [] if results is None else results
 
     cap = resolve_probe_concurrency(len(probes))
     print(
@@ -8709,7 +8839,7 @@ def run_variant_probes(admin_email, template_url, probes=None):
             time.sleep(launch_index * stagger)
         return deploy_and_test_probe(probe, admin_email, template_url)
 
-    results = []
+    results = [] if results is None else results
     # No `with`: match the primary suite's pattern — shutdown(wait=True) in a
     # finally, never an implicit join that could burn the job timeout.
     executor = ThreadPoolExecutor(max_workers=cap)
@@ -8816,6 +8946,15 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
     to say so. UX_NIGHTLY_DISABLE_ENV set to a false or an empty value in the
     build's environment turns the update off without a commit (its comment says
     where it lasts); unset, the schedule decides.
+
+    The weekly variant-probe schedule is also a scheduled run of develop, and its
+    options say ``variant_probes``. It leaves the review stack alone, so the stack
+    still moves once a night, and the probe run does not add that stack's update
+    to the burst its own probe stacks already make.
+
+    A weekly region run leaves it alone too. Its options say ``region_run``, and
+    the build itself is outside PRIMARY_CI_REGION, where the review stack is not.
+    Either is enough.
     """
     env = os.environ if environ is None else environ
     switch = str(env.get(UX_NIGHTLY_DISABLE_ENV, "true")).strip().lower()
@@ -8825,6 +8964,9 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         isinstance(options, dict)
         and options.get("pipeline_source") == "schedule"
         and options.get("ref") == "develop"
+        and options.get("variant_probes") is not True
+        and not options.get("region_run")
+        and region_run(env) is None
     )
 
 
@@ -9037,6 +9179,98 @@ def join_ux_nightly_update(
     return {"state": "failed", "phase": "thread"}
 
 
+def probe_run_timeout_shortfall(codebuild=None) -> str | None:
+    """Why this build's timeout cannot hold a probe run, or None.
+
+    The template carries the timeout a probe run needs, but the live project keeps
+    whatever its stack was last updated to, and a project left short is killed
+    mid-join with no summary written. Reading the build's own timeout lets the run
+    say so at the start instead. Unreadable (no build id, no permission) is None:
+    the check reports a known shortfall, it does not refuse an unknown.
+
+    It cannot see the other half of the prerequisite: a schedule running before
+    the buildspec that exports IDP_RUN_PROBES is deployed never enables the
+    probes, never reaches this check, and passes green having run none. The only
+    sign of that is the summary reporting no probes.
+    """
+    build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
+    if not build_id:
+        return None
+    try:
+        client = codebuild or boto3.client("codebuild")
+        minutes = int(
+            client.batch_get_builds(ids=[build_id])["builds"][0]["timeoutInMinutes"]
+        )
+    except Exception as error:  # noqa: BLE001
+        print(f"⚠️ Could not read this build's timeout ({error}); not checking it")
+        return None
+    if minutes >= PROBE_RUN_MIN_TIMEOUT_MINUTES:
+        return None
+    return (
+        f"this build's timeout is {minutes} min, and a probe run needs at least "
+        f"{PROBE_RUN_MIN_TIMEOUT_MINUTES}; update the CI account's codepipeline "
+        "stack (scripts/sdlc/cfn/codepipeline-s3.yml) before the next probe run"
+    )
+
+
+def join_variant_probes(
+    future: Future,
+    executor: ThreadPoolExecutor,
+    *,
+    started: float,
+    clock: Callable[[], float] = time.monotonic,
+    deadline: float = PROBE_JOIN_DEADLINE_SECONDS,
+    finished: list[dict] | None = None,
+) -> list[dict]:
+    """The probes' results, waiting at most until `deadline` after `started`.
+
+    A supervisor still running at the deadline is reported as one failed entry,
+    after the probes in `finished` (the list run_variant_probes appends to as
+    each probe completes), rather than waited for: the build would otherwise reach CodeBuild's timeout
+    mid-join and be killed before the final summary and failure email exist. Its
+    probe stacks are left to the startup reapers, and its threads end with the
+    process at os._exit. A supervisor that died is reported the same way.
+
+    Never raises, and shuts the executor down without waiting on every path.
+    `clock` is injectable so the bound is testable without sleeping.
+    """
+    remaining = max(0.0, deadline - (clock() - started))
+    try:
+        results = future.result(timeout=remaining)
+    except FuturesTimeoutError:
+        executor.shutdown(wait=False)
+        minutes = round((clock() - started) / 60, 1)
+        return list(finished or []) + [
+            {
+                "stack_name": "<probe supervisor>",
+                "success": False,
+                "error": (
+                    f"probes still running {minutes} min after the build started; "
+                    "stopped waiting so the summary is written before CodeBuild's "
+                    "timeout"
+                ),
+                "failure_type": "deploy",
+                "probe": "probe supervisor",
+            }
+        ]
+    except Exception as e:  # noqa: BLE001
+        # run_variant_probes catches per-probe failures itself; this only fires
+        # if the supervisor thread itself died.
+        executor.shutdown(wait=False)
+        print(f"❌ Deployment-variant probe supervisor exception: {e}")
+        return list(finished or []) + [
+            {
+                "stack_name": "<probe supervisor>",
+                "success": False,
+                "error": str(e),
+                "failure_type": "deploy",
+                "probe": "probe supervisor",
+            }
+        ]
+    executor.shutdown(wait=False)
+    return list(results or [])
+
+
 def ux_nightly_row(outcome: dict | None) -> tuple[str, str]:
     """(status, text) for the UX review stack's summary row. Never raises.
 
@@ -9099,6 +9333,79 @@ def publish_summary_to_s3(summary_text):
         print(f"📁 Summary uploaded to s3://{bucket}/{key}")
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Failed to upload summary to S3: {e}")
+
+
+#: Heads the consolidated summary, and marks the failure email's subject, on the
+#: weekly variant-probe run, so its result is never read as the nightly's.
+VARIANT_PROBE_RUN_LABEL = "WEEKLY VARIANT-PROBE RUN"
+
+
+def variant_probe_run(environ: dict | None = None) -> bool:
+    """Whether IDP_RUN_PROBES asks for the deployment-variant probes.
+
+    In CI the buildspec sets it from the ``idp-run-probes`` S3 object metadata,
+    which integration_test_deployment.py writes only on the weekly variant-probe
+    schedule, and normalises every other value to ``false``.
+    """
+    env = os.environ if environ is None else environ
+    return str(env.get("IDP_RUN_PROBES", "false")).strip().lower() == "true"
+
+
+def label_variant_probe_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary, headed with VARIANT_PROBE_RUN_LABEL on the weekly probe run."""
+    if not variant_probe_run(environ):
+        return summary_text
+    return (
+        f"🔬 {VARIANT_PROBE_RUN_LABEL} — the deployment-variant probes ran beside "
+        "the primary suite. This is not the nightly result.\n\n" + summary_text
+    )
+
+
+#: Heads the consolidated summary, and marks the failure email's subject, on a
+#: weekly region run, followed by the region, so its result is never read as the
+#: nightly's.
+REGION_RUN_LABEL = "WEEKLY REGION RUN"
+
+
+def region_run(environ: dict | None = None) -> str | None:
+    """The region of a weekly region run, or None in PRIMARY_CI_REGION.
+
+    The build runs in the region of the pipeline that started it, and only a
+    weekly region schedule uploads to a pipeline outside PRIMARY_CI_REGION
+    (integration_test_deployment.region_run_requested), so the build's own region
+    is the whole answer and no flag needs to travel with the zip.
+    """
+    region = ci_region(environ)
+    return None if region == PRIMARY_CI_REGION else region
+
+
+def label_region_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary, headed with REGION_RUN_LABEL and the region on a region run."""
+    region = region_run(environ)
+    if region is None:
+        return summary_text
+    return (
+        f"🌍 {REGION_RUN_LABEL} · {region} — the primary suite ran in {region}. "
+        "This is not the nightly result.\n\n" + summary_text
+    )
+
+
+def label_ci_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary with every label that applies: probe run, region run, both."""
+    return label_region_run(label_variant_probe_run(summary_text, environ), environ)
+
+
+def failure_subject(stack_name: str, environ: dict | None = None) -> str:
+    """The failure email's subject, naming the weekly run it came from if any."""
+    labels = []
+    if variant_probe_run(environ):
+        labels.append(VARIANT_PROBE_RUN_LABEL.lower())
+    region = region_run(environ)
+    if region is not None:
+        labels.append(f"{REGION_RUN_LABEL.lower()} · {region}")
+    if not labels:
+        return f"IDP CI failure: {stack_name}"
+    return f"IDP CI failure ({'; '.join(labels)}): {stack_name}"
 
 
 def build_consolidated_summary(
@@ -9423,31 +9730,70 @@ def main():
         # internally caps concurrent probes at the quota budget
         # (IDP_PROBE_MAX_CONCURRENCY).
         #
-        # DEFAULT OFF in CI. Standing up the primary + 5 probe stacks at once
-        # bursts the account-wide control planes (CWL log-group create
-        # consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
-        # limit) — a recurring source of flaky pipeline failures unrelated to the
-        # code under test. The deploy-variant probes are infra smoke tests that
-        # rarely change, so they now run MANUALLY via `make stacktest-*` (see
-        # scripts/sdlc/run_stacktest.py / .claude/skills/run-stack-tests.md),
-        # each on its own stack with no concurrent-burst. Set IDP_RUN_PROBES=true
-        # to re-enable them in a pipeline run. (IDP_TEST_APIGW_HOSTING is still
-        # honored as a legacy alias so an existing override keeps working.)
+        # DEFAULT OFF, and on in CI only for the WEEKLY variant-probe schedule.
+        # Standing up the primary + 5 probe stacks at once bursts the
+        # account-wide control planes (CWL log-group create consistency,
+        # CodeBuild role-trust propagation, IAM CreatePolicy rate limit) — a
+        # recurring source of flaky failures unrelated to the code under test.
+        # The burst is inside ONE run, so the shared resource_group that
+        # serialises deploys does not remove it; what bounds it is the launch
+        # stagger (IDP_PROBE_LAUNCH_STAGGER_SECS), the concurrency cap
+        # (IDP_PROBE_MAX_CONCURRENCY) and the one-shot retry. That is why the
+        # probes run on their own weekly schedule rather than the nightly: a
+        # probe failure fails that run only, and cannot be read as a nightly
+        # product regression. The weekly schedule carries IDP_RUN_PROBES=true;
+        # integration_test_deployment.py turns it into the `idp-run-probes` S3
+        # object metadata and the buildspec exports it here. Run one probe by
+        # hand with `make stacktest-*` (scripts/sdlc/run_stacktest.py /
+        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING=true is still
+        # honored as a legacy alias, now held to the same probe-run timeout as the
+        # schedule: on a project below 180 minutes it is refused, not run.)
         probes_enabled = (
-            get_env_var("IDP_RUN_PROBES", "false").lower() == "true"
+            variant_probe_run()
             or get_env_var("IDP_TEST_APIGW_HOSTING", "false").lower() == "true"
         )
         probes_future = None
         probes_executor = None
+        probes_finished: list[dict] = []
         if probes_enabled:
             print(
                 "\n🚀 Launching deployment-variant probes concurrently with "
                 "the primary suite...\n"
             )
+            if not variant_probe_run():
+                print(
+                    "⚠️ Probes enabled by the legacy IDP_TEST_APIGW_HOSTING alias, "
+                    "not the weekly schedule: the run is not labelled as the weekly "
+                    "variant-probe run"
+                )
             probes_executor = ThreadPoolExecutor(max_workers=1)
-            probes_future = probes_executor.submit(
-                run_variant_probes, admin_email, template_url
-            )
+            # Every probe run, the legacy alias's included, is joined against
+            # PROBE_JOIN_DEADLINE_SECONDS, so every one is held to the timeout
+            # that deadline needs.
+            shortfall = probe_run_timeout_shortfall()
+            if shortfall:
+                # Reported through the join like any probe failure, so the run is
+                # red and the summary says why, without launching probe stacks
+                # CodeBuild would kill before their results are written.
+                print(f"❌ Not launching the probes: {shortfall}")
+                probes_future = probes_executor.submit(
+                    lambda: [
+                        {
+                            "stack_name": "<probe supervisor>",
+                            "success": False,
+                            "error": shortfall,
+                            "failure_type": "deploy",
+                            "probe": "probe supervisor",
+                        }
+                    ]
+                )
+            else:
+                probes_future = probes_executor.submit(
+                    run_variant_probes,
+                    admin_email,
+                    template_url,
+                    results=probes_finished,
+                )
         else:
             print("ℹ️ Skipping deployment-variant probes (disabled)")
 
@@ -9559,6 +9905,7 @@ def main():
             "⏳ INTERIM SUMMARY (primary suite done; deployment-variant probes "
             "may still be running — final summary overwrites this)\n\n" + interim
         )
+        interim = label_ci_run(interim)
         if ai_summary:
             interim = f"{interim}\n\n{ai_summary}"
         publish_summary_to_s3(interim)
@@ -9570,23 +9917,12 @@ def main():
             print(f"\n{'=' * 80}")
             print("Waiting for deployment-variant probes...")
             print(f"{'=' * 80}\n")
-            try:
-                probe_results = probes_future.result()
-            except Exception as e:  # noqa: BLE001
-                # run_variant_probes catches per-probe failures itself; this
-                # only fires if the supervisor thread itself died.
-                print(f"❌ Deployment-variant probe supervisor exception: {e}")
-                probe_results = [
-                    {
-                        "stack_name": "<probe supervisor>",
-                        "success": False,
-                        "error": str(e),
-                        "failure_type": "deploy",
-                        "probe": "probe supervisor",
-                    }
-                ]
-            finally:
-                probes_executor.shutdown(wait=True)
+            probe_results = join_variant_probes(
+                probes_future,
+                probes_executor,
+                started=main_started,
+                finished=probes_finished,
+            )
 
             for probe_result in probe_results:
                 probe_name = probe_result.get("probe", "deployment-variant probe")
@@ -9708,6 +10044,7 @@ def main():
         startup_sweep_findings,
         ux_nightly_update=ux_nightly_outcome,
     )
+    consolidated = label_ci_run(consolidated)
     print(f"\n{consolidated}\n")
 
     print("\n🤖 Generating deployment summary with Bedrock...")
@@ -9727,7 +10064,7 @@ def main():
         reason_suffix = f" — {failure_reason}" if failure_reason else ""
         print(f"💥 Stack: {stack_name} deployment failed!{reason_suffix}")
         send_failure_notification(
-            f"IDP CI failure: {stack_name}",
+            failure_subject(stack_name),
             f"Stack: {stack_name}\nRoot cause: {failure_reason or 'unknown'}\n\n"
             f"{full_summary or 'No summary available.'}",
         )
