@@ -1017,8 +1017,10 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
 
     It swaps and does not filter: an id the region cannot call that has no swap
     row (in CA_UNAVAILABLE_MODELS without a CA_MODEL_MAPPINGS entry) is uploaded
-    as written and fails at its first call. test_weekly_region_runs.py asserts no
-    config the suite uploads names one.
+    as written and fails at its first call, and swap_model_ids rewrites ids held
+    as mapping values, not list items. test_weekly_region_runs.py asserts no
+    config the suite uploads names an unavailable id after the swap. One swapped
+    copy is written per config and region, and reused.
     """
     import yaml
 
@@ -1028,6 +1030,9 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     )
     if region_type is None:
         return config_path
+    cached = _REGIONAL_CONFIGS.get((config_path, region_type))
+    if cached is not None and os.path.exists(cached):
+        return cached
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
     swapped = _model_swapper()(config, region_type)
@@ -1041,7 +1046,12 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         yaml.safe_dump(swapped, f, sort_keys=False)
     print(f"🌍 Swapped model ids in {config_path} for {region} → {out_path}")
+    _REGIONAL_CONFIGS[(config_path, region_type)] = out_path
     return out_path
+
+
+#: (config path, region type) -> the swapped copy regional_config_file() wrote.
+_REGIONAL_CONFIGS: dict[tuple[str, str], str] = {}
 
 
 #: The long-lived review stack the MR UX test (scripts/sdlc/ai_ux_test.py) runs
@@ -2864,7 +2874,6 @@ _HOOK_FAIL_CONFIG_VERSION = "test-pipeline-hooks-fail"
 # instead of the API we tell feature authors to use).
 _HOOK_SOURCE = '''
 import os
-import pathlib
 from idp_common.hooks import load_hook_document, updated_document_result
 
 MARKER_KEY = os.environ["MARKER_KEY"]

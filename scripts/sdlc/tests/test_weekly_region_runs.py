@@ -503,7 +503,20 @@ def test_no_suite_config_names_a_model_canada_cannot_call_after_the_swap(cbd, co
     """The swap does not filter, so an unmapped unavailable id would reach Bedrock."""
     path = cbd.regional_config_file(str(config), {"AWS_REGION": "ca-central-1"})
     unavailable = cbd._update_configuration_module().CA_UNAVAILABLE_MODELS
-    assert not (_model_ids(path) & set(unavailable))
+    text = Path(path).read_text(encoding="utf-8")
+    # Substring, not _model_ids(): some unavailable ids carry no geo prefix.
+    named = {
+        m
+        for m in unavailable
+        if re.search(rf"(?<![\w.]){re.escape(m)}(?![\w.:-])", text)
+    }
+    assert not named, named
+
+
+def test_a_config_is_swapped_once_per_region(cbd):
+    first = cbd.regional_config_file(str(NUVEEN), {"AWS_REGION": "eu-central-1"})
+    again = cbd.regional_config_file(str(NUVEEN), {"AWS_REGION": "eu-central-1"})
+    assert first == again != str(NUVEEN)
 
 
 def test_a_us_upload_is_the_file_as_written(cbd):
