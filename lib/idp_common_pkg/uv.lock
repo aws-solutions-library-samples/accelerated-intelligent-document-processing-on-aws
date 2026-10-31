@@ -1107,11 +1107,11 @@ requires-dist = [
     { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'all'", specifier = "==1.0.0" },
     { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'evaluation'", specifier = "==1.0.0" },
     { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'test'", specifier = "==1.0.0" },
-    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agentic-extraction'", specifier = "==1.14.0" },
-    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = "==1.14.0" },
-    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = "==1.14.0" },
-    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'multi-document-discovery'", specifier = "==1.14.0" },
-    { name = "strands-agents", marker = "extra == 'code-intel'", specifier = "==1.14.0" },
+    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agentic-extraction'", specifier = "==1.48.0" },
+    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = "==1.48.0" },
+    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = "==1.48.0" },
+    { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'multi-document-discovery'", specifier = "==1.48.0" },
+    { name = "strands-agents", marker = "extra == 'code-intel'", specifier = "==1.48.0" },
     { name = "tabulate", marker = "extra == 'agentic-extraction'", specifier = ">=0.9.0" },
     { name = "typer", marker = "extra == 'test'", specifier = ">=0.19.2" },
     { name = "xlrd", marker = "extra == 'all'", specifier = "==2.0.2" },
@@ -3265,7 +3265,7 @@ docsplit = [
 
 [[package]]
 name = "strands-agents"
-version = "1.14.0"
+version = "1.48.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
@@ -3277,12 +3277,13 @@ dependencies = [
     { name = "opentelemetry-instrumentation-threading" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "typing-extensions" },
     { name = "watchdog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/26/dd/a2dc96614bb1dd7c1623cbdf6df268eb307038b2fe27bc5a6148f4223f59/strands_agents-1.14.0.tar.gz", hash = "sha256:f86dd2b92d50196acd0c5ff5404fcd1b6c3715ae56fcceb2a78210ab47860585", size = 471216, upload-time = "2025-10-29T14:20:27.721Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/1e/834e4a63c6ad039d10924b5ba8c0651ccb24d7e28fd8c07c1a09b859120f/strands_agents-1.48.0.tar.gz", hash = "sha256:bfbf5af9d8f1cb348b617d5f8d17b949ef3c3fdd74fa8c849f1fda46885449c2", size = 1174326, upload-time = "2026-07-17T14:03:45.509Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/08/848c26d917d8f75bc10edeea63578af218df5c6efeb69e3cf91eb8fd396e/strands_agents-1.14.0-py3-none-any.whl", hash = "sha256:d2ebc1b991c37e891cfe79cf5dea1bfa021c3e6d93e4d2f238042ea688019bf3", size = 238974, upload-time = "2025-10-29T14:20:24.841Z" },
+    { url = "https://files.pythonhosted.org/packages/25/67/67d1e267405f6ae119cc0412891f66997a5a97eed2dbba18fc430a9ac00a/strands_agents-1.48.0-py3-none-any.whl", hash = "sha256:7118a644e844ab6ef77f4bc9883b7082b2e7a309bcd689cc5ef5345e07abcc9e", size = 612156, upload-time = "2026-07-17T14:03:43.06Z" },
 ]
 
 [[package]]
