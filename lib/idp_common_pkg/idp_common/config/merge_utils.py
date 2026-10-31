@@ -561,16 +561,18 @@ def _strip_prompts(data: Any) -> Any:
     """
     Recursively strip prompt fields from a config section.
 
-    Replaces long prompt strings with placeholder comments.
+    A long prompt is omitted rather than replaced: the template is a delta that
+    ``merge_config_with_defaults`` lays over the system defaults, so an absent key
+    is what "use the default prompt" means. Any string left in its place would be
+    read as the prompt itself -- by ``validate_config``'s placeholder checks, which
+    then refuse the file, and at runtime by every prompt field no check covers.
     """
     if isinstance(data, dict):
         result = {}
         for key, value in data.items():
             if key in ("system_prompt", "task_prompt", "user_prompt"):
-                # Replace prompts with placeholder
-                if value and len(str(value)) > 50:
-                    result[key] = "# Uses system default prompt"
-                else:
+                # Omit long prompts so the system default applies
+                if not (value and len(str(value)) > 50):
                     result[key] = value
             else:
                 result[key] = _strip_prompts(value)

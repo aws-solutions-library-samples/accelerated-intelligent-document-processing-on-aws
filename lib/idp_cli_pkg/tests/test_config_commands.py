@@ -290,6 +290,20 @@ def test_create_to_a_file_parses_and_names_the_next_steps():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("features", ["min", "core", "all"])
+def test_create_output_passes_config_validate(features):
+    """The file `config-create` writes is one `config-validate` accepts (#1673)."""
+    with write_config("", filename="unused.txt") as runner:
+        created = runner.invoke(
+            cli, ["config-create", "--features", features, "--output", "gen.yaml"]
+        )
+        assert created.exit_code == 0, created.output
+        result = runner.invoke(cli, ["config-validate", "--config-file", "gen.yaml"])
+
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.unit
 def test_create_feature_presets_select_different_section_sets():
     """`--features all` must be a superset of `min`, or the preset means nothing."""
     minimal = yaml.safe_load(
