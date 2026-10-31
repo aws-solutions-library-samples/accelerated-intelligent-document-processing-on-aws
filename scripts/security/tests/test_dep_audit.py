@@ -296,6 +296,7 @@ class TestToolPreflight:
     def test_required_tools_are_declared_with_reasons(self):
         assert "jq" in dep_audit.REQUIRED_TOOLS
         assert "uv" in dep_audit.REQUIRED_TOOLS
+        assert "git" in dep_audit.REQUIRED_TOOLS
         for tool, why in dep_audit.REQUIRED_TOOLS.items():
             assert len(why) > 20, f"{tool}: explain why it is needed"
 
