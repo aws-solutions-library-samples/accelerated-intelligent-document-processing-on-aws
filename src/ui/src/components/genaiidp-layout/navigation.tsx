@@ -291,15 +291,6 @@ export const viewerNavItems = [
   },
 ];
 
-// Limited navigation items for Reviewer-only users (HITL review only)
-export const reviewerNavItems = [
-  {
-    type: 'section',
-    text: 'Documents',
-    items: [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }],
-  },
-];
-
 // Keep for backward compatibility
 export const documentsNavItems = adminNavItems;
 
@@ -357,6 +348,110 @@ const buildCfnUpdateStackUrl = (region: string | undefined, stackName: string | 
   );
 };
 
+/**
+ * The "Deployment Info" section (stack, version with its "Update" badge, build, pattern,
+ * region), shared by every navigation. Null until any of it is known. The release check
+ * it reads is open to every signed-in user; only the popover's CloudFormation link is
+ * Admin's.
+ */
+const useDeploymentInfoNavSection = (): SideNavigationProps.Item | null => {
+  const { settings } = useSettingsContext();
+  const { isAdmin } = useUserRole();
+  // Version-check for the "Update available" indicator. Returns
+  // isUpdateAvailable=false until settings.Version is loaded.
+  const currentVersion = settings?.Version as string | undefined;
+  const { latestVersion, templateUrl, isUpdateAvailable } = useLatestVersion(currentVersion);
+
+  const deployedRegion = import.meta.env.VITE_AWS_REGION as string | undefined;
+  const stackName = settings?.StackName as string | undefined;
+
+  // Build the "Update available" popover content. Admin users get a clickable
+  // CFN console deep-link; non-admins see a non-actionable hint pointing them
+  // at their administrator. Both see the version diff.
+  const cfnUpdateStackUrl = buildCfnUpdateStackUrl(deployedRegion, stackName, templateUrl);
+  const updatePopoverContent =
+    isAdmin && cfnUpdateStackUrl ? (
+      <SpaceBetween size="xs">
+        <Box>
+          Latest published version: <strong>v{latestVersion}</strong>
+          <br />
+          Currently deployed: <strong>v{currentVersion}</strong>
+        </Box>
+        <Link external href={cfnUpdateStackUrl}>
+          Update stack in CloudFormation →
+        </Link>
+        <Box variant="small" color="text-body-secondary">
+          Opens the AWS CloudFormation console with the new template URL pre-filled. Review parameters before applying.
+        </Box>
+      </SpaceBetween>
+    ) : (
+      <SpaceBetween size="xs">
+        <Box>
+          Latest published version: <strong>v{latestVersion}</strong>
+          <br />
+          Currently deployed: <strong>v{currentVersion}</strong>
+        </Box>
+        <Box variant="small" color="text-body-secondary">
+          Contact your administrator to update this deployment to the latest version.
+        </Box>
+      </SpaceBetween>
+    );
+
+  if (settings?.Version || settings?.StackName || settings?.BuildDateTime || settings?.IDPPattern || deployedRegion) {
+    const deploymentInfoItems: SideNavigationProps.Item[] = [];
+
+    if (settings?.StackName) {
+      deploymentInfoItems.push({ type: 'link', text: `Stack Name: ${settings.StackName}`, href: '#stackname' });
+    }
+    if (settings?.Version) {
+      // Attach an "Update" badge + popover when the version-check resolver
+      // has reported a newer published version. The badge itself is shown
+      // to all roles; the popover content (Admin gets the actionable link)
+      // is built above.
+      const versionItem: SideNavigationProps.Link = {
+        type: 'link',
+        text: `Version: ${settings.Version}`,
+        href: '#version',
+      };
+      if (isUpdateAvailable && latestVersion) {
+        // info appears as a small adornment to the right of the link text.
+        // Using a Popover with triggerType="custom" wrapping a Badge keeps
+        // the styling consistent with the existing "us-east-1 only" badge.
+        (versionItem as SideNavigationProps.Link & { info?: React.ReactNode }).info = (
+          <Popover
+            header="Update available"
+            dismissButton={false}
+            position="right"
+            size="medium"
+            triggerType="custom"
+            content={updatePopoverContent}
+          >
+            <Badge color="blue">Update</Badge>
+          </Popover>
+        );
+      }
+      deploymentInfoItems.push(versionItem);
+    }
+    if (settings?.BuildDateTime) {
+      deploymentInfoItems.push({ type: 'link', text: `Build: ${settings.BuildDateTime}`, href: '#builddatetime' });
+    }
+    if (settings?.IDPPattern) {
+      const pattern = (settings.IDPPattern as string).split(' ')[0];
+      deploymentInfoItems.push({ type: 'link', text: `Pattern: ${pattern}`, href: '#idppattern' });
+    }
+    if (deployedRegion) {
+      deploymentInfoItems.push({ type: 'link', text: `Region: ${deployedRegion}`, href: '#region' });
+    }
+
+    return {
+      type: 'section',
+      text: 'Deployment Info',
+      items: deploymentInfoItems,
+    } as SideNavigationProps.Item;
+  }
+  return null;
+};
+
 const FullNavigation = ({
   header,
   items,
@@ -367,7 +462,7 @@ const FullNavigation = ({
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isQueueWorker } = useUserRole();
+  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
@@ -389,11 +484,6 @@ const FullNavigation = ({
     [installedFeatures, catalogFeatures, isAdmin],
   );
 
-  // Version-check for the "Update available" indicator. Returns
-  // isUpdateAvailable=false until settings.Version is loaded.
-  const currentVersion = settings?.Version as string | undefined;
-  const { latestVersion, templateUrl, isUpdateAvailable } = useLatestVersion(currentVersion);
-
   // Select navigation items based on user role (highest privilege wins)
   const baseItems = useMemo(() => {
     if (items) return items;
@@ -401,8 +491,7 @@ const FullNavigation = ({
     if (isAdmin) roleItems = adminNavItems;
     else if (isAuthor) roleItems = authorNavItems;
     else if (isViewerOnly) roleItems = viewerNavItems;
-    else if (isReviewerOnly) roleItems = reviewerNavItems;
-    else roleItems = viewerNavItems; // Default: if user has Viewer + Reviewer, show viewer nav (union)
+    else roleItems = viewerNavItems; // Viewer, and Viewer + Reviewer (the union)
 
     // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
     const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isQueueWorker, taskCount: reviewCount });
@@ -418,13 +507,13 @@ const FullNavigation = ({
     }
 
     // Insert the dynamic Extensions section just before Resources
-    // (or at the end if Resources isn't present, e.g. reviewer nav).
+    // (or at the end if Resources isn't present).
     const resourcesIdx = roleItems.findIndex(
       (i) => (i as { type?: string }).type === 'section' && (i as { text?: string }).text === 'Resources',
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -539,97 +628,12 @@ const FullNavigation = ({
   // Create navigation items with deployment info
   const navigationItems: SideNavigationProps.Item[] = [...filteredItems] as SideNavigationProps.Item[];
 
-  const deployedRegion = import.meta.env.VITE_AWS_REGION as string | undefined;
-  const stackName = settings?.StackName as string | undefined;
-
-  // Build the "Update available" popover content. Admin users get a clickable
-  // CFN console deep-link; non-admins see a non-actionable hint pointing them
-  // at their administrator. Both see the version diff.
-  const cfnUpdateStackUrl = buildCfnUpdateStackUrl(deployedRegion, stackName, templateUrl);
-  const updatePopoverContent =
-    isAdmin && cfnUpdateStackUrl ? (
-      <SpaceBetween size="xs">
-        <Box>
-          Latest published version: <strong>v{latestVersion}</strong>
-          <br />
-          Currently deployed: <strong>v{currentVersion}</strong>
-        </Box>
-        <Link external href={cfnUpdateStackUrl}>
-          Update stack in CloudFormation →
-        </Link>
-        <Box variant="small" color="text-body-secondary">
-          Opens the AWS CloudFormation console with the new template URL pre-filled. Review parameters before applying.
-        </Box>
-      </SpaceBetween>
-    ) : (
-      <SpaceBetween size="xs">
-        <Box>
-          Latest published version: <strong>v{latestVersion}</strong>
-          <br />
-          Currently deployed: <strong>v{currentVersion}</strong>
-        </Box>
-        <Box variant="small" color="text-body-secondary">
-          Contact your administrator to update this deployment to the latest version.
-        </Box>
-      </SpaceBetween>
-    );
-
-  if (settings?.Version || settings?.StackName || settings?.BuildDateTime || settings?.IDPPattern || deployedRegion) {
-    const deploymentInfoItems: SideNavigationProps.Item[] = [];
-
-    if (settings?.StackName) {
-      deploymentInfoItems.push({ type: 'link', text: `Stack Name: ${settings.StackName}`, href: '#stackname' });
-    }
-    if (settings?.Version) {
-      // Attach an "Update" badge + popover when the version-check resolver
-      // has reported a newer published version. The badge itself is shown
-      // to all roles; the popover content (Admin gets the actionable link)
-      // is built above.
-      const versionItem: SideNavigationProps.Link = {
-        type: 'link',
-        text: `Version: ${settings.Version}`,
-        href: '#version',
-      };
-      if (isUpdateAvailable && latestVersion) {
-        // info appears as a small adornment to the right of the link text.
-        // Using a Popover with triggerType="custom" wrapping a Badge keeps
-        // the styling consistent with the existing "us-east-1 only" badge.
-        (versionItem as SideNavigationProps.Link & { info?: React.ReactNode }).info = (
-          <Popover
-            header="Update available"
-            dismissButton={false}
-            position="right"
-            size="medium"
-            triggerType="custom"
-            content={updatePopoverContent}
-          >
-            <Badge color="blue">Update</Badge>
-          </Popover>
-        );
-      }
-      deploymentInfoItems.push(versionItem);
-    }
-    if (settings?.BuildDateTime) {
-      deploymentInfoItems.push({ type: 'link', text: `Build: ${settings.BuildDateTime}`, href: '#builddatetime' });
-    }
-    if (settings?.IDPPattern) {
-      const pattern = (settings.IDPPattern as string).split(' ')[0];
-      deploymentInfoItems.push({ type: 'link', text: `Pattern: ${pattern}`, href: '#idppattern' });
-    }
-    if (deployedRegion) {
-      deploymentInfoItems.push({ type: 'link', text: `Region: ${deployedRegion}`, href: '#region' });
-    }
-
-    navigationItems.push({
-      type: 'section',
-      text: 'Deployment Info',
-      items: deploymentInfoItems,
-    } as SideNavigationProps.Item);
-  }
+  const deploymentInfo = useDeploymentInfoNavSection();
+  if (deploymentInfo) navigationItems.push(deploymentInfo);
 
   return (
     <div className="idp-side-nav">
-      {/* Annotator-only users get AnnotatorNavigation, which has no Quick Start. */}
+      {/* Annotator-only and Reviewer-only users get QueueWorkerNavigation, which has no Quick Start. */}
       {isQuickStartWidgetEnabled() && (
         <div className="nav-quick-start">
           <Hotspot hotspotId="nav-quick-start" side="right">
@@ -650,16 +654,20 @@ const FullNavigation = ({
 };
 
 /**
- * Navigation for an Annotator-only user: Home (Inbox, Tasks, Queues)
- * and nothing else. Mounts no feature, catalog or version hooks.
+ * Navigation for a user whose only work is the review queues — Annotator-only, or a
+ * Reviewer with no Admin, Author or Viewer role: Home (Inbox, Tasks, Queues) and
+ * Deployment Info. No Documents or Extensions: their work is reached from Home.
+ * Mounts no feature or catalog hooks.
  */
-const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
+const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
   const location = useLocation();
   const path = location.pathname;
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
+  const deploymentInfo = useDeploymentInfoNavSection();
   const items: SideNavigationProps.Item[] = [
     buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
+    ...(deploymentInfo ? [deploymentInfo] : []),
   ];
   // The edit pages (a Test Studio item under /review-queues/.../items, or a document's
   // edit page, which sets the entry itself) are opened from Tasks; a queue's own page
@@ -677,7 +685,7 @@ const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeH
 
 /** Picks the navigation for the caller's role; renders only a header until the role is known. */
 const Navigation = (props: NavigationProps): React.JSX.Element => {
-  const { loading, isAnnotatorOnly } = useUserRole();
+  const { loading, isAnnotatorOnly, isReviewerOnly } = useUserRole();
   if (loading) {
     return (
       <div className="idp-side-nav">
@@ -685,7 +693,7 @@ const Navigation = (props: NavigationProps): React.JSX.Element => {
       </div>
     );
   }
-  if (isAnnotatorOnly) return <AnnotatorNavigation {...props} />;
+  if (isAnnotatorOnly || isReviewerOnly) return <QueueWorkerNavigation {...props} />;
   return <FullNavigation {...props} />;
 };
 

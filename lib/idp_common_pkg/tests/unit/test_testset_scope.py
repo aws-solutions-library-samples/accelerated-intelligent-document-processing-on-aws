@@ -496,3 +496,39 @@ class TestStoredScopeProfileRead:
             )
             assert testset_scope._stored_scope_profile("ts-a") == "lending"
             assert testset_scope._stored_scope_profile("ts-missing") is None
+
+
+@pytest.mark.unit
+class TestTheModuleOutsideThePackage:
+    """The same file runs in a layer-free resolver as a top-level module, beside a
+    vendored ``config_scope``; it must find that copy there, and the package's own
+    module inside the library."""
+
+    def test_inside_the_package_it_uses_the_package_module(self):
+        from idp_common import config_scope
+
+        assert testset_scope._config_scope() is config_scope
+
+    def test_as_a_top_level_module_it_uses_the_sibling_copy(self, monkeypatch):
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        source = Path(testset_scope.__file__)
+        monkeypatch.syspath_prepend(str(source.parent))
+        monkeypatch.delitem(sys.modules, "config_scope", raising=False)
+        spec = importlib.util.spec_from_file_location(
+            "testset_scope_standalone", source
+        )
+        standalone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(standalone)
+
+        found = standalone._config_scope()
+        assert found.__name__ == "config_scope"
+        assert Path(found.__file__) == source.parent / "config_scope.py"
+
+    def test_no_tracking_table_raises_so_the_caller_refuses(self, monkeypatch):
+        monkeypatch.delenv("TRACKING_TABLE_NAME", raising=False)
+        monkeypatch.delenv("TRACKING_TABLE", raising=False)
+        with pytest.raises(RuntimeError, match="not configured"):
+            testset_scope._stored_scope_profile("ts-a")

@@ -54,7 +54,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isQueueWorker, isAnnotatorOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
+  const { isQueueWorker, isAnnotatorOnly, isReviewerOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -84,16 +84,18 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   } catch {
     /* ignore */
   }
-  // An Annotator-only user lands on Home › Tasks, the items assigned to them. The
-  // welcome page offers Quick Start, the tour, Configuration and Upload Document —
-  // none of which they are scoped to, so it would be a page of dead ends.
-  const landingPath = isAnnotatorOnly
-    ? MY_TASKS_PATH
-    : defaultFeatureId
-      ? `${FEATURES_PATH_PREFIX}/${defaultFeatureId}`
-      : welcomeDismissed
-        ? DEFAULT_PATH
-        : WELCOME_PATH;
+  // An Annotator-only user, and a Reviewer with no Admin, Author or Viewer role, lands on
+  // Home › Tasks: their work is reached from Home. The welcome page offers Quick Start,
+  // the tour, Configuration and Upload Document — none of which they are scoped to, so
+  // it would be a page of dead ends — and the Document List is not in their navigation.
+  const landingPath =
+    isAnnotatorOnly || isReviewerOnly
+      ? MY_TASKS_PATH
+      : defaultFeatureId
+        ? `${FEATURES_PATH_PREFIX}/${defaultFeatureId}`
+        : welcomeDismissed
+          ? DEFAULT_PATH
+          : WELCOME_PATH;
 
   // No route renders before the role is known, so no user sees another role's page flash.
   if (!settingsLoaded || roleLoading) {

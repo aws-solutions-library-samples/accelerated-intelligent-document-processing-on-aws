@@ -26,9 +26,9 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -156,9 +156,14 @@ on its queue (`testset_scope.reviewer_may_access_test_set`).
   navigation, with their **Inbox**, and the notifications bell; the Inbox operations
   are `ANY_GROUP`, scoped to the caller's own messages. A user in `Annotator` also
   has **Tasks** and **Queues** under Home, and a user whose only app group is
-  `Annotator` sees exactly that: Home (Inbox, Tasks and Queues), plus a document's
-  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to;
-  the rest of the documents app isn't routed for them. **Review Studio › Review Management** is
+  `Annotator`, or a `Reviewer` with no `Admin`, `Author` or `Viewer` group, sees exactly
+  that: Home (Inbox, Tasks and Queues) and Deployment Info, plus a document's
+  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to.
+  Both land on Home › Tasks. For an Annotator-only user the rest of the documents app
+  isn't routed; a Reviewer-only user's Document List is out of the navigation but still
+  routed, its documents filtered server-side to the caller's scope as for every role. Navigation is
+  a convenience, not the boundary: every queue operation applies the caller's
+  `allowedConfigVersions` to each item. **Review Studio › Review Management** is
   Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,

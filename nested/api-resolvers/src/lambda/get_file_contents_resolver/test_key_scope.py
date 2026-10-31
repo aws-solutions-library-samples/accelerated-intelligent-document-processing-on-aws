@@ -541,6 +541,44 @@ class TestTestSetKeyScope:
             with pytest.raises(PermissionError, match="^Unauthorized"):
                 index.handler(event, None)
 
+    def test_a_scoped_reviewer_is_refused_when_the_sets_profile_cannot_be_read(
+        self, resolver, monkeypatch
+    ):
+        """No tracking table to read the recorded profile from refuses: an unreadable
+        profile is never read as unrestricted."""
+        index, table = resolver
+        _put_user(table, "user@example.test", allowedConfigVersions=[MINE])
+        monkeypatch.delenv("TRACKING_TABLE_NAME", raising=False)
+        monkeypatch.delenv("TRACKING_TABLE", raising=False)
+        event = _event(
+            "getFileContents",
+            TEST_SET_BUCKET,
+            _test_set_keys(MY_SET)[0],
+            groups=("Reviewer",),
+        )
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            index.handler(event, None)
+
+    def test_a_reviewer_whose_scope_cannot_be_resolved_is_refused(
+        self, resolver, monkeypatch
+    ):
+        """A failed scope lookup refuses rather than admitting an unrestricted read."""
+        index, _ = resolver
+        config_scope = importlib.import_module("config_scope")
+
+        def broken(*_a, **_k):
+            raise config_scope.ScopeLookupError("users table unavailable")
+
+        monkeypatch.setattr(config_scope, "resolve_allowed_config_versions", broken)
+        event = _event(
+            "getFileContents",
+            TEST_SET_BUCKET,
+            _test_set_keys(MY_SET)[0],
+            groups=("Reviewer",),
+        )
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            index.handler(event, None)
+
 
 # ---------------------------------------------------------------------------
 # What a refusal reveals, and what it touches
