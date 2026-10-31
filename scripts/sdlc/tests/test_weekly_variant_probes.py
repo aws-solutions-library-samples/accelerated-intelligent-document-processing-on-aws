@@ -575,3 +575,59 @@ def test_the_inline_buildspec_parses_and_every_command_is_a_string():
         if not isinstance(command, str)
     ]
     assert not bad, f"buildspec commands that are not strings (quote them): {bad}"
+
+
+# ---------------------------------------------------------------------------
+# The running build's own timeout
+# ---------------------------------------------------------------------------
+
+
+class _FakeCodeBuild:
+    def __init__(self, minutes=None, error=None):
+        self.minutes, self.error, self.asked = minutes, error, []
+
+    def batch_get_builds(self, ids):
+        self.asked.append(ids)
+        if self.error:
+            raise self.error
+        return {"builds": [{"timeoutInMinutes": self.minutes}]}
+
+
+def test_a_build_too_short_for_a_probe_run_says_so(cbd, monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    fake = _FakeCodeBuild(minutes=cbd.PROBE_RUN_MIN_TIMEOUT_MINUTES - 1)
+    reason = cbd.probe_run_timeout_shortfall(fake)
+    assert reason and str(fake.minutes) in reason
+    assert fake.asked == [["app-sdlc:abc"]]
+
+
+def test_a_build_long_enough_for_a_probe_run_passes(cbd, monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    fake = _FakeCodeBuild(minutes=cbd.PROBE_RUN_MIN_TIMEOUT_MINUTES)
+    assert cbd.probe_run_timeout_shortfall(fake) is None
+
+
+def test_an_unreadable_timeout_is_not_a_shortfall(cbd, monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    assert (
+        cbd.probe_run_timeout_shortfall(_FakeCodeBuild(error=RuntimeError("x"))) is None
+    )
+    monkeypatch.delenv("CODEBUILD_BUILD_ID")
+    assert cbd.probe_run_timeout_shortfall(_FakeCodeBuild(minutes=1)) is None
+
+
+def test_the_template_timeout_meets_what_a_probe_run_needs(cbd):
+    (minutes,) = re.findall(
+        r"^\s*TimeoutInMinutes:\s*(\d+)\s*$",
+        BUILDSPEC_TEMPLATE.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert int(minutes) >= cbd.PROBE_RUN_MIN_TIMEOUT_MINUTES
+
+
+def test_no_probes_still_returns_the_callers_list(cbd, monkeypatch):
+    monkeypatch.setenv("IDP_TEST_ZAP", "true")
+    held: list[dict] = []
+    assert (
+        cbd.run_variant_probes("a@example.com", "url", probes=[], results=held) is held
+    )

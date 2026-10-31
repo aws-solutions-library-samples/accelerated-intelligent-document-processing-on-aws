@@ -32,7 +32,7 @@ record of its last run.
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
 | [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **scheduled** (primary suite nightly) + manual button — not a merge gate | pipeline `integration_tests` |
-| [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual, except the ZAP DAST and deploy-variant rows (GitLab weekly schedule) | see the table |
+| [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual, except the ZAP DAST and deploy-variant rows (GitLab weekly schedule, while it is active) | see the table |
 | [7. Benchmarks](#7-benchmarks) | **yes** | ❌ manual | `make benchmark-release` |
 
 `make test` and `make lint` are the two commands to run before opening a pull
@@ -461,16 +461,20 @@ nightly schedule, a weekly variant-probe schedule (below), and a **manual play b
 The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and
 the deploy variants in [section 6](#6-live-stack-tiers-manual)) run on a separate
 **weekly** schedule, so a probe failure is never read as a nightly regression.
-Two more weekly schedules run the primary suite in `eu-central-1` and
-`ca-central-1`; each result is labelled with its region, in the same Slack channel.
+The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
+carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
+only while it exists and is active.
+Two more weekly schedules, while they are active, run the primary suite in
+`eu-central-1` and `ca-central-1`; each result is labelled with its region, in the
+same Slack channel.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
 `lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/` — because
 it is the only pre-merge signal this tier has left. And because a breaking change
-can merge and surface a night later with other merges on top of it, **a nightly
-failure is triaged by bisecting the day's merges**, not by reading the pipeline's
-own commit. The trade is written out in full in
+can merge and surface a night later (a week later, for a variant probe) with other
+merges on top of it, **a scheduled failure is triaged by bisecting the merges since
+the last green run**, not by reading the pipeline's own commit. The trade is written out in full in
 [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 
 Per-step detail, what each step asserts, and how to reproduce a single step by hand

@@ -437,14 +437,19 @@ GitLab and GitHub now run the **same** non-integration gates. Integration tests
 at all any more**, on either platform. It was automatic on `develop` and on
 non-Draft MRs, and it put 62–113 minutes onto every pipeline *after* a 45-minute
 check stage (111 min for an MR, 160 for a `develop` push). The deploy path is now
-scheduled — the nightly runs the primary suite and a separate weekly schedule runs
-the deployment-variant probes — with a play button on any MR targeting `develop`. **Click that
-button before merging a change on the deploy path** — `template.yaml`,
+scheduled — the nightly runs the primary suite and, while it is active in the GitLab
+project, a separate weekly schedule runs the deployment-variant probes — with a play
+button on any MR targeting `develop`.
+**Click that button before merging a change on the deploy path** — `template.yaml`,
 `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
 `feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it
-pre-merge, and a break surfaces a night later with other merges stacked on top, so
-triage means bisecting the day's merges rather than reading the failing pipeline's
-own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
+pre-merge, and a break surfaces a night later (a week later, for a variant probe)
+with other merges stacked on top, so triage means bisecting the merges since the last
+green run rather than reading the failing pipeline's own commit. That button runs
+the primary suite only (`IDP_RUN_PROBES` counts only on a schedule), so a change to
+the probe path is verified with `make stacktest-*` or by pressing Run on the weekly
+schedule, not by the button.
+`.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
 maintained definition of that path list, but it now gates nothing and is
 documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
@@ -459,8 +464,8 @@ from `SHARED_GATES` (footnote ³ in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`). Th
 first-time-user stories are the third: `ai_ux_test_stories`, on a non-Draft MR to
 `develop` that changes `CHANGELOG.md`, and `ai_ux_test_stories_nightly` and
 `ai_ux_test_stories_digest`, in the `ux_nightly` stage of the nightly `develop`
-pipeline (never the weekly variant-probe one), are all `allow_failure: true` and absent from `SHARED_GATES` (footnote ⁴
-in the same file).
+pipeline (never the weekly variant-probe one), are all `allow_failure: true` and
+absent from `SHARED_GATES` (footnote ⁴ in the same file).
 
 ### The advisory AI review runs on both platforms
 
