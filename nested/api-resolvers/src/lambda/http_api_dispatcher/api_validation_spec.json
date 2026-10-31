@@ -3704,6 +3704,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "sectionId",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "configVersion",
         "non_null": false,
         "type": "String"
