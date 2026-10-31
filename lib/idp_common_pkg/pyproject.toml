@@ -173,7 +173,7 @@ appsync = ["requests<3.0.0,>=2.32.3"]
 # together with that boto3 migration, or sooner if install_packages() is ever
 # used.
 agents = [
-  "strands-agents==1.14.0; python_version>='3.10'",
+  "strands-agents==1.48.0; python_version>='3.10'",
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",    # Specifically for the code interpreter tool
   "jsonschema>=4.0.0",
 ]
@@ -186,7 +186,7 @@ multi_document_discovery = [
   "Pillow==13.0.0",            # Image processing for document rendering
   "pypdfium2>=5.5.0",          # PDF page rendering
   "jinja2>=3.1.0",             # Prompt template rendering
-  "strands-agents==1.14.0; python_version>='3.10'",  # Agentic schema generation
+  "strands-agents==1.48.0; python_version>='3.10'",  # Agentic schema generation
 ]
 
 # Synthesis / cold-start bootstrap dependencies. Schema authoring + config /
@@ -204,7 +204,7 @@ synthesis = [
 # Code intelligence module dependencies
 code_intel = [
     "requests==2.33.0",
-    "strands-agents==1.14.0",
+    "strands-agents==1.48.0",
     "bedrock-agentcore>=1.6.1,<1.9.0",  # cap rationale: see the [agents] extra
     "PyYAML>=6.0.0",
     "pathspec>=0.11.0",
@@ -336,14 +336,14 @@ all = [
   "openpyxl==3.1.5",
   "xlrd==2.0.2",
   "python-docx==1.2.0",
-  "strands-agents==1.14.0; python_version>='3.10'",
+  "strands-agents==1.48.0; python_version>='3.10'",
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",  # cap rationale: see the [agents] extra
   "jsonschema>=4.0.0",
   # "s3fs==2023.12.2" - - disabled till we fix package dependencies
 ]
 agentic-extraction = [
   "jsonpatch==1.33",
-  "strands-agents==1.14.0 ; python_full_version >= '3.10'",
+  "strands-agents==1.48.0 ; python_full_version >= '3.10'",
   "pandas>=2.2.3",
   "pypdfium2>=5.5.0",  # Apache-2.0 OR BSD-3-Clause licensed (replaces AGPL-licensed PyMuPDF)
   "email-validator>=2.3.0",
