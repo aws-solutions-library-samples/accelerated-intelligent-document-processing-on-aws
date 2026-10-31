@@ -58,6 +58,7 @@ with no overrides, i.e. on the committed `default_cell`.
 |------|------|
 | `v<RELEASE>/corefast/` | The release-vs-release A/B grid backing `docs/benchmarking/releases/v<RELEASE>.md`. **One per release**, never overwritten. |
 | `baseline.json` | The PREV release's `corefast` grid, which `aggregate.py --compare` defaults to. See below: it is **not** a byte-identical copy of the committed `v<PREV>/corefast/summary.json`, and must not be assumed to be one. |
+| `v<PREV>-rvprev/corefast/` | The PREV side of a release A/B, re-run on the same stack before the in-place upgrade (`v0.6.10-rvprev/` onwards). It is the `--baseline` the release page compares against, so it is kept for as long as that page is: deleting it leaves a published comparison citing a path that no longer exists. One per release; it is the like-for-like reference, not a variant. |
 | `v0.6.8/enforcement-kvform/` | The **only** retained evidence that `typed_accuracy` is ever measured. See below. |
 
 ### One kept slice is not a release grid — `v0.6.8/enforcement-kvform/`
@@ -136,6 +137,7 @@ later, and the pruning policy above then removes the option entirely.
 1. Confirm the new data is at `results/v<VERSION>/corefast/`.
 2. Promote: `cp results/v<VERSION>/corefast/summary.json results/baseline.json`.
 3. Commit the new release dir + `baseline.json` + the audit-trail page and index row.
-4. Do **not** add a sibling directory for a re-run or a variant. Either replace the
+4. Do **not** add a sibling directory for a re-run or a variant (the `v<PREV>-rvprev/corefast/`
+   reference side above is the one exception). Either replace the
    set in place (if the first attempt was invalid) or write the finding into the doc
    page and let the data go.
