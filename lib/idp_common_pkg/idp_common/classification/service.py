@@ -4858,20 +4858,49 @@ class ClassificationService:
         classification uses. One fold, so a windowed packet and a page-level
         document cannot disagree about how verdicts become segments, and a
         boundary the model reported inside a window survives as a ``start``.
+
+        **Within one call, the segment reported first wins.** That is the order
+        the per-page claim below walks, so it already held for a windowed packet;
+        it now holds for an unwindowed one too. A model can return segments that
+        share pages — a 1-5 segment followed by 2-2, 3-3, … — and each one used
+        to become a section, so a page was extracted once per section it landed
+        in. One rule for both paths: a page belongs to exactly one segment, and
+        which one does not depend on whether the packet happened to be windowed.
         """
         if len(window_segments) == 1:
-            # Unwindowed: use the model's segments directly, exactly as the
-            # unwindowed packet path always has. Going through the fold would
-            # give the same answer but is a pointless round trip, and the
-            # direct path is the one with years of behaviour behind it.
-            return window_segments[0]
+            overlapping = self._pages_claimed_twice(window_segments[0])
+            if not overlapping:
+                # Unwindowed and well-formed: use the model's segments directly,
+                # exactly as the unwindowed packet path always has.
+                return window_segments[0]
+            logger.warning(
+                "The model returned overlapping segments: %d page(s) appear in "
+                "more than one segment (%s). Each page is kept in the first "
+                "segment that reported it.",
+                len(overlapping),
+                overlapping[:20],
+            )
 
         verdicts: Dict[str, PageClassification] = {}
+        claimed_by: Dict[str, int] = {}
+        source: Dict[str, Segment] = {}
         for window_index, segments in enumerate(window_segments):
             for segment in segments:
-                for position, page_id in enumerate(segment.page_ids):
+                # Whether the next page this segment keeps opens a document.
+                # True for its first page, as always. After a page lost to an
+                # EARLIER WINDOW it is False: that is the leading overlap, and
+                # the pages after it continue the document the earlier window
+                # already opened. After a page lost to an earlier segment of the
+                # SAME call it is True again: the model reported a boundary
+                # here, and dropping it would fold two documents of one class
+                # into one section without any signal.
+                opens_document = True
+                for page_id in segment.page_ids:
                     if page_id in verdicts:
+                        opens_document = claimed_by[page_id] == window_index
                         continue
+                    claimed_by[page_id] = window_index
+                    source[page_id] = segment
                     verdicts[page_id] = PageClassification(
                         page_id=page_id,
                         classification=DocumentClassification(
@@ -4879,12 +4908,13 @@ class ClassificationService:
                             confidence=segment.confidence,
                             metadata={
                                 "document_boundary": (
-                                    "start" if position == 0 else "continue"
+                                    "start" if opens_document else "continue"
                                 ),
                                 "window_index": window_index,
                             },
                         ),
                     )
+                    opens_document = False
 
         uncovered = [pid for pid in sorted_page_ids if pid not in verdicts]
         if uncovered:
@@ -4902,12 +4932,34 @@ class ClassificationService:
         merged = self._fold_page_verdicts_to_segments(
             [verdicts[pid] for pid in sorted_page_ids if pid in verdicts]
         )
+        # The fold rebuilds each segment from per-page verdicts, which carry no
+        # ranked candidates. A merged segment whose every page came from one
+        # reported segment is that segment's verdict, so its candidates still
+        # describe it and are carried over; a segment assembled from several
+        # has no single list that does.
+        for segment in merged:
+            origins = {id(source[pid]): source[pid] for pid in segment.page_ids}
+            if len(origins) == 1:
+                (origin,) = origins.values()
+                segment.candidates = list(origin.candidates)
         logger.info(
             "Merged %d window(s) into %d segments",
             len(window_segments),
             len(merged),
         )
         return merged
+
+    @staticmethod
+    def _pages_claimed_twice(segments: List[Segment]) -> List[str]:
+        """Page IDs that more than one of ``segments`` covers, in first-seen order."""
+        seen: Set[str] = set()
+        repeated: List[str] = []
+        for segment in segments:
+            for page_id in segment.page_ids:
+                if page_id in seen and page_id not in repeated:
+                    repeated.append(page_id)
+                seen.add(page_id)
+        return repeated
 
     def _build_packet_content(
         self,

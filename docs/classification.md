@@ -709,7 +709,13 @@ from the **earlier** window, which is the one that had their preceding context.
 Windows are merged by projecting each window's segments onto per-page verdicts
 and re-running the same fold page-level classification uses, so a windowed packet
 and a page-level document cannot disagree about how verdicts become segments.
-A single window (the common case) uses the model's segments directly.
+A single window (the common case) uses the model's segments directly, unless
+they overlap: when a call returns segments that share pages (a 1–5 segment
+followed by a 2–2 segment, say), each page is kept in the segment the model
+reported **first** — the same rule a windowed packet applies — and a warning names
+the pages. Every page therefore belongs to exactly one section. The later segment
+still starts a new document at the first page it keeps, so two documents of the
+same class that the model let share a page are not joined into one.
 
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.

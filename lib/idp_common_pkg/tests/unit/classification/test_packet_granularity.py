@@ -471,6 +471,118 @@ class TestMergeWindowSegments:
         covered = [pid for s in merged for pid in s.page_ids]
         assert covered == ["1", "3"]
 
+    def test_overlapping_segments_in_one_call_keep_each_page_once(self, caplog):
+        """#1654: one call reporting segments that share pages. The rule is the
+        windowed one — the segment reported first keeps the page — so the
+        answer does not depend on whether the packet was windowed."""
+        import logging
+
+        service = _service()
+        with caplog.at_level(logging.WARNING):
+            merged = service._merge_window_segments(
+                [
+                    [
+                        Segment(page_ids=["1", "2", "3"], doc_class="invoice"),
+                        Segment(page_ids=["3", "4"], doc_class="receipt"),
+                        Segment(page_ids=["4"], doc_class="receipt"),
+                    ]
+                ],
+                ["1", "2", "3", "4"],
+            )
+        assert [(s.page_ids, s.doc_class) for s in merged] == [
+            (["1", "2", "3"], "invoice"),
+            (["4"], "receipt"),
+        ]
+        assert "overlapping segments" in caplog.text
+
+    def test_an_overlap_does_not_merge_two_documents_of_one_class(self):
+        """The later segment lost its first page to an earlier segment of the
+        same call, so its first remaining page still opens a document. Without
+        that, the fold would join two invoices into one section silently."""
+        service = _service()
+        merged = service._merge_window_segments(
+            [
+                [
+                    Segment(page_ids=["1", "2", "3"], doc_class="invoice"),
+                    Segment(page_ids=["3", "4", "5", "6"], doc_class="invoice"),
+                ]
+            ],
+            ["1", "2", "3", "4", "5", "6"],
+        )
+        assert [s.page_ids for s in merged] == [["1", "2", "3"], ["4", "5", "6"]]
+
+    def test_an_unlabelled_splitting_overlap_keeps_its_boundary(self):
+        """The splitting call returns no class, so every page folds under one
+        label and only the boundary separates documents."""
+        service = _service()
+        merged = service._merge_window_segments(
+            [[Segment(page_ids=["1", "2", "3"]), Segment(page_ids=["3", "4"])]],
+            ["1", "2", "3", "4"],
+        )
+        assert [s.page_ids for s in merged] == [["1", "2", "3"], ["4"]]
+
+    def test_a_segment_resuming_after_a_claimed_run_opens_a_document(self):
+        service = _service()
+        merged = service._merge_window_segments(
+            [
+                [
+                    Segment(page_ids=["2", "3"], doc_class="invoice"),
+                    Segment(page_ids=["1", "2", "3", "4", "5"], doc_class="invoice"),
+                ]
+            ],
+            ["1", "2", "3", "4", "5"],
+        )
+        assert [s.page_ids for s in merged] == [["1"], ["2", "3"], ["4", "5"]]
+
+    def test_a_leading_overlap_lost_to_an_earlier_window_still_continues(self):
+        """Across windows the leading overlap is the earlier window's, and the
+        pages after it continue that window's document — unchanged."""
+        service = _service()
+        merged = service._merge_window_segments(
+            [
+                [Segment(page_ids=["1", "2", "3"], doc_class="invoice")],
+                [Segment(page_ids=["3", "4", "5"], doc_class="invoice")],
+            ],
+            ["1", "2", "3", "4", "5"],
+        )
+        assert [s.page_ids for s in merged] == [["1", "2", "3", "4", "5"]]
+
+    def test_candidates_survive_where_a_segment_is_one_reported_segment(self):
+        service = _service()
+        ranked = [{"class": "invoice", "probability": 0.9}]
+        other = [{"class": "receipt", "probability": 0.8}]
+        merged = service._merge_window_segments(
+            [
+                [
+                    Segment(
+                        page_ids=["1", "2"], doc_class="invoice", candidates=ranked
+                    ),
+                    Segment(page_ids=["2", "3"], doc_class="receipt", candidates=other),
+                ]
+            ],
+            ["1", "2", "3"],
+        )
+        assert [(s.page_ids, s.candidates) for s in merged] == [
+            (["1", "2"], ranked),
+            (["3"], other),
+        ]
+
+    def test_one_call_and_two_windows_resolve_an_overlap_the_same_way(self):
+        """The same page claims, delivered as one call or split across two
+        windows, produce the same segments."""
+        service = _service()
+        first = Segment(page_ids=["1", "2", "3"], doc_class="invoice")
+        second = Segment(page_ids=["2", "3", "4"], doc_class="receipt")
+        one_call = service._merge_window_segments(
+            [[first, second]], ["1", "2", "3", "4"]
+        )
+        two_windows = service._merge_window_segments(
+            [[first], [second]], ["1", "2", "3", "4"]
+        )
+        assert [(s.page_ids, s.doc_class) for s in one_call] == [
+            (s.page_ids, s.doc_class) for s in two_windows
+        ]
+
     def test_a_segment_confidence_survives_the_merge(self):
         service = _service()
         merged = service._merge_window_segments(
@@ -616,6 +728,32 @@ class TestPacketClassifyDocument:
         assert invoke.call_count == 1
         assert [s.page_ids for s in result.sections] == [["1", "2"], ["3", "4"]]
         assert [s.classification for s in result.sections] == ["invoice", "receipt"]
+
+    def test_overlapping_segments_never_put_a_page_in_two_sections(self):
+        """#1654, through the real parse and section builder: a wide segment
+        followed by narrower ones covering some of the same pages."""
+        service = _service()
+        document = _document(4)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model") as invoke,
+        ):
+            invoke.return_value = _bedrock_reply(
+                [
+                    {"ordinal_start_page": 1, "ordinal_end_page": 3, "type": "invoice"},
+                    {"ordinal_start_page": 2, "ordinal_end_page": 2, "type": "receipt"},
+                    {"ordinal_start_page": 3, "ordinal_end_page": 4, "type": "receipt"},
+                ]
+            )
+            result = service.packet_classify_document(document)
+
+        placed = [pid for s in result.sections for pid in s.page_ids]
+        assert sorted(placed) == ["1", "2", "3", "4"]
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3"], "invoice"),
+            (["4"], "receipt"),
+        ]
 
     def test_a_long_packet_makes_one_call_per_window_and_merges(self):
         service = _service(packet={"window_pages": "4", "overlap_pages": "1"})

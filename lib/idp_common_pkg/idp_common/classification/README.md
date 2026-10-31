@@ -116,7 +116,16 @@ same fold page-level classification uses, so the two granularities cannot
 disagree about how verdicts become segments. **The earlier window wins for an
 overlapping page**: it is the one that saw the pages before them, which is what a
 boundary decision mostly rests on. A single window is used directly rather than
-folded, so the common case is byte-identical to the unwindowed path.
+folded, so the common case is byte-identical to the unwindowed path — unless its
+segments overlap. **Within one call the segment reported first wins**, which is the
+order the per-page claim already walks for a windowed packet, so a single call whose
+segments share pages goes through the same claim and fold and every page lands in
+exactly one segment (#1654). A segment that lost pages to an earlier segment of the
+**same call** opens a new document at the next page it keeps, so two same-class
+documents that share a page stay two sections; a page lost to an **earlier window**
+is the leading overlap, and the pages after it continue that window's document. The
+fold carries no `candidates`, so a merged segment built entirely from one reported
+segment gets that segment's list back, and one assembled from several gets none.
 
 A combined packet call validates every segment's class like the page path does:
 a reply naming an invalid class re-prompts the window up to
