@@ -26,6 +26,7 @@ echo "Generating Python dependency manifest..."
 
 "${PY_RUN[@]}" - "$REPO_ROOT" "$OUTPUT_DIR/python-packages.txt" << 'PYTHON_SCRIPT'
 """Collect all Python dependencies from lockfiles and requirements, deduplicate by name."""
+import subprocess
 import sys
 import tomllib
 import re
@@ -45,7 +46,32 @@ INTERNAL_PACKAGES = {
     "idp-feature-sdk",
 }
 
-SKIP_DIRS = {".aws-sam", ".venv", "node_modules", ".git", "deps"}
+
+
+def repo_files(pattern: str) -> list[Path]:
+    """Files matching ``pattern`` that the repository holds, not just the disk.
+
+    Tracked files plus untracked files no ignore rule covers: a dependency file a
+    developer has not yet ``git add``-ed is part of their change, but a gitignored
+    copy (a staged build tree, a scratch worktree inside the checkout) never
+    ships, and auditing it makes a local run fail on advisories CI never sees.
+    A walk of the disk cannot tell those apart, so outside a git checkout this
+    fails rather than guessing. Issue #1675.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files", "-z", "--cached", "--others",
+         "--exclude-standard", "--", f":(glob)**/{pattern}"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.exit(
+            f"ERROR: `git ls-files` failed in {repo_root}, so the dependency files "
+            f"to audit cannot be told apart from gitignored copies:\n{proc.stderr}"
+        )
+    found = {repo_root / rel for rel in proc.stdout.split("\0") if rel}
+    # A tracked file deleted in the working tree is still listed by --cached.
+    return sorted(path for path in found if path.is_file())
 
 
 def normalize(name: str) -> str:
@@ -63,10 +89,7 @@ def is_internal(name: str) -> bool:
 resolved: dict[str, str] = {}  # normalized_name -> "name==version"
 
 # 1. Parse all existing uv.lock files (already resolved, no conflicts)
-for lockfile in sorted(repo_root.rglob("uv.lock")):
-    rel = str(lockfile.relative_to(repo_root))
-    if any(skip in rel for skip in SKIP_DIRS):
-        continue
+for lockfile in repo_files("uv.lock"):
     content = lockfile.read_text()
     for block in re.split(r"\n(?=\[\[package\]\])", content):
         name_m = re.search(r'^name\s*=\s*"(.+?)"', block, re.MULTILINE)
@@ -113,10 +136,7 @@ for toml_path in sorted(repo_root.glob("lib/*/pyproject.toml")):
                 additional.add(pkg)
 
 # From requirements.txt files
-for req_path in sorted(repo_root.rglob("requirements*.txt")):
-    rel = str(req_path.relative_to(repo_root))
-    if any(skip in rel for skip in SKIP_DIRS):
-        continue
+for req_path in repo_files("requirements*.txt"):
     with open(req_path) as f:
         for line in f:
             line = line.split("#")[0].strip()

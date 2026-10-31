@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make dep-audit` and `make dep-manifest` read only the dependency files the repository holds** ([#1675](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1675)). Lockfiles and requirements files were found by walking the disk, so a gitignored copy (a staged build tree, a worktree inside the checkout) was audited as if it shipped and a local run could fail where CI passed. They are now found with `git ls-files`, tracked plus untracked-but-not-ignored, and the generator refuses to run outside a git checkout. See [Dependency mirroring](docs/dependency-mirroring.md).
+
 ## [0.6.13]
 
 ### Added

@@ -103,7 +103,7 @@ The manifests are designed to work with any artifact repository manager (JFrog A
 
 The script (`scripts/generate-dep-manifest.sh`):
 
-1. **Python**: Parses existing `uv.lock` files for already-resolved packages, then scans `lib/*/pyproject.toml` and all `requirements.txt` files for any additional packages not covered by the lockfiles. Internal packages and path references are filtered out.
+1. **Python**: Parses existing `uv.lock` files for already-resolved packages, then scans `lib/*/pyproject.toml` and all `requirements.txt` files for any additional packages not covered by the lockfiles. Internal packages and path references are filtered out. Lockfiles and requirements files are found with `git ls-files` (tracked files plus untracked files no ignore rule covers), so a gitignored copy such as a staged build tree is not read and a local run reads the same files CI does. The script therefore has to run inside a git checkout.
 
 2. **Node**: Parses the committed `package-lock.json` files with `jq` to extract every resolved package and version. No install step needed.
 
