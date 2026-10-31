@@ -1026,8 +1026,28 @@ class ClassificationService:
                                 self._pin_page_class(page_result, forced_class)
                             all_page_results.append(page_result)
 
-                            # Check if there was an error in the classification
-                            if "error" in page_result.classification.metadata:
+                            # Check if there was an error in the classification.
+                            #
+                            # ⚠️ A genuinely empty page is NOT one. It stays
+                            # 'unclassified' and is reported as a warning
+                            # ProcessingIssue on its section (see
+                            # _record_unclassified_page_issues), but it must not
+                            # reach document.errors: processresults fails the
+                            # whole document on any entry there, so one blank
+                            # separator sheet in a text-only configuration
+                            # discarded every other page's classification.
+                            # ``page_empty`` is set only by classify_page_bedrock,
+                            # and only when the page's text was read and is
+                            # empty with images off. A failed read or a missing
+                            # artifact leaves it False and still fails the
+                            # document, because that page may have content.
+                            page_empty = bool(
+                                page_result.classification.metadata.get("page_empty")
+                            )
+                            if (
+                                "error" in page_result.classification.metadata
+                                and not page_empty
+                            ):
                                 with errors_lock:
                                     error_msg = f"Error classifying page {page_id}: {page_result.classification.metadata['error']}"
                                     document.errors.append(error_msg)
@@ -2518,6 +2538,11 @@ class ClassificationService:
         # Initialize content variables
         text_content = None
         image_content = None
+        # Why a page ended up with nothing to send, kept apart from the page
+        # simply being empty: a read that failed is a fault, and must still fail
+        # the document (see _classify_pages_multimodal), whereas an empty page
+        # is an ordinary outcome.
+        load_errors: List[str] = []
 
         # Load text content from URI.
         #
@@ -2533,6 +2558,7 @@ class ClassificationService:
                 text_content = s3.get_text_content(text_uri)
             except Exception as e:
                 logger.warning(f"Failed to load text content from {text_uri}: {e}")
+                load_errors.append(f"page text could not be read: {e}")
                 # Continue without text content
 
         # Load image content from URI with configurable dimensions.
@@ -2552,6 +2578,7 @@ class ClassificationService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to load image content from {image_uri}: {e}")
+                load_errors.append(f"page image could not be read: {e}")
                 # Continue without image content
 
         # Check for page content regex match (combined strategy, page granularity only)
@@ -2581,15 +2608,34 @@ class ClassificationService:
         # Verify we have at least some content to classify
         if not text_content and not image_content:
             logger.warning(f"No content available for page {page_id}")
-            # Return unclassified result
-            return self._create_unclassified_result(
+            # Genuinely empty only when nothing went wrong: the page's text was
+            # read and is empty, and no image was expected because images are
+            # not sent. A failed read, or a page artifact that is missing, is
+            # not an empty page — it keeps failing the document as it always
+            # has, because the page may well have content nobody looked at.
+            page_is_empty = bool(text_uri) and not send_images and not load_errors
+            if page_is_empty:
+                error_message = (
+                    "No content available for classification: the page has no "
+                    "OCR text and page images are not sent (modality.images is "
+                    "off)"
+                )
+            elif load_errors:
+                error_message = "No content available for classification: " + (
+                    "; ".join(load_errors)
+                )
+            else:
+                error_message = "No content available for classification"
+            result = self._create_unclassified_result(
                 page_id=page_id,
                 image_uri=image_uri,
                 text_uri=text_uri,
                 raw_text_uri=raw_text_uri,
-                error_message="No content available for classification",
+                error_message=error_message,
                 reason=UNCLASSIFIED_NO_CONTENT,
             )
+            result.classification.metadata["page_empty"] = page_is_empty
+            return result
 
         # Get classification configuration
         config = self._get_classification_config()
@@ -3174,11 +3220,14 @@ class ClassificationService:
           class was assigned, it is just not the model's, and it is the commonest
           of the three because it is where a page the model cannot place ends up;
         * a page with **nothing to classify** → ``warning``. Note what that
-          actually requires: no usable OCR text AND no loadable page image, since
-          ``classify_page_bedrock`` checks both. A blank page normally still has an
-          image, so it does not land here — this is either a text-only ingestion of
-          an empty page or missing page artifacts. Warning rather than error
-          because the message cannot tell the two apart and says so.
+          actually requires: no usable OCR text AND no page image, since
+          ``classify_page_bedrock`` checks both. With images on, a blank page
+          normally still has an image and does not land here — this is then
+          missing page artifacts. With ``modality.images`` off the image is never
+          loaded, so every page without OCR text lands here, and the message says
+          so. Warning rather than error, and the page does not reach
+          ``document.errors`` either, so the rest of the document still
+          completes.
 
         No CloudWatch metric is published from here. Every fleet-level alarm in
         this stack is paired with a threshold parameter a deployer tunes, and none
@@ -3229,9 +3278,14 @@ class ClassificationService:
                 unclassified_reason = metadata.get(
                     "unclassified_reason", UNCLASSIFIED_FAILED
                 )
+                # A no-content page whose text or image could not be read is a
+                # failure, not an empty page: classify_page_bedrock says which
+                # with ``page_empty``. A result without the key (an older or
+                # hand-built one) keeps the no-content reading it always had.
                 code = (
                     "classification_page_no_content"
                     if unclassified_reason == UNCLASSIFIED_NO_CONTENT
+                    and metadata.get("page_empty", True)
                     else "classification_failed"
                 )
                 detail = str(error_message)
@@ -3265,10 +3319,12 @@ class ClassificationService:
                 "the section holds no data for them."
             ),
             "classification_page_no_content": (
-                "{count} page(s) ({pages}) had neither usable OCR text nor a "
-                "loadable page image, so they could not be classified and were "
-                "labelled '{unclassified}'. No fields were extracted from them. "
-                "Check the OCR step for those pages unless they are genuinely empty."
+                "{count} page(s) ({pages}) had nothing to classify — no usable "
+                "OCR text, and no page image was loaded or images are not sent "
+                "— so they were labelled '{unclassified}' and the rest of the "
+                "document was classified without them. No fields were extracted "
+                "from them. Check the OCR step for those pages unless they are "
+                "genuinely empty."
             ),
             "classification_invalid_class_fallback": (
                 "The model returned a class outside the configured vocabulary for "
@@ -4858,20 +4914,49 @@ class ClassificationService:
         classification uses. One fold, so a windowed packet and a page-level
         document cannot disagree about how verdicts become segments, and a
         boundary the model reported inside a window survives as a ``start``.
+
+        **Within one call, the segment reported first wins.** That is the order
+        the per-page claim below walks, so it already held for a windowed packet;
+        it now holds for an unwindowed one too. A model can return segments that
+        share pages — a 1-5 segment followed by 2-2, 3-3, … — and each one used
+        to become a section, so a page was extracted once per section it landed
+        in. One rule for both paths: a page belongs to exactly one segment, and
+        which one does not depend on whether the packet happened to be windowed.
         """
         if len(window_segments) == 1:
-            # Unwindowed: use the model's segments directly, exactly as the
-            # unwindowed packet path always has. Going through the fold would
-            # give the same answer but is a pointless round trip, and the
-            # direct path is the one with years of behaviour behind it.
-            return window_segments[0]
+            overlapping = self._pages_claimed_twice(window_segments[0])
+            if not overlapping:
+                # Unwindowed and well-formed: use the model's segments directly,
+                # exactly as the unwindowed packet path always has.
+                return window_segments[0]
+            logger.warning(
+                "The model returned overlapping segments: %d page(s) appear in "
+                "more than one segment (%s). Each page is kept in the first "
+                "segment that reported it.",
+                len(overlapping),
+                overlapping[:20],
+            )
 
         verdicts: Dict[str, PageClassification] = {}
+        claimed_by: Dict[str, int] = {}
+        source: Dict[str, Segment] = {}
         for window_index, segments in enumerate(window_segments):
             for segment in segments:
-                for position, page_id in enumerate(segment.page_ids):
+                # Whether the next page this segment keeps opens a document.
+                # True for its first page, as always. After a page lost to an
+                # EARLIER WINDOW it is False: that is the leading overlap, and
+                # the pages after it continue the document the earlier window
+                # already opened. After a page lost to an earlier segment of the
+                # SAME call it is True again: the model reported a boundary
+                # here, and dropping it would fold two documents of one class
+                # into one section without any signal.
+                opens_document = True
+                for page_id in segment.page_ids:
                     if page_id in verdicts:
+                        opens_document = claimed_by[page_id] == window_index
                         continue
+                    claimed_by[page_id] = window_index
+                    source[page_id] = segment
                     verdicts[page_id] = PageClassification(
                         page_id=page_id,
                         classification=DocumentClassification(
@@ -4879,12 +4964,13 @@ class ClassificationService:
                             confidence=segment.confidence,
                             metadata={
                                 "document_boundary": (
-                                    "start" if position == 0 else "continue"
+                                    "start" if opens_document else "continue"
                                 ),
                                 "window_index": window_index,
                             },
                         ),
                     )
+                    opens_document = False
 
         uncovered = [pid for pid in sorted_page_ids if pid not in verdicts]
         if uncovered:
@@ -4902,12 +4988,65 @@ class ClassificationService:
         merged = self._fold_page_verdicts_to_segments(
             [verdicts[pid] for pid in sorted_page_ids if pid in verdicts]
         )
+        # The fold rebuilds each segment from per-page verdicts, which carry no
+        # ranked candidates. A merged segment whose every page came from one
+        # reported segment is that segment's verdict, so its candidates still
+        # describe it and are carried over; a segment assembled from several
+        # has no single list that does.
+        for segment in merged:
+            origins = {id(source[pid]): source[pid] for pid in segment.page_ids}
+            if len(origins) == 1:
+                (origin,) = origins.values()
+                segment.candidates = list(origin.candidates)
         logger.info(
             "Merged %d window(s) into %d segments",
             len(window_segments),
             len(merged),
         )
         return merged
+
+    def _split_overflowing_window(
+        self, window_page_ids: List[str]
+    ) -> Optional[tuple[List[str], List[str]]]:
+        """Two smaller windows covering ``window_page_ids``, or None for one page.
+
+        The second half repeats up to ``overlap_pages`` of the first half's
+        trailing pages, for the same reason adjacent windows overlap: the call
+        after a junction needs the pages before its first page to judge whether
+        a new document starts there. The repeat is capped so both halves are
+        always strictly smaller than the window they came from, which is what
+        makes repeated splitting terminate.
+
+        ``window_pages: 0`` is the documented way to ask for one call over the
+        whole packet and nothing else, so it is never split: that setting trades
+        failing outright for the guarantee that the model saw the packet whole.
+        """
+        packet_cfg = self._page_input().packet
+        total = len(window_page_ids)
+        if total < 2 or packet_cfg.window_pages <= 0:
+            return None
+        mid = total // 2
+        # At most about half the first half, so each half is at most about
+        # three quarters of the window and repeated splitting shrinks
+        # geometrically; capping at ``mid - 1`` only guaranteed one page less per
+        # split, and the number of calls grew far faster than the page count.
+        # At least one page while the first half has two, because a junction
+        # with no overlap makes the second half's first page open a document.
+        cap = max(1, (mid - 1) // 2) if mid >= 2 else 0
+        overlap = max(0, min(packet_cfg.overlap_pages, cap))
+        return window_page_ids[:mid], window_page_ids[mid - overlap :]
+
+    @staticmethod
+    def _pages_claimed_twice(segments: List[Segment]) -> List[str]:
+        """Page IDs that more than one of ``segments`` covers, in first-seen order."""
+        seen: Set[str] = set()
+        repeated: List[str] = []
+        for segment in segments:
+            for page_id in segment.page_ids:
+                if page_id in seen and page_id not in repeated:
+                    repeated.append(page_id)
+                seen.add(page_id)
+        return repeated
 
     def _build_packet_content(
         self,
@@ -5117,6 +5256,8 @@ class ClassificationService:
             partial result is still reported as partial rather than as a clean
             run over fewer pages.
         """
+        from idp_common.utils.bedrock_utils import is_input_token_overflow
+
         pages_content, _ = self._format_pages_with_coverage(document)
         config = self._get_classification_config(stage)
         _, send_images = self._resolve_modality()
@@ -5131,23 +5272,89 @@ class ClassificationService:
         metering: Dict[str, Any] = {}
         errors: List[str] = []
 
-        for window_index, window_page_ids in enumerate(windows, start=1):
+        # A worklist rather than a plain loop, because a window can be replaced
+        # by two smaller ones (see the overflow branch below). The halves go back
+        # on the FRONT, so results are still appended in page order — which
+        # _merge_window_segments relies on for "the earlier window wins".
+        pending: List[tuple[List[str], str, bool]] = [
+            (window_page_ids, f"{window_index}/{len(windows)}", False)
+            for window_index, window_page_ids in enumerate(windows, start=1)
+        ]
+        # Splitting is bounded twice over. A sub-window already requested is not
+        # requested again: the overlap makes neighbouring halves produce the same
+        # smaller window, and its verdict is already in hand (or already
+        # reported). And the calls made for split windows are capped at twice
+        # the packet's page count — page granularity's cost, doubled — so a
+        # model that refuses everything, down to single pages, costs a bounded
+        # number of requests rather than one per node of the split tree.
+        requested: Set[tuple[str, ...]] = set()
+        split_budget = 2 * len(sorted_page_ids)
+        split_calls = 0
+        while pending:
+            window_page_ids, window_label, is_split = pending.pop(0)
+            key = tuple(window_page_ids)
+            if key in requested:
+                continue
+            requested.add(key)
+            if is_split:
+                if split_calls >= split_budget:
+                    error_msg = (
+                        f"Packet window {window_label} "
+                        f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) was "
+                        f"not classified: retrying windows that exceeded the "
+                        f"model's input used all {split_budget} calls allowed. "
+                        f"Lower packet.window_pages, or set image.target_width "
+                        f"and target_height so pages render smaller."
+                    )
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    continue
+                split_calls += 1
             try:
                 segments, window_metering = self._classify_one_packet_window(
                     document=document,
                     config=config,
                     pages_content=pages_content,
                     window_page_ids=window_page_ids,
-                    window_label=f"{window_index}/{len(windows)}",
+                    window_label=window_label,
                     send_images=send_images,
                     forced_class=forced_class,
                 )
             except Exception as e:
+                halves = (
+                    self._split_overflowing_window(window_page_ids)
+                    if is_input_token_overflow(e)
+                    else None
+                )
+                # Termination is checked here rather than trusted to the
+                # helper: a half that is not strictly smaller would re-queue the
+                # same window forever, and the worklist grows without bound.
+                if halves and all(len(half) < len(window_page_ids) for half in halves):
+                    # ``window_pages`` is a page count and says nothing about
+                    # what those pages cost in tokens: a full window of
+                    # full-resolution scans can exceed a model's input. A larger-than-
+                    # window packet is already split, so a too-large window is
+                    # split the same way rather than failing the document.
+                    logger.warning(
+                        "Packet window %s (pages %s-%s) exceeded the model's "
+                        "input limit; retrying as windows of %d and %d pages: %s",
+                        window_label,
+                        window_page_ids[0],
+                        window_page_ids[-1],
+                        len(halves[0]),
+                        len(halves[1]),
+                        e,
+                    )
+                    pending[:0] = [
+                        (halves[0], f"{window_label}a", True),
+                        (halves[1], f"{window_label}b", True),
+                    ]
+                    continue
                 # One window failing must not discard the others: on a long
                 # packet that would turn a transient throttle into a total loss
                 # of a 40-page document's boundaries.
                 error_msg = (
-                    f"Packet window {window_index}/{len(windows)} "
+                    f"Packet window {window_label} "
                     f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
                     f"failed: {e}"
                 )
@@ -5337,14 +5544,34 @@ class ClassificationService:
         window_metering: Dict[str, Any] = {}
         segments: List[Segment] = []
         invalid: List[Segment] = []
+        answered = 0
         for attempt in range(max_retries + 1):
-            segments, attempt_metering = self._run_packet_window_call(
-                attempt_content,
-                config,
-                document,
-                window_page_ids,
-                forced_class,
-            )
+            try:
+                segments, attempt_metering = self._run_packet_window_call(
+                    attempt_content,
+                    config,
+                    document,
+                    window_page_ids,
+                    forced_class,
+                )
+            except Exception as e:
+                from idp_common.utils.bedrock_utils import is_input_token_overflow
+
+                if attempt == 0 or not is_input_token_overflow(e):
+                    raise
+                # The re-prompt is longer than the first request, so it can be
+                # the one that does not fit. Raising here would make the caller
+                # split the window and drop this window's billed first attempt
+                # from the metering; the first answer is in hand, so its invalid
+                # segments get the fallback exactly as when retries run out.
+                logger.warning(
+                    "Packet window %s: the validation re-prompt exceeded the "
+                    "model's input (%s); keeping the previous answer.",
+                    window_label,
+                    e,
+                )
+                break
+            answered += 1
             window_metering = (
                 attempt_metering
                 if not window_metering
@@ -5382,7 +5609,7 @@ class ClassificationService:
             "Packet window %s still returned invalid class(es) after %d attempt(s); "
             "assigned fallback '%s' to %d segment(s).",
             window_label,
-            max_retries + 1,
+            answered,
             fallback,
             len(invalid),
         )

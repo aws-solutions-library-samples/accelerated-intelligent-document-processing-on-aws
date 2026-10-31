@@ -116,7 +116,29 @@ same fold page-level classification uses, so the two granularities cannot
 disagree about how verdicts become segments. **The earlier window wins for an
 overlapping page**: it is the one that saw the pages before them, which is what a
 boundary decision mostly rests on. A single window is used directly rather than
-folded, so the common case is byte-identical to the unwindowed path.
+folded, so the common case is byte-identical to the unwindowed path — unless its
+segments overlap. **Within one call the segment reported first wins**, which is the
+order the per-page claim already walks for a windowed packet, so a single call whose
+segments share pages goes through the same claim and fold and every page lands in
+exactly one segment (#1654). A segment that lost pages to an earlier segment of the
+**same call** opens a new document at the next page it keeps, so two same-class
+documents that share a page stay two sections; a page lost to an **earlier window**
+is the leading overlap, and the pages after it continue that window's document. The
+fold carries no `candidates`, so a merged segment built entirely from one reported
+segment gets that segment's list back, and one assembled from several gets none.
+
+A window the model refuses as too long (`is_input_token_overflow`) is split in two
+by `_split_overflowing_window` and both halves are retried, recursively, with up to
+`overlap_pages` repeated at the junction; the halves are queued in page order so
+the merge's "earlier window wins" still holds. A one-page window that does not fit
+is reported like any other window failure, and `window_pages: 0` is never split,
+because one call over the whole packet is what that setting asks for (#1676). The
+repeated overlap is capped at about half the first half (and at least one page), so
+each split shrinks the window by a fraction rather than by a page; a sub-window
+already requested is not requested again; and the calls made for split windows stop
+at twice the packet's page count, after which the remaining sub-windows are reported
+as not classified. A class-validation re-prompt that overflows keeps the answer
+already received, with its metering, and assigns the fallback rather than splitting.
 
 A combined packet call validates every segment's class like the page path does:
 a reply naming an invalid class re-prompts the window up to
@@ -744,19 +766,23 @@ document-level issue would raise that count and then have no text to show for it
 
 | `metadata` key | `unclassified_reason` | Issue code | Severity | Reached from |
 |---|---|---|---|---|
-| `error` | `no_content` | `classification_page_no_content` | warning | `classify_page_bedrock` |
-| `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` only |
+| `error` | `no_content`, `page_empty` true or absent | `classification_page_no_content` | warning | `classify_page_bedrock` |
+| `error` | `no_content`, `page_empty` false | `classification_failed` | error | `classify_page_bedrock` (a read failed or an artifact is missing) |
+| `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
 
-**`classification_failed` does not fire on the Bedrock backend.** All four
-default-reason call sites are in `classify_page_sagemaker`; `classify_page_bedrock`
+**On the Bedrock backend `classification_failed` comes only from a page that could
+not be read.** A no-content result whose `page_empty` is false gets the error code,
+because the page may have content nobody looked at. All four default-reason call
+sites are in `classify_page_sagemaker`; `classify_page_bedrock`
 re-raises from its `except`, and the thread-pool handler that catches it does not
 append the page to `all_page_results`, so this function never sees it. No signal is
 lost — that path marks the document `FAILED`, and `document.errors` *is* read on a
-failed document — but the error-severity code is a UDOP-backend code in practice.
+failed document — so apart from read failures the error-severity code is a
+UDOP-backend code in practice.
 Note that a test mocking `classify_page`'s **return value** cannot surface this,
 since a returned unclassified result is SageMaker-shaped by construction.
 
@@ -765,7 +791,21 @@ one nobody reads. The fallback case is the commonest of the three, because it is
 where a page the model cannot place ends up, and a class *was* assigned — just not
 the model's. `classification_page_no_content` needs **both** the page's OCR text and
 its page image to be unusable (`classify_page_bedrock` checks both), so a blank page
-that still has an image does not land there.
+that still has an image does not land there. With `modality.images` off the image is
+never loaded, so every page without OCR text does, and the `error` text says images
+are not sent rather than pointing at a missing image.
+
+⚠️ **A genuinely empty page is kept out of `document.errors`.** `classify_page_bedrock`
+sets `metadata["page_empty"]` only when the page's text was read, is empty, and
+images are not sent. Such a page still carries `metadata["error"]`, which is what
+this function keys on, but `_classify_pages_multimodal` does not copy it into
+`document.errors`: `processresults` fails the whole document on any entry there, so
+one blank separator sheet in a text-only configuration used to discard the
+classification of every other page. The page stays `unclassified`, and extraction
+takes the empty-schema route for its section. Every other `no_content` page — a text
+or image read that raised, a missing text URI, or images on with no image — still
+reaches `document.errors` and fails the document, because that page may have content
+nobody looked at; its `error` text names the read that failed.
 
 One issue per (section, cause) with the page IDs listed, so a 50-page run of
 unclassifiable pages does not produce 50 identical rows. The write replaces only

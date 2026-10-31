@@ -1307,6 +1307,16 @@ Two consequences worth knowing:
   already carries it, so a class that was later renamed can still be seen and
   corrected rather than silently blanked.
 
+**Re-extract is offered only on a document with one section.** The re-run applies the
+corrected class to every page and produces a single section, so on a packet it would
+overwrite the class and the page grouping of every other section. On a document with
+more than one section the notice still says the fields reflect the previous class,
+but there is no **Re-extract** button: correct that section's fields by hand. The API
+refuses the same request (`reextractTestSetDocument` or `generateDraftLabels` with a
+`documentClass`, on a document whose baseline has more than one section) with a
+bad-request error before it writes anything, and `generateDraftLabels` forces a class
+only onto exactly one named document.
+
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
 
@@ -1364,7 +1374,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Re-extract**, offered after a class change, is there if you would rather the model redo one. It is
+**Re-extract**, offered after a class change on a document with a single section, is there if you would rather the model redo it. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1721,7 +1731,7 @@ Three kinds are distinguished, because they call for different fixes:
 
 | Issue | Meaning | What to do |
 |---|---|---|
-| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue (and re-extract, on a single-section document), then re-run. |
 | **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 

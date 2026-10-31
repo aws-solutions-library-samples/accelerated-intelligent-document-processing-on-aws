@@ -7,7 +7,7 @@
 // the page-class board over the set's 0-based page indices, and the notices after a
 // regroup or a class change (with Re-extract). The shared SectionEditor does the field
 // editing; this hook supplies its slots and the board.
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, FormField, Input } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -127,6 +127,8 @@ export const useTestSetEditorSlots = ({
   // their fields were extracted under: their fields no longer match their class until
   // they are re-extracted.
   const [reclassified, setReclassified] = useState<Record<string, string>>({});
+  // How many sections the last saved grouping wrote, until the caller's refs catch up.
+  const [savedSectionCount, setSavedSectionCount] = useState<number | null>(null);
   // Forces a baseline re-read after a re-extract rewrites it: the key is unchanged.
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -169,6 +171,18 @@ export const useTestSetEditorSlots = ({
   /** Pages for the board, in the 1-based page-id space. */
   const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
   const canRegroup = boardPages.length > 0 && sections.length > 0;
+  /**
+   * Re-extract runs the whole document under one forced class, as one section, so on a
+   * document with several sections it would rewrite every section's class and collapse
+   * the grouping (#1672). The server refuses it there; this keeps the button away too.
+   */
+  // Also counts the grouping just saved: the caller's refs lag the save until its reload
+  // lands, and a split into several sections must not show the button in between. Once
+  // new refs arrive they are the truth and the saved count is dropped. Keyed on the
+  // array's identity, which the caller replaces on each reload: a content key would miss
+  // a re-read that lands on the same section ids the save started from.
+  const canReextract = Math.max(sections.length, savedSectionCount ?? 0) <= 1;
+  useEffect(() => setSavedSectionCount(null), [sections]);
 
   /**
    * Every section's grouping, in the board's 1-based page-id space, from the queue's
@@ -224,6 +238,7 @@ export const useTestSetEditorSlots = ({
       if (was && after && was !== after) moved[sec.sectionId] = was;
     });
     setReclassified(moved);
+    setSavedSectionCount(written.filter(Boolean).length);
     setReloadToken((token) => token + 1);
     // Section ids and classes have moved, so the caller's refs are stale.
     onChanged();
@@ -289,8 +304,14 @@ export const useTestSetEditorSlots = ({
           onDismiss={() => setRegroupedSectionIds([])}
         >
           The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so
-          their values may no longer match. Check them, and change a section&apos;s class and use <b>Re-extract</b> if you would rather the
-          model redo it.
+          their values may no longer match. Check them
+          {canReextract ? (
+            <>
+              , and change the section&apos;s class and use <b>Re-extract</b> if you would rather the model redo it.
+            </>
+          ) : (
+            '.'
+          )}
         </Alert>
       )}
       {error && <Alert type="error">{error}</Alert>}
@@ -302,7 +323,14 @@ export const useTestSetEditorSlots = ({
     <>
       {/* A section's class is changed in Edit Page Grouping. Its fields were extracted under
           the previous class, and only a re-extract replaces them. */}
-      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && (
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && !canReextract && (
+        <Alert type="info" header="Fields still reflect the previous class">
+          These fields were extracted as <b>{reclassified[ctx.selectedSectionId]}</b>. Correct them for <b>{documentClassType}</b> by hand.
+          Re-extract is not offered on a document with more than one section: it re-runs the whole document as a single section of one
+          class, which would overwrite the class and the page grouping of every other section.
+        </Alert>
+      )}
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && canReextract && (
         <Alert
           type="info"
           header="Fields still reflect the previous class"
@@ -354,10 +382,14 @@ export const useTestSetEditorSlots = ({
             ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
             : 'This section has no inference_result at all.'}{' '}
         {sections.length > 1 ? 'Other sections of this document may still have values — choose one from the Section list above. ' : ''}
-        {documentClassType ? (
+        {documentClassType && canReextract ? (
           <>
             To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the{' '}
             <b>JSON Editor</b> tab to enter values by hand.
+          </>
+        ) : documentClassType ? (
+          <>
+            Use the <b>JSON Editor</b> tab to enter values by hand. Re-extract is not offered on a document with more than one section.
           </>
         ) : (
           <>
