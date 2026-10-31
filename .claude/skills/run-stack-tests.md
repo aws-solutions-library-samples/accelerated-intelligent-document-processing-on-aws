@@ -8,7 +8,14 @@ used to run automatically on every integration pipeline; they were moved to
 on-demand `make stacktest-*` targets because standing up ~6 stacks at once in one
 pipeline burst the account-wide AWS control planes (CloudWatch Logs
 create-consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
-limit) and caused flaky failures unrelated to the code under test.
+limit) and caused flaky failures unrelated to the code under test. In CI the
+deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API)
+run only on the **weekly variant-probe schedule** (a GitLab project setting; they
+run only while it is active), never on the nightly;
+`stacktest-rbac` is `make api-test`, which every integration run already executes
+as a step of the primary suite, and the other `stacktest-*` targets run only by
+hand; see
+`scripts/sdlc/docs/CI_TEST_COVERAGE.md` (Pipeline stages & triggers).
 
 ## The stacktest family
 
@@ -118,8 +125,11 @@ over creating one. Procedure:
   (`scripts/sdlc/run_stacktest.py`) imports `codebuild_deployment.py` and drives
   its internal deploy-variant table, so results match what CI would have produced
   — no drift.
-- To temporarily re-enable the deploy-variant tests inside a pipeline run (rarely
-  needed), set `IDP_RUN_PROBES=true`. Default is off.
+- To run all the deploy-variant tests inside a pipeline, press **Run** on the
+  weekly variant-probe schedule (a GitLab project setting under **Build › Pipeline
+  schedules**, carrying `IDP_RUN_PROBES=true`; the button exists only once the schedule does). `IDP_RUN_PROBES=true` is honoured only on a
+  scheduled pipeline, so setting it on a manual or merge-request run does nothing;
+  on the build side it is off unless the buildspec sets it.
 - Permissions boundary is now verified only by the primary suite (Step 13,
   `test_step13_permission_boundaries`); the deploy-variant tests deploy without
   one.

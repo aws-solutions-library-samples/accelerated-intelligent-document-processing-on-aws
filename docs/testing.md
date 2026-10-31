@@ -31,8 +31,8 @@ record of its last run.
 | [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
-| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **nightly** + manual button — not a merge gate | pipeline `integration_tests` |
-| [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual | see the table |
+| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **scheduled** (primary suite nightly) + manual button — not a merge gate | pipeline `integration_tests` |
+| [6. Live-stack tiers](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule) | **yes** | ❌ manual, except the ZAP DAST and deploy-variant rows (GitLab weekly schedule, while it is active) | see the table |
 | [7. Benchmarks](#7-benchmarks) | **yes** | ❌ manual | `make benchmark-release` |
 
 `make test` and `make lint` are the two commands to run before opening a pull
@@ -276,7 +276,7 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make validate-buildspec` | malformed CodeBuild buildspecs, and a loop in a multi-line command that cannot report its own failure — otherwise a deploy-time failure |
 | `make codegen-check` | generated GraphQL types drifting from the schema |
 | `make typecheck` | `basedpyright` over every tracked `.py` file — this is what both CIs run. `make typecheck-pr` narrows it to the files a branch changes, for local latency, and is a gate in neither |
-| `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual) for the live half |
+| `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package in the **current environment** that came from a package index rather than from `lib/`, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
 | `scripts/tests/test_doc_install_commands.py` (part of `make test-packages-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |
 | `python3 scripts/sdlc/validate_service_role_permissions.py` | the CloudFormation service role missing a permission the templates need |
@@ -455,36 +455,48 @@ change merged through a GitHub pull request has not run it.
 ⚠️ **It runs nightly, not per-merge-request, so a green MR pipeline does not mean
 the deploy works.** It was automatic on `develop` and on non-Draft MRs, which put
 62–113 minutes onto every pipeline after a 45-minute check stage. It is now the
-nightly schedule plus a **manual play button**, available on any MR targeting
+nightly schedule, a weekly variant-probe schedule (below), and a **manual play button**, available on any MR targeting
 `develop` and on a `develop` pipeline.
+
+The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and
+the deploy variants in [section 6](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule)) run on a separate
+**weekly** schedule, so a probe failure is never read as a nightly regression.
+The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
+carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
+only while it exists and is active.
+Two more weekly schedules, while they are active, run the primary suite in
+`eu-central-1` and `ca-central-1`; each result is labelled with its region, in the
+same Slack channel.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
 `lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/` — because
 it is the only pre-merge signal this tier has left. And because a breaking change
-can merge and surface a night later with other merges on top of it, **a nightly
-failure is triaged by bisecting the day's merges**, not by reading the pipeline's
-own commit. The trade is written out in full in
+can merge and surface a night later (a week later, for a variant probe) with other
+merges on top of it, **a scheduled failure is triaged by bisecting the merges since
+the last green run**, not by reading the pipeline's own commit. The trade is written out in full in
 [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 
 Per-step detail, what each step asserts, and how to reproduce a single step by hand
 are in [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 
-## 6. Live-stack tiers (manual)
+## 6. Live-stack tiers (manual, plus the weekly probe schedule)
 
 Each of these needs a deployed stack (or deploys its own) and has a written
 procedure, and each but the first-time-user stories is mandatory for a release.
-Three also run in CI in some form, on GitLab only, so a GitHub pull request covers
+Several also run in CI in some form, on GitLab only, so a GitHub pull request covers
 none of them: the dynamic API RBAC matrix is step 12 of the GitLab
 `integration_tests` deployment (`scripts/sdlc/codebuild_deployment.py` shells out to
-`make api-test` against the stack that job deploys); the UX review runs unattended
-as the advisory `ai_ux_test` job on merge requests that change `src/ui/`; and the
-first-time-user stories run as advisory jobs on merge requests that change
-`CHANGELOG.md` and every night against the review stack. Note when
-`integration_tests` runs: automatically only in the scheduled nightly pipeline; on a
-merge request to `develop` and on `develop` itself it is a manual button, and on any
-other branch it does not run, so nothing exercises a change before it merges unless
-someone presses that button. The rest of the rows run only when a person asks.
+`make api-test` against the stack that job deploys); the ZAP DAST and deploy-variant
+rows run on the weekly variant-probe schedule, a scheduled pipeline of its own
+separate from the nightly; the UX review runs unattended as the advisory
+`ai_ux_test` job on merge requests that change `src/ui/`; and the first-time-user
+stories run as advisory jobs on merge requests that change `CHANGELOG.md` and every
+night against the review stack. Note when `integration_tests` runs: automatically
+only in the scheduled pipelines; on a merge request to `develop` and on `develop`
+itself it is a manual button, and on any other branch it does not run, so nothing
+exercises a change before it merges unless someone presses that button. The rest of
+the rows run only when a person asks.
 
 | Tier | What only a live stack can prove | Command | Procedure |
 |---|---|---|---|
@@ -494,8 +506,8 @@ someone presses that button. The rest of the rows run only when a person asks.
 | **First-time-user stories (browser)** | that a person new to the product can do what the published documentation says they can, by following it literally — each story is one intent attempted as one persona and judged against what that persona's role should be able to do, with every hesitation, dead end and gap between the docs and the screens recorded as it goes. Advisory in GitLab CI on merge requests and nightly; not a release tier | `make ai-ux-test-stories-local STORY=…` | [`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md) |
 | Inbox end to end | that a message posted through `idp_common.notifications` (direct, Cognito group fan-out, idempotency key, dedupe key) is the one the **deployed** API lists, counts and marks read for its recipient, and that another user cannot reach it. Creates and removes a temporary Cognito group, two users and their Inbox items | `make stacktest-inbox STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Review queues end to end | that a document routed under a profile with review queues on reaches the **deployed** queue, can be claimed, edited and completed through the API with a real Annotator token, and finishes with the final status object, an unchanged machine manifest and a final manifest. Creates and removes a temporary profile, user and document (`CHECK_EVENTS=1` adds a temporary EventBridge rule and SQS queue) | `make stacktest-review-queues STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
-| ZAP DAST | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
-| Deploy variants | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| ZAP DAST (also on the weekly probe schedule, while it is active) | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Deploy variants (also on the weekly probe schedule, while it is active) | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
 | Seller Entitlement Service e2e | that the service deploys into a seller account, grants correctly, and **refuses** correctly | `make stacktest-seller` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | In-place upgrade (X→Y) | that an existing customer stack survives `update-stack` without rollback **and still works afterwards** | `make stacktest-upgrade` (pointer) | [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade.md) |

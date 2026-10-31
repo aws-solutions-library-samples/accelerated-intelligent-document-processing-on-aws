@@ -1041,8 +1041,8 @@ api-test-static: ## Static RBAC/authorization scan of all API operations (no AWS
 # the way running them all at once in one pipeline did.
 #
 # The deploy-variant stack-tests (APIGateway hosting, WAF, PRIVATE/VPC, Jobs API,
-# ZAP DAST) in particular no longer run automatically in CI; run them here on
-# demand, each on its own stack. Two modes:
+# ZAP DAST) in particular run in CI only on the weekly variant-probe schedule,
+# never on the nightly; run them here on demand, each on its own stack. Two modes:
 #   * STACK_NAME=<existing>  → validate that already-deployed stack (fast)
 #   * omit STACK_NAME        → self-deploy a throwaway stack + validate + teardown
 #     (needs TEMPLATE_URL from publish.py).
