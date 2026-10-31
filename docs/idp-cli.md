@@ -2482,7 +2482,7 @@ idp-cli config-create [OPTIONS]
 **Options:**
 - `--features`: Feature set (default: `min`)
   - `min`: classification, extraction, classes only (simplest)
-  - `core`: min + ocr, assessment
+  - `core`: min + ocr. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
   - `all`: all sections with full defaults
   - Or comma-separated list: `"classification,extraction,summarization"`
 - `--output`, `-o`: Output file path (default: stdout)
