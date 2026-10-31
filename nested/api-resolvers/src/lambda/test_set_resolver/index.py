@@ -2084,8 +2084,9 @@ def generate_draft_labels(args, event=None):
     config_version = input_data.get("configVersion")
     config_revision = input_data.get("configRevision")
     object_keys = input_data.get("objectKeys") or []
-    # Forces the class for this run's documents instead of classifying them. Only
-    # ever set by a single-document re-extract after a class correction.
+    # Forces the class for this run's documents instead of classifying them. Meant
+    # for a single-document re-extract after a class correction, and enforced as
+    # such below: the operation is reachable with this field directly.
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
@@ -2103,6 +2104,19 @@ def generate_draft_labels(args, event=None):
     file_count = int(meta.get("fileCount", 0) or 0)
     if file_count <= 0:
         raise ValueError(f"Test set '{test_set_id}' has no documents to label")
+
+    if document_class:
+        # A forced class replaces classification for every document in the run, so
+        # it is limited to the one document a reviewer corrected, and to a document
+        # with one section (see _single_section_keys_for_forced_class).
+        if len(object_keys) != 1:
+            raise ValueError(
+                "documentClass forces one class onto a whole document, so it needs "
+                f"exactly one objectKey (got {len(object_keys)})"
+            )
+        _single_section_keys_for_forced_class(
+            os.environ["TEST_SET_BUCKET"], test_set_id, object_keys[0]
+        )
 
     already_labeled = 0
     if not object_keys:
@@ -2223,6 +2237,13 @@ def reextract_test_set_document(args, event=None):
     it back over the pin. The observable result was the demotion sticking while
     the correction vanished, leaving fields extracted under the old schema beside
     a "Re-extracted as X" success message.
+
+    A corrected class is refused on a document whose baseline has more than one
+    section. Both writes above are document-wide — the stamp touches every section
+    and the forced run produces a single section over every page — so on a packet a
+    correction to one section would rewrite the class of all of them and then
+    collapse the grouping. Re-extracting a single section needs the pipeline to
+    accept a forced class per page range, which it does not.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -2243,8 +2264,13 @@ def reextract_test_set_document(args, event=None):
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     if document_class:
+        # Refused before the stamp below writes anything; generate_draft_labels
+        # repeats the check for callers that reach it directly.
+        section_keys = _single_section_keys_for_forced_class(
+            test_set_bucket, test_set_id, object_key
+        )
         _set_baseline_document_class(
-            test_set_bucket, test_set_id, object_key, document_class
+            test_set_bucket, test_set_id, object_key, document_class, section_keys
         )
 
     # Reuse the config that drafted the set's labels, so one document is not
@@ -2524,11 +2550,53 @@ def update_test_set_document_sections(args, event=None):
     }
 
 
-def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class_type):
+def _single_section_keys_for_forced_class(test_set_bucket, test_set_id, object_key):
+    """A document's baseline section keys, refusing a document with more than one.
+
+    A forced class is a statement about the whole document. The pipeline applies it
+    to every page and builds ONE section over all of them
+    (``apply_forced_document_class``), the up-front stamp in
+    ``reextract_test_set_document`` touches every section, and the harvest prunes
+    the machine-draft sections the run no longer produces. On a packet that turns
+    one section's correction into a rewrite of every section's class and then a
+    collapse of the grouping (#1672). A document with one section, or none yet, is
+    the case forcing was built for.
+    """
+    keys = _baseline_section_keys(test_set_bucket, test_set_id, object_key)
+    if len(keys) > 1:
+        raise ValueError(
+            f"'{object_key}' has {len(keys)} sections. Re-extracting with a "
+            "corrected class re-runs the whole document as one section of that "
+            "class, which would overwrite the class and the grouping of every "
+            "section. Correct this section's fields directly instead."
+        )
+    return keys
+
+
+def _baseline_section_keys(test_set_bucket, test_set_id, object_key):
+    """The ``result.json`` key of every section in a document's baseline."""
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    keys = []
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=prefix):
+        keys.extend(
+            obj["Key"]
+            for obj in page.get("Contents", [])
+            if obj["Key"].endswith("/result.json")
+        )
+    return keys
+
+
+def _set_baseline_document_class(
+    test_set_bucket, test_set_id, object_key, class_type, keys
+):
     """Stamp a corrected class onto every section of a document's baseline.
 
     Written before the run so the extraction uses it, and written even for sections
-    the run will overwrite, so a failed run still records the correction.
+    the run will overwrite, so a failed run still records the correction. Its only
+    caller, ``reextract_test_set_document``, refuses a document with more than one
+    section first, because a class stamped on every section of a packet is a
+    corruption rather than a correction.
 
     A ``reviewed-human`` section is demoted to ``draft-machine`` — the only place a
     reviewed label is downgraded. The harvest refuses to overwrite reviewed labels,
@@ -2541,15 +2609,6 @@ def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class
     still lands, but the label keeps its provenance and the harvest skips it.
     """
     prefix = f"{test_set_id}/baseline/{object_key}/sections/"
-    paginator = s3_client.get_paginator("list_objects_v2")
-    keys = []
-    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=prefix):
-        keys.extend(
-            obj["Key"]
-            for obj in page.get("Contents", [])
-            if obj["Key"].endswith("/result.json")
-        )
-
     demoted = 0
     for key in keys:
         try:
