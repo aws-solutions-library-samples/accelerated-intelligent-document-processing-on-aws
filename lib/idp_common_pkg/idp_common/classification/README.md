@@ -766,19 +766,23 @@ document-level issue would raise that count and then have no text to show for it
 
 | `metadata` key | `unclassified_reason` | Issue code | Severity | Reached from |
 |---|---|---|---|---|
-| `error` | `no_content` | `classification_page_no_content` | warning | `classify_page_bedrock` |
-| `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` only |
+| `error` | `no_content`, `page_empty` true or absent | `classification_page_no_content` | warning | `classify_page_bedrock` |
+| `error` | `no_content`, `page_empty` false | `classification_failed` | error | `classify_page_bedrock` (a read failed or an artifact is missing) |
+| `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
 
-**`classification_failed` does not fire on the Bedrock backend.** All four
-default-reason call sites are in `classify_page_sagemaker`; `classify_page_bedrock`
+**On the Bedrock backend `classification_failed` comes only from a page that could
+not be read.** A no-content result whose `page_empty` is false gets the error code,
+because the page may have content nobody looked at. All four default-reason call
+sites are in `classify_page_sagemaker`; `classify_page_bedrock`
 re-raises from its `except`, and the thread-pool handler that catches it does not
 append the page to `all_page_results`, so this function never sees it. No signal is
 lost — that path marks the document `FAILED`, and `document.errors` *is* read on a
-failed document — but the error-severity code is a UDOP-backend code in practice.
+failed document — so apart from read failures the error-severity code is a
+UDOP-backend code in practice.
 Note that a test mocking `classify_page`'s **return value** cannot surface this,
 since a returned unclassified result is SageMaker-shaped by construction.
 
@@ -787,7 +791,21 @@ one nobody reads. The fallback case is the commonest of the three, because it is
 where a page the model cannot place ends up, and a class *was* assigned — just not
 the model's. `classification_page_no_content` needs **both** the page's OCR text and
 its page image to be unusable (`classify_page_bedrock` checks both), so a blank page
-that still has an image does not land there.
+that still has an image does not land there. With `modality.images` off the image is
+never loaded, so every page without OCR text does, and the `error` text says images
+are not sent rather than pointing at a missing image.
+
+⚠️ **A genuinely empty page is kept out of `document.errors`.** `classify_page_bedrock`
+sets `metadata["page_empty"]` only when the page's text was read, is empty, and
+images are not sent. Such a page still carries `metadata["error"]`, which is what
+this function keys on, but `_classify_pages_multimodal` does not copy it into
+`document.errors`: `processresults` fails the whole document on any entry there, so
+one blank separator sheet in a text-only configuration used to discard the
+classification of every other page. The page stays `unclassified`, and extraction
+takes the empty-schema route for its section. Every other `no_content` page — a text
+or image read that raised, a missing text URI, or images on with no image — still
+reaches `document.errors` and fails the document, because that page may have content
+nobody looked at; its `error` text names the read that failed.
 
 One issue per (section, cause) with the page IDs listed, so a 50-page run of
 unclassifiable pages does not produce 50 identical rows. The write replaces only

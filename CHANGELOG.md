@@ -15,6 +15,8 @@ SPDX-License-Identifier: MIT-0
 
 - **A packet window too large for the model is split and retried instead of failing the document.** With page images on, a window of full-resolution pages could exceed a smaller model's input although it fit `packet.window_pages`, and the document failed. A window refused as too long is now split in two and each half retried, up to twice the packet's page count in extra calls; `window_pages: 0` still makes one call. **Action:** none. See [Classification](docs/classification.md#packet-granularity-images-few-shot-examples-and-windowing) ([#1676](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1676)).
 
+- **A page with no OCR text no longer fails the document in text-only page classification.** With `modality.images` off, a blank separator or signature page was reported as a document error and failed every other page's classification with it. It is now labelled `unclassified` with a warning on its section, and the rest of the document completes. A page whose text or image could not be read still fails the document. **Action:** none; turn `modality.images` on if such pages should be classified. See [Classification](docs/classification.md#pages-classification-could-not-classify) ([#1677](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1677)).
+
 ## [0.6.13]
 
 ### Added

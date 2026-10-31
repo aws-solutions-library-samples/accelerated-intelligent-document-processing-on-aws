@@ -1026,8 +1026,28 @@ class ClassificationService:
                                 self._pin_page_class(page_result, forced_class)
                             all_page_results.append(page_result)
 
-                            # Check if there was an error in the classification
-                            if "error" in page_result.classification.metadata:
+                            # Check if there was an error in the classification.
+                            #
+                            # ⚠️ A genuinely empty page is NOT one. It stays
+                            # 'unclassified' and is reported as a warning
+                            # ProcessingIssue on its section (see
+                            # _record_unclassified_page_issues), but it must not
+                            # reach document.errors: processresults fails the
+                            # whole document on any entry there, so one blank
+                            # separator sheet in a text-only configuration
+                            # discarded every other page's classification.
+                            # ``page_empty`` is set only by classify_page_bedrock,
+                            # and only when the page's text was read and is
+                            # empty with images off. A failed read or a missing
+                            # artifact leaves it False and still fails the
+                            # document, because that page may have content.
+                            page_empty = bool(
+                                page_result.classification.metadata.get("page_empty")
+                            )
+                            if (
+                                "error" in page_result.classification.metadata
+                                and not page_empty
+                            ):
                                 with errors_lock:
                                     error_msg = f"Error classifying page {page_id}: {page_result.classification.metadata['error']}"
                                     document.errors.append(error_msg)
@@ -2518,6 +2538,11 @@ class ClassificationService:
         # Initialize content variables
         text_content = None
         image_content = None
+        # Why a page ended up with nothing to send, kept apart from the page
+        # simply being empty: a read that failed is a fault, and must still fail
+        # the document (see _classify_pages_multimodal), whereas an empty page
+        # is an ordinary outcome.
+        load_errors: List[str] = []
 
         # Load text content from URI.
         #
@@ -2533,6 +2558,7 @@ class ClassificationService:
                 text_content = s3.get_text_content(text_uri)
             except Exception as e:
                 logger.warning(f"Failed to load text content from {text_uri}: {e}")
+                load_errors.append(f"page text could not be read: {e}")
                 # Continue without text content
 
         # Load image content from URI with configurable dimensions.
@@ -2552,6 +2578,7 @@ class ClassificationService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to load image content from {image_uri}: {e}")
+                load_errors.append(f"page image could not be read: {e}")
                 # Continue without image content
 
         # Check for page content regex match (combined strategy, page granularity only)
@@ -2581,15 +2608,34 @@ class ClassificationService:
         # Verify we have at least some content to classify
         if not text_content and not image_content:
             logger.warning(f"No content available for page {page_id}")
-            # Return unclassified result
-            return self._create_unclassified_result(
+            # Genuinely empty only when nothing went wrong: the page's text was
+            # read and is empty, and no image was expected because images are
+            # not sent. A failed read, or a page artifact that is missing, is
+            # not an empty page — it keeps failing the document as it always
+            # has, because the page may well have content nobody looked at.
+            page_is_empty = bool(text_uri) and not send_images and not load_errors
+            if page_is_empty:
+                error_message = (
+                    "No content available for classification: the page has no "
+                    "OCR text and page images are not sent (modality.images is "
+                    "off)"
+                )
+            elif load_errors:
+                error_message = "No content available for classification: " + (
+                    "; ".join(load_errors)
+                )
+            else:
+                error_message = "No content available for classification"
+            result = self._create_unclassified_result(
                 page_id=page_id,
                 image_uri=image_uri,
                 text_uri=text_uri,
                 raw_text_uri=raw_text_uri,
-                error_message="No content available for classification",
+                error_message=error_message,
                 reason=UNCLASSIFIED_NO_CONTENT,
             )
+            result.classification.metadata["page_empty"] = page_is_empty
+            return result
 
         # Get classification configuration
         config = self._get_classification_config()
@@ -3174,11 +3220,14 @@ class ClassificationService:
           class was assigned, it is just not the model's, and it is the commonest
           of the three because it is where a page the model cannot place ends up;
         * a page with **nothing to classify** → ``warning``. Note what that
-          actually requires: no usable OCR text AND no loadable page image, since
-          ``classify_page_bedrock`` checks both. A blank page normally still has an
-          image, so it does not land here — this is either a text-only ingestion of
-          an empty page or missing page artifacts. Warning rather than error
-          because the message cannot tell the two apart and says so.
+          actually requires: no usable OCR text AND no page image, since
+          ``classify_page_bedrock`` checks both. With images on, a blank page
+          normally still has an image and does not land here — this is then
+          missing page artifacts. With ``modality.images`` off the image is never
+          loaded, so every page without OCR text lands here, and the message says
+          so. Warning rather than error, and the page does not reach
+          ``document.errors`` either, so the rest of the document still
+          completes.
 
         No CloudWatch metric is published from here. Every fleet-level alarm in
         this stack is paired with a threshold parameter a deployer tunes, and none
@@ -3229,9 +3278,14 @@ class ClassificationService:
                 unclassified_reason = metadata.get(
                     "unclassified_reason", UNCLASSIFIED_FAILED
                 )
+                # A no-content page whose text or image could not be read is a
+                # failure, not an empty page: classify_page_bedrock says which
+                # with ``page_empty``. A result without the key (an older or
+                # hand-built one) keeps the no-content reading it always had.
                 code = (
                     "classification_page_no_content"
                     if unclassified_reason == UNCLASSIFIED_NO_CONTENT
+                    and metadata.get("page_empty", True)
                     else "classification_failed"
                 )
                 detail = str(error_message)
@@ -3265,10 +3319,12 @@ class ClassificationService:
                 "the section holds no data for them."
             ),
             "classification_page_no_content": (
-                "{count} page(s) ({pages}) had neither usable OCR text nor a "
-                "loadable page image, so they could not be classified and were "
-                "labelled '{unclassified}'. No fields were extracted from them. "
-                "Check the OCR step for those pages unless they are genuinely empty."
+                "{count} page(s) ({pages}) had nothing to classify — no usable "
+                "OCR text, and no page image was loaded or images are not sent "
+                "— so they were labelled '{unclassified}' and the rest of the "
+                "document was classified without them. No fields were extracted "
+                "from them. Check the OCR step for those pages unless they are "
+                "genuinely empty."
             ),
             "classification_invalid_class_fallback": (
                 "The model returned a class outside the configured vocabulary for "
