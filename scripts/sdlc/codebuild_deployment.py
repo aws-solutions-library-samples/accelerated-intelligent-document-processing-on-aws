@@ -5928,17 +5928,19 @@ def teardown_primary_stack(result, stack_name):
 # IDP stack configured for API-Gateway Web UI hosting in its GLOBAL (regional,
 # internet-facing, NO VPC) form: WebUIHosting=APIGateway +
 # ApiGatewayVisibility=GLOBAL. It exercises the S3-proxy REST API hosting code
-# on every run and fetches the UI over HTTP, without consuming VPC quota.
+# and fetches the UI over HTTP, without consuming VPC quota. It is one of the
+# PROBE_VARIANTS, so it runs on the weekly variant-probe run, not every run.
 #
-# The VPC/PRIVATE variant is NOT run in routine CI: it stood up a throwaway VPC
-# per run, which leaked VPCs (Lambda ENIs blocking teardown) and consumed 1 of
-# only 5 VPC slots per concurrent run, exhausting the quota under parallel
-# pipelines. Validate the PRIVATE/VPC path out-of-band (manual/local) instead.
-# The self-contained VPC template (scripts/sdlc/apigw-hosting-test-vpc.yaml) is
-# retained for that manual use. delete_apigw_test_vpc / the startup reaper below
+# The PRIVATE/VPC variant is a probe too (`apigwpriv`), and it deploys into the
+# persistent test VPC (and skips itself when the CI account has none) rather
+# than standing up its own: a throwaway VPC per run
+# leaked VPCs (Lambda ENIs blocking teardown) and exhausted the 5-VPC quota under
+# parallel pipelines. The self-contained VPC template
+# (scripts/sdlc/apigw-hosting-test-vpc.yaml) is retained for manual use. delete_apigw_test_vpc / the startup reaper below
 # remain to clean up any historical *-apigw-vpc stragglers.
 #
-# Gated by IDP_TEST_APIGW_HOSTING (default "true"); set to "false" to skip.
+# Gated by IDP_RUN_PROBES on a scheduled pipeline (variant_probe_run()); the
+# legacy IDP_TEST_APIGW_HOSTING=true also turns the probes on.
 # ---------------------------------------------------------------------------
 
 
@@ -9581,8 +9583,9 @@ def main():
         # integration_test_deployment.py turns it into the `idp-run-probes` S3
         # object metadata and the buildspec exports it here. Run one probe by
         # hand with `make stacktest-*` (scripts/sdlc/run_stacktest.py /
-        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING is still
-        # honored as a legacy alias so an existing override keeps working.)
+        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING=true is still
+        # honored as a legacy alias, now held to the same probe-run timeout as the
+        # schedule: on a project below 180 minutes it is refused, not run.)
         probes_enabled = (
             variant_probe_run()
             or get_env_var("IDP_TEST_APIGW_HOSTING", "false").lower() == "true"

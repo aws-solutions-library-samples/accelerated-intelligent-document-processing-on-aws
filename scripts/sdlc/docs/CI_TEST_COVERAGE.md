@@ -373,9 +373,10 @@ check stage — which is how a merge request pipeline reached 111 minutes and a
 exhausted account quotas in this project before.
 
 *What it costs.* A change that breaks the deploy, or any of the twelve suite steps
-or five variant probes the deploy runs, can now **merge** and stay undetected
-until the next nightly run — by which time other merges may sit on top of it, so
-the nightly failure does not name the commit that caused it. There is no required
+or the variant probes, can now **merge** and stay undetected until the next
+scheduled run — the next nightly for the primary suite, up to a week for a probe —
+by which time other merges may sit on top of it, so the failure does not name the
+commit that caused it. There is no required
 status check on this repository to fall back on (issue #933), so nothing else
 catches it.
 
