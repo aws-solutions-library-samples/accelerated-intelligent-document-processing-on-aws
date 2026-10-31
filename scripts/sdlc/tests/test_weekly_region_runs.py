@@ -475,7 +475,10 @@ def test_the_summary_call_is_made_in_the_builds_region(cbd, monkeypatch):
             return {"body": io.BytesIO(json.dumps(payload).encode())}
 
     def client(service, region_name=None, **_):
-        seen["region"] = region_name
+        # Only the summary call: loading the product's model table for the first
+        # time imports a Lambda module that makes its own clients at import.
+        if service == "bedrock-runtime":
+            seen["region"] = region_name
         return _Runtime()
 
     monkeypatch.setenv("AWS_REGION", "eu-central-1")
