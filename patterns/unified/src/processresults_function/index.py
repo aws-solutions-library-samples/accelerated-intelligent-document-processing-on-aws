@@ -131,7 +131,20 @@ def handler(event, context):
         if section_document:
             # Add section to document if present
             if section_document.sections:
-                section = section_document.sections[0]
+                # The section this map iteration was about, by id. A result
+                # document can hold more than that one section — the extraction
+                # skip branch returns the whole document, and an assessment that
+                # then runs keeps it — so sections[0] turned every section of a
+                # reprocessed document into a copy of section 1 (#1686).
+                result_section_id = result.get("section_id")
+                section = next(
+                    (
+                        s
+                        for s in section_document.sections
+                        if s.section_id == result_section_id
+                    ),
+                    section_document.sections[0],
+                )
                 logger.info(f"section: {section}")
                 logger.info(
                     f"section.confidence_threshold_alerts: {section.confidence_threshold_alerts}"
