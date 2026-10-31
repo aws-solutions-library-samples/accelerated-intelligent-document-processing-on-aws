@@ -7,6 +7,16 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Reprocessing a Pipeline-mode document no longer multiplies its cost.** When a finished document was resubmitted — by **Process Changes**, **Skip All Reviews**, or completing the last pending section of a review — every section whose extraction was skipped passed the document's whole stored metering on as its own, and the results step added each copy to the document's total. A document with N sections showed about N+1 times its real cost in **Estimated Cost**, and the same inflated figures went to every consumer of the document's metering, although no model or OCR call was repeated. A skipped section now reports only the Lambda time it used, so the total after a reprocess is the stored cost plus that reprocess's own charges. **Action:** none; documents reprocessed before the update keep the figures they were saved with.
+
+- **Reprocessing a Pipeline-mode document keeps every section, and does not re-extract sharded sections.** On a reprocess where extraction was skipped but the assessment step still ran (for example with confidence scoring off), the rebuilt document listed the first section once for every section, losing the others. And with the Step Functions extraction runtime (`extraction.agentic.runtime: step_functions`), a section large enough to shard was extracted again from scratch, paying for its extraction twice, because the shard planner did not check for existing extraction output. Both now behave as a reprocess should: every section is kept, and an already-extracted section is skipped. **Action:** none.
+
+- **`config-create` output now passes `config-validate` and `config-upload`.** The template
+  `idp-cli config-create` and the SDK's `config.create` generate used to write a placeholder
+  string into every prompt it left out, which validation and the runtime read as the prompt
+  itself. Those prompts are now omitted, so the prompt the configuration is merged over
+  applies. See [`config-create`](docs/idp-cli.md#config-create).
+
 - **`make dep-audit` and `make dep-manifest` read only the dependency files the repository holds** ([#1675](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1675)). Lockfiles and requirements files were found by walking the disk, so a gitignored copy (a staged build tree, a worktree inside the checkout) was audited as if it shipped and a local run could fail where CI passed. They are now found with `git ls-files`, tracked plus untracked-but-not-ignored, and the generator refuses to run outside a git checkout. See [Dependency mirroring](docs/dependency-mirroring.md).
 
 - **`make dep-audit` audits every pinned version, not one version per package.** The Python manifest kept a single version of each package, taken from the lockfiles, so an exact pin in a Lambda's `requirements.txt` was never audited at the version it installs: dropped when a lockfile carried another version, and resolved to the latest release when none did. Every distinct name and version pair is now listed and audited. ⚠️ `python-packages.txt` can therefore name a package more than once, which `pip install -r` refuses; [Dependency mirroring](docs/dependency-mirroring.md) shows the per-line loop to use instead.
