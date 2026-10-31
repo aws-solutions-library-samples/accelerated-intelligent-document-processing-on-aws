@@ -79,13 +79,13 @@ to run a typed-truth document into a release grid, after which this row can go.
 
 It is promoted by copying a `corefast/summary.json`, but the file it is copied from is
 not necessarily the one committed under `v<PREV>/corefast/`, and it diverges afterwards.
-Today's `baseline.json` is a v0.6.8 `corefast` grid scored on stack `IDPUpg067to068`,
-while `v0.6.8/corefast/summary.json` is the same suite over the same three documents
-scored on `IDPRel068` — 171 rows and 19 cells on both sides, matching on every
-`(cell, doc, repeat)` key, and different data. It has also been `--augment`ed with the
-#935 calibration statistic, which the release directory's copy has not been, so it is
-larger as well: 533 KB before the backfill, 720 KB after, against 523 KB for the
-release-directory copy.
+Today's `baseline.json` is a copy of `v0.6.13/corefast/summary.json` (stack
+`IDPUpg0612to0613`, `meta.scored_at` `2026-10-31T05:19:55Z`), and it carries the
+calibration and confidence-coverage metrics natively, so it needs no backfill. That has not
+always been so: the v0.6.8 grid it replaced was scored on a different stack from the
+`v0.6.8/corefast/` copy, with matching keys and different data, and had been `--augment`ed
+with the #935 calibration statistic the release directory's copy lacked. The two can
+diverge again whenever either is re-scored or augmented on its own.
 
 Two consequences. **Verify the promotion rather than assuming it** — compare `meta.stack`
 and `meta.scored_at`, which identify the grid, instead of comparing file sizes or
