@@ -94,8 +94,9 @@ class TestBounds:
 
 @pytest.mark.unit
 class TestMembers:
-    def test_member_groups_are_annotator_and_admin(self):
-        assert _queue().member_groups == ["Annotator", "Admin"]
+    def test_member_groups_are_annotator_reviewer_and_admin(self):
+        # Reviewers work every Production queue, so they hear that work waits too.
+        assert _queue().member_groups == ["Annotator", "Reviewer", "Admin"]
 
     def test_member_groups_are_cognito_groups(self):
         parent = load_cfn_yaml(REPO_ROOT / "template.yaml")

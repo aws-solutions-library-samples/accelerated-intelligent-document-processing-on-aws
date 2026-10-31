@@ -305,15 +305,27 @@ describe('the primary action on a Test Studio document', () => {
     expect(layoutTrail?.[2]).toEqual({ text: 'Test set: Invoices', href: '#/review-queues/test-sets/ts-1' });
   });
 
-  it('disables Edit Page Grouping for someone who cannot change the class, saying why', () => {
-    // Not assigned to this Annotator, so they can't work it, and its class is theirs to leave.
+  it('disables Edit Page Grouping on a document assigned to someone else, naming them', () => {
     docOver.claimedByMe = false;
     docOver.assignedTo = 'other@example.com';
     renderScreen();
+    expect(regroupItem()).toMatchObject({ disabled: true, disabledReason: 'Assigned to other@example.com' });
+  });
+
+  it('asks an Annotator to claim an unassigned document before regrouping it', () => {
+    docOver.claimedByMe = false;
+    docOver.assignedTo = null;
+    renderScreen();
     expect(regroupItem()).toMatchObject({
       disabled: true,
-      disabledReason: 'Your role cannot change this document’s page grouping',
+      disabledReason: 'Claim this document first to change its page grouping',
     });
+  });
+
+  it('lets the Annotator holding the document regroup it', () => {
+    docOver.claimedByMe = true;
+    renderScreen();
+    expect(regroupItem()).toMatchObject({ disabled: false });
   });
 
   it('offers Edit Page Grouping on a single-section document too: splitting one section is a fix', () => {

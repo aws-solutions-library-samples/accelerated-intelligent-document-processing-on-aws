@@ -5,8 +5,8 @@
 
 Queues are system-wide definitions in HITLTable (:mod:`.queue_defs`), not
 part of any configuration profile. Their work goes to Annotators: an Admin works
-every queue, and an Annotator works only a queue whose ``eligible_annotators``
-names them. Reads fail closed: a definition read failure raises
+every queue, a Reviewer works every queue, and an Annotator works only a queue whose
+``eligible_annotators`` names them. Reads fail closed: a definition read failure raises
 ``ReviewAccessDenied("CONFIG_UNAVAILABLE")``.
 """
 
@@ -26,6 +26,7 @@ from .queue_defs import QueueDefinition, QueueDefStore, QueuesView
 logger = logging.getLogger(__name__)
 
 ANNOTATOR_GROUP = "Annotator"
+REVIEWER_GROUP = "Reviewer"
 
 
 def _default_store() -> QueueDefStore:
@@ -96,11 +97,15 @@ class QueueDirectory:
         return scope_allows(caller.allowed_versions, profile)
 
     def is_member(self, caller: CallerContext, profile: str, queue: str) -> bool:
-        """Admins work every queue; Annotators the queues they are eligible for."""
+        """Admins and Reviewers work every queue; Annotators the queues that list them."""
         if caller.is_admin:
             return True
         definition = self._view().queue(queue)
-        if definition is None or ANNOTATOR_GROUP not in caller.groups:
+        if definition is None:
+            return False
+        if REVIEWER_GROUP in caller.groups:
+            return True
+        if ANNOTATOR_GROUP not in caller.groups:
             return False
         return definition.allows(caller.email)
 

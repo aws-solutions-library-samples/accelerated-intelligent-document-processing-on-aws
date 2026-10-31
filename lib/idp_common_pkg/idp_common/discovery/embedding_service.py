@@ -17,6 +17,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from idp_common.bedrock.client import BedrockClient
+from idp_common.discovery.regional_defaults import (
+    DEFAULT_EMBEDDING_MODEL_ID,
+    default_embedding_model_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +72,9 @@ class EmbeddingService:
         ... )
     """
 
-    # Default embedding model — must support multimodal (image) embeddings.
-    # Cohere Embed v4 is preferred (best quality, multimodal).
-    # Alternative: amazon.titan-embed-image-v1 (lower quality but simpler API)
-    DEFAULT_MODEL_ID = "us.cohere.embed-v4:0"
+    # The US default, kept as an alias for callers that read it. The constructor
+    # resolves its default per Region through regional_defaults instead.
+    DEFAULT_MODEL_ID = DEFAULT_EMBEDDING_MODEL_ID
 
     # Maximum image size for embedding (bytes) - 5MB
     MAX_IMAGE_SIZE = 5 * 1024 * 1024
@@ -91,13 +94,17 @@ class EmbeddingService:
 
         Args:
             bedrock_client: BedrockClient instance with retry/throttle handling
-            model_id: Bedrock embedding model ID (default: cohere.embed-english-v3)
+            model_id: Bedrock embedding model ID. Defaults to the Cohere Embed v4
+                profile callable from the client's Region (see regional_defaults).
             max_concurrent: Maximum concurrent embedding requests
             input_type: Input type for Cohere models (search_document, search_query,
                        classification, clustering)
         """
         self.client = bedrock_client
-        self.model_id = model_id or self.DEFAULT_MODEL_ID
+        region = getattr(bedrock_client, "region", None)
+        self.model_id = model_id or default_embedding_model_id(
+            region if isinstance(region, str) else None
+        )
         self.max_concurrent = max_concurrent
         self.input_type = input_type
 

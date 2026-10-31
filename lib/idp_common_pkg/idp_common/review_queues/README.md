@@ -29,7 +29,7 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `models.py` | Pydantic records for the table (`ReviewItemRecord`, `DraftRecord`, `HistoryEntry`), `StatusObject`, `ReviewDecision`, `CallerContext` |
 | `keys.py` | Table key layout and the opaque list cursors |
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
-| `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths |
+| `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths. Only Annotators are assigned work; Reviewers claim it |
 | `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch, cached for 30 s; the Default queue is seeded, enabled, whenever it is missing, and a stored Default is never overwritten |
 | `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins every queue; Annotators those whose `eligible_annotators` is empty or names them), failing closed |
 | `reasons.py` | `build_reasons`: why a document is held (its sections' `confidence_threshold_alerts`, and in BDA mode a blueprint confidence under `hitl.confidence_threshold`); reads no S3 |
@@ -133,8 +133,11 @@ when the finalize run ends.
 Correcting a document's split is part of review. `updateDocumentSections` accepts a
 document that is `HITL_IN_PROGRESS` and queue-managed `in_review` when the caller holds
 its `CLAIMED` item (`regroup_refusal`); an `OPEN` item must be claimed first, a
-`FINALIZING` one is refused, and anyone but the holder gets `NOT_LEASE_HOLDER`. The
-legacy HITL flow is unchanged. Section ids are kept across a regroup, so drafts stay
+`FINALIZING` one is refused, and anyone but the holder gets `NOT_LEASE_HOLDER`. An
+Annotator is admitted to a production document only as the holder of its `CLAIMED`
+item, within their `allowedConfigVersions` (`_assert_holds_review_item` in
+`process_changes_resolver`); a test-set document is decided by their
+`allowedTestSets`. The legacy HITL flow is unchanged. Section ids are kept across a regroup, so drafts stay
 with their sections; `get_item_detail` no longer lists a section the regroup removed,
 and `apply_corrections` skips its draft. The finalize run reprocesses the tracked
 document, so it finishes with the new grouping.

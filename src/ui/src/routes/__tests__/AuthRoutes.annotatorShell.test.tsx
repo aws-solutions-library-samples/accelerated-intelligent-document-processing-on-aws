@@ -88,3 +88,21 @@ describe('the full shell', () => {
     expect(screen.getByTestId('edit-page').getAttribute('data-key')).toBe('a/b.pdf');
   });
 });
+
+describe('where a user lands after sign-in', () => {
+  it.each([
+    ['an Annotator-only user', { ...ANNOTATOR_ONLY }],
+    ['a Reviewer-only user, whose navigation is Home', { ...FULL_SHELL, isReviewer: true, isReviewerOnly: true }],
+  ])('sends %s to Home › Tasks', (_name, role) => {
+    roleRef.current = role;
+    renderAt('/login');
+    expect(screen.getByTestId('my-work').getAttribute('data-path')).toBe('/my-work/tasks');
+  });
+
+  it('sends a user with the full shell to the Document List', () => {
+    roleRef.current = { ...FULL_SHELL, isReviewer: true, isReviewerOnly: false };
+    renderAt('/login');
+    expect(screen.queryByTestId('my-work')).toBeNull();
+    expect(screen.getByTestId('documents-app').getAttribute('data-path')).toBe('/documents');
+  });
+});

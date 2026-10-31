@@ -28,6 +28,39 @@ from idp_common.review_queues import (
 )
 from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS, QueueDefinition
 
+#: The operations a queue worker (Admin, Annotator or Reviewer) calls, and the Admin-only
+#: rest. Pinned here, so a change to either set is a deliberate edit to this list.
+_WORKER_FIELDS = dict.fromkeys(
+    [
+        "getMyReviewQueues",
+        "listReviewQueueItems",
+        "listMyReviewWork",
+        "getReviewItem",
+        "claimReviewItem",
+        "claimNextReviewItem",
+        "releaseReviewItem",
+        "saveReviewDraft",
+        "completeReviewItem",
+        "rejectReviewItem",
+    ]
+)
+_ADMIN_FIELDS = dict.fromkeys(
+    [
+        "renewReviewLease",
+        "removeReviewItem",
+        "getReviewQueuesOverview",
+        "forceReleaseReviewItem",
+        "reassignReviewItem",
+        "takeOverReviewItem",
+        "moveReviewItem",
+        "listReviewQueues",
+        "listAnnotators",
+        "createReviewQueue",
+        "updateReviewQueue",
+        "deleteReviewQueue",
+    ]
+)
+
 _INDEX = Path(__file__).with_name("index.py")
 
 
@@ -91,6 +124,35 @@ class TestGroupGate:
             module.handler(_event(field, groups=("Annotator",)), None)
         caller.assert_not_called()
         assert module._SERVICE.mock_calls == []
+
+    def test_the_pinned_lists_cover_every_operation(self, module):
+        assert set(_WORKER_FIELDS) | set(_ADMIN_FIELDS) == set(module._FIELD_GROUPS)
+        assert all(module._FIELD_GROUPS[f] == module._WORKERS for f in _WORKER_FIELDS)
+        assert all(module._FIELD_GROUPS[f] == module._ADMIN for f in _ADMIN_FIELDS)
+
+    @pytest.mark.parametrize("field", sorted(_WORKER_FIELDS))
+    def test_reviewer_reaches_every_worker_operation(self, module, field):
+        # Reviewers work Production queues as Annotators do: the group floor admits
+        # them, and the service then decides the queue and the item.
+        assert "Reviewer" in module._FIELD_GROUPS[field]
+        with patch.object(module, "_caller_context") as caller:
+            caller.return_value = MagicMock(is_admin=False)
+            try:
+                module.handler(_event(field, groups=("Reviewer",)), None)
+            except PermissionError as exc:
+                assert "ROLE" not in str(exc), f"{field} refused a Reviewer by role"
+            except Exception:  # noqa: BLE001 — argument validation is not the question here
+                pass
+        caller.assert_called_once()
+
+    @pytest.mark.parametrize("field", sorted(_ADMIN_FIELDS))
+    def test_reviewer_is_refused_admin_operations(self, module, field):
+        with (
+            patch.object(module, "_caller_context") as caller,
+            pytest.raises(PermissionError, match="ROLE: .*Admin"),
+        ):
+            module.handler(_event(field, groups=("Reviewer",)), None)
+        caller.assert_not_called()
 
     def test_viewer_is_refused_worker_operations(self, module):
         with pytest.raises(PermissionError, match="ROLE"):
@@ -387,6 +449,7 @@ class TestQueueDefinitions:
             module.handler(_event("listAnnotators"), None)
 
     def test_list_annotators_reads_the_pool(self, module, monkeypatch):
+        # Only Annotators are assigned work; Reviewers claim theirs.
         monkeypatch.setenv("USER_POOL_ID", "pool-1")
         with patch.object(
             module, "annotator_emails", return_value=["a@x.com"]

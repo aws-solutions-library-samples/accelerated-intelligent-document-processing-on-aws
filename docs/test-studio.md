@@ -1222,6 +1222,13 @@ packets ranks fewer documents at a time than a set of single-section ones.
 `allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
 *which config versions'* documents a user sees). A user can carry both.
 
+A **Reviewer** works Test Studio queues without `allowedTestSets` and without being
+listed on a queue: they see, claim and label the documents of every test set whose
+configuration profile is in their `allowedConfigVersions`, or every test set when they
+have no such restriction. A set drafted under several profiles has no single profile
+and is shown only to Reviewers with no restriction. Reviewers claim their own
+documents; Admins assign documents to Annotators only.
+
 ### Working the queue collaboratively
 
 - **One shared queue per set.** Every annotator pulls from the same worst-first

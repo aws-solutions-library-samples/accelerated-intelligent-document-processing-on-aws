@@ -115,10 +115,16 @@ interface UserRoleReturn {
   canDeleteConfig: boolean;
   /** True if user can perform HITL reviews (Admin or Reviewer) */
   canReview: boolean;
-  /** True if user can annotate test-set ground truth (Admin, Author or Annotator) */
+  /** True if user can annotate test-set ground truth (Admin, Author, Annotator or Reviewer) */
   canAnnotate: boolean;
-  /** Admin or Annotator: can open a production review-queue item. */
+  /** Admin, Annotator or Reviewer: can open a production review-queue item. */
   canWorkReviewQueues: boolean;
+  /**
+   * Works Production review queues as a member, not as their Admin: an Annotator (the
+   * queues that list them) or a Reviewer (every Production queue). Home › Tasks and
+   * Queues are theirs.
+   */
+  isQueueWorker: boolean;
   /** Config profiles the user is allowed to access. null/undefined = unrestricted (all versions). */
   allowedConfigVersions: string[] | null;
   /**
@@ -300,9 +306,11 @@ const useUserRole = (): UserRoleReturn => {
   const canManageUsers = isAdmin;
   const canDeleteConfig = isAdmin;
   const canReview = isAdmin || isReviewer;
-  const canAnnotate = isAdmin || isAuthor || isAnnotator;
+  // Reviewers annotate the test sets their profile scope admits, as Annotators their assigned sets.
+  const canAnnotate = isAdmin || isAuthor || isAnnotator || isReviewer;
   // Who can open a production review-queue item (the routes' RequireRole set).
-  const canWorkReviewQueues = isAdmin || isAnnotator;
+  const isQueueWorker = isAnnotator || isReviewer;
+  const canWorkReviewQueues = isAdmin || isQueueWorker;
   // Membership of APP_GROUPS, not `groups.length`: an unrecognised group name
   // grants nothing in this app, so it must not read as a role. Gated on
   // `!loading` so the flag is never true merely because the session has not
@@ -334,6 +342,7 @@ const useUserRole = (): UserRoleReturn => {
     canReview,
     canAnnotate,
     canWorkReviewQueues,
+    isQueueWorker,
     allowedConfigVersions,
     allowedTestSets,
     hasNoRole,

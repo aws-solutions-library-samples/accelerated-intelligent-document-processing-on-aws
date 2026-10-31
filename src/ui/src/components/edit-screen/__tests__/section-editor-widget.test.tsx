@@ -58,11 +58,30 @@ const renderWidget = async (props: Partial<React.ComponentProps<typeof SectionEd
 
 const panel = () => createWrapper(document.body).findContainer()!;
 const panelHeader = () => createWrapper(panel().findHeader()!.getElement()).findHeader()!;
-/** The Section dropdown, by its inline label (the panes hold the Fields to show dropdown too). */
-const sectionSelect = () =>
+/** A dropdown button of the panel, by the start of its accessible name ("Section:", "Show fields:"). */
+const dropdown = (name: string) =>
   createWrapper(panel().getElement())
-    .findAllSelects()
-    .find((s) => (s.getElement().textContent ?? '').startsWith('Section'));
+    .findAllButtonDropdowns()
+    .find((d) => (d.findNativeButton().getElement().getAttribute('aria-label') ?? '').startsWith(name));
+const sectionSelect = () => dropdown('Section:');
+const isDisabled = (d: ReturnType<typeof dropdown>) => d!.findNativeButton().getElement().disabled;
+/** A dropdown's items: label, and whether it is the current choice (ticked) or disabled. */
+const choices = (d: NonNullable<ReturnType<typeof dropdown>>) => {
+  act(() => d.openDropdown());
+  const items = d.findItems().map((i) => {
+    const el = i.getElement().querySelector('[role="menuitemcheckbox"]') ?? i.getElement();
+    const describedBy = el.getAttribute('aria-describedby');
+    const reason = describedBy ? (document.getElementById(describedBy)?.textContent ?? '') : '';
+    const text = i.getElement().textContent ?? '';
+    return {
+      text: reason && text.endsWith(reason) ? text.slice(0, -reason.length) : text,
+      checked: el.getAttribute('aria-checked') === 'true',
+      disabled: el.getAttribute('aria-disabled') === 'true',
+    };
+  });
+  act(() => d.openDropdown());
+  return items;
+};
 
 /** The panel header's controls, in order, by label. */
 const widgetControls = () => {
@@ -70,18 +89,17 @@ const widgetControls = () => {
   if (!actions) return [];
   const labels: string[] = [];
   if (actions.findToggle()) labels.push(actions.findToggle()!.getElement().textContent ?? '');
-  actions
-    .findAllSelects()
-    .forEach((s) => labels.push((s.getElement().textContent ?? '').startsWith('Section') ? 'Section' : 'Show Fields'));
+  actions.findAllButtonDropdowns().forEach((d) => {
+    const name = d.findNativeButton().getElement().getAttribute('aria-label') ?? '';
+    labels.push(name.startsWith('Section:') ? 'Section' : 'Show Fields');
+  });
   actions.findAllButtons().forEach((b) => {
-    if (!b.getElement().closest('[class*="select"]')) labels.push(b.getElement().textContent ?? '');
+    if (!b.getElement().closest('[aria-haspopup]') && !b.getElement().hasAttribute('aria-haspopup'))
+      labels.push(b.getElement().textContent ?? '');
   });
   return labels.filter((t) => t !== '');
 };
-const fieldsSelect = () =>
-  createWrapper(panel().getElement())
-    .findAllSelects()
-    .find((s) => (s.getElement().textContent ?? '').startsWith('Show Fields'))!;
+const fieldsSelect = () => dropdown('Show fields:')!;
 const regroupButton = () =>
   panelHeader()
     .findActions()
@@ -109,13 +127,9 @@ describe('the Document Editor panel', () => {
     const { loadSection } = await renderWidget();
     expect(createWrapper(panel().getElement()).findSegmentedControl()).toBeNull();
     const select = sectionSelect()!;
-    select.openDropdown();
-    const labels = select
-      .findDropdown()
-      .findOptions()
-      .map((o) => o.findLabel().getElement().textContent);
-    expect(labels).toEqual(['Section 1 (Letter)', 'Section 2 (Form)', 'Section 3 (no class)']);
-    await act(async () => select.selectOptionByValue('2'));
+    expect(choices(select).map((c) => c.text)).toEqual(['Section 1 (Letter)', 'Section 2 (Form)', 'Section 3 (no class)']);
+    act(() => select.openDropdown());
+    await act(async () => select.findItemById('2')!.click());
     await waitFor(() => expect(loadSection).toHaveBeenLastCalledWith('2'));
   });
 
@@ -129,7 +143,7 @@ describe('the Document Editor panel', () => {
 
   it('shows the Section dropdown for a single section too, disabled since there is nothing to choose', async () => {
     await renderWidget({ sections: [SECTIONS[0]] });
-    expect(sectionSelect()!.isDisabled()).toBe(true);
+    expect(isDisabled(sectionSelect())).toBe(true);
   });
 
   it('shows `body` in place of the panes, without the section controls', async () => {
@@ -172,8 +186,34 @@ describe('the Document Editor panel’s buttons', () => {
 
   it('disable Show Fields on the JSON tab, where the filter does not apply', async () => {
     await renderWidget();
-    await waitFor(() => expect(fieldsSelect().isDisabled()).toBe(false));
+    await waitFor(() => expect(isDisabled(fieldsSelect())).toBe(false));
     act(() => createWrapper(panel().getElement()).findTabs()!.findTabLinkById('json')!.click());
-    expect(fieldsSelect().isDisabled()).toBe(true);
+    expect(isDisabled(fieldsSelect())).toBe(true);
+  });
+
+  it('are dropdown buttons with no title, each reading its current choice, which the menu ticks', async () => {
+    await renderWidget({ evaluation: EVALUATION });
+    expect(panelHeader().findActions()!.findAllSelects()).toHaveLength(0);
+    expect(panelHeader().findActions()!.getElement().textContent).not.toMatch(/Show Fields|Section:/);
+    const section = sectionSelect()!;
+    expect(section.findNativeButton().getElement().textContent).toBe('Section 1 (Letter)');
+    expect(choices(section).map((c) => c.checked)).toEqual([true, false, false]);
+    await waitFor(() => expect(isDisabled(fieldsSelect())).toBe(false));
+    expect(fieldsSelect().findNativeButton().getElement().textContent).toBe('All fields');
+    expect(choices(fieldsSelect())).toEqual([
+      { text: 'All fields', checked: true, disabled: false },
+      { text: 'Confidence alerts only', checked: false, disabled: false },
+      // Needs the comparison on.
+      { text: 'Evaluation mismatches only', checked: false, disabled: true },
+    ]);
+  });
+
+  it('switch Show Fields to the choice made, and the button reads it', async () => {
+    await renderWidget();
+    await waitFor(() => expect(isDisabled(fieldsSelect())).toBe(false));
+    act(() => fieldsSelect().openDropdown());
+    act(() => fieldsSelect().findItemById('confidence-alerts')!.click());
+    expect(fieldsSelect().findNativeButton().getElement().textContent).toBe('Confidence alerts only');
+    expect(choices(fieldsSelect()).find((c) => c.checked)?.text).toBe('Confidence alerts only');
   });
 });

@@ -283,7 +283,11 @@ const QueueDefinitionModal = ({
           </FormField>
           <FormField
             label="Eligible Annotators"
-            description="The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
+            description={
+              testSet
+                ? 'The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. Reviewers work every test set their configuration-profile scope admits without being listed, and claim their own items.'
+                : 'The Annotators who work this queue: they see it in Home › Queues, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items.'
+            }
             stretch
           >
             <Multiselect
@@ -293,7 +297,7 @@ const QueueDefinitionModal = ({
               filteringType="auto"
               statusType={annotatorsLoading ? 'loading' : 'finished'}
               loadingText="Loading Annotators"
-              placeholder="None (Admins only)"
+              placeholder="None (Admins and Reviewers only)"
               empty="No Annotator users. Add one in User Management."
             />
           </FormField>
