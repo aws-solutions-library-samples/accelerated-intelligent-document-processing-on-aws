@@ -5,6 +5,14 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`config-create` output now passes `config-validate` and `config-upload`.** The template
+  `idp-cli config-create` and the SDK's `config.create` generate used to write a placeholder
+  string into every prompt it left out, which validation and the runtime read as the prompt
+  itself. Those prompts are now omitted, so the prompt the configuration is merged over
+  applies. See [`config-create`](docs/idp-cli.md#config-create).
+
 ## [0.6.13]
 
 ### Added

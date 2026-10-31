@@ -2486,7 +2486,7 @@ idp-cli config-create [OPTIONS]
   - `all`: all sections with full defaults
   - Or comma-separated list: `"classification,extraction,summarization"`
 - `--output`, `-o`: Output file path (default: stdout)
-- `--include-prompts`: Include full prompt templates (default: stripped for readability)
+- `--include-prompts`: Include full prompt templates. By default the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the file, so they take whatever value the configuration is merged over: the system defaults when validating or deploying, or the stack's default (or the profile's current) configuration when uploading
 - `--no-comments`: Omit explanatory header comments
 
 **Examples:**

@@ -1483,7 +1483,7 @@ Generate an IDP configuration template.
 - `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or comma-separated (default: `"min"`)
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
-- `include_prompts` (bool, optional): Include prompt templates (default: False)
+- `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
 - `include_comments` (bool, optional): Include explanatory comments (default: True)
 
 **Returns:** `ConfigCreateResult` with `yaml_content` and `output_path`
