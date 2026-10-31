@@ -215,12 +215,37 @@ class TestRequirementShapes:
             "hashed-a==1.0 \\\n"
             "    --hash=sha256:aaaa \\\n"
             "    --hash=sha256:bbbb\n"
-            "hashed-b==2.0 --hash=sha256:cccc\n",
+            "hashed-b==2.0 --hash=sha256:cccc\n"
+            "hashed-c==3.0 --hash sha256:dddd\n",
         )
         git(repo, "add", "hashed")
         proc, manifest, _ = run_generator(repo, tmp_path / "out")
         assert proc.returncode == 0, proc.stderr
-        assert {"hashed-a==1.0", "hashed-b==2.0"} <= manifest_lines(manifest)
+        assert {"hashed-a==1.0", "hashed-b==2.0", "hashed-c==3.0"} <= manifest_lines(
+            manifest
+        )
+
+    def test_a_comment_ending_in_a_backslash_does_not_swallow_the_next_line(
+        self, repo, tmp_path
+    ):
+        write(repo, "cm/requirements.txt", "# see notes \\\nafter-comment==1.0\n")
+        git(repo, "add", "cm")
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert "after-comment==1.0" in manifest_lines(manifest)
+
+    def test_option_lines_are_not_package_names(self, repo, tmp_path):
+        write(
+            repo,
+            "op/requirements.txt",
+            "-r ../svc/requirements.txt\n-c constraints.txt\n"
+            "--index-url https://example.invalid/simple\n",
+        )
+        git(repo, "add", "op")
+        proc, manifest, additional = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        text = manifest.read_text() + additional.read_text()
+        assert "-r" not in text and "constraints" not in text and "-c" not in text
 
     def test_pins_are_written_with_normalized_names(self, repo, tmp_path):
         write(repo, "odd/requirements.txt", "Mixed_Case.Pkg==3.0\n")
@@ -322,8 +347,18 @@ class TestShellMerge:
         return [line for line in manifest.read_text().splitlines() if line]
 
     def test_the_resolver_adds_what_ships_and_nothing_else(self, repo, tmp_path):
-        write(repo, "a1/requirements.txt", "shared-loose==4.0\nMixed_Case==1.0\n")
-        write(repo, "a2/requirements.txt", "shared-loose>=4.0\n")
+        write(
+            repo,
+            "a1/requirements.txt",
+            "shared-loose==4.0\nMixed_Case==1.0\nnear-miss==2.0.1\n",
+        )
+        # Loose names spelled un-normalised, and a loose name that merely
+        # extends a pinned-only one.
+        write(
+            repo,
+            "a2/requirements.txt",
+            "Shared_Loose>=4.0\nNear.Miss>=2\npin-only-ext>=1\n",
+        )
         git(repo, "add", "a1", "a2")
         lines = self.run_script(
             repo,
@@ -333,7 +368,10 @@ class TestShellMerge:
             "mixed-case==9.0\n"  # pinned under another spelling
             "loose-pkg==2.0\n"  # asked for loosely: this is what it gets
             "shared-loose==5.0\n"  # pinned in one file, loose in another
-            "new-trans==1.0\n",  # a transitive dependency nothing names
+            "new-trans==1.0\n"  # a transitive dependency nothing names
+            "near-miss==2.0\n"  # a prefix of the pinned 2.0.1, still distinct
+            "pin-only-ext==1.0\n"
+            "direct-ref @ https://example.invalid/d.whl\n",
         )
         assert len(lines) == len(set(lines)), lines
         assert {
@@ -343,6 +381,10 @@ class TestShellMerge:
             "new-trans==1.0",
             "pin-only==0.3",
             "mixed-case==1.0",
+            "near-miss==2.0",
+            "near-miss==2.0.1",
+            "pin-only-ext==1.0",
+            "direct-ref @ https://example.invalid/d.whl",
         } <= set(lines)
         assert not {"foo==3.0", "pin-only==9.0", "mixed-case==9.0"} & set(lines)
 
@@ -352,3 +394,8 @@ class TestShellMerge:
         git(repo, "add", "a1", "a2")
         lines = self.run_script(repo, tmp_path, "shared-loose==4.0\n")
         assert lines.count("shared-loose==4.0") == 1
+
+    def test_the_scratch_files_are_removed(self, repo, tmp_path):
+        self.run_script(repo, tmp_path, "loose-pkg==2.0\n")
+        left = {p.name for p in (repo / "dist" / "manifests").iterdir()}
+        assert left == {"python-packages.txt", "node-packages.txt"}

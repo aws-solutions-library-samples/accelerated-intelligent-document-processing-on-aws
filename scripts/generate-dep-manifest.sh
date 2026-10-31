@@ -171,11 +171,23 @@ def requirement_lines(text: str) -> list[str]:
     `pip-compile --generate-hashes` writes `foo==1.0 \\` followed by indented
     `--hash=...` lines; read physically, the pin carries a trailing backslash and
     the hashes look like options, so the pin would not be recognised as exact.
+    Whole-line comments are dropped before joining, as pip does: a comment that
+    happens to end in a backslash must not swallow the requirement after it.
     """
+    physical = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
     out = []
-    for line in re.sub(r"\\\r?\n", " ", text).splitlines():
-        line = line.split("#")[0]
-        line = " ".join(t for t in line.split() if not t.startswith("--hash"))
+    for line in re.sub(r"\\\n", " ", "\n".join(physical)).splitlines():
+        tokens = line.split("#")[0].split()
+        kept = []
+        skip_value = False
+        for token in tokens:
+            if skip_value:
+                skip_value = False
+            elif token == "--hash":
+                skip_value = True  # `--hash sha256:...`, value in the next token
+            elif not token.startswith("--hash="):
+                kept.append(token)
+        line = " ".join(kept)
         if line and not line.startswith("-"):
             out.append(line)
     return out
@@ -247,6 +259,13 @@ if [ -f "$ADDITIONAL_REQS" ]; then
         BEFORE=$(wc -l < "$OUTPUT_DIR/python-packages.txt" | tr -d ' ')
         while IFS= read -r line; do
             pkg_name=$(echo "$line" | cut -d'=' -f1 | tr '[:upper:]' '[:lower:]' | tr '_.' '-')
+            if [[ "$line" != *==* ]]; then
+                # Not a pin (a direct reference, say): kept verbatim, which the
+                # audit's parser skips, as long as the name is not already listed.
+                grep -qi "^${pkg_name}==" "$OUTPUT_DIR/python-packages.txt" \
+                    || echo "$line" >> "$OUTPUT_DIR/python-packages.txt"
+                continue
+            fi
             pkg_version=${line#*==}
             if grep -qixF "${pkg_name}==${pkg_version}" "$OUTPUT_DIR/python-packages.txt"; then
                 continue
