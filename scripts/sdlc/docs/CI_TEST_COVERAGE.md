@@ -218,9 +218,9 @@ How the region reaches each part of the run:
 
 - **The GitLab job.** Its `script` and `after_script` are separate shells, so both
   evaluate `integration_test_deployment.py --region-env`. That command exports
-  `AWS_DEFAULT_REGION` and `AWS_REGION` (the CLI and boto3 prefer the latter), and
-  `IDP_REGION_RUN`. Both Slack posts label the run from the schedule's own
-  `IDP_TEST_REGION`, so a run refused for a bad value still says which it was. The source bucket
+  `AWS_DEFAULT_REGION` and `AWS_REGION` (the CLI and boto3 prefer the latter). Both
+  Slack posts label the run from the schedule's own `IDP_TEST_REGION`, so a run
+  refused for a bad value still says which it was. The source bucket
   `genaiic-sdlc-sourcecode-<account>-<region>` and the pipeline follow from the
   region.
 - **The build.** CodeBuild runs in its pipeline's region, and only a region
@@ -232,8 +232,10 @@ How the region reaches each part of the run:
   written. Every `idp-cli config-upload` in the harness therefore goes through
   `regional_config_file`, which applies the product's own `swap_model_ids` from
   `src/lambda/update_configuration/index.py`. The failure analysis and the failure
-  agent call the `eu.` twin of their `us.` Claude profile in the EU
-  (`regional_model_id`). Canada calls the `us.` Claude profiles directly.
+  agent call the model the product's own region mapping gives their `us.` Claude
+  profile in the EU (`regional_model_id`, through `get_model_mapping`), which is
+  sometimes a different model rather than the same one re-prefixed. Canada calls
+  the `us.` Claude profiles directly.
 - **The startup sweeps.** They reap **global** IAM roles and policies whose run
   has no stack left, so `_live_idp_run_prefixes` lists stacks in every region in
   `CI_INFRA_REGIONS`. Listing only the build's own region would read every

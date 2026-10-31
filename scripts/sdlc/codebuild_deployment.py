@@ -7,7 +7,6 @@ Handles IDP stack deployment and testing in AWS CodeBuild environment.
 
 import json
 import os
-import pathlib
 import re
 import secrets
 import shutil
@@ -45,6 +44,7 @@ sys.path.append(
     )
 )
 from failure_agent import (  # noqa: E402
+    _update_configuration_module,
     build_evidence_brief,
     fetch_full_build_log,
     regional_model_id,
@@ -959,14 +959,6 @@ def ci_region(environ: dict | None = None) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
 
 
-_UPDATE_CONFIGURATION_DIR = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "src"
-    / "lambda"
-    / "update_configuration"
-)
-
-
 def _model_swapper():
     """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
 
@@ -974,34 +966,6 @@ def _model_swapper():
     as a stack deploy swaps its shipped defaults.
     """
     return _update_configuration_module().swap_model_ids
-
-
-def _update_configuration_module():
-    """The UpdateConfiguration Lambda's module, loaded from source.
-
-    The module sets the root logger's level on import, which is put back.
-    """
-    import importlib.util
-    import logging
-
-    root_level = logging.getLogger().level
-    added = str(_UPDATE_CONFIGURATION_DIR) not in sys.path
-    if added:
-        # Its own cfnresponse.py sits beside it.
-        sys.path.insert(0, str(_UPDATE_CONFIGURATION_DIR))
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "_ci_update_configuration", _UPDATE_CONFIGURATION_DIR / "index.py"
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {_UPDATE_CONFIGURATION_DIR / 'index.py'}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    finally:
-        if added:
-            sys.path.remove(str(_UPDATE_CONFIGURATION_DIR))
-        logging.getLogger().setLevel(root_level)
-    return module
 
 
 def regional_config_file(config_path: str, environ: dict | None = None) -> str:

@@ -117,7 +117,6 @@ def test_a_region_run_exports_its_region_to_every_variable(itd):
     assert exports == {
         "AWS_DEFAULT_REGION": "ca-central-1",
         "AWS_REGION": "ca-central-1",
-        "IDP_REGION_RUN": "ca-central-1",
     }
 
 
@@ -133,7 +132,6 @@ def test_every_other_run_keeps_its_region(itd, environ, region):
     exports = _exports(itd.region_env_lines(environ))
     assert exports["AWS_DEFAULT_REGION"] == region
     assert exports["AWS_REGION"] == region
-    assert exports["IDP_REGION_RUN"] in ("", "''")
 
 
 def _region_env(environ: dict) -> subprocess.CompletedProcess:
@@ -445,6 +443,12 @@ def test_a_build_outside_the_ci_regions_also_lists_its_own(cbd, monkeypatch):
             "us.anthropic.claude-opus-4-8",
         ),
         ("us.anthropic.claude-opus-4-8", "us-east-1", "us.anthropic.claude-opus-4-8"),
+        # A rescue row: the EU model is a different generation, not a re-prefix.
+        (
+            "us.anthropic.claude-opus-4-1-20250805-v1:0",
+            "eu-central-1",
+            "eu.anthropic.claude-opus-4-5-20251101-v1:0",
+        ),
         (
             "global.anthropic.claude-opus-4-8",
             "eu-central-1",

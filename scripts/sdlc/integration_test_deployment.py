@@ -163,8 +163,7 @@ def region_env_lines(environ: dict | None = None) -> list[str]:
     The job's script and after_script are separate shells, so both evaluate these
     rather than one inheriting the other's exports. AWS_REGION is set as well as
     AWS_DEFAULT_REGION because the CLI and boto3 prefer it, and a runner that
-    exports it would otherwise keep every call in its own region. IDP_REGION_RUN
-    is the region of a region run and empty otherwise; the Slack post reads it.
+    exports it would otherwise keep every call in its own region.
     """
     env = os.environ if environ is None else environ
     requested = region_run_requested(env)
@@ -172,7 +171,6 @@ def region_env_lines(environ: dict | None = None) -> list[str]:
     return [
         f"export AWS_DEFAULT_REGION={shlex.quote(region)}",
         f"export AWS_REGION={shlex.quote(region)}",
-        f"export IDP_REGION_RUN={shlex.quote(requested or '')}",
     ]
 
 

@@ -70,10 +70,13 @@ single-shot behaviour, still improved by `build_evidence_brief` below.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import pathlib
 import shutil
 import subprocess  # nosec B404 - fixed argv, no shell, no user input
+import sys
 import time
 
 # ---------------------------------------------------------------------------
@@ -102,24 +105,65 @@ AGENT_HAIKU_MODEL = os.environ.get(
 )
 
 
+_UPDATE_CONFIGURATION_DIR = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "src"
+    / "lambda"
+    / "update_configuration"
+)
+
+
+@functools.cache
+def _update_configuration_module():
+    """The UpdateConfiguration Lambda's module, loaded from source.
+
+    The module sets the root logger's level on import, which is put back.
+    """
+    import importlib.util
+    import logging
+
+    root_level = logging.getLogger().level
+    added = str(_UPDATE_CONFIGURATION_DIR) not in sys.path
+    if added:
+        # Its own cfnresponse.py sits beside it.
+        sys.path.insert(0, str(_UPDATE_CONFIGURATION_DIR))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_ci_update_configuration", _UPDATE_CONFIGURATION_DIR / "index.py"
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {_UPDATE_CONFIGURATION_DIR / 'index.py'}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        if added:
+            sys.path.remove(str(_UPDATE_CONFIGURATION_DIR))
+        logging.getLogger().setLevel(root_level)
+    return module
+
+
 def regional_model_id(model_id: str, region: str | None = None) -> str:
-    """A `us.` inference-profile id rewritten for the region the build runs in.
+    """`model_id`, or the model the product maps it to for the build's region.
 
     The CI analysis models are written as `us.` profiles, which Bedrock refuses
-    as invalid from an EU region; there the `eu.` twin is the one to call, and
-    eu-central-1 carries one for each of these models. ca-central-1 calls the
-    `us.` Claude profiles directly (docs/canada-region-model-support.md), so every
-    region but EU keeps the id as written. An id that is not a `us.` profile is
-    returned unchanged.
+    as invalid from an EU region. The mapping is the product's own
+    (get_model_mapping in the UpdateConfiguration Lambda), so the harness calls
+    what a stack deployed in that region would: in the EU that is sometimes a
+    different model rather than the same one re-prefixed. ca-central-1 calls the
+    `us.` Claude profiles directly (docs/canada-region-model-support.md), and the
+    Canada table leaves them as written. Any other region keeps the id.
     """
     region = (
         region
         or os.environ.get("AWS_REGION")
         or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     )
-    if region.startswith("eu-") and model_id.startswith("us."):
-        return "eu." + model_id[len("us.") :]
-    return model_id
+    region_type = (
+        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
+    )
+    if region_type is None:
+        return model_id
+    return _update_configuration_module().get_model_mapping(model_id, region_type)
 
 
 # Three independent caps. --max-turns and --max-budget-usd are enforced by the
