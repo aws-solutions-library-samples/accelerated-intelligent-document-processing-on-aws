@@ -620,6 +620,16 @@ def test_the_mr_job_runs_on_non_draft_mrs_to_develop_that_change_the_changelog(
 _NIGHTLY_CASES = [
     ("the scheduled develop pipeline", _branch_pipeline("schedule"), "always"),
     (
+        "the weekly variant-probe schedule",
+        _branch_pipeline("schedule", IDP_RUN_PROBES="true"),
+        "never",
+    ),
+    (
+        "the weekly variant-probe schedule, capitalised",
+        _branch_pipeline("schedule", IDP_RUN_PROBES="True"),
+        "never",
+    ),
+    (
         "a schedule on another branch",
         _branch_pipeline("schedule", branch="main"),
         "never",
