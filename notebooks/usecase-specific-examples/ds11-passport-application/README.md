@@ -29,8 +29,8 @@ etc.). Everything else is inherited from the bundled **system defaults**
 users only specify the document classes they care about; the service
 defaults cover everything else.
 
-- **Primary classification** uses the default
-  `multimodalPageLevelClassification` method (sends each page's image +
+- **Primary classification** uses the default combined, page-granularity
+  classification (sends each page's image +
   OCR text to the LLM, which picks the best-matching class using the
   `description` field).
 - **Optional regex fast-path** on the excluded class

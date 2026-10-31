@@ -87,7 +87,7 @@ const UserManagementLayout = (): React.JSX.Element => {
     {
       label: 'Annotator',
       value: 'Annotator',
-      description: 'Ground-truth annotation of assigned test sets only — cannot see other sets or run configurations',
+      description: 'Works the HITL items an Admin assigns them — sees only Home (Inbox, Tasks, Queues)',
     },
     { label: 'Viewer', value: 'Viewer', description: 'Read-only access to documents, configuration, and agent chat' },
   ];
@@ -411,6 +411,7 @@ const UserManagementLayout = (): React.JSX.Element => {
           Admin: 'text-status-info',
           Author: 'text-status-success',
           Reviewer: 'text-body-default',
+          Annotator: 'text-status-warning',
           Viewer: 'text-body-secondary',
         };
         return <Box {...({ color: colorMap[item.persona] || 'text-body-default' } as Record<string, unknown>)}>{item.persona}</Box>;

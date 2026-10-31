@@ -158,6 +158,65 @@ predicate that is a tautology against a mock (`hasattr(mock, anything)`,
 `assert mock.attr is not None`, `assert isinstance(mock, Mock)`). A `Mock` answers
 to every attribute name, so a claim about one is a claim about your own fixture.
 
+## ⚠️ Never chdir to the repo root for code that writes
+
+A test that exercises a real build or packaging step often has to set the cwd, because
+the step resolves its inputs relatively. **Set it to a staging root, never to the
+checkout** — many of those steps resolve their *output* relatively too, so the test
+leaves build artefacts in the working tree.
+
+The cost is not tidiness. `make srt-scan` detects an `.aws-sam` directory and drops
+into a degraded mode (phantom LOCAL-ONLY findings, and a documented risk of crashing
+checkov on the largest templates), so a test that leaves one makes **the security gate
+depend on whether the test suite ran first** — it stops being the scan CI runs. That
+shipped once ([#1491](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1491)).
+
+Build the staging root out of **symlinks** to the paths the step reads, under
+`tmp_path`. `staging_checkout` in
+`lib/idp_sdk/tests/unit/test_multi_doc_discovery_source_zip.py` is the worked example.
+
+**The control is `scripts/tests/no_build_output.py`, and adopting it in a suite is two
+lines** — walk up to it and bind its `fixture(project_root)` to a name in that suite's
+`conftest.py`, the way `lib/idp_sdk/tests/conftest.py` does and the way
+`no_outbound_aws` is adopted. It discovers build output with the **same predicate
+`scripts/srt/run.py` uses** (`**/.aws-sam`, directories, excluding `node_modules`), so
+the control and the scanner agree about what counts by construction; `publish.py`
+writes these directories throughout the tree, not only at the root, so a hardcoded
+list would miss a leak under `patterns/` or `nested/`. Today only the `idp_sdk` suite
+binds it — a suite that drives a build step and does not is uncovered.
+
+Check, rather than assume, that the artefact is identical to one built in the checkout.
+It is for that step because it derives each archive name with
+`os.path.relpath(file_path, ".")`, which is cwd-relative — but a step that builds its
+member names from an absolute path would embed the staging root instead, and the content
+contract the test asserts would quietly change.
+
+Five things that are easy to get wrong:
+
+- **A test that only expects the step to *fail* leaks too.** The artefact is usually
+  written before the validation that raises, so an aborting call still writes.
+- **Assert "unchanged by this run", not "absent".** `publish.py` legitimately writes
+  these paths in a developer's checkout, so a guard that demands absence goes red on an
+  ordinary built tree and blames the current run. Snapshot existence and mtime either
+  side of the call instead.
+- **Watch the directory, not only the file.** What degrades `make srt-scan` is an
+  `.aws-sam` *directory*; a helper that creates one without writing the artefact — for a
+  lock file, say — slips past a file-only guard while still degrading the scan.
+- **Stage the top of each walk, never a child of a directory the step walks.**
+  `os.walk` traverses a symlinked top but, with `followlinks=False`, descends into no
+  symlinked *sub*directory. So staging `a/b` and `a/c` as links and letting the step
+  `os.walk("a")` yields neither — a silently short artefact and a passing content test.
+- **`mkdir(parents=True)` follows an existing symlink.** If the set of staged paths ever
+  contains one nested inside another, creating the second link's parent creates a real
+  directory *inside the repository* — the exact thing being prevented. Assert no staged
+  path is a prefix of another, especially when the set is imported from elsewhere and can
+  grow without the test being touched.
+
+⚠️ **A staging root of symlinks is an alias, not a sandbox.** Writes the step makes
+*under* a staged path land in the real tree and no checkout guard will see them. What
+makes the arrangement safe is that the step's writes go somewhere that is not a staged
+path — verify that, do not assume it.
+
 ## Moto Usage
 Always use `@mock_aws` decorator:
 ```python
@@ -169,6 +228,29 @@ def test_s3_operation():
     s3.create_bucket(Bucket="test-bucket")
     # ... operations happen against moto mock
 ```
+
+## Fake credentials in fixtures
+
+Secret scanners read this repository, and a fixture that looks like a real AWS
+credential is reported as a hardcoded-credential finding exactly as a leaked key
+would be. Marking the finding a false positive does not stop the same line being
+reported again, so write fixtures the scanners recognise as placeholders. That is
+the shape AWS's own documentation uses:
+
+| Value | Write | Never |
+|---|---|---|
+| Access key ID | `AKIAIOSFODNN7EXAMPLE`, `ASIAIOSFODNN7EXAMPLE`. For several distinct ones keep the prefix and the 20 characters, and end in `EXAMPLE`: `ASIASCOPEDKEYEXAMPLE`, `ASIAPOLLYKEY0EXAMPLE` | an AWS prefix followed by 16 characters that do not end in `EXAMPLE` (do not write one even as a counter-example in a document: the scanner reads Markdown too) |
+| IAM unique ID (`AROA…`, `AIDA…`) | `AROADBQP57FF2AEXAMPLE` | the same shape without `EXAMPLE` |
+| Secret access key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`, or plain words that are not 40 characters long (`polly-scoped-key-material`) | 40 characters of `[A-Za-z0-9/+=]` |
+| Git SHA or tree hash, **in a file that also holds a key ID** | an expression: `"1234abcd" * 5` | a 40-character literal, which a scanner pairs with the key ID as its secret |
+
+Keep the `AKIA`/`ASIA` prefix and the 20-character length rather than inventing a
+stand-in with no AWS shape: `scripts/ux_runner/redact.py` recognises a key ID by
+exactly that shape, so a fixture without it stops exercising the redactor.
+
+`scripts/tests/test_fake_aws_credentials.py` enforces the key-ID rule and the
+40-character rule over every file git tracks or would track, so a violation fails
+locally and in both CIs before a scanner reports it.
 
 ## Local Lambda Testing
 ```bash

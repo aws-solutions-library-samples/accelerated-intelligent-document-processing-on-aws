@@ -102,16 +102,34 @@ The configuration uses multiple evaluation methods tailored to data types:
 
 ### Classification Settings
 
-- **Model**: Amazon Nova Pro
-- **Method**: Text-based holistic classification
+This preset carries no `classification:` block, so every classification setting
+comes from the system defaults
+(`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`):
+
+- **Strategy / granularity**: combined, page granularity — one call per page, with
+  a `start`/`continue` boundary verdict per page that is folded into sections
+- **Modality**: text and images (the default task prompt carries both
+  `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`)
+- **Model**: Amazon Nova 2 Lite
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
-The classification component analyzes document packages to identify document type boundaries and classify each section appropriately across all 10 document types.
+The classification component segments each package from the per-page boundary
+signal and classifies each section across all 10 document types. To have the model
+see the whole package in one call instead, set
+`classification.combined.granularity: packet`. A packet longer than
+`classification.combined.packet.window_pages` (20 by default) is then split into
+overlapping windows and merged, which keeps a request under the 20-image-block
+threshold above which Bedrock downscales every image to 2,000 px. Keep
+`window_pages` at or below 20 while images are on, and no smaller than your
+longest single section.
 
 ### Extraction Settings
 
-- **Model**: Amazon Nova Pro
+This preset carries no `extraction:` block either, so extraction uses the system
+defaults (`base-extraction.yaml`):
+
+- **Model**: Claude Sonnet 5
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 - **Document Image Support**: Uses `{DOCUMENT_IMAGE}` placeholder for multimodal extraction
@@ -120,7 +138,7 @@ The extraction component processes each document section to extract structured d
 
 ### Assessment Settings
 
-- **Model**: Amazon Nova Pro
+- **Model**: Amazon Nova Lite (the system default `extraction.confidence.model`)
 - **Default Confidence Threshold**: 0.8
 - **Temperature**: 0 (deterministic outputs)
 
@@ -154,7 +172,7 @@ Based on testing with the provided sample document:
 To use this healthcare configuration:
 
 1. **Deploy with Sample**: Upload `samples/healthcare-multisection-package.pdf` to test the configuration
-2. **Review Results**: Examine the classified documents and extracted nested data structure in the UI
+2. **Review Results**: Examine the classified sections and extracted nested data structure in the UI
 3. **Evaluate Performance**: Use the evaluation framework to compare against baseline results
 4. **Customize**: Modify attribute definitions for your specific healthcare document formats
 

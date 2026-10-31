@@ -274,6 +274,8 @@ def test_real_template_headless_ui_surface_fully_removed():
         "WAF web ACL": "WAFWebACL",
         "Agent table": "AgentTable",
         "Feature platform stack": "FeaturePlatformStack",
+        "Inbox table": "NotificationsTable",
+        "Review queue table": "HITLTable",
     }
     still_present = {
         family: name for family, name in must_be_absent.items() if name in resources
@@ -281,6 +283,13 @@ def test_real_template_headless_ui_surface_fully_removed():
     assert not still_present, (
         "Headless transform left UI-surface resources in place "
         f"(they should be stripped): {still_present}"
+    )
+
+    assert "HITLTableName" not in result.get("Outputs", {})
+
+    # The Inbox table's output goes with the table.
+    assert "NotificationsTableName" not in result.get("Outputs", {}), (
+        "Headless transform left the NotificationsTableName output in place"
     )
 
     # No AWS::CloudFront::* / WAFv2 types anywhere either — these are

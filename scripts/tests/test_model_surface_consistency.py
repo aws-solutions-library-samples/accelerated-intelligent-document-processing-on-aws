@@ -216,7 +216,8 @@ LIMITS_EXEMPT = {
 }
 
 # Embedding models, selectable ONLY as the Bedrock Knowledge Base's embedding
-# model (`pEmbedModel` in nested/bedrockkb/template.yaml). They are exempt from
+# model (`pEmbedModel` in nested/bedrockkb/template.yaml, and the root parameter
+# template.yaml passes to it). They are exempt from
 # both the pricing and the limits invariants, and the premise for each is asserted
 # below: an embedding model is not a text-generation model, so it has no
 # max-output-tokens in the sense the limits file means, and it is not a pipeline
@@ -925,6 +926,73 @@ def test_preset_discovery_reaches_the_nested_config_files():
 # ---------------------------------------------------------------------------
 
 
+def _cfn_refs(node: object) -> set[str]:
+    """Names read through ``Ref`` or ``Fn::Sub`` anywhere under ``node``."""
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ("Ref", "Fn::Ref") and isinstance(value, str):
+                found.add(value)
+            elif key == "Fn::Sub":
+                text = value[0] if isinstance(value, list) and value else value
+                if isinstance(text, str):
+                    found.update(re.findall(r"\$\{([A-Za-z0-9:]+)[.}]", text))
+            found |= _cfn_refs(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _cfn_refs(item)
+    return found
+
+
+def _kb_embed_model_offerings() -> tuple[str, ...]:
+    """Enum-path prefixes that offer the Knowledge Base embedding model, derived.
+
+    The nested template's ``pEmbedModel``, plus a root parameter ``template.yaml``
+    passes to it -- read from the nested-stack resource whose ``TemplateURL`` is the
+    knowledge-base stack -- and only if that resource's ``pEmbedModel`` is the
+    parameter's ONLY reader in ``template.yaml``. A root parameter that offers embedding models and also
+    feeds anything else is no longer just the knowledge base's setting, so it stays
+    reported.
+    """
+    prefixes = [f"{KB_EMBED_TEMPLATE}.Parameters.pEmbedModel."]
+    parent = yaml.load(
+        (REPO_ROOT / "template.yaml").read_text(encoding="utf-8"), Loader=_CfnLoader
+    )
+    resources = parent.get("Resources") or {}
+    kb_dir = "./" + KB_EMBED_TEMPLATE.rsplit("/", 1)[0] + "/"
+    for logical_id, resource in resources.items():
+        properties = resource.get("Properties") or {}
+        url = properties.get("TemplateURL")
+        if not (isinstance(url, str) and url.startswith(kb_dir)):
+            continue
+        passed = (properties.get("Parameters") or {}).get("pEmbedModel")
+        if not (isinstance(passed, dict) and isinstance(passed.get("Fn::Ref"), str)):
+            continue
+        name = passed["Fn::Ref"]
+        others = {k: v for k, v in resources.items() if k != logical_id}
+        others[logical_id] = {
+            **resource,
+            "Properties": {
+                **properties,
+                "Parameters": {
+                    key: value
+                    for key, value in (properties.get("Parameters") or {}).items()
+                    if key != "pEmbedModel"
+                },
+            },
+        }
+        elsewhere = _cfn_refs(
+            {
+                key: value
+                for key, value in parent.items()
+                if key not in ("Resources", "Metadata", "Parameters")
+            }
+        ) | _cfn_refs(others)
+        if name not in elsewhere:
+            prefixes.append(f"template.yaml.Parameters.{name}.")
+    return tuple(prefixes)
+
+
 @pytest.mark.unit
 def test_embedding_models_are_only_selectable_as_the_kb_embed_model(selectable):
     """The premise behind exempting them from pricing AND limits.
@@ -940,7 +1008,7 @@ def test_embedding_models_are_only_selectable_as_the_kb_embed_model(selectable):
             "selectable anywhere — remove it from EMBEDDING_MODELS"
         )
         paths = sorted(selectable[model])
-        offending = [p for p in paths if not p.startswith(KB_EMBED_TEMPLATE)]
+        offending = [p for p in paths if not p.startswith(_kb_embed_model_offerings())]
         assert not offending, (
             f"{model} is exempted from the pricing and limits invariants on the "
             "premise that it is only the Knowledge Base's embedding model, but it "

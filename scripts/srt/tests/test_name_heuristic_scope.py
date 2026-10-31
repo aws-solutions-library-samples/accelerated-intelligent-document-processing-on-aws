@@ -86,7 +86,7 @@ pytestmark = pytest.mark.unit
 #: 120 throughout the period when the set was missing 15 container-built source
 #: trees, because the count was never wrong — the set was. The per-resource closure
 #: assertions at the bottom of this module are what hold the set itself.
-EXPECTED_PACKAGED_DIRS = 135
+EXPECTED_PACKAGED_DIRS = 139
 
 #: CloudFormation resource types whose code comes from somewhere, and so whose
 #: packaging this gate has an opinion about.

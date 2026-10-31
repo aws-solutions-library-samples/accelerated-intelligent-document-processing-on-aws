@@ -62,7 +62,24 @@ EXEMPT = {
     "benchmarks/tests/test_suite_declarations.py",
     # This guard, which has to spell out the string it forbids.
     "scripts/tests/test_classification_prompt_copies_in_sync.py",
+    # The frozen pre-0.9 system defaults the migration tests read. It records
+    # what a past release shipped, so it must not follow a later prompt change.
+    "lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.8.yaml",
+    # The same, for the defaults the v0.6.12 release shipped.
+    "lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.6.12.yaml",
 }
+
+
+def _page_prompt(classification: dict):
+    """The combined call's page task prompt, in either config format.
+
+    Config format 0.9 keeps it at `combined.page.task_prompt`; a pre-0.9 file
+    (a preset not yet converted, or a notebook config) keeps it flat.
+    """
+    nested = ((classification.get("combined") or {}).get("page") or {}).get(
+        "task_prompt"
+    )
+    return nested if nested is not None else classification.get("task_prompt")
 
 
 def _canonical_rules() -> str:
@@ -72,7 +89,7 @@ def _canonical_rules() -> str:
     <boundary-detection-rules> below"), so the opening tag is found by searching
     backwards from the closing one.
     """
-    prompt = yaml.safe_load(DEFAULTS.read_text())["classification"]["task_prompt"]
+    prompt = _page_prompt(yaml.safe_load(DEFAULTS.read_text())["classification"])
     close = "</boundary-detection-rules>"
     end = prompt.index(close)
     start = prompt.rindex("<boundary-detection-rules>", 0, end)
@@ -154,7 +171,7 @@ def test_no_committed_copy_still_asks_the_unanswerable_question():
     )
 
 
-def _configs_doing_page_level_boundary_detection():
+def _configs_doing_page_level_splitting():
     """Pinned prompts that ask the model to emit `document_boundary`.
 
     That field is what the rules govern, so it is the precise scope. Two kinds of
@@ -178,14 +195,12 @@ def _configs_doing_page_level_boundary_detection():
         classification = loaded.get("classification")
         if not isinstance(classification, dict):
             continue
-        prompt = classification.get("task_prompt")
+        prompt = _page_prompt(classification)
         if isinstance(prompt, str) and "document_boundary" in prompt:
             yield pytest.param(prompt, id=str(rel))
 
 
-@pytest.mark.parametrize(
-    "task_prompt", list(_configs_doing_page_level_boundary_detection())
-)
+@pytest.mark.parametrize("task_prompt", list(_configs_doing_page_level_splitting()))
 def test_every_boundary_prompt_carries_the_canonical_rules(task_prompt):
     """Byte-equality with the default's block, not just "has the tag".
 
@@ -198,7 +213,7 @@ def test_every_boundary_prompt_carries_the_canonical_rules(task_prompt):
 
 def test_the_guard_can_actually_see_the_configs_it_guards():
     """A path or prune-list mistake would make every test above vacuously pass."""
-    found = {p.id for p in _configs_doing_page_level_boundary_detection()}
+    found = {p.id for p in _configs_doing_page_level_splitting()}
     for expected in (
         "lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml",
         "config_library/managed_config/ocr-benchmark/config.yaml",

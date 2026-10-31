@@ -49,7 +49,7 @@ from rich.console import Console
 
 from idp_cli import cli as cli_module
 from idp_cli import display as display_module
-from idp_sdk import IDPClient
+from idp_sdk import IDPClient, ReviewStatus
 from idp_sdk.models import BatchStatus, DocumentBucket, classify_document_state
 from idp_sdk.models.base import IN_FLIGHT_DOCUMENT_STATES, DocumentState
 from idp_sdk.models.document import DocumentStatus
@@ -114,6 +114,7 @@ def doc(
     num_sections: Optional[int] = None,
     error: Optional[str] = None,
     bucket: Optional[DocumentBucket] = None,
+    review_status: Optional[ReviewStatus] = None,
 ) -> DocumentStatus:
     """One `DocumentStatus` as `batch.get_status` would return it.
 
@@ -131,6 +132,7 @@ def doc(
         num_sections=num_sections,
         error=error,
         bucket=bucket,
+        review_status=review_status,
     )
 
 
@@ -198,11 +200,21 @@ def monitored_client(statuses: list[BatchStatus]) -> tuple[IDPClient, list[str]]
 
 
 class TestDisplayDictMapping:
+    def test_a_routed_document_carries_its_review_status_as_a_plain_string(self):
+        """The Review column and `--format json` print the value, never the enum."""
+        status_data, _ = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/a.pdf", review_status=ReviewStatus.REJECTED)])
+        )
+        [row] = status_data["completed"]
+        assert row["review_status"] == "rejected"
+        assert type(row["review_status"]) is str
+
     def test_a_completed_document_maps_every_field_display_reads(self):
-        """All eight per-document keys, for the ordinary case.
+        """All nine per-document keys, for the ordinary case.
 
         `display.py` reads `document_id`, `status`, `start_time`, `end_time`,
-        `duration`, `num_pages`, `num_sections` and `error` off these dicts. Note the
+        `duration`, `num_pages`, `num_sections`, `error` and `review_status` off
+        these dicts. Note the
         key is `duration`, not the model's `duration_seconds`: a rename here shows up
         as a `KeyError` deep in a Rich table, so the exact key set is the contract.
         """
@@ -237,6 +249,8 @@ class TestDisplayDictMapping:
                 "num_pages": 4,
                 "num_sections": 2,
                 "error": "",
+                # Never routed to a review queue.
+                "review_status": None,
             }
         ]
         assert status_data["running"] == []

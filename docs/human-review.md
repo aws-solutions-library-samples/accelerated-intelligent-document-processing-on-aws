@@ -11,285 +11,346 @@ SPDX-License-Identifier: MIT-0
 
 - [Overview](#overview)
 - [Architecture](#architecture)
-- [User Management](#user-management)
+- [Who reviews](#who-reviews)
   - [User Personas](#user-personas)
   - [Managing Users](#managing-users)
 - [Workflow](#workflow)
   - [Review Status Values](#review-status-values)
 - [Configuration](#configuration)
-- [Review Portal](#review-portal)
+- [Document Editor](#document-editor)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
+- [When the Default queue is off](#when-the-default-queue-is-off)
 
 ## Overview
 
-The GenAI-IDP solution supports Human-in-the-Loop (HITL) review capabilities through a built-in review system integrated directly into the Web UI. This feature enables human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold, ensuring accuracy for critical document processing workflows.
+Human-in-the-loop (HITL) review sends a processed document to a person before it
+finishes, when its extracted values aren't confident enough to be trusted on their
+own. The person checks and corrects the values, and the document then finishes with
+the corrected data.
 
-
+Review is **queue based**. A document that needs review is held in a **review queue**,
+and the people who review work it from **Home › Queues** and **Home › Tasks** in the
+Web UI: they claim an item, correct it in the edit page, and finish it with **Process
+Changes**. Admins oversee the queues in **Review Studio › Review Management**. Every
+page and setting of the queues is described in [Review queues](review-queues.md); this
+page is the overview of the review process.
 
 https://github.com/user-attachments/assets/0bf14b62-99dc-4538-a015-d8b89fa2f1f0
 
-
-
-**Supported Patterns:**
-- Pattern 1: BDA processing with HITL review
-- Pattern 2: Textract + Bedrock processing with HITL review
+**Supported processing modes:** both.
+- BDA mode: Amazon Bedrock Data Automation processing with HITL review
+- Pipeline mode: Textract or LLM-based OCR + Bedrock processing with HITL review
 
 **Key Features:**
-- Built-in review portal within the GenAI-IDP Web UI
-- Role-based access control with Admin and Reviewer personas
-- `Annotator` can also reach `claimReview`, `releaseReview` and
-  `completeSectionReview`, but only for documents belonging to a test set in its
-  `allowedTestSets` — production review documents (those with no `TestSetId`) are
-  refused. `skipAllSectionsReview` stays Admin/Reviewer. See [rbac.md](rbac.md).
-- Review ownership model - reviewers claim documents before editing
-- Section-by-section review workflow
-- Visual editor for viewing and correcting extracted data
-- Decoupled from document processing workflow for improved reliability
+- Production review queues, managed by Admins, plus one Test Studio queue per test set
+- Reviewers and Annotators work their queues from **Home › Queues** and **Home › Tasks**,
+  and get an Inbox message when work is assigned to them
+- Every item is held to the caller's configuration-profile scope
+- One edit page for every item, with the page images beside the fields, each review
+  reason, and a draft saved as you type
+- Corrections are applied by a second (finalize) run that reuses the document's OCR,
+  classification and extraction
 
 ## Architecture
 
-The HITL system operates independently from the document processing workflow:
+![HITL review flow: a processed document with confidence alerts is held in the Default queue, claimed or assigned and corrected, then finalized; otherwise it completes with its machine output](../images/hitl_review_queue_flow.svg)
 
-- **Built-in Review Portal**: Web interface integrated into the GenAI-IDP UI for validation and correction
-- **User Management**: Cognito-based authentication with role-based access control
-- **Section Review Tracking**: DynamoDB-based tracking of review progress per document section
-- **Decoupled Design**: Per-section review actions update tracking status directly; when the final pending section is resolved (completed or skipped), the document is finalized and downstream reprocessing (Summarization/Evaluation) is triggered automatically
+_How a document moves through review: processing decides whether it is queued, a Reviewer or Annotator claims and corrects it (or skips it back to the queue), and the finalize run completes it with the corrected data._
 
-### Review Flow
+- **Routing.** At the end of the first run, a document is held in the **Default** queue
+  when HITL is enabled in its configuration (`hitl.enabled`), the Default queue is
+  enabled, and the document raised a confidence alert. Its status becomes
+  `HITL_IN_PROGRESS`, shown as **In Review**, and the machine output is kept. The exact
+  rules, including BDA blueprint confidence, are in
+  [How a document reaches a queue](review-queues.md#how-a-document-reaches-a-queue).
+- **Queues are system-wide**, not part of any Configuration Profile, so one queue holds
+  items of several profiles. Each item keeps its own profile, and that profile decides
+  who may see and work it.
+- **The finalize run** starts when the item is finished. It reuses the first run's OCR,
+  classification and extraction, applies the corrections, and runs summarization,
+  evaluation, rule validation and the post-processing hooks. Those steps run only after
+  review, so they always see the corrected data.
+- **Review state** is kept in DynamoDB (the stack's `HITLTable`), and each routed
+  document has a status object at
+  `s3://<OutputBucket>/<documentKey>/review/status.json` that downstream consumers can
+  trigger on (see [Review status for downstream consumers](review-queues.md#review-status-for-downstream-consumers)).
 
-![Review Process Flow](../images/hitl_workflow.png)
-
-## User Management
+## Who reviews
 
 ### User Personas
 
-The system supports two user personas with different permission levels:
+| Persona | What they do in review |
+|---|---|
+| **Admin** | Manages the queues in **Review Studio › Review Management**: their settings, their **Eligible Annotators**, and their items (**Assign to…**, **Unassign**, **Move…**, **Remove from queue…**). Can open any item, work an unassigned one, and **Take over** one assigned to someone else. |
+| **Reviewer** | Works **every** Production queue, with no Admin assignment: claims items, corrects them, and finishes or skips them. Also works every Test Studio queue whose test set's profile is in their scope. A Reviewer is never assigned work; they claim their own. |
+| **Annotator** | Works the queues that list them in **Eligible Annotators**: claims their items, or is assigned them by an Admin, and finishes or skips them. Also works the test sets in their `allowedTestSets`. |
+| **Author**, **Viewer** | Don't work review queues. A document in review opens read-only for them, saying it is edited in its queue. |
 
-#### Admin Persona
+**Configuration scope applies to every item.** A user's `allowedConfigVersions` limits
+which profiles' items they can work. An item whose profile is outside it isn't listed
+in any queue or in Tasks, is skipped by **Next item**, and can't be opened, claimed,
+saved, skipped or finished. That holds even for an item the user already holds, if
+their scope has been narrowed since. A user with no restriction works every profile's
+items. See [rbac.md](rbac.md).
 
-Admins have full access to all system features:
-
-| Feature | Access |
-|---------|--------|
-| View Documents | ✅ Full access |
-| Upload Documents | ✅ Allowed |
-| View/Edit Extraction Results | ✅ Full access |
-| Complete Section Reviews | ✅ Allowed |
-| Skip All Reviews | ✅ Allowed (Admin only) |
-| Release Any Review | ✅ Allowed (can release reviews owned by others) |
-| View/Edit Configuration | ✅ Full access |
-| User Management | ✅ Full access (create/delete users) |
-| Discovery | ✅ Full access |
-| Analytics & Agents | ✅ Full access |
-
-#### Reviewer Persona
-
-Reviewers have limited access focused on document review tasks:
-
-| Feature | Access |
-|---------|--------|
-| View Documents | ✅ Pending and own in-progress reviews only |
-| Upload Documents | ❌ Not allowed |
-| Start Review | ✅ Claim ownership of pending documents |
-| View/Edit Extraction Results | ✅ Can view and edit (only for owned documents) |
-| Complete Section Reviews | ✅ Allowed (only for owned documents) |
-| Release Review | ✅ Can release own reviews only |
-| Skip All Reviews | ❌ Not allowed (Admin only) |
-| View/Edit Configuration | ❌ Not allowed |
-| User Management | ❌ Not allowed |
-| Discovery | ❌ Not allowed |
-| Analytics & Agents | ❌ Limited access |
-
-**Note:** Reviewers see only documents that are pending review (unassigned) or documents they have claimed for review.
+**What reviewers see.** A Reviewer or Annotator whose only work is review (no Admin,
+Author or Viewer role) sees **Home** (**Inbox**, **Tasks** and **Queues**) and
+**Deployment Info**, and lands on **Home › Tasks** after signing in. A Reviewer or
+Annotator who also holds another role keeps that role's navigation, with **Tasks** and
+**Queues** added under **Home**.
 
 ### Managing Users
 
-User management is available to Admin users through the Web UI.
-
-#### Accessing User Management
-
-1. Log in to the GenAI-IDP Web UI with Admin credentials
-2. Navigate to **User Management** in the left navigation menu
-3. View the list of all users with their email, persona, and status
+User management is available to Admins in **User Management**.
 
 #### Creating a New User
 
-1. Click the **Create User** button
-2. Enter the user's email address
-3. Select the persona:
-   - **Admin**: Full system access
-   - **Reviewer**: Limited access for document review
-4. Click **Create**
+1. Choose **Create User**.
+2. Enter the user's email address.
+3. Choose the persona: **Admin**, **Author**, **Reviewer**, **Annotator** or **Viewer**.
+   For someone who reviews, choose **Reviewer** to have them work every Production
+   queue, or **Annotator** to have them work only the queues an Admin lists them on.
+4. Optionally restrict the user to some Configuration Profiles
+   (`allowedConfigVersions`); review items of other profiles are then out of their reach.
+5. Choose **Create**.
 
-The system will:
-- Create a user record in DynamoDB
-- Create a corresponding user in Cognito
-- Add the user to the appropriate Cognito group (Admin or Reviewer)
-- Send a temporary password to the user's email
+The system creates the user record in DynamoDB and the user in Cognito, adds them to
+the persona's Cognito group, and sends them a temporary password by email.
+
+An Annotator works a Production queue once an Admin lists them in that queue's
+**Eligible Annotators** (Review Management › the queue's **Settings**). A Reviewer
+needs nothing more: they work every Production queue as soon as they sign in.
 
 #### Deleting a User
 
-1. Find the user in the user list
-2. Click the **Delete** button in the Actions column
-3. Confirm the deletion
-
-The system will remove the user from both DynamoDB and Cognito.
+Choose **Delete** in the user's row and confirm. The user is removed from both
+DynamoDB and Cognito.
 
 #### User Synchronization
 
-The system automatically synchronizes users between Cognito and DynamoDB:
-- Existing Cognito users are synced to DynamoDB when the user list is loaded
-- User persona is determined by Cognito group membership
-- Users in the "Admin" group are assigned Admin persona
-- All other users are assigned Reviewer persona
+Users created in Cognito directly are synchronized to DynamoDB when the user list is
+loaded. The persona comes from the user's Cognito groups, highest first: Admin,
+Author, Reviewer, Annotator, Viewer. A user in none of them is shown as Viewer.
 
 ## Workflow
 
 ### Review Status Values
 
-Documents progress through the following Review Status values:
+A document in review has the status **In Review** (`HITL_IN_PROGRESS`). Its queue item
+is in one of these states, shown on the queue's page:
 
-| Status | Description |
-|--------|-------------|
-| **Review Pending** | Document is awaiting review, not yet claimed by a reviewer |
-| **Review In Progress** | Document has been claimed by a reviewer and is being reviewed |
-| **Review Completed** | All sections have been reviewed and approved |
-| **Review Skipped** | Admin has skipped all remaining reviews |
+| State | Meaning |
+|---|---|
+| **Pending** | Waiting in its queue, assigned to nobody. Any Reviewer, and any Annotator the queue lists, can claim it. |
+| **Assigned** | Claimed by, or assigned to, one person. Only they (or an Admin taking it over) can work it. |
+| **In Progress** | Assigned, and the assignee has saved work. |
+
+When the review ends, the document finishes:
+
+| Outcome | Document status |
+|---|---|
+| **Process Changes** | `COMPLETED`, with the corrected data, after the finalize run |
+| An Admin's **Remove from queue…** | `COMPLETED`, with the machine output unchanged |
+| The API's `rejectReviewItem` | `REJECTED`, with the machine output unchanged (the Web UI doesn't offer it) |
+
+The document records **Review Owner** (the item's assignee) and **Review Completed By**
+(whoever finished it).
 
 ### 1. Automatic Triggering
 
-HITL review is automatically triggered when:
-- HITL feature is enabled in your configuration (`assessment.enable_hitl = true`)
-- Extraction confidence score falls below the configured threshold
-- Document status is set to **Review Pending**
+A document is held for review when all of these are true:
+- HITL is enabled in the document's configuration (`hitl.enabled: true`)
+- The Default queue is enabled (it is on a new stack)
+- The document raised a confidence alert: a field's confidence is under its own
+  threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
+  `hitl.confidence_threshold` when it has none; or, in BDA mode, the matched
+  blueprint's confidence is under `hitl.confidence_threshold` or unusable
+
+Each alert becomes a **review reason** on the item. A document with no alerts isn't
+queued, and documents processed by a Test Studio run are never held in a Production
+queue.
 
 ### 2. Review Process
 
-**For Reviewers:**
+**For Reviewers and Annotators:**
 
-1. **View Available Documents**: Log in and navigate to the Documents page. You will see only:
-   - Documents with status **Review Pending** (available to claim)
-   - Documents you have claimed with status **Review In Progress**
+1. **Find work.** Open **Home › Queues** to see the queues you work: every Production
+   queue for a Reviewer, the queues that list you for an Annotator. Open a queue to see
+   its items. **Home › Tasks** lists everything assigned to you; its badge counts it.
+   An Admin's assignment also sends you an Inbox message.
+2. **Claim an item.** On a queue's page, choose **Claim** on an item nobody holds, or
+   **Next item** to claim the next one waiting. The item is assigned to you and appears
+   in your Tasks. You can open any item read-only first; an item someone else holds
+   stays view-only.
+3. **Review and correct.** Open the item from Tasks. It opens in the
+   [edit page](#document-editor). **Review Reason** lists why it is in review, worst
+   first, and the editor opens on the fields with confidence alerts. Correct the
+   values. Your edits are saved as a draft as you type, or at once with **Save**;
+   saving doesn't finish the review, so you can come back to it. **Edit Page
+   Grouping**, on the Document Editor panel, corrects how the document is split into
+   sections.
+4. **Finish.** Choose **Process Changes**. It saves your latest edits, asks you to
+   confirm, and applies your corrections in the finalize run. The item leaves your
+   Tasks, the queue counts it as completed, and the document ends `COMPLETED`.
+5. **Or give it back.** If you can't finish it, choose **Skip** and pick a reason from
+   the queue's skip list, with an optional note. The item goes back to its queue,
+   unassigned and unfinished, and its draft is kept for whoever claims it next.
 
-2. **Start Review (Claim Document)**:
-   - Select a document with **Review Pending** status
-   - Click **Start Review** button
-   - Document status changes to **Review In Progress**
-   - You become the review owner
+#### What changed for Reviewers in v0.6.13
 
-3. **Review Sections**:
-   - In the document detail view, locate the **Sections** panel
-   - Click **View/Edit Data** to open the visual editor
-   - Review and correct extracted key-value pairs
-   - Click **Mark Review Complete** for each section
+Up to v0.6.12 a Reviewer found documents to review in the Document List, chose
+**Start Review** on the document page, corrected it there (including **Edit Mode** on
+the pages table to change the page grouping), and finished with **Process Changes**. From v0.6.13, a
+document that needs review is held in the Default queue, and the steps above replace
+that flow:
 
-4. **Release Review** (optional):
-   - If you need to stop reviewing, click **Release Review**
-   - Document returns to **Review Pending** status
-   - Another reviewer can claim it
+- **The work is in Home › Queues and Home › Tasks**, not the Document List. A Reviewer
+  whose only role is Reviewer no longer has **Documents** in the navigation.
+- **Claim before editing.** An item opens view-only until you claim it. **Edit Page
+  Grouping** stays disabled with *Claim this item first to change its page grouping*,
+  and the server refuses a page-grouping change from anyone but the item's holder.
+- **Process Changes on the queue item finishes the review.** It applies your field and
+  page-grouping corrections in the finalize run; there is no separate **Start Review**
+  step.
+- **The document page doesn't edit a document in a queue.** It offers no **Start
+  Review**, and its **Edit Page Grouping**, **Re-extract Sections**, **Edit Page Text**
+  and **Reset Page Class** are disabled with *This document is in a review queue. Choose Edit to work on
+  it there.*, and **Edit** opens the queue item. For an Author or Viewer, who don't
+  work queues, the document opens read-only.
+- **Start Review is still used when the Default queue is off.** Documents then wait as
+  **Review Pending** and are reviewed on the document page as before: choose **Start
+  Review** first, because **Process Changes** there is accepted only from the Reviewer
+  who holds the open review (see [When the Default queue is off](#when-the-default-queue-is-off)).
+
+Your configuration-profile scope (`allowedConfigVersions`) limits which items you see
+and work in both flows.
 
 **For Admins:**
 
-Admins have additional capabilities:
+- **Assign work.** In **Review Studio › Review Management**, open a queue, select items
+  and choose **Assign to…** to give them to one of the queue's Annotators. **Unassign**
+  returns an item to its queue, keeping its draft. Reviewers aren't assigned work.
+- **Work an item.** Open an item from its queue's page. Editing an unassigned item, or
+  choosing **Process Changes** on it, assigns it to you. An item assigned to someone
+  else is view-only, with **Take over**, which assigns it to you, keeps its draft and
+  tells the former assignee.
+- **Take an item out of review.** **Remove from queue…** ends the document `COMPLETED`
+  with its machine output, applying no draft; an assignee is told.
+- **Reminders.** An assignment doesn't expire. When a queue's time limit passes on an
+  open item, its assignee gets one **still to complete** reminder in the Inbox.
 
-- **Skip All Reviews**: Click **Skip All Reviews** to mark all pending sections as skipped
-  - Document status changes to **Review Skipped**
-  - The **Review Completed By** field records the admin who skipped
-  - Downstream reprocessing (Summarization/Evaluation) is triggered automatically — consistent with completing all sections — which also fires the optional post-processing Lambda hook (`PostProcessingLambdaHookFunctionArn`) on workflow completion
-  
-- **Release Any Review**: Admins can release reviews owned by other users
+The full Admin guide is in
+[Admin guide: Review Management](review-queues.md#admin-guide-review-management).
 
 ### 3. Result Integration
 
-When all sections are reviewed or skipped:
-- Document status changes to **Review Completed** or **Review Skipped**
-- Corrected data is saved to S3
-- **Review Completed By** field records who completed/skipped the review
-- Review history is recorded with reviewer information and timestamps
+When an item is finished with **Process Changes**:
+- The finalize run applies the corrections and writes the document's final outputs to S3
+- Summarization, evaluation, rule validation and the optional post-processing hook
+  (`PostProcessingLambdaHookFunctionArn`) run on the corrected data
+- The document ends `COMPLETED`, and **Review Completed By** records who finished it
+- The review status object becomes `complete`, and the item's history (claims,
+  assignments, skips with their reasons, completion) is kept
 
-**Note:** Finalizing reviews — either completing the last pending section or using **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
+While a document is in review it is corrected only from its queue item: its other
+change actions on the document page (**Edit Page Grouping**, **Re-extract Sections**,
+**Edit Page Text**, **Reset Page Class**, **Use As Evaluation Baseline**) are disabled,
+**Start Review** isn't offered, and the server refuses them. For an Admin, Reviewer or
+Annotator who may work the item, the document page's **Edit** opens its queue item;
+page grouping is changed there, by the item's holder, with **Edit Page Grouping**. Reprocessing, aborting or deleting a document in review withdraws its
+review.
 
 ## Configuration
 
 ### Enabling HITL
 
-HITL is a **configuration setting**, not a stack parameter. Enable it either in the
-Web UI or in the configuration YAML — there is no deploy-time flag:
+HITL is a **configuration setting**, not a stack parameter. Review queues then need
+someone to work them and the Default queue enabled:
 
-#### Method 1: Configuration UI (Runtime Toggle)
+1. **Turn on HITL** in each Configuration Profile whose documents should be reviewed,
+   either in the Web UI (**Configuration** › **Human-in-the-Loop (HITL) Review
+   (Optional)** › **Enabled**, then **Save**) or in the configuration YAML:
 
-1. Log in as an Admin user
-2. Navigate to **Configuration** in the Web UI
-3. Find the **Assessment & HITL Configuration** section
-4. Toggle **Enable Human-in-the-Loop (HITL) review** to enable/disable
-5. Click **Save** to apply changes
+   ```yaml
+   hitl:
+     enabled: true
+     confidence_threshold: 0.8
+   ```
 
-#### Method 2: Configuration YAML (Initial Setup)
-
-Set the HITL fields under `assessment` in the configuration passed as
-`CustomConfigPath` (or `idp-cli deploy --custom-config`), so a new stack comes up
-with HITL already on.
+   Set it in the configuration passed as `CustomConfigPath` (or
+   `idp-cli deploy --custom-config`) for a new stack to come up with HITL on.
+2. **Give people a review role** in **User Management**: **Reviewer** (works every
+   Production queue) or **Annotator** (works the queues that list them). With an
+   external identity provider, map a group instead (see [external-idp.md](external-idp.md)).
+3. **Check the Default queue.** In **Review Studio › Review Management**, open the
+   Default queue's **Settings**, make sure **Enabled** is on, and list any Annotators
+   under **Eligible Annotators**. A change applies to documents processed after it.
 
 > The `EnableHITL` CloudFormation parameter was removed in v0.4.11. If you are
-> upgrading from before that release and had `EnableHITL=true`, re-enable HITL
-> through one of the two methods above; the parameter no longer exists and passing
-> it is rejected.
+> upgrading from before that release and had `EnableHITL=true`, re-enable HITL in the
+> configuration as above; the parameter no longer exists and passing it is rejected.
 
 ### Confidence Threshold Configuration
 
-The confidence threshold determines when human review is triggered:
+Queues have no threshold of their own. The confidence alerts decide routing: each
+field's own threshold in the class schema (`x-aws-idp-confidence-threshold`),
+otherwise `hitl.confidence_threshold`, the same thresholds that drive the alerts and
+field highlights (see [extraction-and-confidence.md](extraction-and-confidence.md)).
 
-1. Navigate to **Configuration** in the Web UI
-2. Find the **Assessment & HITL Configuration** section
-3. Set **HITL Confidence Threshold** (0.0-1.0):
+1. Open **Configuration** in the Web UI.
+2. Find the **Human-in-the-Loop (HITL) Review (Optional)** section.
+3. Set **Confidence threshold** (0.0–1.0, the `hitl.confidence_threshold` key):
    - `0.8` = 80% confidence threshold (recommended starting point)
-   - Fields with confidence below this threshold trigger HITL review
-4. Click **Save** to apply changes
+   - A confidence that is NaN or infinite is not a usable score and is read as 0.0, so
+     it triggers review too
+4. Choose **Save**.
 
-## Review Portal
+Without confidence scoring, only BDA's blueprint confidence can queue a document.
 
-### Document List View
+## Document Editor
 
-**For Admins:** All documents are visible with their current status.
+Every review item opens in the **edit page**: a Production item at its document's edit
+page, `#/documents/<document>/edit`, and a Test Studio item at
+`#/review-queues/test-sets/<id>/items/<document>`. `?section=<id>` opens one section,
+`?field=<path>` one field, and `?view=source` the original file. The breadcrumbs read
+**Home**, then the item's queue or test set, then the document.
 
-**For Reviewers:** Only documents available for review are shown:
-- Documents with **Review Pending** status (available to claim)
-- Documents with **Review In Progress** status owned by the current reviewer
+The title is the document's name with the item's status in parentheses, with the full
+object key under it. The actions are in one bar at the top:
 
-Document statuses displayed:
-- **Review Pending**: Document is awaiting review
-- **Review In Progress**: Document is being reviewed
-- **Review Completed**: All sections reviewed
-- **Review Skipped**: Admin skipped remaining reviews
+| Where | Action | What it does |
+|---|---|---|
+| Bar | **Edit \| View** | **View** shows the original file in the editor's place; unsaved edits are kept |
+| Reports | **History** | **Field Edits** (every field a save changed: **When**, **By**, **Field**, **From**, **To**) and **Review Activity** (who claimed, was assigned, skipped or completed the item) |
+| Reports | **Summary** | The document's summary, once its review is complete |
+| Reports | **Processing Report** | How the open section was extracted |
+| More Actions | **Use As Evaluation Baseline** | Copies the finished document's results into the evaluation baseline (Admin, Author) |
+| Document Editor panel | **Edit Page Grouping** | Opens the page-grouping board, where each section's pages are changed (the item's holder) |
+| Button | **Skip** | Gives the item back to its queue, with a reason |
+| Button | **Cancel** | Leaves the item without finishing it; asks before discarding unsaved edits, and keeps the saved draft |
+| Button | **Save** | Saves the draft now (it is also saved as you type) |
+| Button | **Process Changes** | Saves your latest edits, confirms, and applies the corrections |
 
-### Section Review Interface
+For a Reviewer or Annotator viewing an item nobody holds, the bar offers **Claim**
+instead of the editing buttons. A button that doesn't apply is left out; a menu item
+that doesn't apply yet stays in its menu, disabled, with the reason on hover. The info
+icon opens a panel describing the screen. **Review Reason**, above the editor, lists
+the item's alerts, worst first: the five lowest-confidence are shown, **+N more
+alerts** lists the rest, and hovering a reason shows the field, the score and the
+threshold.
 
-The section review interface provides:
-
-- **Section List**: All document sections with review status
-- **View/Edit Data**: Opens the visual editor for a section
-- **Download Data**: Export extraction results as JSON
-- **Mark Review Complete**: Complete the review for a section
-
-### Review Actions
-
-| Action | Available To | Description |
-|--------|--------------|-------------|
-| **Start Review** | Reviewers, Admins | Claim a pending document for review |
-| **Release Review** | Owner, Admins | Release document back to pending status |
-| **Skip All Reviews** | Admins only | Skip all remaining sections |
-| **Mark Review Complete** | Owner, Admins | Complete review for a section |
-
-### Visual Editor
-
-The visual editor provides a comprehensive review experience with a modern tabbed interface:
+The **Document Editor** panel holds the editor: the page images beside the fields,
+with a **Section** dropdown at its top left listing each section with its class, and
+**Show Fields** set to **Confidence alerts only** when the item has review reasons.
+Changing a section's class isn't available for a Production document in review;
+regrouping pages is, with **Edit Page Grouping**.
 
 #### Navigation Controls
 - **Mouse Wheel Zoom**: Zoom in/out using the mouse wheel without requiring modifier keys
 - **Click-and-Drag Panning**: Pan around zoomed images by clicking and dragging (cursor shows grab/grabbing state)
 - **Rotate**: Turn a sideways or upside-down page in 90° steps, either direction. The rotated page is re-fitted to the panel rather than cropped, bounding-box overlays rotate with it, the rotation stays applied as you move between pages, and **Reset View** clears it along with zoom and pan
-- **Section Navigation**: Use Previous/Next buttons to navigate between document sections without closing the editor
+- **Section Navigation**: Choose a section from the **Section** dropdown at the top left of the Document Editor panel; unsaved edits ask before switching
 
 #### Tabbed Interface
 
@@ -304,54 +365,25 @@ The visual editor provides a comprehensive review experience with a modern tabbe
 - Section filtering with multiselect dropdown to focus on specific sections
 - Full JSON validation before saving
 
-**Edit history Tab**
-- Complete audit trail of all edits to the document
-- Timestamps showing when edits were made
-- Reviewer identification showing who made each change
-- Field-level diff information showing exactly what was modified
-
 #### Editing Features
 
-**Prediction Editing**
-- Edit extracted field values directly in the visual editor
-- Change tracking with visual indicators (blue left border on modified fields)
-- Save changes directly to S3 with proper versioning
-- Discard changes button to revert all edits
-
-**Evaluation Baseline Editing** (when evaluation is enabled)
-- Edit baseline (expected) values alongside predictions
-- Independent change tracking from predictions (orange left border on modified baseline fields)
-- Separate save/discard controls for baseline edits
-- Side-by-side comparison of predicted vs expected values
-
-**Save & Reprocess Workflow**
-
-After making edits to predictions or baselines, you can trigger reprocessing to re-run downstream steps with the updated data:
-
-1. **Save Your Edits**: Click "Save Changes" to persist prediction edits or "Save Baseline" to persist baseline edits to S3
-2. **Trigger Reprocessing**: After saving, click the "Reprocess" button (or use the document toolbar "Reprocess" action)
-3. **Automatic Pipeline Execution**: The document automatically transitions through processing stages:
-   - `SUMMARIZING` → Re-generates document summary using updated extraction data
-   - `EVALUATING` → Re-runs evaluation comparing updated predictions against baselines
-   - `COMPLETE` → Processing finished with updated results
-4. **View Updated Results**: Once complete, the evaluation scores and comparison results reflect your edits
-
-**Key Benefits of Save & Reprocess:**
-- **Iterative Refinement**: Make corrections and immediately see how they affect evaluation scores
-- **Baseline Correction**: Fix ground truth errors and re-evaluate without re-uploading documents
-- **Prompt Tuning Workflow**: Edit predictions to match desired output, save as baseline, then use for prompt improvement
-- **Quality Assurance**: Verify that corrections properly resolve evaluation mismatches
+- Edit extracted field values directly in the visual editor, with a blue left border
+  on each modified field
+- When evaluation is enabled, edit baseline (expected) values alongside the
+  predictions, tracked separately (orange left border); a Reviewer doesn't save
+  baseline edits
+- **Process Changes** applies the edits; **Cancel** discards unsaved ones after asking
 
 #### Smart Filtering
 
-- **Low Confidence Filter**: Toggle to show only fields with confidence scores below threshold
-- **Evaluation Mismatches Filter**: Toggle to show only fields that don't match baseline (when evaluation enabled)
+- **Low Confidence Filter**: Show only fields with confidence scores below threshold
+- **Evaluation Mismatches Filter**: Show only fields that don't match baseline (when evaluation enabled)
 - **Collapsible Tree Navigation**: Expand/Collapse All buttons for nested data structures
 - **Individual Node Toggle**: Click ▶/▼ to expand or collapse specific objects/arrays
 
 #### Evaluation Comparison Mode
 
-When evaluation data is available:
+When evaluation data is available, turn on **Show Evaluation**:
 - Side-by-side display of prediction and baseline values for each field
 - Match indicators showing ✓ Match or ⚠ Mismatch status
 - Evaluation scores and LLM-generated comparison reasons
@@ -361,68 +393,76 @@ When evaluation data is available:
 
 ### Review Management
 
-- **Claim Before Editing**: Always use "Start Review" to claim a document before making edits
-- **Process Promptly**: Review documents promptly to avoid backlogs
-- **Release If Unavailable**: Release reviews if you cannot complete them so others can take over
-- **Consistent Standards**: Establish consistent correction guidelines across reviewers
-- **Quality Checks**: Implement spot-checks on completed reviews for quality assurance
+- **Claim before editing**: claim an item (or use **Next item**) so nobody else works it
+  at the same time
+- **Skip rather than abandon**: if you can't finish an item, **Skip** it with a reason so
+  it goes back to the queue for someone else
+- **Keep the Default queue staffed**: list Annotators on it, or give reviewers the
+  Reviewer role, so queued documents don't wait
+- **Consistent standards**: agree correction guidelines across reviewers, and use the
+  queue's skip reasons to record why work was handed back
+- **Quality checks**: spot-check finished items through **Reports › History**
 
 ### Threshold Optimization
 
-- **Start Conservative**: Begin with higher thresholds (0.8-0.9) and adjust based on accuracy needs
-- **Monitor Patterns**: Track which document types trigger reviews most frequently
-- **Iterative Refinement**: Use review corrections to improve extraction prompts
+- **Start conservative**: begin with higher thresholds (0.8–0.9) and adjust based on accuracy needs
+- **Use per-field thresholds**: set `x-aws-idp-confidence-threshold` on the fields that
+  matter most, rather than lowering the profile-wide threshold
+- **Iterative refinement**: use review corrections to improve extraction prompts
 
 ### User Management
 
-- **Least Privilege**: Assign Reviewer persona to users who only need review access
-- **Admin Oversight**: Limit Admin access to users who need full system control
-- **Regular Audits**: Periodically review user list and remove inactive users
+- **Least privilege**: give review-only users the Reviewer or Annotator role, and
+  restrict them to the Configuration Profiles they review
+- **Reviewer or Annotator**: choose Reviewer for people who should take any Production
+  work; choose Annotator when an Admin decides who works which queue
+- **Regular audits**: periodically review the user list and remove inactive users
 
 ## Troubleshooting
 
 ### Common Issues
 
-**Documents Not Triggering HITL:**
-- Verify HITL is enabled in Configuration
-- Check confidence threshold settings
-- Ensure extraction confidence scores are being calculated
+**Documents not reaching a queue:**
+- Verify HITL is enabled in the document's Configuration Profile
+- Verify the Default queue is enabled in **Review Studio › Review Management**
+- Check the confidence thresholds, and that extraction confidence scores are being calculated
+- Documents processed by a Test Studio run are reviewed in their test set's queue, not a Production queue
 
-**Cannot Start Review:**
-- Verify document is in **Review Pending** status
-- Check if document is already claimed by another reviewer
-- Ensure you have Reviewer or Admin persona
+**A reviewer can't see a queue or an item:**
+- An Annotator sees only the queues that list them in **Eligible Annotators**
+- An item whose profile is outside the user's `allowedConfigVersions` is never shown to them
+- Verify the user's persona and scope in **User Management**, then have them sign out and in again
 
-**Cannot Complete Section Review:**
-- Verify you are the review owner or have Admin persona
-- Check if section is already completed
-- Ensure all required fields are filled
+**Cannot claim an item:**
+- Someone else may hold it: an item someone holds stays view-only
+- The item may have finished or been removed from its queue; refresh the queue's page
 
-**User Cannot See Documents:**
-- Reviewers only see pending documents and their own in-progress reviews
-- Verify user is in the correct Cognito group
-- Check user persona in User Management
-- Clear browser cache and re-login
-
-**Estimated Cost Shows Zero After Start Review:**
-- This issue has been fixed - HITL operations no longer re-serialize document data
-- If still occurring, ensure you have the latest deployment
+**Cannot finish an item:**
+- Only the item's assignee, or an Admin, can finish it
+- An item whose profile has gone out of the user's scope is refused, even one they hold
 
 ### Monitoring
 
-Monitor HITL performance through:
-- **CloudWatch Metrics**: Track review completion rates
-- **Web UI Dashboard**: View document processing status
-- **DynamoDB**: Query HITLReviewHistory for audit trails
+- **Review Studio › Review Management** shows each queue's items, pending, assigned and
+  Annotators, and each queue's page its progress and who holds what
+- The review status object (`review/status.json`) lets downstream systems react when a
+  review finishes
+- **CloudWatch Metrics**: track review completion rates
 
 ### Review History
 
-Each completed review is recorded with:
-- Section ID
-- Reviewer username and email  
-- Review completion timestamp
-- Action taken (complete, skip_all)
+Each item's history records who claimed it, was assigned it, skipped it (with the
+reason and note) and completed it, with timestamps. It is shown in the edit page's
+**Reports › History › Review Activity**, and the document records **Review Owner** and
+**Review Completed By**.
 
-Query the tracking table for `HITLReviewHistory` to audit review activities.
+## When the Default queue is off
 
-The **Review Completed By** field in the document list shows who completed or skipped the review.
+The Default queue is enabled on a new stack. If an Admin turns it off while HITL stays
+enabled in a profile, documents that raise confidence alerts are not queued: they wait
+as **Review Pending** and are reviewed on their document page instead, with **Start
+Review** and **Process Changes** (or **More Actions › Skip All Reviews**). That page is
+reached only by an Admin, or a Reviewer who also holds Author or Viewer; a Reviewer or
+Annotator whose only work is review has no navigation to it. Keep the Default queue
+enabled whenever review-only users do the reviewing. Turning it off stops new documents
+from being queued; items already in review stay there and can be finished.

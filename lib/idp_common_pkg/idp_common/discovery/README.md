@@ -81,7 +81,7 @@ result = discovery.discovery_classes_with_document(
 
 ### Auto-Detect Document Sections
 
-For multi-document packets, auto-detect section boundaries:
+For packets, auto-detect section boundaries:
 
 ```python
 sections = discovery.auto_detect_sections(
@@ -200,15 +200,59 @@ last class. Class discovery clears `classes`; Policy Discovery clears
 
 ## Configuration
 
-Discovery uses configuration from DynamoDB (loaded via `get_config()`). Key settings:
+Discovery uses configuration from DynamoDB (loaded via `get_config()`).
+`DiscoveryConfig` declares **only sub-sections** — there are no model settings at
+the top of `discovery`, so a `discovery.model` or `discovery.task_prompt` written
+there is dropped on load and the shipped default stays in force. Each sub-section
+carries its own model settings:
 
 ```yaml
 discovery:
-  model: us.amazon.nova-pro-v1:0
-  temperature: 0.0
-  system_prompt: "..."
-  task_prompt: "..."
+  # Class discovery from a sample document, no ground truth supplied
+  without_ground_truth:
+    model_id: us.amazon.nova-pro-v1:0
+    temperature: "0.0"
+    top_p: "0.1"
+    max_tokens: ""        # empty = use the model's maximum output limit
+    system_prompt: "..."
+    user_prompt: "..."
+
+  # Same, with a ground-truth file to align the discovered schema to
+  with_ground_truth:
+    model_id: us.amazon.nova-pro-v1:0
+    system_prompt: "..."
+    user_prompt: "..."
+
+  # Section-boundary auto-detection for multi-page packages
+  auto_split:
+    model_id: us.anthropic.claude-opus-4-6-v1:1m
+    system_prompt: "..."
+    user_prompt: "..."
+
+  # Batch discovery over a document collection (embedding clustering)
+  multi_document:
+    # Rewritten at deploy time by update_configuration: eu.cohere.embed-v4:0
+    # in EU Regions, global.cohere.embed-v4:0 in Canada.
+    embedding_model_id: us.cohere.embed-v4:0
+    analysis_model_id: us.anthropic.claude-sonnet-4-6
+
+  # Rule discovery from policy documents
+  rules:
+    model: global.anthropic.claude-sonnet-4-6
+    temperature: "0.0"
+    top_p: "0.0"
+    top_k: "5"
+    max_tokens: ""
+    system_prompt: "..."
+    task_prompt: "..."
 ```
+
+⚠️ **The key spelling differs between the sub-sections, and the wrong spelling is
+silently dropped rather than reported.** `without_ground_truth`,
+`with_ground_truth` and `auto_split` are `DiscoveryModelConfig`, which spells them
+`model_id` and `user_prompt`. `rules` is `RuleDiscoveryConfig`, which spells them
+`model` and `task_prompt`. `discovery.rules.model_id` and
+`discovery.without_ground_truth.model` are both unread keys.
 
 ## Integration with IDP SDK
 

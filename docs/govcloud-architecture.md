@@ -116,8 +116,8 @@ modality in Standard Output Configuration`.
 `ShouldCreateBDAOCRProject` — the `aws` partition only. Outside it the project
 is not created, `BDA_OCR_PROJECT_ARN` is empty, and the OCR service raises a
 clear error *only if* `ocr.backend` is actually set to `bda`. Use
-`ocr.backend: textract` — the built-in default; the GovCloud preset sets no
-`ocr:` key, so the default applies. See
+`ocr.backend: textract` — the built-in default; the GovCloud preset leaves
+`ocr.backend` unset, so the default applies. See
 [the deployment guide](./govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend).
 
 ## What `--headless` Removes
@@ -165,15 +165,21 @@ The headless transform strips the following resource groups (matching the
 ### Chat
 
 - Chat-with-document processor and the chat streaming Function URL family
-- The Step Functions → UI status publisher (fed real-time document status to
-  the web UI)
 
-### HITL (Human-in-the-Loop)
+There is no status-publishing resource to remove: the Web UI learns about document
+status by polling the tracking table, so nothing pushes status to it. The
+`AWS::Lambda::Url` resources that back chat streaming are also the ones the
+separate `--govcloud` transform removes, Function URLs being unavailable in that
+partition.
 
-- SageMaker A2I flow definition, human task UI, and private workforce
-  configuration
+### HITL (Human-in-the-Loop) Review
+
+- The review-queue table (`HITLTable`) and the queue sweeper function, with its
+  scheduling rule and permission
 - Users table and user management functions
-- Section review workflow resolvers
+- Section review workflow: `CompleteSectionReviewFunction` and its resolvers
+- The reviewer Cognito group, along with the rest of the user pool
+- The `HITLTableName` parameter, which the pattern stack then receives empty
 
 ### Knowledge Base
 

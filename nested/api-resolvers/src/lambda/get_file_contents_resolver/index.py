@@ -22,6 +22,16 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
 # Get LOG_LEVEL from environment variable with INFO as default
 
+
+class ReportedServerError(RuntimeError):
+    """A 500 whose message is written for the caller, so the dispatcher passes it on.
+
+    Declared locally because this resolver does not import ``idp_common``; the
+    dispatcher matches the class by name. The canonical class, and the rule for
+    when to raise it, is ``idp_common.api_adapter.ReportedServerError``.
+    """
+
+
 # Force Signature Version 4 for presigned URLs. The IDP buckets are encrypted
 # with SSE-KMS, and S3 rejects SigV2-signed requests for KMS-encrypted objects
 # ("Requests specifying Server Side Encryption with AWS KMS managed keys require
@@ -116,6 +126,12 @@ def _budget_refusal():
     the log line is where the difference is recorded. Wrapped at both call sites rather
     than caught in `handler`, so a single-object field cannot report it as a 500 —
     which it did, while only the batch field converted it.
+
+    ⚠️ The same reasoning fixes the exception CLASS, not just the status and the
+    string. The class reaches the client as `errors[0].authzControl`, so raising the
+    unattributed `PermissionError` here while `assert_document_in_scope` declares
+    itself would put the bit back into the label: `resolver` on the budget overrun
+    and `resource` on an ordinary denial is the same oracle in a different field.
     """
     try:
         yield
@@ -125,7 +141,7 @@ def _budget_refusal():
             "an ordinary authorization refusal on purpose — see _budget_refusal.",
             exc,
         )
-        raise PermissionError(document_scope.REFUSAL) from exc
+        raise s3_targets.ResourceAccessDenied(document_scope.REFUSAL) from exc
 
 
 class _DocumentScope:
@@ -172,6 +188,12 @@ class _DocumentScope:
                     "not configured, so the document that owns the key cannot be "
                     "identified."
                 )
+                # Deliberately the UNATTRIBUTED class. An unwired table is a template
+                # fault rather than a decision about the object the caller named —
+                # the same reading `s3_targets` gives an empty bucket allow-list — so
+                # `authzControl: "resolver"` is true here, and it is read strictly,
+                # which is what keeps a deployment fault visible instead of filed
+                # under a per-object control working as intended.
                 raise PermissionError(document_scope.REFUSAL)
             self._resolver = document_scope.DocumentResolver(
                 _dynamodb_resource(), TRACKING_TABLE_NAME
@@ -769,7 +791,7 @@ def handler(event, context):
             error_code,
             error_message,
         )
-        raise Exception(
+        raise ReportedServerError(
             "This deployment could not read the requested file. "
             "Contact an administrator."
         ) from e

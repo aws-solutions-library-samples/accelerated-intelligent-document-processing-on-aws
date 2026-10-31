@@ -4,14 +4,14 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.11 |
-| **Last Updated** | 2026-10-15 |
-| **Applies to release** | v0.6.11 |
-| **Last reviewed against version** | 0.6.11 |
+| **Version** | 3.13 |
+| **Last Updated** | 2026-10-30 |
+| **Applies to release** | v0.6.13 |
+| **Last reviewed against version** | 0.6.13 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
 | **Architecture** | Unified (Pipeline + BDA modes), API Gateway REST transport |
 | **Methodology** | STRIDE |
-| **Total Threats** | 99 |
+| **Total Threats** | 104 |
 | **Classification** | Internal |
 
 > **`Last reviewed against version` is a gated field.** It records the release
@@ -30,13 +30,13 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 | Metric | Value |
 |--------|-------|
-| Threats identified | **99** |
+| Threats identified | **104** |
 | Critical risk (8–9) | 9 |
 | High risk (6–7) | 31 |
-| Medium risk (3–5) | 44 |
-| Low risk (1–2) | 15 |
-| Mitigated | 63 (63%) |
-| Partially mitigated | 29 (29%) |
+| Medium risk (3–5) | 47 |
+| Low risk (1–2) | 17 |
+| Mitigated | 64 (62%) |
+| Partially mitigated | 33 (32%) |
 | Open (real gap, needs work) | **3 (3%)** |
 | Accepted risk | 4 (4%) |
 
@@ -91,47 +91,56 @@ same mistake as one that reports an intention as a control.
 
 Three further threats are **Partially Mitigated** with the remainder of their
 mitigation outstanding, and are called out here because the partial state is easy
-to over-read: **AUTH.T16** (authorization is opt-in per resolver — there is no
-default deny at the dispatcher; **issue #928**), **AUTH.T15** (divergent
-log-redaction denylists across vendored copies; **issue #921**) and **AUTH.T07**
-(config-version scope — two consumers now deny a lookup they cannot evaluate, but
-**five** named scope-aware resolvers — six source files — still read one as
-"unrestricted"; the scope is keyed on an email that can diverge from the row it
-should match; what identifier the claims yield to the lookup is not constrained at
-the adapter; and Chat-with-Document is unrestricted on the
-streaming transport, which forwards no verified per-user caller — that last half
-closes with `GAP-07` / **issue #920**).
+to over-read: **AUTH.T16** (the dispatcher denies an undeclared operation by default, which
+closed **issue #928**'s half, but every check narrower than the group floor —
+scope, ownership, review-queue eligibility — is still opt-in per resolver), **AUTH.T15** (every
+resolver now applies one canonical log-redaction denylist, **issue #921** closed, but
+it matches key names rather than values) and **AUTH.T07**
+(config-version scope — every REST consumer now shares one fail-closed lookup in
+`idp_common/config_scope.py` that prefers the immutable Cognito `sub`, so a lookup
+that cannot be evaluated denies; what remains is a row whose address changed beyond
+case before the `sub` back-fill ran, the token type the lookup sees being a property
+of the API Gateway authorizer rather than of the code, the class gate having no rule
+about the *matcher*, and Chat-with-Document being unrestricted on the streaming
+transport, which forwards no verified per-user caller — that last half closes with
+`GAP-07` / **issue #920**).
 
 ### What "reviewed" covers
 
-A threat model that claims to have been re-reviewed should say how deeply. In the
-v3.2 pass the following documents were re-derived from the templates and source
-rather than edited in place, and their **Applies to release** rows read v0.6.9:
+A threat model that claims to have been re-reviewed should say how deeply. Each
+document's **Applies to release** row records the release it was last verified
+against as a whole, and the rows deliberately differ: a blanket version bump across
+every document would assert reviews that did not happen, which is the failure mode
+the currency gate exists to prevent.
+
+In the v3.12 currency pass (against 0.6.13) three documents were re-derived from
+the templates, the state machine and `scripts/api_rbac_expectations.yaml` rather
+than edited in place, and their rows read v0.6.13:
 [`architecture/system-overview.md`](architecture/system-overview.md),
-[`architecture/data-flows.md`](architecture/data-flows.md),
-[`feature-threats/rbac-authentication.md`](feature-threats/rbac-authentication.md),
-[`feature-threats/companion-chat.md`](feature-threats/companion-chat.md),
-[`feature-threats/lambda-hooks.md`](feature-threats/lambda-hooks.md) and
-[`feature-threats/sdk-cli.md`](feature-threats/sdk-cli.md).
+[`architecture/data-flows.md`](architecture/data-flows.md), and the new
+[`feature-threats/review-queues.md`](feature-threats/review-queues.md), written
+from the review-queue, Inbox and finalize source.
 
-The remaining documents were **carried forward**: their content was reconciled
-for counts, cross-references and any claim contradicted by the six documents
-above, but their threat entries were not individually re-verified against source
-in this pass, and their **Applies to release** rows still read the release they
-were last verified against. That is deliberate — a blanket version bump across
-all 24 documents would assert a review that did not happen, which is the failure
-mode the currency gate exists to prevent.
+Inside documents that were otherwise carried forward, named entries were
+re-verified against code in the same pass, and the document's row stays at the
+release it was last verified against as a whole: AUTH.T01, AUTH.T15, AUTH.T16 and
+the authorization-surface paragraph in
+[`rbac-authentication.md`](feature-threats/rbac-authentication.md); HOOK.T07 and
+the hook-point table in [`lambda-hooks.md`](feature-threats/lambda-hooks.md);
+UI.T03 in [`web-ui.md`](feature-threats/web-ui.md); and PM.T09, new, in
+[`pipeline-mode.md`](architecture/pipeline-mode.md).
 
-v3.3 is narrower still: a targeted correction to AUTH.T07 and the counts that
-follow from it. No document's **Applies to release** row moved, because no
-document was re-reviewed.
+The remaining documents were **carried forward**: their content was reconciled for
+counts, cross-references and any claim contradicted by the documents above, but
+their threat entries were not individually re-verified against source in this
+pass.
 
 ## Directory Structure
 
 ```
 security/threat-modeling/
 ├── README.md                                    ← You are here
-├── threat-id-glossary.md                        ← All 99 threat IDs with cross-references
+├── threat-id-glossary.md                        ← All 104 threat IDs with cross-references
 │
 ├── architecture/                                ← System architecture & data flows
 │   ├── system-overview.md                       ← Unified architecture, components, trust boundaries
@@ -153,7 +162,8 @@ security/threat-modeling/
 │   ├── reporting-analytics.md                   ← Analytics, evaluation, test sets, versions (RPT)
 │   ├── feature-platform.md                      ← Installable extension threats (FEAT)   [new in 3.0]
 │   ├── jobs-api.md                              ← Machine-to-machine Jobs API threats (JOB) [new in 3.0]
-│   └── pii-anonymization.md                     ← Preprocessing hook + PII redaction (PII)  [new in 3.0]
+│   ├── pii-anonymization.md                     ← Preprocessing hook + PII redaction (PII)  [new in 3.0]
+│   └── review-queues.md                         ← HITL review queues, Inbox, finalize (HITL) [new in 3.12]
 │
 ├── threat-analysis/                             ← Cross-cutting analysis
 │   ├── stride-analysis.md                       ← Full STRIDE analysis across all components
@@ -201,11 +211,12 @@ security/threat-modeling/
 - **[Jobs API](feature-threats/jobs-api.md)** — M2M OAuth realm outside the group RBAC model
 - **[PII Anonymization](feature-threats/pii-anonymization.md)** — Redaction bypass, re-identification oracle
 - **[Seller Entitlement Service](feature-threats/seller-entitlement-service.md)** — Seller-side activation endpoint; identity spoofing, key compromise, wrong-account deploy
+- **[Review Queues](feature-threats/review-queues.md)** — Reviewer-controlled output, Inbox and status-object disclosure, resolver grants
 
 ### Cross-Cutting Analysis
 - **[STRIDE Analysis](threat-analysis/stride-analysis.md)** — Full STRIDE across all components
 - **[Risk Matrix](risk-assessment/risk-matrix.md)** — Complete risk register with scoring and recommendations
-- **[Threat ID Glossary](threat-id-glossary.md)** — All 99 threat IDs with quick reference
+- **[Threat ID Glossary](threat-id-glossary.md)** — All 104 threat IDs with quick reference
 
 ### Implementation & Testing
 - **[Implementation Guide](deliverables/implementation-guide.md)** — Security controls, configuration, and checklists
@@ -217,7 +228,7 @@ security/threat-modeling/
 
 | Prefix | Category | Count | Highest Risk | Document |
 |--------|----------|-------|-------------|----------|
-| PM | Pipeline Mode | 8 | Very High (9) | [pipeline-mode.md](architecture/pipeline-mode.md) |
+| PM | Pipeline Mode | 9 | Very High (9) | [pipeline-mode.md](architecture/pipeline-mode.md) |
 | BDA | BDA Mode | 5 | Medium (4) | [bda-mode.md](architecture/bda-mode.md) |
 | AGT | Agent Analysis | 5 | High (6) | [agent-analysis.md](feature-threats/agent-analysis.md) |
 | CHAT | Companion Chat | 6 | Very High (9) | [companion-chat.md](feature-threats/companion-chat.md) |
@@ -232,6 +243,7 @@ security/threat-modeling/
 | JOB | Jobs API | 3 | High (6) | [jobs-api.md](feature-threats/jobs-api.md) |
 | PII | PII Anonymization | 5 | High (6) | [pii-anonymization.md](feature-threats/pii-anonymization.md) |
 | SELL | Seller Entitlement Service | 10 | Very High (9) | [seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
+| HITL | Review Queues | 4 | Medium (3) | [review-queues.md](feature-threats/review-queues.md) |
 
 ## Top Priority Threats
 
@@ -246,7 +258,7 @@ security/threat-modeling/
 | 7 | SDK.T05 | Deployment service role reaches account administrator | 8 | **Partially Mitigated** (boundary attached, #927 closed) |
 | 8 | CHAT.T03 | Chat streaming Function URL — no group / ownership check | 6 | **Open** (fix pending, #920) |
 | 9 | UI.T06 | Object reads scoped per configuration profile; document ownership is not modelled | 6 | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
-| 10 | AUTH.T16 | No default deny at the dispatcher; authorization is opt-in per resolver | 6 | Partially Mitigated (#928) |
+| 10 | AUTH.T16 | Per-object authorization is opt-in per resolver; the default deny covers the group floor only | 6 | Partially Mitigated (#928 closed) |
 | 11 | HOOK.T07 | `onError: fail` is not terminal at six of seven hook points | 6 | **Mitigated** (#919 closed) |
 
 ## Maintaining This Threat Model
@@ -312,6 +324,8 @@ strictly worse than the red build.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.13 | 2026-10-30 | **HITL.T01 added: review-queue listings apply profile scope per item.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. A review queue is system-wide and holds items of several configuration profiles, so profile scope has to be decided by each item's own profile; the listings (`listReviewQueueItems`, `getMyReviewQueues`, `listMyReviewWork`, `claimNextReviewItem`) now make that decision with `scope_allows`, as the per-item operations already did. Recorded in [`review-queues.md`](feature-threats/review-queues.md) as **HITL.T01** (Low × Medium = 2, Mitigated), with the residual that queue counts are not scope-filtered and that the static RBAC rule does not check per-item application. Counts move 103 → 104; Low 16 → 17; Mitigated 63 → 64; Information Disclosure 39 → 40. Reconciled in the glossary, the risk matrix, the STRIDE analysis, the executive summary, the implementation guide and the export. No other threat, score or status changed. |
+| 3.12 | 2026-10-29 | **Currency re-review for 0.6.13.** The field moves 0.6.11 → 0.6.13, covering 0.6.12 and the current cycle. **Re-derived from source:** [`system-overview.md`](architecture/system-overview.md) and [`data-flows.md`](architecture/data-flows.md), from `template.yaml`, the nested stacks it deploys, `patterns/unified/statemachine/workflow.asl.json` and `scripts/api_rbac_expectations.yaml`. Measured against those: 15 DynamoDB tables where the overview said 13 (`HITLTable` and `NotificationsTable` are new, and no table is named Metering or TestSets), 18 SQS queues, 5 state machines, 130+ Lambda functions, `InstalledFeaturesTable` on the AWS-managed key rather than the stack CMK, 124 of 126 declared log groups on the CMK, and the browser's Identity Pool role granting `lambda:InvokeFunction` on the chat function as well as `lambda:InvokeFunctionUrl`. Routable operations are **164**; `system-overview.md` said 161 with a distribution three operations off, and five other documents still said 124. The ingestion flow now shows the queue sender — not the queue processor — creating the tracking record and the optional malware hold; the shared tail now shows both review paths (the legacy flow marks sections pending and *continues*, where the document said the execution ended) and the finalize execution; the Inbox and `review/status.json` are a new §2.6. **Controls described as absent that are present.** The corpus's convention is that *pending* means absent, and four fixes that merged before or during 0.6.11 were still described as pending in places the v3.9 pass did not reach: the dispatcher's default deny (#928) in AUTH.T16, UI.T03, `data-flows.md`, the STRIDE analysis, and the executive-summary and risk-matrix recommendations; terminal `onError: fail` (#919) in the hook-point table of `lambda-hooks.md`, in `data-flows.md` and in both recommendation lists; the service role's permissions boundary (#927) in the STRIDE analysis and both recommendation lists; and the converged log-redaction denylist (#921) in AUTH.T15 itself, the risk register and the STRIDE analysis. AUTH.T07's "five fail-open resolvers" survived in this file, the risk matrix and the builder's STATUS comment while the entry and the code have one fail-closed lookup. Each is now stated as it is. This is the conservative direction — it understated controls — and the review looked specifically for the damaging one, a threat crediting a control that no longer holds; one was found, the STRIDE analysis crediting "self-signup disabled, admin-created accounts only" when `AllowedSignUpEmailDomain` enables self-registration, and it now names the group floor that actually bounds a self-registered caller. The hook-point table also described `PostProcessingLambdaHookFunctionArn` as a state-machine hook; EventBridge invokes it after the execution has succeeded, so it can neither halt nor fail a document. **New threats (99 → 103).** HITL review queues are a new entry point and change a principal's reach — 40 operations in three resolvers, a new table, a per-user Inbox, a second execution per reviewed document, an outbound status object, and the `Annotator` group working **production** documents where it was confined to test sets — so they get their own prefix and document, [`review-queues.md`](feature-threats/review-queues.md): **HITL.T02** (reviewer drafts are copied verbatim into the final output and are not schema-checked), **HITL.T03** (waiting-work announcements reach every Annotator, and `status.json` and the Output bucket's EventBridge feed carry reviewer and document metadata), **HITL.T04** (resolvers serving Annotator operations hold UsersTable and tracking-table write grants). **PM.T09** records the threat 0.6.12's GuardDuty malware gate addresses — a document whose file structure exploits a parser in a processing Lambda — which the STRIDE analysis listed with no threat behind it; Pillow 13.0.0 closed a CRITICAL advisory on exactly that path this cycle. All four are Partially Mitigated. Bands: Medium 44 → 47, Low 15 → 16; statuses: Partially Mitigated 29 → 33; STRIDE: Tampering 39 → 40, Repudiation 4 → 5, Information Disclosure 38 → 39, Denial of Service 17 → 18, Elevation of Privilege 32 → 34. No threat retired and no existing score or status changed. AUTH.T15 and AUTH.T16 are retitled to what they now describe — a name-based denylist, and per-object checks that remain opt-in under a default-deny group floor. AUTH.T01 records the persona-to-group sync fix and its upgrade action. **Changes reviewed with no threat change:** the classification format 0.9/0.10 and the `split_then_classify` strategy (the model Lambda hook now receives `Splitting` and `SectionClassification` contexts; its IAM bound, `GENAIIDP-*` by ARN and `lambda:FunctionName`, is unchanged — recorded in `lambda-hooks.md` §1.1), BDA-mode refusal of section and page edits in `processChanges` and its revision-pinned mode check, configuration prefix mappings and per-document object-read scoping (both already modelled in v3.10 and v3.11), Test Studio's run sweeper, capacity planning's pipeline-only scope, the SDK's batch revision pinning, the vendored CloudFormation response helper (recorded in the STRIDE supply-chain table), the generic 500 with a request id (recorded under AUTH.T16 and UI.T03), the new region, model and cost metrics, and the documentation-site and dependency bumps. **Re-verified in otherwise carried-forward documents:** AUTH.T01, AUTH.T15, AUTH.T16 and the surface paragraph in `rbac-authentication.md`; HOOK.T07 and the hook-point table in `lambda-hooks.md`; UI.T03 in `web-ui.md`; PM.T09 in `pipeline-mode.md`. Those documents keep their **Applies to release** rows. **Carried forward, reconciled for counts and cross-references only:** `bda-mode`, `agent-analysis`, `companion-chat`, `feature-platform`, `jobs-api`, `knowledge-base`, `mcp-integration`, `pii-anonymization`, `reporting-analytics`, `sdk-cli`, `seller-entitlement-service`, the risk matrix, the STRIDE analysis, the glossary, the executive summary and the implementation guide. |
 | 3.11 | 2026-10-15 | **UI.T06 narrowed: the browser's Identity Pool role grants no S3 at all, and the object-read path now authorizes the DOCUMENT as well as the key.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.11. v3.7 recorded the per-user key check and left the document buckets reachable from the browser's own role, because the UI genuinely signed those GETs; closing that needed the read path redesigned rather than the grant trimmed, and it has been. `CognitoAuthorizedRole`'s `S3` inline policy is deleted along with the KMS statement beside it, leaving `ChatStreamInvoke` and `ParameterStore` and no bucket a signed-in user's own credentials can read; `scripts/tests/test_browser_s3_grants.py` now fails on an S3 statement under any policy name instead of pinning which buckets one may name. Why that policy was the boundary: the Identity Pool declares no `RoleMappings`, so the single `authenticated` role is held identically by every signed-in account including one in no group, with no resolver in the path and therefore no group, per-document or per-user check applicable to anything it granted — which is why step 5 of the chain measured in [#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033) (a self-registered groupless caller assuming that role and reading 15,953 bytes of extracted output with `s3api get-object`) needed no API operation at all. That step now fails at the `get-object`. The UI asks `getFileContents`, `getFilePresignedUrl` or the new batch field `getFilePresignedUrls` for every document byte it displays, so three server-side controls reach each one in the shared `_parse_and_validate_one`: the dispatcher's field-level group floor, the bucket allow-list, and `document_scope`, which resolves the document owning an Input- or Output-bucket key from the tracking table — walking the key's `/` boundaries longest-first, so an artifact prefix this module was never told about cannot read as "not document-scoped" and pass — and matches its `ConfigVersion` against the caller's `allowedConfigVersions`. ⚠️ **Record what that does not do, because this entry is now easy to over-read in the closing direction.** The product models no document owner and no tenant, so the configuration profile is the only per-document axis there is to check: a **scoped** caller is refused a document outside their profiles, a key no tracked document owns, and a document carrying no `ConfigVersion`, all fail-closed; an **unscoped** caller — no `allowedConfigVersions`, which is a user row's default state — is refused nothing by that check and reads any document through the resolver, exactly as `listDocuments` already lists any document for them. So the groupless path to the bytes is closed outright and the cross-document read is closed for scoped callers only. AUTH.T03's third residual becomes a closure rather than a residual and its first is restated per caller shape rather than per axis; RPT.T08's residual is narrowed the same way, the no-API fetch of version-history bytes being gone. `security/README.md`'s coverage table moves the per-**document** row from **No** to **Partly**, naming `get_file_contents_resolver/test_document_scope.py`. Scope-enforcing operations 18 → 19 and routable operations 123 → 124, both on account of the batch field. **UI.T06 moves from Open to Partially Mitigated.** *Open* in this register means a gap with no effective control today, and that was the threat exactly: the asset sat behind an IAM grant every signed-in account held irrespective of group, so no control in this repository could reach the fetch at all. It now sits behind the group floor, a fail-closed bucket allow-list and a fail-closed per-document check, with no path around them, and what is left is a **scope-model** limitation — the product records no ownership axis to check — rather than an unprotected endpoint. The **risk score stays 6**, and so do Likelihood (Medium) and Severity (High): an unset `allowedConfigVersions` is a user row's default state, so an onboarded caller's cross-document read is as reachable as it was and only the groupless and the scoped cases changed. Status tallies move Partially Mitigated 28 → 29 and Open 4 → 3 in this file's Key Statistics, in `risk-assessment/risk-matrix.md` and in `deliverables/executive-summary.md`; the entry is restated in both of those, in `deliverables/implementation-guide.md`, `threat-id-glossary.md`, `architecture/data-flows.md`, `architecture/system-overview.md` and `feature-threats/pii-anonymization.md`, whose PII.T05 row recorded the configuration-profile partitioning as readable around. The title changes from "Object Reads Are Not Scoped Per Document" to **"Object Reads Carry No Document Ownership Axis"**, which is what is actually absent now that reads are scoped per document on the profile axis. ⚠️ **PII.T04's mitigation rested on the deleted grant and the conclusion it defended is unaffected, which is the combination most likely to survive a review.** It justified keeping the re-identification mapping in DynamoDB rather than S3 on the grounds that the object-read path applied no key scoping and that the browser read the Output bucket directly; the second is gone and the first is wrong, yet the decision is *more* clearly right than before, because the per-document check authorizes against the owning document's profile while re-identification has to be authorized against the ORIGINAL document's config version, and the check is a no-op for an unscoped caller. The reasoning is rewritten in that cell and in the two shipping comments that carried it (`feature-platform/pii-anonymizer/hook/handler.py`, `feature-platform/pii-anonymizer/template.yaml`). Routable operations are also corrected to 124 where seven current-tense sentences still said 123 — `deliverables/executive-summary.md` (twice), `feature-threats/web-ui.md`, `feature-threats/rbac-authentication.md` (twice, one of them the 40/73/11 routing split, now 40/74/11), `feature-threats/jobs-api.md` and `threat-analysis/stride-analysis.md` — and the open-items framing in this file and in the risk matrix now states its own composition, three `Open` plus two `Partially Mitigated` plus one `Mitigated`, rather than implying six open gaps. No threat added or retired; no risk score and no risk-band tally changed. |
 | 3.10 | 2026-10-09 | **AUTH.T07 extended: an S3 key prefix can now decide a document's Configuration Profile, and therefore its visibility partition.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.11. A **config prefix mapping** assigns a Configuration Profile to everything arriving under a prefix of the Input bucket, and because a document's profile *is* the document-visibility partition for any user restricted by `allowedConfigVersions`, the mapping set is an authorization input rather than a routing convenience. It is modelled under AUTH.T07 rather than as a new threat, and the reason is the shape of the change: the mapping adds a **second route to choosing a profile** which is not the `version` argument at all, so it widens an existing attack vector instead of opening a new trust boundary — no new entry point, no new data flow, no new principal. Three things are now recorded on that entry. **(1)** `uploadDocument` and `uploadSampleDocument` checked the caller's group and the target bucket and never their configuration scope, so a scoped caller naming any profile in `version` placed a document into another scoped user's partition; both now check, and on the **resolved** profile, which is the only form covering the metadata route and the prefix route at once. The upload prefix is canonicalized first — S3 accepts `finance/x.pdf`, `/finance/x.pdf` and `finance//x.pdf` as three distinct keys and only the first matched a mapping, so one character was otherwise enough to route around a refusing mapping. **(2)** Mapping CRUD is `Admin` only, and the listing is deliberately **not** scope-filtered, because a partially-hidden view of a longest-prefix rule cannot tell you which mapping wins. **(3)** The dry run `resolveConfigPrefixMapping` is open to **Admin and Author** — the two roles that can upload, which is what it serves; a Viewer cannot upload and so has no use for the answer — and is scope-filtered **over every profile the answer could disclose rather than the one it selected** — a refusal resolves to no profile while naming the mapped one in its reason, and metadata precedence resolves to the caller's own in-scope profile while explaining that it beat the mapping's, so a guard predicated on the selected profile leaks through both — and it withholds the matched **prefix** too, since the caller supplies a key and the governing prefix is a refinement of it that locates the boundary a probe at a time. **Two residuals bound all three.** The first is that the upload resolver's mapping read **fails open** — a read error there treats the destination as unmapped, so the scope check is made against the caller's own profile and passes, while `queue_sender`'s own read seconds later may succeed and assign the mapping's profile, landing the document outside the caller's scope. Refusing every upload because a routing table blipped would be an outage of the UI's primary action, so the trade is accepted and made **visible** instead: that path is the third emitter of `PrefixMappingLookupFailed`, which alarms on the first occurrence, and `ConfigSource`/`ConfigMappingPrefix` on each tracking row make the affected window reviewable afterwards. The second is unchanged: this gates the API, not the bucket. A principal with `s3:PutObject` on the Input bucket picks its own prefix and its own `x-amz-meta-config-version` with no API call in the path, which is the bucket-side exposure UI.T06 already carries. Counts: **routable operations 119 → 123** — the four prefix-mapping operations, and no other operation is added here — **scope-verifying 16 → 18**, **scope-filtered 4 → 5**. Four documents carried a stale **118** rather than the then-correct 119, and it was corrected in [`stride-analysis.md`](threat-analysis/stride-analysis.md), [`jobs-api.md`](feature-threats/jobs-api.md), [`executive-summary.md`](deliverables/executive-summary.md) and [`web-ui.md`](feature-threats/web-ui.md), where it was a current-tense claim rather than a dated one. No threat added or retired; 99 threats and every status tally unchanged. |
 | 3.9 | 2026-09-26 | **Currency re-review for 0.6.11.** The field moves 0.6.9 → 0.6.11; it had stood at 0.6.9 through six control-change revisions (v3.3–v3.8), each of which deliberately left it alone, so this is the first pass to re-read the corpus against shipped code since v3.2. **What was re-verified from source:** the API authorization surface against `scripts/api_rbac_expectations.yaml` (119 operations; the `Admin`+`Author` row in [`system-overview.md`](architecture/system-overview.md) read **40** where the manifest records **41**, which [`rbac-authentication.md`](feature-threats/rbac-authentication.md) already had right — the two documents disagreed); the `known_gaps` block, which now holds **three** entries where both documents said two, the third being the harness limitation `GAP-SEC-INCONCLUSIVE-5XX` rather than an authorization gap; the bucket/CMK count (13 buckets, 11 on the customer-managed key — correct as stated); and the five Cognito groups. **Four threats carried a `pending` marker citing an issue that has since closed, and this corpus's convention is that pending means absent — so each was checked against code, not against the issue state, and they did not all land the same way.** `onError: fail` is now terminal at **all seven** hook points (each state's `Catch` routes to `PreprocessingHookFailed`, `PostExtractionHookFailed` or the shared `PostStepHookFailed`), so **HOOK.T07 → Mitigated**; the dispatcher now denies by default (`authz.py`), so AUTH.T16's description is corrected while its status stays Partially Mitigated, because the 403 mapping still falls back to a message prefix for a bare `Exception`; the deployment service role gained a permissions boundary and a constraint on the roles it may create but kept its own `iam:*`, so **SDK.T05 → Partially Mitigated**, not closed. ⚠️ **CHAT.T06 was NOT changed, and the attempt to change it is the finding worth recording**: #920 is closed and a contradicting body identifier is now a 403, but `sse.resolve_caller_sub` returns `claimed or verified` whenever the transport value is not user-specific, and on the deployed commercial transport it is measured to be the pool-wide constant `CognitoIdentityCredentials` — so the body value is still what a turn is attributed to. The corpus's existing "partly addressed … stays Open" reading was right and a status flip would have published a false assurance. CHAT.T03 and CHAT.T06 stay **Open**. Statuses: Mitigated 62 → 63, Partially Mitigated 27 → 28, Open 6 → 4; 99 threats and the risk bands unchanged. **Carried forward, not re-verified:** the ten documents last verified against 0.6.3 (`bda-mode`, `pipeline-mode`, `agent-analysis`, `feature-platform`, `jobs-api`, `knowledge-base`, `mcp-integration`, `pii-anonymization`, `reporting-analytics`, `web-ui`) and `seller-entitlement-service` at 0.6.5 keep their **Applies to release** rows, and their per-document distance is reported by the gate as advisory. 0.6.11's own two changes are extraction retry and cache-point behaviour inside one Lambda — no trust boundary, data path or external surface — so no threat entry was added for them. |

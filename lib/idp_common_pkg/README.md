@@ -30,7 +30,7 @@ This README provides a high-level overview of the package. For detailed document
 - **Evaluation**: Results comparison against ground truth
 - **Summarization**: Document summary generation
 - **DynamoDB**: Document tracking writes/reads against the TrackingTable, reached through the `docs_service` factory
-- **API adapter**: `idp_common.api_adapter`, which normalizes an API Gateway request into the resolver event shape for the UI's REST dispatcher
+- **API adapter**: `idp_common.api_adapter`, which normalizes an API Gateway request into the resolver event shape for the UI's REST dispatcher, and holds the error shapes it answers with: an unexpected error becomes a generic 500 with a request id (`internal_error_payload`), and `ReportedServerError` is the 500 whose message a resolver wrote for the caller
 - **Reporting**: Analytics data storage
 - **Discovery**: Automated document class schema generation using LLMs
 - **Document deletion**: `idp_common.delete_documents`, the one implementation the Web

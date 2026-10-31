@@ -477,7 +477,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.12")
+@click.version_option(version="0.6.13")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -543,7 +543,7 @@ def cli():
     help=(
         "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
         "stack parameter: enable it in the Web UI under Configuration → "
-        "Assessment & HITL Configuration, or in the config YAML."
+        "Human-in-the-Loop (HITL) Review, or in the config YAML."
     ),
 )
 @click.option(
@@ -693,7 +693,7 @@ def deploy(
             console.print(
                 "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
                 "  HITL became a configuration setting in v0.4.11. Enable it in the "
-                "Web UI under Configuration → Assessment & HITL Configuration, or "
+                "Web UI under Configuration → Human-in-the-Loop (HITL) Review, or "
                 "in the config YAML passed to --custom-config."
             )
             sys.exit(1)
@@ -3888,6 +3888,8 @@ def _batch_status_to_display_dicts(batch_status):
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,
             "error": doc.error or "",
+            # in_review / complete / rejected (review queues); None if never routed.
+            "review_status": getattr(doc.review_status, "value", doc.review_status),
         }
         # The producer's own verdict wins when it recorded one, and
         # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
@@ -4849,6 +4851,16 @@ def remove_residual_resources_from_deleted_stacks(
     3. Tracks both ACTIVE stacks (protected) and DELETED stacks (cleanup targets)
     4. Only targets resources that belong to stacks in DELETE_COMPLETE state
     5. Resources from active stacks are NEVER touched
+    6. Before deleting a global resource (CloudFront distribution, response
+       headers policy, IAM policy, S3 bucket), confirms in EVERY enabled
+       region that no stack of that name still exists. A region that cannot
+       be read leaves the resource in place and is reported as an error
+       (exit 1).
+
+    PERMISSIONS:
+    Besides delete permissions for what it cleans, the region confirmation
+    needs ec2:DescribeRegions and cloudformation:DescribeStacks in every
+    enabled region.
 
     SAFETY FEATURES:
     - Multi-region stack discovery (customizable with --check-stack-regions)
@@ -4944,8 +4956,17 @@ def remove_residual_resources_from_deleted_stacks(
                 for error in result["errors"]:
                     console.print(f"    - {error}")
 
+            # Without this a resource left alone (its stack still exists, here or
+            # in another Region, or the user declined) read as "No resources
+            # found", indistinguishable from an account with nothing there.
+            if result.get("skipped"):
+                console.print(f"  [dim]Skipped ({len(result['skipped'])}):[/dim]")
+                for item in result["skipped"]:
+                    console.print(f"    - {item}")
+
             if not any(
-                result.get(key) for key in ["deleted", "disabled", "updated", "errors"]
+                result.get(key)
+                for key in ["deleted", "disabled", "updated", "errors", "skipped"]
             ):
                 console.print("  No resources found")
 
@@ -6896,12 +6917,12 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
 @click.option(
     "--embedding-model",
     default=None,
-    help="Bedrock embedding model ID (default: us.cohere.embed-v4:0)",
+    help="Bedrock embedding model ID (default: us.cohere.embed-v4:0; eu.cohere.embed-v4:0 in EU Regions, global.cohere.embed-v4:0 in Canada)",
 )
 @click.option(
     "--analysis-model",
     default=None,
-    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6)",
+    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6; eu.anthropic.claude-sonnet-4-6 in EU Regions)",
 )
 @click.option(
     "--output",
@@ -7953,9 +7974,8 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
-        # and Rich would read that as a style tag and drop it -- leaving the user told
-        # to `pip install idp_common`, which is already installed. The constant is
+        # `escape`, because INSTALL_HINT is shared text and Rich reads any `[...]` in
+        # it (a pip extra, say) as a style tag and silently drops it. The constant is
         # shared with consumers that do not render through Rich (the bootstrap
         # module, the capability field), so the escape belongs at this call site
         # rather than in the constant.

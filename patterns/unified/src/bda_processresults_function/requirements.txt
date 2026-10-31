@@ -1,3 +1,3 @@
 pypdfium2>=5.5.0
 boto3
-../../lib/idp_common_pkg[core,docs_service,image]  # core utilities, document service, and image processing with dependencies
+../../lib/idp_common_pkg[core,docs_service,image,review_queues]  # core utilities, document service, image processing and review queues with dependencies

@@ -210,33 +210,45 @@ payload = {
 Pattern-1 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
 
 **Pattern-1 Specific Configuration:** HITL is enabled through the configuration
-(Web UI **Configuration → Assessment & HITL Configuration**, or the config YAML),
+(Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
+`hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md). 
 
-## Edit Mode (Data-Only)
+## Editing BDA Documents
 
-Pattern-1 supports a data-only Edit Mode through the Web UI, allowing users to edit extraction data (predictions and ground truth) without re-invoking Bedrock Data Automation.
+A document processed in BDA mode (its configuration profile sets `use_bda`) is corrected
+on its edit page, without re-invoking Bedrock Data Automation. The Web UI decides this
+from the document's configuration profile, and the `processChanges` operation refuses any
+section or page change to such a document for every role; see
+[BDA-mode documents offer data-only editing](./web-ui.md#bda-mode-documents-offer-data-only-editing).
 
 ### Capabilities
 
-- **Edit Extraction Data**: Click "Edit Mode" then use "Edit Data" buttons on each section to open the Visual Editor
+- **Edit Extraction Data**: Choose **Edit Data** in a section row's **⋮** menu (or
+  **Edit** in the document page's action bar) to open the document's edit page, whose
+  **Visual Editor** tab edits the fields
 - **Modify Predictions**: Update predicted field values and review confidence scores
-- **Edit Ground Truth**: Modify baseline/ground truth data for evaluation comparison
-- **Reprocess**: "Save and Reprocess" triggers evaluation and summarization without BDA re-invocation
+- **Edit the evaluation baseline**: With **Show Evaluation** on, edit the baseline values the document is evaluated against. A test set's ground truth is edited in Test Studio
+- **Process the corrections**: The edit page's **Process Changes** saves the edits and
+  re-runs evaluation and summarization on them, without BDA re-invocation
+- **Regroup pages**: **More Actions › Edit Page Grouping › Save page grouping** on the
+  document page saves a new page grouping and keeps the extracted values; nothing is
+  reprocessed
 
 ### Limitations
 
-Since Pattern-1 uses BDA for document splitting and classification:
-
-- **Section Structure**: Read-only - cannot add, delete, or modify sections
-- **Page Assignments**: Read-only - BDA controls which pages belong to which sections
-- **Classification**: Read-only - document classes are determined by BDA blueprints
+BDA splits the document into sections, classifies them and extracts their data, so
+the document page's structural and re-extraction actions are disabled in BDA mode: **Edit
+Page Class** (on the document page and the edit page), **Save and Re-extract**,
+**Re-extract Sections**, **Edit Page Text** and **Reset Page Class** show the reason.
+Correct values with **Edit Data** (the edit page) instead.
 
 ### How It Works
 
-When you click "Save and Reprocess" with existing pages and sections data:
+When the edit page's **Process Changes** runs on a document with existing pages and
+sections data:
 
 1. The workflow detects existing document data (pages > 0 and sections present)
 2. BDA invocation step is automatically skipped
@@ -244,7 +256,7 @@ When you click "Save and Reprocess" with existing pages and sections data:
 4. Document status updates to COMPLETED when finished
 
 This is useful for:
-- Correcting extraction errors in the Visual Editor
+- Correcting extraction errors on the edit page
 - Adding baseline data for evaluation comparison
 - Re-running evaluation after data corrections
 - Updating document summaries after data modifications

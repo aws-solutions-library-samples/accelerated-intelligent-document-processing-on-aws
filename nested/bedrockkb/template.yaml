@@ -275,6 +275,9 @@ Conditions:
   UseS3Vectors: !Equals [!Ref pVectorStoreType, "S3_VECTORS"]
   UseOpenSearchServerless: !Equals [!Ref pVectorStoreType, "OPENSEARCH_SERVERLESS"]
   HasS3VectorBucketName: !Not [!Equals [!Ref pS3VectorBucketName, ""]]
+  UseDefaultS3VectorBucketName: !And
+    - !Condition UseS3Vectors
+    - !Not [!Condition HasS3VectorBucketName]
 
 Resources:
   # Custom resource to transform input to lowercase.
@@ -309,8 +312,19 @@ Resources:
         
         def handler(event, context):
             logger.info(event)  
-            output = event['ResourceProperties'].get('InputString', '').lower()
-            output = output[:32]
+            properties = event['ResourceProperties']
+            output = properties.get('InputString', '').lower()
+            if properties.get('ExactS3VectorBucketName') == 'true':
+                # S3VectorBucketNameLowercase: the S3 Vectors handler's
+                # sanitize_bucket_name() changes a name only by collapsing "--"
+                # or by truncating one longer than 63 characters. A name with
+                # "--" becomes one no vector bucket can have ("_" is not
+                # allowed); one longer than 63 characters already is one. Either
+                # way the IAM grant built from it matches no bucket.
+                if '--' in output:
+                    output = 'not_derivable'
+            else:
+                output = output[:32]
             responseData = {'OutputString': output}                                            
             cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
       Environment:
@@ -322,6 +336,23 @@ Resources:
     Properties:
       ServiceToken: !GetAtt GetAdjustedStackNameFunction.Arn
       InputString: !Ref AWS::StackName
+
+  # The default S3 vector bucket name, lowercased. With the parent stack's
+  # 25-character name limit the nested stack name is at most 50 characters, so
+  # "${AWS::StackName}-s3-vectors" is at most 61 and sanitize_bucket_name() in
+  # the S3 Vectors handler only lowercases it: this is the name of the bucket the
+  # handler creates. S3VectorManagerRole uses it to scope ListIndexes and
+  # DeleteIndex to that one bucket. Where the sanitizer would change the name (a
+  # stack name with "--", or a standalone deploy whose name is too long), the
+  # function returns a name no bucket can have, so that grant matches nothing
+  # and the role can delete only the index named by pS3VectorIndexName.
+  S3VectorBucketNameLowercase:
+    Type: Custom::GetLowercase
+    Condition: UseDefaultS3VectorBucketName
+    Properties:
+      ServiceToken: !GetAtt GetAdjustedStackNameFunction.Arn
+      InputString: !Sub "${AWS::StackName}-s3-vectors"
+      ExactS3VectorBucketName: "true"
 
   # Custom resource to transform comma separated url list to an array of url objects for Web Crawler.
   GetSeedUrlsFunction:
@@ -379,15 +410,18 @@ Resources:
         rules_to_suppress:
           - id: W11
             reason: >-
-              The s3vectors statements are scoped to this account and Region, with
-              the bucket segment left as a wildcard (bucket/*) because the handler
-              lowercases and sanitizes the bucket name it derives from the stack
-              name, CloudFormation has no lowercase intrinsic to reproduce that,
-              and reading the real name back via GetAtt would be circular (this
-              role backs the Lambda that creates the bucket). The index name is
-              exact. What remains unscoped is the Bedrock knowledge base control
-              plane (Create/Delete/Get/Update/ListKnowledgeBases), whose knowledge
-              base id is service-generated and does not exist at create time, and
+              The s3vectors bucket statements are scoped to this account and
+              Region with the bucket segment left as a wildcard (bucket/*): the
+              handler sanitizes the bucket name it derives from the stack name, and
+              a template-side copy of that name (S3VectorBucketNameLowercase)
+              matches it only for stack names the parent stack produces, so
+              narrowing the create grant to it would make Create fail for any other
+              name. The index name is exact. ListIndexes, and DeleteIndex on any
+              index, are granted only on this stack's own bucket, named exactly,
+              because a mismatch there falls back to deleting the named index. What
+              remains unscoped is the Bedrock knowledge base control plane
+              (Create/Delete/Get/Update/ListKnowledgeBases), whose knowledge base
+              id is service-generated and does not exist at create time, and
               iam:PassRole, which is still broader than ideal.
     Condition: UseS3Vectors
     Properties:
@@ -412,11 +446,13 @@ Resources:
               # lowercases it and rewrites anything S3 rejects, and a nested stack
               # name always carries uppercase (e.g. IDP1-DOCUMENTKB-1LSEGJJKD4T8Y),
               # so the real bucket name never equals the template expression.
-              # CloudFormation has no lowercase intrinsic, and !GetAtt on
+              # CloudFormation has no lowercase intrinsic, !GetAtt on
               # S3VectorBucketAndIndex would be circular (this role backs the very
-              # Lambda that creates it), so account + Region is the tightest scope
-              # available. tests/test_iam_scope.py ties this pattern to the
-              # handler's sanitizer so the two cannot drift apart again.
+              # Lambda that creates it), and S3VectorBucketNameLowercase matches
+              # the sanitized name only for the stack names the parent produces, so
+              # account + Region is the tightest scope that cannot break Create.
+              # tests/test_iam_scope.py ties this pattern to the handler's
+              # sanitizer so the two cannot drift apart again.
               - Sid: S3VectorsBucketManage
                 Effect: Allow
                 Action:
@@ -432,6 +468,25 @@ Resources:
                   - s3vectors:CreateIndex
                   - s3vectors:DeleteIndex
                 Resource: !Sub "arn:${AWS::Partition}:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/*/index/${pS3VectorIndexName}"
+              # Every index in this stack's own bucket. The stack Delete lists the
+              # bucket's indexes and deletes each one before the bucket, because S3
+              # Vectors refuses to delete a bucket that holds any index (one left
+              # under an earlier pS3VectorIndexName, for example). The bucket is
+              # named exactly (see S3VectorBucketNameLowercase). Only granted for
+              # the stack-derived bucket name: a pS3VectorBucketName may name a
+              # bucket that existed before the stack, whose other indexes are not
+              # this stack's to delete.
+              - !If
+                - UseDefaultS3VectorBucketName
+                - Sid: S3VectorsOwnBucketIndexes
+                  Effect: Allow
+                  Action:
+                    - s3vectors:ListIndexes
+                    - s3vectors:DeleteIndex
+                  Resource:
+                    - !Sub "arn:${AWS::Partition}:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${S3VectorBucketNameLowercase.OutputString}"
+                    - !Sub "arn:${AWS::Partition}:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${S3VectorBucketNameLowercase.OutputString}/index/*"
+                - !Ref AWS::NoValue
         - PolicyName: BedrockAgentAccess
           PolicyDocument:
             Version: '2012-10-17'

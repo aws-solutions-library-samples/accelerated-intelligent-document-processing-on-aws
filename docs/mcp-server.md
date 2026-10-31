@@ -400,6 +400,13 @@ Query batch and document processing status.
 }
 ```
 
+⚠️ **`include_errors` is advertised but not implemented.** The handler reads only
+`options.detailed`; `include_errors` is accepted and ignored, and the response carries
+no error-detail field either way. What you get instead is the **count** of failures in
+`status.failed`, plus — with `detailed: true` — each document's own `status` and
+`review_status`. For the text of a failure, use `get_results` on the document, or the
+[Error Analyzer](./error-analyzer.md).
+
 **Output Schema:**
 ```json
 {
@@ -418,6 +425,10 @@ Query batch and document processing status.
   "all_complete": "boolean"
 }
 ```
+
+With `options.detailed: true` the response gains a `documents` array, one entry per
+document in the batch, each with `document_id`, `status`, `duration_seconds` and
+`review_status`.
 
 **Example Request:**
 ```json
@@ -460,7 +471,10 @@ Query batch and document processing status.
 
 The `get_results` tool returns paginated results:
 - Default page size: 10 documents
-- Maximum page size: 100 documents
+- Recommended maximum page size: 100 documents. This is **advice, not a limit** — the
+  schema states it in prose only, and `limit` is passed through to a list slice with no
+  clamping, so a larger value is honoured. Treat 100 as the point beyond which a single
+  response gets slow and large enough to be worth paginating instead
 - Use `next_token` to retrieve subsequent pages
 - `total_in_batch` shows the complete batch size
 - Per-document data is accurate for the current page only
@@ -469,16 +483,45 @@ The `get_results` tool returns paginated results:
 
 For multi-section documents (e.g., lending packages):
 - Section 1: Primary extraction results
-- Sections 2+: Additional document types within the same file
+- Sections 2+: Further sections of the same document, each with its own class
 - Use `section_id` parameter to retrieve specific sections
 
 ### Confidence Structure
 
-Confidence scores mirror the field structure exactly:
-- **Flat fields**: Confidence is a numeric value (0.0-1.0)
+Confidence scores mirror the field structure:
+- **Flat fields**: Confidence is the score stored for the field, passed through
+  unchanged (normally a number from 0.0 to 1.0), or `null` when the stored entry
+  carries no score. A field with no stored entry at all is left out of
+  `confidence`, so look a field up with a default rather than assuming its key is
+  present
 - **Nested objects**: Confidence is nested with the same structure as fields
-- **Array fields**: Confidence scores are not provided for array items (e.g., `line_items`)
-- **Null values**: Fields with null values have confidence score of 0.0
+- **Array fields**: Confidence is a list with one entry per item, in item order.
+  For a list of objects (e.g., `line_items`) each entry holds a score per column
+  of that row; for a list of plain values each entry is that item's score
+- **Null values**: A field whose value is null carries whatever was stored for it.
+  The tool passes stored scores through unchanged, so such a field can show a low
+  score, a high score, `null`, or no entry. A score is not a statement that the
+  field is absent; read the value in `fields` for that
+- **Stand-in scores**: A stored score is usually the confidence model's answer, but
+  not always, and each stand-in records why in the field's `confidence_reason`.
+  When the confidence response cannot be parsed, or returns a field in an
+  unexpected shape, the affected fields are stored as 0.5, except that the list
+  rows of a response that cannot be parsed are stored as `null`. A list row or a
+  populated field that the confidence step did not score is also stored as
+  `null`: the response returned fewer rows than were extracted, left the field
+  out, or the time budget ran out before the row's batch was sent. In integrated confidence on the Simple path
+  (1S-TopK), a field whose candidate carries no usable probability is stored as
+  0.0. This tool does not return `confidence_reason`, so a stand-in looks the same
+  as a scored value here; read `explainability_info` in the section's
+  `result.json` to tell them apart
+- **No confidence at all**: `confidence` is `null` when the section has no
+  confidence data, and `{}` when the confidence step stored an empty assessment
+
+The tool returns scores, not alerts. In Pipeline mode, a field's confidence alert
+is raised for any numeric score below its threshold, whether or not the field has
+a value, and a NaN or infinite score is read as 0.0 and raises one. A field with a
+null or non-numeric score raises none. See
+[Human review](human-review.md) for how alerts route a document to review.
 
 Example:
 ```json
@@ -489,7 +532,7 @@ Example:
   },
   "confidence": {
     "vendor_info": {"tax_id": 1.0},
-    "line_items": null
+    "line_items": [{"description": 0.95, "amount": 0.72}]
   }
 }
 ```

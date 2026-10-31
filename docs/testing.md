@@ -202,7 +202,7 @@ under `tests/unit/` is in it. And because nothing gates them, a broken one stays
 broken: a test whose seams are all mocked needs no credentials and belongs in the
 default gate, where something will notice.
 
-### A run can measure the wrong checkout, and the `make` targets pin against it
+### Making sure a run tests this checkout
 
 `idp_common` and the SDKs are **editable installs**, so `import idp_common` reads
 whatever pointer is in the active interpreter's `site-packages` — not necessarily this
@@ -385,8 +385,8 @@ make ui-test        # Vitest, jsdom — no browser
 make ui-build       # lint + typecheck + production Vite build
 ```
 
-Both CIs run the Vitest suite. Nothing in this layer opens a browser — that is
-layer 6's UX review, and it is the only tier in the repo that does.
+Both CIs run the Vitest suite. Nothing in this layer opens a browser — layer 6's
+UX review and first-time-user stories are the tiers that do.
 
 **If you are splitting a local run across lanes, note that these two share
 `src/ui/node_modules` with `make lint-cicd`.** Both reinstall that directory with
@@ -416,9 +416,28 @@ job alone.
 
 Findings are triaged in place rather than waved through: bandit findings take a
 line-scoped `# nosec <ID> - <reason>`, unreachable advisories go in
-`scripts/security/dep_audit_allowlist.json` with a justification, and
-security-matrix/Checkov findings go in `scripts/srt/issues.json`. Procedures:
+`scripts/security/dep_audit_allowlist.json` with a justification (an entry that
+no longer matches any finding fails the audit, so delete it once the advisory is
+withdrawn or the package is upgraded), and security-matrix/Checkov findings go in
+`scripts/srt/issues.json`. Procedures:
 [`srt-security-scan`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/srt-security-scan.md).
+
+`dep-audit` also prints an **unmapped advisories** section. GitHub publishes many
+advisories as *unreviewed*, with no affected package attached; matching by package
+and version, as OSV, `npm audit` and Dependabot do, can never report one. The
+section lists each unreviewed advisory from the last 60 days whose summary opens
+with a pinned package's name and a range that includes the pinned version. It is a
+list to review, not a gate: it is read from prose, and it never changes the exit
+code. It needs a GitHub token (`GITHUB_TOKEN`, `GH_TOKEN` or a `gh` login), and
+says "not checked" without one; `make dep-audit DEP_AUDIT_ARGS=--no-unmapped`
+skips it. GitLab's `dep_audit` job runs it. GitHub's passes `--no-unmapped`,
+because the Actions token's hourly request limit is shared by every job in the
+repository and one run of this report uses about a third of it.
+
+An advisory in that list is not allowlisted: there is no OSV finding for the entry
+to suppress, so it would fail the audit as stale. Once reviewed it needs no
+record; it leaves the list when it is 60 days old or when GitHub maps it to a
+package, at which point OSV reports it normally.
 
 Published, redacted snapshots of the four security tests per release live in
 [`security/test-results/<version>/`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/tree/develop/security/test-results),
@@ -453,22 +472,28 @@ are in [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solution
 
 ## 6. Live-stack tiers (manual)
 
-Each of these needs a deployed stack (or deploys its own), each has a written
-procedure, and each is mandatory for a release. One of them also runs in CI: the
-dynamic API RBAC matrix is step 12 of the GitLab `integration_tests` deployment
-(`scripts/sdlc/codebuild_deployment.py` shells out to `make api-test` against the
-stack that job deploys), so it is the one row below that a GitLab pipeline covers —
-and, being GitLab-only, the one row a GitHub pull request does not. Note when that
-job runs automatically: pushes to `develop` and non-Draft merge requests targeting
-it, and in both cases only when the change touches a deploy-affecting path, so a
-documentation or `CHANGELOG` change does not exercise it. On any other branch it is
-manual. The rest of the rows run only when a person asks.
+Each of these needs a deployed stack (or deploys its own) and has a written
+procedure, and each but the first-time-user stories is mandatory for a release.
+Three also run in CI in some form, on GitLab only, so a GitHub pull request covers
+none of them: the dynamic API RBAC matrix is step 12 of the GitLab
+`integration_tests` deployment (`scripts/sdlc/codebuild_deployment.py` shells out to
+`make api-test` against the stack that job deploys); the UX review runs unattended
+as the advisory `ai_ux_test` job on merge requests that change `src/ui/`; and the
+first-time-user stories run as advisory jobs on merge requests that change
+`CHANGELOG.md` and every night against the review stack. Note when
+`integration_tests` runs: automatically only in the scheduled nightly pipeline; on a
+merge request to `develop` and on `develop` itself it is a manual button, and on any
+other branch it does not run, so nothing exercises a change before it merges unless
+someone presses that button. The rest of the rows run only when a person asks.
 
 | Tier | What only a live stack can prove | Command | Procedure |
 |---|---|---|---|
 | API RBAC — dynamic (also runs in the GitLab `integration_tests` job) | that the **deployed** resolver enforces authorization per Cognito group and configuration-profile scope, not just that the code looks right | `make api-test STACK_NAME=…` | [`api-rbac-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/api-rbac-test.md) |
 | Cognito authorization behaviour | that the pre-token group-mapping trigger and client attribute permissions behave as the docs claim — they do not always | `make live-auth-checks` · `make verify-idp-federation` | [`live-auth-checks`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/live-auth-checks.md) |
-| **UX review (browser)** | that a person can actually complete each flow in the web UI, and how it feels doing so — functional pass/fail **plus** usability findings. The only tier here that opens a browser | `make ux-test STACK_NAME=…` | [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md) |
+| **UX review (browser)** | that a person can actually complete each flow in the web UI, and how it feels doing so — functional pass/fail **plus** usability findings. One of the two tiers here that open a browser, beside the first-time-user stories below | `make ux-test STACK_NAME=…` | [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md) |
+| **First-time-user stories (browser)** | that a person new to the product can do what the published documentation says they can, by following it literally — each story is one intent attempted as one persona and judged against what that persona's role should be able to do, with every hesitation, dead end and gap between the docs and the screens recorded as it goes. Advisory in GitLab CI on merge requests and nightly; not a release tier | `make ai-ux-test-stories-local STORY=…` | [`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md) |
+| Inbox end to end | that a message posted through `idp_common.notifications` (direct, Cognito group fan-out, idempotency key, dedupe key) is the one the **deployed** API lists, counts and marks read for its recipient, and that another user cannot reach it. Creates and removes a temporary Cognito group, two users and their Inbox items | `make stacktest-inbox STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Review queues end to end | that a document routed under a profile with review queues on reaches the **deployed** queue, can be claimed, edited and completed through the API with a real Annotator token, and finishes with the final status object, an unchanged machine manifest and a final manifest. Creates and removes a temporary profile, user and document (`CHECK_EVENTS=1` adds a temporary EventBridge rule and SQS queue) | `make stacktest-review-queues STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | ZAP DAST | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Deploy variants | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
@@ -504,12 +529,52 @@ click drawn on the frame that was on screen when it happened. Output — `review
 and title and a click log (`events.jsonl`, `timeline.json`) that labels clicks with
 text from the page. **A recording of a live stack shows real documents and
 nothing is redacted: never commit the session directory or attach any of it to a
-pull request.** The one exception is a finished product-demo video its author chooses
+pull request.** One exception is a finished product-demo video its author chooses
 to publish: the author uploads that `demo.mp4`, and nothing else from the session, to
-get its asset URL for the demo videos page. What a click label can hold is set out under Privacy in
+get its asset URL for the demo videos page. The MR UX test's mp4 of the CI review
+stack, which holds only shipped example data, is the other. What a click label can
+hold is set out under Privacy in
 [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md#privacy).
 Details:
 [`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy).
+
+**On a merge request the same review runs unattended.** When a non-Draft MR to
+`develop` changes `src/ui/`, the advisory `ai_ux_test` job tests the MR's UI build in
+a confined headless browser against the long-lived review stack `idp-ux-nightly`, and
+appends its findings and a narrated video to the automated code-review comment for
+that commit. It gates nothing. `make ai-ux-test-local MR=<iid>` runs the same test in
+Docker as a dry run, and `make ai-ux-browser` starts only the confined browser, with
+DevTools on `127.0.0.1:9222`, for an interactive session on a machine with no local
+Chrome. Contract:
+[`ux-test-ci`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-ci.md).
+
+### First-time-user stories
+
+[`scripts/ux_stories.toml`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/ux_stories.toml)
+holds stories that say only what a person wants, each with the personas it runs as and
+whether each persona's role should be able to do it, be refused, or not be offered it
+at all. A model that knows the product only through this documentation attempts each
+story in a confined headless browser, searching and reading these pages through tools
+of its own and noting every hesitation and dead end as it goes. Every tool call is
+journalled, and the verdict — done, stuck, refused as the docs say, offered a control
+the docs say the role lacks, and so on — is computed from that journal and the
+persona's expected access, never from the model's prose, so one run of a story can be
+compared with the next. Each story is told to change nothing on the shared review
+stack, and a best-effort guard in front of the browser refuses the saves it
+recognises: a story whose task ends in a save stops at that step and says so.
+
+`make ai-ux-test-stories-local STORY=<id>` runs a story in Docker as a dry run
+(`MR=<iid>` runs the stories that MR's added CHANGELOG entries select, and
+`INTERACTIVE=1` lets you watch it live), `make ai-ux-test-stories-pair` starts the
+confined browser and prints the command for a Claude session you start to play the
+user, and `make ai-ux-test-stories-list` and
+`make ai-ux-test-stories-search Q="…"` are the authoring loop. In CI, the advisory
+`ai_ux_test_stories` job runs the stories a non-Draft MR's added CHANGELOG entries
+select and replies in the code-review thread, and every night the nightly set runs
+and feeds a digest of regressions; none of it gates anything. Procedure:
+[`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md);
+unattended contract:
+[`ux-test-stories-ci`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories-ci.md).
 
 ## 7. Benchmarks
 

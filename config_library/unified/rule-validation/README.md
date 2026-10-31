@@ -42,20 +42,33 @@ The configuration defines 5 specialized prior authorization document classes, ea
 
 ### Classification Settings
 
-- **Model**: Amazon Nova 2 Lite
-- **Method**: Multimodal Page Level Classification
+This preset defines no `classification` section of its own, so every value below
+comes from the system defaults in
+`lib/idp_common_pkg/idp_common/config/system_defaults/`.
+
+- **Strategy**: Combined (`classification.strategy: combined`) — a single call
+  returns both the section boundaries and the classes
+- **Granularity**: page (`classification.combined.granularity`) — one classification
+  per page rather than per packet
+- **Model**: `us.amazon.nova-2-lite-v1:0`
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
-- **OCR Backend**: Amazon Textract with LAYOUT features
+- **Modality**: `modality.text` and `modality.images` are both empty, so each is
+  inferred from the placeholders the call's task prompt uses
+- **OCR Backend**: Amazon Textract with LAYOUT, TABLES, and SIGNATURES features
 
-The classification component analyzes document content and structure to accurately identify PA document types and establish proper page boundaries within multi-document packages.
+The classification component analyzes document content and structure to accurately identify each section's PA document class and establish the section boundaries within each PA packet.
 
 ### Extraction Settings
 
-- **Model**: Amazon Nova 2 Lite
+- **Model**: `us.anthropic.claude-sonnet-5` (from the system defaults — this preset
+  pins no extraction model)
+- **Mode**: `simple` (`extraction.mode`); agentic extraction is off
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
-- **Max Tokens**: 4096
+
+There is no `extraction.max_tokens` setting. Extraction always requests the model's
+maximum output, resolved per model from `config_library/model_config_limits.yaml`.
 
 The extraction component performs comprehensive attribute extraction tailored to each PA document type, capturing critical medical and administrative information including:
 - Patient demographics and insurance details
@@ -67,11 +80,13 @@ The extraction component performs comprehensive attribute extraction tailored to
 
 ### Rule Validation Settings
 
-- **Model**: Claude 3.5 Sonnet (rule validation) and Claude 3.5 Sonnet (orchestrator)
+- **Model**: `us.anthropic.claude-sonnet-4-6` for both `fact_extraction` and
+  `rule_validation_orchestrator` (from the system defaults — this preset sets only
+  `rule_validation.enabled`)
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 20
-- **Max Tokens**: 4096
 - **Semaphore**: 5 concurrent API calls
+- **Chunking**: `max_chunk_size` 8000 with 10% overlap
 - **Recommendation Options**: Configurable (default: Pass, Fail, Information Not Found)
 
 The rule validation component evaluates extracted information against predefined medical coding rules including:
@@ -95,21 +110,28 @@ The configuration defines 7 rule types with specific validation criteria:
 6. **component_service**: Component service vs comprehensive service validation
 7. **separate_procedure**: Separate procedure designation and reporting rules
 
-### Assessment Settings
+### Confidence Assessment Settings
 
-- **Model**: Amazon Nova Lite
-- **Granular Assessment**: Enabled with parallel processing
-- **Default Confidence Threshold**: 0.9
-- **Max Workers**: 20 for improved performance
+Confidence assessment is configured under `extraction.confidence`, and this preset
+takes the system defaults for all of it:
 
-Enhanced confidence assessment ensures high accuracy for medical data extraction, critical for rule validation and compliance decisions.
+- **Mode**: `separate` — confidence is scored in its own call after extraction
+- **Model**: Amazon Nova Lite (`us.amazon.nova-lite-v1:0`)
+- **List batch size**: 25 (`list_batch_size`) — oversized list fields are scored in
+  batches of this many rows
+- **Escalation**: enabled, up to 2 rounds, escalating to
+  `us.anthropic.claude-sonnet-5:1m`
+- **Human review threshold**: `hitl.confidence_threshold`, default `0.8`
+
+Confidence assessment ensures high accuracy for medical data extraction, critical for
+rule validation and compliance decisions.
 
 ### Summarization Settings
 
-- **Model**: Amazon Nova 2 Lite (rule validation orchestrator) and Amazon Nova Pro (document summarization)
+- **Model**: `us.anthropic.claude-sonnet-5:1m` (from the system defaults — this preset
+  pins no summarization model)
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
-- **Max Tokens**: 4096
 
 The summarization component creates:
 - Consolidated rule validation summaries with pass/fail/info-not-found counts per rule type (via orchestrator)
@@ -180,7 +202,7 @@ To use this rule validation configuration:
 
 ### Adding New Document Classes
 
-To add a new PA document section:
+To add a new class of PA document section:
 
 1. Add a new entry to the `classes` array in `config.yaml`:
    ```yaml

@@ -1,0 +1,8 @@
+mutation SaveTestSetDocumentSection($testSetId: String!, $objectKey: String!, $sectionId: String!, $data: AWSJSON) {
+  saveTestSetDocumentSection(testSetId: $testSetId, objectKey: $objectKey, sectionId: $sectionId, data: $data) {
+    testSetId
+    objectKey
+    sectionId
+    reviewed
+  }
+}

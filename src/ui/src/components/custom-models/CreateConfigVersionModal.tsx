@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { Modal, Box, SpaceBetween, Button, FormField, Input, Select, Checkbox, Alert } from '@cloudscape-design/components';
+import { setClassificationModel } from '../../utils/classification-config';
 
 interface SelectOption {
   label: string;
@@ -197,7 +198,8 @@ const CreateConfigVersionModal = ({
         if (!fullConfig.classification) {
           fullConfig.classification = {};
         }
-        (fullConfig.classification as Record<string, unknown>).model = deploymentArn;
+        // The call that assigns the class under the active strategy.
+        setClassificationModel(fullConfig.classification as Record<string, unknown>, deploymentArn);
       }
 
       // Step 3: Save as a new profile using the existing updateConfiguration mutation
@@ -347,7 +349,8 @@ const CreateConfigVersionModal = ({
               <strong>Extraction</strong> — Set <code>extraction.model</code> to the custom model deployment ARN
             </Checkbox>
             <Checkbox checked={useForClassification} onChange={({ detail }) => setUseForClassification(detail.checked)}>
-              <strong>Classification</strong> — Set <code>classification.model</code> to the custom model deployment ARN
+              <strong>Classification</strong> — Use the custom model deployment ARN for the call that assigns the class (Split and classify
+              together, or Split first, then classify each section &rarr; Section classification)
             </Checkbox>
           </SpaceBetween>
         </FormField>

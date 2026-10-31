@@ -1,7 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import hashlib
 import json
 import logging
 import os
@@ -17,10 +16,21 @@ from botocore.exceptions import BotoCoreError, ClientError
 from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
+from idp_common.utils.execution_names import (  # noqa: F401 — re-exported
+    _EXECUTION_NAME_MAX_LEN,
+    _EXECUTION_NAME_UNSAFE,
+    execution_name_for,
+)
+from idp_common.utils.execution_names import execution_arn_for as _execution_arn_for
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.transient_errors import is_transient_error
 
 patch_all()
+
+# Same pattern as idp_common.review_queues.finalize.FINALIZE_TOKEN_RE; kept local
+# here so the handler (and its hermetic tests, which stub idp_common) needs no
+# review_queues import on its hot path.
+_FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -58,6 +68,10 @@ CB_STATE_ERROR_TRANSIENT = "ERROR_TRANSIENT"
 #: gone, malformed request). Admission is ALLOWED — see check_circuit_breaker.
 CB_STATE_ERROR_TERMINAL = "ERROR_TERMINAL"
 DOCUMENT_QUEUE_URL = os.environ.get("DOCUMENT_QUEUE_URL", "")
+#: ``DynamoDBError.error_code`` for a refused condition. Spelled here rather than
+#: imported from ``idp_common.dynamodb.client`` so the hermetic tests, which stub
+#: ``idp_common``, compare against the real string.
+CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailedException"
 RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("RECOVERY_TIMEOUT_SECONDS", "300"))
 # How many workflows HALF_OPEN admits per window, and how long that window is.
 # A half-open breaker is supposed to admit a BOUNDED number of probes and keep
@@ -116,14 +130,6 @@ COUNTER_CONFLICT_BASE_DELAY_SECONDS = float(
     os.environ.get("COUNTER_CONFLICT_BASE_DELAY_SECONDS", "0.2")
 )
 
-# Step Functions execution names: 1-80 chars, no whitespace, brackets, wildcards
-# or the characters " # % \ ^ | ~ ` $ & , ; : /. The name also becomes the last
-# ARN segment, which document_versions.build_run_id and the classification cache
-# key both take with ``split(":")[-1]``, so it is kept to a set that is safe in
-# an S3 key and a DynamoDB sort key as well.
-_EXECUTION_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-_EXECUTION_NAME_MAX_LEN = 80
-
 
 class ExecutionAlreadyStarted(Exception):
     """StartExecution was refused because this message already started a workflow.
@@ -142,50 +148,116 @@ class ExecutionAlreadyStarted(Exception):
         self.execution_arn = execution_arn
 
 
-def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
-    """Derive the idempotent execution name for one SQS message.
+class DocumentAbortedBeforeStart(Exception):
+    """The document was aborted after this message read it, before its start.
 
-    SQS is at-least-once: a message whose StartExecution succeeded is redelivered
-    whenever the invocation that handled it dies before it can report the batch
-    outcome (issue #904 saw one message delivered 24 times and started 6 times).
-    Step Functions refuses a second StartExecution with the same name for 90
-    days, so naming the execution after the message turns every redelivery into
-    a harmless ``ExecutionAlreadyExists``.
-
-    The message id, not the document, is the key: the same object re-uploaded,
-    reprocessed from the UI or re-run through the SDK is a NEW message and must
-    get a new execution, while every redelivery of one message carries the same
-    id. A human-readable prefix from the object's basename is kept so the
-    Step Functions console still reads like a document list.
-
-    Returns None when there is no message id (a direct invocation), in which case
-    Step Functions assigns a name and duplicate protection does not apply.
+    Raised by ``start_workflow`` when ``claim_start`` finds the document ABORTED
+    at the moment the execution would have been started, so that no execution
+    is created; ``process_message`` hands back the concurrency slot it took and
+    acks the message.
     """
-    if not message_id:
-        return None
-    token = message_id
-    if _EXECUTION_NAME_UNSAFE.search(token) or len(token) > 64:
-        token = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
-    basename = (input_key or "").rsplit("/", 1)[-1]
-    prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
-    room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
-    prefix = prefix[:room].rstrip("-.")
-    # Preserve the "looks like a document list" property in the Step
-    # Functions console even for basenames that yield no allowed chars
-    # (e.g. all-emoji filenames, extension-only basenames like ``.pdf``).
-    # A bare token — 32-char sha1 or 36-char UUID — is uninformative and
-    # loses the browse-by-name affordance the prefix exists for. Fall
-    # back to a generic ``doc-`` prefix so the execution row still reads
-    # as "some document" rather than "some hash".
-    return f"{prefix}-{token}" if prefix else f"doc-{token}"
+
+
+def claim_start(object_key: str) -> bool:
+    """Whether the document may be started now: False only if it is ABORTED.
+
+    ``process_message`` checks for ABORTED when it reads the message, but that
+    read is eventually consistent and is taken before the circuit breaker, the
+    counter increment and the configuration reads. ``abortWorkflow`` stops a
+    QUEUED document by writing ABORTED and nothing else, so an abort landing
+    after that read used to be started anyway, and its success then overwrote
+    ABORTED (#1612). This is the same decision taken again, at the last moment,
+    by a conditional write DynamoDB evaluates against the current item.
+
+    Every other outcome allows the start, exactly as before this check existed:
+    a document with no tracking record, and a claim or re-read that fails. A
+    document that was not aborted is never held back by it.
+    """
+    try:
+        if document_service.claim_for_execution(object_key):
+            return True
+    except Exception as e:
+        logger.warning(
+            f"Could not confirm that {object_key} was not aborted before starting "
+            f"it: {e}. Starting it.",
+            exc_info=True,
+        )
+        return True
+    # Refused: the document is ABORTED, or it has no tracking record. Read it to
+    # tell which -- consistently, since the write that refused the claim may be
+    # the one an eventually consistent read would miss.
+    try:
+        current = document_service.get_document(object_key, consistent_read=True)
+    except Exception as e:
+        logger.warning(
+            f"Start claim for {object_key} was refused and the document could not "
+            f"be re-read: {e}. Starting it.",
+            exc_info=True,
+        )
+        return True
+    return not (current is not None and current.status == Status.ABORTED)
+
+
+def aborted_now(object_key: str) -> bool:
+    """Whether a consistent read finds the document ABORTED; False if it cannot.
+
+    Used after a post-start write that failed for a reason other than its
+    condition, which therefore said nothing about an abort in the window.
+    """
+    try:
+        current = document_service.get_document(object_key, consistent_read=True)
+    except Exception as e:
+        logger.error(
+            f"Could not re-read {object_key} after its post-start write failed: "
+            f"{e}. If it was aborted while starting, its execution is not stopped.",
+            exc_info=True,
+        )
+        return False
+    return current is not None and current.status == Status.ABORTED
+
+
+def stop_aborted_start(object_key: str, execution_arn: Optional[str]) -> bool:
+    """Stop an execution whose document was aborted after its start claim.
+
+    Called when the post-start tracking write is refused because the document
+    is ABORTED. The execution exists and owns its concurrency slot, which the
+    workflow tracker releases on the ABORTED event this stop produces, so
+    nothing here touches the counter, and the document is left ABORTED.
+
+    Returns whether the stop request was accepted. A failure is logged at ERROR
+    and not retried: the message is already acked, and the document then reads
+    ABORTED while its execution runs, which is the state #1612 described.
+    """
+    if not execution_arn:
+        logger.error(
+            f"Document {object_key} was aborted after its start claim, but the "
+            f"execution ARN is unknown, so it could not be stopped."
+        )
+        return False
+    try:
+        sfn.stop_execution(
+            executionArn=execution_arn,
+            error="DocumentAborted",
+            cause="The document was aborted while its workflow was being started",
+        )
+    except Exception as e:
+        logger.error(
+            f"Document {object_key} was aborted after its start claim, and "
+            f"stopping its execution {execution_arn} failed: {e}. It reads "
+            f"ABORTED while that execution runs.",
+            exc_info=True,
+        )
+        return False
+    logger.info(
+        f"Document {object_key} was aborted while its start was in flight; "
+        f"stopped execution {execution_arn} and left it ABORTED"
+    )
+    return True
 
 
 def execution_arn_for(execution_name: str) -> str:
     """The ARN Step Functions gives an execution of our state machine by name."""
-    return (
-        state_machine_arn.replace(":stateMachine:", ":execution:", 1)
-        + f":{execution_name}"
-    )
+    return _execution_arn_for(state_machine_arn, execution_name)
 
 
 def ack_message(receipt_handle: str) -> bool:
@@ -910,9 +982,7 @@ def _emit_circuit_breaker_check_failure(classification: str) -> None:
             MetricData=[
                 {
                     "MetricName": "CircuitBreakerCheckFailed",
-                    "Dimensions": [
-                        {"Name": "Classification", "Value": classification}
-                    ],
+                    "Dimensions": [{"Name": "Classification", "Value": classification}],
                     "Value": 1,
                     "Unit": "Count",
                 }
@@ -1261,8 +1331,46 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
+def routing_configuration(
+    manager: Any, config_version: str, config_revision: Optional[int]
+) -> Any:
+    """The configuration ``use_bda`` routing is read from.
+
+    The document's pinned revision when it has one, so that a save made while
+    the document was queued cannot send it down a branch its own configuration
+    does not select (#1619). With no pin, the profile head, as before revisions
+    existed.
+
+    A pinned read that fails falls back to the profile head, with a WARNING
+    naming the revision, rather than to pipeline mode. The head is what routed
+    every document before this read was pinned, so the fallback is never worse
+    than that; defaulting to pipeline would send every BDA document on the
+    stack down the wrong branch whenever the revision cannot be read, which is
+    what an unreadable bucket did when this read was first pinned. The steps
+    after routing load the pinned revision themselves and fail the document if
+    it is gone, so a revision that is really unavailable is still reported.
+    A head read that fails as well raises, into the handling every head-read
+    failure has always had.
+    """
+    if config_revision is None:
+        return manager.get_merged_configuration(config_version)
+    try:
+        return manager.get_merged_configuration(
+            config_version, revision=config_revision
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read revision r{config_revision} of configuration profile "
+            f"'{config_version}' for routing: {e}. Routing from the profile head.",
+            exc_info=True,
+        )
+        return manager.get_merged_configuration(config_version)
+
+
 def start_workflow(
-    document: Document, execution_name: Optional[str] = None
+    document: Document,
+    execution_name: Optional[str] = None,
+    review_finalize_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Start Step Functions workflow
@@ -1272,11 +1380,16 @@ def start_workflow(
         execution_name: Deterministic name for the execution (see
             ``execution_name_for``). None lets Step Functions pick one, which
             disables duplicate protection.
+        review_finalize_token: A review-queue finalize token; adds
+            ``review.finalizeToken`` to the input so the tracker recognises the
+            finalize run. None (every other message) leaves the input as before.
 
     Returns:
         Dict containing execution details
 
     Raises:
+        DocumentAbortedBeforeStart: If the document reads ABORTED immediately
+            before the start (see ``claim_start``); no execution is created
         ExecutionAlreadyStarted: If an execution with this name already exists,
             i.e. an earlier delivery of the same message already started it
         ClientError: If Step Functions operation fails
@@ -1372,8 +1485,12 @@ def start_workflow(
             config_version = getattr(document, "config_version", None) or "default"
             manager = ConfigurationManager(table_name=config_table_name)
 
-            # Read use_bda from the full config (properly decompresses gzip storage)
-            config = manager.get_merged_configuration(config_version)
+            # Read use_bda from the full config (properly decompresses gzip
+            # storage), at the revision the document is pinned to, so routing
+            # agrees with every later step (#1619).
+            config = routing_configuration(
+                manager, config_version, getattr(document, "config_revision", None)
+            )
             use_bda = getattr(config, "use_bda", False) if config else False
             compressed_document["use_bda"] = bool(use_bda)
 
@@ -1409,6 +1526,8 @@ def start_workflow(
         compressed_document["use_bda"] = False
 
     event = {"document": compressed_document}
+    if review_finalize_token:
+        event["review"] = {"finalizeToken": review_finalize_token}
 
     logger.info(
         f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
@@ -1420,6 +1539,10 @@ def start_workflow(
     }
     if execution_name:
         start_args["name"] = execution_name
+
+    # Last, so that an abort written during the preparation above is seen.
+    if not claim_start(document.input_key):
+        raise DocumentAbortedBeforeStart(document.input_key)
 
     try:
         execution = sfn.start_execution(**start_args)
@@ -1448,6 +1571,24 @@ def start_workflow(
         raise
 
 
+def review_finalize_token_of(record: Dict[str, Any]) -> Optional[str]:
+    """The ``ReviewFinalizeToken`` message attribute, when valid.
+
+    A review-queue finalize message names its execution from this token instead
+    of the message id, so a re-send by the sweeper collapses into
+    ``ExecutionAlreadyExists`` rather than starting a second finalize run. An
+    invalid value is ignored with a WARNING (today's naming applies).
+    """
+    attribute = (record.get("messageAttributes") or {}).get("ReviewFinalizeToken") or {}
+    token = attribute.get("stringValue")
+    if token is None:
+        return None
+    if isinstance(token, str) and _FINALIZE_TOKEN_RE.match(token):
+        return token
+    logger.warning("Ignoring an invalid ReviewFinalizeToken message attribute")
+    return None
+
+
 def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Process a single SQS message
@@ -1462,6 +1603,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     message = record["body"]
     message_id = record["messageId"]
+    finalize_token = review_finalize_token_of(record)
     receipt_handle = record.get("receiptHandle", "")
 
     try:
@@ -1549,8 +1691,27 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             # Start workflow with the document
             try:
                 execution = start_workflow(
-                    document, execution_name_for(object_key, message_id)
+                    document,
+                    execution_name_for(object_key, finalize_token or message_id),
+                    review_finalize_token=finalize_token,
                 )
+            except DocumentAbortedBeforeStart:
+                # Aborted after the check at the top of this function read it.
+                # No execution exists, so the slot taken above is this
+                # function's to hand back, as on the duplicate path below.
+                logger.info(
+                    f"Document {object_key} was aborted while its start was being "
+                    f"prepared; skipping workflow start"
+                )
+                try:
+                    update_counter(increment=False)
+                except Exception as counter_error:
+                    logger.error(
+                        f"Failed to decrement counter: {counter_error}", exc_info=True
+                    )
+                    _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
+                ack_message(receipt_handle)
+                return True, message_id
             except ExecutionAlreadyStarted as dup:
                 # An earlier delivery of this same message already started the
                 # workflow, and the invocation handling it died before SQS
@@ -1593,10 +1754,25 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             # message and a SECOND workflow was started for the same document.
             # Now it is logged and the message is acked, because the execution
             # that matters already exists.
+            #
+            # Conditional on the document not being ABORTED. The start claim in
+            # ``start_workflow`` closes the window up to the claim; an abort
+            # landing after it -- during StartExecution, or before this write --
+            # wrote ABORTED for a document it still read as QUEUED, with nothing
+            # to stop, and this write used to overwrite it with RUNNING (#1612).
+            # Refused here, the execution is stopped and ABORTED is left alone.
             try:
-                updated_doc = document_service.update_document(document)
+                updated_doc = document_service.update_document(
+                    document, unless_status=Status.ABORTED
+                )
                 logger.info(f"Document updated: {updated_doc}")
             except Exception as post_start_error:
+                if (
+                    getattr(post_start_error, "error_code", None)
+                    == CONDITIONAL_CHECK_FAILED
+                ):
+                    stop_aborted_start(object_key, document.workflow_execution_arn)
+                    return True, message_id
                 logger.error(
                     f"Workflow for {object_key} started as "
                     f"{execution.get('executionArn') if isinstance(execution, dict) else execution} "
@@ -1605,6 +1781,10 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     f"execution owns the slot and a retry would duplicate it.",
                     exc_info=True,
                 )
+                # The write did not say whether the document was aborted, so
+                # ask: an abort that landed in the window must still stop it.
+                if aborted_now(object_key):
+                    stop_aborted_start(object_key, document.workflow_execution_arn)
 
             return True, message_id
 

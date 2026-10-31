@@ -6,6 +6,16 @@ import { Box, Button, Header, SpaceBetween } from '@cloudscape-design/components
 
 import { InfoLink } from './info-link';
 
+/** The one empty-table text for Human Review and Home › Tasks tables. */
+export const NO_DATA_TEXT = 'No data!';
+
+/** Empty state for a table with no rows (after loading has finished). */
+export const NoDataState = (): React.JSX.Element => (
+  <Box textAlign="center" color="inherit" padding="s">
+    {NO_DATA_TEXT}
+  </Box>
+);
+
 export const getFilterCounterText = (count: number): string => `${count} ${count === 1 ? 'match' : 'matches'}`;
 /* prettier-ignore */
 const getHeaderCounterText = (items: unknown[] = [], selectedItems: unknown[] = []): string => (
@@ -47,17 +57,24 @@ export const TableHeader = (props: TableHeaderProps): React.JSX.Element => (
 
 interface TableEmptyStateProps {
   resourceName: string;
+  /** Replaces the default "No <resource>s" heading. */
+  title?: string;
+  /** Replaces the default "No <resource>s found." text; say what to do next. */
+  description?: string;
+  /** An optional call to action under the text. */
+  action?: React.ReactNode;
 }
 
-export const TableEmptyState = ({ resourceName }: TableEmptyStateProps): React.JSX.Element => (
+export const TableEmptyState = ({ resourceName, title, description, action }: TableEmptyStateProps): React.JSX.Element => (
   <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
     <SpaceBetween size="xxs">
       <div>
-        <b>{` No ${resourceName.toLowerCase()}s`}</b>
+        <b>{title ?? ` No ${resourceName.toLowerCase()}s`}</b>
         <Box variant="p" color="inherit">
-          {`No ${resourceName.toLowerCase()}s found.`}
+          {description ?? `No ${resourceName.toLowerCase()}s found.`}
         </Box>
       </div>
+      {action}
     </SpaceBetween>
   </Box>
 );

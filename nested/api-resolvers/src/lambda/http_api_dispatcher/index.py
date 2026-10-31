@@ -44,10 +44,13 @@ from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutErr
 from validation import validate_arguments
 
 from idp_common.api_adapter import (
+    ReportedServerError,
     ResourceAccessDenied,
     ResourceNotFound,
     _http_response,
+    internal_error_payload,
     normalize_event,
+    request_id_of,
 )
 
 logger = logging.getLogger()
@@ -242,18 +245,19 @@ def _load_field_function_map() -> Dict[str, str]:
 FIELD_FUNCTION_MAP: Dict[str, str] = _load_field_function_map()
 
 # Field aliases: fields served by the SAME resolver Lambda as another field.
-# Kept out of FIELD_FUNCTION_MAP (the SSM parameter that carries it) because
-# that parameter is at the 8 KB Advanced-tier ceiling — one map entry per
-# GraphQL field (rather than per unique resolver Lambda) would duplicate the
-# same ARN/name dozens of times and overflow it (worse in GovCloud, where
-# arn:aws-us-gov:... is longer than arn:aws:...). Each alias's resolver
+# Kept out of FIELD_FUNCTION_MAP (the SSM parameter that carries it): one map
+# entry per unique resolver Lambda, not per GraphQL field. Advanced-tier SSM
+# value limit is 8,192 bytes; the resolved worst case is checked by
+# scripts/tests/test_http_api_field_map_size.py. Route additional fields of an
+# existing Lambda through FIELD_ALIASES. Each alias's resolver
 # branches on the GraphQL `fieldName`, which the normalized event carries
 # regardless of which field name routed to it.
 FIELD_ALIASES: Dict[str, str] = {
     "getFilePresignedUrl": "getFileContents",
     # Both presign fields alias the same resolver, which dispatches on fieldName.
-    # An alias rather than a FIELD_FUNCTION_MAP entry for the reason stated below:
-    # HttpApiFieldFunctionMap is already at its 8 KB Advanced-tier ceiling.
+    # An alias rather than a FIELD_FUNCTION_MAP entry, which would grow the SSM
+    # parameter towards its 8 KB Advanced-tier limit; measure the headroom with
+    # scripts/tests/test_http_api_field_map_size.py.
     "getFilePresignedUrls": "getFileContents",
     "listSampleDocuments": "uploadDocument",
     "uploadSampleDocument": "uploadDocument",
@@ -267,8 +271,18 @@ FIELD_ALIASES: Dict[str, str] = {
     "deleteTestSets": "addDocumentsToTestSet",
     "estimateReviewEffort": "addDocumentsToTestSet",
     "getAnnotationQueue": "addDocumentsToTestSet",
-    # Single hop to a real SSM map entry: HttpApiFieldFunctionMap is at its 8 KB
-    # Advanced-tier ceiling, so a new key would overflow the parameter.
+    "assignTestSetDocuments": "addDocumentsToTestSet",
+    "unassignTestSetDocuments": "addDocumentsToTestSet",
+    "listMyTestSetTasks": "addDocumentsToTestSet",
+    "listTestSetQueues": "addDocumentsToTestSet",
+    "saveTestSetDocumentSection": "addDocumentsToTestSet",
+    "saveTestSetDocumentSectionDraft": "addDocumentsToTestSet",
+    "skipTestSetDocument": "addDocumentsToTestSet",
+    "claimTestSetDocument": "addDocumentsToTestSet",
+    "updateTestSetQueue": "addDocumentsToTestSet",
+    # Single hop to a real SSM map entry (aliases do not chain). Advanced-tier
+    # SSM value limit is 8,192 bytes; the resolved worst case is checked by
+    # scripts/tests/test_http_api_field_map_size.py.
     "openTestSetAnnotationDraft": "addDocumentsToTestSet",
     "generateDraftLabels": "addDocumentsToTestSet",
     "getDraftLabelJob": "addDocumentsToTestSet",
@@ -331,6 +345,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "completeSectionReview": "claimReview",
     "releaseReview": "claimReview",
     "skipAllSectionsReview": "claimReview",
+    "saveSectionReviewEdits": "claimReview",
     # createUser (UserManagementFunctionArn)
     "updateUser": "createUser",
     "deleteUser": "createUser",
@@ -342,6 +357,36 @@ FIELD_ALIASES: Dict[str, str] = {
     "listFinetuningJobs": "createFinetuningJob",
     # sendTestRunToReview (TestRunnerFunction)
     "sendTestRunToReview": "startTestRun",
+    # listInboxMessages (NotificationsResolverFunction)
+    "getInboxUnreadCount": "listInboxMessages",
+    "getInboxPreferences": "listInboxMessages",
+    "markInboxMessages": "listInboxMessages",
+    "markAllInboxMessagesRead": "listInboxMessages",
+    "deleteInboxMessages": "listInboxMessages",
+    "clearReadInboxMessages": "listInboxMessages",
+    "updateInboxPreferences": "listInboxMessages",
+    # getMyReviewQueues (ReviewQueuesResolverFunction)
+    "listReviewQueueItems": "getMyReviewQueues",
+    "listMyReviewWork": "getMyReviewQueues",
+    "getReviewItem": "getMyReviewQueues",
+    "claimReviewItem": "getMyReviewQueues",
+    "claimNextReviewItem": "getMyReviewQueues",
+    "renewReviewLease": "getMyReviewQueues",
+    "releaseReviewItem": "getMyReviewQueues",
+    "saveReviewDraft": "getMyReviewQueues",
+    "completeReviewItem": "getMyReviewQueues",
+    "rejectReviewItem": "getMyReviewQueues",
+    "removeReviewItem": "getMyReviewQueues",
+    "getReviewQueuesOverview": "getMyReviewQueues",
+    "forceReleaseReviewItem": "getMyReviewQueues",
+    "reassignReviewItem": "getMyReviewQueues",
+    "takeOverReviewItem": "getMyReviewQueues",
+    "moveReviewItem": "getMyReviewQueues",
+    "listReviewQueues": "getMyReviewQueues",
+    "listAnnotators": "getMyReviewQueues",
+    "createReviewQueue": "getMyReviewQueues",
+    "updateReviewQueue": "getMyReviewQueues",
+    "deleteReviewQueue": "getMyReviewQueues",
 }
 
 
@@ -465,6 +510,19 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
         # Client input errors -> 400.
         if err_type in ("ValueError", "KeyError"):
             raise ValueError(msg)
+        # A fault the resolver described for the caller -> 500, message kept.
+        if err_type == "ReportedServerError":
+            raise ReportedServerError(msg)
+        # Anything else is unexpected. Its text stays in the log, under the id of
+        # the resolver's own invocation so its log lines can be found; the caller
+        # gets a generic message (see the handler).
+        logger.error(
+            "Resolver %s failed with %s (invocation %s): %s",
+            function_arn,
+            err_type or "an unnamed error",
+            (resp.get("ResponseMetadata") or {}).get("RequestId", "unknown"),
+            msg,
+        )
         raise RuntimeError(msg)
     return data
 
@@ -612,10 +670,36 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         return _http_response(
             400, {"errors": [{"message": str(e), "errorType": "BadRequest"}]}
         )
-    except Exception as e:  # noqa: BLE001
-        logger.error("Dispatch error for %s: %s", field, e, exc_info=True)
-        return _http_response(
-            500, {"errors": [{"message": str(e), "errorType": "InternalError"}]}
+    except ReportedServerError as e:
+        # A resolver wrote this message for the caller; it is passed through.
+        request_id = request_id_of(context, event)
+        logger.error(
+            "Reported server error for %s (request %s): %s", field, request_id, e
         )
+        return _http_response(
+            500,
+            {
+                "errors": [
+                    {
+                        "message": str(e),
+                        "errorType": "InternalError",
+                        "requestId": request_id,
+                    }
+                ]
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        # Unexpected: the text is not written for a reader and can name internal
+        # resources (an AWS authorization message carries role and resource ARNs).
+        # It is logged in full under the request id the caller is given instead.
+        request_id = request_id_of(context, event)
+        logger.error(
+            "Dispatch error for %s (request %s): %s",
+            field,
+            request_id,
+            e,
+            exc_info=True,
+        )
+        return _http_response(500, internal_error_payload(request_id))
 
     return _http_response(200, result)

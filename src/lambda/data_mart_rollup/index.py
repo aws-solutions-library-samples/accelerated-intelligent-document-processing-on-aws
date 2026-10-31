@@ -3908,7 +3908,15 @@ _COMPONENT_RULES: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"datamartrollup|rollup"), "rollup-lambda"),
     # Test infrastructure — all matched here so 'testresults' / 'testrunner'
     # don't fall through to 'test-set-mgmt' via the 'testset' rule.
-    (re.compile(r"testresults|testexecutionaggregation|mlflow"), "test-results"),
+    # ``testrunsweeper`` belongs here rather than with ``testrunner``: the sweep
+    # advances finished runs and enqueues their metrics aggregation, so its cost
+    # is end-of-run accounting, not run submission. It matches no other rule —
+    # notably not ``testrunner``, whose regex needs the full word — so without
+    # this it would fall through to ``other-control``.
+    (
+        re.compile(r"testresults|testexecutionaggregation|testrunsweeper|mlflow"),
+        "test-results",
+    ),
     (re.compile(r"testrunner|filecopy|filecopier"), "test-runner"),
     (re.compile(r"testset"), "test-set-mgmt"),
     # AgentCore — MCP-based agent runtime and its gateway manager.

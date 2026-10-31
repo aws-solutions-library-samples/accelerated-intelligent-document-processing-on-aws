@@ -1,0 +1,118 @@
+{
+  "$comment": [
+    "Every nested-stack parameter that declares a Default which template.yaml never",
+    "overrides. Produced by scripts/tests/nested_parameter_defaults.py and asserted by",
+    "scripts/tests/test_nested_stack_parameters.py. See the module docstring for why",
+    "this class of wiring gap is invisible to every other check in this tree.",
+    "",
+    "THE SECTIONS ARE NOT TWO FLAVOURS OF THE SAME THING.",
+    "",
+    "  accepted     the nested default is the value this solution intends, and the",
+    "               parent having no parameter for it is a decision. One reason per",
+    "               entry, stating a fact about THIS tree -- not a general argument",
+    "               that defaults are usually fine.",
+    "  knownDefects the nested default is wrong and the feature behind it is silently",
+    "               off. These are listed so the gate can stay green on a tree that",
+    "               still has them, NOT because they are agreed to. Each carries what",
+    "               breaks and the issue tracking it; `issues: []` means nobody has",
+    "               filed it yet.",
+    "",
+    "Deleting an entry while its parameter is still unpassed does not make the finding",
+    "go away: it comes back as unaccounted-for, and the gate names it. The only way out",
+    "of either section is to pass the parameter from template.yaml.",
+    "",
+    "`referenced` is whether the nested template READS the parameter -- through Ref or",
+    "Fn::Sub, outside its Metadata. An entry recorded false and found true has turned",
+    "into a default that silently decides behaviour, and the gate reports that even",
+    "though the list of names did not change.",
+    "",
+    "--write removes entries the parent now passes and refreshes `referenced` downward.",
+    "It will not add an entry, and will not record one becoming read, without",
+    "--allow-new-unpassed \"<reason>\". knownDefects is never written to by the tool."
+  ],
+  "generator": "python3 scripts/tests/nested_parameter_defaults.py --write",
+  "accepted": {
+    "DOCUMENTKB::pIndexName": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "Names the OpenSearch Serverless index this same nested stack creates and then addresses at template.yaml:687 and :833. Nothing outside the stack refers to the index by name, so the value is internal and a parent parameter for it would only let the creator and the consumer disagree."
+    },
+    "DOCUMENTKB::pMetaDataFieldName": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "AMAZON_BEDROCK_METADATA is the field name Bedrock Knowledge Bases writes chunk metadata to; the parameter exists so the standalone sample can be pointed at a pre-existing index, and in this solution the stack creates the index itself. A deployment that changed it would get an index Bedrock does not populate."
+    },
+    "DOCUMENTKB::pOverlapPercentage": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "The parent sets the other two chunking inputs (pChunkingStrategy 'Fixed-size chunking', pMaxTokens 8192) and leaves the overlap at 15, which is inside the 10-20% the parameter's own Description calls typical. No document in this repository offers a different overlap and no parent parameter exposes one, so 15 is the solution's single intended value rather than one of several."
+    },
+    "DOCUMENTKB::pS3VectorBucketName": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "Empty is a documented mode rather than a missing value: HasS3VectorBucketName at template.yaml:277 reads the empty default as 'generate the bucket name', which is what this solution wants, since the bucket is created and consumed entirely inside the nested stack."
+    },
+    "DOCUMENTKB::pS3VectorIndexName": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "Names the S3 Vectors index the same stack creates at template.yaml:504 and scopes its own IAM statement to at :434. Both sides come from this one value, so there is nothing for a deployment to coordinate with."
+    },
+    "DOCUMENTKB::pTextFieldName": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "AMAZON_BEDROCK_TEXT_CHUNK is the field name Bedrock Knowledge Bases writes chunk text to, in the index this stack creates. Changing it produces an index Bedrock does not populate, so there is no second value worth surfacing."
+    },
+    "DOCUMENTKB::pVectorFieldName": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "Names the vector field in the index this stack creates at template.yaml:831, read back by nothing outside it. Internal to the vector store for the same reason pIndexName is."
+    },
+    "DOCUMENTKB::pWebCrawlerScope": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "Only reachable through the web data source, which IsWebDataSource at template.yaml:247 conditions on pWebCrawlerURLs being non-empty -- and that parameter is left at its empty default too. Passing a crawl scope while no crawler exists would configure nothing."
+    },
+    "DOCUMENTKB::pWebCrawlerURLs": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "The empty default switches the web data source off at template.yaml:247, and this solution's knowledge base ingests the documents it processed, from the Output bucket the parent passes as pKnowledgeBaseBucketName. Crawling public web sites is a capability of the upstream sample that this product does not offer; docs/knowledge-base.md describes no web source."
+    },
+    "DOCUMENTKB::pWebSyncScheduleExpression": {
+      "template": "nested/bedrockkb/template.yaml",
+      "referenced": true,
+      "reason": "Read only by WebDataSourceScheduler at template.yaml:1074, which carries Condition: IsWebDataSource and so is not created while pWebCrawlerURLs is empty. The parent does pass the S3 sync schedule, which is the one that exists in this solution."
+    },
+    "FeaturePlatformStack::CatalogKey": {
+      "template": "feature-platform/main-stack-extensions/template.yaml",
+      "referenced": true,
+      "reason": "config_library/catalog.json is restated as the same fallback by each of the four feature-platform resolvers that read the manifest (check_feature_entitlement, get_feature_launch_url, list_catalog_features, list_installed_features). The key is a convention shared by the publisher and those handlers, so making it settable from the parent would let one of the five disagree with the rest."
+    },
+    "FeaturePlatformStack::DefaultBuyerAccountId": {
+      "template": "feature-platform/main-stack-extensions/template.yaml",
+      "referenced": true,
+      "reason": "A 12-digit placeholder account id used only by the Marketplace simulation flow; with a real AWS Marketplace the buyer comes from the caller's account context and this value is not read. The parent does expose what selects between those two worlds -- SimulatorEntitlementEndpoint, blank for real AWS -- so the mode is reachable even though this placeholder is not."
+    },
+    "FeaturePlatformStack::FeatureOfferIdMap": {
+      "template": "feature-platform/main-stack-extensions/template.yaml",
+      "referenced": true,
+      "reason": "Empty is the working configuration for the simulator path the parent wires, where the simulator mints a default public offer. It is recorded as agreed rather than as a defect with a caveat worth reading: an extension whose licenseMode is 'marketplace-live' needs a real offerId per feature for the subscribeFeature redirect, and no parent parameter supplies one. Nothing in this tree has exercised that path, so whether the redirect is reachable at all there is undetermined -- unlike the two knownDefects entries, which were verified by reading the condition that is permanently false."
+    },
+    "FeaturePlatformStack::MarketplaceAgreementRegion": {
+      "template": "feature-platform/main-stack-extensions/template.yaml",
+      "referenced": true,
+      "reason": "us-east-1 is the only place the Marketplace SearchAgreements API exists in the aws partition, and the parameter's own Description says that setting it to the stack's Region makes every call fail and every entitlement degrade to advisory. The default is the only correct value here, and the parameter exists for a partition that one day publishes its own endpoint."
+    },
+    "FeaturePlatformStack::SellerBucketObjectArns": {
+      "template": "feature-platform/main-stack-extensions/template.yaml",
+      "referenced": true,
+      "reason": "Empty leaves HasSellerBuckets at template.yaml:332 false, which is correct for every extension this repository publishes: those artifacts are public-read, so the unsigned read of latest.json works and no grant is needed. The parameter is for a private bucket an operator self-publishes to, which is their deployment's input and not this solution's."
+    },
+    "PATTERNSTACK::BedrockModelId": {
+      "template": "patterns/unified/template.yaml",
+      "referenced": false,
+      "reason": "Declared at patterns/unified/template.yaml:202 and read by nothing in that template -- it is the only entry here with referenced false, and the default therefore decides nothing. Vestigial rather than disabled: the extraction and classification model ids come from the configuration in DynamoDB. The parameter should be deleted, and until it is, `referenced: false` is what the gate re-checks -- wiring it to anything makes this a live default and fails."
+    }
+  },
+  "knownDefects": {},
+  "newEntryJustifications": []
+}

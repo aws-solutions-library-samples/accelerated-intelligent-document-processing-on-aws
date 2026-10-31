@@ -7,14 +7,17 @@
 # Audio deps (ffmpeg) are intentionally excluded — documents only in v1.
 pypdf>=6.19.0
 pypdfium2>=4.30.0
-# Cap lifted. 12.3.0 fixes 9 HIGH advisories (heap OOB writes in
-# Image.paste/crop and ImageCmsTransform, decompression-bomb DoS in the PDF and
-# font parsers) that matter here because this hook renders untrusted customer
-# PDFs. It publishes no `manylinux2014_aarch64` wheel, which is the single tag
-# SAM's PythonPipBuilder asks for — so this function is built by hook/Makefile
-# (BuildMethod: makefile), which names `manylinux_2_28_aarch64` explicitly. See
-# that file before changing this pin or the build method.
-pillow>=12.3.0
+# Security floor. 13.0.0 fixes CRITICAL and HIGH advisories against 12.3.0 (a
+# heap overflow in the JPEG decoder, out-of-bounds and uninitialized reads in
+# the TIFF decoder, a GIF decompression-bomb bypass) that matter here because
+# this hook opens untrusted customer images with Pillow, which picks a decoder
+# from the file's content rather than its extension. PDFs are opened by
+# pypdfium2 and pypdf, so Pillow only ever sees a PDF page as rendered pixels.
+# Pillow publishes no `manylinux2014_aarch64` wheel from 12.3.0 on, which is
+# the single tag SAM's PythonPipBuilder asks for — so this function is built by
+# hook/Makefile (BuildMethod: makefile), which names `manylinux_2_28_aarch64`
+# explicitly. See that file before changing this pin or the build method.
+pillow>=13.0.0
 python-docx>=0.8.11
 openpyxl>=3.0.10
 # openpyxl reads only the OOXML container, so a legacy BIFF `.xls` — which this

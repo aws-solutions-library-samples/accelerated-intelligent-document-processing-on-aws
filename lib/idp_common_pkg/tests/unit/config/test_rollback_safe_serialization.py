@@ -115,7 +115,10 @@ def test_roundtrip_is_lossless_in_current_model(config_path):
         back.config.extraction.agentic.shard_token_budget
         == cfg.extraction.agentic.shard_token_budget
     )
-    assert back.config.classification.max_tokens == cfg.classification.max_tokens
+    assert (
+        back.config.classification.combined.llm.max_tokens
+        == cfg.classification.combined.llm.max_tokens
+    )
 
 
 def test_omit_helper_preserves_nonhostile_and_bool_values():

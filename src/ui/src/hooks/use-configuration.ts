@@ -1,12 +1,14 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useContext } from 'react';
 import { generateClient } from '../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getConfigVersion, updateConfiguration as updateConfigurationOp } from '../graphql/generated';
 import { deepMerge } from '../utils/configUtils';
 import { parseConfigurationData } from '../graphql/awsjson-parsers';
+import { AppContext } from '../contexts/app';
+import { describeApiError, isAuthorizationError } from './utils/graphql-error';
 
 const client = generateClient();
 const logger = new ConsoleLogger('useConfiguration');
@@ -20,7 +22,7 @@ interface UseConfigurationReturn {
   loading: boolean;
   refreshing: boolean;
   error: string | null;
-  fetchConfiguration: (fetchVersionName?: string, silent?: boolean) => Promise<void>;
+  fetchConfiguration: (fetchVersionName: string, silent?: boolean) => Promise<void>;
   updateConfiguration: (targetVersionName: string, newCustomConfig: unknown, description?: string | null) => Promise<boolean>;
   resetToDefault: (path: string) => { path: string; defaultValue: unknown } | false;
   isCustomized: (path: string) => boolean;
@@ -223,7 +225,21 @@ const _getDiff = (oldConfig: Record<string, unknown>, newConfig: Record<string, 
   return diff;
 };
 
-const useConfiguration = (versionName: string = 'default'): UseConfigurationReturn => {
+/**
+ * Load one Configuration Profile's schema, default and custom configuration.
+ *
+ * `versionName` is fetched on mount and whenever it changes. Pass null for the
+ * hook to fetch nothing itself: while the profile is not yet known to be one the
+ * caller may read, or while the caller reads through `fetchConfiguration`
+ * instead. `loading` is true until a request has settled.
+ *
+ * Only the most recent request is applied, whether `versionName` or a call to
+ * `fetchConfiguration` made it. An earlier request that answers later is
+ * discarded, configuration and error alike, and `loading` and `refreshing` both
+ * clear when the most recent request settles.
+ */
+const useConfiguration = (versionName: string | null): UseConfigurationReturn => {
+  const appContext = useContext(AppContext);
   const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
   const [defaultConfig, setDefaultConfig] = useState<Record<string, unknown> | null>(null);
   const [customConfig, setCustomConfig] = useState<Record<string, unknown> | null>(null);
@@ -231,8 +247,12 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const latestRequest = useRef(0);
 
-  const fetchConfiguration = async (fetchVersionName: string = 'default', silent: boolean = false): Promise<void> => {
+  const fetchConfiguration = async (fetchVersionName: string, silent: boolean = false): Promise<void> => {
+    latestRequest.current += 1;
+    const request = latestRequest.current;
+    const isLatest = (): boolean => request === latestRequest.current;
     // Use different loading states for initial load vs background refresh
     if (silent) {
       setRefreshing(true);
@@ -247,6 +267,10 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
         variables: { versionName: fetchVersionName },
       });
       logger.debug('API response version', fetchVersionName, result);
+      if (!isLatest()) {
+        logger.debug('Discarding the answer to a superseded request for', fetchVersionName);
+        return;
+      }
 
       const response = result.data.getConfigVersion;
 
@@ -329,6 +353,10 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
       }
       setMergedConfig(activeConfig);
     } catch (err: unknown) {
+      if (!isLatest()) {
+        logger.debug('Discarding the failure of a superseded request for', fetchVersionName, err);
+        return;
+      }
       logger.error('Error fetching configuration', err);
       // Extract meaningful error message from various error shapes:
       // - Error instances: use .message
@@ -347,10 +375,9 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
       }
       setError(`Failed to load configuration: ${errorMsg}`);
     } finally {
-      if (silent) {
-        setRefreshing(false);
-      } else {
+      if (isLatest()) {
         setLoading(false);
+        setRefreshing(false);
       }
     }
   };
@@ -390,6 +417,10 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
 
       const response = result.data.updateConfiguration;
 
+      if (response?.success && response.warnings?.length) {
+        appContext?.setSuccessMessage(`Configuration saved. Note: ${response.warnings.join(' ')}`);
+      }
+
       if (!response?.success) {
         const errorMsg = response?.error?.message || 'Failed to update configuration';
         throw new Error(errorMsg);
@@ -403,6 +434,12 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
       return true;
     } catch (err: unknown) {
       logger.error('Error updating configuration for version', targetVersionName, ':', err);
+      // A refusal (for example, a non-Admin changing review queue settings) is a
+      // flash message; the editor stays so the user can undo the change.
+      if (isAuthorizationError(err) && appContext) {
+        appContext.setErrorMessage(describeApiError(err, 'save the configuration'));
+        return false;
+      }
       let errorMsg: string;
       if (err instanceof Error) {
         errorMsg = err.message;
@@ -531,6 +568,7 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
   };
 
   useEffect(() => {
+    if (versionName === null) return;
     fetchConfiguration(versionName);
   }, [versionName]); // Re-fetch when version changes
 

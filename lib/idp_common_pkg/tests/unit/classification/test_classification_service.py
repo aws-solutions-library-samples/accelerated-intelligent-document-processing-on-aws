@@ -77,7 +77,7 @@ class TestClassificationService:
                     
                     Respond with a JSON object with a single field "class" containing the document type.
                 """),
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
             },
         }
 
@@ -112,7 +112,7 @@ class TestClassificationService:
                     
                     Respond with a JSON object with a single field "class" containing the document type.
                 """),
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
             },
         }
 
@@ -133,7 +133,7 @@ class TestClassificationService:
 
             assert service.backend == "bedrock"
             assert service.bedrock_model == "anthropic.claude-3-sonnet-20240229-v1:0"
-            assert service.classification_method == "multimodalPageLevelClassification"
+            assert service.granularity == service.GRANULARITY_PAGE
             assert len(service.document_types) == 3
             assert service.valid_doc_types == {"invoice", "receipt", "letter"}
 
@@ -991,7 +991,7 @@ class TestClassificationService:
         mock_merge_metering.return_value = {"tokens": 250}
 
         # Set classification method to holistic
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
 
         # Call the method
         result = service.holistic_classify_document(doc)
@@ -1033,7 +1033,7 @@ class TestClassificationService:
             )
 
             # Set classification method to holistic
-            service.classification_method = service.TEXTBASED_HOLISTIC
+            service.granularity = service.GRANULARITY_PACKET
 
             # Create a test document
             doc = Document(
@@ -1200,7 +1200,7 @@ class TestClassificationService:
     ):
         """One page cannot be split, so inference would be pure waste.
 
-        This is what keeps the common "one document per file" single-class
+        This is what keeps the common "one section per document" single-class
         deployment at zero classification cost — the thing the original
         short-circuit was really protecting.
         """
@@ -1225,7 +1225,7 @@ class TestClassificationService:
     def test_holistic_single_class_section_splitting_page(self, single_class_config):
         """The holistic short-circuit honors `page` too."""
         service = self._single_class_service(single_class_config, "page")
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
         doc = self._three_page_document()
 
         with patch.object(service, "_invoke_bedrock_model") as spy_invoke:
@@ -1442,7 +1442,7 @@ class TestClassificationService:
     ):
         """Holistic segment RANGES are the boundary detection; the class is pinned."""
         service = self._regex_service(mock_config, "llm_determined")
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
         doc = self._regex_named_document()
         mock_get_text.side_effect = ["Page 1", "Page 2", "Page 3"]
 
@@ -1568,7 +1568,7 @@ class TestClassificationService:
         }
 
         # Set classification method to holistic
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
 
         # Call the method
         result = service.holistic_classify_document(doc)
@@ -1988,20 +1988,27 @@ class TestClassificationService:
             )
 
             # Verify default value
-            assert service.config.classification.sectionSplitting == "llm_determined"
+            assert (
+                service.config.classification.document_shape.sectionSplitting
+                == "llm_determined"
+            )
 
     def test_section_splitting_invalid_value(self, mock_config):
-        """Test that invalid sectionSplitting value falls back to llm_determined."""
-        # Set invalid value
+        """An unrecognised sectionSplitting is refused, not quietly defaulted.
+
+        It used to fall back to ``llm_determined`` with a warning. That is the
+        expensive value and it changes where sections start, so picking it for the
+        operator is a cost and accuracy decision they did not make — and the warning
+        is written to a Lambda log nobody reads at save time. Every sibling
+        classification enum raises; this one now does too.
+        """
         mock_config["classification"]["sectionSplitting"] = "invalid_value"
 
         with patch("boto3.Session"):
-            service = ClassificationService(
-                region="us-west-2", config=mock_config, backend="bedrock"
-            )
-
-            # Verify fallback to default
-            assert service.config.classification.sectionSplitting == "llm_determined"
+            with pytest.raises(Exception, match="sectionSplitting"):
+                ClassificationService(
+                    region="us-west-2", config=mock_config, backend="bedrock"
+                )
 
     def test_section_splitting_page_prevents_same_type_joining(self, mock_config):
         """Test that page splitting prevents joining of same-type documents."""
@@ -2051,7 +2058,7 @@ class TestClassificationService:
             service = ClassificationService(
                 region="us-west-2", config=mock_config, backend="bedrock"
             )
-            service.classification_method = service.TEXTBASED_HOLISTIC
+            service.granularity = service.GRANULARITY_PACKET
 
             # Create test document
             doc = Document(id="test-doc", status=Status.CLASSIFYING)

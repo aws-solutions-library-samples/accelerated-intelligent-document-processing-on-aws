@@ -32,8 +32,8 @@ TABLE = "ConfigurationTable-test"
 def update_config_module(monkeypatch):
     """Import src/lambda/update_configuration/index.py with cfnresponse stubbed."""
     monkeypatch.setenv("CONFIGURATION_TABLE_NAME", TABLE)
-    # cfnresponse is provided by the Lambda runtime, not the package.
-    sys.modules.setdefault("cfnresponse", MagicMock())
+    # cfnresponse (vendored beside index.py) would PUT to a real URL.
+    monkeypatch.setitem(sys.modules, "cfnresponse", MagicMock())
     monkeypatch.syspath_prepend(str(_LAMBDA_DIR))
     if "index" in sys.modules:
         del sys.modules["index"]
@@ -63,7 +63,9 @@ def _make_table():
 @mock_aws
 def test_detects_rollback_when_stored_format_is_newer(update_config_module):
     _make_table()
-    _seed(TABLE, "Config#default", "0.9")  # newer than the code's own version
+    major, minor = CONFIG_FORMAT_VERSION.split(".")
+    # One minor newer than the code's own version, derived so it stays newer.
+    _seed(TABLE, "Config#default", f"{major}.{int(minor) + 1}")
     assert update_config_module._is_rollback_to_older_format() is True
 
 

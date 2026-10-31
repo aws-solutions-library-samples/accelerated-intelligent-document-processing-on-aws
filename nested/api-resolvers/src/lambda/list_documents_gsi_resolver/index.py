@@ -10,7 +10,9 @@ Uses the TypeDateIndex GSI on TrackingTable for efficient queries:
 
 RBAC (Role-Based Access Control):
 - Admin/Author/Viewer: See all documents (scoped by allowedConfigVersions if set)
-- Reviewer: See only HITL-pending documents + their own completed reviews
+- Reviewer: See only documents a review is owed on that are unclaimed (pending, or
+  released back to the queue) or claimed by them, plus finished reviews they own on
+  rows carrying the legacy HITLTriggered flag — see `_reviewer_filter_expression`
 
 Both operations apply both filters, from the same two helpers
 (`_reviewer_filter_expression`, `_item_in_config_scope`), so the count cannot
@@ -42,6 +44,57 @@ from config_scope import (  # noqa: E402
     caller_sub_from_claims,
     resolve_allowed_config_versions,
     scope_allows,
+)
+
+# Vendored verbatim from idp_common/review_queues/statuses.py, for the same
+# reason; test_review_modules_vendored.py fails if the copies drift.
+from review_statuses import (  # noqa: E402
+    LegacyHitlStatus,
+    ReviewStatus,
+    normalize_hitl_status,
+)
+
+#: Legacy HITL statuses that make a document part of a Reviewer's working set.
+#: ``Review Pending`` is what ``releaseReview`` writes: a released review goes back
+#: to the queue for another Reviewer to claim. Matched exactly, in both document-list
+#: resolvers, so the two lists agree row for row.
+_REVIEWER_ACTIVE_STATUSES = (
+    LegacyHitlStatus.PENDING_REVIEW.value,
+    LegacyHitlStatus.REVIEW_PENDING.value,
+    LegacyHitlStatus.IN_PROGRESS.value,
+    LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
+
+def _review_finished(hitl_status):
+    """Whether a stored HITLStatus says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
+    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
+    writer stored that the exact-match normaliser does not know (the earlier
+    SageMaker A2I flow). The web UI's ``isHitlReviewFinished`` is the same rule.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+#: Every stored HITLStatus value that reads as a finished review, derived from the
+#: declared vocabularies through ``_review_finished`` so a FilterExpression can test
+#: it. Exact values: the normaliser also accepts surrounding whitespace, which no
+#: writer stores.
+_FINISHED_HITL_STATUSES = tuple(
+    sorted(
+        value
+        for value in (
+            *(s.value for s in ReviewStatus),
+            *(s.value for s in LegacyHitlStatus),
+            "COMPLETED",
+        )
+        if _review_finished(value)
+    )
 )
 
 logger = logging.getLogger()
@@ -82,9 +135,6 @@ TYPE_DATE_INDEX = "TypeDateIndex"
 # would need to stamp submission-source the way the test copier does.
 ITEM_TYPE_DOCUMENT = "document"
 ITEM_TYPE_TEST_DOCUMENT = "test-document"
-
-# HITL statuses that indicate a completed/skipped review
-COMPLETED_HITL_STATUSES = {"skipped", "reviewskipped", "completed", "reviewcompleted"}
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -182,17 +232,25 @@ def _caller_scope_or_deny(caller, operation):
 def _reviewer_filter_expression(caller):
     """The server-side filter that reduces the index to a reviewer's own work.
 
-    A Reviewer sees HITL-pending documents (not completed/skipped) that are
-    either unassigned or assigned to them, PLUS completed documents they own:
+    A Reviewer sees HITL-pending documents (not finished) that are either
+    unassigned or assigned to them, PLUS finished documents they own:
 
         HITL is active AND (
-            (not completed AND (no owner OR owner is me))
-            OR owner is me      # in-progress + completed reviews they own
+            (not finished AND (no owner OR owner is me))
+            OR owner is me      # in-progress + finished reviews they own
         )
 
-    HITL counts as active when `HITLTriggered` is true OR `HITLStatus` names a
-    pending/in-progress review — defence in depth for items where the boolean
-    was never written.
+    Finished is `HITLCompleted` OR a `HITLStatus` that `_review_finished` reads as
+    finished. The flag alone is not enough: a review queue records its outcome
+    (`complete` or `rejected`) only in `HITLStatus`, so a finished queue review on a
+    row still carrying the legacy `HITLTriggered` flag read as owed to every
+    Reviewer.
+
+    HITL counts as active when `HITLTriggered` is true OR `HITLStatus` is one of
+    `_REVIEWER_ACTIVE_STATUSES` (pending, released back to the queue, or in
+    progress) — current writers no longer set the boolean. A finished status is not
+    active, so on a row without `HITLTriggered` the "finished documents they own"
+    disjunct is reached only through `HITLCompleted` beside a status still active.
 
     The owner match tests `HITLReviewOwner` against the caller's username *and*
     their email, because claim_review stores `identity.username` (often the
@@ -213,15 +271,17 @@ def _reviewer_filter_expression(caller):
     owner_is_me = Attr("HITLReviewOwner").eq(owner_values[0])
     for value in owner_values[1:]:
         owner_is_me = owner_is_me | Attr("HITLReviewOwner").eq(value)
-    hitl_active = (
-        Attr("HITLTriggered").eq(True) |
-        Attr("HITLStatus").eq("PendingReview") |
-        Attr("HITLStatus").eq("InProgress") |
-        Attr("HITLStatus").eq("ReviewInProgress")
+    # Built from the whole tuple rather than by index, so a status added to it
+    # reaches this filter as it reaches the date-range resolver's membership test.
+    hitl_active = Attr("HITLTriggered").eq(True) | Attr("HITLStatus").is_in(
+        list(_REVIEWER_ACTIVE_STATUSES)
+    )
+    review_finished = Attr("HITLCompleted").eq(True) | Attr("HITLStatus").is_in(
+        list(_FINISHED_HITL_STATUSES)
     )
     return hitl_active & (
         (
-            ~Attr("HITLCompleted").eq(True) &
+            ~review_finished &
             (
                 Attr("HITLReviewOwner").not_exists() |
                 Attr("HITLReviewOwner").eq("") |
@@ -230,6 +290,13 @@ def _reviewer_filter_expression(caller):
         ) |
         owner_is_me
     )
+
+
+def _list_filter(caller, reviewer_only):
+    """The server-side filter for a restricted caller, or None (unfiltered)."""
+    if reviewer_only:
+        return _reviewer_filter_expression(caller)
+    return None
 
 
 def _item_in_config_scope(item, allowed_versions):
@@ -346,9 +413,10 @@ def list_documents(event):
         query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
     
     # RBAC: Server-side filtering for Reviewer-only users
-    if reviewer_only:
-        query_kwargs["FilterExpression"] = _reviewer_filter_expression(caller)
-        logger.info(f"Applied reviewer filter for user: {caller['username']} / {caller['email']}")
+    list_filter = _list_filter(caller, reviewer_only)
+    if list_filter is not None:
+        query_kwargs["FilterExpression"] = list_filter
+        logger.info("Applied reviewer filter for the caller")
 
 
     # Handle pagination token
@@ -483,7 +551,9 @@ def get_document_count(event, context=None):
         "IndexName": TYPE_DATE_INDEX,
         # A scoped caller needs the projected ConfigVersion of each row to decide
         # whether it counts, so only an unscoped caller can use COUNT.
-        "Select": "ALL_PROJECTED_ATTRIBUTES" if allowed_versions else "COUNT",
+        "Select": "ALL_PROJECTED_ATTRIBUTES"
+        if allowed_versions
+        else "COUNT",
     }
 
     if start_dt and end_dt:
@@ -504,8 +574,9 @@ def get_document_count(event, context=None):
     else:
         query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
 
-    if reviewer_only:
-        query_kwargs["FilterExpression"] = _reviewer_filter_expression(caller)
+    list_filter = _list_filter(caller, reviewer_only)
+    if list_filter is not None:
+        query_kwargs["FilterExpression"] = list_filter
 
     logger.info(
         f"Counting documents: start={start_dt}, end={end_dt}, "
@@ -520,9 +591,10 @@ def get_document_count(event, context=None):
         response = table.query(**query_kwargs)
         pages += 1
         if allowed_versions:
+            # Same row decisions as listDocuments, so the count equals the rows.
             total_count += sum(
                 1
-                for item in (response.get("Items") or [])
+                for item in response.get("Items") or []
                 if _item_in_config_scope(item, allowed_versions)
             )
         else:

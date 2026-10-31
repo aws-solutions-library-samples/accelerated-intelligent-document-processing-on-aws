@@ -143,7 +143,7 @@ The companion chat introduces a fundamentally different interaction model from t
 | **Streaming** | Final result only | Real-time progressive updates with sub-agent visibility |
 | **Follow-up Questions** | Not supported (each query independent) | Supported (remembers conversation context) |
 | **UI Location** | Agent Analysis page | Agent Chat page |
-| **GraphQL Operations** | `submitAgentQuery`, `getAgentJobStatus` | `sendAgentChatMessage`, `onAgentChatMessageUpdate` |
+| **API Operations** | `submitAgentQuery`, `getAgentJobStatus` | `sendAgentChatMessage`, `getChatMessages`; replies arrive over the streaming Lambda Function URL rather than a subscription |
 
 ### Multi-Agent System
 
@@ -668,14 +668,32 @@ The feature automatically creates:
 
 ### Environment Variables
 
-Key configuration settings:
+Set on `AgentChatProcessorFunction` and `ChatStreamProcessorFunction` in
+`template.yaml`. These are the ones worth knowing; read the template for the
+full set.
 
 - `CHAT_MESSAGES_TABLE`: DynamoDB table for message storage
-- `CHAT_MEMORY_TABLE`: DynamoDB table for conversation history
-- `ORCHESTRATOR_MODEL_ID`: AI model for orchestrator agent
-- `ANALYTICS_TABLE`: DynamoDB table for analytics job tracking
-- `ATHENA_DATABASE`: Database containing processed document data
-- `LOG_LEVEL`: Logging verbosity (INFO, DEBUG, ERROR)
+- `CHAT_SESSIONS_TABLE`: DynamoDB table of sessions, used for the ownership check
+- `ID_HELPER_CHAT_MEMORY_TABLE`: DynamoDB table for conversation history. When
+  unset the processor logs a warning and runs without persisting memory
+- `MEMORY_METHOD`: memory backend, `dynamodb`
+- `MAX_CONVERSATION_TURNS`: sliding-window size, `20`
+- `MAX_MESSAGE_SIZE_KB`: per-message truncation threshold, `8.5`
+- `STREAMING_ENABLED`: whether the processor emits incremental chunks
+- `CONFIGURATION_TABLE_NAME`: DynamoDB table the agent model IDs are read from
+- `ATHENA_DATABASE`, `ATHENA_OUTPUT_LOCATION`: the analytics agent's query target
+- `LOG_LEVEL`, `STRANDS_LOG_LEVEL`: logging verbosity (INFO, DEBUG, ERROR)
+
+`ChatStreamProcessorFunction` adds the Lambda Web Adapter trio
+(`AWS_LAMBDA_EXEC_WRAPPER`, `AWS_LWA_INVOKE_MODE=response_stream`, `PORT`)
+that makes response streaming work.
+
+**The agent model IDs are not environment variables.** The orchestrator and
+chat companion model comes from configuration, read as
+`config.agents.chat_companion.model_id` in
+`lib/idp_common_pkg/idp_common/agents/orchestrator/config.py`, which resolves
+against the Configuration table named by `CONFIGURATION_TABLE_NAME`. Change it
+in the UI Configuration panel, not by setting a variable.
 
 
 ## Troubleshooting

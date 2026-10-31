@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -9,7 +10,10 @@ import re
 import boto3
 from pydantic import ValidationError
 
-from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.configuration_manager import (
+    ConfigurationManager,
+    ConfigurationValidationError,
+)
 from idp_common.config.constants import (
     CONFIG_TYPE_CONFIG,
     CONFIG_TYPE_DEFAULT_MODEL_CONFIG_LIMITS,
@@ -19,6 +23,7 @@ from idp_common.config.constants import (
     RESERVED_VERSION_NAMES,
 )
 from idp_common.config.hook_reachability import InertGatingHookError
+from idp_common.config.migrations import migrate_config
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
 from idp_common.config.prefix_mappings import (
     DEFAULT_PRECEDENCE,
@@ -129,7 +134,7 @@ _OPERATION_REQUIRED_GROUPS = {
     # Annotator included so the annotate view can populate its class dropdown, and
     # ONLY for that: the response is reduced to the class vocabulary for a caller who
     # is not otherwise entitled to the configuration. See _class_vocabulary_only.
-    "getConfigVersion": {"Admin", "Author", "Viewer", "Annotator"},
+    "getConfigVersion": {"Admin", "Author", "Viewer", "Annotator", "Reviewer"},
     # Not Annotator: revision history serves no annotator flow, and unlike
     # getConfigVersion there is no reduced payload for it to receive.
     "listConfigProfileRevisions": {"Admin", "Author", "Viewer"},
@@ -407,7 +412,10 @@ def handler(event, context):
                         },
                     }
             success = manager.handle_update_custom_configuration(
-                custom_config, version, description, created_by=caller["email"]
+                custom_config,
+                version,
+                description,
+                created_by=caller["email"],
             )
             return {
                 "success": success,
@@ -567,6 +575,14 @@ def handler(event, context):
             return handle_generate_rule_json(rule_description.strip())
         else:
             raise Exception(f"Unsupported operation: {operation}")
+    except ConfigurationValidationError as e:
+        # A cross-field rule checked at the write boundary. A deliberate refusal
+        # reported as data, like the inert-hook refusal below.
+        logger.error(f"Configuration validation refusal: {e}")
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except InertGatingHookError as e:
         # A deliberate refusal, not a fault: the configuration registers an
         # `onError: fail` pipeline hook at a point its processing mode can never
@@ -617,6 +633,10 @@ def handler(event, context):
                 },
             },
         }
+    except PermissionError:
+        # An authorization refusal must reach the dispatcher as 403, not become a
+        # 200 "UnexpectedError" payload.
+        raise
     except Exception as e:
         # Catch all other exceptions to prevent lambda failures
         logger.error(f"Unexpected error in {operation}: {str(e)}", exc_info=True)
@@ -1305,7 +1325,9 @@ def handle_get_config_versions(manager, allowed_versions=None):
         # Filter by user's allowed config versions if scope is set
         if allowed_versions:
             versions = [
-                v for v in versions if scope_allows(allowed_versions, v.get("versionName"))
+                v
+                for v in versions
+                if scope_allows(allowed_versions, v.get("versionName"))
             ]
             logger.info(
                 f"Filtered config versions by scope: {len(versions)} versions returned"
@@ -1340,7 +1362,10 @@ def handle_list_profile_revisions(manager, profile):
         logger.error(f"Error listing revisions for '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to list revisions: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to list revisions: {str(e)}",
+            },
         }
 
 
@@ -1350,6 +1375,14 @@ def handle_get_profile_revision(manager, profile, revision):
 
     Returned as a JSON string so the UI can feed it straight into the same
     comparison view it uses for profiles.
+
+    The conversion to the current config format is **the manager's**, in
+    `ConfigurationManager._read_revision_body` — that is the one authoritative
+    statement of where a revision changes shape, and it covers every consumer
+    rather than this view alone. The call below is defence in depth: it is
+    idempotent and returns the body unchanged for one already converted, and it
+    keeps this layer's own guarantee testable. The stored body is not rewritten,
+    and restore is unchanged.
     """
     try:
         config = manager.get_revision(profile, revision)
@@ -1361,6 +1394,7 @@ def handle_get_profile_revision(manager, profile, revision):
                     "message": f"Revision r{revision} of '{profile}' is no longer retained",
                 },
             }
+        config = migrate_config(copy.deepcopy(config))
         return {"success": True, "config": json.dumps(config, default=str)}
     except Exception as e:
         logger.error(f"Error reading r{revision} of '{profile}': {e}")
@@ -1370,27 +1404,40 @@ def handle_get_profile_revision(manager, profile, revision):
         }
 
 
-def handle_restore_profile_revision(manager, profile, revision, caller_email):
+def handle_restore_profile_revision(
+    manager, profile, revision, caller_email, write_guard=None
+):
     """
     Restore an earlier revision as the profile's current configuration.
 
     Restoring is a forward-only operation: the restored configuration is saved as
-    a NEW revision, so the state being replaced stays inspectable.
+    a NEW revision, so the state being replaced stays inspectable. ``write_guard``
+    (see ``idp_common.config.configuration_manager.WriteGuard``) may refuse it.
     """
     try:
-        new_revision = manager.restore_revision(profile, revision, created_by=caller_email)
+        new_revision = manager.restore_revision(
+            profile, revision, created_by=caller_email, write_guard=write_guard
+        )
         return {
             "success": True,
             "revision": new_revision,
             "message": f"Restored r{revision} as r{new_revision}",
         }
+    except PermissionError:
+        raise
     except ValueError as e:
-        return {"success": False, "error": {"type": "ValidationError", "message": str(e)}}
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except Exception as e:
         logger.error(f"Error restoring r{revision} of '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to restore revision: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to restore revision: {str(e)}",
+            },
         }
 
 
@@ -1399,12 +1446,18 @@ def handle_label_profile_revision(manager, profile, revision, label, notes):
     if label is not None and not validate_description(label):
         return {
             "success": False,
-            "error": {"type": "ValidationError", "message": "Label cannot exceed 200 characters"},
+            "error": {
+                "type": "ValidationError",
+                "message": "Label cannot exceed 200 characters",
+            },
         }
     if notes is not None and not validate_description(notes):
         return {
             "success": False,
-            "error": {"type": "ValidationError", "message": "Notes cannot exceed 200 characters"},
+            "error": {
+                "type": "ValidationError",
+                "message": "Notes cannot exceed 200 characters",
+            },
         }
     try:
         updated = manager.label_revision(profile, revision, label=label, notes=notes)
@@ -1421,7 +1474,10 @@ def handle_label_profile_revision(manager, profile, revision, label, notes):
         logger.error(f"Error labeling r{revision} of '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to label revision: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to label revision: {str(e)}",
+            },
         }
 
 
@@ -1439,12 +1495,18 @@ def handle_delete_profile_revision(manager, profile, revision):
             }
         return {"success": True, "message": f"Deleted r{revision}"}
     except ValueError as e:
-        return {"success": False, "error": {"type": "ValidationError", "message": str(e)}}
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except Exception as e:
         logger.error(f"Error deleting r{revision} of '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to delete revision: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to delete revision: {str(e)}",
+            },
         }
 
 
@@ -1520,8 +1582,7 @@ def handle_put_prefix_mapping(manager, args, actor):
             "error": {
                 "type": "ValidationError",
                 "message": (
-                    f"metadataPrecedence must be one of "
-                    f"{', '.join(PRECEDENCE_VALUES)}"
+                    f"metadataPrecedence must be one of {', '.join(PRECEDENCE_VALUES)}"
                 ),
             },
         }
@@ -1581,9 +1642,7 @@ def handle_put_prefix_mapping(manager, args, actor):
         # PrefixMappingConflict, MAX_MAPPINGS, a validation refusal -- is a
         # permanent pin with no mapping referencing it and nothing that can ever
         # release it. Pinning second makes the only failure the recoverable one.
-        if revision is not None and not manager.mark_revision_pinned(
-            profile, revision
-        ):
+        if revision is not None and not manager.mark_revision_pinned(profile, revision):
             return {
                 "success": False,
                 # A DISTINCT error type, and the written entry alongside it, because

@@ -8,10 +8,13 @@ import { Button, useAuthenticator } from '@aws-amplify/ui-react';
 import { Spinner } from '@cloudscape-design/components';
 
 import { SettingsContext } from '../contexts/settings';
+import { InboxProvider } from '../contexts/inbox';
+import { ReviewWorkProvider } from '../contexts/review-work';
 import useParameterStore from '../hooks/use-parameter-store';
 import useAppContext from '../contexts/app';
 import useUserRole from '../hooks/use-user-role';
 
+import DocumentEditRoute from './DocumentEditRoute';
 import DocumentsRoutes from './DocumentsRoutes';
 import DocumentsQueryRoutes from './DocumentsQueryRoutes';
 import DocumentsAnalyticsRoutes from './DocumentsAnalyticsRoutes';
@@ -19,6 +22,9 @@ import TestStudioRoutes from './TestStudioRoutes';
 import AgentChatRoutes from './AgentChatRoutes';
 import QuickStartWidget from '../components/agent-chat/QuickStartWidget';
 import FeaturesRoutes from './FeaturesRoutes';
+import InboxRoutes from './InboxRoutes';
+import ReviewQueuesRoutes from './ReviewQueuesRoutes';
+import MyWorkRoutes from './MyWorkRoutes';
 import WelcomePage from '../pages/WelcomePage';
 import { NoRoleAssigned, SessionError } from './SessionStates';
 
@@ -34,7 +40,10 @@ import {
   FEATURES_PATH_PREFIX,
   WELCOME_PATH,
   WELCOME_DISMISSED_KEY,
-  ANNOTATE_LANDING_PATH,
+  INBOX_PATH,
+  REVIEW_QUEUES_PATH,
+  MY_WORK_PATH,
+  MY_TASKS_PATH,
 } from './constants';
 
 const logger = new ConsoleLogger('AuthRoutes');
@@ -45,7 +54,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isAnnotatorOnly, hasNoRole, sessionError, retrySession } = useUserRole();
+  const { isQueueWorker, isAnnotatorOnly, isReviewerOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -75,18 +84,21 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   } catch {
     /* ignore */
   }
-  // An Annotator lands in their queue. The welcome page offers Quick Start, the
-  // tour (which ends at Quick Start), Configuration and Upload Document — none of
-  // which they are scoped to, so it would be a page of dead ends.
-  const landingPath = isAnnotatorOnly
-    ? ANNOTATE_LANDING_PATH
-    : defaultFeatureId
-      ? `${FEATURES_PATH_PREFIX}/${defaultFeatureId}`
-      : welcomeDismissed
-        ? DEFAULT_PATH
-        : WELCOME_PATH;
+  // An Annotator-only user, and a Reviewer with no Admin, Author or Viewer role, lands on
+  // Home › Tasks: their work is reached from Home. The welcome page offers Quick Start,
+  // the tour, Configuration and Upload Document — none of which they are scoped to, so
+  // it would be a page of dead ends — and the Document List is not in their navigation.
+  const landingPath =
+    isAnnotatorOnly || isReviewerOnly
+      ? MY_TASKS_PATH
+      : defaultFeatureId
+        ? `${FEATURES_PATH_PREFIX}/${defaultFeatureId}`
+        : welcomeDismissed
+          ? DEFAULT_PATH
+          : WELCOME_PATH;
 
-  if (!settingsLoaded) {
+  // No route renders before the role is known, so no user sees another role's page flash.
+  if (!settingsLoaded || roleLoading) {
     return (
       <SettingsContext.Provider value={settingsContextValue}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh' }}>
@@ -126,24 +138,61 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
     );
   }
 
+  const loginRoute = (
+    <Route
+      path={LOGIN_PATH}
+      element={<Navigate to={!redirectParam || redirectParam === LOGIN_PATH ? landingPath : `${redirectParam}`} replace />}
+    />
+  );
+  const logoutRoute = <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />;
+
+  // An Annotator-only user's shell: Home (Inbox, Tasks, Queues), the queue pages and
+  // Test Studio items (under /review-queues), and a document's edit page (where Inbox
+  // notification links and Tasks point). Nothing else is routed, so the rest of
+  // /documents is not theirs.
+  const routes = isAnnotatorOnly ? (
+    <Routes>
+      <Route path={`${DOCUMENTS_PATH}/:objectKey/edit`} element={<DocumentEditRoute />} />
+      <Route path={`${MY_WORK_PATH}/*`} element={<MyWorkRoutes />} />
+      <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />
+      <Route path={`${REVIEW_QUEUES_PATH}/*`} element={<ReviewQueuesRoutes />} />
+      {loginRoute}
+      {logoutRoute}
+      <Route path="*" element={<Navigate to={landingPath} replace />} />
+    </Routes>
+  ) : (
+    <Routes>
+      <Route path={WELCOME_PATH} element={<WelcomePage />} />
+      <Route path={`${AGENT_CHAT_PATH}/*`} element={<AgentChatRoutes />} />
+      <Route path={`${FEATURES_PATH_PREFIX}/*`} element={<FeaturesRoutes />} />
+      <Route path={`${DOCUMENTS_KB_QUERY_PATH}/*`} element={<DocumentsQueryRoutes />} />
+      <Route path={`${DOCUMENTS_ANALYTICS_PATH}/*`} element={<DocumentsAnalyticsRoutes />} />
+      <Route path={`${TEST_STUDIO_PATH}/*`} element={<TestStudioRoutes />} />
+      <Route path={`${DOCUMENTS_PATH}/*`} element={<DocumentsRoutes />} />
+      {/* Home › Inbox, which every user has. */}
+      <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />
+      <Route path={`${REVIEW_QUEUES_PATH}/*`} element={<ReviewQueuesRoutes />} />
+      <Route path={`${MY_WORK_PATH}/*`} element={<MyWorkRoutes />} />
+      {loginRoute}
+      {logoutRoute}
+      <Route path="*" element={<Navigate to={landingPath} replace />} />
+    </Routes>
+  );
+
+  const shell = (
+    <>
+      {routes}
+      {!isAnnotatorOnly && <QuickStartWidget />}
+    </>
+  );
+
   return (
     <SettingsContext.Provider value={settingsContextValue}>
-      <Routes>
-        <Route path={WELCOME_PATH} element={<WelcomePage />} />
-        <Route path={`${AGENT_CHAT_PATH}/*`} element={<AgentChatRoutes />} />
-        <Route path={`${FEATURES_PATH_PREFIX}/*`} element={<FeaturesRoutes />} />
-        <Route path={`${DOCUMENTS_KB_QUERY_PATH}/*`} element={<DocumentsQueryRoutes />} />
-        <Route path={`${DOCUMENTS_ANALYTICS_PATH}/*`} element={<DocumentsAnalyticsRoutes />} />
-        <Route path={`${TEST_STUDIO_PATH}/*`} element={<TestStudioRoutes />} />
-        <Route path={`${DOCUMENTS_PATH}/*`} element={<DocumentsRoutes />} />
-        <Route
-          path={LOGIN_PATH}
-          element={<Navigate to={!redirectParam || redirectParam === LOGIN_PATH ? landingPath : `${redirectParam}`} replace />}
-        />
-        <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />
-        <Route path="*" element={<Navigate to={landingPath} replace />} />
-      </Routes>
-      <QuickStartWidget />
+      {/* Every user has an Inbox, so it is polled for every signed-in user. */}
+      <InboxProvider>
+        {/* Home › Tasks and its badge: the items assigned to an Annotator. */}
+        {isQueueWorker ? <ReviewWorkProvider>{shell}</ReviewWorkProvider> : shell}
+      </InboxProvider>
     </SettingsContext.Provider>
   );
 };

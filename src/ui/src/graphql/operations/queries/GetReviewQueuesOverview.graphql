@@ -1,0 +1,29 @@
+query GetReviewQueuesOverview {
+  getReviewQueuesOverview {
+    queues {
+      summary {
+        profile
+        name
+        displayName
+        description
+        priority
+        depth
+        unclaimed
+        claimed
+        claimedByMe
+        inProgress
+        annotators
+        oldestEnqueuedAt
+        isDefaultQueue
+        enabled
+        claimCap
+        checklist
+        definedInConfig
+      }
+      reviewers {
+        email
+        claimed
+      }
+    }
+  }
+}

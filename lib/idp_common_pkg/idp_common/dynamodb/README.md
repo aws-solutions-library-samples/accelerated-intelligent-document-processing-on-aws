@@ -16,13 +16,63 @@ The module provides:
 
 ### DynamoDBClient
 
-Low-level client for DynamoDB operations:
-- `put_item()` - Insert items
-- `update_item()` - Update existing items
-- `get_item()` - Retrieve items by key
-- `transact_write_items()` - Execute transactions
-- `scan()` - Scan table with filters
-- `query()` - Query with key conditions
+Low-level client for DynamoDB operations. Always pass `table_name` explicitly when
+the table is not the TrackingTable: the constructor falls back to the
+`TRACKING_TABLE` environment variable.
+
+| Method | What it does |
+|---|---|
+| `put_item(item, condition_expression=None, *, expression_attribute_names=None, expression_attribute_values=None)` | Insert or replace an item, optionally conditionally |
+| `update_item(key, update_expression, ..., condition_expression=None)` | Update (upsert) an item |
+| `get_item(key, *, consistent_read=False, projection_expression=None, expression_attribute_names=None)` | Retrieve one item by key, or `None` |
+| `delete_item(key, *, condition_expression=None, expression_attribute_names=None, expression_attribute_values=None, return_values=None)` | Delete an item, optionally conditionally |
+| `batch_get_items(keys, *, consistent_read=False, projection_expression=None, expression_attribute_names=None, max_attempts=6)` | Get many items: de-duplicated, chunked at 100, `UnprocessedKeys` retried |
+| `batch_write_items(*, put_items=(), delete_keys=(), max_attempts=6)` | Put and/or delete many items: deletes de-duplicated, chunked at 25, `UnprocessedItems` retried |
+| `transact_write_items(transact_items)` | Execute a transaction (`Put`, `Update`, `Delete`, `ConditionCheck`) |
+| `scan(...)` | One page of a scan, with optional filter |
+| `scan_all(...)` | Scan every page, following `LastEvaluatedKey` |
+| `query(key_condition_expression, expression_attribute_names=None, expression_attribute_values=None, limit=None, exclusive_start_key=None, *, index_name=None, scan_index_forward=None, filter_expression=None, projection_expression=None, select=None, consistent_read=None)` | One page of a query |
+| `query_pages(key_condition_expression, *, ..., page_size=None, exclusive_start_key=None, max_pages=None)` | Yield raw query responses, following `LastEvaluatedKey` until it is absent or `max_pages` is reached |
+| `query_count(key_condition_expression, *, ..., index_name=None, filter_expression=None, consistent_read=None)` | Sum `Count` over every page with `Select=COUNT` |
+
+The keyword-only options on `query`, `get_item`, `delete_item` and `put_item` are
+sent to DynamoDB only when set, so existing positional calls behave as before.
+
+**A filtered query must paginate.** `Limit` bounds the items DynamoDB *examines*, not
+the items that match, so one page of a filtered query can hold fewer matches than
+exist, or none. Iterate `query_pages` (or use `query_count`) instead of reading a
+single `query` response.
+
+**`batch_get_items` raises instead of returning a partial result.** Keys DynamoDB
+leaves in `UnprocessedKeys` are re-submitted with exponential backoff and full
+jitter; when `max_attempts` runs out the call raises
+`DynamoDBUnprocessedKeysError`, a `DynamoDBError` with
+`error_code == "UnprocessedKeys"` whose `items` holds the rows read before it gave
+up, for a caller that can use a partial answer on purpose. `batch_write_items` does the same with
+`error_code == "UnprocessedItems"`. A batch of up to 100 keys with nothing
+unprocessed behaves as it always did.
+
+**Transactions report which item cancelled them.** A cancelled
+`transact_write_items` raises `DynamoDBTransactionCanceledError`, a `DynamoDBError`
+subclass carrying `cancellation_reasons` (one entry per transact item, in request
+order) and `reason_code(index)`, which returns the code for one item (`"None"` when it
+did not cause the cancellation or the index is out of range,
+`"ConditionalCheckFailed"` for a false condition). `ConditionCheck` items get the
+table name injected like the other operation types, and the caller's list is never
+mutated.
+
+**Expected condition failures log at DEBUG.** Conditions are routine control flow
+(create-if-absent, optimistic concurrency, dedupe), so a
+`ConditionalCheckFailedException` from `put_item`, `update_item` or `delete_item`,
+and a transaction cancelled only with `None` / `ConditionalCheckFailed` reasons, are
+logged at DEBUG. They still raise. Every other `ClientError` logs at ERROR.
+
+### `calculate_ttl`
+
+`idp_common.dynamodb.calculate_ttl(days, *, now=None) -> int` returns the epoch
+seconds `days` after `now` (default: the current UTC time; a naive `now` is treated
+as UTC), the value a DynamoDB TTL attribute holds. `days` may be fractional.
+`DocumentDynamoDBService.calculate_ttl(days)` delegates to it.
 
 `put_item()` and `update_item()` both take an optional `condition_expression`,
 evaluated by DynamoDB against the item as it exists at write time and surfaced as a
@@ -46,12 +96,25 @@ profile head record, which is where it went wrong.
 
 High-level service for document operations:
 - `create_document()` - Create new documents with list partitioning
-- `update_document()` - Update existing documents
-- `get_document()` - Retrieve documents by object key
+- `update_document(document, expected_status=None, unless_status=None)` - Update
+  existing documents. With `expected_status`, the write lands only if the stored
+  `ObjectStatus` is still that value; with `unless_status`, it lands unless the
+  stored `ObjectStatus` is that value (a record with no status, or no record, is
+  written as without it). Either way a refusal raises `DynamoDBError` with error
+  code `ConditionalCheckFailedException`, and the two cannot be combined. The
+  queue processor writes RUNNING after `StartExecution` with
+  `unless_status=ABORTED`, and stops the execution when that is refused
+- `get_document(object_key, consistent_read=False)` - Retrieve documents by
+  object key. The default read is eventually consistent, so pass
+  `consistent_read=True` when deciding from a write that has just landed
+- `claim_for_execution(object_key)` - A conditional write that changes nothing
+  and returns False if the document is ABORTED or has no tracking record. The
+  queue processor calls it immediately before starting an execution, so a
+  QUEUED document aborted after the processor read it is not started
 - `list_documents()` - List documents with date filtering
 - `list_documents_date_hour()` - List by specific date/hour
 - `list_documents_date_shard()` - List by date/shard
-- `calculate_ttl()` - Generate TTL timestamps
+- `calculate_ttl()` - Generate TTL timestamps (delegates to the module-level `calculate_ttl`)
 
 #### Document run (version) records
 

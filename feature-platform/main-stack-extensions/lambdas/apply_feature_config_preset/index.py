@@ -210,6 +210,7 @@ def _merge_over_default(manager: Any, preset: Dict[str, Any]) -> Optional[Any]:
         from copy import deepcopy
 
         from idp_common.config.merge_utils import deep_update
+        from idp_common.config.migrations import migrate_config
         from idp_common.config.models import IDPConfig
 
         default_config = manager.get_configuration("Config", version=_DEFAULT_PROFILE)
@@ -223,10 +224,17 @@ def _merge_over_default(manager: Any, preset: Dict[str, Any]) -> Optional[Any]:
             return None
 
         merged = deepcopy(default_config.model_dump(mode="python"))
+        # The preset is migrated to the current format BEFORE the merge, as every
+        # other configuration write and read does. Merged first, a legacy (flat
+        # classification) preset becomes a flat/nested hybrid whose migration
+        # reads settings it does not own — such as the default's strategy — off
+        # the host default, so the stored result differs from what the sparse
+        # fallback below yields for the same preset once it is read.
+        #
         # deep_update replaces lists wholesale, so a preset's `classes` list
         # overrides the default's rather than appending to it — the intended
         # behavior for a feature that ships its own document classes.
-        deep_update(merged, preset)
+        deep_update(merged, migrate_config(deepcopy(preset)))
         return IDPConfig(**merged)
     except Exception as exc:  # noqa: BLE001
         logger.warning(

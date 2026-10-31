@@ -33,12 +33,10 @@ export const SCHEMA_EXAMPLES = 'examples';
  * schema's `$defs` as one referenced from a property, and a `$ref` that reaches `$defs`
  * without its target publishes a pointer resolving to nothing.
  *
- * The reachable writer today is the `contains` builder, via `ArrayConstraints`, which
- * points `contains` at a shared class. `SchemaCompositionEditor` and
- * `SchemaConditionalEditor` write into `oneOf`/`anyOf`/`allOf`/`not` and
- * `if`/`then`/`else`, but neither component is imported anywhere, so nothing they write can
- * be in a user's configuration; they are covered because the walk should not depend on
- * which editors happen to be wired up.
+ * The writer in the designer is the `contains` builder, via `ArrayConstraints`, which
+ * points `contains` at a shared class. A schema loaded from a saved configuration can
+ * carry `oneOf`/`anyOf`/`allOf`/`not` and `if`/`then`/`else` too, so those are covered:
+ * the walk should not depend on which editors are wired up.
  */
 export const SUBSCHEMA_KEYWORDS = [
   'items',
@@ -74,9 +72,9 @@ export const SUBSCHEMA_MAP_KEYWORDS = ['properties', 'patternProperties', 'depen
  *
  * `id` and `name` are how the designer labels a node it holds in memory, and a `$defs`
  * body loaded from a saved schema can carry either — that one is reachable and tested.
- * `schemaId` is a React list key `SchemaCompositionEditor` allocates from a render-scoped
- * counter; that component has no importers, so no user's configuration can contain one.
- * It is stripped because the boundary should not depend on which editors are wired up.
+ * `schemaId` is a React list key a composition editor allocated from a render-scoped
+ * counter; the designer no longer has one, and it is still stripped because the
+ * boundary should not depend on which editors are wired up.
  */
 export const DESIGNER_ONLY_KEYS = ['id', 'name', 'schemaId'] as const;
 
@@ -349,7 +347,7 @@ export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
 /**
  * Class-level: replace the class's EFFECTIVE schema with a List-of-Class
  * wrapper, `{instances: {type: array, items: <the original class schema>}}`, so
- * a section holding several documents of this class extracts every one of them
+ * a section holding several records of this class extracts every one of them
  * instead of silently returning only the first.
  *
  * The counterpart to X_AWS_IDP_INSTANCE_ARRAY above and mutually exclusive with

@@ -3,7 +3,7 @@
 **Author:** design, 2026-07-03
 **Status:** PROPOSAL → implement in sequenced PRs (do NOT reorder).
 **Reproducibility:** planning documents written before September 2026 predate the
-project's [reproducibility rules](../benchmarking/index.md#reproducibility--honesty-rules)
+project's [reproducibility rules](../benchmarking/index.md#reproducibility-and-reporting-rules)
 — treat their numbers as unaudited. **Cost** figures have a second, independent
 problem: `_get_unit_cost` in
 `lib/idp_common_pkg/idp_common/reporting/save_reporting_data.py` falls back to a

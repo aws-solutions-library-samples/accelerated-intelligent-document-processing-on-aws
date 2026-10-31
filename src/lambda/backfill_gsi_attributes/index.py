@@ -30,6 +30,7 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 from log_sanitizer import sanitize_event_for_logging
+from review_statuses import normalize_hitl_status
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -39,14 +40,6 @@ PK_PREFIX_TO_ITEM_TYPE = {
     "doc#": "document",
     "testrun#": "testrun",
     "testset#": "testset",
-}
-
-# HITL statuses that indicate review is complete (not pending)
-HITL_COMPLETED_STATUSES = {
-    "completed",
-    "reviewcompleted",
-    "skipped",
-    "reviewskipped",
 }
 
 # Safety margin before Lambda timeout (60 seconds)
@@ -232,6 +225,28 @@ def _test_run_verifier(table):
     return exists
 
 
+def _status_rules_out_pending(hitl_status):
+    """True when a stored HITLStatus means the document is not awaiting legacy review.
+
+    That is a finished legacy review (completed or skipped), or any status a review
+    queue writes: ``complete`` and ``rejected`` end a queue review, and a document
+    still ``in_review`` is worked from its queue item. The live writer
+    (``DocumentDynamoDBService``) keeps HITLPendingReview only for the legacy
+    pending statuses and removes it for every queue status, so the backfill must not
+    put it back (#1568).
+
+    ``COMPLETED`` is the one finished spelling a real writer stored that the
+    exact-match normaliser does not know: the earlier SageMaker A2I flow wrote it,
+    and retained rows may still carry it.
+    """
+    view = normalize_hitl_status(hitl_status)
+    return (
+        view.queue_managed
+        or view.kind in ("complete", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
 def _determine_updates(item, pk, run_exists=None):
     """
     Determine which attributes need to be set on this item.
@@ -262,13 +277,11 @@ def _determine_updates(item, pk, run_exists=None):
         # Set HITLPendingReview if:
         # - HITL was triggered (True or "true")
         # - HITL is not completed
-        # - Status is not in a completed state
+        # - Status does not say the review is finished or queue-managed
         is_triggered = hitl_triggered in (True, "true", "True")
         is_completed = hitl_completed in (True, "true", "True")
-        status_normalized = hitl_status.lower().replace(" ", "") if hitl_status else ""
-        is_status_complete = status_normalized in HITL_COMPLETED_STATUSES
 
-        if is_triggered and not is_completed and not is_status_complete:
+        if is_triggered and not is_completed and not _status_rules_out_pending(hitl_status):
             updates["HITLPendingReview"] = "true"
 
     # 3. For testrun# items, ensure InitialEventTime is set from CreatedAt

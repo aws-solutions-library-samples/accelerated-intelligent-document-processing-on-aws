@@ -43,7 +43,7 @@ The configuration defines [number] document classes, each with specific attribut
 ### Classification Settings
 
 - **Model**: [Model name]
-- **Method**: [Classification method]
+- **Strategy / granularity**: [e.g. Combined, page granularity]
 - **Temperature**: [Temperature value]
 - **Top-k**: [Top-k value]
 

@@ -56,7 +56,8 @@ its capabilities.
   an MCP integration in Amazon Quick over service-to-service OAuth, then drive
   `IDPTools__process` / `get_results` from a Quick workflow that writes the
   extracted fields to an Excel workbook in S3. See also
-  [MCP Server](./mcp-server.md) and [Human-in-the-Loop Review](./human-review.md).
+  [MCP Server](./mcp-server.md), [Human-in-the-Loop Review](./human-review.md)
+  and [Hands-on Workshops](./workshops.md).
 
 ## Analyst Reports
 

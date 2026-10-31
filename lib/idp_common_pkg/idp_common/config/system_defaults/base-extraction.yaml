@@ -56,7 +56,7 @@ extraction:
     # an error. Keep true in production; set false only to measure how often
     # forcing is actually honored.
     fallback_to_prompt: true
-  # Detect a section that holds SEVERAL documents of the same class when the
+  # Detect a section that holds SEVERAL records of the same class when the
   # model returned only one of them (GitHub #753 / #565). One extra integer is
   # requested in the same inference and stripped from the result; when the answer
   # exceeds the number of records extracted, an

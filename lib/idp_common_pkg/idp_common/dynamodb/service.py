@@ -13,9 +13,14 @@ import json
 import logging
 import re
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from idp_common.dynamodb.client import DynamoDBClient
+from idp_common.dynamodb.client import (
+    CONDITIONAL_CHECK_FAILED,
+    DynamoDBClient,
+    DynamoDBError,
+)
+from idp_common.dynamodb.ttl import calculate_ttl
 from idp_common.models import (
     Document,
     Page,
@@ -24,6 +29,7 @@ from idp_common.models import (
     Status,
     coerce_revision,
 )
+from idp_common.review_queues.statuses import LEGACY_PENDING
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,10 @@ _TERMINAL_WORKFLOW_STATUS = {
     Status.REDACTED_SUPERSEDED: "SUCCEEDED",
     Status.FAILED: "FAILED",
     Status.ABORTED: "ABORTED",
+    # Terminal disposition reached by a successful finalize execution: a
+    # reviewer rejected the document in a review queue. Not a processing
+    # failure, so the workflow itself SUCCEEDED.
+    Status.REJECTED: "SUCCEEDED",
     # Refused at the ingest malware gate. Terminal and not successful: no output
     # exists because the document was never admitted to the pipeline.
     Status.QUARANTINED: "FAILED",
@@ -654,6 +664,13 @@ class DocumentDynamoDBService:
                 if section.instance_count:
                     section_data["InstanceCount"] = section.instance_count
 
+                # A BDA blueprint match with no usable confidence. Persisted so a
+                # reprocess that reloads the document from here (process changes,
+                # an extraction rerun) is still held for review in queue mode
+                # (GitHub #1581). Omitted when False, like InstanceCount.
+                if section.blueprint_unscored:
+                    section_data["BlueprintUnscored"] = True
+
                 # Exclusion flags for a section whose class carries
                 # x-aws-idp-exclude-from-processing. This is the write that makes
                 # the UI's "Skipped" badge possible — the badge is the only
@@ -778,8 +795,7 @@ class DocumentDynamoDBService:
             # Maintain sparse GSI attribute for pending review queries
             # "PendingReview" = initial trigger, "Review Pending" = after release_review,
             # "InProgress" = after claim_review
-            pending_statuses = ("PendingReview", "Review Pending", "InProgress")
-            if document.hitl_status in pending_statuses:
+            if document.hitl_status in LEGACY_PENDING:
                 set_expressions.append("#HITLPendingReview = :HITLPendingReview")
                 expression_names["#HITLPendingReview"] = "HITLPendingReview"
                 expression_values[":HITLPendingReview"] = "true"
@@ -871,8 +887,7 @@ class DocumentDynamoDBService:
         # Remove HITLPendingReview GSI attribute when review is completed/skipped
         remove_expressions = []
         if document.hitl_status:
-            pending_statuses = ("PendingReview", "Review Pending", "InProgress")
-            if document.hitl_status not in pending_statuses:
+            if document.hitl_status not in LEGACY_PENDING:
                 remove_expressions.append("HITLPendingReview")
         if remove_expressions:
             update_expression += " REMOVE " + ", ".join(remove_expressions)
@@ -1040,6 +1055,9 @@ class DocumentDynamoDBService:
                         confidence_threshold_alerts=confidence_threshold_alerts,
                         processing_issues=processing_issues,
                         instance_count=int(section_data.get("InstanceCount") or 0),
+                        blueprint_unscored=bool(
+                            section_data.get("BlueprintUnscored", False)
+                        ),
                         # Absent on items written before the flags were persisted,
                         # and on every non-excluded section.
                         excluded=bool(section_data.get("Excluded", False)),
@@ -1148,18 +1166,44 @@ class DocumentDynamoDBService:
 
         return document.input_key
 
-    def update_document(self, document: Document) -> Document:
+    def update_document(
+        self,
+        document: Document,
+        *,
+        expected_status: Optional[Status] = None,
+        unless_status: Optional[Status] = None,
+    ) -> Document:
         """
         Update an existing document in DynamoDB.
 
         Args:
             document: The Document object to update
+            expected_status: When given, the write lands only if the stored
+                ``ObjectStatus`` is still this value, so a caller that read the
+                document and decided from its status learns, instead of
+                overwriting, that something else changed it in between. The
+                abort resolver uses this for a document it read as QUEUED: if
+                the queue processor has started it since, the abort must stop
+                the execution rather than write ABORTED over a running document
+                (#1612). Raises ``DynamoDBError`` with error_code
+                ``ConditionalCheckFailedException`` when it does not hold.
+            unless_status: When given, the write lands unless the stored
+                ``ObjectStatus`` is this value; a record with no status, or no
+                record at all, is written exactly as without it. The queue
+                processor uses this for its write after ``StartExecution``: an
+                abort that landed after its start claim wrote ABORTED, and that
+                write must not be overwritten with RUNNING while the processor
+                stops the execution it just started (#1612). Raises
+                ``DynamoDBError`` with error_code
+                ``ConditionalCheckFailedException`` when the stored status is
+                this value. Cannot be combined with ``expected_status``.
 
         Returns:
             Updated Document object with any data returned from DynamoDB
 
         Raises:
-            DynamoDBError: If the DynamoDB operation fails
+            DynamoDBError: If the DynamoDB operation fails, including when
+                ``expected_status`` does not hold.
         """
         key = {
             "PK": f"doc#{document.input_key}",
@@ -1170,12 +1214,30 @@ class DocumentDynamoDBService:
             self._document_to_update_expressions(document)
         )
 
+        if expected_status is not None and unless_status is not None:
+            raise ValueError("expected_status and unless_status are exclusive")
+        condition_expression = None
+        if unless_status is not None:
+            # A missing attribute is allowed explicitly rather than left to how
+            # ``<>`` compares against one, so a document with no status (or no
+            # record) is written exactly as an unconditional update writes it.
+            condition_expression = (
+                "attribute_not_exists(#ObjectStatus) "
+                "OR #ObjectStatus <> :UnlessObjectStatus"
+            )
+            expression_values[":UnlessObjectStatus"] = unless_status.value
+        if expected_status is not None:
+            # ``#ObjectStatus`` is always registered by the SET clause above.
+            condition_expression = "#ObjectStatus = :ExpectedObjectStatus"
+            expression_values[":ExpectedObjectStatus"] = expected_status.value
+
         response = self.client.update_item(
             key=key,
             update_expression=update_expression,
             expression_attribute_names=expression_names,
             expression_attribute_values=expression_values,
             return_values="ALL_NEW",
+            condition_expression=condition_expression,
         )
 
         # Convert the response back to a Document object
@@ -1185,12 +1247,59 @@ class DocumentDynamoDBService:
         logger.info(f"Successfully updated document: {document.input_key}")
         return updated_document
 
-    def get_document(self, object_key: str) -> Optional[Document]:
+    def update_review_attributes(
+        self,
+        object_key: str,
+        set_attrs: Mapping[str, Any],
+        remove_attrs: Sequence[str] = (),
+    ) -> None:
+        """Targeted write of review-queue attributes on the tracking row.
+
+        One ``UpdateItem`` (``SET``/``REMOVE``) of only the named attributes, so
+        it never races the whole-document ``update_document`` over other fields.
+        Requires the row to exist (``attribute_exists(PK)``).
+        """
+        names: Dict[str, str] = {}
+        values: Dict[str, Any] = {}
+        sets = []
+        for i, (name, value) in enumerate(set_attrs.items()):
+            names[f"#s{i}"] = name
+            values[f":s{i}"] = value
+            sets.append(f"#s{i} = :s{i}")
+        removes = []
+        for i, name in enumerate(remove_attrs):
+            if name in set_attrs:
+                continue
+            names[f"#r{i}"] = name
+            removes.append(f"#r{i}")
+        parts = []
+        if sets:
+            parts.append("SET " + ", ".join(sets))
+        if removes:
+            parts.append("REMOVE " + ", ".join(removes))
+        if not parts:
+            return
+        self.client.update_item(
+            key={"PK": f"doc#{object_key}", "SK": "none"},
+            update_expression=" ".join(parts),
+            expression_attribute_names=names,
+            expression_attribute_values=values or None,
+            return_values="NONE",
+            condition_expression="attribute_exists(PK)",
+        )
+
+    def get_document(
+        self, object_key: str, *, consistent_read: bool = False
+    ) -> Optional[Document]:
         """
         Get a document from DynamoDB by its object key.
 
         Args:
             object_key: The object key of the document to retrieve
+            consistent_read: Use a strongly consistent read. The default read
+                is eventually consistent, so it can miss a write that has just
+                landed; a caller re-reading to decide what happened after a
+                conditional write was refused needs the current item.
 
         Returns:
             Document object if found, None otherwise
@@ -1203,10 +1312,50 @@ class DocumentDynamoDBService:
             "SK": "none",
         }
 
-        item = self.client.get_item(key)
+        item = self.client.get_item(key, consistent_read=consistent_read)
         if item:
             return self._dynamodb_item_to_document(item)
         return None
+
+    def claim_for_execution(self, object_key: str) -> bool:
+        """Confirm, atomically, that a document has not been aborted.
+
+        The queue processor calls this immediately before it starts a document's
+        Step Functions execution. ``abortWorkflow`` has no execution to stop for
+        a QUEUED document, so it writes ABORTED and relies on the processor not
+        starting one; a processor that read the document just before that write
+        used to start it anyway (#1612). A conditional write is evaluated
+        against the item as it is at write time, which a read -- eventually
+        consistent by default, and in any case taken earlier -- is not.
+
+        The write changes nothing (``ObjectStatus`` is set to itself), so a
+        claim made for a redelivered message whose document has since moved on
+        cannot rewind it.
+
+        Returns:
+            True if the document exists and is not ABORTED. False if the
+            condition was refused: the document is ABORTED, or there is no
+            tracking record. The caller tells the two apart by reading it.
+
+        Raises:
+            DynamoDBError: If the DynamoDB operation fails for any other reason.
+        """
+        try:
+            self.client.update_item(
+                key={"PK": f"doc#{object_key}", "SK": "none"},
+                update_expression="SET #ObjectStatus = #ObjectStatus",
+                expression_attribute_names={"#ObjectStatus": "ObjectStatus"},
+                expression_attribute_values={":Aborted": Status.ABORTED.value},
+                return_values="NONE",
+                condition_expression=(
+                    "attribute_exists(PK) AND #ObjectStatus <> :Aborted"
+                ),
+            )
+        except DynamoDBError as e:
+            if e.error_code == CONDITIONAL_CHECK_FAILED:
+                return False
+            raise
+        return True
 
     def batch_get_documents(self, object_keys: List[str]) -> List[Dict[str, Any]]:
         """Batch get document records by object keys (max 100)."""
@@ -1638,6 +1787,10 @@ class DocumentDynamoDBService:
         if section.instance_count:
             section_data["InstanceCount"] = section.instance_count
 
+        # See _document_to_update_expressions (GitHub #1581).
+        if section.blueprint_unscored:
+            section_data["BlueprintUnscored"] = True
+
         # Exclusion flags, written for the same reason ProcessingIssues are above:
         # classification sets them, then extraction calls THIS writer for every
         # section including the excluded ones it short-circuited
@@ -1692,6 +1845,8 @@ class DocumentDynamoDBService:
         manifest_uri: str,
         file_count: int = 0,
         expires_after: Optional[int] = None,
+        *,
+        run_kind: Optional[str] = None,
     ) -> str:
         """
         Record an immutable run (version) item for a completed document and
@@ -1703,6 +1858,8 @@ class DocumentDynamoDBService:
             manifest_uri: S3 URI of the run's output-version manifest
             file_count: Number of output objects pinned by the manifest
             expires_after: Optional TTL timestamp (should match the doc item's)
+            run_kind: Optional ``RunKind`` (``review_phase1`` / ``review_final``
+                for the two runs of a review-queue document)
 
         Returns:
             The run_id of the created run item
@@ -1716,6 +1873,8 @@ class DocumentDynamoDBService:
             "ManifestUri": manifest_uri,
             "FileCount": file_count,
         }
+        if run_kind:
+            item["RunKind"] = run_kind
 
         # Snapshot of the run's metadata (mirrors the doc item's attributes so
         # the UI can render a prior version with the same code paths).
@@ -1788,6 +1947,8 @@ class DocumentDynamoDBService:
                     )
                 if section.instance_count:
                     section_data["InstanceCount"] = section.instance_count
+                if section.blueprint_unscored:
+                    section_data["BlueprintUnscored"] = True
                 # Snapshot the exclusion flags too, so a historical version keeps
                 # the "Skipped" badge instead of showing an unexplained empty
                 # section.
@@ -1929,5 +2090,4 @@ class DocumentDynamoDBService:
         Returns:
             Unix timestamp (seconds since epoch) for the expiration date
         """
-        expiration_date = datetime.datetime.now() + datetime.timedelta(days=days)
-        return int(expiration_date.timestamp())
+        return calculate_ttl(days)

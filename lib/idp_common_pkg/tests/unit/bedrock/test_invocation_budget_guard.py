@@ -1777,17 +1777,17 @@ def test_a_stale_deadline_ends_a_ladder_early_rather_than_late(fake_clock: FakeC
     """The one way the fallback can be wrong, pinned so it is a known quantity.
 
     The process-wide value is what makes the gate visible in a thread-pool worker, and
-    its cost is staleness: a warm container whose handler stopped publishing would
-    hold a previous invocation's deadline. With that deadline in the past, ``remaining``
-    is negative and every cost is refused — so a ladder of cheap throttles is cut from
-    eight attempts to one, which contradicts "an attempt that costs nothing always
-    fits" in every case except the one the docstring now names.
+    its cost is staleness: a value an ended invocation left behind would hold that
+    invocation's deadline. With that deadline in the past, ``remaining`` is negative
+    and every cost is refused — so a ladder of cheap throttles is cut from eight
+    attempts to one, which contradicts "an attempt that costs nothing always fits" in
+    every case except the one the docstring now names.
 
     It is the survivable direction: the ladder raises a transient error immediately
-    instead of silently doing nothing, and the contract on
-    ``set_lambda_deadline_epoch`` — publish at the start of every invocation — is what
-    keeps it unreachable. Asserted here so that if the direction ever reverses, this
-    fails rather than an operator discovering it.
+    instead of silently doing nothing, and ``lambda_deadline_scope``, which every
+    publishing handler runs its invocation inside, is what keeps it unreachable.
+    Asserted here so that if the direction ever reverses, this fails rather than an
+    operator discovering it.
     """
     client = _client_with(
         [ClientError({"Error": {"Code": "ThrottlingException", "Message": "x"}}, "C")]
@@ -2011,6 +2011,66 @@ def test_publishing_writes_both_stores_and_the_scoped_one_is_read_first():
     assert lambda_deadline.get_lambda_deadline_epoch() == 1000.0, (
         "a deadline scoped to one context escaped into the process-wide value"
     )
+
+
+def _deadline_a_worker_reads() -> float | None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda_deadline.get_lambda_deadline_epoch).result()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ends_by", ["return", "raise"])
+def test_a_scope_takes_back_the_deadline_published_inside_it(ends_by: str):
+    """What a handler owes whatever runs after it in the same process.
+
+    Both stores are read afterwards, white-box and from a pool worker, because either
+    one left behind is the leak: the ContextVar is what the next caller on this thread
+    reads first, and the process-wide value is what every thread falls back to. A
+    raise must take it back as surely as a return, since a failed invocation is
+    followed by the next one exactly as a successful one is.
+    """
+    published = time.time() + 300.0
+
+    def _invocation() -> None:
+        with lambda_deadline.lambda_deadline_scope():
+            set_lambda_deadline_epoch(published)
+            assert lambda_deadline.get_lambda_deadline_epoch() == published
+            assert _deadline_a_worker_reads() == published
+            if ends_by == "raise":
+                raise RuntimeError("the invocation failed")
+
+    if ends_by == "raise":
+        with pytest.raises(RuntimeError, match="the invocation failed"):
+            _invocation()
+    else:
+        _invocation()
+
+    assert lambda_deadline._LAMBDA_DEADLINE_EPOCH.get() is None
+    assert lambda_deadline._FALLBACK_DEADLINE_EPOCH is None
+    assert lambda_deadline.get_lambda_deadline_epoch() is None
+    assert _deadline_a_worker_reads() is None
+
+
+@pytest.mark.unit
+def test_a_scope_restores_the_deadline_it_found_rather_than_clearing_it():
+    """Restoring is what makes a scope safe to nest and safe to enter under a caller
+    that already holds a deadline: a test that publishes one and then drives a handler
+    gets its own back, which clearing would not give it."""
+    outer = time.time() + 900.0
+    inner = time.time() + 300.0
+    set_lambda_deadline_epoch(outer)
+
+    with lambda_deadline.lambda_deadline_scope():
+        with lambda_deadline.lambda_deadline_scope():
+            set_lambda_deadline_epoch(inner)
+            assert lambda_deadline.get_lambda_deadline_epoch() == inner
+        assert lambda_deadline.get_lambda_deadline_epoch() == outer
+        assert _deadline_a_worker_reads() == outer
+
+    assert lambda_deadline._LAMBDA_DEADLINE_EPOCH.get() == outer
+    assert lambda_deadline._FALLBACK_DEADLINE_EPOCH == outer
 
 
 @pytest.mark.unit

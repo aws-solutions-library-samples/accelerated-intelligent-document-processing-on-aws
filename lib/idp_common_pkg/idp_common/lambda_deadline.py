@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
@@ -74,13 +76,14 @@ _LAMBDA_DEADLINE_EPOCH: ContextVar[float | None] = ContextVar(
 # shape of defect this module exists to close, so the value is readable without it.
 #
 # The cost is that this is process-wide mutable state, and the one way it can be
-# wrong is staleness: a warm container whose handler stops publishing would keep the
-# previous invocation's deadline. That is bounded by the contract on
-# :func:`set_lambda_deadline_epoch` — publish at the START of every invocation,
-# unconditionally, which all three publishing handlers do — and it fails in the safe
-# direction, because a deadline already past produces an early transient error the
-# state machine retries rather than silent inaction. The ContextVar stays primary so
-# a caller that scopes a different deadline to one async context still gets it.
+# wrong is staleness: a value left behind by an invocation that has ended. That is
+# closed by :func:`lambda_deadline_scope`, which every publishing handler runs its
+# whole invocation inside and which puts this back, with the ContextVar, when the
+# invocation ends — so neither the next warm invocation nor a later test in the same
+# process inherits it. A stale value would fail in the safe direction, because a
+# deadline already past produces an early transient error the state machine retries
+# rather than silent inaction. The ContextVar stays primary so a caller that scopes a
+# different deadline to one async context still gets it.
 _FALLBACK_DEADLINE_EPOCH: float | None = None
 
 # Seconds of the remaining budget left unspent when clamping a sleep, so a sleep does
@@ -94,12 +97,14 @@ DEADLINE_RESERVE_SECONDS = 30.0
 def set_lambda_deadline_epoch(deadline_epoch: float | None) -> None:
     """Record when the current Lambda invocation must finish (epoch seconds).
 
-    ⚠️ **The contract is: call this at the START of every invocation,
-    unconditionally.** It writes process-wide state as well as the ContextVar, so a
-    handler that publishes on some invocations and not others leaves a warm container
-    holding a previous invocation's deadline — see the note on
-    ``_FALLBACK_DEADLINE_EPOCH``. Passing ``None`` clears both and restores the
-    unbounded behaviour, which is what every test teardown here does.
+    ⚠️ **The contract is: call this inside :func:`lambda_deadline_scope`, which the
+    handler wraps around its whole invocation.** It writes process-wide state as well
+    as the ContextVar, and the scope is what takes both back when the invocation ends.
+    Called outside one, the value outlives the invocation that published it, and a
+    warm container — or a later test in the same process — reads a deadline belonging
+    to nothing still running; see the note on ``_FALLBACK_DEADLINE_EPOCH``. Passing
+    ``None`` clears both and restores the unbounded behaviour, which is what every
+    test teardown here does.
 
     The value is readable from a ``ThreadPoolExecutor`` worker, which a ContextVar
     alone is not. ``contextvars.copy_context().run`` is therefore no longer needed to
@@ -109,6 +114,32 @@ def set_lambda_deadline_epoch(deadline_epoch: float | None) -> None:
     global _FALLBACK_DEADLINE_EPOCH
     _LAMBDA_DEADLINE_EPOCH.set(deadline_epoch)
     _FALLBACK_DEADLINE_EPOCH = deadline_epoch
+
+
+@contextmanager
+def lambda_deadline_scope() -> Iterator[None]:
+    """Give back, when the block ends, any deadline published inside it.
+
+    Every handler that calls :func:`set_lambda_deadline_epoch` runs its whole
+    invocation inside this. On exit, by return or by raise, both stores hold what
+    they held on entry: the ContextVar through the token of a ``set`` made here, the
+    process-wide value by assignment. Without it a deadline outlives the invocation
+    that published it, and whatever runs next in the same process reads it — the
+    next warm invocation until it publishes its own, or a later test in the same
+    pytest run. Once that deadline has passed, :func:`attempt_cannot_finish` refuses
+    every attempt, so a retry ladder there gives up after its first failure.
+
+    Restored rather than cleared, so a scope nested inside another, or a caller with
+    a deadline of its own in force, gets that deadline back.
+    """
+    global _FALLBACK_DEADLINE_EPOCH
+    previous_fallback = _FALLBACK_DEADLINE_EPOCH
+    token = _LAMBDA_DEADLINE_EPOCH.set(_LAMBDA_DEADLINE_EPOCH.get())
+    try:
+        yield
+    finally:
+        _LAMBDA_DEADLINE_EPOCH.reset(token)
+        _FALLBACK_DEADLINE_EPOCH = previous_fallback
 
 
 def get_lambda_deadline_epoch() -> float | None:

@@ -5,7 +5,7 @@ title: "Prompt Caching — Measured Behaviour"
 <!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
 <!-- SPDX-License-Identifier: MIT-0 -->
 
-# Prompt caching in GenAIIDP — what actually happens, measured
+# Prompt Caching — Measured Behaviour
 
 > **Why this page exists.** Several cost claims in this repo rest on one sentence:
 > the duplicated schema copies "sit inside the prompt-cache prefix, so they are cache
@@ -22,7 +22,7 @@ number below is read back from `usage.cacheWriteInputTokens` /
 
 ---
 
-## 1. There is a minimum cacheable prefix, and below it caching silently does nothing
+## 1. The minimum cacheable prefix
 
 Anthropic publishes a per-model minimum. **It is not monotonic across generations**,
 which is the trap:
@@ -66,7 +66,7 @@ with `ValidationException: A maximum of 4 blocks with cache_control may be provi
 customisation rather than a live problem: a hand-written prompt with five
 `<<CACHEPOINT>>` markers does not cache less, it fails.
 
-### Nova is different, and much more forgiving
+### Nova models
 
 `us.amazon.nova-2-lite-v1:0`, same sweep: **every** prefix tested cached, including
 the smallest (a 355-token prefix produced `cacheWrite: 355`). A write only happens
@@ -101,7 +101,7 @@ using a Nova extraction model is unaffected by §1–§3.
 > read on every subsequent call. The flakiness was ours. It is recorded here because
 > the same overlap would mislead anyone re-running the sweep.
 
-## 2. Two of the nine classes in the shipped `ocr-benchmark` preset never cache
+## 2. Classes in the `ocr-benchmark` preset that never cache
 
 Measured per class, using each class's **real** prompt prefix (system prompt + the
 task prompt up to `<<CACHEPOINT>>` with the actual schema substituted), with the
@@ -126,7 +126,7 @@ For comparison, `realkie-fcc-verified` → `Invoice` is 1,687 tokens and caches,
 few fields to a class, or shortening a task prompt, can move a class across it in
 either direction with no visible signal. This is not a corner case.
 
-## 3. A one-off document pays **+24.9%** on the prefix for caching it will never reuse
+## 3. The cache-write premium on a document processed once
 
 A cache write costs **1.25×** base input; a read costs **0.1×**. So a prefix that is
 written and never read inside the TTL is a *net loss*. Measured against the exact
@@ -153,7 +153,7 @@ a read refreshes the timer for free. So batch workloads and busy stacks collect;
 a stack processing one document every few minutes pays the 25% surcharge on every
 one of them.
 
-## 4. What this changes about the schema-duplication claim
+## 4. Effect on the schema-duplication saving
 
 The claim "the duplicated copies are cache reads at ~a tenth of input price" is:
 
@@ -169,7 +169,7 @@ The claim "the duplicated copies are cache reads at ~a tenth of input price" is:
 Any statement of the form "the schema is cheap because it's cached" needs the class's
 prefix length and the workload's arrival rate attached, or it is unfalsifiable.
 
-## 5. Consequences for `extraction.forced_tool.enabled` (#744)
+## 5. Effect on `extraction.forced_tool.enabled`
 
 A forced toolSpec renders at position 0 — **before** the system prompt — so it
 lengthens the cached prefix. Measured per class:
@@ -203,7 +203,7 @@ document text and page images, after the cachePoint and therefore never cached. 
 these percentages apply to a fraction of the bill, not to the bill. The end-to-end
 magnitude is measured separately (§6).
 
-## 6. End-to-end magnitude — measured, and smaller than the mechanism suggests
+## 6. End-to-end effect on cost
 
 The §2 and §5 predictions were registered **before** the run and then confirmed on 293
 real documents (stack `IDPBench` at the v0.6.7 tag, `ocr-benchmark`, Sonnet 4.6):
@@ -242,7 +242,7 @@ could be most of the request, and there the same mechanism would dominate.
 Full A/B: [`config-guidance.md`](../config-guidance.md) §7. Data:
 `benchmarks/results/v0.6.7/forcing-real-corpus/`.
 
-## 7. Instrumentation note — why nobody noticed
+## 7. Why the existing metrics did not show this
 
 `benchmarks/harness/detection_ab_teststudio.py` (the previous real-corpus A/B tool)
 computes input tokens as *every metering key whose name contains both "token" and

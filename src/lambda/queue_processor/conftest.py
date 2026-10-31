@@ -66,6 +66,12 @@ _REAL_MODULES: tuple[tuple[str, str], ...] = (
         "idp_common.utils.transient_errors",
         "lib/idp_common_pkg/idp_common/utils/transient_errors.py",
     ),
+    # Execution naming moved into the library (shared with review queues);
+    # stdlib only, and the naming tests assert the real names.
+    (
+        "idp_common.utils.execution_names",
+        "lib/idp_common_pkg/idp_common/utils/execution_names.py",
+    ),
 )
 
 

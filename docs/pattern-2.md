@@ -47,9 +47,16 @@ For the current architecture diagram, see the unified architecture in [architect
 
 The workflow consists of three main processing steps with an optional assessment step:
 1. OCR processing using Amazon Textract
-2. Document classification using Claude via Amazon Bedrock (with two available methods):
-   - Page-level classification: Classifies individual pages and groups them
-   - Holistic packet classification: Analyzes multi-document packets to identify document boundaries
+2. Document classification using Amazon Bedrock. `classification.strategy`
+   chooses between two strategies, and the page-reading call then works at one of
+   two granularities:
+   - `combined` (*Split and classify together (one call)* in the configuration
+     editor): one call returns a
+     page's or packet's section boundaries and classes together
+   - `split_then_classify`: boundaries first, with no class vocabulary in the prompt, then
+     one call per detected section to classify it
+   - Within either, `granularity: page` makes one call per page and
+     `granularity: packet` one call per packet or window of `window_pages` pages
 3. Field extraction using Claude via Amazon Bedrock
 4. **Assessment** (optional): Confidence evaluation of extraction results using LLMs
 
@@ -116,11 +123,11 @@ Each step includes comprehensive retry logic for handling transient errors:
   ```
 
 #### Classification Function
-- **Purpose**: Classifies pages or document packets using Claude via Bedrock and segments into sections
+- **Purpose**: Classifies pages or packets using Claude via Bedrock and splits the document into sections
 - **Key Features**:
-  - Two classification methods:
-    - Page-level classification (multimodalPageLevelClassification)
-    - Holistic packet classification (textbasedHolisticClassification)
+  - Two classification granularities, set by `classification.combined.granularity` under the default `combined` strategy and by `classification.split_then_classify.splitting.llm.granularity` under `split_then_classify` (see [Classification](./classification.md)):
+    - Page granularity (the default): one call per page
+    - Packet granularity: one call per packet
   - RVL-CDIP dataset categories for classification
   - Concurrent page processing
   - Automatic image resizing and optimization
@@ -189,7 +196,8 @@ Each step includes comprehensive retry logic for handling transient errors:
 Pattern-2 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
 
 **Pattern-2 Specific Configuration:** HITL is enabled through the configuration
-(Web UI **Configuration → Assessment & HITL Configuration**, or the config YAML),
+(Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
+`hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md).
@@ -230,7 +238,6 @@ The pattern exports these outputs to the parent stack:
 ### Configuration
 
 **Stack Deployment Parameters:**
-- `ClassificationMethod`: Classification methodology to use (options: 'multimodalPageLevelClassification' or 'textbasedHolisticClassification')
 - **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
 - `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
 - `MaxConcurrentWorkflows`: Workflow concurrency limit
@@ -336,11 +343,19 @@ The OCR service supports optional image resizing for processing optimization:
 # OCR configuration example
 ocr:
   image:
-    resize_config:
-      target_width: 951   # Target width for processing
-      target_height: 1268 # Target height for processing
+    target_width: 951     # Target width for processing
+    target_height: 1268   # Target height for processing
+    dpi: 400              # PDF-to-image rasterization DPI
     preprocessing: true   # Enable adaptive binarization preprocessing
 ```
+
+All four settings sit directly under `ocr.image`, and there is no
+`resize_config` level in the configuration — the service builds that dictionary
+itself from `target_width` and `target_height`. The `resize_config=` and `dpi=`
+constructor keywords in the Python example above are the deprecated
+back-compatibility path; pass the configuration instead and set the values
+there. When neither dimension is set, `OcrService` applies its own 2600×3600
+ceiling.
 
 ### OCR Image Processing Features
 
@@ -405,13 +420,13 @@ ocr:
 
 ## Customizing Classification
 
-The pattern supports two different classification methods:
+Classification runs at one of two granularities, set in the configuration by `classification.combined.granularity` under the default `combined` strategy. Under `split_then_classify` it is set by `classification.split_then_classify.splitting.llm.granularity` instead, and applies to the splitting call, which returns section boundaries without classes; each section is then classified by a call of its own. The two descriptions below are of the combined call:
 
-1. **Page-Level Classification (multimodalPageLevelClassification)**: This is the default method that classifies each page independently based on its visual layout and textual content. It outputs a simple JSON format with a single class label per page.
+1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.combined.page.system_prompt` and `classification.combined.page.task_prompt`.
 
-2. **Holistic Packet Classification (textbasedHolisticClassification)**: This method examines the document as a whole to identify boundaries between different document types within a multi-document packet. It can detect logical document boundaries and identifies document types in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies document segments with start and end page numbers.
+2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify the boundaries between its sections. It detects section boundaries and identifies each section's class in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies the sections with start and end page numbers. Its prompts are `classification.combined.packet.system_prompt` and `classification.combined.packet.task_prompt`.
 
-You can select which method to use by setting the `ClassificationMethod` parameter when deploying the stack.
+The granularity is a configuration setting, not a stack parameter: change it in the configuration (for example in the web UI's configuration editor). [Classification](./classification.md) covers both granularities, the split-then-classify strategy, and how to choose between them.
 
 The classification system uses RVL-CDIP dataset categories and can be customized through the configuration files. Classification models and prompts are now managed through the configuration library rather than CloudFormation parameters.
 
@@ -571,7 +586,7 @@ Pattern 2 supports several placeholders for building dynamic prompts:
 - **`{FEW_SHOT_EXAMPLES}`**: Examples from the configuration (class-specific for extraction, all classes for classification)
 - **`{DOCUMENT_TEXT}`**: OCR-extracted text content from the document
 - **`{DOCUMENT_IMAGE}`**: Document image(s) positioned at specific locations in the prompt
-- **`{DOCUMENT_CLASS}`**: The classified document type (used in extraction prompts)
+- **`{DOCUMENT_CLASS}`**: The class of the section being processed (used in extraction prompts)
 - **`{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`**: List of attributes to extract with their descriptions
 
 **Image Placement Benefits:**

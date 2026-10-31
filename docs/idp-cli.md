@@ -339,8 +339,9 @@ idp-cli deploy [OPTIONS]
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
 - `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
   setting rather than a stack parameter (the `EnableHITL` parameter was removed in
-  v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
-  Configuration**, or in the config YAML passed to `--custom-config`. The flag is
+  v0.4.11) — enable it in the Web UI under **Configuration → Human-in-the-Loop
+  (HITL) Review (Optional)**, or set `hitl.enabled` in the config YAML passed to
+  `--custom-config`. The flag is
   still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
   new pair starts at a comma or whitespace followed by `key=` (so a space-separated
@@ -644,8 +645,8 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 2. **Additional Resource Cleanup Phase** (happens with `--wait` on all deletions and always with `--force-delete-all`): Removes stack-specific resources not tracked by CloudFormation:
    - CloudWatch Log Groups (Lambda functions, Glue crawlers)
    - AppSync APIs and their log groups (only ever present in stacks created before AppSync was removed; current stacks create none)
-   - CloudFront distributions (two-phase cleanup - initiates disable, takes 15-20 minutes to propagate globally)
-   - CloudFront Response Headers Policies (from previously deleted stacks)
+   - This stack's own CloudFront distributions, identified from the stack's resource list rather than by their comment, which carries only the stack name and so is shared by a same-named stack in another Region. A distribution has to be disabled, and finish deploying (15-20 minutes), before it can be deleted, so each pass moves it one step: an enabled one is disabled, a disabled and deployed one is deleted, and one still deploying is left with a message to re-run. Other stacks' distributions, including disabled orphans, are `remove-deleted-stack-resources`'s job
+   - This stack's own CloudFront Response Headers Policy, identified from the stack's resource list rather than by name. No other stack's policy is touched: CloudFront is global, so the account's policy list includes those of IDP stacks in every Region, and sweeping orphans out of it is `remove-deleted-stack-resources`'s job. A policy is usually already gone, because CloudFormation deletes it with the stack; one left by a failed stack deletion cannot be deleted until its distribution has finished deleting (15-20 minutes after it is disabled), and the CLI logs that and says to re-run rather than reporting a failure
    - IAM custom policies and permissions boundaries
    - CloudWatch Logs resource policies
 3. **Retained Resource Cleanup Phase** (only with `--force-delete-all`): Deletes remaining resources in order:
@@ -662,7 +663,8 @@ from one that deleted cleanly.
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
-- CloudFront response header policies (custom)
+- This stack's own CloudFront distributions, one step per pass: disabled if enabled, deleted once disabled and deployed
+- This stack's own CloudFront response headers policy, once its distribution is gone
 - CloudWatch Logs resource policies (stack-specific)
 - AppSync log groups (pre-migration stacks only)
 - Additional log groups containing stack name
@@ -689,9 +691,13 @@ idp-cli delete --stack-name test-stack --empty-buckets --force
 # Force delete ALL remaining resources (comprehensive cleanup)
 idp-cli delete --stack-name test-stack --force-delete-all --force
 
-# Delete without waiting
-idp-cli delete --stack-name test-stack --force --no-wait
+# Wait for the deletion to reach DELETE_COMPLETE before returning
+idp-cli delete --stack-name test-stack --force --wait
 ```
+
+Deletion does **not** wait by default: without `--wait` the command initiates the
+delete and returns, printing the console link and the `--wait` form to follow it with.
+There is no `--no-wait` flag — omitting `--wait` is already the no-wait path.
 
 **What you'll see (standard deletion):**
 ```
@@ -781,9 +787,17 @@ Stack 'test-stack' and all resources completely removed.
 If you run `delete` on a stack that already has a DELETE operation in progress, the command automatically switches to monitoring mode instead of failing. This is useful if you started a deletion without `--wait` - simply run the command again to monitor:
 
 ```bash
-# First run without --wait starts the deletion
-$ idp-cli delete --stack-name test-stack --force --no-wait
-✓ Stack DELETE initiated successfully!
+# First run: no --wait, so the deletion is initiated and the command returns
+$ idp-cli delete --stack-name test-stack --force
+✓ Stack deletion initiated!
+Stack: test-stack
+Region: us-east-1
+
+Monitor progress in the AWS Console:
+  CloudFormation → Stacks → test-stack
+
+Or wait for it with:
+  idp-cli delete --stack-name test-stack --force --wait
 
 # Second run - automatically monitors the in-progress deletion
 $ idp-cli delete --stack-name test-stack
@@ -1399,7 +1413,7 @@ idp-cli download-results \
 ### `use-as-baseline`
 
 Promote a processed document's output to the evaluation baseline — the
-scriptable equivalent of the web UI's **Use as Evaluation Baseline** button.
+scriptable equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies every output object for the document into the evaluation baseline bucket
 and sets the document's `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs
 synchronously (returns once the copy is complete).
@@ -2376,6 +2390,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 2. **IDP Stack Identification** - Identifies IDP stacks by their Description ("AWS GenAI IDP Accelerator") or naming patterns (IDP-*, PATTERN1/2/3)
 3. **Active Stack Protection** - Tracks both ACTIVE and DELETED stacks; resources from active stacks are NEVER touched
 4. **Safe Cleanup** - Only targets resources belonging to stacks in DELETE_COMPLETE state
+5. **Global Resource Check** - CloudFront distributions, response headers policies and IAM policies are global, and the S3 bucket listing is account-wide; all of them carry only the stack's name. So before deleting one the command asks every Region enabled for the account whether a stack of that name still exists there. This protects a stack deleted in a scanned Region and recreated under the same name in one `--check-stack-regions` does not name. If any Region cannot be read, the resource is left in place and reported under **Errors** with the reason, and the command exits 1. A resource left because its stack still exists in another Region is a deliberate skip: it is recorded in the SDK result's `skipped` list and listed under **Skipped** in the CLI summary
 
 **Safety Features:**
 - Resources from ACTIVE stacks are protected and skipped
@@ -2401,6 +2416,8 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 - `--dry-run`: Preview changes without making them **(RECOMMENDED first step)**
 - `--yes`, `-y`: Auto-approve all deletions (skip confirmations)
 - `--check-stack-regions`: Comma-separated regions to check for stacks (default: `us-east-1,us-west-2,eu-central-1`). Pass `ca-central-1` explicitly to sweep a Canada deployment
+
+**Permissions:** besides delete permissions for the resources it cleans, the global resource check needs `ec2:DescribeRegions` and `cloudformation:DescribeStacks` in every enabled Region. A `DescribeStacks` grant scoped to one Region counts as missing for the others. Without them, every CloudFront distribution, response headers policy, IAM policy and S3 bucket is left in place and reported as an error, and the command exits 1.
 
 **Examples:**
 
@@ -2497,11 +2514,18 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - `classification.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
+- **Pre-0.9 classification layout** - Warns when the file still uses the flat
+  classification keys, naming the ones it converted, so you can save the nested
+  form and keep it. A second warning appears for the one conversion that
+  **changes behaviour**: a `maxPagesForClassification` page limit combined with
+  boundary detection is converted to `sectionSplitting: disabled`, after which a
+  short packet becomes one section where it used to be split. Both
+  are warnings, not errors — the file is valid and will run.
 - **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
 - **OpenAI GPT-6 Astra compatibility** - Errors if `us.openai.gpt-6-astra` / `global.openai.gpt-6-astra` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Astra rejects whole-PDF `document` blocks. Like Grok — and unlike its GPT-5.x stablemates — Astra **is** valid for agentic extraction, since it reaches Converse and emits `toolUse`. The agentic check keys on the bedrock-mantle route rather than the `openai.` prefix, so one OpenAI model passes it and the others do not. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
@@ -2549,7 +2573,7 @@ idp-cli config-download [OPTIONS]
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
 - `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
-- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration
+- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration. The file is written in the current configuration format whichever release cut the revision, so it has the same shape as a download of the profile's current configuration ([Revision History](configuration-profiles.md#revision-history))
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2944,7 +2968,7 @@ idp-cli abort-test-run \
 - Document workflows are stopped via Step Functions execution abort
 
 **Limitations:**
-- Cannot abort test runs with status **EVALUATING**, **COMPLETED**, **PARTIAL_COMPLETE**, or **FAILED**
+- Cannot abort test runs with status **EVALUATING**, **COMPLETE**, **PARTIAL_COMPLETE**, or **FAILED**
 - The abort operation waits up to 25 seconds for documents to reach terminal state
 
 ---
@@ -2985,7 +3009,7 @@ idp-cli test-compare \
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs
-- Shows nested config paths (e.g., `classification.model`, `extraction.temperature`)
+- Shows nested config paths (e.g., `classification.combined.llm.model`, `extraction.temperature`)
 - Highlights values that differ across test runs
 
 **Requirements:**
@@ -3129,8 +3153,8 @@ idp-cli discover-multidoc [OPTIONS]
 |--------|-------------|
 | `--dir` | Directory containing documents to analyze (recursive scan) |
 | `-d, --document` | Individual document files (repeatable: `-d doc1.pdf -d doc2.png`) |
-| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`) |
-| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`) |
+| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada) |
+| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions) |
 | `-o, --output` | Output directory for discovered JSON schemas |
 | `--stack-name` | CloudFormation stack name (required for `--save-to-config`) |
 | `--config-profile` (alias: `--config-version`) | Configuration profile to save schemas to |

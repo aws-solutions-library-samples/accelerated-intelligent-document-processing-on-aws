@@ -1,0 +1,10 @@
+{
+  "name": "idp-ux-runner",
+  "private": true,
+  "description": "Pinned toolchain for the MR UX test (scripts/ux_runner/install.sh)",
+  "license": "MIT-0",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.281",
+    "chrome-devtools-mcp": "1.10.1"
+  }
+}

@@ -27,7 +27,7 @@ exclude = [
 
 [project]
 name = "idp_common"
-version = "0.6.12"
+version = "0.6.13"
 description = "Common utilities for GenAI IDP Accelerator patterns"
 authors = [{ name = "AWS", email = "noreply@amazon.com" }]
 requires-python = ">=3.12,<3.14"
@@ -59,6 +59,13 @@ classifiers = [
 # Core utilities only - minimal dependencies
 core = []
 
+# Inbox notifications (idp_common.notifications) - boto3 is a base dependency
+notifications = []
+
+# HITL review queues (idp_common.review_queues)
+# pydantic and boto3 are base dependencies
+review_queues = []
+
 # Development only dependencies
 dev = [
   "python-dotenv (>=1.1.0,<2.0.0)",
@@ -74,13 +81,13 @@ dev = [
 
 # Image handling dependencies
 image = [
-  "Pillow==12.3.0",
+  "Pillow==13.0.0",
   "pypdfium2>=5.5.0",  # PDF page extraction for discovery multi-section support
 ]
 
 # OCR module dependencies
 ocr = [
-  "Pillow==12.3.0",
+  "Pillow==13.0.0",
   "pypdfium2>=5.5.0",
   "amazon-textract-textractor[pandas]==1.9.2",
   "numpy==1.26.4",
@@ -92,17 +99,17 @@ ocr = [
 
 # Classification module dependencies
 classification = [
-  "Pillow==12.3.0", # For image handling
+  "Pillow==13.0.0", # For image handling
 ]
 
 # Extraction module dependencies
 extraction = [
-  "Pillow==12.3.0",  # For image handling
+  "Pillow==13.0.0",  # For image handling
 ]
 
 # Assessment module dependencies
 assessment = [
-  "Pillow==12.3.0",               # For image handling
+  "Pillow==13.0.0",               # For image handling
   "aws-lambda-powertools>=3.2.0", # Structured logging and observability
 ]
 
@@ -123,6 +130,13 @@ evaluation = [
   # EvaluationFunction Lambda fails at import time with
   # ``stickler.doc_split requires pandas``.
   "stickler-eval[docsplit]==1.0.0",
+  # munkres is Stickler's Hungarian-matching dependency, declared there only as
+  # ``munkres>=1.1.4``. Pinned to 1.1.4, the last release by the original
+  # maintainer: 2.0.0 (2026-10-06) and 3.0.0 (2026-10-18) are a rewrite with a
+  # native extension, published by a different uploader and not yet vetted, and
+  # 3.0.0 changed import-time behaviour enough to break a nightly. Revisit after
+  # reviewing the new upstream.
+  "munkres==1.1.4",
   "genson==1.3.0",  # For automatic JSON Schema generation from data
   # Numpy pin relaxed: stickler-eval declares ``numpy>=1.26,<3``; an exact 1.26.4
   # pin invited resolver conflicts on upgrade. Kept above 1.26 so the eval
@@ -160,7 +174,6 @@ appsync = ["requests<3.0.0,>=2.32.3"]
 # used.
 agents = [
   "strands-agents==1.14.0; python_version>='3.10'",
-  "strands-agents-tools==0.2.22; python_version>='3.10'",
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",    # Specifically for the code interpreter tool
   "jsonschema>=4.0.0",
 ]
@@ -170,7 +183,7 @@ multi_document_discovery = [
   "scikit-learn>=1.5.0",       # KMeans clustering and silhouette analysis
   "scipy>=1.14.0",             # KDTree for nearest-neighbor search
   "numpy==1.26.4",             # Embedding matrices and vector operations
-  "Pillow==12.3.0",            # Image processing for document rendering
+  "Pillow==13.0.0",            # Image processing for document rendering
   "pypdfium2>=5.5.0",          # PDF page rendering
   "jinja2>=3.1.0",             # Prompt template rendering
   "strands-agents==1.14.0; python_version>='3.10'",  # Agentic schema generation
@@ -178,27 +191,20 @@ multi_document_discovery = [
 
 # Synthesis / cold-start bootstrap dependencies. Schema authoring + config /
 # test-set creation only need jsonschema; the document GENERATOR is a separate,
-# heavier extra (see synthesis-generator) so the base capability stays light.
+# heavier install in its own container (see below) so the base capability stays light.
 synthesis = [
   "jsonschema>=4.0.0",
 ]
 
-# Optional synthetic-document generator (SEED). Heavy (Strands + Bedrock +
-# rendering); install only where document generation actually runs. The engine
-# adapter imports it lazily and degrades gracefully when absent.
-# NOTE: seed-data requires numpy 2.x (opencv/scikit-image/numba), which conflicts
-# with the numpy==1.26.4 pin in the ocr/evaluation/all extras. Install this in an
-# isolated environment (the generator's own container / AgentCore runtime), NOT
-# alongside idp_common[ocr|evaluation|all].
-synthesis-generator = [
-  "seed-data>=0.0.6",
-]
+# The synthetic-document generator (SEED, the ``seed-data`` package) is not an
+# extra: it needs numpy 2.x and a Pillow older than the one pinned here, so it is
+# installed only in its own container (feature-platform/idp-data-generator/
+# Dockerfile). The engine adapter imports it lazily and degrades when it is absent.
 
 # Code intelligence module dependencies
 code_intel = [
     "requests==2.33.0",
     "strands-agents==1.14.0",
-    "strands-agents-tools==0.2.22",
     "bedrock-agentcore>=1.6.1,<1.9.0",  # cap rationale: see the [agents] extra
     "PyYAML>=6.0.0",
     "pathspec>=0.11.0",
@@ -233,9 +239,6 @@ test = [
                                     # [ocr]. Without it the parser is a MagicMock and a
                                     # `"Sample line one" in result` assertion compares
                                     # against a mock repr rather than parsed text.
-  "strands-agents-tools==0.2.22; python_version>='3.10'",  # sample_calculator/agent.py
-                                    # imports strands_tools at MODULE scope, so its test
-                                    # module cannot even be collected without it.
   "requests (>=2.32.3,<3.0.0)",
   "pyarrow==23.0.1",
   "PyYAML==6.0.2",
@@ -243,7 +246,7 @@ test = [
   "xlrd==2.0.2",
   "python-docx==1.2.0",
   "moto[s3,cloudformation]==5.1.8", # For mocking AWS services in tests (cloudformation extra needed by feature-platform launch-url tests)
-  "Pillow==12.3.0",                 # Required for image processing in assessment tests
+  "Pillow==13.0.0",                 # Required for image processing in assessment tests
   "rich>=13.0.0",                   # Required for publish tests
   "graphql-core>=3.2,<4",           # Real GraphQL parser: oracle for the API-validation-spec parser-correctness test
   "idp_common[agentic-extraction]", # Required for agentic_idp tests
@@ -260,6 +263,7 @@ test = [
   "mypy-boto3-bedrock-runtime>=1.39.0", # Required for bedrock_utils tests
   # Evaluation module dependencies (from evaluation group)
   "stickler-eval[docsplit]==1.0.0",
+  "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
   "numpy>=1.26,<3",
   "build==1.3.0",
@@ -297,13 +301,22 @@ test = [
   # as a manual `pip install`, which made those tests fail on any environment
   # that had not run the benchmark harness by hand.
   "reportlab>=4.0.0",
+  # The other half of that: benchmarks/tests/test_corpus_pagination_truth.py reads
+  # the pagination back out of the RENDERED page, because the defect it covers is a
+  # generator writing a ground truth its own pages contradict and only the page can
+  # settle that. It reads with pypdfium2 — the extractor bank_statement.py already
+  # uses, and already declared in five other extras here — rather than introducing
+  # a second PDF reader. Undeclared, every page-reading case in that file skips, and
+  # a skipped case is indistinguishable from a passing one in a CI log.
+  "pypdfium2>=5.5.0",
 ]
 
 # Full package with all dependencies
 all = [
   "stickler-eval[docsplit]==1.0.0",
+  "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
-  "Pillow==12.3.0",
+  "Pillow==13.0.0",
   "pypdfium2>=5.5.0",
   "amazon-textract-textractor[pandas]==1.9.2",
   "numpy==1.26.4",
@@ -324,7 +337,6 @@ all = [
   "xlrd==2.0.2",
   "python-docx==1.2.0",
   "strands-agents==1.14.0; python_version>='3.10'",
-  "strands-agents-tools==0.2.22; python_version>='3.10'",
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",  # cap rationale: see the [agents] extra
   "jsonschema>=4.0.0",
   # "s3fs==2023.12.2" - - disabled till we fix package dependencies

@@ -31,6 +31,7 @@ import boto3
 from idp_common import extraction, get_config
 from idp_common.docs_service import create_document_service
 from idp_common.extraction.failure import persist_section_after_extraction_failure
+from idp_common.lambda_deadline import lambda_deadline_scope
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
@@ -100,14 +101,15 @@ def handler(event, context):
     completed shards are still preserved by ``S3ShardPersistence`` for the retries
     that do happen.
     """
-    try:
-        return _handle(event, context)
-    except Exception as e:
-        raise_if_transient(
-            e,
-            where=f"shard runtime {event.get('mode', 'plan')} section {event.get('section_id')}",
-        )
-        raise
+    with lambda_deadline_scope():
+        try:
+            return _handle(event, context)
+        except Exception as e:
+            raise_if_transient(
+                e,
+                where=f"shard runtime {event.get('mode', 'plan')} section {event.get('section_id')}",
+            )
+            raise
 
 
 def _handle(event, context):

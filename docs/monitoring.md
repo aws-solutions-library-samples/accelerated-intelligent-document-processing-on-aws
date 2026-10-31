@@ -458,19 +458,22 @@ and two of the three causes report nothing here:
   `extraction_class_not_configured` issue from the Extraction step.
 
 ⚠️ **That last case is not always rare, and which configuration you run decides
-it.** On the default `multimodalPageLevelClassification` with
-`enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
-coerced to `invalidClassFallback`, so it becomes the silent `unclassified` case
-above and the count really is bounded by configuration edits. Two other supported
-configurations store the model's invented class name verbatim —
-`textbasedHolisticClassification`, which has no enforcement loop at all, and
-`multimodalPageLevelClassification` with `enforceValidClasses: false` — and there
-the rate follows model output rather than operator action. Small, cheap
-classification models are the most prone to those predictions. On either of those
-paths expect data points proportional to throughput, and use
-`ConfidenceUnavailableThreshold` to set the volume at which it is worth paging;
-better still, define the classes the model keeps reaching for, or turn enforcement
-on. The report itself is correct either way — the section holds no data — so the
+it.** With `enforceValidClasses` on (the default) — it lives in each
+class-assigning call's `validation` block, at
+`classification.combined.llm.validation.enforceValidClasses` and
+`classification.split_then_classify.section_classification.llm.validation.enforceValidClasses`
+— every call that
+assigns a class — combined classification at page or packet granularity, and
+split-then-classify section classification — re-prompts on an out-of-vocabulary prediction and then assigns
+`fallback_class`, so it becomes the silent `unclassified` case above and the count
+really is bounded by configuration edits. With `enforceValidClasses: false` the
+model's invented class name is stored verbatim, and there the rate follows model
+output rather than operator action. Small, cheap classification models are the most
+prone to those predictions. On that path expect data points proportional to
+throughput, and use `ConfidenceUnavailableThreshold` to set the volume at which it
+is worth paging; better still, define the classes the model keeps reaching for, or
+turn enforcement on. See
+[Enforcing a Valid Class Vocabulary](./classification.md#enforcing-a-valid-class-vocabulary-validation--retry). The report itself is correct either way — the section holds no data — so the
 parameter, not a carve-out, is the right lever.
 
 The first two report nothing at all, exactly as an
@@ -544,7 +547,7 @@ was missing. The six causes worth checking first:
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
 | No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
-| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification method and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
+| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification strategy and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
 | The same code, with a `root_cause` saying none of the section's pages are present in the document | The section lists page IDs the document does not contain, so there was no page text or image to assess against. Before this was detected the pass ran anyway and returned scores derived from nothing | Check the Classification step's section boundaries and the OCR step's page list. A warning-severity `assessment_pages_missing` (no metric) marks the partial case, where only some pages were absent |
 
 **What is lost while it is firing:** the affected sections have no confidence
@@ -777,25 +780,29 @@ from the host — so it is a knob per stack, not one setting for the deployment.
 directions, so a seventh cannot join them silently and converting one forces its
 entry to be removed.
 
-## Pattern-Specific Monitoring
+## Mode-Specific Monitoring
 
-Each pattern includes additional monitoring tailored to its specific workflow:
+The unified pattern stack creates one dashboard covering both processing modes, and
+the `DashboardMerger` Lambda combines it with the main stack's dashboard. Both
+branches are always deployed, so the widgets for both are always present — which of
+them carries data depends on the `use_bda` configuration flag the documents were
+processed under. A mode you are not using reads as flat rather than as missing.
 
-### Pattern 1: Bedrock Data Automation (BDA)
-- BDA project execution metrics
-- API usage and throttling
-- Media processor performance
+**BDA mode** (`use_bda: true`) widgets cover the BDA API — *BDA API Request
+Status*, *BDA API Request Retries*, *BDA Job Executions* — plus duration,
+long-running-invocation and error widgets for *InvokeBDAFunction* and
+*ProcessResults*. The branch's completion-handling function has no widget of its
+own; its failures surface on the state machine and in its log group.
 
-### Pattern 2: Textract + Bedrock
-- Textract OCR performance
-- Bedrock model usage
-- Classification confidence distribution
-- Extraction completeness metrics
+**Pipeline mode** (`use_bda: false`, the default) widgets cover OCR throttling and
+errors, the Bedrock token, request-status, retry and latency series, and duration,
+long-running-invocation and error widgets per step for OCR, Classification,
+Extraction, Assessment and Summarization.
 
-### Pattern 3: Textract + UDOP + Bedrock
-- SageMaker endpoint performance
-- UDOP model latency and throughput
-- GPU utilization metrics
+Document and page throughput, Lambda concurrency throttles, Rule Validation and
+*Confidence Assessment Degraded* sit outside that split and report the same way in
+both modes. To see the widget list for the version you are running, open the
+dashboard rather than trusting this summary.
 
 ## Alarms the Stack Creates
 
@@ -1062,7 +1069,7 @@ report normal operation as a problem. Because it is an average, one slow documen
 in a busy 5-minute window will not trip it — this is a "the whole pipeline is
 slow" signal, not a per-document one.
 
-### The queue alarms — the gap both of the above leave
+### Queue alarms
 
 Both alarms above read the **state machine**, so neither can see a document that
 never got an execution ([#761](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/761)):

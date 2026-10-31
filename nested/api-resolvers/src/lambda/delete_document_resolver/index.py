@@ -16,6 +16,7 @@ import re
 from typing import List
 
 import boto3
+from idp_common.api_adapter import ReportedServerError
 from idp_common.delete_documents import delete_single_document
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -26,6 +27,14 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # Initialize AWS clients
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
+
+# Review queues: a deleted document's review items are purged with it. None when
+# HITL_TABLE_NAME is unset; the store builds no client until it is used.
+_REVIEW_STORE = None
+if os.environ.get("HITL_TABLE_NAME"):
+    from idp_common.review_queues.store import create_review_store
+
+    _REVIEW_STORE = create_review_store()
 
 
 #: Any ARN, in any partition. Matched to the first whitespace, quote or comma, which is
@@ -130,6 +139,7 @@ def handler(event, context):
                 s3_client=s3,
                 input_bucket=input_bucket,
                 output_bucket=output_bucket,
+                review_store=_REVIEW_STORE,
             )
 
             if result["success"]:
@@ -189,8 +199,11 @@ def handler(event, context):
         # deletes and reads to a user as "nothing happened" — after which the document
         # is gone from the list anyway. The per-document detail above says which steps
         # did complete.
+        # `ReportedServerError`, so the dispatcher passes this message through: it
+        # is written for the caller, with ARNs redacted, and an unexpected
+        # exception's text is replaced by a generic message.
         if failures:
-            raise RuntimeError(
+            raise ReportedServerError(
                 f"{len(failures)} of {len(object_keys)} document(s) could not be "
                 f"completely deleted ({deleted_count} completed) — "
                 + " | ".join(failures)

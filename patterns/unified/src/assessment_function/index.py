@@ -18,7 +18,7 @@ from idp_common import assessment, get_config, s3
 # cause and miss the other.
 from idp_common.assessment.degradation import degrade_section_to_no_confidence
 from idp_common.docs_service import create_document_service
-from idp_common.lambda_deadline import set_lambda_deadline_epoch
+from idp_common.lambda_deadline import lambda_deadline_scope, set_lambda_deadline_epoch
 from idp_common.models import Document, Status
 from idp_common.utils import (
     calculate_lambda_metering,
@@ -124,13 +124,14 @@ def handler(event, context):
     assessment call itself. Transient causes are re-raised under the one name
     AssessmentStep lists; hard errors keep their own name and are not retried.
     """
-    try:
-        return _handle(event, context)
-    except Exception as e:
-        raise_if_transient(
-            e, where=f"assessment section {(event or {}).get('section_id')}"
-        )
-        raise
+    with lambda_deadline_scope():
+        try:
+            return _handle(event, context)
+        except Exception as e:
+            raise_if_transient(
+                e, where=f"assessment section {(event or {}).get('section_id')}"
+            )
+            raise
 
 
 def _handle(event, context):

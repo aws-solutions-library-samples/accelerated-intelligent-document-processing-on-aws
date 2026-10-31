@@ -64,6 +64,9 @@ class Status(Enum):
     REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"  # A preprocessing hook (e.g. PII
     # anonymization) produced a redacted copy that is processed as a separate
     # document; this original was intentionally not processed further.
+    REJECTED = (
+        "REJECTED"  # Human reviewer rejected the document (terminal, not success)
+    )
     QUARANTINED = "QUARANTINED"  # GuardDuty Malware Protection reported
     # THREATS_FOUND. Terminal: the document was never admitted to the pipeline,
     # so it has no pages, no sections and no workflow execution. The threat name
@@ -74,6 +77,72 @@ class Status(Enum):
     # SSE-C, access denied, internal error) and the configured policy is to fail
     # closed. Deliberately distinct from QUARANTINED: "we found malware" and "we
     # could not look" call for different operator actions.
+
+
+#: Statuses a workflow can end on with SUCCEEDED while the document is not
+#: COMPLETED. The state machine puts them on ``$.document.status`` in Pass
+#: states before ``WorkflowComplete`` and the tracker preserves them.
+_SUCCEEDED_WRAPPER_STATUSES = frozenset(
+    {"REDACTED_SUPERSEDED", "HITL_IN_PROGRESS", "REJECTED"}
+)
+
+
+def terminal_document_status(
+    workflow_status: str, wrapper_status: Optional[str]
+) -> "Status":
+    """Document status for a finished Step Functions execution.
+
+    ``SUCCEEDED`` maps to ``COMPLETED`` unless the output document carries one of
+    ``REDACTED_SUPERSEDED``, ``HITL_IN_PROGRESS`` (phase 1 of a review-queue
+    document ended at the review point) or ``REJECTED`` (a reviewer rejected it).
+    ``ABORTED`` maps to ``ABORTED``; anything else is ``FAILED``.
+    """
+    if workflow_status == "SUCCEEDED":
+        if wrapper_status in _SUCCEEDED_WRAPPER_STATUSES:
+            return Status(wrapper_status)
+        return Status.COMPLETED
+    if workflow_status == "ABORTED":
+        return Status.ABORTED
+    return Status.FAILED
+
+
+def document_wrapper_status(output_data: Any) -> Optional[str]:
+    """The status the state machine put on the output document's wrapper.
+
+    The output holds the document at the root (``document``), under
+    ``Result.document``, or is the document itself. A terminal status set by a
+    Pass state before ``WorkflowComplete`` (``REDACTED_SUPERSEDED``,
+    ``HITL_IN_PROGRESS``, ``REJECTED``) lives on that wrapper, not inside a
+    compressed snapshot serialized earlier in the run.
+    """
+    if isinstance(output_data, str):
+        try:
+            output_data = json.loads(output_data)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(output_data, dict):
+        return None
+    if "document" in output_data:
+        document_data = output_data["document"]
+    elif (
+        isinstance(output_data.get("Result"), dict)
+        and "document" in output_data["Result"]
+    ):
+        document_data = output_data["Result"]["document"]
+    else:
+        document_data = output_data
+    if not isinstance(document_data, dict):
+        return None
+    status = document_data.get("status")
+    return status if isinstance(status, str) else None
+
+
+#: Statuses for which the post-processing Lambda hook is not invoked: the
+#: document either continues elsewhere (redacted copy, review queue) or was
+#: rejected, so there is no usable result to hand over.
+POST_PROCESSING_SUPPRESSED_STATUSES = frozenset(
+    {Status.REDACTED_SUPERSEDED, Status.HITL_IN_PROGRESS, Status.REJECTED}
+)
 
 
 @dataclass
@@ -92,7 +161,7 @@ class Page:
 
     ``None`` means NOT SCORED — no confidence signal exists for this page. That
     is the normal state: the classification prompt has to ask for a score and
-    the model has to return one (see `classification.confidence` and GitHub
+    the model has to return one (see the class-assigning call's `confidence` block and GitHub
     #673), and several code paths never produce one at all (the SageMaker
     backend returns no score; pages beyond `maxPagesForClassification` have
     their class extrapolated rather than predicted).
@@ -129,7 +198,7 @@ class Page:
     first: ``[{"class": "w2", "probability": 0.8}, {"class": "1099",
     "probability": 0.15}]``.
 
-    Produced by ``classification.confidence.mode: topk``, which asks the model to
+    Produced by a classification call's ``confidence.mode: topk``, which asks the model to
     enumerate and rank candidates rather than self-report one number — that is
     both better calibrated and the direct answer to "what else could this page
     have been?" (the question a reviewer looking at a suspicious classification
@@ -463,6 +532,20 @@ class Section:
     recovered when the model returned a JSON array for a single-object schema.
     """
 
+    blueprint_unscored: bool = False
+    """True when BDA matched a blueprint to this section but its confidence was
+    unscored (see ``idp_common.utils.parse_blueprint_confidence``), so
+    :attr:`confidence` is ``None``.
+
+    Set by the BDA result processor. It is what tells review-queue routing to
+    hold the section with a ``blueprint_confidence`` reason, as legacy HITL
+    marks the segment for review; a ``None`` confidence alone cannot, because a
+    section whose segment did not match a blueprint is unscored too. Serialized
+    only when True, by ``to_dict`` and as ``BlueprintUnscored`` in the DynamoDB
+    tracking record, so other payloads are unchanged and a reprocess that
+    reloads the document is held again.
+    """
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Section":
         """Create a Section from a dictionary representation."""
@@ -486,6 +569,7 @@ class Section:
             excluded=bool(data.get("excluded", False)),
             exclusion_reason=data.get("exclusion_reason"),
             instance_count=int(data.get("instance_count") or 0),
+            blueprint_unscored=bool(data.get("blueprint_unscored", False)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -511,6 +595,8 @@ class Section:
             ]
         if self.instance_count:
             result["instance_count"] = self.instance_count
+        if self.blueprint_unscored:
+            result["blueprint_unscored"] = True
         return result
 
 
@@ -969,6 +1055,8 @@ class Document:
             # are byte-identical.
             if section.instance_count:
                 section_dict["instance_count"] = section.instance_count
+            if section.blueprint_unscored:
+                section_dict["blueprint_unscored"] = True
             result["sections"].append(section_dict)
 
         # Add rule_validation_result if present (optional)
@@ -1103,6 +1191,9 @@ class Document:
                     excluded=bool(section_data.get("excluded", False)),
                     exclusion_reason=section_data.get("exclusion_reason"),
                     instance_count=int(section_data.get("instance_count") or 0),
+                    blueprint_unscored=bool(
+                        section_data.get("blueprint_unscored", False)
+                    ),
                 )
             )
 

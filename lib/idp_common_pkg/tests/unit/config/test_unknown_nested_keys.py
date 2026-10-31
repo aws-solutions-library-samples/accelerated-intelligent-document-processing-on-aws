@@ -454,6 +454,11 @@ def test_a_real_field_written_one_level_up_is_reported_with_the_path_it_belongs_
     ]
     nearest = min((len(p) for p in places), default=0)
     closest = [p for p in places if len(p) == nearest]
+    if len(closest) > 1 and nearest == len(here) + 2:
+        # The one settled tie: one level down, inside the call's ``llm`` block.
+        in_llm = [p for p in closest if p[len(here)] == "llm"]
+        if len(in_llm) == 1:
+            closest = in_llm
     if len(closest) == 1:
         expected = ".".join(closest[0])
         assert finding.suggestion == expected, (
@@ -503,8 +508,11 @@ def test_the_same_misnested_key_is_answered_for_each_place_it_can_be_written(whe
     for segment in reversed(where.split(".")):
         data = {segment: data}
     findings = collect_ignored_config_keys(data, IDPConfig)
+    # Classification's image settings live inside each call; the walk names the
+    # first route under what was written, which is the combined call.
+    image_parent = "classification.combined.llm" if where == "classification" else where
     assert [(f.path, f.suggestion) for f in findings] == [
-        (f"{where}.dpi", f"{where}.image.dpi")
+        (f"{where}.dpi", f"{image_parent}.image.dpi")
     ]
 
 
@@ -553,6 +561,51 @@ def test_an_ambiguous_key_is_reported_with_no_suggestion_at_all():
     assert (
         len([p for p in _every_path_declaring("enabled") if p[0] == "extraction"]) > 1
     )
+
+
+def test_a_call_setting_written_in_its_stage_block_is_sent_to_the_llm_block():
+    """``section_classification.model`` belongs in ``section_classification.llm``.
+
+    ``model`` is declared twice one level under ``section_classification`` — in
+    ``llm`` and in ``embeddings`` — so the plain depth rule ties and declines. The
+    tie is settled for the call's own ``llm`` block, which is where every 0.9
+    classification call keeps its model parameters, and nowhere else.
+    """
+    written = "classification.split_then_classify.section_classification.model"
+    findings = collect_ignored_config_keys(
+        {
+            "classification": {
+                "split_then_classify": {"section_classification": {"model": "x"}}
+            }
+        },
+        IDPConfig,
+    )
+    assert [(f.path, f.suggestion) for f in findings] == [
+        (written, "classification.split_then_classify.section_classification.llm.model")
+    ]
+    # The premise: without the rule this is a genuine tie.
+    tied = [
+        p
+        for p in _every_path_declaring("model")
+        if p[:3] == ("classification", "split_then_classify", "section_classification")
+        and len(p) == 5
+    ]
+    assert len(tied) > 1, tied
+
+
+def test_the_llm_block_rule_does_not_settle_a_tie_one_level_further_out():
+    """The rule applies only inside the block the key was written in.
+
+    ``classification.split_then_classify.model`` has ``splitting.llm.model`` and
+    ``section_classification.llm.model`` equally near, both in an ``llm`` block —
+    preferring one would be a guess, so it still declines.
+    """
+    findings = collect_ignored_config_keys(
+        {"classification": {"split_then_classify": {"model": "x"}}}, IDPConfig
+    )
+    assert [(f.path, f.suggestion) for f in findings] == [
+        ("classification.split_then_classify.model", None)
+    ]
 
 
 def test_a_key_that_belongs_to_another_section_is_not_suggested_across_sections():

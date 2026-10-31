@@ -747,7 +747,7 @@ result = client.evaluation.create_baseline(
 ### evaluation.use_as_baseline()
 
 Promote a processed document's output to the evaluation baseline — the
-programmatic equivalent of the web UI's **Use as Evaluation Baseline** button.
+programmatic equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies the document's output into the evaluation baseline bucket and sets its
 `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs synchronously.
 
@@ -2014,8 +2014,8 @@ Discover document classes from a collection of documents using embedding-based c
 **Parameters:**
 - `document_dir` (str, optional): Directory path containing documents to analyze (recursive scan)
 - `document_paths` (list[str], optional): List of individual document file paths
-- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`)
-- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`)
+- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada)
+- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions)
 - `output_dir` (str, optional): Directory to write individual JSON schema files per discovered class
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)

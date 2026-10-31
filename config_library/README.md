@@ -56,11 +56,12 @@ classes:
 To override a specific setting:
 
 ```yaml
-notes: "Configuration with custom classification method"
+notes: "Configuration that classifies a whole packet in one call"
 
-# Override just the classification method - everything else uses defaults
+# Override just the granularity - everything else uses defaults
 classification:
-  classificationMethod: textbasedHolisticClassification
+  combined:
+    granularity: packet
 
 classes:
   # ... your document classes

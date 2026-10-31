@@ -888,20 +888,13 @@ class TestRemoveDeletedStackResourcesScope:
         assert surviving == []
         assert api_calls.only("DeleteLogGroup").params["logGroupName"] == orphan
 
-    def test_a_protected_resource_is_summarised_as_no_resources_found(self):
-        """DEFECT: the summary never reports what the sweep protected or skipped.
+    def test_a_protected_resource_is_summarised_as_skipped(self):
+        """The summary reports what the sweep left alone, not only what it did.
 
-        The SDK returns a `skipped` list along`deleted`, `disabled`, `updated` and
-        `errors`, and cli.py:4165-4192 reads every key except `skipped`. When the
-        only log group belongs to a live stack, the sweep finds it, protects it, and
-        the command prints "LOG GROUPS: No resources found" (cli.py:4189-4192,
-        reached because none of the four keys it looks at is populated).
-
-        The consequence is a misleading report in exactly the situation the user
-        wants reassurance about: they cannot tell "there was nothing there" from
-        "there was something and I left it alone", and a resource skipped because its
-        owning stack could not be verified is invisible. Nothing is deleted wrongly,
-        so this is a reporting defect rather than a safety one.
+        When the only log group belongs to a live stack, the sweep finds it and
+        protects it. Reporting that as "No resources found" would make "there was
+        nothing there" indistinguishable from "there was something and I left it
+        alone", which is the distinction a user running a destructive sweep needs.
         """
         with mock_aws():
             _idp_stack("IDP-Gone", deleted=True)
@@ -916,11 +909,54 @@ class TestRemoveDeletedStackResourcesScope:
 
         assert result.exit_code == 0
         assert surviving == [protected]
-        assert "LOG GROUPS:" in result.output
-        assert "No resources found" in result.output
-        assert protected not in result.output
-        # No section of the summary reports skipped resources at all.
-        assert "Skipped (" not in result.output
+        log_section = result.output.split("LOG GROUPS:", 1)[1].split("\n\n", 1)[0]
+        assert "Skipped (" in log_section
+        assert protected in log_section
+        assert "No resources found" not in log_section
+
+
+@pytest.mark.usefixtures("sweep_console", "cloudfront_policies_unavailable")
+def test_an_unconfirmable_region_check_exits_non_zero_and_names_the_resource(
+    monkeypatch,
+):
+    """A denied ``ec2:DescribeRegions`` leaves every global resource in place,
+    which is the safe outcome, but it must not read as a clean account: the run
+    reports each resource it could not confirm as an error and exits 1 (#1533)."""
+    real_client = boto3.session.Session.client
+
+    def client(self, service_name, *args, **kwargs):
+        if service_name == "ec2":
+            raise RuntimeError("UnauthorizedOperation")
+        return real_client(self, service_name, *args, **kwargs)
+
+    with mock_aws():
+        _idp_stack("IDP-Gone", deleted=True)
+        iam = boto3.client("iam")
+        iam.create_policy(
+            PolicyName="IDP-Gone-PermissionsBoundary",
+            PolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+                }
+            ),
+        )
+        monkeypatch.setattr(boto3.session.Session, "client", client)
+
+        result = CliRunner().invoke(
+            cli,
+            ["remove-deleted-stack-resources", "--region", "us-east-1", "--yes"],
+        )
+        monkeypatch.undo()
+        surviving = [
+            p["PolicyName"]
+            for p in boto3.client("iam").list_policies(Scope="Local")["Policies"]
+        ]
+
+    assert result.exit_code == 1
+    assert "Not deleted IDP-Gone-PermissionsBoundary (stack: IDP-Gone)" in result.output
+    assert "could not list enabled Regions" in result.output
+    assert "IDP-Gone-PermissionsBoundary" in surviving
 
 
 class TestRemoveDeletedStackResourcesReporting:

@@ -14,7 +14,8 @@ This module adds the remaining items:
   * **2.1  IDOR** — a second user (User B) must not read/modify User A's data,
            and an operation that takes a resource identifier from the caller
            must refuse an identifier outside the deployment / the caller's
-           configuration scope.
+           configuration scope. The Inbox suite applies the same check to
+           Inbox messages (list, mark, delete, cursor and argument abuse).
   * **2.3  Token expiry** — an expired token is rejected (structural + optional
            live wait via ``IDP_SECTEST_WAIT_EXPIRY``).
   * **2.4  Logout revocation** — after global sign-out, a previously-issued
@@ -42,14 +43,19 @@ Design notes
   setup/teardown; this module only drives requests with the tokens it's given.
 """
 
+import json
 import socket
 import ssl
+import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlsplit
 
 # Checklist ids used in report details so AppSec sign-off is traceable.
 SEC_IDOR = "SEC-2.1-IDOR"
+SEC_INBOX_IDOR = "SEC-2.1-IDOR-INBOX"
+SEC_REVIEW_IDOR = "SEC-2.1-IDOR-REVIEW-QUEUES"
 SEC_EXPIRY = "SEC-2.3-TOKEN-EXPIRY"
 SEC_LOGOUT = "SEC-2.4-LOGOUT-REVOCATION"
 SEC_DELETED = "SEC-2.5-DELETED-RESOURCE"
@@ -266,6 +272,561 @@ def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
             f"  User A getAgentJobStatus(own job) -> {st} "
             "(marker absent for OWNER too — seed keying mismatch, inconclusive)"
         )
+
+
+# ---------------------------------------------------------------------------
+# 2.1 IDOR — User A's Inbox is not reachable by User B
+# ---------------------------------------------------------------------------
+def notification_keys():
+    """``idp_common.notifications.keys``, the one owner of the Inbox key formats.
+
+    The live harness runs from ``scripts/`` without an installed package in some
+    environments, so this repository's own library root is appended to
+    ``sys.path`` as a fallback (never another checkout's ``lib/``).
+    """
+    try:
+        from idp_common.notifications import keys
+    except ImportError:
+        root = Path(__file__).resolve().parents[1] / "lib" / "idp_common_pkg"
+        if root.is_dir() and str(root) not in sys.path:
+            sys.path.append(str(root))
+        from idp_common.notifications import keys
+    return keys
+
+
+def review_queue_keys():
+    """``idp_common.review_queues.keys``, the one owner of the HITLTable key formats.
+
+    Same fallback as :func:`notification_keys`: this repository's own library root
+    is appended to ``sys.path`` when the package isn't installed.
+    """
+    try:
+        from idp_common.review_queues import keys
+    except ImportError:
+        root = Path(__file__).resolve().parents[1] / "lib" / "idp_common_pkg"
+        if root.is_dir() and str(root) not in sys.path:
+            sys.path.append(str(root))
+        from idp_common.review_queues import keys
+    return keys
+
+
+def _inbox_items(body):
+    """The ``items`` list of a ``listInboxMessages`` body, or ``None``."""
+    try:
+        parsed = json.loads(body or "")
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+        return None
+    return parsed["items"]
+
+
+def _inbox_item(body, notification_id):
+    for item in _inbox_items(body) or []:
+        if isinstance(item, dict) and item.get("id") == notification_id:
+            return item
+    return None
+
+
+def run_inbox_idor_suite(
+    ctx, record, results, tokens, seed_fn=None, call_body=None, cleanup_fn=None
+):
+    """User B must not read, mark or delete User A's Inbox messages.
+
+    The Inbox resolver builds the partition key only from the caller's verified
+    claims, so User B's requests naming User A's message id resolve inside User
+    B's own partition. The suite seeds one message for the Admin test user,
+    proves the owner can see it (the positive control), then asserts:
+
+    * User B's list does not contain it;
+    * User B marking it read answers 404, and the owner still sees it unread;
+    * User B deleting it answers 404, and the owner still sees it;
+    * User B paging with a cursor naming it gets none of the owner's items;
+    * an invalid ``nextToken`` and an unknown ``userId`` argument answer 400.
+
+    ``seed_fn(notification_id, marker)`` writes the item and returns the owner's
+    recipient key, or ``None`` when the stack has no ``NotificationsTableName``
+    output (an older stack): a SKIP, never a PASS. A seed that raises is an
+    ERROR, because the table exists and the check should have run. A failed
+    positive control is an ERROR too: without it, "User B saw nothing" proves
+    nothing. ``cleanup_fn(notification_id)`` runs in ``finally``.
+    """
+    print("\n=== INBOX IDOR (User B cannot reach User A's Inbox) ===")
+    a_tok = tokens.get("Admin")
+    b_tok = tokens.get("userB")
+    if not a_tok or not b_tok or seed_fn is None or call_body is None:
+        record(
+            results,
+            "listInboxMessages",
+            "inbox-idor",
+            "SKIP",
+            False,
+            f"{SEC_INBOX_IDOR}: preconditions unavailable (two users + seed + "
+            "body-call) — skipped",
+            outcome="SKIP",
+        )
+        print("  SKIP (preconditions unavailable)")
+        return
+
+    try:
+        keys = notification_keys()
+        notification_id = keys.new_notification_id()
+    except Exception as e:  # noqa: BLE001
+        record(
+            results,
+            "listInboxMessages",
+            "inbox-idor-seed",
+            "ERR",
+            False,
+            f"{SEC_INBOX_IDOR}: could not load idp_common.notifications.keys "
+            f"({type(e).__name__}: {e}) — check not run",
+            outcome="ERROR",
+        )
+        print("  ERROR (idp_common.notifications unavailable)")
+        return
+
+    marker = f"INBOX-IDOR-MARKER-{_rand()}"
+    try:
+        _run_inbox_idor_checks(
+            ctx,
+            record,
+            results,
+            (a_tok, b_tok),
+            seed_fn,
+            call_body,
+            keys,
+            notification_id,
+            marker,
+        )
+    finally:
+        if cleanup_fn is not None:
+            try:
+                cleanup_fn(notification_id)
+            except Exception as e:  # noqa: BLE001
+                print(f"  (inbox cleanup error: {e})")
+
+
+def _run_inbox_idor_checks(
+    ctx, record, results, toks, seed_fn, call_body, keys, notification_id, marker
+):
+    a_tok, b_tok = toks
+    api = ctx["api_base"]
+    op = "listInboxMessages"
+
+    try:
+        owner = seed_fn(notification_id, marker)
+    except Exception as e:  # noqa: BLE001
+        record(
+            results,
+            op,
+            "inbox-idor-seed",
+            "ERR",
+            False,
+            f"{SEC_INBOX_IDOR}: seeding the owner's message failed "
+            f"({type(e).__name__}: {e}) — check not run",
+            outcome="ERROR",
+        )
+        print(f"  ERROR (seed failed: {e})")
+        return
+    if not owner:
+        record(
+            results,
+            op,
+            "inbox-idor-seed",
+            "SKIP",
+            False,
+            f"{SEC_INBOX_IDOR}: stack has no NotificationsTableName output "
+            "(Inbox not deployed) — skipped",
+            outcome="SKIP",
+        )
+        print("  SKIP (no NotificationsTableName output)")
+        return
+
+    def owner_view():
+        """(status, item-or-None, why-inconclusive) for the owner's own list."""
+        st, body = call_body(api, op, {"limit": 100}, a_tok)
+        why = _inconclusive_response(st, body)
+        if not why and st != 200:
+            why = f"owner list answered {st}"
+        if not why and _inbox_items(body) is None:
+            why = "owner list body has no items array"
+        return st, (None if why else _inbox_item(body, notification_id)), why
+
+    # 1. Positive control: the owner sees the seeded message, unread.
+    st, item, why = owner_view()
+    if why or item is None or item.get("read") is not False:
+        detail = why or (
+            "seeded message absent from the owner's list"
+            if item is None
+            else "seeded message is not unread for the owner"
+        )
+        record(
+            results,
+            op,
+            "inbox-owner(positive control)",
+            st,
+            False,
+            f"{SEC_INBOX_IDOR}: positive control failed — {detail}; the leak "
+            "checks would prove nothing, so none were run",
+            outcome="ERROR",
+        )
+        print(f"  Owner listInboxMessages -> {st} (ERROR: {detail})")
+        return
+    record(
+        results,
+        op,
+        "inbox-owner(positive control)",
+        st,
+        True,
+        f"{SEC_INBOX_IDOR}: owner sees the seeded message unread; got {st}",
+    )
+    print(f"  Owner listInboxMessages -> {st} (OK owner sees the message)")
+
+    def leaked(body):
+        text = body or ""
+        return marker in text or notification_id in text
+
+    # 2. User B's own list is served and does not contain it.
+    st, body = call_body(api, op, {"limit": 100}, b_tok)
+    _record_inbox_read(record, results, op, "userB(lists inbox)", st, body, leaked)
+
+    # 3. User B marks A's id read -> 404, and the owner still sees it unread.
+    st, body = call_body(
+        api, "markInboxMessages", {"ids": [notification_id], "read": True}, b_tok
+    )
+    _record_inbox_status(
+        record,
+        results,
+        "markInboxMessages",
+        "userB(marks A's message)",
+        (st, body),
+        404,
+        leaked,
+    )
+    o_st, o_item, o_why = owner_view()
+    unread = (not o_why) and o_item is not None and o_item.get("read") is False
+    _record_owner_after(
+        record,
+        results,
+        "markInboxMessages",
+        "inbox-owner(still unread)",
+        o_st,
+        o_why,
+        unread,
+        "after User B's mark the owner's message must stay unread",
+    )
+
+    # 4. User B deletes A's id -> 404, and the message still exists.
+    st, body = call_body(api, "deleteInboxMessages", {"ids": [notification_id]}, b_tok)
+    _record_inbox_status(
+        record,
+        results,
+        "deleteInboxMessages",
+        "userB(deletes A's message)",
+        (st, body),
+        404,
+        leaked,
+    )
+    o_st, o_item, o_why = owner_view()
+    _record_owner_after(
+        record,
+        results,
+        "deleteInboxMessages",
+        "inbox-owner(still exists)",
+        o_st,
+        o_why,
+        (not o_why) and o_item is not None,
+        "after User B's delete the owner's message must still exist",
+    )
+
+    # 5. User B pages with a cursor naming A's id -> none of A's items.
+    cursor = keys.encode_cursor(notification_id)
+    st, body = call_body(api, op, {"limit": 100, "nextToken": cursor}, b_tok)
+    _record_inbox_read(record, results, op, "userB(cursor at A's id)", st, body, leaked)
+
+    # 6. An invalid nextToken -> 400.
+    st, body = call_body(api, op, {"nextToken": "not-a-valid-cursor"}, b_tok)
+    _record_inbox_status(
+        record, results, op, "userB(invalid nextToken)", (st, body), 400, leaked
+    )
+
+    # 7. An unknown userId argument -> 400 (the operation takes no user argument).
+    st, body = call_body(api, op, {"userId": owner, "limit": 100}, b_tok)
+    _record_inbox_status(
+        record, results, op, "userB(unknown userId arg)", (st, body), 400, leaked
+    )
+
+
+def _record_inbox_read(record, results, op, principal, st, body, leaked):
+    """User B's own list must be served (200) and carry none of A's data."""
+    why = _inconclusive_response(st, body)
+    leak = (not why) and leaked(body)
+    served = (not why) and st == 200 and _inbox_items(body) is not None
+    ok = served and not leak
+    record(
+        results,
+        op,
+        principal,
+        st,
+        ok,
+        f"{SEC_INBOX_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_INBOX_IDOR}: User B's list must be served and hold none of A's "
+            f"messages; owner data {'PRESENT (LEAK)' if leak else 'absent'}; "
+            f"got {st}"
+        ),
+        outcome="ERROR" if why else None,
+    )
+    verdict = "INCONCLUSIVE" if why else ("OK" if ok else "FAIL")
+    print(f"  {principal} -> {st} ({verdict})")
+
+
+def _record_inbox_status(record, results, op, principal, response, expected, leaked):
+    """User B's request must answer exactly ``expected`` and disclose nothing.
+
+    A 5xx or a dead connection is inconclusive (ERROR): whether the resolver
+    refused before or after acting on A's id is exactly what is unknown.
+    """
+    st, body = response
+    why = _inconclusive_response(st, body)
+    ok = (not why) and st == expected and not leaked(body)
+    record(
+        results,
+        op,
+        principal,
+        st,
+        ok,
+        f"{SEC_INBOX_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else f"{SEC_INBOX_IDOR}: expected {expected} with no owner data; got {st}",
+        outcome="ERROR" if why else None,
+    )
+    verdict = "INCONCLUSIVE" if why else ("OK" if ok else "FAIL")
+    print(f"  {principal} -> {st} ({verdict})")
+
+
+def _record_owner_after(record, results, op, principal, st, why, ok, claim):
+    record(
+        results,
+        op,
+        principal,
+        st,
+        ok,
+        f"{SEC_INBOX_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else f"{SEC_INBOX_IDOR}: {claim}; {'holds' if ok else 'VIOLATED'}",
+        outcome="ERROR" if why else None,
+    )
+    verdict = "INCONCLUSIVE" if why else ("OK" if ok else "FAIL")
+    print(f"  {principal} -> {st} ({verdict})")
+
+
+# ---------------------------------------------------------------------------
+# 2.1 IDOR — review queues: claims and drafts are the claimer's alone
+# ---------------------------------------------------------------------------
+def _review_page_keys(body):
+    """Object keys of a ``ReviewItemPage`` body, or ``None`` when unreadable."""
+    try:
+        parsed = json.loads(body or "")
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+        return None
+    return [i.get("objectKey") for i in parsed["items"] if isinstance(i, dict)]
+
+
+def run_review_queue_idor_suite(
+    ctx, record, results, seed_fn=None, call_body=None, cleanup_fn=None
+):
+    """Only the claimer may act on a claimed review item; non-members see nothing.
+
+    ``seed_fn()`` writes a temporary review queue definition whose Eligible
+    Annotators are A and B (not C), and a queue item in that queue CLAIMED by A
+    under a live lease; a third Annotator C is not a member. It returns
+    ``{"tokens": {"A", "B", "C"}, "object_key", "cycle_id"}``, or ``None`` when
+    the stack has no ``HITLTableName`` output (a SKIP, never a PASS). A
+    seed that raises is an ERROR. Then:
+
+    * positive control: A's ``getReviewItem`` is 200 and A's ``listMyReviewWork``
+      holds the item (a failure is ERROR: the leak checks would prove nothing);
+    * B (a member) may preview it (200) but ``renewReviewLease``,
+      ``releaseReviewItem``, ``saveReviewDraft`` and ``completeReviewItem`` answer
+      403, and B's ``listMyReviewWork`` lacks it;
+    * C (not a member) gets 403 on ``getReviewItem`` and ``claimReviewItem``.
+
+    ``cleanup_fn(seeded)`` runs in ``finally``.
+    """
+    print("\n=== REVIEW QUEUES IDOR (only the claimer acts on a claim) ===")
+    op = "getReviewItem"
+    if seed_fn is None or call_body is None:
+        record(
+            results,
+            op,
+            "review-idor",
+            "SKIP",
+            False,
+            f"{SEC_REVIEW_IDOR}: preconditions unavailable (seed + body-call) — skipped",
+            outcome="SKIP",
+        )
+        print("  SKIP (preconditions unavailable)")
+        return
+    seeded = None
+    try:
+        try:
+            seeded = seed_fn()
+        except Exception as e:  # noqa: BLE001
+            record(
+                results,
+                op,
+                "review-idor-seed",
+                "ERR",
+                False,
+                f"{SEC_REVIEW_IDOR}: seeding the claimed item failed "
+                f"({type(e).__name__}: {e}) — check not run",
+                outcome="ERROR",
+            )
+            print(f"  ERROR (seed failed: {e})")
+            return
+        if not seeded:
+            record(
+                results,
+                op,
+                "review-idor-seed",
+                "SKIP",
+                False,
+                f"{SEC_REVIEW_IDOR}: stack has no HITLTableName output "
+                "(review queues not deployed) — skipped",
+                outcome="SKIP",
+            )
+            print("  SKIP (no HITLTableName output)")
+            return
+        _run_review_idor_checks(ctx, record, results, seeded, call_body)
+    finally:
+        if cleanup_fn is not None and seeded:
+            try:
+                cleanup_fn(seeded)
+            except Exception as e:  # noqa: BLE001
+                print(f"  (review cleanup error: {e})")
+
+
+def _run_review_idor_checks(ctx, record, results, seeded, call_body):
+    api = ctx["api_base"]
+    toks = seeded["tokens"]
+    key = seeded["object_key"]
+    item_args = {"objectKey": key, "cycleId": seeded["cycle_id"]}
+
+    def leaked(body):
+        return key in (body or "")
+
+    # 1. Positive control.
+    st, body = call_body(api, "getReviewItem", {"objectKey": key}, toks["A"])
+    w_st, w_body = call_body(api, "listMyReviewWork", {"limit": 100}, toks["A"])
+    why = _inconclusive_response(st, body) or _inconclusive_response(w_st, w_body)
+    work = _review_page_keys(w_body)
+    if why or st != 200 or w_st != 200 or work is None or key not in work:
+        detail = (
+            why
+            or f"claimer preview {st}, My Work {w_st}, item listed: {bool(work and key in work)}"
+        )
+        record(
+            results,
+            "getReviewItem",
+            "review-claimer(positive control)",
+            st,
+            False,
+            f"{SEC_REVIEW_IDOR}: positive control failed — {detail}; the leak checks "
+            "would prove nothing, so none were run",
+            outcome="ERROR",
+        )
+        print(f"  Claimer getReviewItem -> {st} (ERROR: {detail})")
+        return
+    record(
+        results,
+        "getReviewItem",
+        "review-claimer(positive control)",
+        st,
+        True,
+        f"{SEC_REVIEW_IDOR}: the claimer sees the item and it is in their My Work",
+    )
+    print(f"  Claimer getReviewItem -> {st} (OK)")
+
+    # 2. B, a member, may preview.
+    st, body = call_body(api, "getReviewItem", {"objectKey": key}, toks["B"])
+    why = _inconclusive_response(st, body)
+    record(
+        results,
+        "getReviewItem",
+        "member-B(preview)",
+        st,
+        (not why) and st == 200,
+        f"{SEC_REVIEW_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else f"{SEC_REVIEW_IDOR}: a member may preview (read-only); got {st}",
+        outcome="ERROR" if why else None,
+    )
+
+    # 3. B can't act on A's claim. Each call carries every argument the
+    # dispatcher requires, or it answers 400 before ownership is ever checked.
+    for field, extra in (
+        ("renewReviewLease", {}),
+        ("releaseReviewItem", {"reason": "Out of time"}),
+        ("saveReviewDraft", {"sectionId": "1", "data": "{}"}),
+        ("completeReviewItem", {}),
+    ):
+        st, body = call_body(api, field, {**item_args, **extra}, toks["B"])
+        _record_review_status(
+            record, results, field, "member-B(acts on A's claim)", (st, body), 403
+        )
+
+    # 4. B's own My Work doesn't hold A's item.
+    st, body = call_body(api, "listMyReviewWork", {"limit": 100}, toks["B"])
+    why = _inconclusive_response(st, body)
+    keys_b = _review_page_keys(body)
+    ok = (not why) and st == 200 and keys_b is not None and key not in keys_b
+    record(
+        results,
+        "listMyReviewWork",
+        "member-B(My Work)",
+        st,
+        ok,
+        f"{SEC_REVIEW_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else f"{SEC_REVIEW_IDOR}: B's My Work must not hold A's claim; got {st}",
+        outcome="ERROR" if why else None,
+    )
+
+    # 5. C, not a member, is refused.
+    for field, args in (
+        ("getReviewItem", {"objectKey": key}),
+        ("claimReviewItem", item_args),
+    ):
+        st, body = call_body(api, field, args, toks["C"])
+        _record_review_status(
+            record, results, field, "non-member-C", (st, body), 403, leaked
+        )
+
+
+def _record_review_status(
+    record, results, op, principal, response, expected, leaked=None
+):
+    st, body = response
+    why = _inconclusive_response(st, body)
+    leak = bool(leaked and leaked(body)) and st != 200
+    ok = (not why) and st == expected and not leak
+    record(
+        results,
+        op,
+        principal,
+        st,
+        ok,
+        f"{SEC_REVIEW_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else f"{SEC_REVIEW_IDOR}: expected {expected}; got {st}",
+        outcome="ERROR" if why else None,
+    )
+    verdict = "INCONCLUSIVE" if why else ("OK" if ok else "FAIL")
+    print(f"  {principal} {op} -> {st} ({verdict})")
 
 
 # ---------------------------------------------------------------------------

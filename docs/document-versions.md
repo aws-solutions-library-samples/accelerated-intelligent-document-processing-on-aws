@@ -31,7 +31,7 @@ so on.
 
 Each version records:
 
-- **When** it completed and which **configuration version** processed it
+- **When** it completed, and which **Configuration Profile** and **revision** processed it
 - Its section/page structure and metering (cost) snapshot
 - Per-section quality data — the low-confidence field alerts and any processing
   issues detected for that run — so a historical view shows the same
@@ -77,10 +77,15 @@ Noncurrent S3 object versions (the byte-store for version history) are expired o
 the same schedule via bucket lifecycle rules, so version history does not grow
 unbounded. Deleting a version (below) reclaims its storage immediately.
 
-> **Always on.** Versioning uses infrastructure the solution already had (S3
-> bucket versioning) plus one small tracking-table record per run, so it is
-> enabled by default. To disable run-record creation, set the WorkflowTracker
-> Lambda's `DOCUMENT_VERSIONING_ENABLED` environment variable to `false`.
+> **Always on, and there is no stack parameter to turn it off.** Versioning uses
+> infrastructure the solution already had (S3 bucket versioning) plus one small
+> tracking-table record per run, so it is on in every deployment. The
+> `WorkflowTracker` Lambda reads a `DOCUMENT_VERSIONING_ENABLED` environment
+> variable and skips run-record creation when it is not `true`, but the template
+> sets that variable to the literal `"true"` with no `!Ref` behind it. Editing it
+> in the Lambda console does suppress run records — until the next stack update,
+> which restores the literal and silently re-enables versioning. Treat the feature
+> as unconditional, and change the template if you genuinely need it off.
 
 ## Viewing and managing versions
 
@@ -90,13 +95,18 @@ The document detail page includes a **Version History** panel listing every
 retained version newest-first, with the current version badged. From there you
 can:
 
-- **View a past version** — choose *View* on any row to render that run's
+- **View a past version** — choose *View* in a row's **⋮** menu to render that run's
   snapshot on the page (read-only): its sections, page text/images, extraction
   results, and summary/evaluation reports are all fetched from the run's pinned
   S3 object versions (page images via version-pinned presigned URLs), so you see
   exactly what that run produced even after later runs overwrote the outputs. A
   banner indicates you're viewing a previous version; *Return to current
-  version* switches back. Editing is disabled while viewing history.
+  version* switches back. While you view a past version, every change action on
+  the page (the **More Actions** items, such as **Edit Page Grouping**, **Re-extract
+  Sections**, **Use As Evaluation Baseline** and **Reprocess**) is
+  disabled with the reason "Not available while you view a past version…", and so
+  are **Refresh** and **Edit**. **Reports › Rule Validation Summary** is unavailable,
+  because rule validation results aren't kept for past versions.
 - **Compare any two versions** — select two rows and choose *Compare selected*
   to see a section-by-section, field-level diff of their extraction results
   (values are read from each run's pinned S3 versions, so the comparison is
@@ -106,6 +116,10 @@ can:
   Deletion is reference-counted: any output object version also pinned by
   another retained version is kept, so deleting one version never corrupts
   another.
+
+![Version History panel listing two processing runs of the same document](../images/webui-document-versions.png)
+
+![Compare versions dialog: one changed field in the Bank-Statement section, every other section identical](../images/webui-document-versions-compare.png)
 
 ### CLI
 

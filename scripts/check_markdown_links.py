@@ -78,6 +78,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from posixpath import dirname as pdirname
@@ -466,11 +467,14 @@ def is_relative(target: str) -> bool:
     return not target.startswith("/")
 
 
-def published_pages(root: Path) -> set[str]:
+def published_pages(root: Path, env: Mapping[str, str] | None = None) -> set[str]:
     """The ``docs/`` pages ``docs-site/setup.sh`` publishes, repo-relative.
 
     Derived by running that script against a throwaway root, then reading the
     symlinks back. This checkout is only ever read.
+
+    ``env`` is the whole environment ``bash`` runs the script with; None, the
+    default, passes this process's own.
     """
     # Absolute, because the symlinks below are created inside a temporary
     # directory and point back here. A relative root produced a symlink that
@@ -491,6 +495,7 @@ def published_pages(root: Path) -> set[str]:
             capture_output=True,
             text=True,
             check=False,
+            env=None if env is None else dict(env),
         )
         if completed.returncode != 0:
             raise RuntimeError(

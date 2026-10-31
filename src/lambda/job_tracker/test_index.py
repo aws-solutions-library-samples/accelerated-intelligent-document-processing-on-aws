@@ -9,7 +9,7 @@ import pytest
 
 # Add idp_common to path and import real Status
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg"))
-from idp_common.models import Status
+from idp_common.models import Status, document_wrapper_status, terminal_document_status
 
 # Mock idp_common before importing index. `job_completion` is deliberately NOT
 # mocked: it holds the all-files-terminal check and the zip build that this
@@ -20,6 +20,8 @@ mock_job_service_module = MagicMock()
 mock_job_service_module.create_job_service = MagicMock(return_value=mock_job_service)
 mock_models_module = MagicMock()
 mock_models_module.Status = Status
+mock_models_module.terminal_document_status = terminal_document_status
+mock_models_module.document_wrapper_status = document_wrapper_status
 
 sys.modules["idp_common.job_service"] = mock_job_service_module
 sys.modules["idp_common.models"] = mock_models_module
@@ -161,6 +163,71 @@ class TestHandler:
         response = handler(event, None)
 
         assert "ZIP created" in response["body"]
+
+    def test_creates_zip_when_a_file_was_rejected(self, mock_s3, job_svc):
+        """REJECTED (a reviewer rejected the document) is terminal: the ZIP is built."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = {"a.pdf": "COMPLETED", "b.pdf": "REJECTED"}
+        mock_s3.list_objects_v2.return_value = {"Contents": [{"Key": "jobs/test-uuid/a.pdf"}]}
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"content")}
+
+        response = handler(make_event("jobs/test-uuid/b.pdf"), None)
+
+        assert "ZIP created" in response["body"]
+
+    def test_wrapper_rejected_status_is_recorded_as_rejected(self, mock_s3, job_svc):
+        """A SUCCEEDED finalize run whose wrapper says REJECTED records REJECTED."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = {"b.pdf": "REJECTED"}
+        mock_s3.list_objects_v2.return_value = {"Contents": []}
+        event = make_event("jobs/test-uuid/b.pdf")
+        event["detail"]["output"] = json.dumps({"document": {"status": "REJECTED"}})
+
+        handler(event, None)
+
+        job_svc.update_file_status.assert_called_once_with(
+            "test-uuid", "b.pdf", Status.REJECTED
+        )
+
+    def test_review_hold_is_recorded_without_finalizing_the_job(
+        self, mock_s3, job_svc
+    ):
+        """HITL_IN_PROGRESS is not terminal: record it, keep the job open, no ZIP."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = {"b.pdf": "HITL_IN_PROGRESS"}
+        event = make_event("jobs/test-uuid/b.pdf")
+        event["detail"]["output"] = json.dumps(
+            {"document": {"status": "HITL_IN_PROGRESS"}}
+        )
+
+        response = handler(event, None)
+
+        assert response == {"statusCode": 200, "body": "Job still processing"}
+        job_svc.update_file_status.assert_called_once_with(
+            "test-uuid", "b.pdf", Status.HITL_IN_PROGRESS
+        )
+        mock_s3.put_object.assert_not_called()
+
+    def test_review_hold_for_a_missing_job_is_not_found(self, mock_s3, job_svc):
+        """A review hold on a job that no longer exists answers 404, not 200."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = None
+        event = make_event("jobs/gone-uuid/b.pdf")
+        event["detail"]["output"] = json.dumps(
+            {"document": {"status": "HITL_IN_PROGRESS"}}
+        )
+
+        response = handler(event, None)
+
+        assert response == {"statusCode": 404, "body": "Job not found"}
+        job_svc.update_file_status.assert_called_once_with(
+            "gone-uuid", "b.pdf", Status.HITL_IN_PROGRESS
+        )
+        mock_s3.put_object.assert_not_called()
 
     def test_invalid_job_path(self, mock_s3, job_svc):
         """Test handler returns 400 for invalid job path format."""

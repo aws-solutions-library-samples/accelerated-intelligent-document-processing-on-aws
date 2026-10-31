@@ -40,6 +40,9 @@ The headless transformation strips the following resource groups from the templa
 - UI-only resolver Lambdas in the main template (capacity planning, version
   check, fine-tuning)
 - Chat processors and the chat streaming endpoint (Lambda Function URL)
+- Inbox: the `NotificationsTable` table and the Inbox API operations;
+  `idp_common.notifications` producers no-op (`create_notification_service()`
+  returns `None`)
 
 ### Authentication
 
@@ -64,13 +67,26 @@ The headless transformation strips the following resource groups from the templa
 - Chat-with-document features
 - Text-to-SQL query capabilities
 
-### HITL (Human-in-the-Loop) Support
+### HITL (Human-in-the-Loop) Review
 
-- SageMaker A2I Human-in-the-Loop
-- Private workforce configuration
-- Human-review workflows
-- A2I flow definition and human task UI
-- Cognito client for A2I integration
+Human review is performed by reviewers signed in to the web UI, so it goes when the
+UI does. The transform removes:
+
+- `HITLTable`, the review-queue table, and the queue sweeper (`ReviewQueueSweeperFunction`
+  with its scheduling rule and permission)
+- `UsersTable` and the user management functions
+- The section review workflow — `CompleteSectionReviewFunction` and its resolvers
+- The reviewer Cognito group, along with the rest of the user pool
+- The `HITLTableName` parameter, which the pattern stack then receives empty
+
+Confidence scoring itself is retained: extraction and assessment still produce
+per-field confidence, and the configured thresholds are still applied. With
+`HITLTableName` empty, review routing falls back to its legacy mode, which still
+**marks** a document that needs review — the `HITLTriggered` and `HITLStatus`
+attributes are written to the tracking table, which headless keeps. What is absent
+is the queue to hold it and the interface to work it in. So in headless mode those
+flags are a signal to read and act on in your own system, not a handoff the
+deployment can complete.
 
 ### Discovery (Web-UI-dependent)
 
@@ -309,7 +325,7 @@ The following features depend on the UI / UI REST API / Cognito stack and are th
 - Agent Analytics (natural-language analytics UI)
 - Document knowledge-base chat interface
 - Test Studio (UI-driven test management)
-- Human-in-the-Loop review UI (A2I)
+- Human-in-the-Loop review UI (the review queue and section review screens)
 
 ### Workarounds
 

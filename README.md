@@ -41,6 +41,7 @@ A scalable, serverless solution for automated document processing and informatio
 
 https://github.com/user-attachments/assets/fc2652b5-a9cc-42d7-9975-887c8320a2f5
 
+> **Hands-on workshop:** Learn the accelerator end to end in the [GenAI IDP Workshop on AWS Workshop Studio](https://catalog.workshops.aws/workshops/c384d63d-3090-44c9-a639-e06dd6d9164f). It is best taken at an AWS-hosted event, such as an enablement session or hands-on workshop for your team, where each participant gets a temporary AWS account with the solution pre-deployed. AWS customers can request a session through their AWS account team or Solutions Architect. A self-paced option in your own account is also available. See [Hands-on Workshops](./docs/workshops.md).
 
 Concierge support for customization, deployment, and integration of production use cases is available through [AWS Professional Services](https://aws.amazon.com/professional-services/).
 
@@ -53,9 +54,13 @@ Concierge support for customization, deployment, and integration of production u
 ## Key Features
 
 - **Serverless Architecture**: Built entirely on AWS serverless technologies including Lambda, Step Functions, SQS, and DynamoDB
-- **Modular, pluggable patterns**: Pre-built processing patterns using state-of-the-art models and AWS services
+- **Two processing modes, one stack**: A single unified pattern stack runs either
+  Bedrock Data Automation end to end or a Textract-plus-Bedrock pipeline, selected by
+  the `use_bda` configuration flag — no separate stack to pick between
 - **Command Line Interface**: Programmatic batch processing with evaluation framework, analytics integration, and interactive Agent Chat
-- **Advanced Classification**: Support for page-level and holistic document packet classification
+- **Advanced Classification**: Classify a page at a time or a whole packet at a time
+  (classification granularity `page` or `packet`), in one call or in a separate
+  boundary-then-class pass
 - **Few Shot Example Support**: Improve accuracy through example-based prompting
 - **Custom Business Logic Integration**: Inject custom prompt generation logic via Lambda functions for specialized document processing
 - **High Throughput Processing**: Handles large volumes of documents through intelligent queuing
@@ -76,10 +81,10 @@ Concierge support for customization, deployment, and integration of production u
 
 ![Architecture Diagram](./images/IDP.UnifiedPatterns.drawio.png)
 
-The solution uses a modular architecture with nested CloudFormation stacks to support multiple document processing patterns while maintaining common infrastructure for queueing, tracking, and monitoring.
+The solution uses a modular architecture with nested CloudFormation stacks, with one unified pattern stack doing the document processing and common infrastructure for queueing, tracking, and monitoring.
 
 The unified pattern supports two processing modes, controlled by the `use_bda` configuration flag:
-- **Pipeline mode** (default): OCR → Bedrock Classification (page-level or holistic) → Bedrock Extraction → Assessment → Rule Validation → Summarization
+- **Pipeline mode** (default): OCR → Bedrock Classification (`page` or `packet` granularity) → Bedrock Extraction → Assessment → Rule Validation → Summarization
 - **BDA mode**: End-to-end processing with Bedrock Data Automation (BDA) → Rule Validation → Summarization
 
 ## Quick Start
@@ -191,6 +196,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 
 - [Architecture](./docs/architecture.md) - Detailed component architecture and data flow
 - [Demo Videos](./docs/demo-videos.md) - Comprehensive collection of feature demonstration videos
+- [Hands-on Workshops](./docs/workshops.md) - The instructor-led GenAI IDP Workshop on AWS Workshop Studio, and the self-guided Amazon Quick integration workshop
 - [Deployment](./docs/deployment.md) - Build, publish, deploy, and test instructions
 - [Headless Deployment](./docs/headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) for API-only use cases
 - [GovCloud Deployment](./docs/govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
@@ -241,7 +247,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 99 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 104 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats

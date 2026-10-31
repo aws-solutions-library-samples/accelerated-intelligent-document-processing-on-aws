@@ -52,7 +52,7 @@ the complete answer rather than token-by-token output.
 
 #### AgentChatResolver
 - **Purpose**: Entry point for user messages
-- **Location**: `src/lambda/agent_chat_resolver/`
+- **Location**: `nested/api-resolvers/src/lambda/agent_chat_resolver/`
 - **Responsibilities**:
   - Validates incoming messages
   - Stores user messages in DynamoDB
@@ -280,26 +280,48 @@ mutation SendMessage {
 }
 ```
 
-#### Subscription: onAgentChatMessageUpdate
-Subscribe to real-time message updates.
+#### Receiving the reply: the SSE stream
 
-```graphql
-subscription WatchMessages {
-  onAgentChatMessageUpdate(sessionId: "user-session-123") {
-    role
-    content
-    timestamp
-    isProcessing
-  }
-}
+There is no subscription to receive replies on. `onAgentChatMessageUpdate` is
+declared in `nested/api-resolvers/src/api/schema.graphql` and the UI still
+imports its operation document, but `src/ui/src/hooks/use-agent-chat.ts` sets
+`useHttpApiTransport` to a constant `true`, so the effect that would open the
+subscription returns immediately and the `client.graphql` call inside it is
+unreachable. The REST client would hand back a no-op handle anyway, and the
+field has no entry in the dispatcher's RBAC manifest, so it is default-denied
+with a 403.
+
+Replies arrive one of two ways, chosen by whether a streaming Function URL is
+configured:
+
+**With a Function URL (the commercial default)** the hook calls `streamChat`
+against the Lambda Function URL, which runs with
+`InvokeMode=RESPONSE_STREAM`. The browser reads the body as Server-Sent
+Events, and each event carries the same shape the subscription used to
+deliver, so events feed straight into the message list. This is the only
+true token-by-token path.
+
+```
+POST <streamUrl>/chat/agent        (SigV4, IAM-authed)
+body: { prompt, sessionId, method, enableCodeIntelligence, callerSub }
+
+→ text/event-stream; one event per chunk, terminal event marks completion
 ```
 
-#### Query: getAgentChatMessages
+**Without one (for example GovCloud)** the hook sends
+`sendAgentChatMessage` over the REST API, which async-invokes the processor,
+and then polls `getChatMessages` for the new assistant reply
+(`src/ui/src/api/chat-poll.ts`). It baselines the existing assistant message
+keys *before* sending so the poll matches only the new reply, which keeps it
+independent of client and server clocks. Because the processor persists only
+the final message, this path shows a spinner and then the complete answer.
+
+#### Query: getChatMessages
 Retrieve conversation history.
 
 ```graphql
 query GetHistory {
-  getAgentChatMessages(sessionId: "user-session-123") {
+  getChatMessages(sessionId: "user-session-123") {
     role
     content
     timestamp
@@ -307,6 +329,13 @@ query GetHistory {
   }
 }
 ```
+
+⚠️ Use `getChatMessages`, not `getAgentChatMessages`. The latter is declared in
+the schema but is routed from nowhere and has no manifest entry, so it returns
+403 to every caller including Admin — see the `getAgentChatMessages` row in
+[docs/rbac.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/rbac.md).
+Reads through `getChatMessages` are session-scoped: it requires any assigned
+group and additionally verifies that the caller owns the session.
 
 ## Available Agents
 
@@ -319,6 +348,57 @@ The system includes several specialized agents:
 5. **External MCP Agents**: Connects to external MCP servers
 
 All agents are automatically available to the orchestrator - no manual selection needed.
+
+### A system prompt names only tools its agent registers
+
+An agent's system prompt is the model's only guide to choosing among its tools,
+and Strands gives the model nothing beyond the tools passed to `strands.Agent`. A
+prompt that names any other tool sends the model after something it does not have,
+with no error anywhere. For the Error Analyzer the registered names are the
+function names in `error_analyzer/tools/` (there is no `@tool(name=...)` aliasing),
+and the shipped prompt lives in `config/system_defaults/base-agents.yaml` with a
+mirror in the `ErrorAnalyzerConfig` and `ChatCompanionConfig` defaults in
+`config/models.py`.
+
+`tests/unit/agents/error_analyzer/test_prompt_tool_names.py` builds the real agent,
+reads the tool names and parameters out of its Strands registry, and checks every
+shipped copy of the prompt — those model defaults plus every YAML file git sees
+(tracked, or untracked and not ignored) that sets `agents.error_analyzer.system_prompt`
+or `agents.chat_companion.system_prompt` — in both directions: every
+underscore-joined identifier must be a registered tool, a parameter of one, or a
+listed data field, every registered tool must be named, and an argument list
+written as `tool (a, b)` may hold only that tool's own parameters. When you add, rename or remove a tool,
+update the prompt in the same change. Prefer a preset that inherits the default
+prompt to one that carries a copy, because a copy is what went stale here.
+
+### A configured default reaches a tool only through a `None` signature default
+
+Strands invokes a tool with only the arguments the model supplied, so Python fills
+the rest from the function signature. A tool that declares `hours_back: int = 24`
+and then falls back to configuration can never reach the configuration: the
+signature default is always present. For a setting meant to supply the default,
+declare the argument `Optional[...] = None` and resolve `None` to the configured
+value inside the tool. The Error Analyzer's `search_cloudwatch_logs` and
+`search_performance_issues` resolve `hours_back` from
+`agents.error_analyzer.lookback_hours` this way, both resolve `max_log_events` from
+`parameters.max_log_events`, and `search_cloudwatch_logs` resolves `max_log_groups`
+from `parameters.max_log_groups`. A configured value is clamped to the maximum the
+tool description advertises (168 hours, 50 events, 50 groups), because the
+configuration model accepts any positive value and a saved profile must still load.
+`tests/unit/agents/error_analyzer/test_config_reaches_tools.py` invokes both through
+the real agent with no arguments and asserts the window, event limit and group count
+on the CloudWatch Logs requests.
+
+Changing a configured default that saved profiles already store takes a
+configuration-format migration, because every profile and revision stores a full
+snapshot. `max_log_events` is the worked example: its default moved from 5 to 10,
+the limit the tools applied while they ignored it, and
+`idp_common/config/migrations/v09_to_v010.py` reads a stored `5` in a pre-0.10
+configuration as `10` so no deployment's event limit changes. See the
+[configuration module README](../config/README.md#config-format-migrations).
+`parameters.time_range_hours_default` is an unused alias kept so saved profiles that
+carry it still validate; see
+[Advanced parameters](../../../../docs/error-analyzer.md#advanced-parameters-config-file-only).
 
 ## Usage Examples
 

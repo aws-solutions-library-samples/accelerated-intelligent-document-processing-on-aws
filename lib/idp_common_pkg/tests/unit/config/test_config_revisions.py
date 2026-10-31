@@ -13,6 +13,8 @@ Covers the invariants the feature rests on:
 
 import copy
 import datetime
+import gzip
+import json
 import logging
 from decimal import Decimal
 from pathlib import Path
@@ -28,7 +30,8 @@ from idp_common.config.configuration_manager import (
 )
 from idp_common.config.constants import ACTIVE_POINTER_KEY, CONFIG_TYPE_CONFIG
 from idp_common.config.merge_utils import merge_config_with_defaults
-from idp_common.config.models import IDPConfig
+from idp_common.config.migrations.v08_to_v09 import FLAT_KEYS
+from idp_common.config.models import CONFIG_FORMAT_VERSION, IDPConfig
 from idp_common.config.revisions import ConfigRevisionStore
 
 TABLE = "test-config-table"
@@ -1108,6 +1111,159 @@ class TestLibraryProfileStoredHash:
         head = manager.get_merged_configuration("p")
         assert served is not None and head is not None
         assert served.model_dump() == head.model_dump()
+
+
+def _plant_pre_0_9_body(profile, revision, model="MARKER-MODEL"):
+    """
+    Replace a revision's stored body with one a pre-0.9 release would have cut.
+
+    A revision body cannot be produced in this shape through a save: the save
+    validates through `IDPConfig`, which migrates, so everything this release
+    writes is already nested. Only an older release's object is flat, and the only
+    way to hold one is to put it there.
+    """
+    body = {
+        "config_format_version": "0.8",
+        "notes": "live",
+        "classification": {"model": model, "temperature": 0.25},
+    }
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=BUCKET,
+        Key=ConfigRevisionStore.body_key(profile, revision),
+        Body=gzip.compress(json.dumps(body).encode("utf-8")),
+    )
+    return body
+
+
+def _stored_body(profile, revision):
+    """The revision object exactly as it sits in the Configuration bucket."""
+    raw = (
+        boto3.client("s3", region_name="us-east-1")
+        .get_object(Bucket=BUCKET, Key=ConfigRevisionStore.body_key(profile, revision))[
+            "Body"
+        ]
+        .read()
+    )
+    return json.loads(gzip.decompress(raw).decode("utf-8"))
+
+
+@pytest.mark.unit
+@mock_aws
+class TestRevisionBodyFormat:
+    """
+    A revision is read in the current config format, from either source.
+
+    Three surfaces serve one revision — `idp-cli config-download
+    --config-revision N`, the UI's Revision History, and the pinned read the
+    pipeline does — and a revision cut before the 0.9 classification nesting is
+    stored flat. Reading it raw gives those surfaces different answers for the
+    same revision number, and gives one surface two different answers depending
+    on whether the stored object has expired yet.
+    """
+
+    def test_a_pre_0_9_revision_is_read_in_the_current_format(self, monkeypatch):
+        """
+        What `idp-cli config-download --config-revision N` writes to disk: the SDK
+        strips the storage marker and the discriminator and serialises the rest, so
+        a flat body here is a flat YAML file in the operator's hands, while
+        `config-download` with no revision hands them a nested one.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _plant_pre_0_9_body("p", 1)
+
+        body = manager.get_revision("p", 1)
+
+        assert body is not None
+        assert body["config_format_version"] == CONFIG_FORMAT_VERSION
+        assert not FLAT_KEYS & body["classification"].keys()
+        assert body["classification"]["combined"]["llm"]["model"] == "MARKER-MODEL"
+        assert body["classification"]["combined"]["llm"]["temperature"] == 0.25
+
+    def test_both_sources_for_one_revision_agree_on_the_shape(self, monkeypatch):
+        """
+        The expired-body path rebuilds from the profile head through
+        `ConfigurationRecord`/`IDPConfig` and is therefore migrated, so without
+        migrating the stored body too, r1 answers flat while its object exists and
+        nested the day after it expires — the same revision, two shapes.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _plant_pre_0_9_body("p", 1)
+
+        from_body = manager.get_revision("p", 1)
+        _expire_body("p", 1)
+        from_head = manager.get_revision("p", 1)
+
+        for source, body in (("stored body", from_body), ("profile head", from_head)):
+            assert body is not None, source
+            assert body["config_format_version"] == CONFIG_FORMAT_VERSION, source
+            assert not FLAT_KEYS & body["classification"].keys(), source
+            assert "combined" in body["classification"], source
+
+    def test_reading_a_revision_does_not_rewrite_its_stored_body(self, monkeypatch):
+        """
+        Migration is in memory only. The stored revision stays an immutable record
+        of the configuration that actually ran, which is what makes a pinned run
+        reproducible and a comparison between two revisions meaningful.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        planted = _plant_pre_0_9_body("p", 1)
+
+        assert manager.get_revision("p", 1) is not None
+        assert manager._load_revision_config("p", 1) is not None
+
+        assert _stored_body("p", 1) == planted
+
+    def test_a_body_the_conversion_cannot_read_is_returned_as_stored(
+        self, monkeypatch, caplog
+    ):
+        """
+        The revision was read; only its normalisation for display or download
+        failed, so it is served as stored with a warning rather than raising.
+
+        What depends on this is a whole test run: `_capture_config` in the test
+        runner reaches a pinned revision through `get_revision` and re-raises any
+        failure as "Could not read revision r<n>", so raising here would fail
+        `startTestRun` over one unconvertible revision — and the capture's own
+        contract is to record such a body as stored.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        planted = _plant_pre_0_9_body("p", 1)
+
+        def refuse(_config):
+            raise ValueError("cannot convert")
+
+        monkeypatch.setattr(
+            "idp_common.config.migrations.migrate_config", refuse, raising=True
+        )
+        with caplog.at_level(logging.WARNING):
+            body = manager.get_revision("p", 1)
+
+        assert body == planted
+        assert "returning it as stored" in caplog.text
+
+    def test_the_pinned_read_still_sees_the_recorded_configuration(self, monkeypatch):
+        """
+        Migrating on the way out must not change what a pinned document runs: the
+        pinned read already migrated through `IDPConfig`, so it resolves the same
+        values it did before.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _plant_pre_0_9_body("p", 1)
+
+        config = manager._load_revision_config("p", 1)
+
+        assert config.classification.combined.llm.model == "MARKER-MODEL"
+        assert config.notes == "live"
 
 
 @pytest.mark.unit

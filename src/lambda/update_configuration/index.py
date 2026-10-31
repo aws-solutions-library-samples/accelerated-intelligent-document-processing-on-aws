@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -11,10 +12,14 @@ import boto3
 import cfnresponse  # type: ignore[import-untyped]
 import yaml
 from botocore.exceptions import ClientError
+from pydantic import TypeAdapter, ValidationError
+
 from idp_common.config.configuration_manager import (
     ConfigurationManager,  # type: ignore[import-untyped]
 )
+from idp_common.config.flags import flag_is_true
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.migrations import migrate_config
 
 # One definition of "strip the cross-region profile prefix", shared with the
 # retired-model registry rather than re-spelled here. That module's prefix list is
@@ -23,7 +28,6 @@ from idp_common.config.merge_utils import merge_config_with_defaults
 # this handler too.
 from idp_common.config.retired_models import base_model_id as _base_model_id
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-from pydantic import ValidationError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -97,6 +101,11 @@ MODEL_MAPPINGS = {
     # that stack pointing at a dead model.
     "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-6",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
+    # The multi-document discovery embedding default. `us.cohere.embed-v4:0` is
+    # rejected as an invalid model identifier from an EU Region, so without this
+    # row an EU stack kept a default its embed step could not call. A twin row:
+    # the EU geo profile of the same model, 1024 dimensions like the US one.
+    "us.cohere.embed-v4:0": "eu.cohere.embed-v4:0",
     # Retired source -> LIVE target. Claude 3 Haiku reached end of life in both
     # regions, so mapping it onto its EU twin rewrote a stored config from one dead
     # model to another. Claude Haiku 4.5 is the current Haiku-class model.
@@ -441,16 +450,53 @@ def detect_pattern_from_config(config: Dict[str, Any]) -> str:
     Returns:
         Pattern name (pattern-1 or pattern-2)
     """
-    # Check classification method
-    classification_method = config.get("classification", {}).get(
-        "classificationMethod", ""
-    )
-
-    if classification_method == "bda":
+    # BDA mode is `use_bda`, which is the flag the pipeline itself branches on.
+    # This used to sniff `classification.classificationMethod == "bda"` — a THIRD
+    # value that key never legitimately held (its enum was
+    # multimodalPageLevel/textbasedHolistic) and that nothing in the product
+    # wrote. It was removed in config format 0.8 and is migrated away on read,
+    # so a sniff for it now matches nothing.
+    #
+    # ⚠️ Read through `flag_is_true`, not plain truthiness: a YAML, DynamoDB or
+    # UI round-trip can deliver this flag as the string "false", which is truthy,
+    # and the wrong answer here merges a pipeline configuration onto the BDA
+    # defaults.
+    if flag_is_true(config.get("use_bda")):
         return "pattern-1"
-    else:
-        # Default to pattern-2 (most common - Textract + Bedrock LLM)
-        return "pattern-2"
+    # Default to pattern-2 (most common - Textract + Bedrock LLM)
+    return "pattern-2"
+
+
+def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) -> None:
+    """Write the stack's custom/fine-tuned model ARNs into a merged config.
+
+    ``CustomClassificationModelARN`` replaces the model of the call that assigns
+    the class under the active strategy — ``combined.llm`` for the combined
+    strategy, ``split_then_classify.section_classification.llm`` for
+    split-then-classify. The splitting call keeps its own model: it only finds
+    boundaries, which is not what a classification model was trained to do. ``CustomExtractionModelARN`` replaces
+    ``extraction.model``. An empty or absent ARN changes nothing.
+    """
+    from idp_common.config.models import class_assigning_llm_path
+
+    classification_arn = str(properties.get("CustomClassificationModelARN") or "")
+    if classification_arn.strip() and isinstance(config.get("classification"), dict):
+        classification = config["classification"]
+        path = class_assigning_llm_path(classification)
+        node = classification
+        for key in path:
+            if not isinstance(node.get(key), dict):
+                node[key] = {}
+            node = node[key]
+        node["model"] = classification_arn
+        logger.info(
+            "Updated classification.%s.model to: %s", ".".join(path), classification_arn
+        )
+
+    extraction_arn = str(properties.get("CustomExtractionModelARN") or "")
+    if extraction_arn.strip() and isinstance(config.get("extraction"), dict):
+        config["extraction"]["model"] = extraction_arn
+        logger.info("Updated extraction model to: %s", extraction_arn)
 
 
 def merge_custom_with_defaults(
@@ -492,13 +538,28 @@ def merge_custom_with_defaults(
         return merged
 
     except FileNotFoundError as e:
-        # System defaults not available in Lambda - return config as-is
+        # System defaults not available in Lambda - return config unmerged
         logger.warning(f"System defaults not available, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
     except Exception as e:
-        # Any other error - log and return original config
+        # Any other error - log and return original config, unmerged
         logger.warning(f"Error merging with defaults, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
+
+
+def _migrated_or_original(config: Dict[str, Any]) -> Dict[str, Any]:
+    """``config`` in the current format, for the paths that skip the merge.
+
+    The merge migrates a legacy config; returning the raw one instead leaves flat
+    ``classification`` keys in place, and ``apply_custom_model_arns`` then writes
+    the custom model into a nested block beside them — a flat/nested hybrid in
+    which the flat model wins on the next read and the ARN is lost.
+    """
+    try:
+        return migrate_config(copy.deepcopy(config))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not migrate the unmerged config, using it as-is: {e}")
+        return config
 
 
 def save_configuration_bypass_manager(
@@ -509,6 +570,7 @@ def save_configuration_bypass_manager(
     Used when ConfigurationManager is unreliable (e.g., after migration from legacy format).
     """
     import boto3
+
     from idp_common.config.models import (
         IDPConfig,
         ModelConfigLimitsConfig,
@@ -560,11 +622,34 @@ def save_configuration_bypass_manager(
     )
     stringified = _stringify_values(config_dict)
 
+    # `managed` is stored as the head's `Managed` attribute, never in the body,
+    # exactly as `ConfigurationRecord.to_dynamodb_item` stores it: the profile
+    # listing reads only the attribute, so a body key alone listed a managed
+    # profile as a user profile. And, as in `save_configuration`, a body that
+    # does not say `managed: true` keeps a profile stored as managed — by the
+    # attribute, or by the body key this writer used to leave (#1613). "Stored as
+    # managed" is coerced the way `IDPConfig.managed` coerces it on the validated
+    # read, so this writer and `save_configuration` agree on a string value too.
+    managed = stringified.pop("managed", None)
+    stored = (
+        existing_item.get("Managed", existing_item.get("managed"))
+        if existing_item is not None
+        else None
+    )
+    try:
+        stored_managed = stored is not None and TypeAdapter(bool).validate_python(
+            stored
+        )
+    except ValidationError:
+        stored_managed = False
+
     # Create DynamoDB item with flattened config
     item = {
         "Configuration": f"{config_type}#{version}" if version else config_type,
         **stringified,
     }
+    if managed is not None:
+        item["Managed"] = managed is True or stored_managed
 
     # Preserve existing created date and active status
     if config_type == "Config":
@@ -833,31 +918,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
 
                 # Apply custom model ARNs if provided
                 if isinstance(resolved_default, dict):
-                    # Replace classification model if CustomClassificationModelARN is provided and not empty
-                    if (
-                        "CustomClassificationModelARN" in properties
-                        and properties["CustomClassificationModelARN"].strip()
-                    ):
-                        if "classification" in resolved_default:
-                            resolved_default["classification"]["model"] = properties[
-                                "CustomClassificationModelARN"
-                            ]
-                            logger.info(
-                                f"Updated classification model to: {properties['CustomClassificationModelARN']}"
-                            )
-
-                    # Replace extraction model if CustomExtractionModelARN is provided and not empty
-                    if (
-                        "CustomExtractionModelARN" in properties
-                        and properties["CustomExtractionModelARN"].strip()
-                    ):
-                        if "extraction" in resolved_default:
-                            resolved_default["extraction"]["model"] = properties[
-                                "CustomExtractionModelARN"
-                            ]
-                            logger.info(
-                                f"Updated extraction model to: {properties['CustomExtractionModelARN']}"
-                            )
+                    apply_custom_model_arns(resolved_default, properties)
 
                 configurations["Config#default#System Default"] = resolved_default
 

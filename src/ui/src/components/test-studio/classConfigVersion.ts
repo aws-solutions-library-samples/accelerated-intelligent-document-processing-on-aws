@@ -58,17 +58,3 @@ export const resolveClassConfigVersion = (
 
   return { version: 'default', source: 'default' };
 };
-
-/** Badge text naming the config and, when it is a fallback, where it came from. */
-export const describeClassConfigSource = ({ version, source }: ClassConfigChoice): string => {
-  switch (source) {
-    case 'baseline':
-      return version;
-    case 'testSet':
-      return `${version} (test set)`;
-    case 'active':
-      return `${version} (active config)`;
-    default:
-      return 'built-in default';
-  }
-};

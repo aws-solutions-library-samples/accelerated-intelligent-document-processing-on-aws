@@ -140,6 +140,85 @@ def attach_page_confidence(
     return page_details
 
 
+def compute_boundary_and_label_accuracy(
+    sections_gt: List[Dict[str, Any]],
+    sections_pred: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Split section accuracy into a **boundary** half and a **label** half.
+
+    ``split_accuracy_without_order`` requires a predicted section to match a
+    ground-truth one on **both** its page set and its class, so a wrong boundary
+    and a wrong label are reported as the same failure. That is the defect
+    GitHub issue #1329 names: tuning effort goes to the wrong place, because the
+    number cannot say whether the model is splitting the packet wrongly or
+    naming the pieces wrongly. The split-then-classify strategy makes the
+    distinction actionable — the two halves are separate calls that can use
+    separate models — but the distinction is worth having on combined runs too, and it costs
+    nothing to compute from data already loaded.
+
+    The decomposition is exact rather than approximate:
+
+        split_accuracy_without_order = boundary_accuracy x label_accuracy
+
+    because ``split`` counts sections matching on page set AND class, while
+    ``boundary`` counts those matching on page set and ``label`` is the fraction
+    of *those* that also match on class.
+
+    ``label_accuracy`` is ``None``, not ``0.0``, when no section's boundaries
+    matched: no label was scored, and reporting zero would present "we never got
+    far enough to judge the labels" as "every label was wrong" — the pair of
+    readings this function exists to keep apart.
+
+    Returns:
+        ``{boundary_accuracy, label_accuracy, total_sections,
+        boundary_matched_sections, label_matched_sections}``. Accuracies are
+        ``None`` when there is nothing to score.
+    """
+
+    def page_set(section: Dict[str, Any]) -> frozenset:
+        return frozenset(int(p) for p in (section.get("page_indices") or []))
+
+    out: Dict[str, Any] = {
+        "boundary_accuracy": None,
+        "label_accuracy": None,
+        "total_sections": len(sections_gt),
+        "boundary_matched_sections": 0,
+        "label_matched_sections": 0,
+    }
+    if not sections_gt:
+        return out
+
+    # Each predicted section may satisfy at most one ground-truth section, so a
+    # model that emits the same range twice cannot score it twice.
+    unclaimed = list(range(len(sections_pred)))
+    boundary_matched = 0
+    label_matched = 0
+
+    for gt_section in sections_gt:
+        gt_pages = page_set(gt_section)
+        if not gt_pages:
+            continue
+        match_index = None
+        for position, pred_index in enumerate(unclaimed):
+            if page_set(sections_pred[pred_index]) == gt_pages:
+                match_index = position
+                break
+        if match_index is None:
+            continue
+
+        pred_section = sections_pred[unclaimed.pop(match_index)]
+        boundary_matched += 1
+        if pred_section.get("document_class") == gt_section.get("document_class"):
+            label_matched += 1
+
+    out["boundary_matched_sections"] = boundary_matched
+    out["label_matched_sections"] = label_matched
+    out["boundary_accuracy"] = round(boundary_matched / len(sections_gt), 4)
+    if boundary_matched:
+        out["label_accuracy"] = round(label_matched / boundary_matched, 4)
+    return out
+
+
 def compute_graded_packet_metrics(
     sections_gt: List[Dict[str, Any]],
     sections_pred: List[Dict[str, Any]],

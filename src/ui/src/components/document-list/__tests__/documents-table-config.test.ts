@@ -10,6 +10,7 @@ import {
   LATEST_PERIODS,
   TEST_RUN_COLUMN_ID,
   buildDownloadMenuItems,
+  isClaimableForReview,
   resolveInitialPeriodsToLoad,
   testRunIdFromObjectKey,
   type MappedDocument,
@@ -200,5 +201,23 @@ describe('resolveInitialPeriodsToLoad', () => {
     expect(resolveInitialPeriodsToLoad(undefined)).toBe(LATEST_PERIODS);
     expect(resolveInitialPeriodsToLoad(Number.NaN)).toBe(LATEST_PERIODS);
     expect(resolveInitialPeriodsToLoad(Number.POSITIVE_INFINITY)).toBe(LATEST_PERIODS);
+  });
+});
+
+describe('isClaimableForReview', () => {
+  it('claims a raised, unfinished, unowned review', () => {
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlStatus: 'Review Pending' }))).toBe(true);
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlStatus: 'PendingReview' }))).toBe(true);
+  });
+
+  it('does not send a claim the server refuses', () => {
+    // No review raised: NO_REVIEW_PENDING.
+    expect(isClaimableForReview(row({ hitlTriggered: false }))).toBe(false);
+    expect(isClaimableForReview(row({ hitlTriggered: false, hitlStatus: 'N/A' }))).toBe(false);
+    // Finished: REVIEW_FINISHED.
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlCompleted: true, hitlStatus: 'Completed' }))).toBe(false);
+    // Owned, or in a review queue.
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlReviewOwner: 'bob', hitlStatus: 'InProgress' }))).toBe(false);
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlStatus: 'in_review' }))).toBe(false);
   });
 });

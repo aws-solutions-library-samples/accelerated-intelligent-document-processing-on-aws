@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import gzip
+import copy
 import json
 import logging
 import math
@@ -19,6 +19,10 @@ from decimal import Decimal
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
+
+from idp_common import testrun_status as trs
+from idp_common.config.migrations import migrate_config
+from idp_common.dynamodb import DynamoDBClient, DynamoDBError
 
 sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
@@ -300,144 +304,42 @@ def handler(event, context):
     raise ValueError(f"Unknown field: {field_name}")
 
 
-# Statuses that mean "processing is over" AND that aggregate metrics are
-# expected for. ABORTED is terminal too but is deliberately absent: an aborted
-# run is not eligible for aggregation, so it must keep reporting ABORTED rather
-# than being masked as EVALUATING.
-_METRICS_ELIGIBLE_STATUSES = ("COMPLETE", "PARTIAL_COMPLETE")
-
-
-# A document's ``EvaluationStatus``, partitioned into the three answers the run
-# status needs. Every value ANY writer can put in that attribute must appear in
-# exactly one of these, because a value in none of them is counted as in-flight
-# (see the branch that logs it) and a run holding one such document never
-# reaches a terminal status. That is the whole of #1330 — ``DISABLED`` was not
-# written at all, and ``TIMED_OUT`` was written but named nowhere here, so
-# either one pinned a run at EVALUATING with every document showing Completed.
+# The run-status derivation lives in ``idp_common.testrun_status``, which is
+# its single home. It used to be spelled out here, and the abort path carried a
+# second copy; a value classified in neither pinned runs at EVALUATING forever,
+# which happened twice in one release cycle (``TIMED_OUT``, then ``DISABLED``
+# — #1330). The remedy adopted then was a closure test over the copies, which
+# keeps the copies honest but does not stop a third consumer being written
+# against its own. This resolver and the scheduled sweeper that advances runs no
+# client is watching (#1620) both call it. The abort path does not: it runs
+# without an idp_common layer, so it keeps a literal set, held to this one by
+# ``test_both_readers_of_an_evaluation_status_agree``. Editing the shared sets is
+# therefore not sufficient on its own — that test names the second site.
 #
-# ⚠️ The attribute has THREE writers, not one, and the two beyond the pipeline
-# are easy to miss because they describe a different activity: promoting a
-# document to an evaluation baseline writes ``BASELINE_COPYING`` /
-# ``BASELINE_AVAILABLE`` / ``BASELINE_ERROR`` over whatever evaluation left
-# there (``copy_to_baseline_resolver``, and ``idp_sdk``'s evaluation processor
-# for the programmatic route). A test-run document promoted from the document
-# list therefore reaches this loop carrying one of those, which is why they are
-# classified here rather than left to the catch-all.
-# ``test_results_resolver.py::test_every_evaluation_status_any_writer_can_set_is_classified``
-# derives the universe from the three writers known today and fails on a value
-# missing here; what it does not detect is a fourth writer, which is written out
-# as a residual where that universe is built.
+# The names below stay private to this module so its remaining call sites and
+# tests read unchanged; the sets they point at are the shared ones. Read the
+# reasoning for each classification in ``idp_common/testrun_status.py``, not
+# here — a summary in two places is how the copies started.
 #
-# Terminal and not a failure: the document is as finished as it will ever be.
-# ``NO_BASELINE`` and ``DISABLED`` produce no metrics by construction (no ground
-# truth to score against; no evaluation asked for), which is a legitimate
-# outcome rather than an error.
-#
-# ⚠️ **All three ``BASELINE_*`` values are settled, and the honest reason is that
-# the run can no longer be told anything by them — not that they are good news.**
-# A promotion *overwrites* this attribute, so whatever evaluation recorded is
-# gone, and two things follow that are worth knowing before reading a run's
-# figures. **A promoted document whose evaluation had FAILED stops counting as a
-# failed file**, so a run can move from PARTIAL_COMPLETE to COMPLETE with
-# ``failedFiles`` 0 while its cached metrics still cover only the documents that
-# were scored; the information needed to prevent that was destroyed by the
-# overwrite, and separating the two would take a second attribute. And
-# ``BASELINE_COPYING`` is settled **despite naming work in progress**, because
-# the copy is invoked as an async Lambda whose terminal write is best-effort —
-# an invocation that never lands, or fails that write, leaves the attribute
-# there with nothing to reconcile it. Waiting on it is therefore unbounded, and
-# it would be a wait for an action taken on the document *after* the run
-# finished, which tells the run nothing. Holding a completed run at EVALUATING
-# for that is the #1330 symptom on a new route.
-#
-# A third consequence, older than any of this and listed because it is in the
-# same family: the aggregation selects documents by ``EvaluationStatus ==
-# "COMPLETED"``, so a promoted document drops out of a run's metrics on any
-# *re*-aggregation even when its evaluation had succeeded — and a release that
-# adds a metrics key re-aggregates every historical run once. The cause is the
-# overwrite rather than anything here.
-_EVAL_STATUS_SETTLED = frozenset(
-    {
-        "COMPLETED",
-        "NO_BASELINE",
-        "DISABLED",
-        "BASELINE_AVAILABLE",
-        "BASELINE_ERROR",
-        "BASELINE_COPYING",
-    }
-)
-# Terminal and a failure. ``TIMED_OUT`` is the status the single-attempt timeout
-# policy stamps (#917); it means the same thing to a run as ``FAILED``.
-_EVAL_STATUS_UNSUCCESSFUL = frozenset({"FAILED", "TIMED_OUT"})
-# Genuinely still working, and able to leave that state on its own.
-_EVAL_STATUS_IN_FLIGHT = frozenset({"RUNNING"})
-
-
-def _normalized_eval_status(doc_item):
-    """A document's ``EvaluationStatus``, upper-cased, or None if not recorded.
-
-    Casing is normalized because writers have historically been inconsistent
-    about it (the same reason the two document probes in this file upper-case the
-    field), and here an unexpected spelling is not a cosmetic problem: it lands
-    in the unrecognised branch and holds the run short of a terminal status. A
-    blank string is treated as "not recorded", which is what it means.
-    """
-    raw = doc_item.get("EvaluationStatus")
-    if raw is None:
-        return None
-    normalized = str(raw).strip().upper()
-    return normalized or None
+# ``_METRICS_ELIGIBLE_STATUSES`` and ``_normalized_eval_status`` used to sit here
+# too. Both were read only by the counting loop this module no longer owns, so
+# they are gone rather than kept as aliases nothing calls: a private wrapper with
+# no caller is indistinguishable from one whose caller was lost, and the next
+# reader would have to establish which.
+_EVAL_STATUS_SETTLED = trs.EVAL_STATUS_SETTLED
+_EVAL_STATUS_UNSUCCESSFUL = trs.EVAL_STATUS_UNSUCCESSFUL
+_EVAL_STATUS_IN_FLIGHT = trs.EVAL_STATUS_IN_FLIGHT
 
 
 def _ran_with_evaluation_disabled(item):
     """Did this run process its documents with evaluation switched off?
 
-    Answered from the configuration the run captured, because that is the input
-    that decided it. Documents processed since #1330 also say so themselves
-    (``EvaluationStatus=DISABLED``), and that is the preferred signal where it
-    exists — this covers the two cases where it does not: a run that predates
-    the stamp, and one whose stamp could not be written (the evaluation function
-    records it best-effort, since nothing has actually failed in this case).
-
     Decompresses the captured config, so call it only when the cheap signals are
     exhausted — and deliberately **not** from ``_awaiting_metrics``, whose
     answer has to be the same for three callers and so must come off the run
     record; see the warning there.
-
-    The reading must agree with the pipeline's, and the pipeline's goes through
-    pydantic's ``EvaluationConfig.enabled: bool``, which accepts the string
-    spellings below as well as real booleans — a stored ``"false"`` genuinely
-    disables evaluation. Anything else, including a value pydantic would reject,
-    reads as enabled: this function only answers True when evaluation demonstrably
-    did not run, since the cost of a wrong True is a run reported complete while
-    results are still coming.
     """
-    config = _captured_config_of(item)
-    if not isinstance(config, dict):
-        return False
-    evaluation = config.get("evaluation")
-    if not isinstance(evaluation, dict) or "enabled" not in evaluation:
-        # The default is enabled, so an absent section is not a disabled run.
-        return False
-    enabled = evaluation["enabled"]
-    if isinstance(enabled, bool):
-        return not enabled
-    if isinstance(enabled, str):
-        # Not stripped, deliberately: pydantic does not strip either, so `" false"`
-        # is a configuration it REJECTS — every pipeline step fails to load it —
-        # and reading that as "evaluation was disabled" would be this function
-        # claiming a run finished on the strength of a configuration that never
-        # ran. Matching pydantic's exact token set is what keeps the two readings
-        # the same one.
-        return enabled.lower() in {"0", "off", "f", "false", "n", "no"}
-    if isinstance(enabled, (int, float, Decimal)):
-        # ``float`` is unreachable through either storage shape today — the
-        # compressed path parses with ``parse_float=Decimal`` and DynamoDB hands
-        # back ``Decimal`` on the inline one — and is listed because pydantic
-        # reads 0.0 as false, so omitting it would be a disagreement waiting for
-        # a third storage shape.
-        return enabled == 0
-    return False
+    return trs.ran_with_evaluation_disabled(item)
 
 
 def _awaiting_metrics(item, status):
@@ -445,61 +347,19 @@ def _awaiting_metrics(item, status):
 
     The single definition of the condition behind the ``EVALUATING`` badge. Two
     resolvers surface that badge — ``_build_test_run_list`` (the Executions
-    list) and ``get_test_run_status`` (the per-row poll), which are also this
-    rule's only callers. ``get_test_results`` reports the stored status and
-    decides its own enqueue from the cache's own shape. All three previously
-    spelled a version of this out inline.
-    Issue #619 was diagnosed through the resulting confusion: the badge said
-    EVALUATING while the file counts said every document was processed and none
-    was evaluating, because "terminal but no metrics" and "actually evaluating"
-    render identically. Keep the rule here so the three sites cannot drift.
-
-    ⚠️ **Everything this answer depends on must be readable from the run record
-    alone**, because the callers do not see the same things: only
-    ``get_test_run_status`` reads the run's documents. An exclusion one of them
-    can evaluate and the others cannot splits the badge in two — a run reporting
-    COMPLETE on the per-row poll and EVALUATING in the Executions list at the
-    same time — and because the two disagree about whether an aggregation is
-    outstanding, neither enqueues one, so the split never resolves. That was
-    measured on a run with no published ground truth, and it is the shape of
-    #619 reintroduced. The draft-labeling exclusion is safe for precisely this
-    reason: ``Purpose`` is on the record.
-
-    A run that will never have metrics is therefore NOT excluded here. It does
-    not need to be: the aggregation is enqueued, ``handle_cache_update_request``
-    writes every key of ``metrics_to_cache`` whatever the aggregation found, and
-    the badge clears on that one pass (see the convergence note in
-    ``get_test_results``) — with the run's cost, which is in the cached result
-    and nowhere else. One EVALUATING interval while that happens is what every
-    other terminal run shows.
+    list) and ``get_test_run_status`` (the per-row poll). ``get_test_results``
+    reports the stored status and decides its own enqueue from the cache's own
+    shape. Issue #619 was diagnosed through the resulting confusion: the badge
+    said EVALUATING while the file counts said every document was processed and
+    none was evaluating, because "terminal but no metrics" and "actually
+    evaluating" render identically.
     """
-    if _is_draft_labeling_run(item):
-        return False
-    return status in _METRICS_ELIGIBLE_STATUSES and not item.get("testRunResult")
+    return trs.awaiting_metrics(item, status)
 
 
 def _is_draft_labeling_run(item):
-    """True for a run that CREATES a baseline rather than being scored against one.
-
-    Such a run has no baseline by construction — that is what it is producing — so
-    the copier skips baseline staging and evaluation never runs. It therefore has
-    no aggregate metrics to wait for, ever.
-
-    Treating one as "awaiting metrics" cost twice: it displayed EVALUATING
-    indefinitely (observed on a dev stack: a run COMPLETE with 100/100 documents
-    processed and CompletedAt set, still badged EVALUATING three days later), and
-    every view of it enqueued a full aggregation — re-reading every document's
-    results.json from S3 — to compute extraction metrics that are structurally
-    empty.
-
-    Prefers the persisted ``Purpose``. Falls back to the Context string only for
-    runs created before Purpose was written, which is why the fallback is exact
-    rather than a substring match.
-    """
-    purpose = item.get("Purpose")
-    if purpose:
-        return purpose == "draft-labeling"
-    return item.get("Context") == "Draft labeling run"
+    """True for a run that CREATES a baseline rather than being scored against one."""
+    return trs.is_draft_labeling_run(item)
 
 
 def _display_status(item, status):
@@ -520,7 +380,12 @@ def _display_status(item, status):
 # minutes on a large run; this window keeps concurrent readers (and repeat visits
 # to the results page) from stacking up redundant duplicate work, while still
 # letting a run whose aggregation genuinely failed retry on a later view.
-_CACHE_UPDATE_THROTTLE_SECONDS = 300
+#
+# Shared with the sweeper (#1620), which writes the same attribute under the same
+# condition — so a sweep and a page load arriving together collapse to one
+# aggregation instead of racing. The window and the attribute name are therefore
+# a contract between two Lambdas, not a local tuning knob.
+_CACHE_UPDATE_THROTTLE_SECONDS = trs.CACHE_UPDATE_THROTTLE_SECONDS
 
 
 def _cache_update_recently_queued(
@@ -541,7 +406,7 @@ def _cache_update_recently_queued(
     unparseable timestamp), so an unreadable value degrades to attempting the
     authoritative claim rather than silently suppressing recovery.
     """
-    queued_at = item.get("CacheUpdateQueuedAt")
+    queued_at = item.get(trs.CACHE_UPDATE_QUEUED_AT_ATTR)
     if not queued_at or not throttle_seconds:
         return False
     try:
@@ -574,12 +439,15 @@ def _claim_cache_update_slot(test_run_id, throttle_seconds):
     cutoff = (now - timedelta(seconds=throttle_seconds)).isoformat()
     try:
         table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+        # Attribute named from the shared constant, not spelled inline: the
+        # sweeper claims the same slot, and a rename on one side only would let
+        # both enqueue the same aggregation while each believed it held the claim.
+        attr = trs.CACHE_UPDATE_QUEUED_AT_ATTR
         table.update_item(
             Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"},
-            UpdateExpression="SET CacheUpdateQueuedAt = :now",
+            UpdateExpression=f"SET {attr} = :now",
             ConditionExpression=(
-                "attribute_not_exists(CacheUpdateQueuedAt) "
-                "OR CacheUpdateQueuedAt < :cutoff"
+                f"attribute_not_exists({attr}) OR {attr} < :cutoff"
             ),
             ExpressionAttributeValues={":now": now.isoformat(), ":cutoff": cutoff},
         )
@@ -694,9 +562,20 @@ def handle_cache_update_request(event, context):
             }
 
             table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+            # The attempt counter is cleared in the same write that records the
+            # result, because the sweeper reads it as *consecutive* failures when
+            # sizing its backoff. ``ADD`` only ever increments it, so left in
+            # place it becomes a lifetime total: a run that failed a few times,
+            # succeeded, and later needs recomputing — a release adding a key to
+            # these metrics, or a cache invalidation — would be deferred by up to
+            # a day on the strength of failures that are over. Clearing it here
+            # is what makes the counter mean what the throttle reads.
             table.update_item(
                 Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"},
-                UpdateExpression="SET testRunResult = :metrics",
+                UpdateExpression=(
+                    f"SET testRunResult = :metrics "
+                    f"REMOVE {trs.CACHE_UPDATE_ATTEMPTS_ATTR}"
+                ),
                 ExpressionAttributeValues={
                     ":metrics": float_to_decimal(metrics_to_cache)
                 },
@@ -1142,7 +1021,11 @@ def compare_test_runs(test_run_ids):
 
         for test_run_id in test_run_ids:
             logger.info(f"Getting results for test run: {test_run_id}")
-            test_result = get_test_results(test_run_id)
+            # One aborted run's unreadable count must not fail the comparison of
+            # the others (the comparison view does not display aborted runs).
+            test_result = get_test_results(
+                test_run_id, unreadable_count_as_none=True
+            )
             if test_result:
                 logger.info(f"Found results for {test_run_id}: {test_result.keys()}")
                 results.append(test_result)
@@ -1252,8 +1135,6 @@ def _count_completed_documents(table, test_run_id, files):
     """
     Count how many documents reached a settled, non-failed evaluation state.
 
-    Uses batch_get_item for efficiency instead of sequential get_item calls.
-
     Counts the same ``_EVAL_STATUS_SETTLED`` set ``get_test_run_status`` counts
     as completed, so the "N of M completed" an aborted run reports agrees with
     the figure every other run reports. Matching only ``COMPLETED`` made this
@@ -1269,6 +1150,13 @@ def _count_completed_documents(table, test_run_id, files):
     an aborted run that predates the ``DISABLED`` stamp and ran with evaluation
     off still reports 0 of N here, where the status loop reports N.
 
+    Reads through the shared ``batch_get_items`` helper, which retries
+    ``UnprocessedKeys`` with backoff and raises when keys remain. Any read that
+    does not cover every document raises rather than returning a count: the
+    caller persists this figure with ``CompletedFilesCounted`` set, which stops
+    it ever being recounted, so a partial count would be permanent. Raising
+    leaves the flag unset and the next request counts again.
+
     Args:
         table: DynamoDB table resource
         test_run_id: Test run identifier
@@ -1276,49 +1164,40 @@ def _count_completed_documents(table, test_run_id, files):
 
     Returns:
         int: Number of documents whose evaluation settled without failing
+
+    Raises:
+        DynamoDBError: The documents could not all be read, including
+            ``DynamoDBUnprocessedKeysError`` when retries are exhausted.
     """
     if not files:
         return 0
 
+    keys = [
+        {"PK": f"doc#{test_run_id}/{file_name}", "SK": "none"} for file_name in files
+    ]
+    items = DynamoDBClient(table_name=table.table_name).batch_get_items(keys)
+
     completed_count = 0
-    table_name = table.table_name
-    dynamodb_client = boto3.client("dynamodb")
-
-    # Build object keys
-    object_keys = [f"{test_run_id}/{file_name}" for file_name in files]
-
-    # DynamoDB batch_get_item supports up to 100 keys per batch
-    batch_size = 100
-    for i in range(0, len(object_keys), batch_size):
-        batch = object_keys[i : i + batch_size]
-        keys = [{"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}} for key in batch]
-
-        try:
-            response = dynamodb_client.batch_get_item(
-                RequestItems={table_name: {"Keys": keys}}
-            )
-
-            # Count completed evaluations
-            for item in response.get("Responses", {}).get(table_name, []):
-                eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
-                if eval_status in _EVAL_STATUS_SETTLED:
-                    completed_count += 1
-
-            # Handle unprocessed keys (throttling, etc.)
-            unprocessed = response.get("UnprocessedKeys", {}).get(table_name, {})
-            if unprocessed:
-                logger.warning(
-                    f"Batch get had {len(unprocessed.get('Keys', []))} unprocessed keys"
-                )
-
-        except Exception as e:
-            logger.error(f"Batch get failed for batch starting at index {i}: {str(e)}")
-
+    for item in items:
+        eval_status = item.get("EvaluationStatus")
+        if (
+            isinstance(eval_status, str)
+            and eval_status.upper() in _EVAL_STATUS_SETTLED
+        ):
+            completed_count += 1
     return completed_count
 
 
-def get_test_results(test_run_id):
-    """Get detailed test results for a specific test run"""
+def get_test_results(test_run_id, *, unreadable_count_as_none=False):
+    """Get detailed test results for a specific test run.
+
+    For an aborted run whose completed-document count has not been taken yet,
+    a count that cannot read every document raises by default, and nothing is
+    saved. With ``unreadable_count_as_none`` the run is returned with
+    ``completedFiles`` null instead, still unsaved, so a caller assembling
+    several runs is not failed by one of them. Only ``DynamoDBError`` is
+    degraded; any other error still propagates.
+    """
     table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
     # Get test run metadata
@@ -1401,9 +1280,23 @@ def get_test_results(test_run_id):
         if current_status == "ABORTED" and not completed_files_counted:
             files = metadata.get("Files", [])
             if files:
-                completed_files_count = _count_completed_documents(
-                    table, test_run_id, files
-                )
+                # A count that cannot read every document is never persisted:
+                # persisting sets CompletedFilesCounted, after which it is never
+                # recounted, so a partial figure would be permanent.
+                try:
+                    completed_files_count = _count_completed_documents(
+                        table, test_run_id, files
+                    )
+                except DynamoDBError as e:
+                    if not unreadable_count_as_none:
+                        raise
+                    logger.warning(
+                        f"Could not count completed documents for aborted test "
+                        f"run {test_run_id}; returning no count: {e}"
+                    )
+                    completed_files_count = None
+
+            if files and completed_files_count is not None:
                 logger.info(
                     f"Counted {completed_files_count} completed documents for aborted test run {test_run_id}"
                 )
@@ -1832,134 +1725,40 @@ def get_test_run_status(test_run_id):
                 "failedFiles": item.get("FailedFiles", 0),
             }
 
-        # Always check actual document status from tracking table
-        completed_files = 0
-        processing_failed_files = 0  # Only count processing failures found during scan
-        evaluating_files = 0
-        queued_files = 0
-        # Resolved at most once per invocation, and only if some document turns
-        # out to carry no evaluation status at all — it decompresses the run's
-        # captured configuration, which is not worth doing on a poll where
-        # every document already says what happened to it.
-        evaluation_off = None
-
-        for file_key in files:
-            logger.info(f"Checking file: {file_key} for test run: {test_run_id}")
+        # Derived by ``idp_common.testrun_status``, which is the single home
+        # for this logic — see the note beside ``_EVAL_STATUS_SETTLED`` above.
+        # Documents are fetched one at a time here because this runs on a user's
+        # request for a single run; the sweeper batches, which is why the shared
+        # function takes a loader rather than doing the reads itself.
+        def _load_document(file_key):
             doc_response = table.get_item(
                 Key={"PK": f"doc#{test_run_id}/{file_key}", "SK": "none"}
             )
-            if "Item" in doc_response:
-                doc_status = doc_response["Item"].get("ObjectStatus", "QUEUED")
-                eval_status = _normalized_eval_status(doc_response["Item"])
-                logger.info(
-                    f"File {file_key}: ObjectStatus={doc_status}, EvaluationStatus={eval_status}"
-                )
-
-                if doc_status == "COMPLETED":
-                    # Check if evaluation is also complete
-                    if eval_status in _EVAL_STATUS_SETTLED:
-                        completed_files += 1
-                        logger.info(
-                            f"File {file_key}: counted as completed ({eval_status})"
-                        )
-                    elif eval_status in _EVAL_STATUS_UNSUCCESSFUL:
-                        processing_failed_files += 1
-                        logger.info(
-                            f"File {file_key}: counted as failed (eval {eval_status})"
-                        )
-                    elif eval_status in _EVAL_STATUS_IN_FLIGHT:
-                        evaluating_files += 1
-                        logger.info(f"File {file_key}: counted as evaluating")
-                    elif eval_status is None:
-                        # Nothing recorded. Either evaluation has not reached
-                        # this document yet, or it never will because the run's
-                        # configuration switched evaluation off — and before
-                        # #1330 those were read as the first case
-                        # unconditionally, which is why such a run sat at
-                        # EVALUATING forever. Documents processed since carry
-                        # DISABLED and are settled above; this consults the
-                        # captured configuration, which is what answers for a
-                        # run that predates the stamp or whose stamp could not
-                        # be written.
-                        if evaluation_off is None:
-                            evaluation_off = _ran_with_evaluation_disabled(item)
-                        if evaluation_off:
-                            completed_files += 1
-                            logger.info(
-                                f"File {file_key}: counted as completed "
-                                "(evaluation disabled for this run)"
-                            )
-                        else:
-                            evaluating_files += 1
-                            logger.info(
-                                f"File {file_key}: counted as evaluating (eval not started)"
-                            )
-                    else:
-                        # A status none of the three sets above names. Counting
-                        # it as evaluating keeps the run short of a terminal
-                        # status for as long as it is there, so this is a
-                        # "someone added an EvaluationStatus and did not come
-                        # here" alarm, not a routine branch — hence WARNING.
-                        evaluating_files += 1
-                        logger.warning(
-                            f"File {file_key}: unrecognised EvaluationStatus "
-                            f"{eval_status!r}; counting as evaluating, which will "
-                            f"hold test run {test_run_id} short of a terminal status"
-                        )
-                elif doc_status == "FAILED":
-                    processing_failed_files += 1
-                    logger.info(f"File {file_key}: counted as failed")
-                elif doc_status == "ABORTED":
-                    # Count aborted documents as processing failures
-                    processing_failed_files += 1
-                    logger.info(f"File {file_key}: counted as failed (aborted)")
-                elif doc_status == "QUEUED":
-                    queued_files += 1
-                    logger.info(f"File {file_key}: counted as queued")
-                else:
-                    logger.info(
-                        f"File {file_key}: still processing (status: {doc_status})"
-                    )
-            else:
+            if "Item" not in doc_response:
                 logger.warning(f"Document not found: doc#{test_run_id}/{file_key}")
-                # Count missing documents as queued (not yet created)
-                queued_files += 1
+                return None
+            return doc_response["Item"]
 
-        # Calculate total failed files
-        baseline_failed_files = item.get(
-            "BaselineFailedFiles", 0
-        )  # Set by copier, never updated
-        total_failed_files = (
-            baseline_failed_files + processing_failed_files
-        )  # Recalculated each call
+        tally = trs.tally_documents(files, _load_document, item)
+        completed_files = tally.completed
+        evaluating_files = tally.evaluating
+        queued_files = tally.queued
+
+        # Set by copier, never updated.
+        baseline_failed_files = item.get("BaselineFailedFiles", 0)
+        total_failed_files = trs.total_failed_files(tally, baseline_failed_files)
 
         logger.info(
-            f"Test run {test_run_id} counts: completed={completed_files}, processing_failed={processing_failed_files}, baseline_failed={baseline_failed_files}, total_failed={total_failed_files}, evaluating={evaluating_files}, queued={queued_files}, total={files_count}"
+            f"Test run {test_run_id} counts: completed={completed_files}, "
+            f"processing_failed={tally.failed}, "
+            f"baseline_failed={baseline_failed_files}, "
+            f"total_failed={total_failed_files}, evaluating={evaluating_files}, "
+            f"queued={queued_files}, total={files_count}"
         )
 
-        # Determine overall test run status based on document and evaluation states
-        if (
-            completed_files == files_count
-            and files_count > 0
-            and total_failed_files == 0
-        ):
-            overall_status = "COMPLETE"
-        elif (
-            total_failed_files > 0
-            and (completed_files + total_failed_files + evaluating_files) == files_count
-        ):
-            overall_status = "PARTIAL_COMPLETE"
-        elif evaluating_files > 0:
-            overall_status = "EVALUATING"
-        elif queued_files == files_count:
-            overall_status = "QUEUED"  # All files are still queued
-        elif (
-            completed_files + total_failed_files + evaluating_files + queued_files
-            < files_count
-        ):
-            overall_status = "RUNNING"  # Some files are actively processing
-        else:
-            overall_status = item.get("Status", "RUNNING")
+        overall_status = trs.derive_overall_status(
+            tally, files_count, baseline_failed_files, item.get("Status", "RUNNING")
+        )
 
         # Auto-update database metadata if calculated status differs from stored status
         stored_status = item.get("Status", "RUNNING")
@@ -2226,42 +2025,8 @@ def _aggregate_test_run_metrics(test_run_id):
 
 
 def _captured_config_of(item):
-    """The configuration a run captured, whether stored compressed or inline.
-
-    Runs record their configuration as a gzip Binary attribute; runs created
-    before that stored the body inline under ``Config``.
-
-    Uses ``parse_float=Decimal`` for the compressed path so non-integer
-    numbers land as ``Decimal``, matching the legacy-inline path where
-    DDB's resource client returns them as ``Decimal`` already. Same
-    reason ``_decompress_config_item`` uses this in ``test_runner``.
-
-    Caveat — integer-valued numbers are not perfectly type-symmetric
-    across the two storage formats. ``_json_default`` collapses an
-    integer-valued ``Decimal`` (``Decimal('0.0')``, ``Decimal('3.0')``)
-    to a Python ``int`` at compress time, so the JSON payload writes
-    ``0`` / ``3`` rather than ``0.0`` / ``3.0``; ``parse_int`` on
-    read-back keeps those as ``int``, while the legacy-inline path
-    would have kept them as ``Decimal``. Downstream consumers that
-    switch on ``isinstance(x, Decimal)`` for integer-valued numbers
-    should treat ``int`` and ``Decimal`` as equivalent for the
-    integer case (JSON has no representation for "integer-valued
-    Decimal" — the whole path is inherently lossy for the int/float
-    distinction on that specific shape).
-    """
-    if item.get("_config_storage") == "compressed":
-        blob = item.get("_compressed_config")
-        if blob is None:
-            return {}
-        raw = blob if isinstance(blob, bytes) else bytes(blob)
-        try:
-            return json.loads(
-                gzip.decompress(raw).decode("utf-8"), parse_float=Decimal
-            )
-        except Exception as e:
-            logger.error(f"Failed to decompress captured test run config: {e}")
-            return {}
-    return item.get("Config", {})
+    """The configuration a run captured, whether stored compressed or inline."""
+    return trs.captured_config_of(item)
 
 
 def _get_test_run_config(test_run_id):
@@ -2286,7 +2051,38 @@ def _get_test_run_config(test_run_id):
         else:
             return obj
 
-    return convert_decimals(config)
+    return _migrated_run_config(convert_decimals(config))
+
+
+def _migrated_run_config(config):
+    """The captured run config with its ``Config`` body in the current format.
+
+    A run captured before a config-format change stores the old shape — a run
+    from before 0.9 holds flat ``classification`` keys — so comparing it with a
+    newer run would report every moved setting as ``<missing>`` on one side.
+    Migrating on read normalises runs already stored; the stored item is not
+    rewritten. A body that cannot be migrated is returned as captured.
+
+    The result carries the resulting ``config_format_version``, including for a
+    body captured without one. Stripping it instead would make the key a function
+    of when the run was captured rather than of the configuration: the capture
+    side (``test_runner._current_format``) always stamps, so a run captured from
+    an unstamped configuration would read back stripped here while one captured
+    once the strip was gone kept the stamp — two shapes for one configuration,
+    and a difference reported on the one key that says nothing about how
+    documents are processed.
+    """
+    if not isinstance(config, dict):
+        return config
+    body = config.get("Config")
+    if not isinstance(body, dict) or not body:
+        return config
+    try:
+        migrated = migrate_config(copy.deepcopy(body))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not migrate captured test run config: {e}")
+        return config
+    return {**config, "Config": migrated}
 
 
 def _build_config_comparison(configs):

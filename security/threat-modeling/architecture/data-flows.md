@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
-| **Applies to release** | v0.6.9 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-10-29 |
+| **Applies to release** | v0.6.13 |
 | **Classification** | Internal |
 
 > **v3.0 update.** All UI flows were rewritten: AppSync GraphQL + subscriptions
@@ -16,16 +16,13 @@
 > for the preprocessing/PII hook, the Feature Platform UI bundle, and the
 > Jobs API.
 
-> **v3.2 refresh (v0.6.9).** Re-verified against `template.yaml`,
-> `patterns/unified/statemachine/workflow.asl.json`, the queue processor and the
-> chat stream processor. Corrections: SQS is encrypted with the stack's KMS CMK,
-> not SSE-SQS (§2.1); the admission-control mechanism is now described rather
-> than summarised as "a counter" (§2.1); `onError: fail` is terminal at the
-> **preprocessing** hook point only, not at every hook point (§2.1a, §8);
-> the Identity Pool role is shared by **five** groups, not four (§4.1, §5.1); and
-> the dispatcher's lack of a default deny is called out where the request path is
-> described (§3.1). In-flight fixes are cited by issue number and marked
-> **pending**; nothing marked pending is a control today.
+> **Re-derived for v0.6.13** from `template.yaml`, the nested stacks,
+> `patterns/unified/statemachine/workflow.asl.json`, the queue sender and queue
+> processor, the chat stream processor and the review-queue modules. The flows
+> below include the optional malware gate at ingest (§2.1), both human-review
+> paths and the finalize execution (§2.4), the Inbox (§2.6) and the review status
+> object as an outbound interface (§2.6). In-flight fixes are cited by issue
+> number and marked **pending**; nothing marked pending is a control today.
 
 ## 1. Overview
 
@@ -49,10 +46,15 @@ sequenceDiagram
     User->>S3: Upload document (S3 PutObject / presigned URL)
     S3->>EB: Object created event
     EB->>QS: Trigger Lambda
+    QS->>DDB: Create document tracking record (profile and revision resolved)
+    opt MalwareScanning on
+        QS->>DDB: Status MALWARE_SCANNING (not enqueued)
+        Note over QS: GuardDuty verdict arrives via EventBridge
+        QS->>DDB: THREATS_FOUND -> QUARANTINED, unscannable -> MALWARE_SCAN_FAILED (no workflow)
+    end
     QS->>SQS: Enqueue document reference
     SQS->>QP: Dequeue message
     QP->>DDB: Conditional counter increment (admission control)
-    QP->>DDB: Create document tracking record
     QP->>SFN: Start execution (deterministic name, document reference, config)
 ```
 
@@ -113,7 +115,8 @@ sequenceDiagram
 **Security-relevant characteristics**:
 - The hook runs **before** any classification/extraction model sees the document, which is the point of the PII feature — but the **detection call itself sends the un-redacted document to Bedrock** (TB3→TB4). This is an accepted, documented residual exposure (see PII.T01).
 - Writing the redacted copy back to the *input* bucket creates a re-entrancy risk; a marker + guard prevents redaction loops (PII.T02).
-- `onError: fail` is terminal **here**: a failed preprocessing hook stops the execution rather than falling through to processing the un-redacted original (a fail-**closed** design; see PII.T03). This is specific to the `preprocessing` hook point. At the other six hook points the state machine's `Catch` block routes *forward* to the next step regardless of `onError`, so `onError: fail` does not halt the workflow there — see HOOK.T07 and §8, fix **pending in issue #919**.
+- `onError: fail` is terminal **here**: a failed preprocessing hook stops the execution rather than falling through to processing the un-redacted original (a fail-**closed** design; see PII.T03). At this hook point any error is caught to `PreprocessingHookFailed`; at the other six, `HookFatalError` — what `onError: fail` raises — is caught first and routed to a terminal failure state, and other errors route forward (HOOK.T07, closed by issue #919).
+- For a document held by a review queue, this hook runs again in the finalize execution (§2.4).
 
 **Trust boundary crossings**: TB3→TB6 (hook is customer/feature-managed), TB3→TB4 (PII detection call).
 
@@ -201,12 +204,16 @@ sequenceDiagram
     participant S3 as S3 Output Bucket
     participant Report as Reporting Lambda
 
-    SFN->>HITL: Check if any section is below confidence threshold
-    alt HITL Enabled and threshold breached
-        HITL->>DDB: Mark sections PENDING_REVIEW; end execution
-        Note over Reviewer: Decoupled — review happens out-of-band
-        Reviewer->>DDB: Claim section, save corrections (completeSectionReview)
-        Reviewer->>SFN: Final section resolved -> trigger_reprocessing
+    SFN->>HITL: Check review routing (ProcessResults set review_hold / review_outcome)
+    alt Review queue holds the document (HITL on, Default queue enabled)
+        HITL->>DDB: Status HITL_IN_PROGRESS; execution ends (SUCCEEDED)
+        Note over Reviewer: Eligible Annotator (or Admin) claims, drafts, completes or rejects
+        Reviewer->>DDB: Item -> FINALIZING with single-use finalize token
+        Reviewer->>SFN: Resolver sends document to DocumentQueue; queue processor starts the finalize execution
+        Note over SFN: Finalize run re-enters at preprocessing; drafts copied over results (complete) or status REJECTED (rejected)
+    else Legacy HITL triggered
+        HITL->>DDB: Mark sections PENDING_REVIEW; workflow continues
+        Note over Reviewer: Decoupled — Reviewer claims and saves corrections out-of-band (completeSectionReview)
     end
 
     SFN->>RV: Validate extracted data against rules
@@ -226,14 +233,20 @@ sequenceDiagram
     Report->>DDB: Update document record; snapshot immutable run version
 ```
 
-> **v0.6 change — HITL no longer uses Amazon A2I or SageMaker.** Human review
-> is a **built-in portal in the Web UI**, backed by the REST API and DynamoDB
-> section-review tracking. There is no A2I `FlowDefinition`, no SageMaker
-> workteam, and no external review portal URL. Review is **decoupled** from the
-> workflow: per-section actions update tracking directly, and resolving the last
-> pending section triggers downstream reprocessing. Authorization for review
-> actions is the Admin/Reviewer group set enforced in the resolver Lambdas
-> (`completeSectionReview`, `skipSectionReview`), not an A2I task assignment.
+> **Two review paths, neither using Amazon A2I or SageMaker.** Human review is
+> built into the Web UI. **Review queues** (v0.6.13) hold a document whose
+> configuration enables HITL while the Default queue is enabled: the first
+> execution ends `HITL_IN_PROGRESS`, nothing that produces final output runs on
+> unreviewed data, and a second (finalize) execution — started by the
+> review-queues resolver through `DocumentQueue` and named from a single-use
+> token — applies the reviewer's drafts or ends the document `REJECTED`. The four
+> hooks before the review point run in both executions; rule validation,
+> summarization, evaluation and the post-review hooks run in the finalize
+> execution only. Queue operations are `Admin` + `Annotator` (eligibility per
+> queue) with supervision `Admin` only (HITL.T02). The **legacy** flow
+> marks sections pending while the workflow continues, and is reviewed through
+> `claimReview`, `completeSectionReview` and `skipAllSectionsReview` under the
+> `Admin`/`Reviewer` groups; those operations refuse a document a queue manages.
 
 ### 2.5 Document Version Snapshot
 
@@ -257,6 +270,43 @@ expires. `deleteDocumentVersion` is Admin-only; `listDocumentVersions` requires 
 assigned group, and within that has no per-document scope. Version bytes are fetched via
 `getFilePresignedUrl` with an explicit `versionId` — see UI.T02/UI.T06 for the
 key-scoping gap that applies to those reads.
+
+### 2.6 Inbox and the Review Status Object
+
+```mermaid
+sequenceDiagram
+    participant WT as WorkflowTracker / review-queues resolver
+    participant Cog as Cognito (ListUsersInGroup)
+    participant NT as NotificationsTable
+    participant Out as Output bucket
+    participant Bus as Default EventBridge bus
+    participant UI as Recipient's browser
+    participant NR as Notifications resolver
+
+    WT->>Cog: Expand group recipients at post time
+    WT->>NT: One row per recipient (assignment, release, take-over, reminder, items waiting)
+    WT->>Out: Write <document>/review/status.json (in_review, then complete or rejected, last)
+    Out-->>Bus: Every Output-bucket object event (no consumer in the stack)
+    UI->>NR: listInboxMessages / mark / delete (POST /op/{field})
+    NR->>NT: Query the caller's own partition (key from verified claims)
+    NR-->>UI: Messages; body rendered as sanitized markdown, link only as an in-app route
+```
+
+**Security-relevant characteristics**:
+- No API operation posts a message; content comes only from platform code, and the
+  recipient key is derived from verified claims, so no Inbox operation takes a user
+  argument.
+- Group addressing is expanded when the message is posted, so membership is read
+  from Cognito at that moment; the "items waiting" announcement is addressed to the
+  whole `Annotator` and `Admin` groups rather than to a queue's eligible Annotators
+  (HITL.T03).
+- `status.json` carries the reviewer's email and any reject note, and is readable
+  through the scope-checked object reads by any caller whose scope covers the
+  document; the Output bucket's EventBridge configuration has no per-prefix filter,
+  so every object key in that bucket reaches the account's default bus.
+
+**Trust boundary crossings**: TB3 internal (Cognito read, DynamoDB, S3, EventBridge);
+TB3→TB1 (messages to the browser).
 
 ## 3. Web UI Data Flows
 
@@ -298,14 +348,14 @@ but is open to any authenticated user (AUTH.T08). This is why the automated
 authorization harness (`make api-test` / `make api-test-static`) is a **primary**
 control rather than a nice-to-have.
 
-**The dispatcher does not default-deny.** It resolves a field if it can map it,
-whether or not the target enforces anything; `ddb_direct._REQUIRED_GROUPS` is the
-only group check that happens at dispatcher level, and it returns without denying
-for a field that has no entry. Its 403 mapping also keys partly on error-message
-prefixes, so a reworded exception can change an HTTP status. A default-deny gate
-and the removal of that prefix dependency are **pending in issue #928**; until
-then the manifest plus `make api-test-static` is what stands in for a default
-deny. See AUTH.T16.
+**The dispatcher denies by default.** `authz.py` refuses any field with no entry
+in the generated `api_rbac_manifest.json` before routing, and enforces each
+declared operation's group list; `ddb_direct._REQUIRED_GROUPS` additionally gates
+the in-process handlers. That floor decides only which groups may call an
+operation: the per-object checks — scope, ownership, review-queue eligibility —
+are inside the resolvers and are opt-in per resolver. The 403 mapping still keys
+partly on error-message prefixes, so a reworded bare `Exception` becomes a 500,
+which now answers a generic `InternalError` with a request id. See AUTH.T16.
 
 Two mechanical details are load-bearing when reading resolver code: the REST
 authorizer places claims at `requestContext.authorizer.claims` and flattens
@@ -453,9 +503,9 @@ sequenceDiagram
 |---|---|
 | Network exposure | Public Function URL (no CloudFront/WAF/VPC in front) |
 | Authentication | SigV4 via `AuthType=AWS_IAM` — unauthenticated callers rejected by Lambda |
-| Authorization granularity | **Only** `lambda:InvokeFunctionUrl` on the shared `CognitoAuthorizedRole` — the role is common to **all five RBAC groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish Admin from Reviewer |
-| Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here. Fix **pending in issue #920** |
-| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does. Fix **pending in issue #920** |
+| Authorization granularity | `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function, granted to the shared `CognitoAuthorizedRole` and nothing narrower — the role is common to **all five RBAC groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish Admin from Reviewer |
+| Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here; this transport carries no group claim (`GAP-07`). **Issue #920** is closed without changing that |
+| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does, because no verified per-user subject reaches this transport (CHAT.T03) |
 | Caller identity available | Weaker than the diagram suggests: the value derived from the request context is the assumed-role **session name**, and on `/chat/agent` a body-supplied `callerSub` takes precedence over it. That session name is the same for every user of the deployment, so no per-user identity exists on this transport at all. **Issue #920** (PR #954) removes the precedence problem but does not create one — establishing a verified subject is still outstanding; see CHAT.T06 |
 | CORS | `AllowOrigins: "*"`, `AllowCredentials: false` (safe: SigV4 in headers, no cookies) |
 | Covered by `make api-test` | **No** — the harness drives `POST /op/{field}` only |
@@ -694,15 +744,16 @@ sequenceDiagram
 
 **Trust boundary crossings**: TB3→TB6. Customer-managed Lambda hooks receive full document processing results and can send data to arbitrary external systems.
 
-> **Failure containment across hook points.** `onError: fail` is documented as
-> stopping the workflow, and does so at the `preprocessing` hook point. At the
-> other six (`postOcr`, `postClassification`, `postExtraction`,
-> `postRuleValidation`, `postSummarization`, `postprocessing`) the state
-> machine's `Catch` block routes forward to the next step, so a hook that fails
-> — including one configured `onError: fail` — does not halt processing. A
-> deployment relying on a hook to enforce a business or compliance gate at one of
-> those points now has that guarantee as well: every hook state routes its catch to a terminal failure state. See HOOK.T07, closed by **issue
-> issue #919**.
+> **Failure containment across hook points.** `onError: fail` stops the workflow
+> at every hook point. At `preprocessing` any error is caught to a terminal
+> state; at the other six (`postOcr`, `postClassification`, `postExtraction`,
+> `postRuleValidation`, `postSummarization`, `postprocessing`) `HookFatalError`,
+> which the dispatcher raises for a failed `onError: fail` hook, is caught first
+> and routed to a terminal failure state, while other errors route forward. See
+> HOOK.T07, closed by **issue #919**. The post-processing Lambda hook shown in this
+> flow is different: EventBridge invokes it after the execution has succeeded, so
+> it cannot halt the document, and it is skipped for `HITL_IN_PROGRESS` and
+> `REJECTED`.
 
 ## 9. Summary of Cross-Boundary Data Flows
 
@@ -712,8 +763,13 @@ sequenceDiagram
 | OCR processing | TB3 | TB4 | High (full document text) | TLS, IAM roles |
 | LLM prompts (Anthropic/Nova) | TB3 | TB4 | High (document text + PII) | TLS, IAM roles, no training opt-out |
 | **LLM prompts (OpenAI GPT-5.x via mantle)** | TB3 | TB4 | High (document text + PII) | TLS, IAM roles; **different model family — verify vendor/residency constraints** (PM.T08) |
-| **UI API operations** | TB1 | TB3 | High | JWT authn at gateway; **group/scope authz in resolver Lambdas only**; input-shape validation; optional WAF |
-| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03) — fixes **pending in issue #920**; not covered by the WAF or by `make api-test` |
+| **UI API operations** | TB1 | TB3 | High | JWT authn at gateway; default-deny group floor at the dispatcher; scope, ownership and queue-eligibility checks in resolver Lambdas; input-shape validation; optional WAF |
+| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03); #920 closed without a verified per-user subject; not covered by the WAF or by `make api-test` |
+| **Malware verdict** (optional) | GuardDuty | TB3 | Low (verdict only) | EventBridge rule filtered to the Input bucket; unknown verdicts refuse unless both the config and the stack ceiling allow unscannable files (PM.T09) |
+| **Review-queue work** | TB1 | TB3 | High (production document data, reviewer edits) | Group floor (`Admin` + `Annotator`; supervision `Admin`); per-item eligibility and profile scope, fail closed, with listings filtered by each item's own profile (HITL.T01); holder-only conditional writes (HITL.T02) |
+| **Review finalize** | TB3 | TB3 | High | Server-built `DocumentQueue` message; token-named execution; hooks before the review point run twice (HOOK.T04) |
+| **Inbox** | TB3 | TB1 | Low-Medium (queue, profile, file and user names) | Partition from verified claims; no posting operation; in-app links only; sanitized rendering; group-addressed announcements reach whole groups (HITL.T03) |
+| **Review status object and Output-bucket events** | TB3 | TB3 (account bus) | Medium (reviewer email, reject note; object keys on the bus) | `status.json` readable through the scope-checked object reads; every Output-bucket event reaches the default bus with no in-stack consumer (HITL.T03) |
 | Chat messages (REST path) | TB1 | TB3→TB4 | Medium-High | Group check + `ownerSub` ownership check |
 | **Jobs API submission** | TB1 | TB3 | High | Separate Cognito pool, OAuth scopes, PRIVATE endpoint + VPCe resource policy (JOB.T01) |
 | **Feature UI bundle** | TB6 | TB1 | High (runs as the user) | Admin-gated install, prefix-scoped S3 write; **no SRI/signature, same-origin, unsandboxed** (FEAT.T01) |

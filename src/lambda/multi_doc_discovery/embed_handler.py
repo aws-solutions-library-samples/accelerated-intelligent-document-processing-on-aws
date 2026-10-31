@@ -19,6 +19,7 @@ import numpy as np
 from idp_common.bedrock.client import BedrockClient
 from idp_common.config import ConfigurationReader
 from idp_common.discovery.embedding_service import EmbeddingService
+from idp_common.discovery.regional_defaults import default_embedding_model_id
 
 from appsync_status import update_status
 
@@ -63,7 +64,11 @@ def handler(event, context):
 
     # Initialize embedding service
     bedrock_client = BedrockClient(region=os.environ.get("AWS_REGION"))
-    embedding_model_id = config.get("embedding_model_id", "us.cohere.embed-v4:0")
+    # _get_multi_doc_config returns {} when the config cannot be read, so the
+    # fallback must be callable from this Region, not the US default.
+    embedding_model_id = config.get("embedding_model_id") or default_embedding_model_id(
+        os.environ.get("AWS_REGION")
+    )
     max_concurrent = int(config.get("max_concurrent_embeddings", 5))
 
     embedding_service = EmbeddingService(

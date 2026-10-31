@@ -147,7 +147,7 @@ service = ClassificationService(region="us-east-1", config=config)
 document = service.classify_document(document)
 ```
 
-**Features:** Multimodal page-level classification, text-based holistic classification, BIO-like sequence segmentation, regex-based classification, DynamoDB caching, few-shot examples, section splitting strategies (`disabled`, `page`, `llm_determined`).
+**Features:** Two strategies (`combined`, `split_then_classify`) selected by `classification.strategy`; two granularities for the page-reading call (`page`, `packet`); BIO-like sequence segmentation, regex-based classification, DynamoDB caching, few-shot examples, class confidence, section splitting values (`disabled`, `page`, `llm_determined`).
 
 ### Extraction (`idp_common.extraction`)
 
@@ -550,7 +550,11 @@ Common helpers: `build_s3_uri()`, `parse_s3_uri()`, `merge_metering_data()`, `ex
 
 ### Metrics (`idp_common.metrics`)
 
-CloudWatch metrics publishing: `publish_metric()`, `record_duration()`.
+CloudWatch metrics publishing: `put_metric()` (thread-safe, with optional dimensions and namespace), `create_client_performance_metrics()` and `emit_control_plane_cost_metric()`. See the [metrics module README](../lib/idp_common_pkg/idp_common/metrics/README.md).
+
+### Notifications (`idp_common.notifications`)
+
+The [Inbox](./web-ui.md#inbox) service: platform components post messages to users or Cognito groups, and the API resolver serves each user's own Inbox. `notify()` posts and never raises; `create_notification_service()` returns a `NotificationService`, or `None` when the Inbox table is not configured (as in a headless deployment); `recipient_key_from_claims()` derives a recipient from verified ID-token claims; `document_detail_link()` builds an internal link to a document's detail page. See the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md) for types, dedupe, idempotency, muting, retention and the producer IAM grants.
 
 ## Detailed Module Documentation
 
@@ -568,3 +572,4 @@ Each module has its own detailed README with comprehensive usage examples:
 | BDA | [`lib/idp_common_pkg/idp_common/bda/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/lib/idp_common_pkg/idp_common/bda/README.md) |
 | OCR | [`lib/idp_common_pkg/idp_common/ocr/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/lib/idp_common_pkg/idp_common/ocr/README.md) |
 | Schema | [`lib/idp_common_pkg/idp_common/schema/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/lib/idp_common_pkg/idp_common/schema/README.md) |
+| Notifications | [`lib/idp_common_pkg/idp_common/notifications/README.md`](../lib/idp_common_pkg/idp_common/notifications/README.md) |

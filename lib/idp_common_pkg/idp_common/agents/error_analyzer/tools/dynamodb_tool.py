@@ -38,7 +38,7 @@ def fetch_document_record(object_key: str) -> Dict[str, Any]:
     - Verify document exists in the system
 
     Tool chaining: If tracking_available=False, use search_cloudwatch_logs,
-    xray_trace, or retrieve_document_context for document analysis.
+    analyze_document_trace, or retrieve_document_context for document analysis.
 
     Example usage:
     - "What's the status of report.pdf?"

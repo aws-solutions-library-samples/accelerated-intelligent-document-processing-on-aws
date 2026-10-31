@@ -15,8 +15,20 @@ from idp_common import metrics
 from idp_common.config import get_config
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, HitlMetadata, Page, Section, Status
+from idp_common.review_queues.routing import (
+    bda_segment_triggers,
+    review_mode,
+    route_for_review,
+)
+from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
+from idp_common.review_queues.store import create_review_store
 from idp_common.s3 import get_s3_client, write_content
-from idp_common.utils import build_s3_uri, parse_confidence, parse_s3_uri
+from idp_common.utils import (
+    build_s3_uri,
+    finite_float,
+    parse_blueprint_confidence,
+    parse_s3_uri,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -38,22 +50,73 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 s3_client = get_s3_client()
 
 
-def is_hitl_enabled(config_version=None, config_revision=None):
-    """Check if HITL is enabled from configuration."""
-    try:
-        config = get_config(as_model=True, version=config_version)
-        hitl_enabled = config.hitl.enabled
-        logger.info(f"HITL enabled from config: {hitl_enabled}")
-        return hitl_enabled
-    except Exception as e:
-        logger.warning(f"Failed to get HITL config: {e}", exc_info=True)
-        return False  # Default to disabled if config unavailable
+# Review queues (idp_common.review_queues): None when HITL_TABLE_NAME is
+# unset (headless), which keeps every profile on the legacy HITL flow.
+_REVIEW_STORE = create_review_store()
+
+
+def legacy_review_finished(hitl_status):
+    """True when a stored ``HITLStatus`` records a finished legacy review.
+
+    Finishing a legacy review (completed or skipped) triggers a reprocess, so the
+    run it starts must keep that status rather than ask for the review again. The
+    status is read through ``normalize_hitl_status`` rather than a list of spellings:
+    a legacy (not queue-managed) completed or skipped review is finished.
+    ``COMPLETED`` is the one finished spelling a real writer stored that the
+    exact-match normaliser does not know: the earlier A2I flow wrote it, and
+    retained rows may still carry it. ``process_changes_resolver`` makes the same
+    exception, but it also counts a queue outcome as finished, which this does not.
+    A queue outcome (``complete`` / ``rejected``) is not a legacy review: in the
+    legacy flow such a document is asked for a review again, as reprocessing it
+    under review queues starts a fresh cycle.
+    """
+    view = normalize_hitl_status(hitl_status)
+    return (
+        not view.queue_managed and view.kind in ("complete", "skipped")
+    ) or hitl_status == "COMPLETED"
+
+
+def legacy_hitl_enabled(config, document=None):
+    """HITL on and handled by the legacy flow (the Default review queue is off).
+
+    Read from the configuration the handler already loaded (version and revision),
+    once per invocation.
+    """
+    hitl_enabled = bool(config is not None and config.hitl.enabled)
+    return hitl_enabled and review_mode(config, _REVIEW_STORE, document) == "legacy"
+
+
+def _apply_review(response, document, config, execution_arn, document_service=None):
+    """Review-queue routing for every return path (no keys added when it is off)."""
+    if review_mode(config, _REVIEW_STORE, document) != "queues":
+        return response
+    decision = route_for_review(
+        document,
+        config,
+        mode="bda",
+        execution_arn=execution_arn or "",
+        store=_REVIEW_STORE,
+        document_service=document_service,
+        output_bucket=document.output_bucket or os.environ.get("OUTPUT_BUCKET"),
+    )
+    response["hitl_triggered"] = False
+    if decision.hold:
+        response["review_hold"] = True
+    if decision.outcome:
+        response["review_outcome"] = decision.outcome
+    return response
 
 
 def is_rule_validation_enabled(config_version=None, config_revision=None):
-    """Check if rule validation is enabled and has rules configured."""
+    """Check if rule validation is enabled and has rules configured.
+
+    Reads the document's pinned revision, like this handler's other
+    configuration reads. An unpinned read resolves the profile head instead.
+    """
     try:
-        config = get_config(as_model=True, version=config_version)
+        config = get_config(
+            as_model=True, version=config_version, revision=config_revision
+        )
         if hasattr(config, 'rule_validation') and config.rule_validation:
             enabled = config.rule_validation.enabled
             if enabled:
@@ -460,7 +523,7 @@ def resolve_class_schema(doc_class, config):
     Returns:
         dict: The class schema, or None when not found.
 
-    Thin wrapper over ``idp_common.assessment.threshold_resolver.find_class_schema``
+    Thin wrapper over ``idp_common.config.schema_utils.find_class_schema``
     — the lookup itself (including the non-string ``x-aws-idp-document-type``
     guard) lives there and is unit-tested, so this path and the standalone
     assessment service cannot drift apart.
@@ -468,7 +531,7 @@ def resolve_class_schema(doc_class, config):
     # Imported lazily: this Lambda installs idp_common[core,docs_service,image],
     # not [assessment], so a module-level import would risk a cold-start failure
     # if the assessment package ever grows a hard third-party dependency.
-    from idp_common.assessment.threshold_resolver import find_class_schema
+    from idp_common.config.schema_utils import find_class_schema
 
     if config is None or not hasattr(config, "classes"):
         return None
@@ -1003,8 +1066,10 @@ def process_keyvalue_details(
                         for k in ["top", "left", "width", "height"]
                     }
                     break
-        results["key_value_details"][target_page].append(kv_entry)
-        results["bounding_box_details"][target_page].append(
+        # setdefault: with no page indices the fallback page "0" has no list,
+        # and indexing it raised KeyError out of process_segments.
+        results["key_value_details"].setdefault(target_page, []).append(kv_entry)
+        results["bounding_box_details"].setdefault(target_page, []).append(
             {"key": format_key_path(key_path), "bounding_box": bbox}
         )
 
@@ -1046,6 +1111,14 @@ def process_keyvalue_details(
     return results
 
 
+def _is_positive_infinity(value) -> bool:
+    """True for a value ``float()`` reads as +inf (``inf``, ``"Infinity"``)."""
+    try:
+        return float(value) == float("inf")
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def create_confidence_threshold_alerts(
     pagespecific_details: dict, confidence_threshold: float
 ) -> list:
@@ -1071,13 +1144,30 @@ def create_confidence_threshold_alerts(
         "key_value_details", {}
     ).items():
         for kv_entry in kv_details:
-            confidence = kv_entry.get("confidence", 0.0)
+            # A null, non-numeric or non-finite (NaN, infinite) confidence is
+            # an unscored field, read as 0.0 so it alerts and goes to review,
+            # which is the fail-safe direction. A missing key already reads as 0.0
+            # via ``process_keyvalue_details``. Comparing a null directly raised
+            # TypeError, which escaped process_segments into the handler's
+            # catch-all and abandoned the rest of the document's segments; a NaN
+            # compared directly raised no alert, since ``nan < t`` is False.
+            confidence = finite_float(kv_entry.get("confidence", 0.0))
+            if confidence is None:
+                confidence = 0.0
             # Use the entry's per-field threshold (schema-resolved) when present
-            entry_threshold = kv_entry.get(
-                "confidence_threshold", confidence_threshold
-            )
+            # A null, non-numeric, NaN or -inf threshold falls back to the
+            # default: a NaN or -inf one (the schema resolver passes either
+            # through) suppressed the alert, since ``c < nan`` is False, and a
+            # non-numeric one raised TypeError. A +inf threshold is kept: it
+            # alerts on every field, and falling back would review less.
+            raw_threshold = kv_entry.get("confidence_threshold")
+            entry_threshold = finite_float(raw_threshold)
             if entry_threshold is None:
-                entry_threshold = confidence_threshold
+                entry_threshold = (
+                    float("inf")
+                    if _is_positive_infinity(raw_threshold)
+                    else confidence_threshold
+                )
             if confidence < entry_threshold:
                 alert = {
                     "attribute_name": kv_entry.get("key", ""),
@@ -1124,6 +1214,7 @@ def process_segments(
     now = datetime.datetime.now().isoformat()
     hitl_triggered = False
     overall_hitl_triggered = False
+    hitl_enabled = legacy_hitl_enabled(config, document)
 
     for record_number, segment in enumerate(segment_metadata, start=1):
         logger.info(f"Processing segment for execution id: {execution_id}")
@@ -1142,16 +1233,41 @@ def process_segments(
             custom_bucket, custom_key = parse_s3_path(segment["custom_output_path"])
             custom_output = download_json(custom_bucket, custom_key)
             custom_decimal_output = download_decimal(custom_bucket, custom_key)
-            explainability_data = custom_output.get("explainability_info", [])
-            page_indices = custom_output.get("split_document", {}).get(
-                "page_indices", []
+            # An unusable result (not a JSON object, or with a malformed
+            # ``split_document``, ``explainability_info`` or ``document_class``)
+            # is processed with whatever is usable rather than raising: ``.get``
+            # on it raised AttributeError, which escaped this loop into the
+            # handler's catch-all and abandoned every later segment.
+            if not isinstance(custom_output, dict):
+                logger.warning(
+                    f"Segment {record_number} custom output is a "
+                    f"{type(custom_output).__name__}, not an object; "
+                    "processing it with no fields"
+                )
+                custom_output = {}
+            explainability_data = custom_output.get("explainability_info")
+            if not isinstance(explainability_data, list):
+                explainability_data = []
+            split_document = custom_output.get("split_document")
+            page_indices = (
+                split_document.get("page_indices")
+                if isinstance(split_document, dict)
+                else None
             )
+            if not isinstance(page_indices, list):
+                page_indices = []
+            # Integers only. A bool is kept, as before (``true + 1`` is 2), since
+            # dropping it would leave the segment matching no section.
+            page_indices = [idx for idx in page_indices if isinstance(idx, int)]
             # Convert page_indices from 0-based (BDA) to 1-based for consistency
             page_indices_1based = [idx + 1 for idx in page_indices]
             # Resolve this segment's class schema so per-field thresholds
             # (including $ref/$defs array items) are honored instead of a flat one
-            segment_doc_class = (custom_output.get("document_class") or {}).get(
-                "type", ""
+            document_class = custom_output.get("document_class")
+            segment_doc_class = (
+                document_class.get("type", "")
+                if isinstance(document_class, dict)
+                else ""
             )
             segment_class_schema = resolve_class_schema(segment_doc_class, config)
             pagespecific_details = process_keyvalue_details(
@@ -1166,8 +1282,34 @@ def process_segments(
                 pagespecific_details, confidence_threshold
             )
 
-            blueprint_name = custom_output["matched_blueprint"]["name"]
-            bp_confidence = custom_output["matched_blueprint"]["confidence"]
+            # A MATCH segment whose custom output carries no usable
+            # ``matched_blueprint`` (absent, null, not an object, or missing
+            # its name or confidence) is processed rather than raising:
+            # subscripting it raised KeyError/TypeError, which escaped this
+            # loop into the handler's catch-all and abandoned every later
+            # segment. A missing name reads as "None", the value the
+            # standard-output branch below records for an unclassified
+            # segment. A missing or otherwise unscored confidence leaves the
+            # section unscored and marked ``blueprint_unscored``, so both review
+            # modes hold it: legacy HITL marks the segment, and queue mode adds
+            # a ``blueprint_confidence`` reason (GitHub #1581). Both read the
+            # value through ``parse_blueprint_confidence``.
+            matched_blueprint = custom_output.get("matched_blueprint")
+            if not isinstance(matched_blueprint, dict):
+                matched_blueprint = {}
+            blueprint_name = matched_blueprint.get("name") or "None"
+            bp_confidence = matched_blueprint.get("confidence")
+            if not matched_blueprint.get("name"):
+                logger.warning(
+                    f"Segment {record_number} is a MATCH but its custom output "
+                    "names no blueprint "
+                    f"({custom_output.get('matched_blueprint')!r}); recording None"
+                )
+            if bp_confidence is None:
+                logger.warning(
+                    f"Segment {record_number} is a MATCH but its custom output "
+                    "has no blueprint confidence; leaving it unscored"
+                )
 
             # Update the corresponding document section with confidence alerts
             # Find the section that contains these page indices (now 1-based)
@@ -1184,9 +1326,10 @@ def process_segments(
                     # mode scored by default, with no extra inference and no
                     # prompt change — unlike the pipeline mode, where the model
                     # has to be asked.
-                    section.confidence = parse_confidence(
+                    section.confidence = parse_blueprint_confidence(
                         bp_confidence, context=f"BDA blueprint {blueprint_name}"
                     )
+                    section.blueprint_unscored = section.confidence is None
                     logger.info(
                         f"Updated section {section.section_id} with {len(confidence_threshold_alerts)} confidence alerts, "
                         f"class confidence {section.confidence}"
@@ -1195,18 +1338,19 @@ def process_segments(
 
             # Check if any key-value or blueprint confidence is below threshold
             # Use confidence_threshold_alerts to determine if HITL should be triggered
-            if is_hitl_enabled(config_version, config_revision):
-                low_confidence = (
-                    len(confidence_threshold_alerts) > 0
-                    or float(bp_confidence) < confidence_threshold
-                )
+            low_confidence = bda_segment_triggers(
+                confidence_threshold_alerts,
+                bp_confidence,
+                confidence_threshold,
+                hitl_enabled=hitl_enabled,
+            )
+            if low_confidence is not None:
                 logger.info(
                     f"HITL enabled - confidence_threshold_alerts: {len(confidence_threshold_alerts)}, "
                     f"bp_confidence: {bp_confidence}, threshold: {confidence_threshold}, "
                     f"low_confidence: {low_confidence}"
                 )
             else:
-                low_confidence = None
                 logger.info("HITL disabled in configuration")
 
             logger.info(f"low_confidence: {low_confidence}")
@@ -1236,7 +1380,7 @@ def process_segments(
                 # HITL review will be handled via portal, not A2I
                 item.update({"hitl_corrected_result": custom_decimal_output})
         else:
-            if is_hitl_enabled(config_version, config_revision):
+            if hitl_enabled:
                 std_hitl = "true"
                 # std_hitl = None # HITL for standard output blueprint match is disabled until we have option to choose Blueprint in A2I
             else:
@@ -1347,7 +1491,7 @@ def handle_skip_bda(event):
     
     # Check if HITL should be triggered based on existing confidence alerts
     hitl_triggered = False
-    if is_hitl_enabled(config_version, config_revision):
+    if legacy_hitl_enabled(config, document):
         # Check each section for confidence alerts below threshold
         for section in document.sections:
             alerts = section.confidence_threshold_alerts or []
@@ -1379,6 +1523,9 @@ def handle_skip_bda(event):
         "skip_bda": True
     }
     
+    response = _apply_review(
+        response, document, config, event.get("execution_arn"), document_service
+    )
     logger.info(f"Skip BDA response: {json.dumps(response, default=str)}")
     return response
 
@@ -1426,17 +1573,27 @@ def handler(event, context):
         # Check if HITL review is needed
         config_version = getattr(document, 'config_version', None)
         config_revision = getattr(document, 'config_revision', None)
-        hitl_triggered = is_hitl_enabled(config_version, config_revision) and any(
+        try:
+            skip_config = get_config(
+                as_model=True, version=config_version, revision=config_revision
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get HITL config: {e}", exc_info=True)
+            skip_config = None  # HITL disabled if config unavailable
+        hitl_triggered = legacy_hitl_enabled(skip_config, document) and any(
             section.confidence_threshold_alerts for section in document.sections
         )
         
-        return {
+        response = {
             "document": document.serialize_document(working_bucket, "processresults_skip", logger),
             "hitl_triggered": hitl_triggered,
             "rule_validation_enabled": is_rule_validation_enabled(
                 config_version, config_revision
             ),
         }
+        return _apply_review(
+            response, document, skip_config, first_response.get("execution_arn")
+        )
     
     output_bucket = first_response.get("output_bucket")
 
@@ -1677,11 +1834,11 @@ def handler(event, context):
 
     # Set Review Status on document model if HITL review is needed
     # Only set to PendingReview if not already reviewed (preserve completed/skipped status on reprocess)
-    if hitl_triggered and document.sections:
+    if hitl_triggered and document.sections and legacy_hitl_enabled(config, document):
         existing_status = document.hitl_status
-        if existing_status not in ("Review Completed", "Review Skipped", "Completed", "Skipped"):
+        if not legacy_review_finished(existing_status):
             hitl_sections_pending = [section.section_id for section in document.sections]
-            document.hitl_status = "PendingReview"
+            document.hitl_status = LegacyHitlStatus.PENDING_REVIEW.value
             document.hitl_triggered = True
             document.hitl_sections_pending = hitl_sections_pending
             document.hitl_sections_completed = []
@@ -1722,5 +1879,12 @@ def handler(event, context):
         "bda_response_count": len(bda_responses),
     }
 
+    response = _apply_review(
+        response,
+        document,
+        config,
+        first_response.get("execution_arn") or document.workflow_execution_arn,
+        document_service,
+    )
     logger.info(f"Response: {json.dumps(response, default=str)}")
     return response

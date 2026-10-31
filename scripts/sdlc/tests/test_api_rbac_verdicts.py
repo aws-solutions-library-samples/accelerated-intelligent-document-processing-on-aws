@@ -582,6 +582,262 @@ def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
     assert not [r for r in results if r["inconclusive"]]
 
 
+#: A ctx the per-document suite can reach a verdict with. Its own rather than
+#: :data:`CTX`, because the bucket is normally read from CloudFormation and these
+#: tests must not: priming ``input_bucket`` is the documented short-circuit at the
+#: top of ``_input_bucket``.
+DOC_CTX = {**CTX, "input_bucket": "an-input-bucket"}
+
+
+def _document_key(key):
+    """Stub ``resolve_document_object_key``, which reads ``call_body`` not ``call``."""
+    return lambda ctx, tokens: key
+
+
+class TestThePerDocumentSuiteClassifiesInconclusiveResults:
+    """Same convention as the three scope arms above, on the suite added for #1478.
+
+    Written because this suite's verdict turns on a RESPONSE FIELD rather than only
+    on a status, which is a new way for an arm here to read an unusable response as
+    an answer: ``authz_control`` is ``None`` on a 500, on an unreadable body and on a
+    dead connection alike, and the branch that reads ``None`` is a legitimate verdict
+    ("this deployment sets no label") that must not swallow the inconclusive ones.
+    """
+
+    @pytest.mark.parametrize(
+        "status,et",
+        [(0, None), (500, None), (504, None), (200, "__unreadable_body__")],
+    )
+    def test_no_arm_passes_and_every_one_says_it_established_nothing(
+        self, monkeypatch, capsys, status, et
+    ):
+        # `ApiResult` rather than a bare 4-tuple, because that is what `call`
+        # returns on every one of these: a dead connection and an unreadable body
+        # both produce one, with `authz_control` None. Stubbing a plain tuple would
+        # make the stub the only caller in the run that cannot carry a label.
+        monkeypatch.setattr(
+            h,
+            "call",
+            lambda api_base, field, args, token: h.ApiResult(status, et, None, "rid"),
+        )
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        assert len(results) == 2, "expected both arms to be recorded"
+        assert not [r for r in results if r["outcome"] == "PASS"]
+        for r in results:
+            assert r["inconclusive"] is True, (
+                f"{r['principal']}: classified {r['outcome']} without the "
+                "inconclusive flag, so it drops out of the report's "
+                "'Could not be run' section"
+            )
+            assert "INCONCLUSIVE" in r["detail"]
+            if status >= 500:
+                assert r["known_gap"] == h.GAP_INCONCLUSIVE_5XX
+                assert r["outcome"] == "WARN"
+            else:
+                assert r["known_gap"] is None
+                assert r["outcome"] == "ERROR"
+
+    def test_a_healthy_deployment_passes_both_arms(self, monkeypatch, capsys):
+        """The control: the scoped caller refused as ``resource``, Admin served."""
+
+        def _call(api_base, field, args, token):
+            if token == "tok-scoped":  # nosec B105 - a fake token id, not a credential
+                return h.ApiResult(
+                    403,
+                    "Unauthorized",
+                    None,
+                    "rid",
+                    control=h.CONTROL_RESOURCE,
+                    message="Unauthorized: you are not permitted to read that object.",
+                )
+            return h.ApiResult(200, None, None, "rid")
+
+        monkeypatch.setattr(h, "call", _call)
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        assert len(results) == 2
+        assert all(r["outcome"] == "PASS" for r in results)
+        assert not [r for r in results if r["inconclusive"]]
+
+    @pytest.mark.parametrize(
+        "control,why",
+        [
+            (h.CONTROL_RESOLVER, "an undeclared per-object control"),
+            (h.CONTROL_GROUP_FLOOR, "the field-level group floor"),
+        ],
+    )
+    def test_a_refusal_that_is_not_the_per_object_control_fails(
+        self, monkeypatch, capsys, control, why
+    ):
+        """The whole point of the suite: a 403 alone is not the assertion.
+
+        Both controls answer ``403``/``Unauthorized`` here, so an arm checking only
+        "was it refused" would pass on a refusal that came from somewhere else —
+        which is the confusion #1308 is about, and #1478 is the case where the
+        per-document control reached the client unattributed.
+        """
+
+        def _call(api_base, field, args, token):
+            if token == "tok-scoped":  # nosec B105 - a fake token id, not a credential
+                return h.ApiResult(
+                    403, "Unauthorized", None, "rid", control=control, message="no."
+                )
+            return h.ApiResult(200, None, None, "rid")
+
+        monkeypatch.setattr(h, "call", _call)
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        scoped = results[0]
+        assert scoped["outcome"] == "FAIL", f"{why} was scored {scoped['outcome']}"
+        assert repr(control) in scoped["detail"]
+
+    def test_an_unlabelled_refusal_is_inconclusive_rather_than_a_pass(
+        self, monkeypatch, capsys
+    ):
+        """A stack deployed before `authzControl` existed labels nothing, so the
+        cell cannot tell the two controls apart and established neither. ERROR
+        rather than PASS, and rather than FAIL: it is a fact about the deployment
+        rather than about its authorization."""
+
+        def _call(api_base, field, args, token):
+            if token == "tok-scoped":  # nosec B105 - a fake token id, not a credential
+                return h.ApiResult(403, "Unauthorized", None, "rid")
+            return h.ApiResult(200, None, None, "rid")
+
+        monkeypatch.setattr(h, "call", _call)
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        assert results[0]["outcome"] == "ERROR"
+        assert results[0]["inconclusive"] is True
+
+    def test_a_403_carrying_a_url_is_not_a_refusal(self, monkeypatch, capsys):
+        """The one failure mode every status assertion here would otherwise miss.
+
+        The control exists so the capability is never minted; a refusal whose body
+        carries the signed URL satisfies "was it refused" and hands over the object.
+        """
+
+        def _call(api_base, field, args, token):
+            if token == "tok-scoped":  # nosec B105 - a fake token id, not a credential
+                return h.ApiResult(
+                    403,
+                    "Unauthorized",
+                    None,
+                    "rid",
+                    control=h.CONTROL_RESOURCE,
+                    message="Unauthorized: you are not permitted to read that object.",
+                    # In a field OTHER than the message, which is the half a
+                    # message-only check cannot see.
+                    body=(
+                        '{"errors":[{"message":"Unauthorized: you are not permitted '
+                        'to read that object."}],"url":"https://b.example/doc.pdf'
+                        '?X-Amz-Signature=deadbeef"}'
+                    ),
+                )
+            return h.ApiResult(200, None, None, "rid")
+
+        monkeypatch.setattr(h, "call", _call)
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        assert results[0]["outcome"] == "FAIL"
+
+    def test_a_served_document_is_a_failure_not_a_pass(self, monkeypatch, capsys):
+        """The leak this suite exists to detect, asserted directly."""
+        monkeypatch.setattr(
+            h,
+            "call",
+            lambda api_base, field, args, token: h.ApiResult(200, None, None, "rid"),
+        )
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        assert results[0]["outcome"] == "FAIL"
+        assert "NOT REFUSED" in results[0]["detail"]
+
+    @pytest.mark.parametrize(
+        "ctx,key,why",
+        [
+            ({"api_base": API, "circuit_breaker": False}, "doc.pdf", "no input bucket"),
+            (DOC_CTX, None, "no processed document"),
+        ],
+    )
+    def test_an_absent_precondition_skips_rather_than_passing_or_crashing(
+        self, monkeypatch, capsys, ctx, key, why
+    ):
+        """A SKIP, and **not** an exception.
+
+        The first case is the one worth having: ``_input_bucket`` reads
+        ``ctx["stack"]`` and ``ctx["region"]`` inside its own ``try``, and its
+        contract is to answer ``""`` and let the caller skip. It raised ``KeyError``
+        on a ctx without them, which aborted this suite and every suite after it.
+        """
+        monkeypatch.setattr(
+            h,
+            "call",
+            lambda api_base, field, args, token: h.ApiResult(0, None, None, ""),
+        )
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key(key))
+        results = []
+
+        h.run_document_bytes_scope_suite(ctx, SCOPE_TOKENS, results)
+        capsys.readouterr()
+
+        assert [r["outcome"] for r in results] == ["SKIP"], why
+        assert not results[0]["passed"]
+
+    def test_no_scoped_user_skips(self, monkeypatch, capsys):
+        monkeypatch.setattr(h, "resolve_document_object_key", _document_key("doc.pdf"))
+        results = []
+
+        h.run_document_bytes_scope_suite(DOC_CTX, {"Admin": "tok-Admin"}, results)
+        capsys.readouterr()
+
+        assert [r["outcome"] for r in results] == ["SKIP"]
+
+
+def test_the_per_document_suite_takes_the_same_arguments_as_its_siblings():
+    """It is wired into ``main`` beside ``run_scope_suite``, so its signature has to
+    match theirs — a fourth parameter would make the call site a TypeError at the
+    end of a run that had already created Cognito users and seeded table rows.
+
+    The call site's PRESENCE is asserted in
+    ``test_api_rbac_refusal_attribution.py::test_the_document_bytes_suite_exists_and_is_invoked_from_main``,
+    which reads ``main``'s own body; this is the complementary half and the two are
+    not interchangeable.
+    """
+    import inspect
+
+    expected = list(inspect.signature(h.run_scope_suite).parameters)
+
+    assert list(inspect.signature(h.run_document_bytes_scope_suite).parameters) == (
+        expected
+    ), f"the per-document suite must take {expected}, like every sibling suite"
+
+
 # A structurally valid JWT shape: the token-negatives suite base64url-decodes the
 # signature segment to flip a byte in it, so a placeholder has to be decodable.
 _FAKE_JWT = "hdr.pay." + base64.urlsafe_b64encode(b"\x00" * 256).decode().rstrip("=")
@@ -636,3 +892,15 @@ class TestTheUnauthCellClassifiesInconclusiveResults:
         unauth = [r for r in results if r["principal"] == "unauth"]
         assert unauth and unauth[0]["outcome"] == "ERROR"
         assert unauth[0]["inconclusive"] is True
+
+
+def test_live_matrix_roles_are_every_template_group():
+    """ROLES is read from template.yaml, so a new Cognito group joins the matrix."""
+    assert h.ROLES[0] == "Admin"
+    assert set(h.ROLES) == {
+        "Admin",
+        "Annotator",
+        "Author",
+        "Reviewer",
+        "Viewer",
+    }

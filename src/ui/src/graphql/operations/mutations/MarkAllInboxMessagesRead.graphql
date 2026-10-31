@@ -1,0 +1,7 @@
+mutation MarkAllInboxMessagesRead {
+  markAllInboxMessagesRead {
+    updated
+    notFoundIds
+    unreadCount
+  }
+}

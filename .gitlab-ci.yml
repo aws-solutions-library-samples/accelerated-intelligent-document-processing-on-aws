@@ -60,10 +60,20 @@ stages:
   - fast_checks
   - deployment_validation
   - integration_tests
+  # Advisory UX tests of a merge request (ux_test_build, ai_ux_test and
+  # ai_ux_test_stories). After the deploy stages so nothing in them waits on
+  # them; every job here sets `needs`, so none waits for an earlier stage. Not
+  # gates, and not in fast_checks, whose jobs are the no-AWS gates and all
+  # carry `needs: []`.
+  - ux_review
   # Runs on a scheduled pipeline whatever happened upstream, so that a nightly
   # which never reached the deploy stage is still reported. See
   # nightly_notification.
   - notify
+  # The nightly first-time-user stories (ai_ux_test_stories_nightly, then
+  # ai_ux_test_stories_digest). Last, so nightly_notification neither waits for
+  # them nor downloads what they write. Not gates.
+  - ux_nightly
 
 # ---------------------------------------------------------------------------
 # Shared setup fragments.
@@ -1030,6 +1040,17 @@ dep_audit:
     # Node/npm are NOT needed: the manifest is read from the committed
     # package-lock.json files, not from an install.
 
+  # The unmapped-advisory report reads GitHub's advisory API with the
+  # `GITHUB_TOKEN` project variable described on `srt_security_review`; GitLab
+  # injects it, so nothing is wired here. That report never changes the exit
+  # code, and with the variable absent it prints "not checked".
+  #
+  # Budget: one run is about 330 requests against that token's 5,000 an hour,
+  # whose only other user here is SRT's single release lookup per job. GitHub's
+  # workflow runs the audit WITHOUT a token for the opposite reason: the Actions
+  # token allows 1,000 an hour shared by every job in that repository. If the
+  # GitLab budget is ever exhausted the report degrades to unread days; the
+  # audit's verdict is unaffected.
   script:
     - python3 scripts/security/dep_audit.py --json dep-audit-report.json
 
@@ -1204,6 +1225,378 @@ ai_mr_review:
     expire_in: 1 week
 
 # ---------------------------------------------------------------------------
+# Advisory UX test of a merge request's web UI, with a narrated video added to
+# the ai_mr_review note for the same head. NOT A GATE: `allow_failure: true` on
+# both jobs, and neither is in test_ci_gate_parity.py's SHARED_GATES. See
+# footnote ³ in scripts/sdlc/docs/CI_TEST_COVERAGE.md and
+# .claude/skills/ux-test-ci.md.
+#
+# ⚠️ TWO JOBS, because the browser job must not run MR code. Chrome's DevTools
+# port is unauthenticated, so the MR's build (npm ci with its lifecycle scripts,
+# and vite with its config) runs in ux_test_build, and reaches ai_ux_test only as
+# static files that the egress proxy serves at http://localhost:3000.
+# ux_test_build declares no cache, so nothing the MR's install writes reaches
+# another job either: the node_modules cache the other UI jobs restore is keyed
+# on the lockfile alone, and so shared with other pipelines that have the same
+# lockfile. Restoring it would do this job no good, since npm ci deletes
+# node_modules before it installs.
+#
+# AUTOMATIC on non-Draft MRs to develop that change src/ui/, with identical rules
+# on both jobs. If they differed, `needs: [ux_test_build]` could name a job absent
+# from the pipeline and break pipeline creation on every MR. `interruptible`
+# bounds a push burst. ai_ux_test is idempotent per head SHA, and
+# `resource_group: ux_test_stack` serialises runs against the shared review stack.
+#
+# ⚠️ EACH UX VARIABLE IS SCOPED TO THE JOBS THAT READ IT, OR EVERY JOB GETS IT.
+# Requires masked, NOT protected CI variables (a protected variable is absent
+# from MR pipelines). Each UX job declares an environment of its own with
+# `action: prepare`, which gives a job the variables scoped to that environment
+# and creates no deployment: ai_ux_test declares `ux-review` and ux_test_build
+# declares `ux-review-build`. The two first-time-user story jobs that drive the
+# browser, ai_ux_test_stories and ai_ux_test_stories_nightly, read what
+# ai_ux_test reads and declare `ux-review` as well; no other job declares either.
+# UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID have environment scope `ux-review`
+# alone, so the job that runs the MR's `npm ci` never holds the persona's
+# password. UX_TEST_UI_ENV, which both jobs read, is stored twice with the same
+# value, at environment scope `ux-review` and at `ux-review-build`. Each scope is
+# an exact name, never a wildcard: `ux-review*` would match both.
+# GITLAB_REVIEW_TOKEN is shared with ai_mr_review, a job with no environment, and
+# so keeps the default scope. Without them the jobs print SKIPPED: and exit 0. A
+# variable left at the default scope, All (`*`), reaches every job of every
+# pipeline: static_checks, unit_tests, package_tests and ui_tests each run
+# `npm ci` in src/ui, and so every lifecycle script of every UI dependency, with
+# it in the environment. A job's own `variables:` cannot take a project variable
+# away, because project variables outrank this file, so the scope is the only
+# thing that keeps it out of those jobs. No rule may read a scoped variable:
+# GitLab can leave it undefined while it evaluates `rules` at pipeline creation.
+# The setup steps are under footnote ³ in CI_TEST_COVERAGE.md.
+# ---------------------------------------------------------------------------
+# ⚠️ EVERY STEP THAT RUNS THIRD-PARTY CODE BUT ONE INHERITS NONE OF THE JOB'S
+# SECRETS.
+#
+# Both UX jobs run them under this function, which hands on an environment built
+# from nothing: the search path, the home directory, npm's cache location when
+# the runner names one, a locale, the proxy variables when the runner sets them,
+# and install.sh's prefix. ux_test_build runs apt (its packages' maintainer
+# scripts), the MR's `npm ci` (every src/ui dependency's lifecycle scripts) and
+# its vite build (the MR's config and plugins) under it; ai_ux_test runs apt and
+# install.sh (pip, `npm ci` and the npm packages' own install scripts). None of
+# them needs the GitLab token, the persona passwords, the stack's UI env or an
+# AWS credential. An allowlist, because a denylist passes every variable nobody
+# named: CI_REPOSITORY_URL carries the job token, and a job receives every
+# project variable its environment's scope admits. It keeps the secrets out of a
+# package script's environment and its logs; it does not stop a hostile package,
+# which runs as root beside the job's shell and could read its /proc/<pid>/environ
+# and the checkout's .git/config. The one step outside it is ux_test_build's
+# .node_setup, the anchor every job that builds the UI shares: it unpacks the
+# Node.js release from nodejs.org, which nothing checks against a digest, and has
+# that release's npm upgrade itself, both with the job's environment.
+# before_script and script share one shell, so a job includes the definition
+# once, ahead of its first use.
+.without_job_secrets: &without_job_secrets
+  - |
+    without_job_secrets() {
+      env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 \
+        ${npm_config_cache:+npm_config_cache="$npm_config_cache"} \
+        ${http_proxy:+http_proxy="$http_proxy"} \
+        ${https_proxy:+https_proxy="$https_proxy"} \
+        ${no_proxy:+no_proxy="$no_proxy"} \
+        ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} \
+        ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} \
+        ${NO_PROXY:+NO_PROXY="$NO_PROXY"} \
+        ${UX_RUNNER_PREFIX:+UX_RUNNER_PREFIX="$UX_RUNNER_PREFIX"} \
+        "$@"
+    }
+
+ux_test_build:
+  stage: ux_review
+  interruptible: true
+  timeout: 20m
+  # A UI build that fails here also fails static_checks' `make ui-build-only`,
+  # which is the gate; this job must not add a second red mark for it.
+  allow_failure: true
+  tags:
+    - size:large
+  rules: &ux_test_rules
+    # Ordered before the catch-all so a Draft falls through to `never`, as in
+    # ai_mr_review. `changes` is what keeps the job off non-UI MRs.
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
+      changes:
+        paths:
+          - src/ui/**/*
+        compare_to: refs/heads/develop
+      when: on_success
+    - when: never
+  needs: []
+  # An environment of this job's own, not ai_ux_test's: the one UX variable this
+  # job reads, UX_TEST_UI_ENV, is stored at this scope too, and the persona's
+  # password is not, so the job that runs the MR's `npm ci` never holds it. See
+  # the note above the section.
+  environment:
+    name: ux-review-build
+    action: prepare
+  variables:
+    # The merge base with develop, which ui_change.py diffs against.
+    GIT_DEPTH: 0
+  before_script:
+    - *without_job_secrets
+    - without_job_secrets apt-get update -y
+    - without_job_secrets apt-get install curl git -y
+    - *node_setup
+  script:
+    - python3 scripts/ux_runner/ui_change.py --target-branch "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}" --out ui-change.json
+    # The env file is written before npm ci and the build, from the one variable
+    # this job needs. It holds no credential: the review stack's UI configuration, which the build
+    # inlines into the bundle anyway, and its bucket names. npm ci then runs every
+    # src/ui dependency's lifecycle scripts, a malicious version the lockfile
+    # already resolves included, since its integrity hashes check only that a
+    # package is the one recorded; and the build runs vite with the MR's config.
+    # Both run under without_job_secrets, which keeps the job's secrets out of
+    # their environment and logs. This job holds no persona password to keep out,
+    # since its environment is not ai_ux_test's; what it does hold,
+    # GITLAB_REVIEW_TOKEN and any AWS session the runner gave the job among them,
+    # a package that goes looking can still read from this shell's
+    # /proc/<pid>/environ. Node and npm themselves come from .node_setup, which
+    # runs with the job's environment, as in every job using it.
+    - |
+      if python3 -c 'import json, sys; sys.exit(0 if json.load(open("ui-change.json"))["skip"] else 1)'; then
+        echo "Only tests changed under src/ui; nothing to build."
+        exit 0
+      fi
+      if [ -z "${UX_TEST_UI_ENV:-}" ]; then
+        echo "SKIPPED: UX_TEST_UI_ENV is not set in this job, so the MR's UI cannot be built against the review stack. This job's copy belongs at environment scope ux-review-build."
+        exit 0
+      fi
+      printf '%s' "$UX_TEST_UI_ENV" | base64 -d > src/ui/.env.production.local
+      cd src/ui && without_job_secrets npm ci --prefer-offline --no-audit && without_job_secrets npm run build:only
+  artifacts:
+    paths:
+      - src/ui/build/
+      - ui-change.json
+    expire_in: 1 day
+
+ai_ux_test:
+  stage: ux_review
+  interruptible: true
+  # Install about 5 min, plus a session bounded to 25 min, plus render and post.
+  # The job's AWS credentials are a chained session capped at 1h, which is why
+  # claude and render get freshly minted, scoped sessions (account.py).
+  timeout: 60m
+  allow_failure: true
+  resource_group: ux_test_stack
+  tags:
+    - size:large
+  rules: *ux_test_rules
+  needs:
+    - job: ux_test_build
+      artifacts: true
+  # The environment UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID are scoped to,
+  # with this job's copy of UX_TEST_UI_ENV; see the note above the section.
+  environment:
+    name: ux-review
+    action: prepare
+  variables:
+    # Bedrock inference-profile id; the GitLab role grants the Opus family only.
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
+    AWS_REGION: "us-east-1"
+    GIT_DEPTH: 0
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    # What the setup anchored below (&ux_confined_setup) extracts, runs, passes and
+    # writes into. A project or pipeline variable of the same name overrides a job
+    # variable, so the precheck refuses to start unless UX_HARNESS and UX_ENTRY
+    # are exactly the entry's own HARNESS_PATHS and path: the pin fails closed
+    # whatever the variables say. A merge request whose .gitlab-ci.yml predates
+    # this setup runs this job as it was then, naming the harness in its own script
+    # where no variable reaches it and setting neither; ai_ux_test.py runs for it.
+    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+    UX_ENTRY: "scripts/sdlc/ai_ux_test.py"
+    UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID"
+    UX_ARTIFACTS: "ux-tests"
+  before_script: &ux_confined_setup
+    # ⚠️ SET THE MODES, DO NOT INHERIT THEM. A GitLab Docker executor runs a job
+    # at umask 0000 by default, and Chrome runs as uxbrowser with --no-sandbox,
+    # so one renderer bug is code running as that uid. Under 0000 the harness,
+    # its bytecode, the toolchain, the recorder's session and socket and the
+    # artifact directory would all be writable by it, and root runs and reads
+    # them later in this job. before_script and script share one shell, so this
+    # holds for every command below, and ai_ux_test.py sets the same umask itself.
+    - umask 022
+    # ⚠️ THE STEPS THAT RUN THIRD-PARTY CODE INHERIT NONE OF THE JOB'S SECRETS.
+    #
+    # apt and install.sh run under the shared without_job_secrets above, which
+    # keeps the secrets out of a package script's environment and logs but does
+    # not stop a hostile package. What guards against one here is that each
+    # download is checked before it is used: install.sh checks the Chrome for
+    # Testing zip and the Node tarball against the sha256 it records for each
+    # architecture, installs the Python packages with pip --require-hashes from
+    # the digests in requirements.txt and the npm packages from the lockfile's
+    # integrity hashes, and apt checks its repositories' signatures. npm's
+    # upgrade of itself is checked only against what the npm registry publishes
+    # for that version.
+    - *without_job_secrets
+    - without_job_secrets apt-get update -y
+    - without_job_secrets apt-get install curl git -y
+    # ⚠️ EXTRACT THE HARNESS FROM THE TARGET BRANCH, AND FAIL CLOSED.
+    #
+    # This checkout is the MR, so its copy of the harness (the tool lists, the
+    # egress allowlist, the environment allowlist, the prompt) is
+    # author-controlled. `git archive` into a fresh directory, rather than
+    # `git checkout FETCH_HEAD -- ...` in place, because an in-place checkout
+    # leaves MR-added files beside the pinned ones, and Python resolves imports
+    # from the script's own directory first: an MR adding scripts/sdlc/json.py
+    # would run in this job, beside an AWS credential and GITLAB_REVIEW_TOKEN.
+    # The fetch names refs/heads/ so a tag called like the branch cannot stand in
+    # for it. The extracted tree is made writable by root alone. Everything below
+    # runs from $UX_HARNESS_DIR, the toolchain install from inside it, and Python
+    # runs it with -B, so no bytecode is written into it for root to read back;
+    # nothing runs from the checkout. The MR that adds this job cannot exercise
+    # it, which is the same trade ai_mr_review makes, except that this one
+    # refuses rather than warns.
+    - |
+      TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
+      git fetch -q origin "refs/heads/$TARGET"
+      rm -rf "$UX_HARNESS_DIR" && mkdir -p "$UX_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/ux-harness.tar FETCH_HEAD -- $UX_HARNESS && tar -xf /tmp/ux-harness.tar -C "$UX_HARNESS_DIR" && chmod -R go-w "$UX_HARNESS_DIR"; then
+        echo "UX harness pinned to origin/$TARGET in $UX_HARNESS_DIR: $UX_HARNESS"
+      else
+        echo "❌ Could not pin the UX harness to origin/$TARGET — it does not carry"
+        echo "   all of: $UX_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the harness, its tool lists and its egress allowlist the MR's own."
+        echo "   Expected only on the MR that adds the UX test."
+        exit 1
+      fi
+    # The checkout was made by the runner at its own umask, and once Chrome runs
+    # the browser's uid must not be able to rename or replace anything in it that
+    # root writes into or the proxy serves (ux-tests, src/ui/build), so the whole
+    # tree is made writable by root alone before any of this job's Python runs.
+    - chmod -R go-w "$CI_PROJECT_DIR"
+    # The artifact directory sits in the checkout, which could hold `ux-tests` as
+    # a symlink, and the harness writes into it as root, so it starts fresh:
+    # `rm -rf` removes a symlink itself, not what it points at. It removes the
+    # path's first component, so `mkdir -p` then makes every level afresh.
+    - rm -rf "${UX_ARTIFACTS%%/*}" && mkdir -p "$UX_ARTIFACTS"
+    # About a minute: test-only, already-tested, Draft and missing-precondition
+    # heads stop here, before the toolchain install.
+    - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --precheck --artifact-dir "$UX_ARTIFACTS"
+    - if [ -f "$UX_ARTIFACTS/proceed" ]; then (cd "$UX_HARNESS_DIR" && without_job_secrets bash "$UX_HARNESS_DIR/scripts/ux_runner/install.sh"); fi
+  script:
+    - |
+      if [ ! -f "$UX_ARTIFACTS/proceed" ]; then
+        echo "Nothing to UX-test for this head; see the precheck line above."
+        exit 0
+      fi
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" "$UX_ARTIFACTS" "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --inputs "$UX_ARTIFACTS/inputs.json" --artifact-dir "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-tests/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# Advisory first-time-user stories (scripts/ux_stories.toml), run by
+# scripts/sdlc/ai_ux_test_stories.py: a model that knows the product only from
+# its published documentation attempts one story as one persona, in the confined
+# browser of ai_ux_test, and the verdict comes from the journal of its tool
+# calls. NOT A GATE: ai_ux_test_stories here, and ai_ux_test_stories_nightly and
+# ai_ux_test_stories_digest at the end of this file, are all
+# `allow_failure: true`, GitLab-only, and absent from test_ci_gate_parity.py's
+# SHARED_GATES. See footnote ⁴ in scripts/sdlc/docs/CI_TEST_COVERAGE.md and
+# .claude/skills/ux-test-stories-ci.md; test_ux_test_stories_ci_jobs.py pins
+# the three jobs' shape.
+#
+# UX_TEST_STORIES switches them: unset or empty runs all three, `mr` keeps only
+# this job, `nightly` keeps only the nightly pair, and any other value, `off`
+# among them, runs none, so a mistyped `off` still stops them.
+#
+# This job and the nightly shards take &ux_confined_setup from ai_ux_test, so
+# each pins the harness to the target branch the same way and fails closed, and
+# its precheck refuses a UX_HARNESS or UX_ENTRY other than the entry's own
+# HARNESS_PATHS and path. Both read ai_ux_test's masked, unprotected CI
+# variables UX_TEST_UI_ENV, UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID, and
+# this job GITLAB_REVIEW_TOKEN as well; a run against the deployed UI also needs
+# a UX_TEST_WEB_URL=<the stack's ApplicationWebURL> line in UX_TEST_UI_ENV.
+# Without them the precheck prints SKIPPED: and the job exits 0. The three
+# UX_TEST_* variables are set at environment scope `ux-review`, and a variable
+# set at an environment's scope reaches only a job that declares that
+# environment, so both declare exactly the environment ai_ux_test declares,
+# `ux-review` with `action: prepare`, as test_ux_test_stories_ci_jobs.py pins.
+# The digest declares only its own, so it never holds the persona's password.
+# ---------------------------------------------------------------------------
+ai_ux_test_stories:
+  stage: ux_review
+  interruptible: true
+  # About 6 min of install and docs index, then flows only while one can finish
+  # inside the catalogue's deadline_minutes (55), counted from the job's start.
+  # Most CHANGELOG MRs stop at the precheck in about a minute.
+  timeout: 60m
+  allow_failure: true
+  # No resource_group: the job replies in the code-review thread, never edits the
+  # review note, and only reads the review stack (its flows are told to change
+  # nothing, and a best-effort guard refuses the saves it recognises), so it runs
+  # alongside ai_ux_test.
+  tags:
+    - size:large
+  rules:
+    - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "mr"
+      when: never
+    # The code review's own trigger, narrowed by `changes`: the reply goes into
+    # that review's thread, and the CHANGELOG entries an MR adds are what select
+    # its stories.
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
+      changes:
+        paths:
+          - CHANGELOG.md
+        compare_to: refs/heads/develop
+      when: on_success
+    - when: never
+  # The MR's UI build, when the MR changes src/ui. An optional need on a job the
+  # pipeline does not hold is dropped, so on any other MR this job starts at once
+  # and tests the deployed UI with the MR head's docs.
+  needs:
+    - job: ux_test_build
+      artifacts: true
+      optional: true
+  # ai_ux_test's environment, which UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID
+  # are scoped to, with its copy of UX_TEST_UI_ENV; see the note above.
+  environment:
+    name: ux-review
+    action: prepare
+  variables:
+    # Bedrock inference-profile id, inside the Opus family the GitLab role grants.
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
+    AWS_REGION: "us-east-1"
+    # The MR's story inputs diff against its merge base with develop.
+    GIT_DEPTH: 0
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
+    UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
+    # Posting is opt-in: this flag is what lets the precheck's one-line replies
+    # and the run's reply reach the MR, and no other story job carries it.
+    UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID --post"
+    UX_ARTIFACTS: "ux-test-stories"
+  before_script: *ux_confined_setup
+  # UX_HARNESS_SHA labels the run with the harness commit, read from the archive
+  # the setup extracted: the extracted tree has no git of its own, and the
+  # precheck's own fetches of the MR head and the target branch rewrite
+  # FETCH_HEAD.
+  script:
+    - |
+      if [ ! -f "$UX_ARTIFACTS/proceed" ]; then
+        echo "No first-time-user story to run for this head; see the precheck line above."
+        exit 0
+      fi
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" "$UX_ARTIFACTS" "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      export UX_HARNESS_SHA="$(git get-tar-commit-id < /tmp/ux-harness.tar)"
+      python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --inputs "$UX_ARTIFACTS/inputs.json" --artifact-dir "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-test-stories/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
 # The nightly result reaches Slack even when the deploy stage never ran.
 #
 # ⚠️ WHY THIS JOB EXISTS, AND WHY THE FIX IS NOT MORE LOGIC IN integration_tests.
@@ -1242,7 +1635,7 @@ nightly_notification:
       allow_failure: true
     - when: never
   # No checkout needed: the script is inline and everything it reads is an
-  # artifact. This also keeps the job to a few seconds.
+  # artifact or the GitLab API. This also keeps the job to a few seconds.
   variables:
     GIT_STRATEGY: none
   script:
@@ -1262,12 +1655,13 @@ nightly_notification:
       echo "⚠️ No Slack post was made by integration_tests — posting the fallback"
       python3 - "$CI_PIPELINE_URL" "$CI_COMMIT_SHA" "$SLACK_WEBHOOK_URL" <<'PY'
       import json
+      import os
       import pathlib
+      import re
       import sys
       import urllib.error
+      import urllib.parse
       import urllib.request
-
-      pipeline_url, sha, webhook = sys.argv[1:4]
 
       # Two distinct situations reach this job, and they need different words.
       #
@@ -1277,57 +1671,436 @@ nightly_notification:
       #     The summary is the valuable part, so send it.
       #   * absent — the pipeline never reached the deploy stage. Nothing was
       #     deployed and nothing was tested, and saying so plainly is the whole
-      #     job. Do NOT guess which upstream job failed: enumerating them needs
-      #     an API token this job has no reason to hold, and a wrong guess in a
-      #     channel is worse than a pipeline link.
-      summary_path = pathlib.Path("deployment_summary.txt")
-      if summary_path.is_file():
-          status = "⚠️ RESULT NOT DELIVERED"
-          body = (
-              "The deploy ran but its own Slack post did not succeed, so this is "
-              "a replacement carrying the summary it would have sent.\n\n"
-              + summary_path.read_text(errors="replace").strip()
-          )
-      else:
-          status = "❌ FAILED BEFORE THE DEPLOY"
-          body = (
-              "This nightly did not reach the deploy stage, so NOTHING was "
-              "deployed and no integration test ran. An earlier stage failed and "
-              "GitLab skipped the rest of the pipeline.\n\n"
-              "There is no deployment summary for this run. Open the pipeline to "
-              "see which job failed — a failure here is usually a check that is "
-              "independent of the deploy, including a dated expiry alarm that can "
-              "fire with no code change at all."
-          )
+      #     job. WHICH job failed, and why, is read from the GitLab API rather
+      #     than guessed: GITLAB_REVIEW_TOKEN (api scope, every environment)
+      #     already reaches this job, and the decisive lines of each failed job's
+      #     log are what make the post actionable from Slack. Without the token,
+      #     or when the API cannot be read, it falls back to the pipeline link.
+      #
+      # The extraction is functions with no side effects, so
+      # scripts/sdlc/tests/test_nightly_notification.py can run them against real
+      # job-log shapes; everything that touches the network is in main().
 
-      if len(body) > 2000:
-          body = body[:2000] + "\n… (truncated — the rest is in the job artifacts)"
-
-      # Same flat, all-string contract as the post in integration_tests: these
-      # four keys are declared on the Slack Workflow Builder trigger as Text, and
-      # renaming one here posts a blank variable rather than failing.
-      payload = json.dumps(
-          {
-              "status": status,
-              "commit": sha[:8],
-              "job_url": pipeline_url,
-              "summary": body,
-          }
-      ).encode()
-
-      request = urllib.request.Request(
-          webhook,
-          data=payload,
-          headers={"Content-Type": "application/json"},
-          method="POST",
+      ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+      # GitLab's timestamped trace prefix: "2026-10-29T03:29:51.498956Z 01O ".
+      STAMP = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z \d\d[OE]\+? ?")
+      # Where the script's own output ends and the runner's bookkeeping begins.
+      SCRIPT_END = re.compile(
+          r"^(section_end:\d+:step_script|Uploading artifacts|Running after_script"
+          r"|Cleaning up project directory|ERROR: Job failed)"
       )
-      try:
-          # nosec B310 - webhook is an https URL from a masked CI variable
+      MAX_LINE = 200
+      MAX_CAUSE_LINES = 12
+      # The whole body is capped at 2000 characters. Each described job gets an
+      # equal share of it, trimmed from its detail lines, so every job keeps its
+      # header and its totals rather than the last ones being cut off.
+      MAX_BODY = 2000
+      MAX_JOBS = 4
+
+
+      def clean_trace(trace):
+          lines = []
+          for raw in trace.replace("\r\n", "\n").split("\n"):
+              # A carriage return overwrites the line on a terminal, so the last
+              # non-empty segment is what a reader saw. GitLab ends every section
+              # marker with "\r\x1b[0K", whose last segment is empty: taking it
+              # blindly would erase the marker before it can be recognised.
+              segments = [ANSI.sub("", seg) for seg in raw.split("\r")]
+              shown = next((seg for seg in reversed(segments) if seg.strip()), "")
+              line = STAMP.sub("", shown).rstrip()
+              if line.startswith("section_start:"):
+                  continue
+              lines.append(line)
+          return lines
+
+
+      def failure_cause(trace):
+          """The few lines of a failed job's log that say why it failed."""
+          lines = clean_trace(trace)
+          end = next(
+              (i for i, line in enumerate(lines) if SCRIPT_END.match(line)), len(lines)
+          )
+          lines = lines[:end]
+          detail = []
+          # dep_audit: the gating block is the verdict, the rest is triage detail.
+          # Its header carries the advisory count, so it is kept with the totals.
+          totals = []
+          for i, line in enumerate(lines):
+              if line.startswith("GATING"):
+                  totals.append(line)
+                  for follow in lines[i + 1 :]:
+                      if follow.startswith(("ALLOWLISTED", "BELOW THRESHOLD")):
+                          break
+                      if follow.strip() and not set(follow.strip()) <= {"-", "="}:
+                          detail.append(follow)
+                  break
+          # pytest's failed tests are detail; its tally and make's own error line
+          # are the totals, which must survive truncation.
+          detail += [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+          totals += [
+              line
+              for line in lines
+              if re.match(r"^=+ .*\b(failed|errors?)\b.* in [\d.]+s", line)
+              or line.startswith("make: *** ")
+          ]
+          # The fallback quotes unfiltered job output into the Slack channel. Masked
+          # variables are masked in the trace; anything a job echoes unmasked is not.
+          # A bare "make: *** ... Error 1" says which target failed, not why, so
+          # with no recognised detail the end of the script output is quoted too.
+          if not detail:
+              detail = [
+                  line for line in lines if line.strip() and line not in totals
+              ][-MAX_CAUSE_LINES:]
+
+          def unique(items):
+              seen = set()
+              cut = [x[:MAX_LINE] for x in items]
+              return [x for x in cut if not (x in seen or seen.add(x))]
+
+          totals = unique(totals)
+          detail = [line for line in unique(detail) if line not in totals]
+          room = max(MAX_CAUSE_LINES - len(totals), 1)
+          if len(detail) > room:
+              hidden = len(detail) - (room - 1)
+              detail = detail[: room - 1] + [f"… and {hidden} more lines"]
+          if totals and totals[0].startswith("GATING"):
+              return totals[:1] + detail + totals[1:]
+          return detail + totals
+
+
+      def blocking_failures(jobs):
+          """Failed jobs that stopped the pipeline; allow_failure ones did not."""
+          return [
+              j
+              for j in jobs
+              if j.get("status") == "failed" and not j.get("allow_failure")
+          ]
+
+
+      def describe(job, cause_lines, budget=MAX_BODY):
+          reason = job.get("failure_reason") or ""
+          header = f"• {job.get('name', '?')} ({job.get('stage', '?')}) failed"
+          if reason and reason != "script_failure":
+              header += f" — {reason.replace('_', ' ')}"
+          header += f": {job.get('web_url', '')}"
+          lines = [f"    {line}" for line in cause_lines]
+          # Drop detail from the middle, keeping the first line (the verdict, or
+          # the GATING header) and the last ones (the totals), until it fits.
+          while len(lines) > 2 and len("\n".join([header] + lines)) > budget:
+              del lines[len(lines) // 2]
+          return "\n".join([header] + lines)[:budget]
+
+
+      def api_get(path, token):
+          base = os.environ["CI_API_V4_URL"]
+          request = urllib.request.Request(
+              f"{base}{path}", headers={"PRIVATE-TOKEN": token}
+          )
+          # nosec B310 - CI_API_V4_URL is the runner-provided https API base
           with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-              print(f"💬 Fallback nightly notification posted to Slack ({response.status})")
-      except (urllib.error.URLError, OSError) as exc:
-          # Never fail the job for this. The pipeline's own verdict is already
-          # red; adding a second red mark for the notification would only
-          # obscure which one matters.
-          print(f"⚠️ Fallback Slack post failed: {exc}")
+              return response.read().decode("utf-8", errors="replace")
+
+
+      def read_causes():
+          token = os.environ.get("GITLAB_REVIEW_TOKEN")
+          if not token:
+              return None, "GITLAB_REVIEW_TOKEN is not set"
+          # ⚠️ Every failure here, of ANY type, degrades to the plain link. An
+          # uncaught error would end the script before the post, and silence is the
+          # one outcome this job exists to prevent.
+          try:
+              project = urllib.parse.quote(os.environ["CI_PROJECT_ID"], safe="")
+              pipeline = os.environ["CI_PIPELINE_ID"]
+              jobs = json.loads(
+                  api_get(
+                      f"/projects/{project}/pipelines/{pipeline}/jobs"
+                      "?scope[]=failed&per_page=100",
+                      token,
+                  )
+              )
+              failed = blocking_failures(jobs)
+              names = [str(job.get("name", "?")) for job in failed]
+              if len(jobs) >= 100:
+                  names.append("first page only")
+              shown = failed[:MAX_JOBS]
+              budget = (MAX_BODY - 400) // max(len(shown), 1)
+              sections = []
+              for job in shown:
+                  # One unreadable job must not cost the causes of the others.
+                  try:
+                      trace = api_get(f"/projects/{project}/jobs/{job['id']}/trace", token)
+                      cause = failure_cause(trace)
+                  except Exception as exc:  # noqa: BLE001 - degrade this job only
+                      cause = [f"(log not readable: {type(exc).__name__})"]
+                  sections.append(describe(job, cause, budget))
+              if len(failed) > MAX_JOBS:
+                  sections.append(f"… and {len(failed) - MAX_JOBS} more failed jobs")
+          except Exception as exc:  # noqa: BLE001 - see the warning above
+              # The reason is posted to Slack, where GitLab's masking does not
+              # apply, and a malformed token (a pasted trailing newline) makes
+              # http.client raise with the header value in the message.
+              # Scrubbed in every form it can appear: raw, repr()-escaped, stripped.
+              detail = str(exc)
+              for form in sorted({token, repr(token)[1:-1], token.strip()}, key=len)[::-1]:
+                  if form:
+                      detail = detail.replace(form, "[token]")
+              detail = detail[:MAX_LINE]
+              return None, f"{type(exc).__name__}: {detail}"
+          if not sections:
+              return None, "the API listed no failed blocking job"
+          return names, "\n\n".join(sections)
+
+
+      def status_suffix(names):
+          shown = ", ".join(names[:3])
+          if len(names) > 3:
+              shown += f" +{len(names) - 3}"
+          return f" ({shown})"
+
+
+      def no_summary_message(names, causes):
+          """The status and body for a run that left no deployment summary."""
+          if names and "integration_tests" in names:
+              # The deploy job itself died before writing its summary, so a stack
+              # may have been created; "nothing was deployed" would be wrong in the
+              # costly direction.
+              return (
+                  "❌ DEPLOY FAILED WITHOUT A SUMMARY" + status_suffix(names),
+                  "The deploy job failed before it wrote its deployment summary, so "
+                  "there is no test result for this run, and a stack may have been "
+                  "left standing. Check the job log and the retained-stack markers.\n\n"
+                  + causes,
+              )
+          if names:
+              return (
+                  "❌ FAILED BEFORE THE DEPLOY" + status_suffix(names),
+                  "This nightly did not reach the deploy stage, so NOTHING was "
+                  "deployed and no integration test ran. GitLab skipped the rest "
+                  "of the pipeline because of:\n\n" + causes,
+              )
+          return (
+              "❌ FAILED BEFORE THE DEPLOY",
+              "This nightly did not reach the deploy stage, so NOTHING was "
+              "deployed and no integration test ran. An earlier stage failed "
+              "and GitLab skipped the rest of the pipeline.\n\n"
+              "The failed job could not be read from the GitLab API "
+              f"({causes}). Open the pipeline to see which job failed — a "
+              "failure here is usually a check that is independent of the "
+              "deploy, including a dated expiry alarm or a newly published "
+              "advisory that can fire with no code change at all.",
+          )
+
+
+      def main():
+          pipeline_url, sha, webhook = sys.argv[1:4]
+          summary_path = pathlib.Path("deployment_summary.txt")
+          if summary_path.is_file():
+              status = "⚠️ RESULT NOT DELIVERED"
+              body = (
+                  "The deploy ran but its own Slack post did not succeed, so this is "
+                  "a replacement carrying the summary it would have sent.\n\n"
+                  + summary_path.read_text(errors="replace").strip()
+              )
+          else:
+              names, causes = read_causes()
+              if not names:
+                  # ⚠️ Visible in the job log: if this line appears on every nightly,
+                  # the token cannot read job logs and the post is back to a link.
+                  print(f"⚠️ Could not read the failed jobs ({causes}); posting the link")
+              status, body = no_summary_message(names, causes)
+
+          if len(body) > MAX_BODY:
+              body = body[:MAX_BODY] + "\n… (truncated — the rest is in the job logs)"
+
+          # Same flat, all-string contract as the post in integration_tests: these
+          # four keys are declared on the Slack Workflow Builder trigger as Text, and
+          # renaming one here posts a blank variable rather than failing.
+          payload = json.dumps(
+              {
+                  "status": status,
+                  "commit": sha[:8],
+                  "job_url": pipeline_url,
+                  "summary": body,
+              }
+          ).encode()
+
+          request = urllib.request.Request(
+              webhook,
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              # nosec B310 - webhook is an https URL from a masked CI variable
+              with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                  print(f"💬 Fallback nightly notification posted to Slack ({response.status})")
+          except (urllib.error.URLError, OSError) as exc:
+              # Never fail the job for this. The pipeline's own verdict is already
+              # red; adding a second red mark for the notification would only
+              # obscure which one matters.
+              print(f"⚠️ Fallback Slack post failed: {exc}")
+
+
+      if __name__ == "__main__":
+          main()
       PY
+
+# ---------------------------------------------------------------------------
+# The nightly first-time-user stories: the nightly story set against the review
+# stack after the deploy, in parallel shards, then the digest that merges them
+# and, on the schedule, compares the night with earlier scheduled nights.
+# Advisory, as the note above ai_ux_test_stories says, and in ux_nightly, after
+# notify.
+#
+# The two jobs share their rules by anchor, so the digest's `needs` never names
+# a job absent from the pipeline:
+#   - the scheduled develop pipeline, automatically, and `when: always`, so a
+#     night whose deploy failed or never ran is still run and records the
+#     stack's state, which keeps it out of the comparison;
+#   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
+#   - a push to develop, as a manual button.
+# integration_tests is in every pipeline those rules admit (scheduled, or a
+# manual job on develop), so `dependencies: [integration_tests]` is always
+# valid.
+#
+# Neither job is interruptible: a merge to develop during the night must not
+# cancel it. The shards read UX_TEST_UI_ENV, UX_TEST_PERSONAS and
+# UX_TEST_AWS_ACCOUNT_ID, from the environment ux-review they declare as
+# ai_ux_test_stories does, and post nothing. On the schedule the digest reads
+# earlier nights' digests with GITLAB_REVIEW_TOKEN, read-only, and posts to Slack
+# with UX_TEST_STORIES_SLACK_WEBHOOK_URL. The digest alone declares the
+# environment ux-stories-digest, so that webhook is set at that environment
+# scope and reaches no other job; UX_TEST_STORIES and UX_TEST_STORIES_RUN stay at
+# All scope, because GitLab can leave a scoped variable undefined while it
+# evaluates rules.
+# ---------------------------------------------------------------------------
+ai_ux_test_stories_nightly:
+  stage: ux_nightly
+  interruptible: false
+  # About 6 min of install and docs index, then flows only while one can finish
+  # inside the catalogue's deadline_minutes (55), counted from the job's start.
+  timeout: 60m
+  allow_failure: true
+  tags:
+    - size:large
+  # ceil(nightly flows / k), where k = floor((deadline_minutes - setup_minutes
+  # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
+  # gate: 13 p0 flows at 3 a shard. The CI-jobs test recomputes it from the
+  # catalogue.
+  parallel: 5
+  rules: &ux_story_nightly_rules
+    - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "develop" && $UX_TEST_STORIES_RUN == "all"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"
+      when: manual
+    - when: never
+  # deployment_summary.txt, which records the review stack's state for the night.
+  dependencies:
+    - integration_tests
+  # ai_ux_test's environment, as on ai_ux_test_stories.
+  environment:
+    name: ux-review
+    action: prepare
+  variables:
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
+    AWS_REGION: "us-east-1"
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    UX_HARNESS: *ux_story_harness
+    UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
+    # Under CI, --all is the nightly shard: a flow that gave up or ran out of
+    # steps runs once more at twice its step budget, inside the catalogue's
+    # job_usd and deadline.
+    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary deployment_summary.txt"
+    UX_ARTIFACTS: "ux-test-stories/shard-$CI_NODE_INDEX"
+  before_script: *ux_confined_setup
+  # UX_HARNESS_SHA as in ai_ux_test_stories.
+  script:
+    - |
+      if [ ! -f "$UX_ARTIFACTS/proceed" ]; then
+        echo "Nothing for this shard to run; see the precheck line above."
+        exit 0
+      fi
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" "$UX_ARTIFACTS" "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      export UX_HARNESS_SHA="$(git get-tar-commit-id < /tmp/ux-harness.tar)"
+      python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --artifact-dir "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-test-stories/
+    expire_in: 30 days
+
+ai_ux_test_stories_digest:
+  stage: ux_nightly
+  interruptible: false
+  timeout: 20m
+  allow_failure: true
+  rules: *ux_story_nightly_rules
+  # The one job UX_TEST_STORIES_SLACK_WEBHOOK_URL is scoped to. `prepare` records
+  # no deployment: the environment exists only to scope that variable.
+  environment:
+    name: ux-stories-digest
+    action: prepare
+  # Every shard, whatever it ended with: on the schedule the rule is
+  # `when: always`.
+  needs:
+    - job: ai_ux_test_stories_nightly
+      artifacts: true
+  variables:
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    UX_HARNESS: *ux_story_harness
+    UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
+    UX_ARTIFACTS: "ux-test-stories-digest"
+  # The digest runs no model and no browser and installs nothing, so it takes
+  # three of &ux_confined_setup's steps, as written there, rather than the
+  # anchor, whose last two are the story precheck and the toolchain install: the
+  # umask, the extraction from the target branch that fails closed, and a fresh
+  # output directory. git is in the job image. Between them runs the half of the
+  # pin the precheck gives the other two jobs: the entry's own check, from the
+  # extracted harness, that UX_HARNESS and UX_ENTRY name exactly its
+  # HARNESS_PATHS and path.
+  before_script:
+    - umask 022
+    - |
+      TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
+      git fetch -q origin "refs/heads/$TARGET"
+      rm -rf "$UX_HARNESS_DIR" && mkdir -p "$UX_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/ux-harness.tar FETCH_HEAD -- $UX_HARNESS && tar -xf /tmp/ux-harness.tar -C "$UX_HARNESS_DIR" && chmod -R go-w "$UX_HARNESS_DIR"; then
+        echo "UX harness pinned to origin/$TARGET in $UX_HARNESS_DIR: $UX_HARNESS"
+      else
+        echo "❌ Could not pin the UX harness to origin/$TARGET — it does not carry"
+        echo "   all of: $UX_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the harness, its tool lists and its egress allowlist the MR's own."
+        echo "   Expected only on the MR that adds the UX test."
+        exit 1
+      fi
+    - |
+      python3 -I -B - "$UX_HARNESS_DIR" <<'PY'
+      import os
+      import sys
+
+      sys.path.insert(0, os.path.join(sys.argv[1], "scripts", "sdlc"))
+      import ai_ux_test_stories as entry
+
+      problem = entry.paths.harness_pin_problem(
+          os.environ, harness_paths=entry.HARNESS_PATHS, entry=entry.ENTRY
+      )
+      print(f"FAILED: {problem}" if problem else f"UX harness pin checked for {entry.ENTRY}")
+      sys.exit(1 if problem else 0)
+      PY
+    - rm -rf "${UX_ARTIFACTS%%/*}" && mkdir -p "$UX_ARTIFACTS"
+  script:
+    # The shards merged; on the schedule, compared with the earlier scheduled
+    # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and,
+    # with UX_TEST_STORIES_SLACK_WEBHOOK_URL set, the one-line summary posted to
+    # Slack. digest.md says when no earlier night was read.
+    - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" --digest ux-test-stories --out "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-test-stories-digest/
+    expire_in: 30 days

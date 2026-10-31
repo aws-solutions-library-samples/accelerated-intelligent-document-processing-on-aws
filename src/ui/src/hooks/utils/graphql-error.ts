@@ -125,6 +125,17 @@ export function isAuthorizationError(err: unknown): boolean {
 }
 
 /**
+ * True for a request that never got an answer: the REST client wraps a rejected
+ * `fetch` (the browser's "Failed to fetch") as `errorType: 'NetworkError'`. Nothing
+ * reached the server, so a background refresh can simply try again.
+ */
+export function isNetworkError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const errors = (err as { errors?: Array<{ errorType?: string }> }).errors;
+  return Array.isArray(errors) && errors.some((e) => e?.errorType === 'NetworkError');
+}
+
+/**
  * The message to show the user for a failed call, with permission failures given
  * copy they can act on.
  *

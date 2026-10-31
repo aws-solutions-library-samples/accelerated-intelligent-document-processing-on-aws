@@ -28,6 +28,9 @@
       "Admin",
       "Author"
     ],
+    "assignTestSetDocuments": [
+      "Admin"
+    ],
     "autoDetectSections": [
       "Admin",
       "Author"
@@ -38,14 +41,35 @@
       "Viewer"
     ],
     "checkFeatureEntitlement": "ANY",
+    "claimNextReviewItem": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
     "claimReview": [
       "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "claimReviewItem": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "claimTestSetDocument": [
       "Annotator",
       "Reviewer"
     ],
     "clearDraftLabels": [
       "Admin",
       "Author"
+    ],
+    "clearReadInboxMessages": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
     ],
     "compareDocumentVersions": [
       "Admin",
@@ -57,6 +81,11 @@
     "compareTestRuns": [
       "Admin",
       "Author"
+    ],
+    "completeReviewItem": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
     ],
     "completeSectionReview": [
       "Admin",
@@ -74,6 +103,9 @@
     "createFinetuningJob": [
       "Admin",
       "Author"
+    ],
+    "createReviewQueue": [
+      "Admin"
     ],
     "createUser": [
       "Admin"
@@ -116,6 +148,16 @@
       "Admin",
       "Author"
     ],
+    "deleteInboxMessages": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "deleteReviewQueue": [
+      "Admin"
+    ],
     "deleteTestSets": [
       "Admin",
       "Author"
@@ -130,7 +172,11 @@
     "estimateReviewEffort": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
+    ],
+    "forceReleaseReviewItem": [
+      "Admin"
     ],
     "generateDraftLabels": [
       "Admin",
@@ -148,7 +194,8 @@
     "getAnnotationQueue": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
     ],
     "getChatMessages": [
       "Admin",
@@ -173,6 +220,7 @@
       "Admin",
       "Annotator",
       "Author",
+      "Reviewer",
       "Viewer"
     ],
     "getConfigVersions": [
@@ -209,7 +257,8 @@
     "getDraftLabelJob": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
     ],
     "getFeatureLaunchUrl": [
       "Admin"
@@ -236,6 +285,20 @@
       "Viewer"
     ],
     "getFinetuningJob": "ANY",
+    "getInboxPreferences": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getInboxUnreadCount": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getLatestPublishedVersion": "ANY",
     "getModelConfigLimits": [
       "Admin",
@@ -243,10 +306,23 @@
       "Viewer"
     ],
     "getMyProfile": "ANY",
+    "getMyReviewQueues": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
     "getPricing": [
       "Admin",
       "Author",
       "Viewer"
+    ],
+    "getReviewItem": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "getReviewQueuesOverview": [
+      "Admin"
     ],
     "getSampleDocumentUrl": [
       "Admin",
@@ -275,7 +351,8 @@
     "getTestSetDocuments": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
     ],
     "getTestSetVersions": [
       "Admin",
@@ -293,6 +370,9 @@
       "Admin",
       "Author",
       "Viewer"
+    ],
+    "listAnnotators": [
+      "Admin"
     ],
     "listAvailableAgents": [
       "Admin",
@@ -357,19 +437,68 @@
       "Viewer"
     ],
     "listFinetuningJobs": "ANY",
+    "listInboxMessages": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "listInstalledFeatures": "ANY",
+    "listMyReviewWork": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "listMyTestSetTasks": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer"
+    ],
+    "listReviewQueueItems": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "listReviewQueues": [
+      "Admin"
+    ],
     "listSampleDocuments": [
       "Admin",
       "Author",
       "Viewer"
     ],
+    "listTestSetQueues": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
     "listUsers": [
+      "Admin"
+    ],
+    "markAllInboxMessagesRead": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "markInboxMessages": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "moveReviewItem": [
       "Admin"
     ],
     "openTestSetAnnotationDraft": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
     ],
     "pauseCircuitBreaker": [
       "Admin"
@@ -395,12 +524,26 @@
       "Reviewer",
       "Viewer"
     ],
+    "reassignReviewItem": [
+      "Admin"
+    ],
     "reextractTestSetDocument": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
+    ],
+    "rejectReviewItem": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
     ],
     "releaseReview": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "releaseReviewItem": [
       "Admin",
       "Annotator",
       "Reviewer"
@@ -408,6 +551,12 @@
     "removeDocumentsFromTestSet": [
       "Admin",
       "Author"
+    ],
+    "removeReviewItem": [
+      "Admin"
+    ],
+    "renewReviewLease": [
+      "Admin"
     ],
     "reprocessDocument": [
       "Admin",
@@ -433,6 +582,27 @@
     "resumeCircuitBreaker": [
       "Admin"
     ],
+    "saveReviewDraft": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "saveSectionReviewEdits": [
+      "Admin",
+      "Reviewer"
+    ],
+    "saveTestSetDocumentSection": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer"
+    ],
+    "saveTestSetDocumentSectionDraft": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer"
+    ],
     "sendAgentChatMessage": [
       "Admin",
       "Author",
@@ -457,6 +627,12 @@
       "Admin",
       "Reviewer"
     ],
+    "skipTestSetDocument": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer"
+    ],
     "startMultiDocDiscovery": [
       "Admin",
       "Author"
@@ -477,6 +653,12 @@
       "Admin",
       "Author"
     ],
+    "takeOverReviewItem": [
+      "Admin"
+    ],
+    "unassignTestSetDocuments": [
+      "Admin"
+    ],
     "unsubscribeFeature": [
       "Admin"
     ],
@@ -491,10 +673,20 @@
       "Annotator",
       "Reviewer"
     ],
+    "updateInboxPreferences": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "updateModelConfigLimits": [
       "Admin"
     ],
     "updatePricing": [
+      "Admin"
+    ],
+    "updateReviewQueue": [
       "Admin"
     ],
     "updateTestSet": [
@@ -504,7 +696,11 @@
     "updateTestSetDocumentSections": [
       "Admin",
       "Annotator",
-      "Author"
+      "Author",
+      "Reviewer"
+    ],
+    "updateTestSetQueue": [
+      "Admin"
     ],
     "updateUser": [
       "Admin"

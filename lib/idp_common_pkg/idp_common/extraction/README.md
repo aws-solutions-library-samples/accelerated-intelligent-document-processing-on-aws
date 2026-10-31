@@ -369,13 +369,13 @@ x-aws-idp-image-path: "s3://config-bucket/examples/invoices/"
 The extraction service automatically filters examples by document class:
 
 ```python
-# When processing a "letter" document, only letter examples are used
-# When processing an "invoice" document, only invoice examples are used
+# When processing a "letter" section, only letter examples are used
+# When processing an "invoice" section, only invoice examples are used
 
 # This ensures extraction examples are relevant and targeted
 document = extraction_service.process_document_section(
-    document=letter_document,  # Classified as "letter"
-    section_id="section-1"
+    document=letter_document,
+    section_id="section-1"  # Classified as "letter"
 )
 # Only letter examples will be included in the prompt
 ```
@@ -399,14 +399,14 @@ service = ExtractionService(
 )
 
 # Examples are automatically included in prompts during extraction
-# Only examples matching the document's classification are used
+# Only examples matching the section's class are used
 document = service.process_document_section(document, section_id)
 ```
 
 The service automatically:
 
 1. Loads few-shot examples from the configuration
-2. Filters examples to only include those from the document's classified type
+2. Filters examples to only include those from the section's class
 3. Includes them in extraction prompts using the `{FEW_SHOT_EXAMPLES}` placeholder
 4. Formats examples with both text and images for multimodal understanding
 
@@ -766,15 +766,15 @@ that sees the whole request, tool results included); the loader exists so the
 reduction is auditable per page and so the agentic path, which builds its own
 requests, is covered too.
 
-## Multi-document sections (`instance_count`)
+## Several records in one section (`instance_count`)
 
-Classification splits sections on document *type*. When a packet concatenates
+Classification splits a document into sections by *class*. When a packet concatenates
 several records of the **same** type with no separator, there is no type change
 to split on, so they land in one section — and extraction, whose class schema
-describes one document, returns one record. See
+describes one record, returns one record. See
 [#565](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/565).
 
-`Section.instance_count` reports how many documents of the class a section turned
+`Section.instance_count` reports how many instances (records) of the class a section turned
 out to hold: `0` = undetermined, `1` = normal, `> 1` = the section spans several.
 The UI surfaces `> 1` so this is obvious at a glance. It is populated from
 whichever of two sources applies.
@@ -792,7 +792,7 @@ and reviewed.
 This replaced the previous behaviour, which stored the array under a `raw_array`
 key that nothing read, failed the section, and reported a misleading
 `extraction_sparse`. Note what it does *not* fix: if the model returns a single
-object for a two-document section, only the first record exists in the response
+object for a two-record section, only the first record exists in the response
 and there is nothing to recover.
 
 ### Declared (`x-aws-idp-instance-array`)
@@ -804,7 +804,7 @@ own instance axis:
 classes:
   - $id: patient_packet
     type: object
-    x-aws-idp-instance-array: records   # each element is one document
+    x-aws-idp-instance-array: records   # each element is one record
     properties:
       records:
         type: array
@@ -817,7 +817,7 @@ classes:
 
 `instance_count` becomes `len(inference_result["records"])`. Nothing else
 changes — **no schema transform, no output-shape change, no downstream impact** —
-because the pipeline is only being told which existing array means "one document
+because the pipeline is only being told which existing array means "one record
 per element". This exists so configs that already solved multi-record packets by
 hand keep working unchanged while still getting the count and the UI badge.
 
@@ -829,13 +829,13 @@ otherwise fail silently by simply never producing a count.
 ### Suspected (`extraction.multi_instance_detection`, #753)
 
 The common branch, and the one that used to be completely silent: the model
-returns a **single object** for a several-document section, so records 2..N are
+returns a **single object** for a several-record section, so records 2..N are
 absent from the response and there is nothing to recover. `instance_count` landed
 on `1` by construction, `ProcessingIssueCount` on `0`, and the document on
 `COMPLETED`.
 
-Detection asks the model, **in the same inference**, how many separate documents
-of the class the pages contain. `extraction/instance_probe.py` adds one auxiliary
+Detection asks the model, **in the same inference**, how many separate records
+(instances) of the class the pages contain. `extraction/instance_probe.py` adds one auxiliary
 integer property (`IDPDocumentInstanceCount`) to a **copy** of the class schema —
 `self._wire_class_schema`, used for the prompt text and, when forced tool use is
 on, for the `toolSpec`. `self._class_schema` is untouched, so the off-schema
@@ -890,7 +890,7 @@ documents per pair, only the toggle differing) — see
   documents each), not a single failure mode.
 
 Hence off by default, and turn it on per configuration profile where a section can
-hold several documents of one class **and the class schema describes only one** —
+hold several records of one class **and the class schema describes only one** —
 that conjunction is what loses records. It is also worth running once as a pure
 diagnostic on any corpus, then turning off: that is how the `BANK_CHECK` missing
 instance axis above was found.
@@ -912,7 +912,7 @@ transport model (the same `augment_schema_with_probe` copy, through
 after the call — before validation/escalation and before the integrated field
 assessment is lifted, from which the probe key is also removed. Sharded agentic
 sections are not probed: each shard would answer for its own pages, and neither
-sum (double-counts a document spanning a boundary) nor max (under-counts records
+sum (double-counts a record spanning a shard boundary) nor max (under-counts records
 spread across shards) is right (#772, options 2/3 remain open). A resumed run keeps
 its existing model.
 
@@ -944,7 +944,7 @@ class schema".
 Treating the wrapper as an out-of-band key instead breaks every one of them:
 `_filter_extracted_to_schema` deletes `instances` and emits `{}`; assessment
 collapses the whole section to one `{"confidence": 0.5}` leaf;
-`_schema_field_mismatch_reason` blacklists the section so the escalation ladder
+`_schema_field_mismatch_reason` excludes the section so the escalation ladder
 skips it permanently; evaluation builds a Stickler model with zero declared fields
 and silently scores 0.0.
 
@@ -1017,7 +1017,7 @@ Enforced by the `classes` field validator in `config/models.py`:
   because a silent rename changes the extraction contract under the user);
 - **warn only** when the class's top level is nothing but one array-of-object.
   Having an internal array is **not** evidence of already being a list wrapper —
-  an invoice with `line_items[]` is a single-instance document and
+  an invoice with `line_items[]` is a single-instance class and
   `multi-instance: true` on it correctly gives `instances[i].line_items[j]`.
 
 An already-wrapped schema legitimately carries both keys, so `is_wrapped` short-
@@ -1164,7 +1164,7 @@ that went unreported.
 | Reason | When | Recorded issue |
 |---|---|---|
 | `class_has_no_attributes` | The label resolves to a class in configuration that declares no properties. An authoring choice; nothing was expected from the section | none |
-| `class_unclassified` | The label is the `unclassified` sentinel, or the configured `classification.invalidClassFallback`. Classification determined no class — a blank page, a page whose classification failed, or a deployment with no document types configured | none here. The **classification** stage reports it, at the severity only it can judge |
+| `class_unclassified` | The label is the `unclassified` sentinel, or the configured `classification.fallback_class`. Classification determined no class — a blank page, a page whose classification failed, or a deployment with no document types configured | none here. The **classification** stage reports it, at the severity only it can judge |
 | `class_not_configured` | The section carries a **named** class the configuration in force does not contain: renamed or deleted while documents were in flight, or an old document reprocessed under a newer configuration | error-severity `extraction_class_not_configured` on the section and in the stub's `metadata.processing_issues` |
 
 The fault case is reported here, at the stage that discovered it, because the
@@ -1286,7 +1286,12 @@ per field, its **top-K guesses with probabilities** rather than a single value:
 `idp_common.extraction.topk_resolver.resolve_candidates` then splits this into:
 
 - **`inference_result`** — the top guess `G1` per field (numbers coerced per schema).
-- **raw confidence leaves** — `{"confidence": P1}` per field, stashed in
+- **raw confidence leaves** — `{"confidence": P1}` per field (clamped to [0, 1]).
+  A candidate with no usable `P1` (missing, null, not a number, or NaN) gets
+  `{"confidence": 0.0, "confidence_reason": "No usable probability (P1) …"}`, so
+  it still falls below its threshold and alerts, and the reason marks the 0.0 as a
+  stand-in rather than the model's verdict. NaN in particular used to clamp to
+  1.0, because `min(1.0, nan)` is `1.0`. The leaves are stashed in
   `metering["_integrated_field_assessment"]`. `_save_results` runs these through the
   **shared** `enrich_assessment_with_thresholds` (attaches
   `confidence_threshold` from each field's `x-aws-idp-confidence-threshold` or the
@@ -1495,8 +1500,8 @@ extraction:
       use_confidence_data: true  # Cross-reference with OCR confidence
       max_empty_line_gap: 3  # Tolerate up to N empty lines in tables
       auto_merge_adjacent_tables: true  # Merge table fragments
-    validation:                # see "Schema-Constraint Validation" below
-      enabled: false
+  validation:                  # sibling of `agentic`, not nested inside it —
+    enabled: false             # see "Schema-Constraint Validation" below
 ```
 
 > **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
@@ -1667,7 +1672,7 @@ The table parser transparently skips page markers inside tables — they do not 
 
 **Sharded concurrent extraction** (`max_concurrent_batches > 1`): the section's
 pages are split into **token-budgeted page ranges**, and each shard's prompt
-contains **only that shard's OCR text and images** — not the whole document. The
+contains **only that shard's OCR text and images** — not the whole section. The
 shards run concurrently (up to `max_concurrent_batches` at a time) and their
 results are merged. This serves two purposes:
 
@@ -1858,7 +1863,7 @@ hitl:
     and emits `explainability_info`. If the model returns a flat response with no
     confidence envelope, the path **falls back to the standalone Assessment step**
     (no data loss). Best for **smaller documents** where one inference comfortably
-    holds the whole doc; for large docs prefer agentic (sharded) or `separate`.
+    holds the whole section; for large docs prefer agentic (sharded) or `separate`.
   - **Missing-row robustness (both paths):** because integrated confidence rides on
     the extraction call, a model can under-score a large table. After reconcile,
     any list rows left unscored are **retried in focused, bounded re-assessment
@@ -1961,12 +1966,16 @@ validation still fails.
 extraction:
   agentic:
     enabled: true
-    validation:
-      enabled: false          # Off by default (no behavior change on upgrade)
-      check_formats: true     # Enforce JSON-Schema 'format' keywords
-      fail_action: escalate   # warn | escalate | reject
-      escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; "" = retry same model
+  validation:                 # sibling of `agentic`
+    enabled: false            # Off by default (no behavior change on upgrade)
+    check_formats: true       # Enforce JSON-Schema 'format' keywords
+    fail_action: escalate     # warn | escalate | reject
+    escalation_model: "us.anthropic.claude-opus-4-8"  # stronger tier; "" = retry same model
 ```
+
+A stored config still carrying the older `extraction.agentic.validation` nesting
+is relocated to `extraction.validation` by the v0.7 migration on every load, so it
+keeps working; write new configs in the shape above.
 
 How it works:
 
@@ -2041,7 +2050,7 @@ Deliberately narrow:
 - **All-empty only.** A populated sibling list means the detected tables plausibly
   belong to that one, and an empty sibling may be genuinely absent.
 - **Single-agent only.** Per-shard this inference is unsound — a shard legitimately
-  contains none of the whole document's rows. Sharded output is validated once
+  contains none of the whole section's rows. Sharded output is validated once
   after merge, as it already was for `minItems`.
 - **Not a schema violation.** It does not enter `ValidationReport`, so escalation
   behaviour is unchanged. `metadata.completeness_check` reports it separately as
@@ -2325,6 +2334,65 @@ signals make both loud without changing what is extracted:
   attributed to it; and because the recorded corpus cannot bound the false-failure rate —
   it holds no legitimately-empty-list document that also carries a same-width table, so
   the case needs its own measurement. Tracked with the narrowing in GitHub issue #1046.
+- `extraction_list_field_not_a_list` (**error**, always) — a field the class schema declares
+  as an array came back as a string carrying content, a number, a bool or an object, so none
+  of its rows reaches confidence scoring, evaluation or any other consumer of the result.
+  The live shape is a model declining *inside the field* instead of failing: measured
+  on a 400-row statement, `Transactions` came back as `'The statement contains 400
+  transactions (SEQ00000 to SEQ00399). They are too many to list in full here without
+  risking errors, so this field is not populated.'`
+
+  ⚠️ **A blank value is not this code.** `""` or `"   "` says what `[]` says — there were
+  no rows — and a genuinely empty section is legitimate, which is the reason
+  `extraction_incomplete` is a `warning`; the `error` rationale below holds for a refusal
+  sentence and not for a blank. A blank therefore joins `extraction_incomplete` and only a
+  value carrying content reaches this code. The message is correspondingly bounded to what
+  is known — the rows are not *available*, rather than provably destroyed — because a value
+  holding content is not always unrecoverable: a JSON-serialized array is the #783 shape,
+  and `coercion.py`'s `json_parsed_from_string` repairs exactly that when coercion is
+  enabled on the simple path, so the rows may be sitting in the string.
+
+  **Scope** is `_declared_array_non_lists`, which matches `_object_list_targets` — top-level
+  declared arrays, `items` resolved through `$ref`, and one level into an array of
+  instances — rather than top-level `properties` alone. The nested shape ships:
+  `checkpoints[].items`, `glossarySections[].terms` and `employees[].shifts` in both
+  `ocr-benchmark` presets, reported as `outer[].inner`. Two levels down is not reached and
+  no shipped preset declares one.
+
+  ⚠️ **Every other signal here is structurally unable to see it, which is why detection
+  could not be left where it was.** `extraction_incomplete` tests absent / `None` / empty
+  and a string is none of the three; all three OCR-grounded codes above compare a row
+  *count* and there is no list to count, with full exact-width evidence present;
+  `confidence_coverage` reports no denominator, correctly. Full-schema validation *does*
+  report it, as `extraction_validation_failed` — but only when
+  `extraction.validation.enabled` is true, at `warning`, with a message that reads the same
+  for a total loss as for a reformatted date. `coercion.py` sees it too and refuses, which
+  is the right call — it performs exactly one cross-family repair,
+  `json_parsed_from_string`, described there as "the one cross-family repair that is
+  lossless and unambiguous", and a prose sentence is not it — but that refusal is gated on
+  `extraction.coercion.enabled` and emits no issue at all. On
+  the v0.6.12 grid the one affected run that recorded **no issue of any kind** was the one
+  with enforcement off. This check reads `_class_schema` against the final extracted
+  fields, so it needs neither toggle.
+
+  `error`, unconditionally: it is the one code in this family that is not an estimate — a
+  declared type and a returned value leave nothing to infer — which is the distinction that
+  keeps `extraction_row_count_unverified` and `extraction_sparse` at `info`. It does **not**
+  fail the section (`_generate_processing_report` fails only on `ROW_SHORTFALL_CODE` at
+  `error`, so the report reads `COMPLETED WITH ERRORS`) and
+  `extraction.row_shortfall_action` does not govern it, for the reason it governs neither
+  `extraction_output_truncated` nor `extraction_partial_row_shortfall`: widening that knob
+  would start failing runs that complete today on a deployment already opted into `fail`.
+
+  `details` carries `returned_types` per field and `returned_values` for the string cases,
+  truncated at `_NOT_A_LIST_PREVIEW_CHARS` (300) — the refusal sentence is the only record
+  of *why* the model declined and nothing else in the pipeline keeps it, but it is unbounded
+  model-authored text going into a DynamoDB item. In simple mode the message recommends
+  Advanced (agentic) extraction, which is the measured remedy rather than boilerplate: on
+  the v0.6.12 grid the advanced cells returned 400 of 400 rows on all three 400-row
+  documents, 18 runs of 18, while the traditional cells lost nearly the whole list on 13 of
+  39. `tests/unit/extraction/test_list_field_not_a_list.py` is the whole surface, driven
+  from the three refusal sentences the grid recorded verbatim.
 - `extraction_partial_row_shortfall` (warning, **always**) — the band the half ratio left
   silent, and the reason it was there to leave: ⚠️ **`_OCR_ROW_SHORTFALL_RATIO` goes quiet
   well before half the document is gone.** Sweeping every extracted count from 1 to 800
@@ -2391,6 +2459,117 @@ signals make both loud without changing what is extracted:
   alone. That matters here specifically: taken against `ocr_matched_table_rows` instead, the
   #1361 case reads 0.501 rather than 0.511 and nothing else in the issue looks wrong.
   `tests/unit/extraction/test_partial_row_shortfall.py` is the whole surface.
+- `extraction_row_count_unverified` (info, **always**) — the two codes above did not run,
+  which until this one existed produced the same output as their running and finding
+  nothing: no issue, and `Status: SUCCESS`. ⚠️ **Both are grounded in the same evidence —
+  OCR tables whose column count EQUALS the item schema's property count — and that evidence
+  is routinely zero.** At zero matched rows `expected < _OCR_ROW_ESTIMATE_MIN` holds for
+  every extracted count and every document size, so neither check is merely quiet: both are
+  structurally unable to fire. This code reports that condition, so "could not check" is
+  distinguishable from "checked and found complete".
+
+  It fires when a list of objects came back with at least `_OCR_ROW_ESTIMATE_MIN` (30) rows
+  while the section's OCR text holds fewer than that many rows in tables of the list's own
+  width. ⚠️ **It is a statement about the EVIDENCE, never about the result**, and it is the
+  correct answer on a complete extraction — which is why the message says the count is
+  unverified and equally consistent with a complete list, and why the severity is `info`.
+  Two ordinary configurations reach it with nothing wrong: an item schema carrying a
+  property the rendered table does not have (a derived `Balance`), and an OCR configuration
+  that emits no Markdown tables at all. At `warning` those runs' reports would move from
+  `SUCCESS` to `COMPLETED WITH WARNINGS` for a condition the operator may have chosen, so
+  `info` is what keeps the status line while still putting the code in `processing_issues`
+  and in the processing report's issue list. `extraction.row_shortfall_action` does **not**
+  govern it, for the reason it governs neither `extraction_output_truncated` nor
+  `extraction_partial_row_shortfall`.
+
+  ⚠️ **`info` is not invisible, and two UI surfaces are severity-blind.** They are
+  count-based, so an `info` issue moves them exactly as a `warning` would:
+
+  | Surface | Reader | Before | After |
+  |---|---|---|---|
+  | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Info** |
+  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py`, or summed from the sections on the GSI path | `0` | non-zero |
+
+  So on an OCR configuration that renders no exact-width tables, a document where
+  nothing is wrong gets a non-zero issue count and a section labelled **Info**.
+  That label is `getSectionIssueStatus`'s neutral text for an info-only section and
+  is shared with `extraction_sparse` and `extraction_off_schema_fields`, so it says
+  only "there is a note here" and leaves the note itself to the message and the
+  Processing Report tab. **Auto-recovered** is reserved for
+  `assessment_recovered_with_retries`, the one `info` code that reports a repair,
+  so an unverified row count is no longer described as a recovery — which it is
+  close to the opposite of
+  ([#1521](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1521)).
+  The non-zero issue count remains, and is the trade for being able to tell "could
+  not check" from "checked and found complete" at all. Note that the
+  sparse `HasProcessingIssues` attribute is **not** a third surface: its own
+  writer records that it has no reader anywhere — not a GSI key, not projected, not
+  queried, absent from the UI and from every Glue and Athena schema.
+
+  **Which OCR renderings reach it, measured rather than assumed.** On a 3-property item
+  schema, `_ocr_tables` plus the exact-width match sum to **0** rows of evidence for a
+  GitHub-legal pipe table written without leading pipes, for the same table carrying a
+  fourth column the schema does not have, for one carrying an added row-number column, and
+  for a list rendered as bullets. An LLM OCR backend renders its own Markdown and can
+  produce any of them.
+
+  ⚠️ **A table-emitting backend reaches this too, and the deciding factor is the width
+  rather than the backend.** Textractor's `TABLES` rendering does not produce the four
+  shapes above, but it renders the table the document actually has — and if the list
+  item's schema carries one property more than that table has columns (a derived or
+  document-level field is the ordinary case), the exact-width match rejects it and the
+  evidence sums to 0 just the same. Measured on a live stack running the shipped
+  `lending-package-sample` preset: a 5-property `transaction_details` returned 68 rows
+  while the section rendered tables **2 and 3 columns wide**, so
+  `ocr_matched_table_rows` was 0 and the issue fired on a list that looks complete.
+
+  The two causes need different
+  remedies and the issue tells them apart: `details["ocr_table_widths"]` holds every table
+  width that WAS found in the section, so `[]` means no table was recognised while `[4]`
+  against `item_property_count: 3` means the evidence is there and the wrong shape.
+
+  ⚠️ **The exact-width match is deliberately NOT loosened, not even as a fallback reachable
+  only when the exact-width evidence is empty.** "Empty" is the ordinary state for a schema
+  with a derived property, so a tolerance would be reachable on the backends where detection
+  works today — a two-column key/value block counting against a three-column list and
+  reporting a shortfall that is not one, against a population currently at 48-of-49
+  detection. Carrying the widths in `details` gives a reader the same diagnosis with no
+  count tolerated into any sum. ⚠️ **The residual is the other end of the floor:** a list
+  that came back with fewer than 30 rows and has no evidence either still reports nothing
+  here, because without evidence a 5-row list cannot be told from a correct one;
+  `extraction_incomplete`, `extraction_sparse` and a declared `minItems` are the signals
+  that cover a list that small.
+
+  ⚠️ **Gated on `ocr_rows`, not on the `expected` the branch itself tests.** `expected` is
+  `min(ocr_rows, group_cap)`, so the branch is also reached with the OCR evidence
+  *plentiful* and the group's summed declared `maxItems` under the floor — 400 matched rows
+  against `maxItems: 20`. Every string this code emits describes the absent-evidence half of
+  that disjunction, so firing there would state a contradiction, and the condition really is
+  different: the evidence is present and it is the config author's own ceiling that makes
+  the comparison inapplicable. **That case reports nothing, which is the residual**, and it
+  is reachable rather than hypothetical — `shard_validation_schema` strips `maxItems` for a
+  shard on purpose, so a merged section can hold more rows than its declared cap. Reading
+  the gate against `ocr_rows` is a strict narrowing (`ocr_rows < 30` forces
+  `expected < 30`), so nothing that was silent before this code can start speaking.
+
+  **Where it meets `extraction_output_truncated`.** Nothing suppresses either, so one
+  section can carry both, and read together without a qualifier they contradict: that code
+  is the one *certain* completeness signal and says the response stopped early, while this
+  one says the row count is equally consistent with a complete list. The "equally
+  consistent" claim is about **this check's own evidence**, and the message says so by
+  name when `metadata["output_truncated"]` is set, deferring to the certain signal.
+
+  ⚠️ **`details["ocr_tables"]` is not size-bounded.** It carries one entry per table found
+  in the section, matching the two sibling row checks, and `ProcessingIssue._bound_details`
+  elides oversized *strings* while leaving list length alone — so the payload grows with the
+  document, at ~24 bytes per table and one issue per width group. That needs on the order of
+  ten thousand tables in one section to approach DynamoDB's 400 KB item ceiling, and a table
+  costs at least five OCR lines, so the measured bound is comfortable rather than absent;
+  `TestTheDetailsPayloadIsBoundedByMeasurement` pins the figures so a change that makes the
+  payload bigger per table shows up as a diff in them.
+
+  `tests/unit/extraction/test_row_count_unverified.py` is the whole surface, and it pins the
+  exact-width match in the direction a future tolerance would have to break deliberately.
 - `extraction_list_truncated` (warning) — a non-empty list came back under its schema
   `minItems`. The one completeness signal with no false positives by construction, because
   the config author declared the floor rather than a heuristic inferring it. ⚠️ **What
