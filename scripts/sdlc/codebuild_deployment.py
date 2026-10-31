@@ -991,8 +991,7 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
     non-adjustable account-wide IAM *mutating* call rate that
     _THROTTLE_RETRY_CONFIG exists to ride out, while iam:GetPolicy does not. For
     the shared probe boundary that makes the steady state after the first run
-    cost zero mutating calls, which is what a concurrent `make probes-all` sweep
-    needs.
+    cost zero mutating calls, which is what concurrently launched probes need.
     """
     boundary_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
 
@@ -8309,7 +8308,7 @@ DEFAULT_PROBE_MAX_CONCURRENCY = 8
 # windows. 120s × up to 5 probes = at most ~8min added to the LAST probe's start
 # — negligible against a ~30-min deploy, and it prevents the burst rather than
 # recovering from it. Only applies when probes actually run (the weekly
-# variant-probe schedule, `make probes-all`, or IDP_RUN_PROBES=true). 0 disables.
+# variant-probe schedule, or IDP_RUN_PROBES=true). 0 disables.
 DEFAULT_PROBE_LAUNCH_STAGGER_SECS = 120
 
 

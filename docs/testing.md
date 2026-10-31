@@ -455,7 +455,7 @@ change merged through a GitHub pull request has not run it.
 ⚠️ **It runs nightly, not per-merge-request, so a green MR pipeline does not mean
 the deploy works.** It was automatic on `develop` and on non-Draft MRs, which put
 62–113 minutes onto every pipeline after a 45-minute check stage. It is now the
-nightly schedule plus a **manual play button**, available on any MR targeting
+nightly schedule, a weekly variant-probe schedule (below), and a **manual play button**, available on any MR targeting
 `develop` and on a `develop` pipeline.
 
 The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and

@@ -779,7 +779,9 @@ def monitor_pipeline_execution(
         return False
 
 
-def monitor_pipeline(pipeline_name, version_id, max_wait=8100, handoff_after=None):
+def monitor_pipeline(
+    pipeline_name, version_id, max_wait=8100, handoff_after=MONITOR_HANDOFF_SECONDS
+):
     """Monitor pipeline using version-based tracking"""
     # First find the execution that matches our version
     execution_id = find_pipeline_execution_by_version(pipeline_name, version_id)
@@ -793,8 +795,6 @@ def monitor_pipeline(pipeline_name, version_id, max_wait=8100, handoff_after=Non
     print(f"Pipeline execution ID written to file: {execution_id}")
         
     # Then monitor that specific execution
-    if handoff_after is None:
-        return monitor_pipeline_execution(pipeline_name, execution_id, max_wait)
     return monitor_pipeline_execution(
         pipeline_name, execution_id, max_wait, handoff_after=handoff_after
     )
