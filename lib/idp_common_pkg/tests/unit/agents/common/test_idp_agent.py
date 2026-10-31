@@ -72,12 +72,13 @@ class TestMonitoringIsReachable:
         # a reference exists. Read off the registry's own table because Strands'
         # HookRegistry exposes callbacks and no list of the providers that added them,
         # which is the same absence that left the tracker unreachable in the first
-        # place.
+        # place. Each entry wraps the bound method in a ``_CallbackEntry`` whose
+        # ``callback`` attribute holds it.
         agent = _agent()
         registered = [
-            callback
-            for callbacks in agent.hooks._registered_callbacks.values()
-            for callback in callbacks
+            entry.callback
+            for entries in agent.hooks._registered_callbacks.values()
+            for entry in entries
         ]
         assert any(
             getattr(callback, "__self__", None) is agent.message_tracker

@@ -157,7 +157,7 @@ def test_the_assembled_request_stays_within_bedrocks_cache_block_limit():
         # keeps the failure in the right place without an unreachable ``yield``.
         counts.append(
             _count_cache_points(
-                self.format_request(agent.messages, tool_specs, "system")
+                self.format_request(agent.messages, tool_specs, [{"text": "system"}])
             )
         )
         raise _Throttled()
