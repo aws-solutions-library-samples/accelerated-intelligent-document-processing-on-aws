@@ -28,6 +28,11 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
         confidence
         confidenceThreshold
       }
+      MissingRequiredFields {
+        attributeName
+        confidence
+        confidenceThreshold
+      }
       ProcessingIssues {
         stage
         severity

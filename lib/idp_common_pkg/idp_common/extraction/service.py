@@ -7444,8 +7444,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # the same non-indexed finding can arrive several times. Idempotent;
         # imported lazily like the other batching imports in this file.
         from idp_common.assessment.batching import dedupe_alerts
+        from idp_common.assessment.presence import exclude_absent_value_alerts
 
-        section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
+        # An absent value raises no confidence alert (#1527) — the same filter the
+        # standalone Assessment step applies where it stores its alerts. Its score
+        # stays in explainability_info; a required absent field is listed in
+        # missing_required_fields by _save_results instead.
+        section.confidence_threshold_alerts = dedupe_alerts(
+            exclude_absent_value_alerts(
+                merged_assessment_alerts, grounded, extracted_fields
+            )
+        )
         output_metadata["assessment_integrated_in_extraction"] = True
         # Counts the list that was actually STORED. Reading the pre-dedupe list
         # here let the recorded count contradict the data next to it — a section
@@ -8048,6 +8057,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 geometry_available=self._ocr_geometry_available,
             )
             section_issues = ladder_issues + audit_issues
+
+        # Required fields this section's extraction left absent (#1527), for
+        # every confidence mode — including none, since it is a property of the
+        # values and the class schema. With integrated confidence the entries
+        # carry the field's score; with `separate` the Assessment step rebuilds
+        # this list from the same values once it has scores.
+        from idp_common.assessment.presence import collect_missing_required_fields
+
+        section.missing_required_fields = collect_missing_required_fields(
+            fields_for_output,
+            self._class_schema,
+            self._grounded_assessment if merged_assessment else None,
+        )
 
         # Extraction-completeness issue (BOTH modes): flag empty / suspiciously
         # sparse extractions — e.g. a large list schema field that came back

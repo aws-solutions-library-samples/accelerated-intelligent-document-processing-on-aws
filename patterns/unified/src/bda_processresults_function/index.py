@@ -1137,6 +1137,8 @@ def create_confidence_threshold_alerts(
     Returns:
         List of confidence threshold alert dictionaries matching AppSync service expectations
     """
+    from idp_common.assessment.presence import has_extracted_value
+
     alerts = []
 
     # Process key-value details from all pages
@@ -1144,6 +1146,12 @@ def create_confidence_threshold_alerts(
         "key_value_details", {}
     ).items():
         for kv_entry in kv_details:
+            # A field BDA found no value for raises no confidence alert — the
+            # same rule pipeline mode applies (#1527). Its score stays in the
+            # explainability data, and a required absent field is counted in the
+            # section's missing_required_fields instead.
+            if not has_extracted_value(kv_entry.get("value")):
+                continue
             # A null, non-numeric or non-finite (NaN, infinite) confidence is
             # an unscored field, read as 0.0 so it alerts and goes to review,
             # which is the fail-safe direction. A missing key already reads as 0.0
@@ -1281,6 +1289,19 @@ def process_segments(
             confidence_threshold_alerts = create_confidence_threshold_alerts(
                 pagespecific_details, confidence_threshold
             )
+            # Required fields BDA left absent (#1527), against the same class
+            # schema the thresholds were resolved from.
+            from idp_common.assessment.presence import (
+                collect_missing_required_fields,
+            )
+
+            missing_required_fields = collect_missing_required_fields(
+                custom_output.get("inference_result"),
+                segment_class_schema,
+                explainability_data[0]
+                if explainability_data and isinstance(explainability_data[0], dict)
+                else None,
+            )
 
             # A MATCH segment whose custom output carries no usable
             # ``matched_blueprint`` (absent, null, not an object, or missing
@@ -1318,6 +1339,7 @@ def process_segments(
                 # Check if this section's pages match the current segment's pages
                 if set(section.page_ids) == set(page_ids_str):
                     section.confidence_threshold_alerts = confidence_threshold_alerts
+                    section.missing_required_fields = missing_required_fields
                     # BDA's matched-blueprint confidence IS the classification
                     # confidence in this mode: the matched blueprint is what
                     # determines the section's class. It was already read below
@@ -1852,6 +1874,9 @@ def handler(event, context):
         for section in document.sections
     )
     logger.info(f"Total confidence alert count: {document.confidence_alert_count}")
+    document.missing_required_field_count = sum(
+        len(section.missing_required_fields or []) for section in document.sections
+    )
 
     # Update document (includes Review Status)
     document_service.update_document(document)

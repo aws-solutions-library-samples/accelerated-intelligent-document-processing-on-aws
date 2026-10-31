@@ -989,8 +989,11 @@ def handler(event, context):
                         existing_section.extraction_result_uri = None
                         existing_section.attributes = None
 
-                    # Clear confidence threshold alerts for modified sections
+                    # Clear confidence threshold alerts for modified sections,
+                    # and the missing-required-field list derived from the same
+                    # extraction (#1527); re-extraction rebuilds both.
                     existing_section.confidence_threshold_alerts = []
+                    existing_section.missing_required_fields = []
                     logger.info(
                         f"Cleared confidence alerts for modified section: {section_id}"
                     )

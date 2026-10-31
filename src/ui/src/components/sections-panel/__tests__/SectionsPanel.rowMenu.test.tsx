@@ -127,12 +127,13 @@ describe('the Document Sections table', () => {
 
   it('puts Actions last at 100px, the data columns sharing the rest of the width evenly', () => {
     renderPanel();
-    const share = css('calc((100% - 100px) / 5)');
+    const share = css('calc((100% - 100px) / 6)');
     expect(columnWidths()).toEqual([
       ['Section ID', share],
       ['Class/Type', share],
       ['Page IDs', share],
       ['Low Confidence Fields', share],
+      ['Missing Required Fields', share],
       ['Status', share],
       ['Actions', '100px'],
     ]);
@@ -141,6 +142,7 @@ describe('the Document Sections table', () => {
       'class',
       'pageIds',
       'confidenceAlerts',
+      'missingRequiredFields',
       'status',
       'actions',
     ]);

@@ -23,6 +23,11 @@ subscription OnUpdateDocument {
         confidence
         confidenceThreshold
       }
+      MissingRequiredFields {
+        attributeName
+        confidence
+        confidenceThreshold
+      }
       ProcessingIssues {
         stage
         severity

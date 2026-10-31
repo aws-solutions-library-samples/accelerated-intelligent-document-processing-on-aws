@@ -413,6 +413,7 @@ class RerunProcessor:
             section.extraction_result_uri = None
             section.attributes = None
             section.confidence_threshold_alerts = []
+            section.missing_required_fields = []
             logger.debug(f"Cleared extraction data for section {section.section_id}")
 
         # Update status

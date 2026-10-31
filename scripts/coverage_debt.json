@@ -91,6 +91,7 @@
         "idp_common/assessment/degradation.py": 96.0,
         "idp_common/assessment/models.py": 100.0,
         "idp_common/assessment/ocr_grounding.py": 89.55,
+        "idp_common/assessment/presence.py": 95.41,
         "idp_common/assessment/service.py": 81.65,
         "idp_common/assessment/threshold_resolver.py": 95.6,
         "idp_common/bda/__init__.py": 100.0,

@@ -160,17 +160,60 @@ const findExplainabilityData = (section: DocumentSection | null): Record<string,
   return null;
 };
 
+/** Marks "no extracted values were supplied", as distinct from an absent value. */
+export const VALUES_UNKNOWN: unique symbol = Symbol('values-unknown');
+type ExtractedValues = unknown | typeof VALUES_UNKNOWN;
+
+/**
+ * True when an extracted value holds something extraction actually found — the
+ * backend's `has_extracted_value` (#1527): null, a blank string and an empty
+ * container are absent, and so is a container of nothing but those.
+ */
+export const hasExtractedValue = (value: unknown): boolean => {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.some(hasExtractedValue);
+  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).some(hasExtractedValue);
+  return true;
+};
+
+/**
+ * The value under `key`, mirroring the backend walk: a populated scalar under
+ * an assessment node with children is a value the model split into fragments,
+ * so each fragment inherits it (and counts as present).
+ */
+const childValue = (values: ExtractedValues, key: string | number): ExtractedValues => {
+  if (values === VALUES_UNKNOWN) return VALUES_UNKNOWN;
+  if (typeof key === 'number') {
+    if (Array.isArray(values)) return values[key];
+  } else if (values && typeof values === 'object' && !Array.isArray(values)) {
+    return (values as Record<string, unknown>)[key];
+  }
+  if ((values && typeof values === 'object') || !hasExtractedValue(values)) return undefined;
+  return values;
+};
+
+/** The section's extracted values (`inference_result`), when it carries them. */
+const findExtractedValues = (section: DocumentSection | null): ExtractedValues => {
+  const result = section?.Output?.inference_result;
+  return result && typeof result === 'object' ? result : VALUES_UNKNOWN;
+};
+
 /**
  * Get fields that are below the HITL confidence threshold from explainability data
  * @param {Object} explainabilityData - Explainability data containing confidence scores
  * @param {number} hitlThreshold - HITL confidence threshold (0.0-1.0)
  * @param {string} path - Current path in the data structure
+ * @param values - The extracted values at the same position. A field whose value
+ *   is absent is not an alert (#1527), as on the backend; when the values are
+ *   not known (`VALUES_UNKNOWN`, the default) nothing is excluded.
  * @returns {Array} Array of field objects with confidence below threshold
  */
 export const getFieldsBelowThreshold = (
   explainabilityData: Record<string, unknown> | null,
   hitlThreshold: number,
   path: string = '',
+  values: ExtractedValues = VALUES_UNKNOWN,
 ): FieldBelowThreshold[] => {
   const fieldsBelow: FieldBelowThreshold[] = [];
 
@@ -181,11 +224,13 @@ export const getFieldsBelowThreshold = (
   Object.entries(explainabilityData).forEach(([fieldName, fieldData]) => {
     if (fieldData && typeof fieldData === 'object') {
       const { confidence } = fieldData as ConfidenceFieldData;
+      const fieldValues = childValue(values, fieldName);
 
       if (typeof confidence === 'number') {
         const fieldPath = path ? `${path}.${fieldName}` : fieldName;
+        const absent = fieldValues !== VALUES_UNKNOWN && !hasExtractedValue(fieldValues);
 
-        if (confidence < hitlThreshold) {
+        if (confidence < hitlThreshold && !absent) {
           fieldsBelow.push({
             fieldName,
             fieldPath,
@@ -200,14 +245,14 @@ export const getFieldsBelowThreshold = (
         fieldData.forEach((item, index) => {
           if (item && typeof item === 'object') {
             const nestedPath = path ? `${path}.${fieldName}[${index}]` : `${fieldName}[${index}]`;
-            const nestedFields = getFieldsBelowThreshold(item, hitlThreshold, nestedPath);
+            const nestedFields = getFieldsBelowThreshold(item, hitlThreshold, nestedPath, childValue(fieldValues, index));
             fieldsBelow.push(...nestedFields);
           }
         });
       } else if (typeof fieldData === 'object' && fieldData !== null && !('confidence' in fieldData)) {
         // This is a nested object without confidence, recurse into it
         const nestedPath = path ? `${path}.${fieldName}` : fieldName;
-        const nestedFields = getFieldsBelowThreshold(fieldData as Record<string, unknown>, hitlThreshold, nestedPath);
+        const nestedFields = getFieldsBelowThreshold(fieldData as Record<string, unknown>, hitlThreshold, nestedPath, fieldValues);
         fieldsBelow.push(...nestedFields);
       }
     }
@@ -235,7 +280,7 @@ export const getDocumentConfidenceAlertCount = (sections: DocumentSection[] | nu
       const explainabilityData = findExplainabilityData(section);
 
       if (explainabilityData) {
-        const fieldsBelow = getFieldsBelowThreshold(explainabilityData, hitlThreshold);
+        const fieldsBelow = getFieldsBelowThreshold(explainabilityData, hitlThreshold, '', findExtractedValues(section));
         return total + fieldsBelow.length;
       }
 
@@ -274,7 +319,7 @@ export const getSectionConfidenceAlertCount = (section: DocumentSection | null, 
     const explainabilityData = findExplainabilityData(section);
 
     if (explainabilityData) {
-      const fieldsBelow = getFieldsBelowThreshold(explainabilityData, hitlThreshold);
+      const fieldsBelow = getFieldsBelowThreshold(explainabilityData, hitlThreshold, '', findExtractedValues(section));
       return fieldsBelow.length;
     }
   }
@@ -306,7 +351,7 @@ export const getSectionConfidenceAlerts = (
     const explainabilityData = findExplainabilityData(section);
 
     if (explainabilityData) {
-      const fieldsBelow = getFieldsBelowThreshold(explainabilityData, hitlThreshold);
+      const fieldsBelow = getFieldsBelowThreshold(explainabilityData, hitlThreshold, '', findExtractedValues(section));
       return fieldsBelow;
     }
   }

@@ -106,6 +106,10 @@ type Document implements DynamoDbBase @aws_cognito_user_pools @aws_iam {
   HITLReviewedByEmail: String
   HITLReviewHistory: AWSJSON
   ConfidenceAlertCount: Int
+  # Required fields (JSON Schema `required` in each section's class schema) that
+  # extraction left absent, summed over sections. Counted separately from
+  # ConfidenceAlertCount: an absent field raises no confidence alert.
+  MissingRequiredFieldCount: Int
   ProcessingIssueCount: Int
   ConfigVersion: String
   # Revision of that profile the document was processed under.
@@ -174,6 +178,10 @@ type Section @aws_cognito_user_pools @aws_iam {
   # for one. Unrelated to ConfidenceThresholdAlerts below, which are per-field.
   Confidence: Float
   ConfidenceThresholdAlerts: [ConfidenceThresholdAlert]
+  # Required fields of this section's class that extraction left absent, in the
+  # same shape as a confidence alert (confidence and threshold are null when the
+  # field carries no score). Informational: nothing routes on it.
+  MissingRequiredFields: [ConfidenceThresholdAlert]
   # Structured self-healing / quality issues detected for this section
   # (assessment incomplete, recovered-with-retries, geometry incomplete, …).
   # Drives the section Status icon + hover details in the UI.

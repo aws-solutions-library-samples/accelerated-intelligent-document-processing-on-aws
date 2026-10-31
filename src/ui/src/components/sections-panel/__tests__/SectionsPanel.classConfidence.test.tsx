@@ -61,7 +61,7 @@ describe('Document Sections — class confidence is not shown', () => {
     renderPanel();
     // The regression this guards is width, so it counts columns rather than
     // inspecting styles: Section ID, Class/Type, Page IDs, Low Confidence Fields,
-    // Status, Actions.
-    expect(headers().filter((h) => h.length > 0)).toHaveLength(6);
+    // Missing Required Fields, Status, Actions.
+    expect(headers().filter((h) => h.length > 0)).toHaveLength(7);
   });
 });
