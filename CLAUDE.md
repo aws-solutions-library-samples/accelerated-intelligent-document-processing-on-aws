@@ -439,8 +439,8 @@ non-Draft MRs, and it put 62–113 minutes onto every pipeline *after* a 45-minu
 check stage (111 min for an MR, 160 for a `develop` push). The deploy path is now
 scheduled — the nightly runs the primary suite and, while it is active in the GitLab
 project, a separate weekly schedule runs the deployment-variant probes, and two more
-weekly schedules run the primary suite in `eu-central-1` and `ca-central-1` — with a
-play button on any MR targeting `develop`.
+weekly schedules, while active, run the primary suite in `eu-central-1` and
+`ca-central-1` — with a play button on any MR targeting `develop`.
 **Click that button before merging a change on the deploy path** — `template.yaml`,
 `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
 `feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it

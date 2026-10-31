@@ -546,6 +546,17 @@ def test_a_config_is_swapped_once_per_region(cbd):
     assert first == again != str(NUVEEN)
 
 
+def test_a_rewritten_config_is_swapped_again(cbd, tmp_path):
+    """The hook configs are rewritten between uploads under the same path."""
+    config = tmp_path / "hook.yaml"
+    config.write_text("extraction:\n  model: us.amazon.nova-pro-v1:0\n")
+    first = cbd.regional_config_file(str(config), {"AWS_REGION": "eu-central-1"})
+    config.write_text("extraction:\n  model: us.amazon.nova-lite-v1:0\n")
+    second = cbd.regional_config_file(str(config), {"AWS_REGION": "eu-central-1"})
+    assert first != second
+    assert "eu.amazon.nova-lite-v1:0" in Path(second).read_text()
+
+
 def test_a_us_upload_is_the_file_as_written(cbd):
     assert cbd.regional_config_file(str(NUVEEN), {"AWS_REGION": "us-east-1"}) == str(
         NUVEEN

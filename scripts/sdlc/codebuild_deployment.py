@@ -5,6 +5,7 @@ CodeBuild Deployment Script
 Handles IDP stack deployment and testing in AWS CodeBuild environment.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -984,7 +985,7 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     as written and fails at its first call, and swap_model_ids rewrites ids held
     as mapping values, not list items. test_weekly_region_runs.py asserts no
     config the suite uploads names an unavailable id after the swap. One swapped
-    copy is written per config and region, and reused.
+    copy is written per config contents and region, and reused.
     """
     import yaml
 
@@ -994,11 +995,15 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     )
     if region_type is None:
         return config_path
-    cached = _REGIONAL_CONFIGS.get((config_path, region_type))
+    with open(config_path, "rb") as f:
+        raw = f.read()
+    # Keyed on the contents, not the path: the harness rewrites some of the
+    # files it uploads (the hook configs in /tmp) between uploads.
+    key = (hashlib.sha256(raw).hexdigest(), region_type)
+    cached = _REGIONAL_CONFIGS.get(key)
     if cached is not None and os.path.exists(cached):
         return cached
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = yaml.safe_load(raw)
     swapped = _model_swapper()(config, region_type)
     if swapped == config:
         return config_path
@@ -1010,11 +1015,12 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         yaml.safe_dump(swapped, f, sort_keys=False)
     print(f"🌍 Swapped model ids in {config_path} for {region} → {out_path}")
-    _REGIONAL_CONFIGS[(config_path, region_type)] = out_path
+    _REGIONAL_CONFIGS[key] = out_path
     return out_path
 
 
-#: (config path, region type) -> the swapped copy regional_config_file() wrote.
+#: (sha256 of the config, region type) -> the swapped copy regional_config_file()
+#: wrote.
 _REGIONAL_CONFIGS: dict[tuple[str, str], str] = {}
 
 
