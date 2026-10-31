@@ -15,6 +15,14 @@ Parameters:
     Description: 'Prefix for the S3 bucket name'
     Default: genaiic-sdlc-sourcecode
 
+  PipelineTriggerRoleName:
+    Type: String
+    Default: genaiic-sdlc-pipeline-trigger-role
+    Description: >-
+      Name of the role EventBridge uses to start the pipeline. IAM names are
+      global, so a copy of this stack in a second region needs its own, for
+      example genaiic-sdlc-pipeline-trigger-role-eu-central-1. The default is the
+      name the us-east-1 stack already carries, so that stack keeps its role.
   FailureAgentRoleName:
     Type: String
     Description: 'Name of the read-only role the CI failure-analysis agent assumes. Created by scripts/sdlc/cfn/sdlc-iam-role.yml as <BuilderRoleName>-failure-agent; must match that stack.'
@@ -858,7 +866,11 @@ Resources:
     Properties:
       Name: app-sdlc
       ServiceRole: !If [CreateCodeBuildRole, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
-      TimeoutInMinutes: 120
+      # 180, not 120: the weekly variant-probe run joins the probes after the
+      # primary suite, and PROBE_JOIN_DEADLINE_SECONDS in codebuild_deployment.py
+      # (150 min) sits 30 minutes below this so its final summary is written. The
+      # nightly finishes well inside either value; this is a backstop, not a budget.
+      TimeoutInMinutes: 180
       VpcConfig:
         !If
           - DeployInVPC
@@ -943,6 +955,20 @@ Resources:
                 - npm install -g npm@11 || echo "npm upgrade skipped, using bundled $(npm --version)"
                 - pip install uv || { echo "uv installation failed"; exit 1; }
                 - export IDP_ADMIN_EMAIL=$(aws s3api head-object --bucket ${SOURCE_BUCKET} --key deploy/code.zip --query 'Metadata."gitlab-user-email"' --output text 2>/dev/null || echo "")
+                # Deployment-variant probes, carried on the same S3 metadata channel
+                # as the admin email above and set only by the WEEKLY variant-probe
+                # schedule (see variant_probes_requested in
+                # scripts/sdlc/integration_test_deployment.py for the rule, and why
+                # it is not set on this project's environment). Note the
+                # `None` normalisation: `--output text` prints the literal string
+                # `None` for an absent key rather than an empty string, and `|| echo`
+                # cannot catch it because the command SUCCEEDED -- so a bare read
+                # would hand codebuild_deployment.py the string "None".
+                - export IDP_RUN_PROBES=$(aws s3api head-object --bucket ${SOURCE_BUCKET} --key deploy/code.zip --query 'Metadata."idp-run-probes"' --output text 2>/dev/null || echo "false")
+                - '[ "$IDP_RUN_PROBES" = "true" ] || export IDP_RUN_PROBES=false'
+                # Quoted: an unquoted `- echo "...: ..."` is a YAML mapping, and
+                # CodeBuild then rejects the whole buildspec at DOWNLOAD_SOURCE.
+                - 'echo "Deployment-variant probes: $IDP_RUN_PROBES"'
                 - make setup || { echo "IDP Common and IDP CLI installation failed"; exit 1; }
                 - pip install rich scikit-learn || echo "Additional package installation failed, using fallbacks"
                 - export PATH="$PWD/.venv/bin:$PATH"
@@ -1179,7 +1205,7 @@ Resources:
   PipelineTriggerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: genaiic-sdlc-pipeline-trigger-role
+      RoleName: !Ref PipelineTriggerRoleName
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
