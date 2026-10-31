@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **The deployment-variant probes run on their own weekly scheduled pipeline.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. ⚠️ **Action (CI account only):** update the `genaiic-sdlc-codepipeline` stack, which holds the buildspec that reads the flag, then create the weekly schedule. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
+
 ## [0.6.13]
 
 ### Added
@@ -46,8 +50,6 @@ SPDX-License-Identifier: MIT-0
 - **One vocabulary for documents, sections and records.** A *document* is what you submit, *sections* are what classification splits it into, and *records* are same-class items inside a section. Labels change with it: *Advanced — known document shape*, *Multi-instance Section Detection*, *Records per section* and *One section*. No configuration key, stored value or prompt changed.
 
 - **Documentation corrected and extended.** Pages that described retired architecture (Pattern 1/2/3, SageMaker UDOP, GraphQL subscriptions) or settings that are not validated now say what actually happens, the classification pages explain how to choose a strategy, granularity and modality, and the guides carry current screenshots. Two copyable examples that silently did nothing are fixed: a `document_classes:` key that does not exist, and an OCR `resize_config:` level that is dropped on load. `QUERIES` is removed from the shipped OCR feature list, where it would have failed every document. **Action:** re-check any configuration copied from those examples.
-
-- **The deployment-variant probes run on their own weekly scheduled pipeline.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. ⚠️ **Action (CI account only):** update the `genaiic-sdlc-codepipeline` stack, which holds the buildspec that reads the flag, then create the weekly schedule. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
 
 ### Fixed
 
