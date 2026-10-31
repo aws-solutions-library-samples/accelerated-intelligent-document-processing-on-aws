@@ -58,6 +58,7 @@ with no overrides, i.e. on the committed `default_cell`.
 |------|------|
 | `v<RELEASE>/corefast/` | The release-vs-release A/B grid backing `docs/benchmarking/releases/v<RELEASE>.md`. **One per release**, never overwritten. |
 | `baseline.json` | The PREV release's `corefast` grid, which `aggregate.py --compare` defaults to. See below: it is **not** a byte-identical copy of the committed `v<PREV>/corefast/summary.json`, and must not be assumed to be one. |
+| `v<PREV>-rvprev/corefast/` | The PREV side of a release A/B, re-run on the same stack before the in-place upgrade (`v0.6.10-rvprev/` onwards). It is the `--baseline` the release page compares against, so it is kept for as long as that page is: deleting it leaves a published comparison citing a path that no longer exists. One per release; it is the like-for-like reference, not a variant. |
 | `v0.6.8/enforcement-kvform/` | The **only** retained evidence that `typed_accuracy` is ever measured. See below. |
 
 ### One kept slice is not a release grid — `v0.6.8/enforcement-kvform/`
@@ -79,13 +80,13 @@ to run a typed-truth document into a release grid, after which this row can go.
 
 It is promoted by copying a `corefast/summary.json`, but the file it is copied from is
 not necessarily the one committed under `v<PREV>/corefast/`, and it diverges afterwards.
-Today's `baseline.json` is a v0.6.8 `corefast` grid scored on stack `IDPUpg067to068`,
-while `v0.6.8/corefast/summary.json` is the same suite over the same three documents
-scored on `IDPRel068` — 171 rows and 19 cells on both sides, matching on every
-`(cell, doc, repeat)` key, and different data. It has also been `--augment`ed with the
-#935 calibration statistic, which the release directory's copy has not been, so it is
-larger as well: 533 KB before the backfill, 720 KB after, against 523 KB for the
-release-directory copy.
+Today's `baseline.json` is a copy of `v0.6.13/corefast/summary.json` (stack
+`IDPUpg0612to0613`, `meta.scored_at` `2026-10-31T05:19:55Z`), and it carries the
+calibration and confidence-coverage metrics natively, so it needs no backfill. That has not
+always been so: the v0.6.8 grid it replaced was scored on a different stack from the
+`v0.6.8/corefast/` copy, with matching keys and different data, and had been `--augment`ed
+with the #935 calibration statistic the release directory's copy lacked. The two can
+diverge again whenever either is re-scored or augmented on its own.
 
 Two consequences. **Verify the promotion rather than assuming it** — compare `meta.stack`
 and `meta.scored_at`, which identify the grid, instead of comparing file sizes or
@@ -136,6 +137,7 @@ later, and the pruning policy above then removes the option entirely.
 1. Confirm the new data is at `results/v<VERSION>/corefast/`.
 2. Promote: `cp results/v<VERSION>/corefast/summary.json results/baseline.json`.
 3. Commit the new release dir + `baseline.json` + the audit-trail page and index row.
-4. Do **not** add a sibling directory for a re-run or a variant. Either replace the
+4. Do **not** add a sibling directory for a re-run or a variant (the `v<PREV>-rvprev/corefast/`
+   reference side above is the one exception). Either replace the
    set in place (if the first attempt was invalid) or write the finding into the doc
    page and let the data go.

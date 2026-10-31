@@ -1816,7 +1816,7 @@ class DocumentDynamoDBService:
     def update_document_section(
         self,
         document_id: str,
-        section_index: int,
+        section_index: Optional[int],
         section: Section,
     ) -> Dict[str, Any]:
         """
@@ -1827,13 +1827,30 @@ class DocumentDynamoDBService:
         ~100KB to ~5KB per update and avoids read-modify-write race conditions
         during parallel Map operations.
 
+        ``section_index`` is the section's position in the **full** document the
+        caller's map iterates, and it is written unconditionally, exactly as given:
+        that list is the authority during the map, because a postClassification
+        hook may have added, removed or reordered sections that the stored item
+        does not yet reflect.
+
+        ``section_index=None`` is for a caller that cannot know that position — the
+        assessment step, whose incoming document is the extraction step's
+        single-section document, so every section sits at index 0 in it (#1690).
+        The stored ``Sections`` are then read and the section is written at the
+        slot carrying its ``Id`` (see ``_stored_section_index`` for which copy),
+        conditional on that slot still carrying it. If none does, or the slot keeps
+        changing under sibling writes, nothing is written and ``{}`` is returned
+        rather than overwriting another section.
+
         Args:
             document_id: The ObjectKey of the document to update
-            section_index: The index position of the section in the Sections array
+            section_index: The section's position in the full document, or
+                ``None`` to place it by ``Id`` in the stored ``Sections``
             section: The Section object with updated data
 
         Returns:
-            Dictionary with the updated document attributes
+            Dictionary with the updated document attributes, or ``{}`` when
+            ``section_index`` is ``None`` and no stored slot carries the ``Id``
 
         Raises:
             DynamoDBError: If the DynamoDB operation fails
@@ -1911,6 +1928,9 @@ class DocumentDynamoDBService:
             if section.exclusion_reason:
                 section_data["ExclusionReason"] = section.exclusion_reason
 
+        if section_index is None:
+            return self._write_section_by_id(key, document_id, section_data)
+
         # Use SET Sections[index] = :value for atomic section update
         update_expression = f"SET #Sections[{section_index}] = :section"
         expression_names = {"#Sections": "Sections"}
@@ -1928,6 +1948,91 @@ class DocumentDynamoDBService:
             f"Updated section {section_index} ({section.section_id}) for document: {document_id}"
         )
         return response.get("Attributes", {})
+
+    def _write_section_by_id(
+        self, key: Dict[str, Any], document_id: str, section_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Write ``section_data`` at the stored slot carrying its ``Id``, or nowhere.
+
+        The write is conditional on the chosen slot still carrying the ``Id``: a
+        sibling Map iteration may write that slot between the read and this write
+        (after a hook reshaped the list), and an unconditional write would then
+        overwrite another section. A refused write is resolved once more from a
+        fresh read; a second refusal gives up rather than guess.
+        """
+        section_id = section_data["Id"]
+        for _attempt in range(2):
+            slot = self._stored_section_index(
+                key, section_id, section_data.get("OutputJSONUri") or ""
+            )
+            if slot is None:
+                logger.warning(
+                    f"Not writing section {section_id} of {document_id}: no stored "
+                    "section carries that Id, and the caller supplied no position, "
+                    "so any slot chosen would be another section's"
+                )
+                return {}
+            try:
+                response = self.client.update_item(
+                    key=key,
+                    update_expression=f"SET #Sections[{slot}] = :section",
+                    expression_attribute_names={"#Sections": "Sections", "#Id": "Id"},
+                    expression_attribute_values={
+                        ":section": section_data,
+                        ":section_id": section_id,
+                    },
+                    return_values="ALL_NEW",
+                    condition_expression=f"#Sections[{slot}].#Id = :section_id",
+                )
+            except DynamoDBError as e:
+                if e.error_code != CONDITIONAL_CHECK_FAILED:
+                    raise
+                logger.info(
+                    f"Sections[{slot}] of {document_id} changed before section "
+                    f"{section_id} was written there; resolving its slot again"
+                )
+                continue
+            logger.info(
+                f"Updated section {slot} ({section_id}) for document: {document_id}"
+            )
+            return response.get("Attributes", {})
+        logger.warning(
+            f"Not writing section {section_id} of {document_id}: its slot kept "
+            "changing under concurrent writes"
+        )
+        return {}
+
+    def _stored_section_index(
+        self, key: Dict[str, Any], section_id: str, output_uri: str
+    ) -> Optional[int]:
+        """The stored slot for ``section_id``: the copy extraction wrote, if any.
+
+        After a postClassification hook reshapes the section list, the stored list
+        can hold the same ``Id`` twice for a while: classification's stale copy and
+        the one extraction wrote at the section's map index. Neither position rule
+        picks the fresh one in every reshape (first is wrong after an insert, last
+        after a removal), but the extraction result URI does, because the stale
+        copy predates the extraction. On a reprocess both copies may carry the
+        previous run's URI, and the first Id match is taken.
+        """
+        item = self.client.get_item(
+            key,
+            consistent_read=True,
+            projection_expression="#Sections",
+            expression_attribute_names={"#Sections": "Sections"},
+        )
+        matches = [
+            (index, stored)
+            for index, stored in enumerate((item or {}).get("Sections") or [])
+            if isinstance(stored, Mapping) and stored.get("Id") == section_id
+        ]
+        if not matches:
+            return None
+        if output_uri:
+            for index, stored in matches:
+                if stored.get("OutputJSONUri") == output_uri:
+                    return index
+        return matches[0][0]
 
     # ------------------------------------------------------------------ #
     # Document runs (versions)
