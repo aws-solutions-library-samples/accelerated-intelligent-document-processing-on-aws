@@ -10,7 +10,8 @@ pipeline burst the account-wide AWS control planes (CloudWatch Logs
 create-consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
 limit) and caused flaky failures unrelated to the code under test. In CI the
 deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API)
-run only on the **weekly variant-probe schedule**, never on the nightly;
+run only on the **weekly variant-probe schedule** (a GitLab project setting; they
+run only while it is active), never on the nightly;
 `stacktest-rbac` is `make api-test`, which every integration run already executes
 as a step of the primary suite, and the other `stacktest-*` targets run only by
 hand; see

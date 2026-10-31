@@ -9600,7 +9600,9 @@ def main():
                     "variant-probe run"
                 )
             probes_executor = ThreadPoolExecutor(max_workers=1)
-            shortfall = probe_run_timeout_shortfall()
+            # Only the scheduled probe run is held to the probe-run timeout; a run
+            # enabled by the legacy alias keeps its old behaviour.
+            shortfall = probe_run_timeout_shortfall() if variant_probe_run() else None
             if shortfall:
                 # Reported through the join like any probe failure, so the run is
                 # red and the summary says why, without launching probe stacks

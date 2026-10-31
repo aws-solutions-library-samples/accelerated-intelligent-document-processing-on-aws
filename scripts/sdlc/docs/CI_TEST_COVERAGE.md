@@ -1760,8 +1760,9 @@ high enough to run the whole default table in parallel.
 
 ### Gating & implementation
 
-**Gating**: the probes run by default; set `IDP_TEST_APIGW_HOSTING=false` to
-skip them all (the env name is kept for backward compatibility).
+**Gating**: the probes run only on the weekly variant-probe schedule, which carries
+`IDP_RUN_PROBES=true`; the variable counts only on a scheduled pipeline.
+`IDP_TEST_APIGW_HOSTING=true` is still honoured as a legacy alias that turns them on.
 **Implementation** in `scripts/sdlc/codebuild_deployment.py`: `PROBE_VARIANTS`
 (the table), `deploy_and_test_probe()` (one probe's lifecycle, incl. VPC-param
 injection + skip), `run_variant_probes()` (the concurrent launcher),
