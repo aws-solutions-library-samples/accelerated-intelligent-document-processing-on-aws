@@ -225,6 +225,74 @@ def test_main_labels_the_summary_and_the_failure_email():
     assert "VARIANT_PROBE_RUN_LABEL" in email and "variant_probe_run()" in email
 
 
+def _main_function() -> ast.FunctionDef:
+    tree = ast.parse(
+        (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    return next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+
+
+def _calls(node: ast.AST, name: str) -> list[ast.Call]:
+    return [
+        call
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == name
+    ]
+
+
+def test_main_launches_the_probes_only_past_the_timeout_check():
+    """Read from source: the guard is consulted, and the probes sit behind it."""
+    launch = next(
+        node
+        for node in ast.walk(_main_function())
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "probes_enabled"
+    )
+    assert _calls(launch, "probe_run_timeout_shortfall"), (
+        "main() launches the probes without consulting probe_run_timeout_shortfall()"
+    )
+    guard = next(
+        node
+        for node in ast.walk(launch)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "shortfall"
+    )
+    submitted = {
+        ast.unparse(call.args[0])
+        for call in ast.walk(guard)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "submit"
+    }
+    in_else = {
+        ast.unparse(call.args[0])
+        for branch in guard.orelse
+        for call in ast.walk(branch)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "submit"
+    }
+    assert "run_variant_probes" in in_else, submitted
+
+
+def test_main_joins_the_probes_against_the_deadline():
+    """Read from source: the join keeps finished probes and counts from main()."""
+    (join,) = _calls(_main_function(), "join_variant_probes")
+    keywords = {kw.arg: ast.unparse(kw.value) for kw in join.keywords}
+    assert keywords.get("started") == "main_started", keywords
+    assert keywords.get("finished") == "probes_finished", keywords
+
+
 # ---------------------------------------------------------------------------
 # Slack
 # ---------------------------------------------------------------------------

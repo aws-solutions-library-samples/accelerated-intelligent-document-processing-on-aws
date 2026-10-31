@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
-- **The deployment-variant probes run on their own weekly scheduled pipeline.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. ⚠️ **Action (CI account only):** update the `genaiic-sdlc-codepipeline` stack, which holds the buildspec that reads the flag, then create the weekly schedule. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
+- **The deployment-variant probes run on their own weekly scheduled pipeline.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. ⚠️ **Action (CI account only):** update the `genaiic-sdlc-codepipeline` stack, which holds the buildspec that reads the flag, then create the weekly schedule. Every probe run, including one turned on by the legacy `IDP_TEST_APIGW_HOSTING=true`, now needs a 180-minute CodeBuild project and goes red on a shorter one rather than running. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
 
 ## [0.6.13]
 
