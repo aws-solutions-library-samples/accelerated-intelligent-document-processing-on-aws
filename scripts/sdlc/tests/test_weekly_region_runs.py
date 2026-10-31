@@ -220,6 +220,35 @@ def test_after_script_selects_the_same_region_before_its_first_aws_call(config):
 
 
 @pytest.mark.parametrize(
+    ("helper", "expected"),
+    [
+        ("exit 2", "us-east-1"),
+        ("echo 'export AWS_DEFAULT_REGION=ca-central-1'", "ca-central-1"),
+    ],
+)
+def test_after_script_exports_the_region_its_reads_use(config, helper, expected):
+    """A failed helper falls back to us-east-1 for the reads, not just the echo."""
+    step = next(
+        item
+        for item in config["integration_tests"]["after_script"]
+        if "--region-env" in item
+    )
+    script = step.replace(
+        "python3 scripts/sdlc/integration_test_deployment.py --region-env",
+        f'sh -c "{helper}"',
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
+    out = subprocess.run(
+        ["bash", "-c", script + '\nprintf "%s %s" "$AWS_DEFAULT_REGION" "$AWS_REGION"'],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    ).stdout
+    assert out.splitlines()[-1] == f"{expected} {expected}"
+
+
+@pytest.mark.parametrize(
     ("job", "variable"),
     [
         ("integration_tests", "IDP_REGION_RUN"),
@@ -451,6 +480,30 @@ def test_a_canada_upload_drops_what_canada_cannot_call(cbd):
     ids = _model_ids(path)
     assert "us.amazon.nova-pro-v1:0" not in ids
     assert "ca.amazon.nova-lite-v1:0" in ids
+
+
+#: Every literal configuration the suite uploads through regional_config_file().
+SUITE_CONFIGS = [
+    NUVEEN,
+    REPO_ROOT / "config_library" / "unified" / "lending-package-sample" / "config.yaml",
+    REPO_ROOT / "config_library" / "unified" / "rule-validation" / "config.yaml",
+]
+
+
+def test_every_suite_config_is_named_here(cbd):
+    source = (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text()
+    named = set(
+        re.findall(r"['\"]((?:scripts|config_library)/[\w/.-]+\.yaml)['\"]", source)
+    )
+    assert named <= {str(p.relative_to(REPO_ROOT)) for p in SUITE_CONFIGS}, named
+
+
+@pytest.mark.parametrize("config", SUITE_CONFIGS, ids=lambda p: p.parent.name)
+def test_no_suite_config_names_a_model_canada_cannot_call_after_the_swap(cbd, config):
+    """The swap does not filter, so an unmapped unavailable id would reach Bedrock."""
+    path = cbd.regional_config_file(str(config), {"AWS_REGION": "ca-central-1"})
+    unavailable = cbd._update_configuration_module().CA_UNAVAILABLE_MODELS
+    assert not (_model_ids(path) & set(unavailable))
 
 
 def test_a_us_upload_is_the_file_as_written(cbd):

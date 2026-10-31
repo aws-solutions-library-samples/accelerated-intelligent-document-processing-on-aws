@@ -971,8 +971,15 @@ def _model_swapper():
     """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
 
     Loaded from source rather than copied, so the harness swaps a config exactly
-    as a stack deploy swaps its shipped defaults. The module sets the root
-    logger's level on import, which is put back.
+    as a stack deploy swaps its shipped defaults.
+    """
+    return _update_configuration_module().swap_model_ids
+
+
+def _update_configuration_module():
+    """The UpdateConfiguration Lambda's module, loaded from source.
+
+    The module sets the root logger's level on import, which is put back.
     """
     import importlib.util
     import logging
@@ -994,7 +1001,7 @@ def _model_swapper():
         if added:
             sys.path.remove(str(_UPDATE_CONFIGURATION_DIR))
         logging.getLogger().setLevel(root_level)
-    return module.swap_model_ids
+    return module
 
 
 def regional_config_file(config_path: str, environ: dict | None = None) -> str:
@@ -1007,6 +1014,11 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     and on the ones ca-central-1 cannot call. Uploading the swapped copy is what a
     user in that region would do. In PRIMARY_CI_REGION, and any other region the
     swap does not cover, the path comes back unchanged.
+
+    It swaps and does not filter: an id the region cannot call that has no swap
+    row (in CA_UNAVAILABLE_MODELS without a CA_MODEL_MAPPINGS entry) is uploaded
+    as written and fails at its first call. test_weekly_region_runs.py asserts no
+    config the suite uploads names one.
     """
     import yaml
 

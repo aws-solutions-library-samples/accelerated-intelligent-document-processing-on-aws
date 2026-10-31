@@ -673,7 +673,9 @@ integration_tests:
     - |
       REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env 2>/dev/null) || REGION_ENV=""
       eval "$REGION_ENV"
-      echo "Region: ${AWS_DEFAULT_REGION:-us-east-1}"
+      export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+      export AWS_REGION="${AWS_REGION:-$AWS_DEFAULT_REGION}"
+      echo "Region: $AWS_DEFAULT_REGION"
 
     # Display CodeBuild logs directly in GitLab runner console
     - |
