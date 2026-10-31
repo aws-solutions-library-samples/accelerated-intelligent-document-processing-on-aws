@@ -134,6 +134,34 @@ DEFAULT_INITIAL_BACKOFF = 2  # seconds
 DEFAULT_MAX_BACKOFF = 300  # 5 minutes
 
 
+def _without_attempt_frames(exc: BaseException) -> BaseException:
+    """Detach a failed attempt's traceback before the next attempt starts.
+
+    Every retry ladder in this client retries by calling itself from inside the
+    ``except`` block that caught the failure. While that nested call runs, the
+    caught exception is still the one being handled, and its ``__traceback__``
+    keeps every frame of the failed attempt alive — including botocore's
+    ``_make_api_call``, whose ``request_dict`` holds the fully serialised request
+    body. For a multimodal request that body is every page image base64-encoded,
+    so each throttled attempt kept one more copy of the request reachable until the
+    whole ladder returned.
+
+    That is linear in retries and in page count, and it multiplies by the number
+    of concurrent callers: the standalone confidence step fans a large list out
+    across ``extraction.agentic.max_concurrent_batches`` workers, each sending the
+    whole section's page images, so under throttling a 17-page section climbed by
+    hundreds of megabytes per retry round and the Lambda was killed with
+    ``Runtime.OutOfMemory`` — which raises nothing the handler can catch, so the
+    document was failed although its extraction had succeeded (#1678).
+
+    The exception object itself is kept (it is passed on as ``last_exception``, and
+    becomes the ``__context__`` of any later failure), so the error text and type
+    are unchanged; only the frames of the attempt that already failed are released.
+    """
+    exc.__traceback__ = None
+    return exc
+
+
 # Claude 4.7 and later model base names that don't support
 # temperature/top_k/top_p parameters. These parameters are deprecated for these
 # models and cause runtime errors. The set covers Claude 4.7, 4.8, and any
@@ -2247,7 +2275,7 @@ class BedrockClient:
                     retry_count=retry_count + 1,
                     max_retries=max_retries,
                     request_start_time=request_start_time,
-                    last_exception=e,
+                    last_exception=_without_attempt_frames(e),
                     context=context,
                     worst_attempt_seconds=worst,
                 )
@@ -2285,7 +2313,7 @@ class BedrockClient:
                         retry_count=retry_count,
                         max_retries=max_retries,
                         request_start_time=request_start_time,
-                        last_exception=e,
+                        last_exception=_without_attempt_frames(e),
                         context=context,
                         worst_attempt_seconds=max(
                             worst_attempt_seconds,
@@ -2358,7 +2386,7 @@ class BedrockClient:
                 retry_count=retry_count + 1,
                 max_retries=max_retries,
                 request_start_time=request_start_time,
-                last_exception=e,
+                last_exception=_without_attempt_frames(e),
                 context=context,
                 worst_attempt_seconds=worst,
             )
@@ -2751,7 +2779,7 @@ class BedrockClient:
                     normalized_text=normalized_text,
                     retry_count=retry_count + 1,
                     max_retries=max_retries,
-                    last_exception=e,
+                    last_exception=_without_attempt_frames(e),
                     worst_attempt_seconds=worst,
                 )
             else:
@@ -3227,14 +3255,16 @@ class BedrockClient:
 
             attempt_start_time = time.time()
 
-            # Serialize payload - handle bytes by converting to base64
-            payload_json = json.dumps(lambda_payload, default=str)
-
-            # Invoke Lambda synchronously
+            # Invoke Lambda synchronously. The payload is serialised inline rather
+            # than bound to a local: a retry below recurses from inside this frame,
+            # so a local holding the serialised request (every page image, base64)
+            # would stay alive for the rest of the ladder, one copy per attempt —
+            # the retention ``_without_attempt_frames`` removes from the traceback
+            # side (#1678).
             response = self.lambda_client.invoke(
                 FunctionName=lambda_arn,
                 InvocationType="RequestResponse",
-                Payload=payload_json.encode("utf-8"),
+                Payload=json.dumps(lambda_payload, default=str).encode("utf-8"),
             )
 
             duration = time.time() - attempt_start_time
@@ -3363,7 +3393,7 @@ class BedrockClient:
                     retry_count=retry_count + 1,
                     max_retries=max_retries,
                     request_start_time=request_start_time,
-                    last_exception=e,
+                    last_exception=_without_attempt_frames(e),
                     context=context,
                     worst_attempt_seconds=worst,
                 )
@@ -3394,7 +3424,7 @@ class BedrockClient:
                     retry_count=retry_count + 1,
                     max_retries=max_retries,
                     request_start_time=request_start_time,
-                    last_exception=e,
+                    last_exception=_without_attempt_frames(e),
                     context=context,
                     worst_attempt_seconds=worst,
                 )

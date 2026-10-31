@@ -133,8 +133,15 @@ rows cost fewer waves, or smaller sections; *lowering*
 buys smaller calls by making more of them.
 
 Two things that will still produce this symptom. **An out-of-memory kill is
-equally exception-free and nothing above bounds memory** — read the kill reason in
-the function's log rather than assuming the wall clock. And the multi-instance
+equally exception-free** — read the kill reason in the function's log
+(`Runtime.OutOfMemory`) rather than assuming the wall clock. The confidence pass
+holds about one serialised request per concurrent batch, each carrying every page
+image of the section, so memory grows with page count times
+`extraction.agentic.max_concurrent_batches`; lowering that setting is the remedy for
+a section with many large page images. Throttled retries no longer add a copy of
+the request each (#1678); before that, every round of retries on a 17-page section
+added 340 to 380 MB across the default ten batches, measured offline, so a section
+that normally fits could run out of memory under throttling. And the multi-instance
 shape #894 reports is a different route: each outer row is a whole instance, so the
 pass makes *few* big calls rather than many small ones, which is not the shape
 #1488 bounds, and one instance whose output exceeds the cap cannot be split. For

@@ -968,6 +968,19 @@ The BedrockClient automatically handles common failure scenarios:
 - Intelligent classification of retryable vs. non-retryable errors
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
+- A retry does not keep the attempt it replaces alive. Every ladder here
+  (`_invoke_with_retry`, `_generate_embedding_with_retry`,
+  `_invoke_lambda_hook_with_retry`) retries by calling itself from inside the
+  handler that caught the failure, so each recursive call passes
+  `last_exception=_without_attempt_frames(e)`, which detaches the exception's
+  traceback before the next attempt starts. Without it, the traceback kept the
+  failed attempt's botocore frames — and with them the serialised request body,
+  every attached image base64-encoded — reachable until the ladder returned, one
+  copy per retry. The LambdaHook ladder also serialises its payload inline rather
+  than into a local of the frame it recurses from, for the same reason. A new
+  retry site must do the same; `tests/unit/bedrock/test_retry_releases_failed_attempts.py`
+  derives every recursive site from this module and fails on one it cannot drive
+  (#1678).
 
 ## Configuration Options
 
