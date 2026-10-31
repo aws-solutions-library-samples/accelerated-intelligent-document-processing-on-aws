@@ -77,10 +77,13 @@ from idp_common.review_queues.testset_summaries import (  # type: ignore
 )
 from idp_common.s3 import find_matching_files  # type: ignore
 from idp_common.testset_scope import (  # type: ignore
+    REVIEWER_GROUP,
+    SCOPE_PROFILE_ATTRIBUTE,
     TestSetAccessDenied,
     assert_can_access_test_set,
     caller_email,
     clear_scope_cache,
+    reviewer_may_access_test_set,
 )
 
 # Constants
@@ -274,6 +277,37 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
+def _scope_profile(test_set_id):
+    """The set's configuration profile for a Reviewer's scope, recorded on its metadata.
+
+    Resolved once with the full rule (`_resolve_set_config_version`: declared, bound,
+    or from its drafting runs) and kept as ``ScopeProfile`` so the file-read resolver,
+    which cannot resolve it, reads the same value. Empty when the set has no single
+    profile, which no scoped Reviewer is admitted to. A new drafting run drops it
+    (`generate_draft_labels`), so it is resolved again.
+    """
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"}) or {}
+    if SCOPE_PROFILE_ATTRIBUTE in meta:
+        return str(meta.get(SCOPE_PROFILE_ATTRIBUTE) or "")
+    if not meta:
+        return ""
+    profile = _resolve_set_config_version(test_set_id, meta)[0] or ""
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression=f"SET {SCOPE_PROFILE_ATTRIBUTE} = :p",
+            expression_attribute_values={":p": profile},
+        )
+    except Exception as e:  # noqa: BLE001 — the answer stands; recording is best effort
+        logger.warning(f"Could not record the profile of test set {test_set_id}: {e}")
+    return profile
+
+
+def _assert_set_access(event, test_set_id):
+    """`assert_can_access_test_set` with this resolver's full profile resolution."""
+    assert_can_access_test_set(event, test_set_id, set_profile=_scope_profile)
+
+
 # Operations a scoped Annotator may reach; every other field here is test-set
 # management and stays Admin/Author. Each of these must also enforce per-set scope
 # via assert_can_access_test_set — reaching the operation is not the same as being
@@ -378,13 +412,16 @@ def _dispatch(event, context):
         if field_name in ADMIN_ONLY_FIELDS:
             allowed_groups = ["Admin"]
         elif field_name in ADMIN_AND_ANNOTATOR_FIELDS:
-            allowed_groups = ["Admin", "Annotator"]
+            allowed_groups = ["Admin", "Annotator", REVIEWER_GROUP]
         elif field_name in ANNOTATOR_ONLY_FIELDS:
-            allowed_groups = [ANNOTATOR_GROUP]
+            allowed_groups = [ANNOTATOR_GROUP, REVIEWER_GROUP]
         else:
             allowed_groups = ["Admin", "Author"]
             if field_name in ANNOTATOR_ALLOWED_FIELDS:
-                allowed_groups.append("Annotator")
+                # Reviewers work every test set their profile scope admits, as
+                # Annotators work the sets they are scoped to; the per-set check is
+                # `_assert_set_access` in each handler.
+                allowed_groups.extend(["Annotator", REVIEWER_GROUP])
         if not _caller_in_groups(event, tuple(allowed_groups)):
             logger.warning(
                 f"Forbidden: caller attempted '{field_name}' without "
@@ -443,26 +480,26 @@ def _dispatch(event, context):
     elif field_name == "listTestSetQueues":
         return list_test_set_queues(event)
     elif field_name == "claimTestSetDocument":
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         return claim_test_set_document(event["arguments"], event)
     elif field_name == "updateTestSetQueue":
         return update_test_set_queue(event["arguments"])
     elif field_name == "saveTestSetDocumentSection":
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         _assert_assignee(event, event["arguments"])
         return save_test_set_document_section(event["arguments"], event)
     elif field_name == "saveTestSetDocumentSectionDraft":
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         _assert_assignee(event, event["arguments"])
         _assert_author_may_edit(event, event["arguments"])
         return save_test_set_document_section_draft(event["arguments"], event)
     elif field_name == "skipTestSetDocument":
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         _assert_assignee(event, event["arguments"])
         return skip_test_set_document(event["arguments"], event)
     elif field_name == "getTestSetDocuments":
         # Annotator-reachable: group membership alone would expose other sets.
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         return get_test_set_documents(event["arguments"])
     elif field_name == "publishTestSetVersion":
         return publish_test_set_version(event["arguments"], event)
@@ -474,12 +511,12 @@ def _dispatch(event, context):
         # Annotator-reachable: group membership alone would let one annotator open a
         # version transition on a set they were never assigned.
         input_data = event["arguments"].get("input", event["arguments"])
-        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        _assert_set_access(event, input_data.get("testSetId") or "")
         return open_test_set_annotation_draft(event["arguments"], event)
     elif field_name == "updateTestSetDocumentSections":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
-        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        _assert_set_access(event, input_data.get("testSetId") or "")
         _assert_assignee(event, input_data)
         result = update_test_set_document_sections(event["arguments"], event)
         _refresh_summary(input_data.get("testSetId"), input_data.get("objectKey"))
@@ -487,18 +524,18 @@ def _dispatch(event, context):
     elif field_name == "reextractTestSetDocument":
         # Annotator-reachable: group membership alone would expose other sets.
         input_data = event["arguments"].get("input", event["arguments"])
-        assert_can_access_test_set(event, input_data.get("testSetId") or "")
+        _assert_set_access(event, input_data.get("testSetId") or "")
         _assert_assignee(event, input_data)
         result = reextract_test_set_document(event["arguments"], event)
         _refresh_summary(input_data.get("testSetId"), input_data.get("objectKey"))
         return result
     elif field_name == "getDraftLabelJob":
         # Annotator-reachable: group membership alone would expose other sets' jobs.
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         return get_draft_label_job(event["arguments"])
     elif field_name == "estimateReviewEffort":
         # Annotator-reachable: group membership alone would expose other sets.
-        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
+        _assert_set_access(event, event["arguments"].get("testSetId") or "")
         return estimate_review_effort(event["arguments"])
     elif field_name == "getAnnotationQueue":
         return get_annotation_queue(event["arguments"], event)
@@ -2146,7 +2183,9 @@ def generate_draft_labels(args, event=None):
     # resolved by the runner even when the caller passed none.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="SET labelJobId = :j, labelJobStatus = :s",
+        # A new drafting run can change the set's profile, so the recorded one is
+        # dropped and resolved again on next use (`_scope_profile`).
+        update_expression=f"SET labelJobId = :j, labelJobStatus = :s REMOVE {SCOPE_PROFILE_ATTRIBUTE}",
         expression_attribute_values={":j": test_run_id, ":s": "RUNNING"},
     )
 
@@ -2965,7 +3004,7 @@ def list_my_test_set_tasks(event):
         test_set_id = d["testSetId"]
         if test_set_id not in access:
             try:
-                assert_can_access_test_set(event, test_set_id)
+                _assert_set_access(event, test_set_id)
                 access[test_set_id] = True
             except TestSetAccessDenied:
                 access[test_set_id] = False
@@ -3012,7 +3051,7 @@ def get_annotation_queue(args, event=None):
 
     # Scope check precedes any read, so an unauthorized caller cannot even learn
     # whether the set exists.
-    assert_can_access_test_set(event, test_set_id)
+    _assert_set_access(event, test_set_id)
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
@@ -5002,7 +5041,8 @@ def skip_test_set_document(args, event=None):
 
 
 def claim_test_set_document(args, event=None):
-    """An Annotator takes a document of a set whose queue lists them.
+    """An Annotator takes a document of a set whose queue lists them; a Reviewer one
+    of any set their profile scope admits.
 
     The document must be unassigned and not yet reviewed. It is assigned to the
     caller exactly as an Admin assignment would (no expiry; the set's time limit
@@ -5015,13 +5055,21 @@ def claim_test_set_document(args, event=None):
     if not object_key or ".." in object_key or object_key.startswith("/"):
         raise ValueError("Invalid object key")
     caller = (caller_email(event) or "").lower()
-    if not caller or not _caller_in_groups(event, (ANNOTATOR_GROUP,)):
-        logger.warning("Rejecting claimTestSetDocument: caller is not an Annotator")
-        raise PermissionError("NOT_ELIGIBLE: only Annotators take test-set documents")
+    if not caller or not _caller_in_groups(event, (ANNOTATOR_GROUP, REVIEWER_GROUP)):
+        logger.warning(
+            "Rejecting claimTestSetDocument: caller is not an Annotator or a Reviewer"
+        )
+        raise PermissionError(
+            "NOT_ELIGIBLE: only Annotators and Reviewers take test-set documents"
+        )
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
-    if caller not in _queue_annotators(meta):
+    # A Reviewer works every set their profile scope admits (checked before this, in
+    # `_dispatch`), listed or not; an Annotator only the sets whose queue lists them.
+    if not _caller_in_groups(
+        event, (REVIEWER_GROUP,)
+    ) and caller not in _queue_annotators(meta):
         logger.warning(
             "Rejecting claimTestSetDocument: caller isn't listed on the queue"
         )
@@ -5154,8 +5202,9 @@ def update_test_set_queue(args):
 
 
 def list_test_set_queues(event=None):
-    """Test Studio queues: every set for an Admin (HITL › Queue Management), and for
-    an Annotator only the sets whose queue lists them (My Work › Queues).
+    """Test Studio queues: every set for an Admin (Review Studio › Review Management),
+    for an Annotator only the sets whose queue lists them, and for a Reviewer every set
+    their profile scope admits (Home › Queues).
 
     One read of the sets' metadata items, which carry the counts kept by the
     background summary build, assignments and completed reviews. No S3 reads, and no
@@ -5166,13 +5215,19 @@ def list_test_set_queues(event=None):
     only_listed = bool(event and event.get("identity")) and not _caller_in_groups(
         event, ("Admin",)
     )
+    # A Reviewer also sees every set their profile scope admits, listed or not.
+    is_reviewer = only_listed and _caller_in_groups(event, (REVIEWER_GROUP,))
     out = []
     for item in _load_test_set_records():
         test_set_id = item.get("id") or str(item.get("PK", "")).replace("testset#", "")
         if not test_set_id:
             continue
         if only_listed and caller not in _queue_annotators(item):
-            continue
+            if not (
+                is_reviewer
+                and reviewer_may_access_test_set(event, test_set_id, _scope_profile)
+            ):
+                continue
         status, _count = _ensure_summaries(test_set_id, item)
         out.append(
             {

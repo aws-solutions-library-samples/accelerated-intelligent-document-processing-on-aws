@@ -433,11 +433,12 @@ declared, and no test can read a sentence — the name is the reliable route.
 GitLab and GitHub now run the **same** non-integration gates. Integration tests
 (`integration_tests`) remain GitLab-only, as they need AWS credentials.
 
-⚠️ **`integration_tests` is nightly plus a manual button — it is not a merge gate
+⚠️ **`integration_tests` is scheduled plus a manual button — it is not a merge gate
 at all any more**, on either platform. It was automatic on `develop` and on
 non-Draft MRs, and it put 62–113 minutes onto every pipeline *after* a 45-minute
 check stage (111 min for an MR, 160 for a `develop` push). The deploy path is now
-a scheduled run, with a play button on any MR targeting `develop`. **Click that
+scheduled — the nightly runs the primary suite and a separate weekly schedule runs
+the deployment-variant probes — with a play button on any MR targeting `develop`. **Click that
 button before merging a change on the deploy path** — `template.yaml`,
 `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
 `feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it
@@ -457,8 +458,8 @@ MR to `develop` that changes `src/ui/`, are both `allow_failure: true` and absen
 from `SHARED_GATES` (footnote ³ in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`). The
 first-time-user stories are the third: `ai_ux_test_stories`, on a non-Draft MR to
 `develop` that changes `CHANGELOG.md`, and `ai_ux_test_stories_nightly` and
-`ai_ux_test_stories_digest`, in the `ux_nightly` stage of the scheduled `develop`
-pipeline, are all `allow_failure: true` and absent from `SHARED_GATES` (footnote ⁴
+`ai_ux_test_stories_digest`, in the `ux_nightly` stage of the nightly `develop`
+pipeline (never the weekly variant-probe one), are all `allow_failure: true` and absent from `SHARED_GATES` (footnote ⁴
 in the same file).
 
 ### The advisory AI review runs on both platforms

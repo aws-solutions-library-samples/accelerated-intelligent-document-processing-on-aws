@@ -707,11 +707,15 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 production documents held in review queues, and test sets that need ground truth.
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
-- **Navigation.** A user whose only role is Annotator sees exactly **Home**
-  (**Inbox**, **Tasks**, **Queues**). Other users have **Home** with the **Inbox**
-  only, then the usual sections their roles
-  allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
-  **Extensions** and **Resources**. Admins also see **Review Studio › Review Management**.
+- **Navigation.** A user whose only role is Annotator, and a Reviewer with no Admin,
+  Author or Viewer role, sees exactly **Home** (**Inbox**, **Tasks**, **Queues**) and
+  **Deployment Info**: no **Documents** and no **Extensions**. A Reviewer finds their
+  work in Home › Queues and Home › Tasks, and works every Production queue. A Reviewer
+  who also holds another role keeps that role's navigation, with Tasks and Queues
+  added under **Home**. Other users have **Home** with the **Inbox** only, then the
+  usual sections their roles allow: **Documents**, **Assistants**, **Test Studio**,
+  **Configuration**, **Extensions**, **Resources** and **Deployment Info**. Admins also
+  see **Review Studio › Review Management**.
 - **Review Management** (Admins) has two tables, **Production Queues** and **Test Studio
   Queues** (one per test set), one at a time: the **Production | Test Studio** switch
   beside **Refresh** chooses which. Each lists Queue, Items, Pending, Assigned and
@@ -767,8 +771,8 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   dropdown, **Show Fields** (all fields, confidence alerts only, or evaluation mismatches
   only; for the Visual Editor, so disabled on the JSON tab) and **Edit Page Grouping**
   (each section's pages and class, for the roles that may change them: an Admin or a
-  Reviewer on a direct edit, an Admin on a queue item; disabled with the reason
-  otherwise). They are hidden while the original file is shown.
+  Reviewer on a direct edit, the item's holder on a queue item, Annotator or Admin;
+  disabled with the reason otherwise, for example "Claim this item first"). They are hidden while the original file is shown.
   The page's actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
   activity; **Summary**; **Processing Report**); **More Actions** (**Use As Evaluation

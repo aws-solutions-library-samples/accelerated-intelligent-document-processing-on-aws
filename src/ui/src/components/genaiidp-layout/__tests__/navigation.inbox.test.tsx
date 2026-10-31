@@ -47,21 +47,22 @@ const NO_ROLE = {
   isAnnotator: false,
   isAnnotatorOnly: false,
   isViewerOnly: false,
+  isQueueWorker: false,
   allowedTestSets: null,
 };
 
-/** Roles in the Annotator group: Home has their Tasks and Queues. */
+/** Roles that work Production review queues (Annotator or Reviewer): Home has their Tasks and Queues. */
 const ANNOTATOR_ROLES: Array<[string, Record<string, unknown>]> = [
-  ['Annotator', { ...NO_ROLE, isAnnotator: true, isAnnotatorOnly: true, allowedTestSets: ['set-1'] }],
-  ['Admin + Annotator', { ...NO_ROLE, isAdmin: true, isAnnotator: true }],
-  ['Viewer + Annotator', { ...NO_ROLE, isViewerOnly: true, isAnnotator: true }],
+  ['Annotator', { ...NO_ROLE, isAnnotator: true, isAnnotatorOnly: true, isQueueWorker: true, allowedTestSets: ['set-1'] }],
+  ['Admin + Annotator', { ...NO_ROLE, isAdmin: true, isAnnotator: true, isQueueWorker: true }],
+  ['Viewer + Annotator', { ...NO_ROLE, isViewerOnly: true, isAnnotator: true, isQueueWorker: true }],
+  ['Reviewer', { ...NO_ROLE, isReviewerOnly: true, isQueueWorker: true }],
 ];
 
-/** Roles without the Annotator group: Home has the Inbox only. */
+/** Roles that work no review queue as a member: Home has the Inbox only. */
 const OTHER_ROLES: Array<[string, Record<string, unknown>]> = [
   ['Admin', { ...NO_ROLE, isAdmin: true }],
   ['Author', { ...NO_ROLE, isAuthor: true }],
-  ['Reviewer', { ...NO_ROLE, isReviewerOnly: true }],
   ['Viewer', { ...NO_ROLE, isViewerOnly: true }],
 ];
 

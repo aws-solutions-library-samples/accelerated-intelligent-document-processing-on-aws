@@ -28,6 +28,10 @@ from idp_common.review_queues.testset_docs import (
 )
 from tests.unit.review_queues._table import create_review_table
 
+#: The resolver's per-set check: the shared `assert_can_access_test_set`, given its
+#: profile resolution (`_assert_set_access`).
+_SCOPE_CHECK = "_assert_set_access("
+
 # Mock environment variables and dependencies before importing.
 #
 # The credentials matter as much as the region, and for a less obvious reason.
@@ -4166,6 +4170,20 @@ class TestTestSetResolver:
         assert "reextractTestSetDocument" in allowed
         assert "getDraftLabelJob" in allowed
 
+    def test_the_resolvers_scope_check_is_the_shared_rule_with_its_profile_resolver(
+        self,
+    ):
+        """`_assert_set_access` is what every branch calls: it must be the shared rule
+        (`assert_can_access_test_set`) given this resolver's profile resolution, or a
+        Reviewer would be decided by a different rule here than in getFileContents."""
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def _assert_set_access(") :]
+        body = body[: body.index("\ndef ")]
+        assert (
+            "assert_can_access_test_set(event, test_set_id, set_profile=_scope_profile)"
+            in body
+        )
+
     def test_every_annotator_field_asserts_per_set_scope(self):
         """Group membership alone would expose other teams' sets.
 
@@ -4184,7 +4202,7 @@ class TestTestSetResolver:
             branch = dispatch[
                 branch_at : next_branch if next_branch > 0 else len(dispatch)
             ]
-            if "assert_can_access_test_set" in branch:
+            if _SCOPE_CHECK in branch:
                 continue
 
             # Otherwise the handler it delegates to has to do it.
@@ -4197,7 +4215,7 @@ class TestTestSetResolver:
                     continue
                 end = source.find("\ndef ", at + 1)
                 handler_src += source[at : end if end > 0 else len(source)]
-            assert "assert_can_access_test_set" in handler_src, (
+            assert _SCOPE_CHECK in handler_src, (
                 f"{field} is Annotator-reachable but neither its dispatch branch nor "
                 f"{called} asserts per-set access"
             )
@@ -5224,7 +5242,7 @@ class TestTestSetResolver:
         source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
         branch = source.split('elif field_name == "openTestSetAnnotationDraft":')[1]
         branch = branch.split("elif field_name ==")[0]
-        assert "assert_can_access_test_set" in branch
+        assert _SCOPE_CHECK in branch
 
     # ------------------------------------------------- zip upload: the set's name
 

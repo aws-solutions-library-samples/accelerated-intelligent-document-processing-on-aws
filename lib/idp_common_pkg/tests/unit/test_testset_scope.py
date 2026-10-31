@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Tests for per-user test-set scope (``allowedTestSets``).
+"""Tests for per-user test-set scope (``allowedTestSets``, and a Reviewer's profile scope).
 
 This is a security boundary: sharing an annotation-queue link is only safe because
 the server refuses out-of-scope access on every operation. These tests are written
@@ -150,13 +150,14 @@ class TestAnnotatorScope:
 
 
 class TestOtherRoles:
-    def test_reviewer_gets_no_test_set_access(self, users_table):
-        """Production HITL review is a different axis and grants nothing here.
-
-        A Reviewer can review production documents; that must not imply access to
-        ground-truth test sets.
-        """
-        with pytest.raises(TestSetAccessDenied, match="requires Admin, Author"):
+    def test_a_reviewer_whose_profile_scope_cannot_be_resolved_is_refused(
+        self, users_table
+    ):
+        """Fail closed: with no users table configured the Reviewer's
+        `allowedConfigVersions` cannot be read, so no test set is admitted."""
+        with pytest.raises(
+            TestSetAccessDenied, match="outside your allowed configuration scope"
+        ):
             assert_can_access_test_set(
                 _event(["Reviewer"], "rev@example.com"), "ts-alpha", users_table
             )
@@ -279,3 +280,255 @@ class TestScopeCacheAsymmetry:
         # Still cached — a populated scope is not re-read on the short TTL.
         assert testset_scope.get_allowed_test_sets("b@example.com", table) == ["set-a"]
         assert table.query.call_count == calls_after_first
+
+
+class TestReviewerProfileScope:
+    """A Reviewer works every test set whose configuration profile their
+    `allowedConfigVersions` admits, every set when they have no restriction, and is
+    refused whenever the scope or the set's profile cannot be answered."""
+
+    @pytest.fixture
+    def scope(self, monkeypatch):
+        """Set the Reviewer's resolved `allowedConfigVersions` (None = unrestricted)."""
+        from idp_common import config_scope
+
+        state = {"scope": None, "raises": None}
+
+        def resolve(*_a, **_k):
+            if state["raises"]:
+                raise state["raises"]
+            return state["scope"]
+
+        monkeypatch.setattr(config_scope, "resolve_allowed_config_versions", resolve)
+        return state
+
+    @staticmethod
+    def _reviewer(groups=("Reviewer",)):
+        return _event(list(groups), "rev@example.com")
+
+    def test_with_no_restriction_every_set_is_admitted_without_reading_its_profile(
+        self, scope
+    ):
+        profile = MagicMock(side_effect=AssertionError("must not be read"))
+        assert_can_access_test_set(self._reviewer(), "ts-any", set_profile=profile)
+
+    @pytest.mark.parametrize("set_profile", ["lending", "lending-v2"])
+    def test_a_set_whose_profile_is_in_scope_is_admitted(self, scope, set_profile):
+        scope["scope"] = ["lending", "lending-*"]
+        assert_can_access_test_set(
+            self._reviewer(), "ts-a", set_profile=lambda _id: set_profile
+        )
+
+    @pytest.mark.parametrize(
+        "set_profile",
+        ["claims", "", None],
+        ids=["other-profile", "no-single-profile", "none-recorded"],
+    )
+    def test_a_set_outside_scope_or_without_a_profile_is_refused(
+        self, scope, set_profile
+    ):
+        scope["scope"] = ["lending"]
+        with pytest.raises(
+            TestSetAccessDenied, match="outside your allowed configuration scope"
+        ):
+            assert_can_access_test_set(
+                self._reviewer(), "ts-a", set_profile=lambda _id: set_profile
+            )
+
+    def test_a_profile_that_cannot_be_read_is_refused(self, scope):
+        scope["scope"] = ["lending"]
+        with pytest.raises(TestSetAccessDenied):
+            assert_can_access_test_set(
+                self._reviewer(),
+                "ts-a",
+                set_profile=MagicMock(side_effect=RuntimeError("down")),
+            )
+
+    def test_a_scope_lookup_failure_is_refused(self, scope):
+        from idp_common.config_scope import ScopeLookupError
+
+        scope["raises"] = ScopeLookupError("users table unavailable")
+        with pytest.raises(TestSetAccessDenied):
+            assert_can_access_test_set(
+                self._reviewer(), "ts-a", set_profile=lambda _id: "lending"
+            )
+
+    def test_without_a_resolver_the_recorded_profile_is_read(self, scope, monkeypatch):
+        scope["scope"] = ["lending"]
+        reads = []
+        monkeypatch.setattr(
+            testset_scope,
+            "_stored_scope_profile",
+            lambda tid: reads.append(tid) or "lending",
+        )
+        assert_can_access_test_set(self._reviewer(), "ts-a")
+        assert reads == ["ts-a"]
+
+    def test_a_reviewer_who_is_also_an_annotator_stays_scoped_by_allowed_test_sets(
+        self, scope, users_table
+    ):
+        """Holding Reviewer must not widen an Annotator's allowedTestSets, even with no
+        profile restriction: the profile rule is never consulted for them."""
+        scope["scope"] = None
+        _seed_user(users_table, "rev@example.com", allowed=["ts-a"])
+        profile = MagicMock(
+            side_effect=AssertionError("the profile rule must not be consulted")
+        )
+        assert_can_access_test_set(
+            self._reviewer(("Reviewer", "Annotator")),
+            "ts-a",
+            users_table,
+            set_profile=profile,
+        )
+        with pytest.raises(TestSetAccessDenied):
+            assert_can_access_test_set(
+                self._reviewer(("Reviewer", "Annotator")),
+                "ts-b",
+                users_table,
+                set_profile=profile,
+            )
+
+
+class _BatchGetOnly:
+    """A DynamoDB resource holding only what the layer-free file resolver's role is
+    granted on the tracking table: ``BatchGetItem``. ``GetItem`` is refused as IAM
+    refuses it there, which moto does not enforce."""
+
+    def __init__(self, item=None, unprocessed_rounds=0):
+        self.item = item
+        self.unprocessed_rounds = unprocessed_rounds
+        self.calls = []
+
+    def Table(self, name):  # noqa: N802 — boto3's spelling
+        table = MagicMock(name=f"Table({name})")
+        table.get_item.side_effect = RuntimeError(
+            "AccessDeniedException: not authorized to perform dynamodb:GetItem"
+        )
+        return table
+
+    def batch_get_item(self, RequestItems):  # noqa: N803 — boto3's spelling
+        self.calls.append(RequestItems)
+        ((table, request),) = RequestItems.items()
+        if self.unprocessed_rounds:
+            self.unprocessed_rounds -= 1
+            return {"Responses": {table: []}, "UnprocessedKeys": RequestItems}
+        return {"Responses": {table: [self.item] if self.item else []}}
+
+
+@pytest.mark.unit
+class TestStoredScopeProfileRead:
+    """The recorded profile is read with ``BatchGetItem``, the only tracking-table read
+    the file resolver may make; anything it cannot answer raises so the caller refuses."""
+
+    @pytest.fixture(autouse=True)
+    def _table(self, monkeypatch):
+        monkeypatch.setenv("TRACKING_TABLE_NAME", "tracking")
+
+    def _with(self, monkeypatch, resource):
+        monkeypatch.setattr(boto3, "resource", lambda *_a, **_k: resource)
+        return resource
+
+    def test_reads_the_recorded_profile_without_get_item(self, monkeypatch):
+        ddb = self._with(monkeypatch, _BatchGetOnly({"ScopeProfile": "lending"}))
+        assert testset_scope._stored_scope_profile("ts-a") == "lending"
+        assert ddb.calls == [
+            {
+                "tracking": {
+                    "Keys": [{"PK": "testset#ts-a", "SK": "metadata"}],
+                    "ProjectionExpression": "ScopeProfile",
+                }
+            }
+        ]
+
+    @pytest.mark.parametrize(
+        ("item", "expected"),
+        [(None, None), ({}, None), ({"ScopeProfile": ""}, "")],
+        ids=["no-item", "unrecorded", "no-single-profile"],
+    )
+    def test_an_unrecorded_or_empty_profile(self, monkeypatch, item, expected):
+        self._with(monkeypatch, _BatchGetOnly(item))
+        assert testset_scope._stored_scope_profile("ts-a") == expected
+
+    def test_an_unprocessed_key_is_retried(self, monkeypatch):
+        ddb = self._with(
+            monkeypatch,
+            _BatchGetOnly({"ScopeProfile": "lending"}, unprocessed_rounds=2),
+        )
+        assert testset_scope._stored_scope_profile("ts-a") == "lending"
+        assert len(ddb.calls) == 3
+
+    def test_a_key_left_unprocessed_raises_so_the_caller_refuses(self, monkeypatch):
+        self._with(
+            monkeypatch, _BatchGetOnly({"ScopeProfile": "x"}, unprocessed_rounds=99)
+        )
+        with pytest.raises(RuntimeError, match="unprocessed"):
+            testset_scope._stored_scope_profile("ts-a")
+
+    def test_a_scoped_reviewer_is_admitted_under_the_resolver_grant(self, monkeypatch):
+        from idp_common import config_scope
+
+        monkeypatch.setattr(
+            config_scope,
+            "resolve_allowed_config_versions",
+            lambda *_a, **_k: ["lending"],
+        )
+        self._with(monkeypatch, _BatchGetOnly({"ScopeProfile": "lending"}))
+        assert_can_access_test_set(_event(["Reviewer"], "rev@example.com"), "ts-a")
+
+    def test_reads_a_real_table(self, monkeypatch):
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            table = ddb.create_table(
+                TableName="tracking",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            table.put_item(
+                Item={"PK": "testset#ts-a", "SK": "metadata", "ScopeProfile": "lending"}
+            )
+            assert testset_scope._stored_scope_profile("ts-a") == "lending"
+            assert testset_scope._stored_scope_profile("ts-missing") is None
+
+
+@pytest.mark.unit
+class TestTheModuleOutsideThePackage:
+    """The same file runs in a layer-free resolver as a top-level module, beside a
+    vendored ``config_scope``; it must find that copy there, and the package's own
+    module inside the library."""
+
+    def test_inside_the_package_it_uses_the_package_module(self):
+        from idp_common import config_scope
+
+        assert testset_scope._config_scope() is config_scope
+
+    def test_as_a_top_level_module_it_uses_the_sibling_copy(self, monkeypatch):
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        source = Path(testset_scope.__file__)
+        monkeypatch.syspath_prepend(str(source.parent))
+        monkeypatch.delitem(sys.modules, "config_scope", raising=False)
+        spec = importlib.util.spec_from_file_location(
+            "testset_scope_standalone", source
+        )
+        standalone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(standalone)
+
+        found = standalone._config_scope()
+        assert found.__name__ == "config_scope"
+        assert Path(found.__file__) == source.parent / "config_scope.py"
+
+    def test_no_tracking_table_raises_so_the_caller_refuses(self, monkeypatch):
+        monkeypatch.delenv("TRACKING_TABLE_NAME", raising=False)
+        monkeypatch.delenv("TRACKING_TABLE", raising=False)
+        with pytest.raises(RuntimeError, match="not configured"):
+            testset_scope._stored_scope_profile("ts-a")

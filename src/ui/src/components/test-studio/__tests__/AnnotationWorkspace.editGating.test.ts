@@ -81,7 +81,7 @@ const only = (group: (typeof GROUPS)[number]): AnnotationRoles => {
     isReviewer: group === 'Reviewer',
     isAnnotator: group === 'Annotator',
   };
-  return { ...flags, canAnnotate: flags.isAdmin || flags.isAuthor || flags.isAnnotator };
+  return { ...flags, canAnnotate: flags.isAdmin || flags.isAuthor || flags.isAnnotator || flags.isReviewer };
 };
 
 /** The groups whose single-group caller gets `pick(...)` true. */
@@ -95,11 +95,11 @@ describe('AnnotationWorkspace edit gating', () => {
   it('picks the read-only decision from the document own save path', () => {
     // A document with a review record: edited (as a draft, then completed) by an Admin or
     // an Annotator. The draft operation has no Reviewer and completion has no Author.
-    expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator']);
+    expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Reviewer']);
     // Authored ground truth: the direct path's roles may edit (saveTestSetDocumentSection,
     // which accepts an Annotator for a document assigned to them). The regression made this
     // read-only for everyone — a queue-state condition presented as a permission problem.
-    expect(groupsWhere((r) => !annotationEditFlags(r, AUTHORED, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Author']);
+    expect(groupsWhere((r) => !annotationEditFlags(r, AUTHORED, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Author', 'Reviewer']);
   });
 
   it('does not let editing begin before the version transition is open', () => {
@@ -149,7 +149,7 @@ describe('AnnotationWorkspace edit gating', () => {
     // reextractTestSetDocument, which stamps the baseline server-side and needs no
     // review record. Gating it on isReadOnly denied it to roles the server allows.
     const reextract = groupsFor('reextractTestSetDocument');
-    expect(reextract.sort()).toEqual(['Admin', 'Annotator', 'Author']);
+    expect(reextract.sort()).toEqual(['Admin', 'Annotator', 'Author', 'Reviewer']);
     expect(groupsWhere((r) => annotationEditFlags(r, AUTHORED, DRAFT).canChangeClass)).toEqual(reextract.sort());
 
     // canAnnotate is that same set, which is why it is the right flag here.
@@ -170,7 +170,7 @@ describe('AnnotationWorkspace edit gating', () => {
     // Documents the asymmetry that makes two predicates necessary. If either of
     // these ever changes, this test fails and points at the client copy below.
     expect(review.sort()).toEqual(['Admin', 'Annotator', 'Reviewer']);
-    expect(direct.sort()).toEqual(['Admin', 'Annotator', 'Author']);
+    expect(direct.sort()).toEqual(['Admin', 'Annotator', 'Author', 'Reviewer']);
 
     expect(groupsWhere((r) => saveCapabilities(r).canSaveViaReview)).toEqual(review.sort());
     expect(groupsWhere((r) => saveCapabilities(r).canSaveDirectToBaseline)).toEqual(direct.sort());
@@ -181,7 +181,7 @@ describe('AnnotationWorkspace edit gating', () => {
     // review copy server-side, which is why a review copy is editable only by the
     // intersection with completeSectionReview's groups.
     const draft = groupsFor('saveTestSetDocumentSectionDraft').sort();
-    expect(draft).toEqual(['Admin', 'Annotator', 'Author']);
+    expect(draft).toEqual(['Admin', 'Annotator', 'Author', 'Reviewer']);
     expect(groupsWhere((r) => saveCapabilities(r).canDraft)).toEqual(draft);
     const review = groupsFor('completeSectionReview');
     expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(

@@ -104,6 +104,17 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   const editorReadOnly = !editFlags || editFlags.isReadOnly || !mayWork;
   const mayChangeClass = !!editFlags && mayChangeClassFor(editFlags.canChangeClass && mayWork, editorReadOnly);
   const sections = doc?.sections ?? [];
+  // Who may regroup: the document's holder (an Annotator it is assigned to), an Admin or
+  // an Author; an Annotator who doesn't hold it claims it first.
+  const regroupReason: string | undefined = !doc
+    ? undefined
+    : !mayWork
+      ? doc.assignedTo
+        ? `Assigned to ${doc.assignedTo}`
+        : 'Claim this document first to change its page grouping'
+      : !mayChangeClass || !testSetId
+        ? 'Your role cannot change this document’s page grouping'
+        : undefined;
 
   const slots = useTestSetEditorSlots({
     bucket: testSetBucket ?? '',
@@ -124,7 +135,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
 
   // The trail the user came by; without one, Review Management for an Admin, Tasks for an
   // Annotator, the set in Test Studio for an Author.
-  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : isAnnotator ? 'tasks' : 'test-studio');
+  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : isAnnotator || isReviewer ? 'tasks' : 'test-studio');
   // The set is named once its queue has loaded, never by its id first.
   const setName = queue ? (queue.name ?? testSetId) : null;
   const navigation: EditNavigation = {
@@ -196,15 +207,15 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   // review copy is completed by an Admin or an Annotator, authored ground truth by
   // whoever may save it.
   const roleCannotSave = editFlags.saveViaReview
-    ? !(editFlags.canSaveViaReview && (isAdmin || isAnnotator))
+    ? !(editFlags.canSaveViaReview && (isAdmin || isAnnotator || isReviewer))
     : !editFlags.canSaveDirectToBaseline;
   // A completed document still opens, so its labels can be read and corrected, but its
   // task is over: completing or skipping it again would end nothing. Skip now returns a
   // document to its queue; `skipped` marks one skipped before that, which still counts
   // as complete.
   const isComplete = doc.reviewed || !!doc.skipped;
-  // An Annotator (not an Admin, who assigns from the queue) claims a document nobody holds.
-  const canClaim = isAnnotator && !isAdmin && !doc.assignedTo && !isComplete;
+  // An Annotator or a Reviewer (not an Admin, who assigns from the queue) claims a document nobody holds.
+  const canClaim = (isAnnotator || isReviewer) && !isAdmin && !doc.assignedTo && !isComplete;
   let skipReason: string | undefined;
   if (isComplete) skipReason = doc.reviewed ? 'This document is already reviewed' : 'This document was already skipped';
   else if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
@@ -296,7 +307,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         showRefresh: true,
         refreshDisabledReason: saving ? 'Saving your changes…' : loading ? 'Loading…' : undefined,
         showRegroup: true,
-        regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
+        regroupDisabledReason: regroupReason,
         showClaim: canClaim,
         offerHistory: true,
       },

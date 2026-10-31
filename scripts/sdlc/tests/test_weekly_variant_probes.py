@@ -17,6 +17,8 @@ on a scheduled pipeline. What is pinned here:
 
 from __future__ import annotations
 
+import ast
+import os
 import re
 import textwrap
 from pathlib import Path
@@ -275,6 +277,49 @@ def test_both_slack_posts_label_the_weekly_run(config, job):
         "the label goes on `status`, a key the Slack workflow already declares; a "
         "new key would be ignored by the workflow"
     )
+
+
+def _label_condition(body: str) -> ast.expr:
+    """The expression deciding whether ``body`` labels its post as a probe run.
+
+    In integration_tests that is the ``probe_run`` assignment; in
+    nightly_notification it is the ``if`` whose body prefixes ``status``.
+    """
+    tree = ast.parse(body)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "probe_run" for t in node.targets
+        ):
+            return node.value
+        if isinstance(node, ast.If) and SLACK_LABEL in ast.unparse(node.body[0]):
+            return node.test
+    raise AssertionError("no probe-run label condition found")
+
+
+@pytest.mark.parametrize("job", ["integration_tests", "nightly_notification"])
+@pytest.mark.parametrize(
+    ("source", "probes", "labelled"),
+    [
+        ("schedule", "true", True),
+        ("schedule", " TRUE ", True),
+        ("web", "true", False),
+        ("push", "true", False),
+        ("schedule", "", False),
+        ("schedule", "false", False),
+    ],
+)
+def test_the_label_agrees_with_variant_probes_requested(
+    config, job, source, probes, labelled, itd, monkeypatch
+):
+    """A manual run carrying IDP_RUN_PROBES runs no probes, so it is not labelled."""
+    monkeypatch.setenv("CI_PIPELINE_SOURCE", source)
+    monkeypatch.setenv("IDP_RUN_PROBES", probes)
+    condition = _label_condition(_slack_bodies(config)[job])
+    verdict = eval(  # noqa: S307 - the expression is this repo's own CI config
+        compile(ast.Expression(condition), "<label>", "eval"), {"os": os}
+    )
+    assert bool(verdict) is labelled
+    assert bool(verdict) is bool(itd.variant_probes_requested())
 
 
 # ---------------------------------------------------------------------------
