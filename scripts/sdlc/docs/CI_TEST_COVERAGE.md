@@ -172,6 +172,10 @@ for an absent key rather than an empty string, and `|| echo` cannot catch it
 because the command *succeeded* — so a bare read hands the deploy script the string
 `"None"`. The buildspec turns anything that is not exactly `true` into `false`.
 
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then turn the weekly
+schedule on.** This is a step for whoever operates the CI account, not for users of
+the accelerator.
+
 ⚠️ **The buildspec lives in a CloudFormation template**, so the
 `genaiic-sdlc-codepipeline` stack in the CI account has to be updated to the
 template on `develop` before the weekly schedule runs any probes. The same update
