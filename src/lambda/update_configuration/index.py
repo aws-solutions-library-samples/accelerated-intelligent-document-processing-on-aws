@@ -101,6 +101,11 @@ MODEL_MAPPINGS = {
     # that stack pointing at a dead model.
     "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-6",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
+    # The multi-document discovery embedding default. `us.cohere.embed-v4:0` is
+    # rejected as an invalid model identifier from an EU Region, so without this
+    # row an EU stack kept a default its embed step could not call. A twin row:
+    # the EU geo profile of the same model, 1024 dimensions like the US one.
+    "us.cohere.embed-v4:0": "eu.cohere.embed-v4:0",
     # Retired source -> LIVE target. Claude 3 Haiku reached end of life in both
     # regions, so mapping it onto its EU twin rewrote a stored config from one dead
     # model to another. Claude Haiku 4.5 is the current Haiku-class model.
