@@ -3153,8 +3153,8 @@ idp-cli discover-multidoc [OPTIONS]
 |--------|-------------|
 | `--dir` | Directory containing documents to analyze (recursive scan) |
 | `-d, --document` | Individual document files (repeatable: `-d doc1.pdf -d doc2.png`) |
-| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`) |
-| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`) |
+| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada) |
+| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions) |
 | `-o, --output` | Output directory for discovered JSON schemas |
 | `--stack-name` | CloudFormation stack name (required for `--save-to-config`) |
 | `--config-profile` (alias: `--config-version`) | Configuration profile to save schemas to |

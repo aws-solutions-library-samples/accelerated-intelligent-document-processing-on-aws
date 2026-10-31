@@ -149,6 +149,7 @@
         "idp_common/discovery/models.py": 100.0,
         "idp_common/discovery/multi_document_discovery.py": 28.75,
         "idp_common/discovery/prompts/__init__.py": 100.0,
+        "idp_common/discovery/regional_defaults.py": 100.0,
         "idp_common/discovery/rules_discovery.py": 72.33,
         "idp_common/docs_service.py": 80.0,
         "idp_common/document_failure.py": 100.0,
