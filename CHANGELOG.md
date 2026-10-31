@@ -17,6 +17,8 @@ SPDX-License-Identifier: MIT-0
   itself. Those prompts are now omitted, so the prompt the configuration is merged over
   applies. See [`config-create`](docs/idp-cli.md#config-create).
 
+- **Re-extract in the Test Studio editor no longer rewrites every section of a multi-section document.** It re-runs the whole document as one section of the corrected class, so offered on one section of a packet it overwrote the class of every section and then collapsed the grouping. It is now offered only on a document with one section, and `reextractTestSetDocument` and `generateDraftLabels` with a `documentClass` refuse a document with more than one section before writing anything (`generateDraftLabels` also requires exactly one `objectKeys` entry when a class is forced). See [Test Studio](docs/test-studio.md). ([#1672](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1672))
+
 ## [0.6.13]
 
 ### Added
