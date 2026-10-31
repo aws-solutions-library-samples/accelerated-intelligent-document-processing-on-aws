@@ -969,8 +969,10 @@ UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS = 85 * 60
 #: How long after main() starts it will wait for the deployment-variant probes
 #: before reporting the ones still running as failed. Only the weekly
 #: variant-probe run launches them. Like UX_NIGHTLY_JOIN_DEADLINE_SECONDS it counts
-#: from main()'s start, and it sits 30 minutes below CodeBuild's 180-minute project
-#: timeout (scripts/sdlc/cfn/codepipeline-s3.yml), so the final summary and the
+#: from main()'s start, and it sits 30 minutes below the 180-minute project timeout
+#: the template declares (scripts/sdlc/cfn/codepipeline-s3.yml; a project deployed
+#: from an older template is shorter, and probe_run_timeout_shortfall() refuses a
+#: probe run on one), so the final summary and the
 #: failure email are written even when a probe hangs; without it the build is
 #: killed mid-join and neither is. test_weekly_variant_probes.py pins the headroom.
 #: The 30 minutes is an unmeasured, reviewed allowance for the install phase before
@@ -9600,9 +9602,10 @@ def main():
                     "variant-probe run"
                 )
             probes_executor = ThreadPoolExecutor(max_workers=1)
-            # Only the scheduled probe run is held to the probe-run timeout; a run
-            # enabled by the legacy alias keeps its old behaviour.
-            shortfall = probe_run_timeout_shortfall() if variant_probe_run() else None
+            # Every probe run, the legacy alias's included, is joined against
+            # PROBE_JOIN_DEADLINE_SECONDS, so every one is held to the timeout
+            # that deadline needs.
+            shortfall = probe_run_timeout_shortfall()
             if shortfall:
                 # Reported through the join like any probe failure, so the run is
                 # red and the summary says why, without launching probe stacks
