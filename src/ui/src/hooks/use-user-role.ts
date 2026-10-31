@@ -115,9 +115,9 @@ interface UserRoleReturn {
   canDeleteConfig: boolean;
   /** True if user can perform HITL reviews (Admin or Reviewer) */
   canReview: boolean;
-  /** True if user can annotate test-set ground truth (Admin, Author or Annotator) */
+  /** True if user can annotate test-set ground truth (Admin, Author, Annotator or Reviewer) */
   canAnnotate: boolean;
-  /** Admin or Annotator: can open a production review-queue item. */
+  /** Admin, Annotator or Reviewer: can open a production review-queue item. */
   canWorkReviewQueues: boolean;
   /**
    * Works Production review queues as a member, not as their Admin: an Annotator (the

@@ -197,6 +197,35 @@ queue.
    the queue's skip list, with an optional note. The item goes back to its queue,
    unassigned and unfinished, and its draft is kept for whoever claims it next.
 
+#### What changed for Reviewers in v0.6.13
+
+Up to v0.6.12 a Reviewer found documents to review in the Document List, chose
+**Start Review** on the document page, corrected it there (including **Edit Mode** on
+the pages table to change the page grouping), and finished with **Process Changes**. From v0.6.13, a
+document that needs review is held in the Default queue, and the steps above replace
+that flow:
+
+- **The work is in Home › Queues and Home › Tasks**, not the Document List. A Reviewer
+  whose only role is Reviewer no longer has **Documents** in the navigation.
+- **Claim before editing.** An item opens view-only until you claim it. **Edit Page
+  Grouping** stays disabled with *Claim this item first to change its page grouping*,
+  and the server refuses a page-grouping change from anyone but the item's holder.
+- **Process Changes on the queue item finishes the review.** It applies your field and
+  page-grouping corrections in the finalize run; there is no separate **Start Review**
+  step.
+- **The document page doesn't edit a document in a queue.** It offers no **Start
+  Review**, and its **Edit Page Grouping**, **Re-extract Sections**, **Edit Page Text**
+  and **Reset Page Class** are disabled with *This document is in a review queue. Choose Edit to work on
+  it there.*, and **Edit** opens the queue item. For an Author or Viewer, who don't
+  work queues, the document opens read-only.
+- **Start Review is still used when the Default queue is off.** Documents then wait as
+  **Review Pending** and are reviewed on the document page as before: choose **Start
+  Review** first, because **Process Changes** there is accepted only from the Reviewer
+  who holds the open review (see [When the Default queue is off](#when-the-default-queue-is-off)).
+
+Your configuration-profile scope (`allowedConfigVersions`) limits which items you see
+and work in both flows.
+
 **For Admins:**
 
 - **Assign work.** In **Review Studio › Review Management**, open a queue, select items
@@ -225,9 +254,11 @@ When an item is finished with **Process Changes**:
   assignments, skips with their reasons, completion) is kept
 
 While a document is in review it is corrected only from its queue item: its other
-change actions (**Edit Page Grouping**, **Re-extract Sections**, **Edit Page Text**,
-**Reset Page Class**, **Use As Evaluation Baseline**) are disabled, and the server
-refuses them. Reprocessing, aborting or deleting a document in review withdraws its
+change actions on the document page (**Edit Page Grouping**, **Re-extract Sections**,
+**Edit Page Text**, **Reset Page Class**, **Use As Evaluation Baseline**) are disabled,
+**Start Review** isn't offered, and the server refuses them. For an Admin, Reviewer or
+Annotator who may work the item, the document page's **Edit** opens its queue item;
+page grouping is changed there, by the item's holder, with **Edit Page Grouping**. Reprocessing, aborting or deleting a document in review withdraws its
 review.
 
 ## Configuration
