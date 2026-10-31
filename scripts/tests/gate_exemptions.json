@@ -3249,6 +3249,20 @@
       "reason": "Each member carries its own reason in the dict: testset_labels.py is the one writer the scan exists to make the only one, and testset_summaries.py derives a document summary from labels rather than writing a label. Whether a match is a label write is a reading of what the line does, which the regex cannot compute. test_every_allowed_file_still_matches fails on a stale entry whose file no longer matches, so an entry cannot outlive its reason and pre-approve a future writer at that path.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_test_set_label_writers.py"
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_generated_template_validates.py::PENDING_DECISION": {
+      "kind": "exemption",
+      "memberKind": "the name of one top-level section of the system defaults that `FEATURE_SETS[\"all\"]` in idp_common/config/merge_utils.py does not include",
+      "turnsOff": "the equality between `FEATURE_SETS[\"all\"]` and the sections the system defaults carry, for the named section only. Every other assertion in the file still applies to it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_generated_template_validates.py",
+      "issues": [
+        1691
+      ],
+      "reason": "Each member carries its own reason in the constant's value, because the three reasons differ: rule_validation and chat are on in the system defaults and off in some presets, and hitl is off in the system defaults and may have been turned on in a profile. They share one fact. `all` copies each section's default values, and config-upload merges the file over the stack's preset or the profile's current configuration, so adding a member to `all` would revert that section there. Whether `--features all` should do that is a product decision, so it cannot be computed. The ratchet is test_all_accounts_for_every_section_the_defaults_carry. It requires every member to be a real section and not already in `all`, and it requires `all` plus the members to equal the section set derived from the defaults. A section that is in neither is therefore unaccounted for and fails, and a member that is added to `all`, or that the defaults drop, also fails."
     }
   }
 }
