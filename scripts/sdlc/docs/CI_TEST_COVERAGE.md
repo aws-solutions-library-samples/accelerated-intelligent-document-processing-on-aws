@@ -121,10 +121,15 @@ primary suite only.
 | Nightly schedule | not set | primary suite; updates the UX review stack |
 | Weekly variant-probe schedule | `true`, as a schedule variable | primary suite plus the probes; labelled `WEEKLY VARIANT-PROBE RUN` in the summary and the failure email and `WEEKLY VARIANT PROBES` in Slack; leaves the UX review stack alone |
 | Manual button, `web` or any other source | ignored | primary suite |
+| Any schedule, with `IDP_RUN_PROBES=true` set as a **project or group** CI/CD variable | `true`, inherited | the probes too — a nightly included, because GitLab gives every schedule the same source. Set the variable on the weekly schedule only |
 
 **Why a separate schedule.** A probe failure fails the run it is in. On the nightly
 it would be read as a product regression, and the nightly is the run somebody has to
 triage. On its own schedule a red run is a probe result, labelled as one.
+Every schedule runs the one `integration_tests` job, whose timeout is sized for the
+probe run, and it holds the size-1 `integration_deploy` resource group, so schedules
+that fire close together run one after another: a run queued behind the probe run
+can start up to that timeout later, and its result arrives correspondingly late.
 The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
 carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
 only while it exists and is active.
@@ -167,6 +172,10 @@ for an absent key rather than an empty string, and `|| echo` cannot catch it
 because the command *succeeded* — so a bare read hands the deploy script the string
 `"None"`. The buildspec turns anything that is not exactly `true` into `false`.
 
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then turn the weekly
+schedule on.** This is a step for whoever operates the CI account, not for users of
+the accelerator.
+
 ⚠️ **The buildspec lives in a CloudFormation template**, so the
 `genaiic-sdlc-codepipeline` stack in the CI account has to be updated to the
 template on `develop` before the weekly schedule runs any probes. The same update
@@ -175,7 +184,9 @@ join needs. Until it is, a weekly run carries the variable and deploys the prima
 suite only, and its summary's probe section reads "None run". Its Slack post is
 labelled, because the label is read in GitLab, but its summary and failure email
 are not, because they read the flag inside CodeBuild. It still leaves the UX review
-stack alone, because that decision is recorded in `ci_run_options.json`.
+stack alone, because that decision is recorded in `ci_run_options.json`. A run
+enabled by the legacy `IDP_TEST_APIGW_HOSTING` alias against such a project is
+refused by the timeout check and goes red, where it used to run the probes.
 
 **How long the weekly run is watched.** The probes are joined after the primary
 suite, so the weekly run's final summary lands later than the nightly's. CodeBuild
@@ -239,6 +250,9 @@ stack logs one expected ERROR line when BDA refuses its OCR project. BDA mode
 (`use_bda`, Step 4) works in both regions.
 
 **Standing up a region.** See [`scripts/sdlc/cfn/README.md`](../cfn/README.md#a-second-ci-region).
+For whoever operates the CI account, in this order: grant the GitLab role
+`s3:PutObject` on the region's source bucket, confirm that region's failure-email
+subscription, then create the region's schedule carrying `IDP_TEST_REGION`.
 Add the region to both `REGION_RUN_REGIONS` and `CI_INFRA_REGIONS`;
 `test_weekly_region_runs.py` fails if the two disagree.
 
@@ -422,9 +436,10 @@ check stage — which is how a merge request pipeline reached 111 minutes and a
 exhausted account quotas in this project before.
 
 *What it costs.* A change that breaks the deploy, or any of the twelve suite steps
-or five variant probes the deploy runs, can now **merge** and stay undetected
-until the next nightly run — by which time other merges may sit on top of it, so
-the nightly failure does not name the commit that caused it. There is no required
+or the variant probes, can now **merge** and stay undetected until the next
+scheduled run — the next nightly for the primary suite, up to a week for a probe —
+by which time other merges may sit on top of it, so the failure does not name the
+commit that caused it. There is no required
 status check on this repository to fall back on (issue #933), so nothing else
 catches it.
 
@@ -489,8 +504,8 @@ catches it.
   now **documentation rather than configuration**: it gates nothing, because a
   manual button you click deliberately should always be available. It is the
   definition of "touches the deploy path" to apply by hand.
-- **Triage a nightly failure by bisecting the day's merges**, not by reading the
-  pipeline's own commit.
+- **Triage a scheduled failure by bisecting the merges since the last green run**,
+  not by reading the pipeline's own commit.
 
 ² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
 runs Claude Code (via Bedrock) over the MR diff with
@@ -1816,8 +1831,11 @@ high enough to run the whole default table in parallel.
 
 ### Gating & implementation
 
-**Gating**: the probes run by default; set `IDP_TEST_APIGW_HOSTING=false` to
-skip them all (the env name is kept for backward compatibility).
+**Gating**: the probes run only on the weekly variant-probe schedule, which carries
+`IDP_RUN_PROBES=true`; the variable counts only on a scheduled pipeline.
+`IDP_TEST_APIGW_HOSTING=true` is still honoured as a legacy alias that turns them on,
+and a run it enables is held to the same probe-run timeout: on a project below 180
+minutes it is refused, and the run is red, rather than launching the probes.
 **Implementation** in `scripts/sdlc/codebuild_deployment.py`: `PROBE_VARIANTS`
 (the table), `deploy_and_test_probe()` (one probe's lifecycle, incl. VPC-param
 injection + skip), `run_variant_probes()` (the concurrent launcher),

@@ -1060,8 +1060,10 @@ UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS = 85 * 60
 #: How long after main() starts it will wait for the deployment-variant probes
 #: before reporting the ones still running as failed. Only the weekly
 #: variant-probe run launches them. Like UX_NIGHTLY_JOIN_DEADLINE_SECONDS it counts
-#: from main()'s start, and it sits 30 minutes below CodeBuild's 180-minute project
-#: timeout (scripts/sdlc/cfn/codepipeline-s3.yml), so the final summary and the
+#: from main()'s start, and it sits 30 minutes below the 180-minute project timeout
+#: the template declares (scripts/sdlc/cfn/codepipeline-s3.yml; a project deployed
+#: from an older template is shorter, and probe_run_timeout_shortfall() refuses a
+#: probe run on one), so the final summary and the
 #: failure email are written even when a probe hangs; without it the build is
 #: killed mid-join and neither is. test_weekly_variant_probes.py pins the headroom.
 #: The 30 minutes is an unmeasured, reviewed allowance for the install phase before
@@ -6019,17 +6021,19 @@ def teardown_primary_stack(result, stack_name):
 # IDP stack configured for API-Gateway Web UI hosting in its GLOBAL (regional,
 # internet-facing, NO VPC) form: WebUIHosting=APIGateway +
 # ApiGatewayVisibility=GLOBAL. It exercises the S3-proxy REST API hosting code
-# on every run and fetches the UI over HTTP, without consuming VPC quota.
+# and fetches the UI over HTTP, without consuming VPC quota. It is one of the
+# PROBE_VARIANTS, so it runs on the weekly variant-probe run, not every run.
 #
-# The VPC/PRIVATE variant is NOT run in routine CI: it stood up a throwaway VPC
-# per run, which leaked VPCs (Lambda ENIs blocking teardown) and consumed 1 of
-# only 5 VPC slots per concurrent run, exhausting the quota under parallel
-# pipelines. Validate the PRIVATE/VPC path out-of-band (manual/local) instead.
-# The self-contained VPC template (scripts/sdlc/apigw-hosting-test-vpc.yaml) is
-# retained for that manual use. delete_apigw_test_vpc / the startup reaper below
+# The PRIVATE/VPC variant is a probe too (`apigwpriv`), and it deploys into the
+# persistent test VPC (and skips itself when the CI account has none) rather
+# than standing up its own: a throwaway VPC per run
+# leaked VPCs (Lambda ENIs blocking teardown) and exhausted the 5-VPC quota under
+# parallel pipelines. The self-contained VPC template
+# (scripts/sdlc/apigw-hosting-test-vpc.yaml) is retained for manual use. delete_apigw_test_vpc / the startup reaper below
 # remain to clean up any historical *-apigw-vpc stragglers.
 #
-# Gated by IDP_TEST_APIGW_HOSTING (default "true"); set to "false" to skip.
+# Gated by IDP_RUN_PROBES on a scheduled pipeline (variant_probe_run()); the
+# legacy IDP_TEST_APIGW_HOSTING=true also turns the probes on.
 # ---------------------------------------------------------------------------
 
 
@@ -9750,8 +9754,9 @@ def main():
         # integration_test_deployment.py turns it into the `idp-run-probes` S3
         # object metadata and the buildspec exports it here. Run one probe by
         # hand with `make stacktest-*` (scripts/sdlc/run_stacktest.py /
-        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING is still
-        # honored as a legacy alias so an existing override keeps working.)
+        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING=true is still
+        # honored as a legacy alias, now held to the same probe-run timeout as the
+        # schedule: on a project below 180 minutes it is refused, not run.)
         probes_enabled = (
             variant_probe_run()
             or get_env_var("IDP_TEST_APIGW_HOSTING", "false").lower() == "true"
@@ -9771,6 +9776,9 @@ def main():
                     "variant-probe run"
                 )
             probes_executor = ThreadPoolExecutor(max_workers=1)
+            # Every probe run, the legacy alias's included, is joined against
+            # PROBE_JOIN_DEADLINE_SECONDS, so every one is held to the timeout
+            # that deadline needs.
             shortfall = probe_run_timeout_shortfall()
             if shortfall:
                 # Reported through the join like any probe failure, so the run is

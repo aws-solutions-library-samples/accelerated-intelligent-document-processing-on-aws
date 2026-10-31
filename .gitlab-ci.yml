@@ -524,7 +524,9 @@ integration_tests:
   # it can watch that long — plus before_script (~5 min) and after_script log
   # capture (~2 min), so the SCRIPT owns the deadline and always exits cleanly.
   # When this equalled the monitor's deadline, GitLab hard-killed the job first
-  # and after_script never captured logs.
+  # and after_script never captured logs. A runner's maximum_timeout would cap this
+  # silently; the fleet that ran these jobs set none (checked 2026-10-31), so recheck
+  # it if integration_tests moves to other runners.
   timeout: 3h30m
   # Serialize deploys. The resource_group is a size-1 mutex; it is now scoped to a
   # single SHARED group rather than per-branch, which is the right choice once the
@@ -596,8 +598,8 @@ integration_tests:
   #     paths and is still the right definition of "touches the deploy path" — it is
   #     no longer wired to a `changes:` rule here, because a manual button you click
   #     deliberately should always be available.
-  #   - A nightly failure is triaged by bisecting the day's merges, not by reading
-  #     the pipeline's own commit.
+  #   - A scheduled failure is triaged by bisecting the merges since the last green
+  #     run, not by reading the pipeline's own commit.
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
@@ -893,8 +895,8 @@ integration_tests:
       region_run = os.environ.get("IDP_REGION_RUN", "").strip()
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
-      # monitor stopped before the pipeline reached a terminal state, on the
-      # 110-min deadline or on a credential expiry it could not refresh), and it
+      # monitor stopped before the pipeline reached a terminal state, on its
+      # handoff deadline or on a credential expiry it could not refresh), and it
       # drops this marker when it does. Reporting that as ✅ PASSED asserts
       # something nobody checked.
       handed_off = pathlib.Path("monitor_handoff.txt").is_file()
@@ -911,8 +913,8 @@ integration_tests:
       # attached, so a long summary can never push the handoff warning off the end
       # — that warning is the part a reader most needs.
       if not ok:
-          summary += ("\n\nTriage by bisecting the day's merges: the pipeline's own "
-                      "commit is not necessarily the cause.")
+          summary += ("\n\nTriage by bisecting the merges since the last green run: "
+                      "the pipeline's own commit is not necessarily the cause.")
       elif handed_off:
           summary = (
               pathlib.Path("monitor_handoff.txt").read_text(errors="replace").strip()

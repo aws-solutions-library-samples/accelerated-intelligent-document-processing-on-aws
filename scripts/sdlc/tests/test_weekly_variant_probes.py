@@ -237,6 +237,74 @@ def test_the_combined_label_and_subject_carry_the_probe_run(cbd):
     )
 
 
+def _main_function() -> ast.FunctionDef:
+    tree = ast.parse(
+        (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    return next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+
+
+def _calls(node: ast.AST, name: str) -> list[ast.Call]:
+    return [
+        call
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == name
+    ]
+
+
+def test_main_launches_the_probes_only_past_the_timeout_check():
+    """Read from source: the guard is consulted, and the probes sit behind it."""
+    launch = next(
+        node
+        for node in ast.walk(_main_function())
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "probes_enabled"
+    )
+    assert _calls(launch, "probe_run_timeout_shortfall"), (
+        "main() launches the probes without consulting probe_run_timeout_shortfall()"
+    )
+    guard = next(
+        node
+        for node in ast.walk(launch)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "shortfall"
+    )
+    submitted = {
+        ast.unparse(call.args[0])
+        for call in ast.walk(guard)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "submit"
+    }
+    in_else = {
+        ast.unparse(call.args[0])
+        for branch in guard.orelse
+        for call in ast.walk(branch)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "submit"
+    }
+    assert "run_variant_probes" in in_else, submitted
+
+
+def test_main_joins_the_probes_against_the_deadline():
+    """Read from source: the join keeps finished probes and counts from main()."""
+    (join,) = _calls(_main_function(), "join_variant_probes")
+    keywords = {kw.arg: ast.unparse(kw.value) for kw in join.keywords}
+    assert keywords.get("started") == "main_started", keywords
+    assert keywords.get("finished") == "probes_finished", keywords
+
+
 # ---------------------------------------------------------------------------
 # Slack
 # ---------------------------------------------------------------------------
@@ -296,6 +364,38 @@ def _label_condition(body: str) -> ast.expr:
     raise AssertionError("no probe-run label condition found")
 
 
+def _evaluate(node: ast.expr) -> object:
+    """Evaluate the label condition without eval().
+
+    Only the shapes the condition uses are accepted: ``and``/``or``, ``==``,
+    string constants, and ``os.environ.get(...)`` with ``.strip()``/``.lower()``.
+    Anything else fails the test, so a condition that grows a new shape is read
+    again rather than evaluated blindly.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BoolOp):
+        values = [_evaluate(v) for v in node.values]
+        return all(values) if isinstance(node.op, ast.And) else any(values)
+    if (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.Eq)
+    ):
+        return _evaluate(node.left) == _evaluate(node.comparators[0])
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if ast.unparse(node.func) == "os.environ.get":
+            key, default = (_evaluate(a) for a in node.args)
+            return os.environ.get(str(key), str(default))
+        if node.func.attr in ("strip", "lower") and not node.args:
+            value = _evaluate(node.func.value)
+            assert isinstance(value, str)
+            return value.strip() if node.func.attr == "strip" else value.lower()
+    raise AssertionError(
+        f"unexpected shape in the label condition: {ast.unparse(node)}"
+    )
+
+
 @pytest.mark.parametrize("job", ["integration_tests", "nightly_notification"])
 @pytest.mark.parametrize(
     ("source", "probes", "labelled"),
@@ -315,9 +415,7 @@ def test_the_label_agrees_with_variant_probes_requested(
     monkeypatch.setenv("CI_PIPELINE_SOURCE", source)
     monkeypatch.setenv("IDP_RUN_PROBES", probes)
     condition = _label_condition(_slack_bodies(config)[job])
-    verdict = eval(  # noqa: S307 - the expression is this repo's own CI config
-        compile(ast.Expression(condition), "<label>", "eval"), {"os": os}
-    )
+    verdict = _evaluate(condition)
     assert bool(verdict) is labelled
     assert bool(verdict) is bool(itd.variant_probes_requested())
 
