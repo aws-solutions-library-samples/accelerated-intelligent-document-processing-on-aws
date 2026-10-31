@@ -709,10 +709,26 @@ from the **earlier** window, which is the one that had their preceding context.
 Windows are merged by projecting each window's segments onto per-page verdicts
 and re-running the same fold page-level classification uses, so a windowed packet
 and a page-level document cannot disagree about how verdicts become segments.
-A single window (the common case) uses the model's segments directly.
+A single window (the common case) uses the model's segments directly, unless
+they overlap: when a call returns segments that share pages (a 1–5 segment
+followed by a 2–2 segment, say), each page is kept in the segment the model
+reported **first** — the same rule a windowed packet applies — and a warning names
+the pages. Every page therefore belongs to exactly one section. The later segment
+still starts a new document at the first page it keeps, so two documents of the
+same class that the model let share a page are not joined into one.
 
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.
+
+`window_pages` is a page count, so a window can still be too large for the model
+once its page images are attached: a full window of full-resolution scans can
+exceed a smaller model's input. A window the model refuses as too long is split in two and both halves
+are retried, down to single pages, with the overlap repeated at the junction and
+merged by the same earlier-window rule. Retrying is bounded: the calls made for
+split windows stop at twice the packet's page count, and anything left is reported
+as not classified. Every half that fits is a separate billed call, so if this
+appears in the logs routinely, lower `window_pages` or set `image.target_width` /
+`target_height`. With `window_pages: 0` the window is not split.
 
 **How to pick the two numbers.**
 
@@ -1047,8 +1063,8 @@ severity says how much attention the case deserves:
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. **Produced only by `classify_page_sagemaker`**, so it cannot occur in a stack this solution deploys: no template here creates a SageMaker endpoint or UDOP model. You reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page. If you supplied the endpoint yourself, check its health, model access and quota — otherwise this code indicates a classifier wired up outside the solution's own templates |
-| `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. On the Bedrock backend it is produced in one case: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. A Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue | For a read failure, check the page's artifacts in the working bucket and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
+| `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text, and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
 One issue per section per cause, listing the page IDs, so a long run of
