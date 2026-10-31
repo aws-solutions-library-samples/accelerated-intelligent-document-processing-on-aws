@@ -145,3 +145,49 @@ class TestDiscovery:
         proc, manifest, _ = run_generator(root, tmp_path / "out")
         assert proc.returncode != 0
         assert "git ls-files" in proc.stderr
+
+
+class TestEveryPinIsAudited:
+    def test_a_requirements_pin_of_a_locked_package_is_kept_beside_the_lock(
+        self, repo, tmp_path
+    ):
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert {"foo==2.0", "foo==1.5"} <= manifest_lines(manifest)
+
+    def test_a_pin_of_an_unlocked_package_is_audited_at_the_pin(self, repo, tmp_path):
+        proc, manifest, additional = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        lines = manifest_lines(manifest)
+        assert {"pin-only==0.3", "extra-pkg==4.1", "marked-pkg==5.0"} <= lines
+        # Still handed to the resolver by name, so its transitive dependencies
+        # are found; the shell merge skips the name itself, which is now present.
+        names = set(additional.read_text().split())
+        assert {"pin-only", "loose-pkg", "wild-pkg"} <= names
+
+    def test_non_exact_specs_are_not_recorded_as_pins(self, repo, tmp_path):
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        lines = manifest_lines(manifest)
+        assert not any(line.startswith(("loose-pkg", "wild-pkg")) for line in lines)
+
+    def test_each_pair_appears_once(self, repo, tmp_path):
+        write(repo, "svc2/requirements.txt", "foo==1.5\nFOO==2.0\n")
+        git(repo, "add", "svc2")
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        foo = [
+            line
+            for line in manifest.read_text().splitlines()
+            if re.match(r"(?i)foo==", line)
+        ]
+        assert sorted(foo) == ["foo==1.5", "foo==2.0"]
+
+    def test_a_pin_that_is_not_a_pep_440_version_is_kept_not_fatal(
+        self, repo, tmp_path
+    ):
+        write(repo, "svc3/requirements.txt", "odd-pkg==1.0\nodd-pkg==vendor-build\n")
+        git(repo, "add", "svc3")
+        proc, manifest, _ = run_generator(repo, tmp_path / "out")
+        assert proc.returncode == 0, proc.stderr
+        assert {"odd-pkg==1.0", "odd-pkg==vendor-build"} <= manifest_lines(manifest)

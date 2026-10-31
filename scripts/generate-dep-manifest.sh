@@ -25,13 +25,13 @@ fi
 echo "Generating Python dependency manifest..."
 
 "${PY_RUN[@]}" - "$REPO_ROOT" "$OUTPUT_DIR/python-packages.txt" << 'PYTHON_SCRIPT'
-"""Collect all Python dependencies from lockfiles and requirements, deduplicate by name."""
+"""Collect every pinned Python dependency from lockfiles and requirements files."""
 import subprocess
 import sys
 import tomllib
 import re
 from pathlib import Path
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 repo_root = Path(sys.argv[1])
 output_file = Path(sys.argv[2])
@@ -45,7 +45,6 @@ INTERNAL_PACKAGES = {
     "idp-common", "idp-sdk", "idp-accelerator-cli", "idp-mcp-connector",
     "idp-feature-sdk",
 }
-
 
 
 def repo_files(pattern: str) -> list[Path]:
@@ -82,11 +81,29 @@ def is_internal(name: str) -> bool:
     return normalize(name) in INTERNAL_PACKAGES
 
 
-# Strategy: parse existing uv.lock files for already-resolved packages,
-# then collect any additional packages from requirements.txt that aren't
-# covered by the lockfiles. This avoids re-resolution conflicts.
+# Strategy: parse existing uv.lock files for already-resolved packages, record
+# every exact `==` pin in a requirements file, then collect the remaining names
+# from pyproject.toml and requirements.txt for `uv pip compile` to resolve. The
+# loose names are resolved by name alone, which avoids re-resolution conflicts.
+#
+# The manifest keeps every distinct (name, version) pair, not one version per
+# name: a requirements file pinning `foo==1.5` installs 1.5 into its Lambda
+# whatever version a lockfile carries, so keeping only the lockfile's version
+# (or the highest of several) leaves the version that ships unaudited.
 
-resolved: dict[str, str] = {}  # normalized_name -> "name==version"
+pinned: dict[tuple[str, str], str] = {}  # (normalized_name, version) -> "name==version"
+locked: set[str] = set()  # normalized names some lockfile resolves
+
+# An exact pin: a name, optional extras, `==` and a concrete version, optionally
+# followed by an environment marker. `==1.*` and `==1.0,<2` are not exact.
+EXACT_PIN = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==\s*"
+    r"([A-Za-z0-9][A-Za-z0-9.+!_-]*)\s*(?:;.*)?$"
+)
+
+
+def record(name: str, version: str) -> None:
+    pinned.setdefault((normalize(name), version), f"{name}=={version}")
 
 # 1. Parse all existing uv.lock files (already resolved, no conflicts)
 for lockfile in repo_files("uv.lock"):
@@ -99,12 +116,11 @@ for lockfile in repo_files("uv.lock"):
             version = ver_m.group(1)
             if version == "0.0.0" or is_internal(name):
                 continue
-            key = normalize(name)
-            if key not in resolved or Version(version) > Version(resolved[key].split("==")[1]):
-                resolved[key] = f"{name}=={version}"
+            record(name, version)
+            locked.add(normalize(name))
 
 # 2. Collect additional packages from pyproject.toml and requirements.txt
-#    that aren't already in the resolved set
+#    that no lockfile resolves
 additional: set[str] = set()
 
 
@@ -125,14 +141,14 @@ for toml_path in sorted(repo_root.glob("lib/*/pyproject.toml")):
     project = data.get("project", {})
     for dep in project.get("dependencies", []):
         pkg = extract_pkg_name(dep)
-        if not is_internal(pkg) and normalize(pkg) not in resolved:
+        if not is_internal(pkg) and normalize(pkg) not in locked:
             additional.add(pkg)
     for group_deps in project.get("optional-dependencies", {}).values():
         for dep in group_deps:
             if is_path_ref(dep):
                 continue
             pkg = extract_pkg_name(dep)
-            if not is_internal(pkg) and normalize(pkg) not in resolved:
+            if not is_internal(pkg) and normalize(pkg) not in locked:
                 additional.add(pkg)
 
 # From requirements.txt files
@@ -145,13 +161,29 @@ for req_path in repo_files("requirements*.txt"):
             if is_path_ref(line):
                 continue
             pkg = extract_pkg_name(line)
-            if not is_internal(pkg) and normalize(pkg) not in resolved:
+            if is_internal(pkg):
+                continue
+            pin = EXACT_PIN.match(line)
+            if pin:
+                record(pin.group(1), pin.group(2))
+            # A pinned name not in a lockfile still goes to the resolver, so its
+            # transitive dependencies are found; the merge below skips the name
+            # itself because the pin is already in the manifest.
+            if normalize(pkg) not in locked:
                 additional.add(pkg)
 
-# Write resolved packages to output; write additional to a temp file for resolution
+
+def version_order(pair: tuple[str, str]) -> tuple:
+    try:
+        return (pair[0], 0, Version(pair[1]), "")
+    except InvalidVersion:
+        return (pair[0], 1, Version("0"), pair[1])
+
+
+# Write pinned packages to output; write additional to a temp file for resolution
 with open(output_file, "w") as f:
-    for key in sorted(resolved.keys()):
-        f.write(resolved[key] + "\n")
+    for key in sorted(pinned, key=version_order):
+        f.write(pinned[key] + "\n")
 
 # Write additional packages to a temp file so the shell can resolve them
 additional_file = Path(sys.argv[2]).parent / ".additional-reqs.txt"
@@ -159,11 +191,11 @@ if additional:
     with open(additional_file, "w") as f:
         for pkg in sorted(additional, key=str.lower):
             f.write(pkg + "\n")
-    print(f"  {len(resolved)} packages from lockfiles, {len(additional)} to resolve")
+    print(f"  {len(pinned)} pinned packages, {len(additional)} to resolve")
 else:
     additional_file.unlink(missing_ok=True)
-    print(f"  {len(resolved)} packages from lockfiles, 0 additional")
-    print(f"  -> {sys.argv[2]} ({len(resolved)} total)")
+    print(f"  {len(pinned)} pinned packages, 0 additional")
+    print(f"  -> {sys.argv[2]} ({len(pinned)} total)")
 PYTHON_SCRIPT
 
 # Resolve additional packages (not in lockfiles) with uv pip compile
@@ -228,5 +260,5 @@ echo "  -> $OUTPUT_DIR/node-packages.txt ($NODE_COUNT packages)"
 
 echo ""
 echo "Done. Manifests at: $OUTPUT_DIR/"
-echo "  python-packages.txt: pip-compatible (name==version)"
+echo "  python-packages.txt: name==version, one line per pinned version"
 echo "  node-packages.txt:   npm-compatible (name@version)"

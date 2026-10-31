@@ -16,7 +16,7 @@ make dep-manifest
 ```
 
 Output (gitignored, under `dist/manifests/`):
-- `python-packages.txt` — pip-compatible format (`name==version`)
+- `python-packages.txt` — one `name==version` per line; a package appears once per version the repository pins
 - `node-packages.txt` — npm-compatible format (`name@version`)
 
 ## Prerequisites
@@ -62,11 +62,17 @@ The manifests are designed to work with any artifact repository manager (JFrog A
    - Upstream URL: `https://pypi.org`
    - (Optional) Set inclusion patterns from the manifest
 
-2. Bulk-cache all packages:
+2. Bulk-cache all packages, one line at a time:
    ```bash
-   pip install --index-url https://your-repo-manager/api/pypi/pypi-remote/simple \
-       -r dist/manifests/python-packages.txt --no-deps --target /tmp/cache
+   grep -v '^#' dist/manifests/python-packages.txt | while IFS= read -r pkg; do
+       [ -n "$pkg" ] && pip download --no-deps --dest /tmp/cache \
+           --index-url https://your-repo-manager/api/pypi/pypi-remote/simple "$pkg"
+   done
    ```
+   Do not pass the file to `pip install -r`. It lists every version the
+   repository pins, so a package pinned at two versions (in a lockfile and in a
+   Lambda's `requirements.txt`, say) appears twice, and pip refuses a
+   requirements file naming two versions of one package.
 
 3. Configure pip for air-gapped builds:
    ```ini
@@ -103,7 +109,7 @@ The manifests are designed to work with any artifact repository manager (JFrog A
 
 The script (`scripts/generate-dep-manifest.sh`):
 
-1. **Python**: Parses existing `uv.lock` files for already-resolved packages, then scans `lib/*/pyproject.toml` and all `requirements.txt` files for any additional packages not covered by the lockfiles. Internal packages and path references are filtered out. Lockfiles and requirements files are found with `git ls-files` (tracked files plus untracked files no ignore rule covers), so a gitignored copy such as a staged build tree is not read and a local run reads the same files CI does. The script therefore has to run inside a git checkout.
+1. **Python**: Parses existing `uv.lock` files for already-resolved packages, records every exact `==` pin in a `requirements.txt` file at its pinned version, then scans `lib/*/pyproject.toml` and the `requirements.txt` files for any remaining packages not covered by the lockfiles and resolves those with `uv pip compile`. Every distinct name and version pair is kept, so a pin that differs from a lockfile's version is listed beside it rather than dropped. Internal packages and path references are filtered out. Lockfiles and requirements files are found with `git ls-files` (tracked files plus untracked files no ignore rule covers), so a gitignored copy such as a staged build tree is not read and a local run reads the same files CI does. The script therefore has to run inside a git checkout.
 
 2. **Node**: Parses the committed `package-lock.json` files with `jq` to extract every resolved package and version. No install step needed.
 
