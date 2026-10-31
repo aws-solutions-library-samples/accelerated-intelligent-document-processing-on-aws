@@ -1987,7 +1987,11 @@ field whose value is absent keeps its `confidence` and `confidence_reason` in
 section's confidence alerts. So it does not count in the document's
 `ConfidenceAlertCount`, it does not trigger legacy HITL, and it does not become a
 review reason in review-queue mode. The rule is the same in every confidence mode
-(`separate`, `integrated`) and in BDA mode.
+(`separate`, `integrated`) and in BDA mode, with one exception: when Advanced
+(agentic) extraction is sharded and `separate` confidence runs inside the shards,
+the stored alerts on list rows are numbered from the start of each shard, so they
+cannot be matched to the row they describe. Those row alerts are kept as they are,
+and only the alerts on fields outside lists are judged.
 
 A value is **absent** when it is null, a blank string, an empty list or object, or
 an object or list that holds nothing but those, such as `{"City": null, "Zip": ""}`.
@@ -2028,7 +2032,8 @@ document count is the sum over its sections.
 > Nothing compares an absent scalar with the page text yet, so a value that is on
 > the page but came back empty is now visible only as a missing required field
 > (when the schema requires it) or in its own confidence score. Documents processed
-> before this change keep their stored alerts until they are reprocessed.
+> before this change keep their stored alerts until their extraction or confidence
+> assessment runs again.
 
 ### Thresholds inside lists (arrays)
 

@@ -858,3 +858,212 @@ class TestProcessResultsCount:
         assert written.missing_required_field_count == 3
         assert written.confidence_alert_count == 0
         assert not written.hitl_triggered
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1: shard-local row indexes, list rules, shape mismatches, writers
+# --------------------------------------------------------------------------- #
+
+
+class TestShardLocalRowIndexes:
+    """On the agentic sharded path with nothing rebuilding the surface, an
+    alert's row index counts from its shard's first row (upstream #813), so it
+    cannot be matched against the merged data."""
+
+    _ASSESSMENT = {
+        "Total": {"confidence": 0.0},
+        "Rows": [{"Amount": {"confidence": 0.1}}, {"Amount": {"confidence": 0.2}}],
+    }
+    # The merged data: row 0 is empty, row 1 (shard 2's row 0) has a value.
+    _VALUES = {"Total": None, "Rows": [{"Amount": None}, {"Amount": "99.99"}]}
+
+    def test_row_alerts_are_kept_and_unindexed_ones_judged(self):
+        alerts = [_alert("Total"), _alert("Rows[0].Amount", 0.2)]
+        kept = exclude_absent_value_alerts(
+            alerts, self._ASSESSMENT, self._VALUES, row_indexes_are_global=False
+        )
+        assert _names(kept) == ["Rows[0].Amount"]
+
+    def test_the_separate_in_shard_path_keeps_a_shard_local_row_alert(self):
+        """Through the storage point, with the integrated retry off: the alert
+        on shard 2's first row (a populated value) must survive."""
+        svc = _extraction_service()
+        section = Section(section_id="1", classification="Invoice", page_ids=["1"])
+        svc._attach_explainability(
+            output_metadata={},
+            merged_assessment=self._ASSESSMENT,
+            merged_assessment_alerts=[_alert("Total"), _alert("Rows[0].Amount", 0.2)],
+            extracted_fields=self._VALUES,
+            document=Document(id="d", input_key="d.pdf"),
+            section=section,
+            section_info=_section_info(),
+        )
+        assert _names(section.confidence_threshold_alerts) == ["Rows[0].Amount"]
+
+    def test_a_rebuilt_surface_has_its_row_alerts_judged(self):
+        """When the integrated retry rebuilt the surface its indexes are global,
+        so an alert on an empty cell is dropped."""
+        svc = _extraction_service()
+        rebuilt = [_alert("Rows[0].Amount", 0.1), _alert("Rows[1].Amount", 0.2)]
+        svc._integrated_assessment_enabled = lambda: True  # type: ignore[method-assign]
+        svc._retry_missing_integrated_rows = (  # type: ignore[method-assign]
+            lambda merged_assessment, **_kw: (merged_assessment, rebuilt, None)
+        )
+        section = Section(section_id="1", classification="Invoice", page_ids=["1"])
+        svc._attach_explainability(
+            output_metadata={},
+            merged_assessment=self._ASSESSMENT,
+            merged_assessment_alerts=[],
+            extracted_fields=self._VALUES,
+            document=Document(id="d", input_key="d.pdf"),
+            section=section,
+            section_info=_section_info(),
+        )
+        assert _names(section.confidence_threshold_alerts) == ["Rows[1].Amount"]
+
+
+class TestShapeMismatch:
+    def test_a_populated_list_scored_as_a_dict_keeps_its_alerts(self):
+        assessment = {"Tags": {"a": {"confidence": 0.1}, "b": {"confidence": 0.1}}}
+        alerts = [_alert("Tags.a"), _alert("Tags.b")]
+        assert (
+            exclude_absent_value_alerts(alerts, assessment, {"Tags": ["a", "b"]})
+            == alerts
+        )
+
+    def test_a_populated_dict_scored_as_a_list_keeps_its_alerts(self):
+        assessment = {"Addr": [{"confidence": 0.1}]}
+        alerts = [_alert("Addr[0]")]
+        assert (
+            exclude_absent_value_alerts(alerts, assessment, {"Addr": {"City": "X"}})
+            == alerts
+        )
+
+
+class TestRequiredLists:
+    def test_a_required_list_of_blank_scalars_is_one_missing_entry(self):
+        schema = _obj({"Tags": {"type": "array", "items": S}}, required=["Tags"])
+        for value in ([""], [None, " "]):
+            found = collect_missing_required_fields({"Tags": value}, schema)
+            assert _names(found) == ["Tags"]
+
+    def test_a_required_list_of_empty_rows_that_require_nothing_is_missing(self):
+        schema = _obj(
+            {"Rows": {"type": "array", "items": _obj({"a": S})}}, required=["Rows"]
+        )
+        found = collect_missing_required_fields({"Rows": [{"a": None}]}, schema)
+        assert _names(found) == ["Rows"]
+
+    def test_rows_that_require_fields_report_them_rather_than_the_list(self):
+        schema = _obj(
+            {"Rows": {"type": "array", "items": _obj({"a": S}, required=["a"])}},
+            required=["Rows"],
+        )
+        found = collect_missing_required_fields({"Rows": [{"a": None}]}, schema)
+        assert _names(found) == ["Rows[0].a"]
+
+
+class TestWritersKeepTheList:
+    def test_the_section_writer_writes_it(self):
+        """A whole-map replace: omitting the list here would erase it."""
+        from unittest.mock import Mock
+
+        from idp_common.dynamodb.service import DocumentDynamoDBService
+
+        service = DocumentDynamoDBService(dynamodb_client=Mock())
+        section = Section(
+            section_id="1",
+            classification="c",
+            page_ids=["1"],
+            missing_required_fields=[_alert("A")],
+        )
+        service.update_document_section("doc.pdf", 0, section)
+        stored = service.client.update_item.call_args.kwargs[
+            "expression_attribute_values"
+        ][":section"]
+        assert [e["attributeName"] for e in stored["MissingRequiredFields"]] == ["A"]
+
+    def test_the_run_record_snapshots_it(self):
+        from unittest.mock import Mock
+
+        from idp_common.dynamodb.service import DocumentDynamoDBService
+
+        client = Mock()
+        service = DocumentDynamoDBService(dynamodb_client=client)
+        doc = Document(id="d.pdf", input_key="d.pdf")
+        doc.sections = [
+            Section(
+                section_id="1",
+                classification="c",
+                page_ids=["1"],
+                missing_required_fields=[_alert("A")],
+            )
+        ]
+        service.create_document_run(doc, "run-1", "s3://b/manifest.json", 1)
+        item = client.put_item.call_args.args[0]
+        stored = item["Sections"][0]["MissingRequiredFields"]
+        assert [e["attributeName"] for e in stored] == ["A"]
+
+
+def _load_resolver(name: str):
+    import importlib.util
+    import os
+
+    path = os.path.join(
+        os.path.dirname(__file__),
+        "../../../../../nested/api-resolvers/src/lambda",
+        name,
+        "index.py",
+    )
+    spec = importlib.util.spec_from_file_location(f"{name}_missing_required", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestApiShapes:
+    def test_the_version_view_carries_the_list(self, monkeypatch):
+        monkeypatch.setenv("OUTPUT_BUCKET", "out")
+        monkeypatch.setenv("TRACKING_TABLE", "tracking")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        module = _load_resolver("document_versions_resolver")
+        entry = {"attributeName": "A", "confidence": None, "confidenceThreshold": None}
+        shaped = module._shape_version(
+            {"RunId": "r", "Sections": [{"Id": "1", "MissingRequiredFields": [entry]}]}
+        )
+        assert shaped["Sections"][0]["MissingRequiredFields"] == [entry]
+
+    def test_the_document_list_passes_the_count_through(self, monkeypatch):
+        monkeypatch.setenv("TRACKING_TABLE", "tracking")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        module = _load_resolver("list_documents_gsi_resolver")
+        row = module._gsi_item_to_document(
+            {"PK": "doc#a.pdf", "SK": "none", "MissingRequiredFieldCount": 2}
+        )
+        assert row["MissingRequiredFieldCount"] == 2
+
+
+class TestBdaHandlerCount:
+    def test_the_bda_result_step_sums_the_sections(self, monkeypatch):
+        from tests.unit.lambdas import test_bda_processresults_feature_off_parity as p
+
+        output = p._custom_output(0.95, 0.99)
+        output["inference_result"] = {"InvoiceTotal": "12.00", "PoNumber": ""}
+        schema = {
+            "type": "object",
+            "required": ["PoNumber"],
+            "properties": {"InvoiceTotal": S, "PoNumber": S},
+        }
+        monkeypatch.setattr(
+            p, "_case", lambda case_id: (p._config(), p._main_event(), output)
+        )
+        monkeypatch.setattr(
+            p.bda_index, "resolve_class_schema", lambda doc_class, config: schema
+        )
+        outcome = p.run_case("alerts_hitl_on")
+        written = outcome["update_document_calls"][-1]["document"]
+        assert [
+            e["attribute_name"]
+            for e in written["sections"][0]["missing_required_fields"]
+        ] == ["PoNumber"]
+        assert written["missing_required_field_count"] == 1

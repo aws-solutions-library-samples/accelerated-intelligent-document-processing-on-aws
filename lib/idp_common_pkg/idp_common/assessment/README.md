@@ -1601,7 +1601,8 @@ which the alert builders above never see
 
 They are applied where each mode stores its alerts, so every producer upstream is
 covered by one call: `AssessmentService.process_document_section` (`separate`),
-`ExtractionService._attach_explainability` (`integrated`), and
+`ExtractionService._attach_explainability` (`integrated`, and `separate` run
+inside agentic shards), and
 `create_confidence_threshold_alerts` in the BDA result processor, which skips a
 key-value entry whose `value` is absent. `ExtractionService._save_results` builds
 `missing_required_fields` for every confidence mode, including none, and the
@@ -1610,8 +1611,15 @@ key-value entry whose `value` is absent. `ExtractionService._save_results` build
 reasons all read `confidence_threshold_alerts`, none of them sees an absent value.
 Nothing routes on `missing_required_fields`.
 
+One path judges list rows it cannot place. On the agentic sharded path, when the
+integrated retry did not rebuild the alert surface, each alert's row index counts
+from its shard's first row (upstream #813), so matching it against the merged data
+would test the wrong row and could drop a real alert on a populated row.
+`_attach_explainability` therefore passes `row_indexes_are_global=False` there, and
+alerts carrying a row index are kept unjudged.
+
 The tracking item stores the list as `MissingRequiredFields` beside
-`ConfidenceThresholdAlerts`, bounded the same way (at most 50 per section and 1,000
+`ConfidenceThresholdAlerts`, bounded the same way (at most 50 per section and 300
 per document, with `MissingRequiredFieldsTotal` recorded when a section's list was
 truncated), and the document count as `MissingRequiredFieldCount`. That count is
 not in the document list's GSI projection, so the list's fast path cannot show it.

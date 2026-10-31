@@ -76,9 +76,11 @@ def _child_value(value: Any, key: Any) -> Any:
             return value[key] if 0 <= key < len(value) else None
     elif isinstance(value, dict):
         return value.get(key)
-    if isinstance(value, (dict, list)) or not _is_populated_value(value):
-        return None
-    return value
+    # The assessment's shape does not match the value's (a list scored as a dict
+    # keyed by element, a dict scored as a list, a decomposed string). There is
+    # no matching sub-value to test, so a populated value is inherited and the
+    # alert kept — the conservative direction.
+    return value if has_extracted_value(value) else None
 
 
 def iter_assessed_leaf_values(
@@ -143,6 +145,8 @@ def exclude_absent_value_alerts(
     alerts: list[dict[str, Any]] | None,
     assessment: Any,
     extraction_results: Any,
+    *,
+    row_indexes_are_global: bool = True,
 ) -> list[dict[str, Any]]:
     """``alerts`` without those raised on a leaf whose extracted value is absent.
 
@@ -150,6 +154,13 @@ def exclude_absent_value_alerts(
     ``explainability_info``) and ``extraction_results`` its ``inference_result``.
     When either is not a dict nothing can be judged and the list is returned
     unchanged, so a caller with no data never loses an alert by accident.
+
+    ``row_indexes_are_global=False`` is for a surface whose list-row indexes
+    count from the start of a shard rather than of the merged list (the
+    agentic sharded path when nothing rebuilt it, upstream #813). Matching such a
+    path against the merged data would judge the wrong row — dropping a real
+    alert on a populated row because another row is empty — so every alert with
+    a row index is kept, and only the unindexed ones are judged.
     """
     alerts = list(alerts or [])
     if not isinstance(assessment, dict) or not isinstance(extraction_results, dict):
@@ -161,6 +172,7 @@ def exclude_absent_value_alerts(
         if not (
             isinstance(alert, dict)
             and isinstance(alert.get("attribute_name"), str)
+            and (row_indexes_are_global or "[" not in alert["attribute_name"])
             and _is_under(alert["attribute_name"], absent)
         )
     ]
@@ -193,9 +205,10 @@ def collect_missing_required_fields(
       object's path), never one per child; an absent object that is not
       required contributes nothing.
     - An array's item schema ``required`` applies to every row the list holds
-      (``items[2].amount``), including a row that is null or empty. An empty or
-      absent list has no rows, so it contributes only its own entry, and only
-      when the list itself is required.
+      (``items[2].amount``), including a row that is null or empty. A list with
+      no rows, or whose rows hold nothing and whose item schema requires
+      nothing (``Tags: [""]``), is absent: it contributes only its own entry,
+      and only when the list itself is required.
     - A schema that declares no ``required`` anywhere yields nothing. That
       includes a multi-instance class: the synthesized wrapper's own
       ``required: ["instances"]`` is the transform's, not the author's, and is
@@ -247,14 +260,16 @@ def collect_missing_required_fields(
             child_path = f"{path}.{name}" if path else name
             child_value = obj.get(name)
             child_assess = assess_obj.get(name)
-            # A list is present when it has rows, whatever they hold: the item
-            # schema's ``required`` then applies to each row, so a row of nulls
-            # reports its required fields rather than hiding inside an "absent"
-            # list. Anything else is present when it holds a value.
-            present = (
-                bool(child_value)
-                if isinstance(child_value, list)
-                else has_extracted_value(child_value)
+            # A list whose rows hold nothing is still walked row by row when its
+            # item schema declares ``required``: each row then reports its own
+            # required fields, so a row of nulls is counted whatever its sibling
+            # rows hold. Otherwise (scalar items, or object rows that require
+            # nothing) such a list is absent like any other empty container, so
+            # a required ``Tags: [""]`` is one missing entry.
+            present = has_extracted_value(child_value) or (
+                isinstance(child_value, list)
+                and bool(child_value)
+                and _rows_declare_required(properties.get(name))
             )
             if not present:
                 if name in required:
@@ -270,6 +285,15 @@ def collect_missing_required_fields(
             _walk_value(
                 properties.get(name), child_value, child_assess, child_path, depth + 1
             )
+
+    def _rows_declare_required(schema: Any) -> bool:
+        items = deref_schema(
+            deref_schema(schema, class_schema).get(SCHEMA_ITEMS), class_schema
+        )
+        required_raw = items.get(SCHEMA_REQUIRED)
+        return isinstance(required_raw, list) and any(
+            isinstance(name, str) for name in required_raw
+        )
 
     def _walk_value(schema: Any, value: Any, assess: Any, path: str, depth: int):
         if depth > _MAX_SCHEMA_DEPTH:

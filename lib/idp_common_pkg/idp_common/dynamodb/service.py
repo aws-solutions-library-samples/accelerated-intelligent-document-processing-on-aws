@@ -224,9 +224,13 @@ _MAX_STORED_ALERTS_PER_DOCUMENT = 1000
 # Missing required fields (#1527) are stored inline beside the alerts, so they are
 # bounded the same way for the same reason: one entry per required cell of a
 # long table can reach the item ceiling on its own. The full list is recomputable
-# from the section's inference_result and class schema.
+# from the section's inference_result and class schema. The document budget is
+# smaller than the alerts' because the two share the item: at roughly 70 bytes
+# plus the path per entry, a full alert list is already about a third of the
+# 409,600-byte ceiling, and an equal second budget would leave little for pages,
+# processing issues and metering.
 _MAX_STORED_MISSING_REQUIRED_PER_SECTION = 50
-_MAX_STORED_MISSING_REQUIRED_PER_DOCUMENT = 1000
+_MAX_STORED_MISSING_REQUIRED_PER_DOCUMENT = 300
 
 
 def _worst_first_subset(

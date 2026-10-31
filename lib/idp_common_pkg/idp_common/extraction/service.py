@@ -7373,6 +7373,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # integrated large-list coverage reaches 100% like the separate path
         # (which retries inside assess_results_batched). No-op when nothing is
         # missing. Best-effort: never fails extraction.
+        # Whether the alert surface's row indexes are GLOBAL. Only the retry
+        # below rebuilds it from the merged assessment; otherwise the alerts are
+        # the shards' own, whose row indexes count from each shard's first row
+        # (upstream #813), so they cannot be matched against the merged data.
+        alert_rows_are_global = False
         if self._integrated_assessment_enabled():
             try:
                 merged_assessment, regenerated_alerts, split_stats = (
@@ -7388,6 +7393,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # extends) the incoming surface: extending would re-introduce
                 # the slice-local duplicates this exists to fix (upstream #813).
                 merged_assessment_alerts = regenerated_alerts
+                alert_rows_are_global = True
                 # Surface adaptive batch-splitting activity (only when the
                 # confidence model truncated and batches had to shrink).
                 from idp_common.assessment.batching import split_stats_are_notable
@@ -7452,7 +7458,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # missing_required_fields by _save_results instead.
         section.confidence_threshold_alerts = dedupe_alerts(
             exclude_absent_value_alerts(
-                merged_assessment_alerts, grounded, extracted_fields
+                merged_assessment_alerts,
+                grounded,
+                extracted_fields,
+                row_indexes_are_global=alert_rows_are_global,
             )
         )
         output_metadata["assessment_integrated_in_extraction"] = True
