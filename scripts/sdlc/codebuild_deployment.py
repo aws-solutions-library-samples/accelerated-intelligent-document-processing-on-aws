@@ -9068,6 +9068,11 @@ def probe_run_timeout_shortfall(codebuild=None) -> str | None:
     mid-join with no summary written. Reading the build's own timeout lets the run
     say so at the start instead. Unreadable (no build id, no permission) is None:
     the check reports a known shortfall, it does not refuse an unknown.
+
+    It cannot see the other half of the prerequisite: a schedule running before
+    the buildspec that exports IDP_RUN_PROBES is deployed never enables the
+    probes, never reaches this check, and passes green having run none. The only
+    sign of that is the summary reporting no probes.
     """
     build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
     if not build_id:
