@@ -86,13 +86,23 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 
 ## Annotator guide
 
-An Annotator-only user sees only **Home** (**Inbox**, **Tasks** and **Queues**) and the
-notifications bell, and opens a document only through its edit page
-(`#/documents/<document>/edit`), from Tasks or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
-**Queues** are there only for Annotators.
+An Annotator-only user, and a Reviewer with no Admin, Author or Viewer role, sees only
+**Home** (**Inbox**, **Tasks** and **Queues**), **Deployment Info** and the
+notifications bell, lands on Home › Tasks, and opens a document through its edit page
+(`#/documents/<document>/edit`), from Tasks, Queues or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
+**Queues** are there for Annotators and Reviewers. A Reviewer works every Production
+queue, and every Test Studio queue whose test set's configuration profile is in their
+profile scope, with no Admin assignment needed. **Reviewers find their work in Home ›
+Queues and Home › Tasks, not in the Document List**, which is no longer in their
+navigation.
+
+Every item is held to your configuration scope (`allowedConfigVersions`): an item whose
+profile is outside it is not listed in any queue or in Tasks, is skipped by **Claim
+next**, and can't be opened, claimed, saved, skipped, finished or rejected — even one
+you already hold, if your scope has been narrowed since.
 
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
-  **Eligible Annotators**). Open one to see its items. You can open any item
+  **Eligible Annotators**), or, for a Reviewer, every Production queue. Open one to see its items. You can open any item
   read-only, and **Claim** one that nobody holds: it's assigned to you and appears
   in your Tasks. On a Test Studio queue you can also select several documents
   nobody holds and choose **Claim (n)** to take them all at once; any that another
@@ -204,9 +214,12 @@ info icon opens a panel describing the page.
 joins it when User Management gives them the Annotator role, or when the external
 identity provider maps them to it (`ExternalIdPAnnotatorGroupName`, see
 [external-idp.md](./external-idp.md)). A user may hold Annotator alongside another
-role, Admin for example. A queue's **Eligible Annotators** setting is who works it:
+role, Admin for example. A queue's **Eligible Annotators** setting is which Annotators
+work it:
 only the Annotators listed there see the queue in Home › Queues, can claim its
-items, and can be assigned them. A queue with nobody listed has no Annotators until
+items, and can be assigned them. Reviewers are not listed and not assigned work: each
+Reviewer works every Production queue, sees all of them in Home › Queues, and claims and
+finishes their items without an Admin, within their configuration-profile scope. A queue with nobody listed has no Annotators until
 you add some. Listing an Annotator on a Test Studio queue also gives them access to
 that test set. A user added to the group in Cognito directly can be listed at once:
 their User Management record is created when they're first given a test set.
@@ -224,7 +237,7 @@ any other queue that already exists stays listed and usable. Each queue has:
 | Name, description | What Admins and Annotators see; the name defaults from the id | — |
 | Priority | Higher-priority queues are listed first, and **Next item** takes from them first (0–100). For information: kept for when there is more than one queue; with only the Default queue it changes nothing yet | `50` |
 | Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080). For information: one reminder is sent, and the item stays assigned | `60` |
-| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Empty means none (only Admins) | empty |
+| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items. Empty means no Annotators (Admins and Reviewers only) | empty |
 | Enabled | When off, no documents are added to the queue | on |
 
 A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Review Management.
@@ -352,8 +365,8 @@ its queue item:
   the queue, and kept once the review finishes. **Review Completed By** is whoever
   finished it, filled in once its corrections have been applied.
 - The document page's **Edit** and **Edit Data** in a section row's **⋮** menu open the document's
-  edit page, which shows the queue item for Admins and Annotators, the roles that can
-  open queue items. For other roles it opens the direct edit, read-only, saying the
+  edit page, which shows the queue item for Admins, Annotators and Reviewers, the roles
+  that can open queue items. For other roles it opens the direct edit, read-only, saying the
   document is edited in its queue.
 - The document page's change actions (**More Actions** › **Edit Page Grouping**,
   **Re-extract Sections**, **Edit Page Text**, **Reset Page Class**, **Use As Evaluation
@@ -422,6 +435,7 @@ EventBridge rule pattern, is in the
 - Documents processed by a Test Studio run are never held in a production review
   queue, whatever the Default queue's settings. Test runs are scored on the machine's output,
   and their documents are reviewed in the test set's own queue instead.
-- The legacy Reviewer role and the Document List **Start Review** flow are separate
-  from review queues and work as before.
+- The legacy Document List **Start Review** flow is separate from review queues and
+  works as before for users who have the Document List. A Reviewer with no Admin,
+  Author or Viewer role works from Home › Queues and Home › Tasks instead.
 - The Integration API and IDP Monitor don't yet distinguish review states.

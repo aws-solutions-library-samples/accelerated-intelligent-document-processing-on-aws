@@ -26,9 +26,9 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -60,9 +60,15 @@ owner's decision, not an annotator's.
 
 **Two-layer enforcement.** Group membership only reaches the operation; every one
 of the above additionally asserts the target test set is in the caller's
-`allowedTestSets`. The check is centralized in
+`allowedTestSets`, or, for a Reviewer, that the set's configuration profile is in
+their `allowedConfigVersions`. The check is centralized in
 `idp_common/testset_scope.py::assert_can_access_test_set` and **fails closed** — an
-unreadable users record, a missing attribute, or an empty list all deny. Reaching a
+unreadable users record, a missing attribute, or an empty list all deny an Annotator,
+and a Reviewer whose scope or set profile cannot be read is denied. A set's profile is
+resolved once by the Test Studio resolver (declared, bound, or from its drafting run),
+recorded on the set as `ScopeProfile` so every check reads the same value, and
+resolved again after a new drafting run; a set with no single profile is admitted only
+to Reviewers with no profile restriction. Reaching a
 test-set operation is never the same as being allowed to see a given set.
 
 For the HITL operations the scope is resolved from the document rather than an
@@ -86,8 +92,17 @@ user locked out for the full TTL.
 
 ## Annotators and review queues
 
-[Review queues](./review-queues.md) are worked by the Annotators listed on them. An
-Annotator claims an item from one of their queues, or an Admin assigns it to them.
+[Review queues](./review-queues.md) are worked by the Annotators listed on them and,
+for Production queues, by every Reviewer. An Annotator claims an item from one of their
+queues, or an Admin assigns it to them; a Reviewer claims their own items and is never
+assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
+Production review-queue operations as an Annotator (`getMyReviewQueues`,
+`listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
+`claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
+`rejectReviewItem`), within their `allowedConfigVersions`, and the Test Studio
+operations an Annotator has, for every test set whose configuration profile their
+`allowedConfigVersions` admits (every set when they have none), without being listed
+on its queue (`testset_scope.reviewer_may_access_test_set`).
 
 - **What an Annotator can call.**
   - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,
@@ -141,9 +156,14 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   navigation, with their **Inbox**, and the notifications bell; the Inbox operations
   are `ANY_GROUP`, scoped to the caller's own messages. A user in `Annotator` also
   has **Tasks** and **Queues** under Home, and a user whose only app group is
-  `Annotator` sees exactly that: Home (Inbox, Tasks and Queues), plus a document's
-  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to;
-  the rest of the documents app isn't routed for them. **Review Studio › Review Management** is
+  `Annotator`, or a `Reviewer` with no `Admin`, `Author` or `Viewer` group, sees exactly
+  that: Home (Inbox, Tasks and Queues) and Deployment Info, plus a document's
+  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to.
+  Both land on Home › Tasks. For an Annotator-only user the rest of the documents app
+  isn't routed; a Reviewer-only user's Document List is out of the navigation but still
+  routed, its documents filtered server-side to the caller's scope as for every role. Navigation is
+  a convenience, not the boundary: every queue operation applies the caller's
+  `allowedConfigVersions` to each item. **Review Studio › Review Management** is
   Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,

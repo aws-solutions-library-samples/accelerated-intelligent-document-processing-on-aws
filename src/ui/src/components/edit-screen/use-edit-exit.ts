@@ -15,8 +15,8 @@ import type { EditExit } from './edit-model';
 
 /** Returns `leavePath(queuePath)`: where a queue item's edit screen leaves to for the caller. */
 export const useLeavePath = (): ((queuePath: string) => string) => {
-  const { isAdmin, isAnnotator } = useUserRole();
-  return useCallback((queuePath: string) => (isAnnotator && !isAdmin ? MY_TASKS_PATH : queuePath), [isAdmin, isAnnotator]);
+  const { isAdmin, isQueueWorker } = useUserRole();
+  return useCallback((queuePath: string) => (isQueueWorker && !isAdmin ? MY_TASKS_PATH : queuePath), [isAdmin, isQueueWorker]);
 };
 
 /**

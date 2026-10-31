@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **Reviewers work the review queues.** A Reviewer now has **Home › Tasks** and **Queues**, and works every Production queue and every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` (every one when they have no restriction), without being listed or assigned: they claim, save, skip, finish and reject items and correct classes and page grouping, as an Annotator does. Reviewers claim their own work and are never assigned it; Annotators are unchanged. A test set's profile is resolved once and recorded on the set (`ScopeProfile`), so every check agrees, and is resolved again after a new drafting run; a set drafted under several profiles is shown only to Reviewers with no profile restriction. Every queue item stays held to the caller's configuration scope: one outside it is not listed, claimed, opened or changed. Annotators and Reviewers with no Admin, Author or Viewer role now see **Home** and **Deployment Info** only; Reviewers no longer have **Documents** or **Extensions** in the navigation. See [Test Studio](docs/test-studio.md) and [Review queues](docs/review-queues.md#annotator-guide). **Action:** Reviewers find their review work in **Home › Queues** and **Home › Tasks** instead of the Document List.
+
 ## [0.6.13]
 
 ### Added

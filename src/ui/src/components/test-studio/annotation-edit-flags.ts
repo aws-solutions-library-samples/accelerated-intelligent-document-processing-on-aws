@@ -60,10 +60,10 @@ export const saveCapabilities = (
   roles: AnnotationRoles,
 ): { canSaveViaReview: boolean; canSaveDirectToBaseline: boolean; canDraft: boolean } => ({
   canSaveViaReview: roles.isAdmin || roles.isReviewer || roles.isAnnotator,
-  // saveTestSetDocumentSection: an Annotator saves only documents assigned to them.
-  canSaveDirectToBaseline: roles.isAdmin || roles.isAuthor || roles.isAnnotator,
+  // saveTestSetDocumentSection: an Annotator or a Reviewer saves only documents assigned to them.
+  canSaveDirectToBaseline: roles.isAdmin || roles.isAuthor || roles.isAnnotator || roles.isReviewer,
   // saveTestSetDocumentSectionDraft: an Author only on authored ground truth.
-  canDraft: roles.isAdmin || roles.isAuthor || roles.isAnnotator,
+  canDraft: roles.isAdmin || roles.isAuthor || roles.isAnnotator || roles.isReviewer,
 });
 
 export interface AnnotationEditFlags {
@@ -109,7 +109,7 @@ export const annotationEditFlags = (
   const saveViaReview = Boolean(selected.reviewObjectKey);
   // A review copy is edited (saved as a draft, then completed) by an Admin or an
   // Annotator: the draft operation has no Reviewer, and completion has no Author.
-  const mayEditReviewCopy = canSaveViaReview && (roles.isAdmin || roles.isAnnotator);
+  const mayEditReviewCopy = canSaveViaReview && (roles.isAdmin || roles.isAnnotator || roles.isReviewer);
   return {
     isReadOnly: !draft || (saveViaReview ? !mayEditReviewCopy : !canSaveDirectToBaseline),
     saveViaReview,
