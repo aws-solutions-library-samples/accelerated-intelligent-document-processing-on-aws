@@ -38,17 +38,21 @@ logger = logging.getLogger(__name__)
 # Valid pattern names
 VALID_PATTERNS = ["pattern-1", "pattern-2"]
 
-# Feature sets for create-config command
+# Feature sets for the create-config command. Each entry names top-level sections
+# of the system defaults; a name a pattern's defaults lack is skipped for that
+# pattern (pattern-1 has no ``ocr`` or ``classification``). Confidence scoring is
+# not a section of its own: it lives in ``extraction.confidence``, so it comes with
+# ``extraction``. tests/unit/config/test_generated_template_validates.py derives the
+# sections from the defaults and fails on a name that is not one, and on a section
+# that neither ``all`` nor its ``AWAITING_DECISION`` set accounts for.
 FEATURE_SETS = {
     "min": ["classification", "extraction", "classes"],
-    "core": ["ocr", "classification", "extraction", "assessment", "classes"],
+    "core": ["ocr", "classification", "extraction", "classes"],
     "all": [
         "ocr",
         "classification",
         "extraction",
-        "assessment",
         "summarization",
-        "criteria_validation",
         "evaluation",
         "discovery",
         "agents",

@@ -5001,7 +5001,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction, classes), 'core' (adds ocr, assessment), 'all', or comma-separated list of sections",
+    help="Feature set: 'min' (classification, extraction, classes), 'core' (adds ocr), 'all', or comma-separated list of sections",
 )
 @click.option(
     "--output",
@@ -5033,7 +5033,7 @@ def config_create(
 
     Feature sets:
       min:  classification, extraction, classes (simplest)
-      core: min + ocr, assessment
+      core: min + ocr
       all:  all sections with full defaults
 
     Or specify a comma-separated list of sections:
