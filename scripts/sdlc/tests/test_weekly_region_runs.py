@@ -248,18 +248,41 @@ def test_after_script_exports_the_region_its_reads_use(config, helper, expected)
     assert out.splitlines()[-1] == f"{expected} {expected}"
 
 
-@pytest.mark.parametrize(
-    ("job", "variable"),
-    [
-        ("integration_tests", "IDP_REGION_RUN"),
-        ("nightly_notification", "IDP_TEST_REGION"),
-    ],
-)
-def test_both_slack_posts_name_the_region(config, job, variable):
+def _region_label_assignment(config, job) -> str:
+    """The ``region_run = ...`` statement in ``job``'s Slack heredoc, unparsed."""
+    import ast
+    import textwrap
+
+    for step in config[job].get("after_script", []) + config[job]["script"]:
+        match = re.search(r"<<'PY'\n(.*?)\n\s*PY\s*$", step, re.S | re.M)
+        if not match:
+            continue
+        tree = ast.parse(textwrap.dedent(match.group(1)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "region_run" for t in node.targets
+            ):
+                return ast.unparse(node)
+    raise AssertionError(f"no region_run label in {job}")
+
+
+def test_both_slack_posts_derive_the_region_label_the_same_way(config):
+    """One label, one rule: the schedule's own IDP_TEST_REGION, on a schedule only."""
+    posts = {
+        job: _region_label_assignment(config, job)
+        for job in ("integration_tests", "nightly_notification")
+    }
+    assert len(set(posts.values())) == 1, posts
+    (assignment,) = set(posts.values())
+    assert "os.environ.get('IDP_TEST_REGION', '')" in assignment
+    assert "os.environ.get('CI_PIPELINE_SOURCE', '') == 'schedule'" in assignment
+
+
+@pytest.mark.parametrize("job", ["integration_tests", "nightly_notification"])
+def test_both_slack_posts_name_the_region(config, job):
     body = "\n".join(
         _lines(config[job].get("after_script", []) + config[job]["script"])
     )
-    assert f'os.environ.get("{variable}"' in body
     label_line = next(line for line in body.splitlines() if SLACK_LABEL in line)
     assert label_line.strip().startswith("status ="), (
         "the label goes on `status`, the key the Slack workflow already declares"

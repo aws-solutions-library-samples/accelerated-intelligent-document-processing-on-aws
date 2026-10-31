@@ -219,7 +219,8 @@ How the region reaches each part of the run:
 - **The GitLab job.** Its `script` and `after_script` are separate shells, so both
   evaluate `integration_test_deployment.py --region-env`. That command exports
   `AWS_DEFAULT_REGION` and `AWS_REGION` (the CLI and boto3 prefer the latter), and
-  `IDP_REGION_RUN` for the Slack label. The source bucket
+  `IDP_REGION_RUN`. Both Slack posts label the run from the schedule's own
+  `IDP_TEST_REGION`, so a run refused for a bad value still says which it was. The source bucket
   `genaiic-sdlc-sourcecode-<account>-<region>` and the pipeline follow from the
   region.
 - **The build.** CodeBuild runs in its pipeline's region, and only a region
