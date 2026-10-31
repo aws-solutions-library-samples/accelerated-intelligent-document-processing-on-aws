@@ -3889,6 +3889,173 @@ class TestTestSetResolver:
         )
         assert written["document_class"]["type"] == "bank-check"
 
+    def _seed_reextract_packet(self, s3, sections):
+        """A packet's baseline, one result.json per (class, labelSource) given."""
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        bodies = {}
+        for n, (cls, source) in enumerate(sections, start=1):
+            key = f"ts1/baseline/packet.pdf/sections/{n}/result.json"
+            body = json.dumps(
+                {
+                    "labelSource": source,
+                    "document_class": {"type": cls},
+                    "split_document": {"page_indices": [n - 1]},
+                    "inference_result": {f"{cls}_field": n},
+                }
+            ).encode()
+            s3.put_object(Bucket="test-set-bucket", Key=key, Body=body)
+            bodies[key] = body
+        return bodies
+
+    @pytest.mark.parametrize("count", [2, 3])
+    def test_reextract_with_a_class_refuses_a_multi_section_document(
+        self, labeling_env, count
+    ):
+        """#1672: one section's correction must not rewrite every section's class.
+
+        The forced class is document-wide all the way down — stamped on every
+        baseline section, then applied by the pipeline to every page as one
+        section — so on a packet it relabelled every section and the harvest then
+        collapsed the grouping. Refused before any write, and before the run.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        before = self._seed_reextract_packet(
+            s3,
+            [
+                ("Payslip", "reviewed-human"),
+                ("Bank-checks", "draft-machine"),
+                ("W2", "draft-machine"),
+            ][:count],
+        )
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match=f"has {count} sections"):
+                test_set_index.reextract_test_set_document(
+                    {
+                        "input": {
+                            "testSetId": "ts1",
+                            "objectKey": "packet.pdf",
+                            "documentClass": "Bank-checks",
+                        }
+                    }
+                )
+
+        mock_lambda.invoke.assert_not_called()
+        for key, body in before.items():
+            stored = s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            assert stored == body, f"{key} was rewritten"
+
+    def test_generate_draft_labels_refuses_a_forced_class_on_a_packet(
+        self, labeling_env
+    ):
+        """The guard holds for a direct generateDraftLabels call, not just reextract.
+
+        generateDraftLabels accepts documentClass itself, and forwarding it on a
+        packet collapses the harvest to one section exactly as reextract did.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        before = self._seed_reextract_packet(
+            s3, [("Payslip", "draft-machine"), ("W2", "draft-machine")]
+        )
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match="has 2 sections"):
+                test_set_index.generate_draft_labels(
+                    {
+                        "input": {
+                            "testSetId": "ts1",
+                            "objectKeys": ["packet.pdf"],
+                            "documentClass": "W2",
+                        }
+                    }
+                )
+
+        mock_lambda.invoke.assert_not_called()
+        for key, body in before.items():
+            stored = s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            assert stored == body, f"{key} was rewritten"
+
+    @pytest.mark.parametrize("object_keys", [None, [], ["a.pdf", "b.pdf"]])
+    def test_generate_draft_labels_forces_a_class_onto_exactly_one_document(
+        self, labeling_env, object_keys
+    ):
+        """Without one named document a forced class would land on a whole set."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+        args = {"testSetId": "ts1", "documentClass": "W2"}
+        if object_keys is not None:
+            args["objectKeys"] = object_keys
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match="exactly one objectKey"):
+                test_set_index.generate_draft_labels({"input": args})
+
+        mock_lambda.invoke.assert_not_called()
+
+    def test_generate_draft_labels_forces_a_class_onto_one_single_section_document(
+        self, labeling_env
+    ):
+        """The case forcing exists for still reaches the runner."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_reextract_packet(s3, [("Payslip", "draft-machine")])
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(read=lambda: b'{"testRunId": "ts1-one"}')
+            }
+            mock_boto3.client.return_value = mock_lambda
+            test_set_index.generate_draft_labels(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKeys": ["packet.pdf"],
+                        "documentClass": "W2",
+                    }
+                }
+            )
+
+        payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
+        assert payload["arguments"]["input"]["documentClass"] == "W2"
+
+    def test_reextract_without_a_class_still_runs_on_a_multi_section_document(
+        self, labeling_env
+    ):
+        """No forced class means an ordinary re-run: nothing is stamped up front."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        before = self._seed_reextract_packet(
+            s3, [("Payslip", "draft-machine"), ("W2", "draft-machine")]
+        )
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(read=lambda: b'{"testRunId": "ts1-rerun"}')
+            }
+            mock_boto3.client.return_value = mock_lambda
+            result = test_set_index.reextract_test_set_document(
+                {"input": {"testSetId": "ts1", "objectKey": "packet.pdf"}}
+            )
+
+        assert result["jobId"] == "ts1-rerun"
+        payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
+        assert "documentClass" not in payload["arguments"]["input"]
+        for key, body in before.items():
+            stored = s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            assert stored == body, f"{key} was rewritten"
+
     def test_reextract_demotes_a_reviewed_label_so_the_harvest_can_replace_it(
         self, labeling_env
     ):
