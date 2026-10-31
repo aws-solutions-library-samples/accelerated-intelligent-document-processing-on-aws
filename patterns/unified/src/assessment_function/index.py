@@ -193,15 +193,6 @@ def _handle(event, context):
     if not section:
         raise ValueError(f"Section {section_id} not found in document")
 
-    # Capture section index BEFORE any potential modifications to document.sections
-    # This is needed for atomic section updates to DynamoDB
-    section_index = next(
-        i for i, s in enumerate(document.sections) if s.section_id == section_id
-    )
-    logger.info(
-        f"Section {section_id} is at index {section_index} in the Sections array"
-    )
-
     # Assessment metering context (granular assessment has been retired; the
     # standalone AssessmentService batches large lists on its own).
     assessment_context = "Assessment"
@@ -416,17 +407,20 @@ def _handle(event, context):
     # Update the section in DynamoDB for immediate UI visibility
     # This allows the UI to show assessment results (confidence alerts) as they complete
     try:
-        # Use section_index captured at start (before any potential modifications)
         updated_section = next(
             s for s in updated_document.sections if s.section_id == section_id
         )
         original_input_key = document.input_key
         logger.info(
-            f"Persisting assessment results for section {section_id} (index {section_index}) to DynamoDB for document {original_input_key}"
+            f"Persisting assessment results for section {section_id} to DynamoDB for document {original_input_key}"
         )
+        # No index (#1690): on the normal path the incoming document is the
+        # extraction step's SECTION document, which holds only this section, so
+        # its position here is 0 for every section and says nothing about the
+        # stored Sections list. The writer finds the slot by section Id.
         result = document_service.update_document_section(
             document_id=original_input_key,
-            section_index=section_index,
+            section_index=None,
             section=updated_section,
         )
         logger.info(f"Section update result: {json.dumps(result, default=str)[:500]}")

@@ -111,6 +111,18 @@ High-level service for document operations:
   and returns False if the document is ABORTED or has no tracking record. The
   queue processor calls it immediately before starting an execution, so a
   QUEUED document aborted after the processor read it is not started
+- `update_document_section(document_id, section_index, section)` - Write one
+  section as `SET Sections[i]`, for the per-section steps inside the
+  `ProcessSections` map. `section_index` is the section's position in the full
+  document the map iterates, written as given: during the map that list is the
+  authority, since a postClassification hook may have reshaped it without the
+  stored item knowing. Pass `section_index=None` when the caller cannot know that
+  position (the assessment step, whose incoming document holds only its own
+  section): the stored `Sections` are read and the section is written at the slot
+  carrying its `Id` — preferring the copy with its extraction result URI when a
+  hook-reshaped list briefly holds two — conditional on that slot still carrying
+  the `Id`. If no slot does, or it keeps changing, nothing is written and `{}` is
+  returned
 - `list_documents()` - List documents with date filtering
 - `list_documents_date_hour()` - List by specific date/hour
 - `list_documents_date_shard()` - List by date/shard
