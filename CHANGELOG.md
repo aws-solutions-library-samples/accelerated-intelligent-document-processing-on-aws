@@ -13,6 +13,8 @@ SPDX-License-Identifier: MIT-0
 
 - **Packet classification no longer puts a page in two sections.** When the model returned segments that shared pages, each became a section and the shared pages were extracted twice. Each page is now kept in the segment reported first, the rule windowed packets already used, and a warning names the pages. **Action:** none. See [Classification](docs/classification.md#packet-granularity-images-few-shot-examples-and-windowing) ([#1654](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1654)).
 
+- **A packet window too large for the model is split and retried instead of failing the document.** With page images on, a window of full-resolution pages could exceed a smaller model's input although it fit `packet.window_pages`, and the document failed. A window refused as too long is now split in two and each half retried, up to twice the packet's page count in extra calls; `window_pages: 0` still makes one call. **Action:** none. See [Classification](docs/classification.md#packet-granularity-images-few-shot-examples-and-windowing) ([#1676](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1676)).
+
 ## [0.6.13]
 
 ### Added

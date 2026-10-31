@@ -4949,6 +4949,37 @@ class ClassificationService:
         )
         return merged
 
+    def _split_overflowing_window(
+        self, window_page_ids: List[str]
+    ) -> Optional[tuple[List[str], List[str]]]:
+        """Two smaller windows covering ``window_page_ids``, or None for one page.
+
+        The second half repeats up to ``overlap_pages`` of the first half's
+        trailing pages, for the same reason adjacent windows overlap: the call
+        after a junction needs the pages before its first page to judge whether
+        a new document starts there. The repeat is capped so both halves are
+        always strictly smaller than the window they came from, which is what
+        makes repeated splitting terminate.
+
+        ``window_pages: 0`` is the documented way to ask for one call over the
+        whole packet and nothing else, so it is never split: that setting trades
+        failing outright for the guarantee that the model saw the packet whole.
+        """
+        packet_cfg = self._page_input().packet
+        total = len(window_page_ids)
+        if total < 2 or packet_cfg.window_pages <= 0:
+            return None
+        mid = total // 2
+        # At most about half the first half, so each half is at most about
+        # three quarters of the window and repeated splitting shrinks
+        # geometrically; capping at ``mid - 1`` only guaranteed one page less per
+        # split, and the number of calls grew far faster than the page count.
+        # At least one page while the first half has two, because a junction
+        # with no overlap makes the second half's first page open a document.
+        cap = max(1, (mid - 1) // 2) if mid >= 2 else 0
+        overlap = max(0, min(packet_cfg.overlap_pages, cap))
+        return window_page_ids[:mid], window_page_ids[mid - overlap :]
+
     @staticmethod
     def _pages_claimed_twice(segments: List[Segment]) -> List[str]:
         """Page IDs that more than one of ``segments`` covers, in first-seen order."""
@@ -5169,6 +5200,8 @@ class ClassificationService:
             partial result is still reported as partial rather than as a clean
             run over fewer pages.
         """
+        from idp_common.utils.bedrock_utils import is_input_token_overflow
+
         pages_content, _ = self._format_pages_with_coverage(document)
         config = self._get_classification_config(stage)
         _, send_images = self._resolve_modality()
@@ -5183,23 +5216,89 @@ class ClassificationService:
         metering: Dict[str, Any] = {}
         errors: List[str] = []
 
-        for window_index, window_page_ids in enumerate(windows, start=1):
+        # A worklist rather than a plain loop, because a window can be replaced
+        # by two smaller ones (see the overflow branch below). The halves go back
+        # on the FRONT, so results are still appended in page order — which
+        # _merge_window_segments relies on for "the earlier window wins".
+        pending: List[tuple[List[str], str, bool]] = [
+            (window_page_ids, f"{window_index}/{len(windows)}", False)
+            for window_index, window_page_ids in enumerate(windows, start=1)
+        ]
+        # Splitting is bounded twice over. A sub-window already requested is not
+        # requested again: the overlap makes neighbouring halves produce the same
+        # smaller window, and its verdict is already in hand (or already
+        # reported). And the calls made for split windows are capped at twice
+        # the packet's page count — page granularity's cost, doubled — so a
+        # model that refuses everything, down to single pages, costs a bounded
+        # number of requests rather than one per node of the split tree.
+        requested: Set[tuple[str, ...]] = set()
+        split_budget = 2 * len(sorted_page_ids)
+        split_calls = 0
+        while pending:
+            window_page_ids, window_label, is_split = pending.pop(0)
+            key = tuple(window_page_ids)
+            if key in requested:
+                continue
+            requested.add(key)
+            if is_split:
+                if split_calls >= split_budget:
+                    error_msg = (
+                        f"Packet window {window_label} "
+                        f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) was "
+                        f"not classified: retrying windows that exceeded the "
+                        f"model's input used all {split_budget} calls allowed. "
+                        f"Lower packet.window_pages, or set image.target_width "
+                        f"and target_height so pages render smaller."
+                    )
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    continue
+                split_calls += 1
             try:
                 segments, window_metering = self._classify_one_packet_window(
                     document=document,
                     config=config,
                     pages_content=pages_content,
                     window_page_ids=window_page_ids,
-                    window_label=f"{window_index}/{len(windows)}",
+                    window_label=window_label,
                     send_images=send_images,
                     forced_class=forced_class,
                 )
             except Exception as e:
+                halves = (
+                    self._split_overflowing_window(window_page_ids)
+                    if is_input_token_overflow(e)
+                    else None
+                )
+                # Termination is checked here rather than trusted to the
+                # helper: a half that is not strictly smaller would re-queue the
+                # same window forever, and the worklist grows without bound.
+                if halves and all(len(half) < len(window_page_ids) for half in halves):
+                    # ``window_pages`` is a page count and says nothing about
+                    # what those pages cost in tokens: a full window of
+                    # full-resolution scans can exceed a model's input. A larger-than-
+                    # window packet is already split, so a too-large window is
+                    # split the same way rather than failing the document.
+                    logger.warning(
+                        "Packet window %s (pages %s-%s) exceeded the model's "
+                        "input limit; retrying as windows of %d and %d pages: %s",
+                        window_label,
+                        window_page_ids[0],
+                        window_page_ids[-1],
+                        len(halves[0]),
+                        len(halves[1]),
+                        e,
+                    )
+                    pending[:0] = [
+                        (halves[0], f"{window_label}a", True),
+                        (halves[1], f"{window_label}b", True),
+                    ]
+                    continue
                 # One window failing must not discard the others: on a long
                 # packet that would turn a transient throttle into a total loss
                 # of a 40-page document's boundaries.
                 error_msg = (
-                    f"Packet window {window_index}/{len(windows)} "
+                    f"Packet window {window_label} "
                     f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
                     f"failed: {e}"
                 )
@@ -5389,14 +5488,34 @@ class ClassificationService:
         window_metering: Dict[str, Any] = {}
         segments: List[Segment] = []
         invalid: List[Segment] = []
+        answered = 0
         for attempt in range(max_retries + 1):
-            segments, attempt_metering = self._run_packet_window_call(
-                attempt_content,
-                config,
-                document,
-                window_page_ids,
-                forced_class,
-            )
+            try:
+                segments, attempt_metering = self._run_packet_window_call(
+                    attempt_content,
+                    config,
+                    document,
+                    window_page_ids,
+                    forced_class,
+                )
+            except Exception as e:
+                from idp_common.utils.bedrock_utils import is_input_token_overflow
+
+                if attempt == 0 or not is_input_token_overflow(e):
+                    raise
+                # The re-prompt is longer than the first request, so it can be
+                # the one that does not fit. Raising here would make the caller
+                # split the window and drop this window's billed first attempt
+                # from the metering; the first answer is in hand, so its invalid
+                # segments get the fallback exactly as when retries run out.
+                logger.warning(
+                    "Packet window %s: the validation re-prompt exceeded the "
+                    "model's input (%s); keeping the previous answer.",
+                    window_label,
+                    e,
+                )
+                break
+            answered += 1
             window_metering = (
                 attempt_metering
                 if not window_metering
@@ -5434,7 +5553,7 @@ class ClassificationService:
             "Packet window %s still returned invalid class(es) after %d attempt(s); "
             "assigned fallback '%s' to %d segment(s).",
             window_label,
-            max_retries + 1,
+            answered,
             fallback,
             len(invalid),
         )

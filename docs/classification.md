@@ -720,6 +720,16 @@ same class that the model let share a page are not joined into one.
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.
 
+`window_pages` is a page count, so a window can still be too large for the model
+once its page images are attached: a full window of full-resolution scans can
+exceed a smaller model's input. A window the model refuses as too long is split in two and both halves
+are retried, down to single pages, with the overlap repeated at the junction and
+merged by the same earlier-window rule. Retrying is bounded: the calls made for
+split windows stop at twice the packet's page count, and anything left is reported
+as not classified. Every half that fits is a separate billed call, so if this
+appears in the logs routinely, lower `window_pages` or set `image.target_width` /
+`target_height`. With `window_pages: 0` the window is not split.
+
 **How to pick the two numbers.**
 
 - Keep `window_pages` at **20 or below** whenever images are on, so a request
