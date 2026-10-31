@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reprocessing a Pipeline-mode document no longer multiplies its cost.** When a finished document was resubmitted — by **Process Changes**, **Skip All Reviews**, or completing the last pending section of a review — every section whose extraction was skipped passed the document's whole stored metering on as its own, and the results step added each copy to the document's total. A document with N sections showed about N+1 times its real cost in **Estimated Cost**, and the same inflated figures went to every consumer of the document's metering, although no model or OCR call was repeated. A skipped section now reports only the Lambda time it used, so the total after a reprocess is the stored cost plus that reprocess's own charges. **Action:** none; documents reprocessed before the update keep the figures they were saved with.
+
 ## [0.6.13]
 
 ### Added
