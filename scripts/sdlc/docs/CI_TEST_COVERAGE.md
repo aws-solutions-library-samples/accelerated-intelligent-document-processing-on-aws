@@ -96,7 +96,8 @@ payload-robustness corpus covers that goal directly. See
 ## Pipeline stages & triggers
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
-first one; the two deploy stages are **nightly plus a manual button**, and the
+first one; the two deploy stages are **scheduled plus a manual button** (the nightly runs
+the primary suite, a separate weekly schedule the probes), and the
 advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
 `CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
 nightly schedule or on request.
