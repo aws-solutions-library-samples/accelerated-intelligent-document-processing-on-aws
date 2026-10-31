@@ -125,9 +125,10 @@ primary suite only.
 **Why a separate schedule.** A probe failure fails the run it is in. On the nightly
 it would be read as a product regression, and the nightly is the run somebody has to
 triage. On its own schedule a red run is a probe result, labelled as one.
-Both schedules run the one `integration_tests` job, whose timeout is sized for the
-probe run, and it holds the size-1 `integration_deploy` resource group; space the
-two schedules so one cannot queue behind the other.
+Every schedule runs the one `integration_tests` job, whose timeout is sized for the
+probe run, and it holds the size-1 `integration_deploy` resource group, so schedules
+that fire close together run one after another: a run queued behind the probe run
+can start up to that timeout later, and its result arrives correspondingly late.
 The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
 carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
 only while it exists and is active.
