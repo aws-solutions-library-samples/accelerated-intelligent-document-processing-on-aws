@@ -4158,6 +4158,10 @@ def _harvest_label_job(job, deadline=None):
     pending_files = set()
     out_of_time = False
     section_failure = None
+    # Documents whose results this pass could not copy, with the reason. Neither
+    # pending nor failed while anything else was labeled (they are retried while
+    # the job is in flight), but they are why a job that labeled nothing failed.
+    harvest_errors = {}
     for file_name in files:
         if file_name in resolved:
             continue
@@ -4240,6 +4244,7 @@ def _harvest_label_job(job, deadline=None):
             logger.error(
                 f"Draft labeling: failed to harvest '{file_name}' for job {job_id}: {e}"
             )
+            harvest_errors[file_name] = str(e)
 
     now = datetime.utcnow().isoformat() + "Z"
     job_key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
@@ -4255,13 +4260,22 @@ def _harvest_label_job(job, deadline=None):
     expected_failed = sorted(set(job.get("failedFiles") or []))
     for attempt in range(1, _MAX_HARVEST_WRITE_ATTEMPTS + 1):
         labeled = len(done)
+        uncopied = sorted(set(harvest_errors) - done - set(failed))
         if pending_files:
             status = "RUNNING"
-        elif failed and not labeled:
-            # Nothing to harvest and nothing left to wait for.
+        elif (failed or uncopied) and not labeled:
+            # Nothing to harvest and nothing left to wait for. A document whose
+            # results could not be copied counts here: without it a one-document
+            # job (every re-extract) whose copy raised ended COMPLETED with nothing
+            # written, and the editor reported the re-extract as done (#1728).
             status = "FAILED"
         else:
             status = "COMPLETED"
+        # A failed job is terminal, so a document it could not copy will not be
+        # retried; it is recorded as failed so the count says why.
+        failed_files = sorted(
+            set(failed) | (set(uncopied) if status == "FAILED" else set())
+        )
         update_expr = (
             "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
         )
@@ -4269,14 +4283,29 @@ def _harvest_label_job(job, deadline=None):
             ":s": status,
             ":n": labeled,
             ":h": sorted(done),
-            ":f": sorted(set(failed)),
+            ":f": failed_files,
         }
         if status == "FAILED":
             update_expr += ", #er = :e"
-            expr_values[":e"] = section_failure or (
-                f"All {len(set(failed))} document(s) failed processing; no labels were "
-                "produced"
-            )
+            if section_failure:
+                expr_values[":e"] = section_failure
+            elif uncopied:
+                name = uncopied[0]
+                expr_values[":e"] = (
+                    f"The results for '{name}' could not be copied into the test set "
+                    f"({harvest_errors[name][:300]}), so nothing was written for it"
+                    + (
+                        f" or for {len(uncopied) - 1} other document(s)"
+                        if len(uncopied) > 1
+                        else ""
+                    )
+                    + ". Repeating it is safe."
+                )
+            else:
+                expr_values[":e"] = (
+                    f"All {len(set(failed))} document(s) failed processing; no "
+                    "labels were produced"
+                )
         if status in ("COMPLETED", "FAILED"):
             update_expr += ", completedAt = :c"
             expr_values[":c"] = now
@@ -4374,7 +4403,7 @@ def _harvest_label_job(job, deadline=None):
             "status": status,
             "labeled": labeled,
             "harvestedFiles": sorted(done),
-            "failedFiles": sorted(set(failed)),
+            "failedFiles": failed_files,
         }
     )
     if status == "FAILED":

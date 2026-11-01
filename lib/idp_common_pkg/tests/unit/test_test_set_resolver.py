@@ -11969,3 +11969,79 @@ class TestReviewRunWithoutEarlierJobRecords:
         entries = self._queue_entry(s3)
         assert entries["packet.pdf"]["reviewObjectKey"] == "run2/packet.pdf"
         assert entries["other.pdf"]["reviewObjectKey"] == "run0/other.pdf"
+
+
+def _seed_running_job(table, job_id, object_keys, **extra):
+    item = {
+        "PK": "testset#ts1",
+        "SK": f"labeljob#{job_id}",
+        "testSetId": "ts1",
+        "jobId": job_id,
+        "status": "RUNNING",
+        "total": len(object_keys),
+        "labeled": 0,
+        "objectKeys": object_keys,
+        "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    item.update(extra)
+    table.put_item(Item=item)
+
+
+@pytest.mark.unit
+class TestHarvestErrorEndsTheJob:
+    """#1728 item 4: a document whose results cannot be copied is not success.
+
+    The harvest deliberately does not count such a document as pending, so that one
+    that fails every time cannot hold the job open. Nor did it count it as failed,
+    so a one-document job — every re-extract — ended COMPLETED with nothing written,
+    and the editor reported the re-extract as done over unchanged fields.
+    """
+
+    def _seed_unreadable_result(self, table, s3, files=("a.pdf",)):
+        _seed_test_set(table, "ts1", fileCount=len(files))
+        sections = {
+            # A section whose result object does not exist: get_object raises the
+            # ordinary NoSuchKey, not one of the cases the harvest names.
+            name: [{"Id": "1", "OutputJSONUri": f"s3://output-bucket/run1/{name}/gone"}]
+            for name in files
+        }
+        _seed_completed_run(table, "run1", "ts1", list(files), sections)
+        _seed_running_job(table, "run1", list(files))
+
+    def test_a_one_document_job_whose_copy_raises_fails_with_the_reason(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        self._seed_unreadable_result(table, s3)
+
+        result = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": "run1"}
+        )
+
+        assert result["status"] == "FAILED"
+        assert result["labeled"] == 0
+        assert "a.pdf" in result["error"]
+        assert "could not be copied" in result["error"]
+        assert result["failedDocuments"] == 1
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta["labelJobStatus"] == "FAILED"
+
+    def test_a_job_that_labeled_something_still_completes(self, labeling_env):
+        """Unchanged: one document copied and one that raised is a partial success,
+        and the one that raised is retried while the job is in flight."""
+        table, s3 = labeling_env
+        self._seed_unreadable_result(table, s3, files=("a.pdf", "b.pdf"))
+        uri = _seed_pipeline_result(s3, "run1/b.pdf/sections/1/result.json", {"x": 1})
+        table.update_item(
+            Key={"PK": "doc#run1/b.pdf", "SK": "none"},
+            UpdateExpression="SET Sections = :s",
+            ExpressionAttributeValues={":s": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+
+        result = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": "run1"}
+        )
+
+        assert result["status"] == "COMPLETED"
+        assert result["labeled"] == 1
+        assert result["failedDocuments"] == 0
