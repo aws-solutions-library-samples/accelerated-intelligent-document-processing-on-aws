@@ -63,16 +63,19 @@ class TestEmptyMatrixBuildArtifacts:
 
         assert _names(stale_scan_dirs(srt, tmp_path)) == [".aws-sam-idp-main"]
 
-    def test_a_same_named_template_outside_a_build_tree_does_not_keep_it(
+    def test_a_present_template_whose_path_only_mentions_aws_sam_is_kept(
         self, tmp_path
     ):
-        # Only a template under `.aws-sam` can be what an `.aws-sam` name was given
-        # to, so a source template elsewhere must not count as the live artifact.
+        # The name rule cannot tell a `.aws-sam` directory from a path component
+        # that merely starts with `.aws-sam`, so a template present at such a path
+        # must keep its scan dir: a path that exists is never pruned.
         srt = tmp_path / ".srt"
-        _scan_dir(srt, "nested-x-.aws-sam-packaged", [])
-        _touch(tmp_path, "nested/x/packaged.yaml")
+        _scan_dir(srt, "docs-.aws-sam-demo-template", [])
+        _scan_dir(srt, "samples-.aws-sam-x", [])
+        _touch(tmp_path, "docs/.aws-sam-demo/template.yaml")
+        _touch(tmp_path, "samples/.aws-sam-x.yaml")
 
-        assert _names(stale_scan_dirs(srt, tmp_path)) == ["nested-x-.aws-sam-packaged"]
+        assert stale_scan_dirs(srt, tmp_path) == []
 
     def test_unresolvable_source_template_dir_is_still_left_alone(self, tmp_path):
         # Fail closed for anything that is not named after a build artifact.

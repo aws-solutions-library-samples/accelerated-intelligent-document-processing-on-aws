@@ -1335,56 +1335,133 @@ def test_the_lock_pins_the_ruff_the_gate_runs() -> None:
     )
 
 
+#: An install into the interpreter the job runs: uv's pip, a pip, or ``python -m
+#: pip``. Whitespace-tolerant, because ``uv  pip install`` is the same command.
+_INSTALL_COMMAND = re.compile(
+    r"(?<![\w.-])(?:uv\s+pip|pip3?|python3?\s+-m\s+pip)\s+install(?![\w-])"
+)
+#: An install into the ENVIRONMENT after its setup step. A bare ``pip`` is left out
+#: here on purpose: after GitLab activates a ``uv venv``, which has no pip, a bare
+#: ``pip`` is the image's system pip, and installs outside the environment the
+#: tests run in.
+_ENV_INSTALL_COMMAND = re.compile(
+    r"(?<![\w.-])(?:uv\s+pip|python3?\s+-m\s+pip)\s+install(?![\w-])"
+)
+
+
+def _subcommands(command: str) -> list[str]:
+    """One shell command line split at ``&&``, ``||``, ``;`` and ``|``."""
+    return [part.strip() for part in re.split(r"&&|\|\||;|\|", command) if part.strip()]
+
+
+def _flatten(items) -> list[str]:
+    """GitLab script lists with anchors expanded (an alias arrives as a nested list)."""
+    flat: list[str] = []
+    for item in items or []:
+        flat.extend(_flatten(item) if isinstance(item, list) else [str(item)])
+    return flat
+
+
 @pytest.mark.unit
 def test_every_ci_install_is_constrained_to_the_lock() -> None:
     """Both CIs install against ``uv.lock``, by the same mechanism (#1707).
 
     Unconstrained, the install resolved every dependency against the index on the
     day, and CI tested a different dependency set from the one the lock records.
-    What is asserted, per CI: the constraints file is exported from the lock
-    before the first install, it is the file the ``Makefile`` names, and every
-    ``uv pip install`` in the environment step carries it — a tool installed
-    first without it would leave a shared dependency at an unlocked version for
-    the constrained pass to fight over. ``make install-first-party`` applies it
-    itself, which the last assertion holds.
+    What is asserted, per CI: the constraints file is exported from the lock once,
+    before the first install, and it is the file the ``Makefile`` names; every
+    install in the environment step carries it, read per sub-command so one chained
+    after ``&&`` is not hidden by the ``-c`` of the line it rides on — a tool
+    installed first without it would leave a shared dependency at an unlocked
+    version for the constrained pass to fight over; and no step after the
+    environment step installs into the environment again.
     """
-    default = re.search(r"^LOCK_CONSTRAINTS \?= (.*)$", MAKEFILE.read_text(), re.M)
+    makefile = MAKEFILE.read_text()
+    default = re.search(r"^LOCK_CONSTRAINTS \?= (.*)$", makefile, re.M)
     assert default, "the Makefile no longer declares LOCK_CONSTRAINTS"
     relative = default.group(1).strip().removeprefix("$(CURDIR)/")
 
     for label, commands in _ci_python_setups():
-        installs = [i for i, c in enumerate(commands) if "uv pip install" in c]
-        assert installs, f"{label}: no `uv pip install` found; this check is vacuous"
-        exports = [
-            i
-            for i, c in enumerate(commands)
-            if re.match(r"export LOCK_CONSTRAINTS=", c)
-            and c.rstrip('"').endswith(relative)
-        ]
-        made = [i for i, c in enumerate(commands) if c == "make lock-constraints"]
-        assert exports and made, (
-            f"{label} no longer exports LOCK_CONSTRAINTS (= .../{relative}) and "
-            f"runs `make lock-constraints`, so its installs are not read from the lock"
+        parts = [part for command in commands for part in _subcommands(command)]
+        # What runs before the environment exists (GitLab's `pip install uv` into
+        # the image) installs the tooling, not the environment under test.
+        venv = [i for i, c in enumerate(parts) if c.startswith("uv venv")]
+        parts = parts[venv[-1] + 1 :] if venv else parts
+        installs = [i for i, c in enumerate(parts) if _INSTALL_COMMAND.search(c)]
+        assert installs, f"{label}: no install found; this check would be vacuous"
+        exports = [i for i, c in enumerate(parts) if "LOCK_CONSTRAINTS=" in c]
+        assert len(exports) == 1 and parts[exports[0]].rstrip('"').endswith(relative), (
+            f"{label} must set LOCK_CONSTRAINTS exactly once, to .../{relative}; "
+            f"found {[parts[i] for i in exports]}"
         )
+        made = [i for i, c in enumerate(parts) if c == "make lock-constraints"]
+        assert made, f"{label} no longer runs `make lock-constraints`"
         assert exports[0] < made[0] < installs[0], (
             f"{label}: the lock must be exported before the first install"
         )
         unconstrained = [
-            commands[i] for i in installs if LOCK_CONSTRAINTS_REF not in commands[i]
+            parts[i]
+            for i in installs
+            if LOCK_CONSTRAINTS_REF not in re.sub(r"\s+", " ", parts[i])
         ]
         assert not unconstrained, (
             f"{label} installs without {LOCK_CONSTRAINTS_REF}: {unconstrained}"
         )
 
+    # After the environment step: GitLab jobs that use `.python_setup`, and every
+    # step of the two GitHub workflows (the composite action is not a step's `run`).
+    setup = set(_flatten(yaml.safe_load(GITLAB.read_text())[".python_setup"]))
+    later: list[tuple[str, str]] = []
+    for name, body in yaml.safe_load(GITLAB.read_text()).items():
+        if not isinstance(body, dict) or "script" not in body:
+            continue
+        lines = _flatten(body.get("before_script")) + _flatten(body.get("script"))
+        if not setup <= set(lines):
+            continue
+        later += [
+            (f"{GITLAB.name}:{name}", line) for line in lines if line not in setup
+        ]
+    for workflow in (GITHUB_TESTS, GITHUB_SECURITY):
+        for name, steps in _github_job_steps(workflow).items():
+            later += [(f"{workflow.name}:{name}", step) for step in steps]
+    reinstalls = [
+        (where, part)
+        for where, text in later
+        for line in _uncommented(text).splitlines()
+        for part in _subcommands(line)
+        if _ENV_INSTALL_COMMAND.search(part)
+        or (
+            re.search(
+                r"make\b.*\btest-cicd\b.*lib/idp_common_pkg|make\b.*-C\s+lib/idp_common_pkg\b.*\btest-(unit-)?cicd\b",
+                part,
+            )
+            and "SKIP_INSTALL=1" not in part
+        )
+    ]
+    assert not reinstalls, (
+        f"these install into the CI environment after its lock-constrained setup "
+        f"step, so whatever they resolve is not the lock: {reinstalls}. Install in "
+        f"the setup step, or pass SKIP_INSTALL=1 to lib/idp_common_pkg's targets."
+    )
+
     assert "lock-constraints" in re.search(
-        r"^install-first-party:(.*)$", MAKEFILE.read_text(), re.M
+        r"^install-first-party:(.*)$", makefile, re.M
     ).group(1), "install-first-party no longer depends on lock-constraints"
     assert re.search(
         r"\$\(PIP\) install -c \"\$\(LOCK_CONSTRAINTS\)\" \$\(FIRST_PARTY_EDITABLES\)",
         _uncommented(_recipe("install-first-party")),
     ), "install-first-party no longer installs with -c $(LOCK_CONSTRAINTS)"
-    assert "uv export --frozen" in _recipe("lock-constraints"), (
-        "lock-constraints no longer exports the committed lock as-is"
+    export = re.sub(r"\\\n\s*", " ", _uncommented(_recipe("lock-constraints")))
+    assert re.search(r"uv export --locked\b", export), (
+        "lock-constraints no longer exports with --locked, so a lock that has "
+        "fallen behind pyproject.toml would be exported without complaint"
+    )
+    assert "--all-extras" in export and "--all-groups" in export, (
+        "lock-constraints no longer exports every extra and group, so packages "
+        "outside the narrower selection would install unconstrained"
+    )
+    assert not re.search(r"--only-|--no-dev\b|--extra\b|--group\b", export), (
+        f"lock-constraints narrows the export: {export.strip()}"
     )
 
 

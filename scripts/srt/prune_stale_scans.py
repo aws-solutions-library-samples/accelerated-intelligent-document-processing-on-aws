@@ -28,8 +28,8 @@ unresolvable path as CI-visible, failing closed — but for a build artifact it 
 `make srt-clean` deleted the template and kept its scan dir, and the next scan under
 `CI=1` reported INCOMPLETE over a file that no longer exists. So an unresolvable scan
 dir whose name carries a `.aws-sam` component is matched the other way round: its name
-is compared against the names SRT would give every template still present under a
-`.aws-sam` tree, and it is stale when none matches. Unresolvable dirs of any other
+is compared against the names SRT would give every template still present whose
+path mentions `.aws-sam`, and it is stale when none matches. Unresolvable dirs of any other
 shape are still left alone.
 
 Nothing CI scans is affected: a path that exists is never pruned, so a genuine
@@ -75,17 +75,22 @@ def names_a_build_artifact(name):
 
 
 def build_artifact_scan_names(project_root="."):
-    """Scan-dir names of every template currently present under a `.aws-sam` tree."""
+    """Scan-dir names of every template present whose path mentions `.aws-sam`.
+
+    Not only templates under a `.aws-sam` directory: the name rule cannot tell
+    `nested/x/.aws-sam/packaged.yaml` from `nested/x/.aws-sam-packaged.yaml`, so
+    any present template whose name could carry the `.aws-sam` component keeps
+    its scan dir. That is what keeps "a path that exists is never pruned" true.
+    """
     root = Path(project_root)
     names = set()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in UNWALKED_DIRS]
         rel = Path(dirpath).relative_to(root)
-        if BUILD_DIR not in rel.parts:
-            continue
         for filename in filenames:
-            if filename.endswith(TEMPLATE_SUFFIXES):
-                names.add(scan_dir_name(rel / filename))
+            path = rel / filename
+            if BUILD_DIR in path.as_posix() and filename.endswith(TEMPLATE_SUFFIXES):
+                names.add(scan_dir_name(path))
     return names
 
 
@@ -95,7 +100,7 @@ def stale_scan_dirs(srt_dir, project_root="."):
     A scan dir whose `security-matrix.json` yields no path is left alone —
     failing closed, the same way `failed_checkov_scans` treats an unresolvable
     path as CI-visible — unless its name says it scanned a `.aws-sam` build
-    artifact and no template under a `.aws-sam` tree still carries that name.
+    artifact and no template present still carries that name.
     Those are reported with the scanned path `None`.
     """
     srt_dir = Path(srt_dir)

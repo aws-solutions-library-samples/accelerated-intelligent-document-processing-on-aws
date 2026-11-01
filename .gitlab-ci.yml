@@ -117,9 +117,7 @@ stages:
   # cannot hold a shared dependency at an unlocked version. Passed per command
   # rather than as UV_CONSTRAINT, which would reach every later `uv` call in the
   # job. Same file, same form as .github/actions/python-env; see LOCK_CONSTRAINTS
-  # in the Makefile (#1707). The lock pins numpy 1.26.4, which has no wheel for
-  # this image's Python, so it is built from source here as it already is on
-  # GitHub.
+  # in the Makefile (#1707).
   - export LOCK_CONSTRAINTS="$CI_PROJECT_DIR/build/lock-constraints/idp_common_pkg.txt"
   - make lock-constraints
   # Pinned: ruff gates every Python file via `make lint-cicd`, and an unpinned

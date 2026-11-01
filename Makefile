@@ -85,10 +85,21 @@ all: lint test ## Run lint + test (default)
 # Packages only the other four first-party packages depend on are not in the lock
 # and still resolve from the index.
 #
-# --frozen reads the lock as committed; it does not re-resolve or check it against
-# pyproject.toml. Every extra and group is exported because a constraint that
-# nothing requests has no effect. Overridable so both CI configs can name the file
-# they then export as UV_CONSTRAINT.
+# --locked, not --frozen: --frozen exports whatever the lock holds even when
+# pyproject.toml has moved on, so a dependency added without re-locking would be
+# left out of the constraints and resolve from the index with every check green.
+# --locked refuses a lock that no longer matches pyproject.toml; the remedy is
+# `uv lock` in lib/idp_common_pkg. Every extra and group is exported because a
+# constraint that nothing requests has no effect.
+#
+# ⚠️ This makes CI test the LOCKED versions. What is deployed does not use the
+# lock: the Lambda requirements and layers that publish.py builds resolve
+# against the index when they are built. So CI is now faithful to the lock, which
+# is what Dependabot bumps and `make dep-audit` audits, and not to a deployed
+# artifact. Closing that gap means building the artifacts from the lock too, which
+# is a separate change.
+#
+# Overridable, and both CI configs set it, so each passes the same file to `-c`.
 LOCK_CONSTRAINTS ?= $(CURDIR)/build/lock-constraints/idp_common_pkg.txt
 
 .PHONY: lock-constraints
@@ -97,7 +108,7 @@ lock-constraints: ## Export lib/idp_common_pkg/uv.lock as a pip constraints file
 		echo -e "$(RED)ERROR: uv is required to read lib/idp_common_pkg/uv.lock (https://docs.astral.sh/uv/).$(NC)"; \
 		exit 1; }
 	@mkdir -p "$(dir $(LOCK_CONSTRAINTS))"
-	uv export --frozen --project lib/idp_common_pkg --all-extras --all-groups \
+	uv export --locked --project lib/idp_common_pkg --all-extras --all-groups \
 		--no-emit-project --no-hashes --quiet --output-file "$(LOCK_CONSTRAINTS)"
 
 ##@ Setup
