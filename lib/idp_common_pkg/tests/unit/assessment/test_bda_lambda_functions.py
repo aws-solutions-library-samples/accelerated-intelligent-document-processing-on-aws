@@ -25,12 +25,14 @@ Regressions guarded here:
 
 from __future__ import annotations
 
-import importlib.util
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.unit._handler_loading import exec_with_stubs
 
 _INDEX_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -39,12 +41,9 @@ _INDEX_PATH = os.path.join(
 
 # pypdfium2 is a Lambda-runtime dependency of the module (PDF page rendering)
 # and is not a test dependency of idp_common_pkg; nothing under test touches it.
-with patch.dict("sys.modules", {"pypdfium2": MagicMock()}):
-    _spec = importlib.util.spec_from_file_location("bda_processresults", _INDEX_PATH)
-    if _spec is None or _spec.loader is None:
-        raise ImportError(f"Could not load BDA processresults module at {_INDEX_PATH}")
-    bda_index = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(bda_index)
+bda_index = exec_with_stubs(
+    "bda_processresults", Path(_INDEX_PATH), {"pypdfium2": MagicMock()}
+)
 
 resolve_class_schema = bda_index.resolve_class_schema
 add_confidence_thresholds_to_explainability_flat = (

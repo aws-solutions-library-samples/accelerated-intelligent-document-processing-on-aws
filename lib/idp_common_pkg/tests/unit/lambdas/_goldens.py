@@ -10,34 +10,26 @@ against them proves the feature-off path still produces exactly what it did.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+
+from tests.unit._handler_loading import load_with_xray_stubbed
 
 SRC = Path(__file__).resolve().parents[5] / "patterns" / "unified" / "src"
 GOLDENS = Path(__file__).resolve().parent / "goldens"
 
 
 def load_handler(module_name: str, relative_path: str, extra_modules=None):
-    """Load a deployed handler by path, with X-Ray (and optional extras) stubbed."""
-    recorder = MagicMock()
-    recorder.capture.return_value = lambda fn: fn
-    xray_core = MagicMock()
-    xray_core.patch_all = lambda: None
-    xray_core.xray_recorder = recorder
+    """Load a deployed handler by path, with X-Ray (and optional extras) stubbed.
+
+    See ``tests.unit._handler_loading`` for what is and is not left in
+    ``sys.modules`` afterwards.
+    """
     os.environ.setdefault("AWS_REGION", "us-east-1")
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-    modules = {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core}
-    modules.update(extra_modules or {})
-    with patch.dict("sys.modules", modules):
-        spec = importlib.util.spec_from_file_location(module_name, SRC / relative_path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    return module
+    return load_with_xray_stubbed(module_name, SRC / relative_path, extra_modules)
 
 
 def normalise(result: Any) -> Any:
