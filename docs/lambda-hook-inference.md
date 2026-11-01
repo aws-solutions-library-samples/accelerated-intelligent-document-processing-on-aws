@@ -604,6 +604,11 @@ bound is worth knowing when you price a hook. A function error followed by a
 throttle or a timeout used to be retried at two levels at once and could make almost
 twice that many.
 
+The client publishes `LambdaHookRequestsFailed` to CloudWatch once for each request
+that ends in failure, after its retries, and never for one that recovers. A request
+that ended on a function error used to be counted once for every attempt it had made,
+plus one.
+
 ## Metering and Cost Tracking
 
 Lambda Hook invocations are tracked in the document's metering data under:

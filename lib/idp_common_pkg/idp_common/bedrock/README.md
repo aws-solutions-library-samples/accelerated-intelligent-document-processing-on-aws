@@ -1002,6 +1002,11 @@ The BedrockClient automatically handles common failure scenarios:
   most `max_retries + 1` invocations whatever mix of failures it meets;
   `tests/unit/bedrock/test_retry_ladder_bounds.py` checks every ordering of the three
   retryable failure kinds (#1706).
+- `LambdaHookRequestsFailed` is emitted once per failed request, at the
+  `except Exception` handler every terminal function error passes through, and never
+  at the `raise` that feeds it. The same test file drives every `raise` in the hook
+  ladder, which it finds in the source and confirms by tracing the lines executed,
+  and asserts one emission for each failure and none for a request that recovers.
   `tests/unit/bedrock/test_retry_releases_failed_attempts.py` drives every handler
   that can retry with a stub that fails the way botocore does, and measures the
   memory still held at each attempt with the cyclic collector off. It also fails

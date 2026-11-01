@@ -3357,7 +3357,10 @@ class BedrockClient:
                     time.sleep(backoff)
                     retry = (retry_count + 1, worst)
                 else:
-                    self._put_metric("LambdaHookRequestsFailed", 1)
+                    # Not counted here either, for the same reason as the
+                    # out-of-time raise above: ``except Exception`` below counts it on
+                    # the way out. Counting it at both points reported every request
+                    # that ended on a function error as two failures (#1706).
                     raise RuntimeError(f"LambdaHook function error: {error_message}")
             else:
                 # Parse response payload

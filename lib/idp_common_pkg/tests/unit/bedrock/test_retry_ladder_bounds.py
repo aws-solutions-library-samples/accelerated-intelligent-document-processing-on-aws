@@ -13,10 +13,14 @@ measured rather than assumed.
 
 from __future__ import annotations
 
+import ast
 import io
 import itertools
 import json
+import sys
 from collections import Counter
+from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,6 +32,7 @@ from botocore.exceptions import ClientError, ReadTimeoutError
 from botocore.httpsession import URLLib3Session
 from urllib3.exceptions import ProtocolError
 
+from idp_common.bedrock import client as client_mod
 from idp_common.bedrock.client import BedrockClient
 from idp_common.lambda_deadline import set_lambda_deadline_epoch
 
@@ -234,3 +239,146 @@ def test_a_hook_ladder_that_recovers_stops_at_the_first_success():
             if "".join(made) != prefix + "S" or not isinstance(outcome, dict):
                 wrong.append(f"{prefix}S: {''.join(made)} -> {type(outcome).__name__}")
     assert not wrong, wrong[:5]
+
+
+# --- LambdaHook ladder: one failed request is one LambdaHookRequestsFailed ---------
+
+
+def _hook_denied() -> dict:
+    raise ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Invoke"
+    )
+
+
+def _hook_handled_function_error() -> dict:
+    return {
+        "FunctionError": "Handled",
+        "Payload": io.BytesIO(json.dumps({"errorMessage": "bad input"}).encode()),
+    }
+
+
+def _hook_transport_runtime_error() -> dict:
+    raise RuntimeError("not retried: the ladder reserves RuntimeError for itself")
+
+
+def _run_hook_once(
+    first: Callable[[], dict], out_of_time: bool, metrics: Counter
+) -> int:
+    """One request whose first attempt fails with ``first``; a retry, if the ladder
+    makes one, fails non-retryably so the request still ends in one failure."""
+    made: list[Callable[[], dict]] = []
+
+    def invoke(**_kwargs):
+        step = first if not made else _hook_denied
+        made.append(step)
+        return step()
+
+    client = _recording_client(metrics)
+    client._lambda_client = SimpleNamespace(invoke=invoke)
+    with patch.object(client_mod, "attempt_cannot_finish", lambda *a: out_of_time):
+        with pytest.raises(Exception):
+            client._invoke_lambda_hook_with_retry(
+                lambda_arn=_HOOK_ARN,
+                lambda_payload={"messages": []},
+                retry_count=0,
+                max_retries=_HOOK_MAX_RETRIES,
+                request_start_time=0.0,
+            )
+    return len(made)
+
+
+#: Every way a request can end in failure that is not exhaustion (which the
+#: exhaustive schedule test below covers): refused for time on each retrying route,
+#: and refused outright on each non-retrying one. ``test_every_hook_failure_exit_is_
+#: driven`` derives the ladder's raise sites from its source and fails if these
+#: routes, with the schedules, leave one undriven.
+_ONE_SHOT_FAILURES = {
+    "function error, out of time": (_hook_function_error, True),
+    "throttle, out of time": (_hook_throttle, True),
+    "read timeout, out of time": (_hook_read_timeout, True),
+    "function error, handled": (_hook_handled_function_error, False),
+    "client error, not retryable": (_hook_denied, False),
+    "runtime error from the transport": (_hook_transport_runtime_error, False),
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("route", sorted(_ONE_SHOT_FAILURES))
+def test_a_request_refused_on_its_first_attempt_counts_one_failure(route):
+    first, out_of_time = _ONE_SHOT_FAILURES[route]
+    metrics: Counter = Counter()
+    attempts = _run_hook_once(first, out_of_time, metrics)
+    assert attempts == 1, f"{route}: {attempts} attempts"
+    assert metrics["LambdaHookRequestsFailed"] == 1, (
+        f"{route}: one failed request emitted LambdaHookRequestsFailed "
+        f"{metrics['LambdaHookRequestsFailed']} times (#1706)"
+    )
+
+
+@pytest.mark.unit
+def test_an_exhausted_request_counts_one_failure_and_a_recovered_one_none():
+    wrong = []
+    for schedule in _every_schedule(_HOOK_MAX_RETRIES + 1):
+        metrics: Counter = Counter()
+        _run_hook(schedule, metrics)
+        if metrics["LambdaHookRequestsFailed"] != 1:
+            wrong.append(f"{schedule}: {metrics['LambdaHookRequestsFailed']}")
+    for failures in range(_HOOK_MAX_RETRIES + 1):
+        for prefix in _every_schedule(failures):
+            metrics = Counter()
+            _run_hook(prefix + "S", metrics)
+            if metrics["LambdaHookRequestsFailed"] != 0:
+                wrong.append(f"{prefix}S: {metrics['LambdaHookRequestsFailed']}")
+    assert not wrong, (
+        "LambdaHookRequestsFailed must be emitted once per failed request and never "
+        f"for one that recovers (#1706); request: count -> {wrong[:6]}"
+    )
+
+
+def _hook_ladder_raise_lines() -> set[int]:
+    """Line of every ``raise`` in the hook ladder, bar the unreachable fall-through."""
+    tree = ast.parse(Path(client_mod.__file__).read_text(encoding="utf-8"))
+    (fn,) = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_invoke_lambda_hook_with_retry"
+    ]
+    lines = {
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Raise) and "fell through" not in ast.unparse(n)
+    }
+    assert len(lines) >= 4, f"raise sites derivation looks broken: {sorted(lines)}"
+    return lines
+
+
+@pytest.mark.unit
+def test_every_hook_failure_exit_is_driven():
+    """Universe closure: every way out of the hook ladder is driven by a route above,
+    so a new raise site cannot emit a second ``LambdaHookRequestsFailed`` — or none —
+    without a test reaching it. Read by tracing the lines the ladder executes."""
+    code = BedrockClient._invoke_lambda_hook_with_retry.__code__
+    executed: set[int] = set()
+
+    def tracer(frame, event, _arg):
+        if frame.f_code is not code:
+            return None
+
+        def lines(f, ev, _a):
+            if ev == "line":
+                executed.add(f.f_lineno)
+            return lines
+
+        return lines
+
+    previous = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        for first, out_of_time in _ONE_SHOT_FAILURES.values():
+            _run_hook_once(first, out_of_time, Counter())
+        for schedule in _every_schedule(_HOOK_MAX_RETRIES + 1):
+            _run_hook(schedule, Counter())
+    finally:
+        sys.settrace(previous)
+    undriven = _hook_ladder_raise_lines() - executed
+    assert not undriven, f"hook ladder raise sites no route reaches: {sorted(undriven)}"
