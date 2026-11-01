@@ -54,6 +54,18 @@ class ForcedSectionsError(ValueError):
     """A forced grouping that cannot be encoded or decoded."""
 
 
+def is_valid_document_class(value: Any) -> bool:
+    """True for a class name a forced class or grouping may carry.
+
+    The same vocabulary as a forced grouping's classes, for the whole-document
+    ``document-class`` metadata value: up to 100 ASCII letters, digits, spaces,
+    hyphens and underscores, the shape ``test_set_resolver.validate_document_class``
+    enforces on the API. The test runner checks a forwarded ``documentClass`` with
+    this before queueing it.
+    """
+    return isinstance(value, str) and bool(_CLASS_RE.fullmatch(value))
+
+
 def _compress(indices: Sequence[int]) -> str:
     """``[0, 1, 2, 5, 4]`` -> ``"0-2,5,4"``: ascending runs only, order kept.
 

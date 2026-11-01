@@ -447,3 +447,26 @@ class TestTheMetadataReachesThePipeline:
             doc = self._copy()
 
         assert doc.forced_sections is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("W2", True),
+        ("Bank Statement", True),
+        ("PA-Claims_Evidence", True),
+        ("x" * 100, True),
+        ("x" * 101, False),
+        ("", False),
+        ("Bank Statement\n", False),
+        ("a/b", False),
+        ("Relevé", False),
+        (None, False),
+        (["W2"], False),
+    ],
+)
+def test_is_valid_document_class_is_the_grouping_vocabulary(value, expected):
+    from idp_common.forced_sections import is_valid_document_class
+
+    assert is_valid_document_class(value) is expected

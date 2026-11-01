@@ -18,6 +18,7 @@ from idp_common.config.migrations import migrate_config  # type: ignore
 from idp_common.forced_sections import (  # type: ignore
     ForcedSectionsError,
     decode_forced_sections,
+    is_valid_document_class,
 )
 from idp_common.review_queues.statuses import (  # type: ignore
     LegacyHitlStatus,
@@ -145,6 +146,26 @@ def handler(event, context):
                 decode_forced_sections(document_sections)
             except ForcedSectionsError as e:
                 raise ValueError(f"Invalid documentSections: {e}") from e
+        if document_class is not None and document_class != "":
+            # Replaces classification for every document in the run and is stamped
+            # as S3 object metadata by the copier, so it is held to what the
+            # re-extract that sends it means: one named document, a draft-labeling
+            # run, and a class name metadata can carry (#1728).
+            if not is_valid_document_class(document_class):
+                raise ValueError(
+                    "Invalid documentClass: expected up to 100 characters of "
+                    "letters, digits, spaces, hyphens or underscores"
+                )
+            if purpose != "draft-labeling" or len(object_keys) != 1:
+                raise ValueError(
+                    "documentClass is accepted only on a draft-labeling run of "
+                    "exactly one document"
+                )
+            if document_sections:
+                raise ValueError(
+                    "Pass documentClass or documentSections, not both: a forced "
+                    "grouping already carries every section's class"
+                )
         tracking_table = os.environ["TRACKING_TABLE"]
         config_table = os.environ["CONFIG_TABLE"]
 
