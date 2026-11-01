@@ -79,8 +79,14 @@ def test_agentic_model_config_has_no_cache_flags_when_off():
     )
     on = agentic._build_model_config(**kw)
     off = agentic._build_model_config(**kw, prompt_cache="off")
-    assert on.get("cache_prompt") == "default"
+    assert on.get("cache_tools") == "default"
     assert "cache_prompt" not in off and "cache_tools" not in off
+    # The system-prompt cache point is carried by the system content.
+    model = kw["model_id"]
+    assert agentic._build_system_prompt_content("s", model)[-1] == {
+        "cachePoint": {"type": "default"}
+    }
+    assert agentic._build_system_prompt_content("s", model, "off") == "s"
 
 
 def test_the_documented_yaml_value_works():

@@ -127,6 +127,31 @@ this matters most, because its blocks nest: a transient re-raised for one rule t
 up through `asyncio.gather` into a document-level `except` that returns a document
 marked failed (#1101).
 
+### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
+
+`async_exponential_backoff_retry`, the ladder around the agentic extraction call,
+retries in a loop, so each attempt starts after the previous handler has exited and
+the failure is unreachable by then. That alone did not free it: a read timeout or a
+dropped connection leaves a botocore reference cycle behind it
+(`Endpoint._send_request` holds the exception it raises in a local), so the failed
+attempt's serialised request, page images included, stayed in memory until the cyclic
+garbage collector next ran. Measured with a real botocore client and an 8 MB request
+with the collector off, 8, 16, 24 and 32 MB were still held at attempts 2 to 5 of a
+read timeout, whether the botocore error arrived raw or raised `from` a wrapper. (The
+decorator does not retry a raw dropped connection at all: botocore's
+`ConnectionClosedError` matches none of its retryable names, and Strands wraps only a
+throttle in a retryable exception.) The retrying branch now
+calls `drop_failed_attempt`, the helper `bedrock/client.py` uses, which detaches the
+tracebacks along the failure's chain and stops at any exception the caller was already
+handling. It lives in the leaf module `idp_common/failed_attempt.py` so that both
+modules can import it without importing each other.
+
+Two things are deliberately left alone, because each measured flat: the `ClientError`
+branch of both decorators (a botocore throttle leaves no cycle), and the synchronous
+`exponential_backoff_retry`, which retries only `ClientError`.
+`tests/unit/utils/test_retry_decorators_release_failed_attempts.py` measures the
+retrying routes and keeps the throttle as its control (#1706).
+
 ### The shard invocation's time budget (`idp_common.timeout_budget`)
 
 The retry ladder in `bedrock_utils` spends part of a budget it does not own. The whole

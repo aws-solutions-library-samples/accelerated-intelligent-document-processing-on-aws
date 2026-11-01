@@ -16,7 +16,8 @@ REAL ``BedrockModel.format_request``, because the defect lives in the interactio
 between the two: strands' append-on-failure behavior, its treatment of a
 ``list[ContentBlock]`` input as the caller's own list (which is what
 ``_has_an_unanswered_attempt`` reads), and its rendering of
-``cache_prompt``/``cache_tools`` plus our message cachePoint into one request.
+the system-prompt cachePoint, ``cache_tools`` and our message cachePoint into
+one request.
 Asserting on a hand-written fake would have missed all three — and if a future
 strands starts copying the content list, or stops leaving a failed turn behind,
 these are the tests that notice.
@@ -38,7 +39,7 @@ from idp_common.extraction import agentic_idp  # noqa: E402
 # "A maximum of 4 blocks with cache_control may be provided."
 MAX_CACHE_CONTROL_BLOCKS = 4
 
-# What this path legitimately sends: one for cache_prompt (system), one for
+# What this path legitimately sends: one in the system content, one for
 # cache_tools (toolConfig), one trailing block on the prompt itself. Pinned as an
 # equality, not just against the cap: a strands release that stopped rendering
 # either model-level cache point would leave a `<= 4` assertion passing while it
@@ -84,10 +85,11 @@ def _count_cache_points(request: dict[str, Any]) -> int:
 def _a_claude_agent():
     """A real strands Agent on the model config this path builds for Claude.
 
-    The two cache flags come from ``_build_model_config`` rather than being
-    hardcoded here, so a change to which models get prompt or tool caching moves
-    this test with it instead of leaving it asserting about a config the product
-    no longer produces.
+    The tool cache flag comes from ``_build_model_config`` and the system content
+    from ``_build_system_prompt_content`` rather than being hardcoded here, so a
+    change to which models get prompt or tool caching moves this test with it
+    instead of leaving it asserting about a config the product no longer
+    produces.
     """
     from strands import Agent, tool
     from strands.models.bedrock import BedrockModel
@@ -98,10 +100,6 @@ def _a_claude_agent():
         max_retries=1,
         connect_timeout=10,
         read_timeout=60,
-    )
-    assert model_config.get("cache_prompt") == "default", (
-        "this test is about the cache points _build_model_config sets for a Claude "
-        "model, and it no longer sets the system one"
     )
     assert model_config.get("cache_tools") == "default", (
         "this test is about the cache points _build_model_config sets for a Claude "
@@ -115,7 +113,13 @@ def _a_claude_agent():
         return f"recorded {value}"
 
     model = BedrockModel(region_name="us-west-2", **model_config)
-    return Agent(model=model, tools=[record_row], system_prompt="system"), model
+    system_prompt = agentic_idp._build_system_prompt_content("system", CLAUDE_MODEL)
+    assert isinstance(system_prompt, list) and "cachePoint" in system_prompt[-1], (
+        "this test is about the cache points this path sets for a Claude model, "
+        "and _build_system_prompt_content no longer sets the system one"
+    )
+    agent = Agent(model=model, tools=[record_row], system_prompt=system_prompt)
+    return agent, model
 
 
 def _a_prompt() -> list[dict[str, Any]]:
@@ -157,7 +161,9 @@ def test_the_assembled_request_stays_within_bedrocks_cache_block_limit():
         # keeps the failure in the right place without an unreachable ``yield``.
         counts.append(
             _count_cache_points(
-                self.format_request(agent.messages, tool_specs, [{"text": "system"}])
+                self.format_request(
+                    agent.messages, tool_specs, agent.system_prompt_content
+                )
             )
         )
         raise _Throttled()
