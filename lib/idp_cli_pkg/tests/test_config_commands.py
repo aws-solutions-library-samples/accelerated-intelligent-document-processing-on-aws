@@ -1779,6 +1779,46 @@ def test_activate_reports_a_partial_bda_sync_as_a_warning_but_still_activates():
     assert "Successfully activated configuration profile: bda-v2" in result.output
 
 
+@pytest.mark.unit
+def test_activate_names_a_class_the_bda_sync_did_not_send():
+    with patched_client() as client:
+        client.config.activate.return_value = MagicMock(
+            success=True,
+            error=None,
+            bda_synced=True,
+            bda_classes_synced=2,
+            bda_classes_failed=0,
+            bda_unsent_classes=["Notice"],
+            bda_orphaned_blueprint_arns=[],
+        )
+        result = invoke(
+            ["config-activate", "--stack-name", STACK, "--config-profile", "bda-v2"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert "• Notice" in result.output
+
+
+@pytest.mark.unit
+def test_an_aborted_activation_still_names_a_class_the_bda_sync_did_not_send():
+    with patched_client() as client:
+        client.config.activate.return_value = MagicMock(
+            success=False,
+            error="BDA sync failed for all classes — activation aborted",
+            bda_synced=False,
+            bda_classes_synced=0,
+            bda_classes_failed=1,
+            bda_unsent_classes=["Notice"],
+            bda_orphaned_blueprint_arns=[],
+        )
+        result = invoke(
+            ["config-activate", "--stack-name", STACK, "--config-profile", "bda-v2"]
+        )
+    assert result.exit_code == 1, result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert "• Notice" in result.output
+
+
 # --------------------------------------------------------------------------- #
 # config-list
 # --------------------------------------------------------------------------- #
@@ -2314,3 +2354,59 @@ def test_create_refuses_a_request_for_only_empty_sections():
     )
     assert "Traceback" not in result.output
     assert not written, "a refused request must not leave a template behind"
+
+
+@pytest.mark.unit
+def test_sync_bda_names_a_class_it_did_not_send_and_does_not_count_it():
+    """A class with no field a BDA blueprint can hold is not sent (issue #1755). Its
+    status entry is a success, so it used to be listed as synced with nothing
+    saying no blueprint exists for it."""
+    with config_stack() as stack:
+        stack.seed("lending", class_name="invoice", active=True)
+
+        with patched_bda(
+            sync_result=[
+                {"status": "success", "class": "invoice"},
+                {
+                    "status": "success",
+                    "class": "notice",
+                    "warnings": [
+                        {
+                            "class": "notice",
+                            "property": "notice",
+                            "type": "empty_blueprint",
+                            "message": "not sent",
+                        }
+                    ],
+                },
+            ]
+        ):
+            result = invoke(["config-sync-bda", "--stack-name", STACK])
+
+    assert result.exit_code == 0, result.output
+    assert "Classes synced: 1" in result.output
+    assert "• invoice" in result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert result.output.count("• notice") == 1
+
+
+@pytest.mark.unit
+def test_a_failed_sync_bda_still_names_a_class_it_did_not_send():
+    with config_stack() as stack:
+        stack.seed("lending", class_name="invoice", active=True)
+
+        with patched_bda(
+            sync_result=[
+                {"status": "failed", "class": "invoice", "error": "boom"},
+                {
+                    "status": "success",
+                    "class": "notice",
+                    "warnings": [{"class": "notice", "type": "empty_blueprint"}],
+                },
+            ]
+        ):
+            result = invoke(["config-sync-bda", "--stack-name", STACK])
+
+    assert result.exit_code == 1, result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert "• notice" in result.output

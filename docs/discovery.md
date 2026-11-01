@@ -1689,6 +1689,15 @@ BDA rejects a whole blueprint when the class description or any field's descript
 
 The sync therefore rewrites those characters in the blueprint it sends. Your configuration is not changed. Where an equivalent exists, the character is replaced: dashes become `-`, the left single quote and backticks become `'`, other curly quotes outside the set become straight quotes, `…` becomes `...`, unusual spaces become a plain space, a bullet becomes `-`, `×` becomes `x`, `→` becomes `->`, and `{` and `}` become `(` and `)`. Accented letters outside the set lose the accent, so `ý` becomes `y`. A character with no equivalent, such as a CJK character, `^` or `~`, is removed. Each removal is reported as an `unsupported_characters` warning for the class, and a description that is blank, or has nothing left after removal, becomes `-`.
 
+**Characters BDA does not accept in a class name:**
+The class name becomes the blueprint's `class`, which BDA limits to the same characters as descriptions and to 60 characters. The sync does not replace the characters there, because the class name is what comes back from BDA: a sync from BDA to IDP reads it as the class name. Instead, each character BDA does not accept is written as `_x` followed by its code point and `_`, so `Invoice — {EU}` reaches BDA as `Invoice _x2014_ _x007B_EU_x007D_`, and the accelerator turns it back into `Invoice — {EU}` when it reads the class from BDA, including in the results it stores for each document. A class name that only uses characters BDA accepts is sent unchanged. A class whose name is longer than 60 characters after this escaping fails to sync with a message that says so; shorten the name.
+
+**Integer fields:**
+BDA rejects a whole blueprint that declares `"type": "integer"` anywhere. The sync sends such a field as `number` and adds `(a whole number)` to its instruction, or `(whole numbers)` for a list of integers, so BDA is still told to return a whole number. Your configuration is not changed. A later sync from BDA to IDP reads the field back as `number`.
+
+**Classes with no fields BDA can hold:**
+BDA rejects a blueprint with no fields. A class that has no properties, such as one describing boilerplate pages, or whose every field is dropped for one of the reasons above, is therefore not sent to BDA. The sync names it in a warning, alongside the fields it dropped from it, and does not count it as synced; the rest of the sync goes ahead. The Web UI shows the warning in the sync message, `idp-cli config-sync-bda` and `config-activate` list the class as not sent, and the SDK returns it in `unsent_classes` (`bda_unsent_classes` from `activate`). In replace mode, a blueprint synced for that class earlier is removed. In merge mode it is kept, with the fields it had when it was last synced. To have BDA recognise such a document type, give the class at least one field BDA can represent.
+
 ##### AWS Standard Blueprint Handling
 
 - AWS-provided blueprints (identifiable by `aws:blueprint` in ARN) are read-only

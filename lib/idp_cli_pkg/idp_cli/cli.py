@@ -449,6 +449,21 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     return result
 
 
+def _print_unsent_classes(classes) -> None:
+    """Name the classes a BDA sync did not send, because none of their fields can
+    be represented in a blueprint (issue #1755). Prints nothing when there are none."""
+    classes = list(classes or [])
+    if not classes:
+        return
+    console.print(
+        f"[yellow]⚠ {len(classes)} class(es) not sent to BDA: none of their fields "
+        f"can be represented in a BDA blueprint, and BDA rejects a blueprint with "
+        f"no fields[/yellow]"
+    )
+    for cls_name in classes:
+        console.print(f"    • {cls_name}")
+
+
 def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
     """Report blueprints a BDA sync disassociated but could not delete.
 
@@ -5590,6 +5605,7 @@ def config_activate(
             # the deletes run whatever happened to the classes — and it is the one
             # where nothing else printed says so. `bda_synced` is False on every
             # failing path, so gating on it would have hidden exactly those.
+            _print_unsent_classes(result.bda_unsent_classes)
             _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
             sys.exit(1)
 
@@ -5604,6 +5620,7 @@ def config_activate(
                 console.print(
                     f"[green]✓ Successfully synced {result.bda_classes_synced} classes to BDA[/green]"
                 )
+            _print_unsent_classes(result.bda_unsent_classes)
         _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
 
         console.print(
@@ -6110,7 +6127,9 @@ def config_sync_bda(
             console.print(f"  Classes synced: {result.classes_synced}")
             if result.processed_classes:
                 for cls_name in result.processed_classes:
-                    console.print(f"    • {cls_name}")
+                    if cls_name not in result.unsent_classes:
+                        console.print(f"    • {cls_name}")
+            _print_unsent_classes(result.unsent_classes)
             _print_orphaned_blueprints(result.orphaned_blueprint_arns)
         else:
             console.print("[yellow]⚠ BDA sync completed with issues[/yellow]")
@@ -6118,6 +6137,7 @@ def config_sync_bda(
             console.print(f"  Classes failed: {result.classes_failed}")
             if result.error:
                 console.print(f"  [red]Error: {result.error}[/red]")
+            _print_unsent_classes(result.unsent_classes)
             _print_orphaned_blueprints(result.orphaned_blueprint_arns)
             sys.exit(1)
 
