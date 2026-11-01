@@ -724,7 +724,10 @@ A grouping that is malformed, or names a page the document does not have, raises
 fails the document, because classifying it instead would regroup every section. The
 harvest in the test-set resolver then writes back only the targeted section, and only
 when the run's result for it has the corrected class and the same page indices; the
-BDA branch never runs this step, so under `use_bda: true` the job fails instead.
+BDA branch never runs this step, so under `use_bda: true` the job fails instead. The
+same holds for `document-class`: the harvest writes the run's result only when every
+section it would write came back as the forced class, so a whole-document re-extract
+under `use_bda: true` that comes back classified otherwise fails with nothing written.
 
 ## Enforcing a Valid Class Vocabulary (Validation + Retry)
 
