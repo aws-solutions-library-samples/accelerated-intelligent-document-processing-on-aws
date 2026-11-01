@@ -40,6 +40,7 @@ import pytest
 import urllib3
 from botocore.config import Config
 from botocore.exceptions import ConnectionClosedError
+from botocore.exceptions import ReadTimeoutError as BotocoreReadTimeoutError
 from botocore.httpsession import URLLib3Session
 from strands import Agent
 from strands.models.bedrock import BedrockModel
@@ -377,6 +378,50 @@ def test_a_certificate_failure_is_not_retried(bedrock, steps):
     assert type(error).__name__ == "SSLError"
     assert type(error).__module__ == "botocore.exceptions"
     assert sent == list(steps[:-1])
+
+
+@pytest.fixture
+def unbounded_delay_budget(monkeypatch):
+    """The decorator with its cumulative-delay allowance removed, so only
+    ``max_retries`` can end a ladder. ``_backoff_or_none`` is looked up at call time,
+    so the production decoration of ``invoke_agent_with_retry`` is the one measured;
+    everything else it decides (the deadline gate, the clamp) still runs."""
+    real = bedrock_utils._backoff_or_none
+
+    def no_allowance(sleep_time, total_slept, _max_total_delay, *args, **kwargs):
+        return real(sleep_time, total_slept, None, *args, **kwargs)
+
+    monkeypatch.setattr(bedrock_utils, "_backoff_or_none", no_allowance)
+
+
+#: ``max_retries`` on ``invoke_agent_with_retry``'s decoration in agentic_idp.py.
+_AGENTIC_ATTEMPTS = 50
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("steps", "raised_type"),
+    [
+        ("D" * 60, ConnectionClosedError),
+        # Only the first failure is wrapped: each retry resumes in a new invocation,
+        # whose first model call raises the botocore error raw.
+        ("T" + "D" * 60, ConnectionClosedError),
+        ("R" * 60, BotocoreReadTimeoutError),
+    ],
+    ids=["raw", "wrapped", "read-timeout"],
+)
+def test_transport_retries_stop_at_max_retries_when_the_budget_does_not(
+    bedrock, unbounded_delay_budget, steps, raised_type
+):
+    """The attempt bound, on its own. With the 90s allowance in force it always ends
+    the ladder first (``test_an_exhausted_ladder_raises_the_failure_it_last_met``),
+    so a ladder that retried on its last attempt, or never stopped, passed every
+    other test here (#1745)."""
+    make_agent, sent, _raised = bedrock
+    with pytest.raises(raised_type):
+        asyncio.run(invoke_agent_with_retry([{"text": "hi"}], make_agent(steps)))
+    tool_uses = steps.count("T")
+    assert len(sent) == tool_uses + _AGENTIC_ATTEMPTS
 
 
 def _decorated(raise_once):
