@@ -791,7 +791,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 |---|---|
 | `make setup` | Install all first-party packages into the current Python environment |
 | `make setup-venv` | Create `.venv` and install everything into it |
-| `make install-first-party` | Install just the first-party editables in one pip pass |
+| `make install-first-party` | Install just the first-party editables in one pip pass, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
 
 ### Code quality
 
