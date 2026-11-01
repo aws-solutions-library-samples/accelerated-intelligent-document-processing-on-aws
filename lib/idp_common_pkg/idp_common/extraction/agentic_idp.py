@@ -30,7 +30,12 @@ from strands import Agent, tool
 from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models import BedrockModel
 from strands.types.agent import AgentInput
-from strands.types.content import CachePoint, ContentBlock, Message
+from strands.types.content import (
+    CachePoint,
+    ContentBlock,
+    Message,
+    SystemContentBlock,
+)
 from strands.types.media import (
     DocumentContent,
     ImageContent,
@@ -1326,6 +1331,39 @@ def _build_system_prompt(
     return complete_prompt, schema_json
 
 
+def _system_prompt_caching_enabled(model_id: str, prompt_cache: str = "auto") -> bool:
+    """Whether the system prompt carries a trailing ``cachePoint`` for this model.
+
+    The one decision both consumers read: ``_build_system_prompt_content`` places
+    the block, and ``_build_model_config`` gates tool caching on it. The ``:1m``
+    suffix is removed before the lookup, as ``_build_model_config`` does before it
+    forwards the id to Bedrock.
+    """
+    if prompt_cache == "off":
+        return False
+    return supports_prompt_caching(model_id.removesuffix(":1m"))
+
+
+def _build_system_prompt_content(
+    system_prompt: str, model_id: str, prompt_cache: str = "auto"
+) -> str | list[SystemContentBlock]:
+    """The agent's system prompt, ending in a ``cachePoint`` when caching applies.
+
+    strands 1.48 deprecates the ``BedrockModel`` ``cache_prompt`` option (it emits
+    a ``UserWarning`` on every request) in favour of a ``cachePoint`` block in the
+    system content itself, which is what this returns. The request strands builds
+    from it is the same as the one ``cache_prompt="default"`` produced: the text
+    block, then ``{"cachePoint": {"type": "default"}}``. A model that is not sent
+    cache points, or ``extraction.prompt_cache: off``, gets the plain string.
+    """
+    if not _system_prompt_caching_enabled(model_id, prompt_cache):
+        return system_prompt
+    return [
+        SystemContentBlock(text=system_prompt),
+        SystemContentBlock(cachePoint=CachePoint(type="default")),
+    ]
+
+
 def _build_model_config(
     model_id: str,
     max_tokens: int | None,
@@ -1342,7 +1380,8 @@ def _build_model_config(
     1. Creates boto3 Config with retry and timeout settings
     2. Determines model-specific max token limits
     3. Validates and caps max_tokens if needed
-    4. Auto-detects and enables caching support (prompt and tool caching)
+    4. Auto-detects caching support and enables tool caching (the system-prompt
+       cache point is a system content block: _build_system_prompt_content)
 
     Args:
         model_id: Bedrock model identifier (supports us.*, eu.*, and global.anthropic.*)
@@ -1524,8 +1563,10 @@ def _build_model_config(
             "Prompt caching disabled by configuration (extraction.prompt_cache: off)",
             extra={"model_id": model_id},
         )
-    elif supports_prompt_caching(model_id):
-        model_config["cache_prompt"] = "default"
+    elif _system_prompt_caching_enabled(model_id, prompt_cache):
+        # The system-prompt cache point is not set here: it is a block in the
+        # system content (_build_system_prompt_content), because strands 1.48
+        # deprecates the BedrockModel ``cache_prompt`` option.
         logger.info(
             "Prompt caching enabled for model",
             extra={"model_id": model_id, "auto_detected": True},
@@ -2490,7 +2531,9 @@ async def structured_output_async(
             **inference_params,
         ),  # pyright: ignore[reportArgumentType]
         tools=tools,
-        system_prompt=final_system_prompt,
+        system_prompt=_build_system_prompt_content(
+            final_system_prompt, model_id, config.extraction.prompt_cache
+        ),
         state={
             "current_extraction": None,
             "images": {},

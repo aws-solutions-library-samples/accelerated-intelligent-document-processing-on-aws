@@ -118,8 +118,17 @@ def test_1m_caching_still_detected() -> None:
         connect_timeout=10.0,
         read_timeout=300.0,
     )
-    assert config.get("cache_prompt") == "default"
     assert config.get("cache_tools") == "default"
+    # The system-prompt cache point is a system content block, not a model
+    # option (strands 1.48 deprecates ``cache_prompt``); the decision is still
+    # made on the stripped id.
+    assert "cache_prompt" not in config
+    from idp_common.extraction.agentic_idp import _build_system_prompt_content
+
+    assert _build_system_prompt_content("sys", "us.anthropic.claude-opus-4-7:1m") == [
+        {"text": "sys"},
+        {"cachePoint": {"type": "default"}},
+    ]
 
 
 def test_1m_does_not_inflate_max_tokens_for_claude4() -> None:

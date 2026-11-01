@@ -587,7 +587,7 @@ Type coercion occurs automatically during evaluation:
 
 ## Assessment Confidence Integration
 
-The evaluation framework automatically integrates with the assessment feature to provide enhanced quality insights. When documents have been processed with assessment enabled via the configuration `assessment.enabled: true` property, the evaluation reports include confidence scores alongside traditional accuracy metrics.
+The evaluation framework automatically integrates with the assessment feature to provide enhanced quality insights. When documents have been processed with confidence scoring on — `extraction.confidence.mode` set to `separate` (the default) or `integrated` rather than `off` — the evaluation reports include confidence scores alongside traditional accuracy metrics. See [Enable/Disable Confidence](configuration.md#enabledisable-confidence).
 
 ### Confidence Score Display
 
@@ -1274,7 +1274,7 @@ Once documents are processed with baselines:
 
 - **Choose appropriate evaluation methods**: Match methods to your data types (EXACT for IDs, FUZZY for names, SEMANTIC for descriptions)
 - **Set realistic thresholds**: Start with strict thresholds (0.9+) and adjust based on your accuracy requirements
-- **Configure confidence tracking**: Enable assessment to get confidence scores in evaluation reports
+- **Configure confidence tracking**: Leave `extraction.confidence.mode` at `separate` or `integrated` (not `off`) to get confidence scores in evaluation reports
 
 ## Automatic Field Discovery
 

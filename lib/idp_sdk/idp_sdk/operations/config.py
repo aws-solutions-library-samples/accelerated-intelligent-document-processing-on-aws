@@ -7,7 +7,11 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
-from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
+from idp_sdk.exceptions import (
+    IDPProcessingError,
+    IDPResourceNotFoundError,
+    IDPValidationError,
+)
 from idp_sdk.models import (
     ConfigActivateResult,
     ConfigCreateResult,
@@ -163,9 +167,49 @@ class ConfigOperation:
 
         return config_table
 
+    @staticmethod
+    def parse_features(
+        features: "str | list[str] | tuple[str, ...]",
+    ) -> "str | list[str]":
+        """Read a ``features`` value as a feature-set name or a list of sections.
+
+        A string is split on commas and blank segments are dropped, so a trailing
+        or doubled comma is harmless. If exactly one name remains and it is a
+        feature-set name (``min``, ``core``, ``all``), that is the preset; anything
+        else is a list of section names, so a single name and a list are the same
+        request. A list or tuple is taken as section names as given. Which names
+        are sections is decided by ``generate_config_template``, which refuses an
+        unknown one.
+
+        Raises:
+            IDPValidationError: The value names no section at all, or is neither
+                a string nor a list of strings.
+        """
+        from idp_common.config.merge_utils import FEATURE_SETS
+
+        if isinstance(features, (list, tuple)) and all(
+            isinstance(name, str) for name in features
+        ):
+            return [name.strip() for name in features if name.strip()]
+        if not isinstance(features, str):
+            raise IDPValidationError(
+                "features must be a feature-set name or section names, as a "
+                f"comma-separated string or a list; got {type(features).__name__}."
+            )
+        names = [name.strip() for name in features.split(",") if name.strip()]
+        if not names:
+            raise IDPValidationError(
+                "features contains no section names. Give a feature set "
+                f"({', '.join(FEATURE_SETS)}) or one or more section names, "
+                "comma-separated."
+            )
+        if len(names) == 1 and names[0] in FEATURE_SETS:
+            return names[0]
+        return names
+
     def create(
         self,
-        features: str = "min",
+        features: "str | list[str]" = "min",
         pattern: str = "pattern-2",
         output: Optional[str] = None,
         include_prompts: bool = False,
@@ -175,7 +219,9 @@ class ConfigOperation:
         """Generate an IDP configuration template.
 
         Args:
-            features: Feature set to include
+            features: A feature set (``min``, ``core``, ``all``), or one or more
+                section names, comma-separated or as a list (see
+                ``parse_features``)
             pattern: Pattern to use (pattern-1, pattern-2)
             output: Optional output file path
             include_prompts: Include prompt templates
@@ -184,20 +230,24 @@ class ConfigOperation:
 
         Returns:
             ConfigCreateResult with generated configuration
+
+        Raises:
+            IDPValidationError: ``features`` names no section, an unknown feature
+                set or section, or is not a string or list of strings, or names
+                only sections that are empty in the system defaults (``classes``
+                alone), or ``pattern`` is not a known pattern.
         """
         from idp_common.config.merge_utils import generate_config_template
 
-        if "," in features:
-            feature_list = [f.strip() for f in features.split(",")]
-        else:
-            feature_list = features
-
-        yaml_content = generate_config_template(
-            features=feature_list,
-            pattern=pattern,
-            include_prompts=include_prompts,
-            include_comments=include_comments,
-        )
+        try:
+            yaml_content = generate_config_template(
+                features=self.parse_features(features),
+                pattern=pattern,
+                include_prompts=include_prompts,
+                include_comments=include_comments,
+            )
+        except ValueError as e:
+            raise IDPValidationError(str(e)) from e
 
         if output:
             with open(output, "w", encoding="utf-8") as f:

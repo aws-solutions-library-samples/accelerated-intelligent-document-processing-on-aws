@@ -23,6 +23,7 @@ from idp_common.config.merge_utils import (
     generate_config_template,
     load_system_defaults,
     merge_config_with_defaults,
+    template_sections,
     validate_config,
 )
 
@@ -95,6 +96,12 @@ def test_a_stripped_prompt_resolves_to_the_system_default(pattern, features):
     assert actual == expected
 
 
+def _copied(sections, defaults):
+    """The requested sections the generator copies: those the defaults have and
+    do not leave an empty list (left out, issue #1720)."""
+    return [s for s in sections if s in defaults and defaults[s] != []]
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("pattern,features", MATRIX)
 def test_include_prompts_still_writes_every_prompt(pattern, features):
@@ -104,7 +111,7 @@ def test_include_prompts_still_writes_every_prompt(pattern, features):
         )
     )
     defaults = load_system_defaults(pattern)
-    included = [s for s in FEATURE_SETS[features] if s in defaults]
+    included = _copied(FEATURE_SETS[features], defaults)
 
     for section in included:
         assert _prompts(template[section]) == _prompts(defaults[section])
@@ -122,7 +129,7 @@ def test_the_default_template_leaves_long_prompts_out(pattern, features):
         generate_config_template(features=features, pattern=pattern)
     )
     defaults = load_system_defaults(pattern)
-    included = [s for s in FEATURE_SETS[features] if s in defaults]
+    included = _copied(FEATURE_SETS[features], defaults)
 
     # Non-vacuity: the defaults do carry prompts long enough to strip.
     assert any(len(v) > 50 for s in included for v in _prompts(defaults[s]).values())
@@ -212,7 +219,10 @@ def test_all_accounts_for_every_section_the_defaults_carry():
 def test_the_all_template_carries_every_placed_section_of_its_pattern(pattern):
     template = yaml.safe_load(generate_config_template(features="all", pattern=pattern))
 
-    assert _sections(template) == SECTIONS_BY_PATTERN[pattern] - set(PENDING_DECISION)
+    defaults = load_system_defaults(pattern)
+    placed = SECTIONS_BY_PATTERN[pattern] - set(PENDING_DECISION)
+
+    assert _sections(template) == set(_copied(placed, defaults))
 
 
 @pytest.mark.unit
@@ -276,7 +286,255 @@ def test_core_is_min_plus_ocr(pattern):
             yaml.safe_load(generate_config_template(features=features, pattern=pattern))
         )
 
-    copied = {"classification", "extraction", "classes"} & SECTIONS_BY_PATTERN[pattern]
-    stubs = {"summarization", "evaluation", "assessment"}
+    copied = {"classification", "extraction"} & SECTIONS_BY_PATTERN[pattern]
+    stubs = {"summarization", "evaluation"}
     assert emitted("min") - stubs == copied
     assert emitted("core") == copied | ({"ocr"} & SECTIONS_BY_PATTERN[pattern])
+
+
+# --- Issue #1709: no dead keys, strict section lists, an accurate header -------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern,features", MATRIX)
+def test_every_top_level_key_is_a_section_the_pattern_has(pattern, features):
+    """A key no defaults file carries is one nothing reads. ``min`` used to write
+    ``assessment: {enabled: false}``, a retired section, which looked like it
+    switched confidence scoring off and did nothing."""
+    template = yaml.safe_load(
+        generate_config_template(features=features, pattern=pattern)
+    )
+
+    assert set(template) - {"notes"} <= SECTIONS_BY_PATTERN[pattern]
+    assert "assessment" not in template
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", VALID_PATTERNS)
+def test_min_leaves_confidence_scoring_on(pattern):
+    """What the docs and the header now say: ``min`` does not disable confidence."""
+    template = yaml.safe_load(generate_config_template(features="min", pattern=pattern))
+    merged = merge_config_with_defaults(template, pattern)
+
+    assert merged["extraction"]["confidence"]["mode"] not in (None, "off")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", VALID_PATTERNS)
+def test_template_sections_is_the_derived_section_set(pattern):
+    assert set(template_sections(pattern)) == SECTIONS_BY_PATTERN[pattern]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "features",
+    [
+        ["classification", "extration"],
+        ["not-a-section"],
+        ["min", "summarization"],
+        ["notes"],
+        ["use_bda"],
+    ],
+)
+def test_an_unknown_name_in_a_list_is_refused(features):
+    with pytest.raises(ValueError, match="Unknown configuration section"):
+        generate_config_template(features=features, pattern="pattern-2")
+
+
+@pytest.mark.unit
+def test_a_section_the_pattern_lacks_is_refused_in_a_list():
+    """pattern-1 has no ``ocr``. A preset skips it; a list naming it is refused."""
+    assert "ocr" not in SECTIONS_BY_PATTERN["pattern-1"]
+    with pytest.raises(ValueError, match="'ocr'"):
+        generate_config_template(features=["ocr", "extraction"], pattern="pattern-1")
+    generate_config_template(features="core", pattern="pattern-1")
+
+
+@pytest.mark.unit
+def test_a_preset_inside_a_list_says_presets_stand_alone():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        generate_config_template(features=["min", "ocr"], pattern="pattern-2")
+
+
+@pytest.mark.unit
+def test_an_empty_list_is_refused():
+    with pytest.raises(ValueError, match="No sections requested"):
+        generate_config_template(features=[], pattern="pattern-2")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", VALID_PATTERNS)
+def test_every_section_of_a_pattern_can_be_requested_alone(pattern):
+    defaults = load_system_defaults(pattern)
+    for section in SECTIONS_BY_PATTERN[pattern]:
+        # An empty default has nothing to copy, so a request for it alone is
+        # refused (test_requesting_only_empty_sections_is_refused, issue #1720).
+        if _is_empty(defaults[section]):
+            continue
+        template = yaml.safe_load(
+            generate_config_template(features=[section], pattern=pattern)
+        )
+        assert set(template) == {"notes", section}
+
+
+def _header_field(text, prefix):
+    """The comma-separated names on the header line starting with ``prefix``."""
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return set(line[len(prefix) :].rstrip(".").split(", "))
+    return set()
+
+
+HEADER_MATRIX = (
+    MATRIX
+    + [(p, ["classification", "summarization"]) for p in ["pattern-2"]]
+    + [(p, ["extraction"]) for p in VALID_PATTERNS]
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern,features", HEADER_MATRIX)
+def test_the_header_describes_the_file_it_heads(pattern, features):
+    """Every claim in the header is checked against the YAML below it, never
+    against the generator's own bookkeeping. It used to call every template
+    "a minimal configuration", including ``all``."""
+    text = generate_config_template(features=features, pattern=pattern)
+    body = yaml.safe_load(text)
+    present = set(body) - {"notes"}
+    stubs = {k for k, v in body.items() if v == {"enabled": False}}
+
+    copied = _header_field(text, "# Sections copied from the system defaults: ")
+    switched_off = _header_field(text, "# Sections switched off: ")
+    omitted = _header_field(text, "# Sections not in this file: ")
+
+    left_empty = _header_field(text, "# Empty in the system defaults, so left out: ")
+
+    assert copied == present - stubs
+    assert switched_off == stubs
+    assert omitted == SECTIONS_BY_PATTERN[pattern] - present
+    defaults = load_system_defaults(pattern)
+    requested = FEATURE_SETS[features] if isinstance(features, str) else list(features)
+    assert left_empty == {
+        s for s in requested if s in defaults and _is_empty(defaults[s])
+    }
+    explains = "# Written empty, it would replace the profile's own on upload;" in text
+    assert explains == bool(left_empty)
+    assert "minimal configuration" not in text
+
+    label = features if isinstance(features, str) else ", ".join(features)
+    assert f"# Feature set: {label}\n" in text
+
+    mode = ((body.get("extraction") or {}).get("confidence") or {}).get("mode")
+    says_on = "# Confidence scoring stays on" in text
+    assert says_on == (mode not in (None, "off"))
+    if says_on:
+        assert f"extraction.confidence.mode: {mode})" in text
+
+
+@pytest.mark.unit
+def test_the_header_matrix_exercises_every_header_line():
+    """Non-vacuity: some template switches sections off, some leaves sections
+    out, and some carries extraction, so no assertion above is always empty."""
+    texts = [generate_config_template(features=f, pattern=p) for p, f in HEADER_MATRIX]
+    for prefix in (
+        "# Sections switched off: ",
+        "# Sections not in this file: ",
+        "# Confidence scoring stays on",
+        "# Empty in the system defaults, so left out: ",
+    ):
+        assert any(prefix in t for t in texts), prefix
+    assert any("# Sections switched off: " not in t for t in texts)
+
+
+@pytest.mark.unit
+def test_a_repeated_section_is_listed_once():
+    text = generate_config_template(features=["ocr", "ocr"], pattern="pattern-2")
+    assert "# Sections copied from the system defaults: ocr.\n" in text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", VALID_PATTERNS)
+def test_the_header_says_prompts_were_stripped_only_when_they_were(pattern):
+    stripped = generate_config_template(features="all", pattern=pattern)
+    full = generate_config_template(
+        features="all", pattern=pattern, include_prompts=True
+    )
+    line = "# Long system_prompt, task_prompt and user_prompt values are left out;"
+
+    assert line in stripped
+    assert line not in full
+
+
+# --- Issue #1720: nothing in a template empties what it is uploaded over -----
+
+
+def _is_empty(value):
+    return value == []
+
+
+def _empty_lists(data, path=""):
+    """Dotted paths of every empty list in a config tree, at any depth."""
+    if isinstance(data, list):
+        if not data:
+            return {path}
+        found = set()
+        for i, item in enumerate(data):
+            found |= _empty_lists(item, f"{path}[{i}]")
+        return found
+    if isinstance(data, dict):
+        found = set()
+        for key, value in data.items():
+            found |= _empty_lists(value, f"{path}.{key}" if path else str(key))
+        return found
+    return set()
+
+
+EVERY_REQUEST = [
+    (pattern, features, include_prompts)
+    for pattern in VALID_PATTERNS
+    for features in list(FEATURE_SETS)
+    + [[s] for s in template_sections(pattern) if s != "classes"]
+    + [["classes", "extraction"]]
+    for include_prompts in (False, True)
+]
+
+
+@pytest.mark.unit
+def test_the_system_defaults_do_hold_an_empty_list():
+    """Non-vacuity for the test below: ``classes`` is empty in every pattern's
+    defaults, and every feature set names it, so the generator has one to skip."""
+    for pattern in VALID_PATTERNS:
+        assert load_system_defaults(pattern)["classes"] == []
+    assert all("classes" in names for names in FEATURE_SETS.values())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern,features,include_prompts", EVERY_REQUEST)
+def test_no_template_carries_an_empty_list(pattern, features, include_prompts):
+    """An uploaded file is merged over the profile's configuration, and a list
+    there is replaced rather than merged, so an empty list in a template empties
+    the profile's list. ``classes: []`` removed every document class of the
+    profile it was uploaded over (issue #1720). A list the defaults leave empty
+    has nothing to contribute; one nested inside a section would fail here too,
+    and needs the same treatment rather than an exemption."""
+    template = yaml.safe_load(
+        generate_config_template(
+            features=features, pattern=pattern, include_prompts=include_prompts
+        )
+    )
+
+    assert _empty_lists(template) == set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", VALID_PATTERNS)
+def test_requesting_only_empty_sections_is_refused(pattern):
+    """``--features classes`` has nothing to copy. A file holding only ``notes``
+    would report success and, uploaded, overwrite the profile's notes."""
+    with pytest.raises(ValueError, match="Nothing to generate: classes is empty"):
+        generate_config_template(features=["classes"], pattern=pattern)
+    # With a section that has defaults alongside, it generates as usual.
+    template = yaml.safe_load(
+        generate_config_template(features=["classes", "extraction"], pattern=pattern)
+    )
+    assert set(template) == {"notes", "extraction"}

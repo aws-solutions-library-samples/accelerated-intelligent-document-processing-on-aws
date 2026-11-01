@@ -77,10 +77,11 @@ def _compact_content(summary: dict[str, Any]) -> list[dict[str, Any]]:
     """Wrap a compact summary dict as a Strands ToolResultContent list.
 
     Returning a dict with BOTH ``status`` and ``content`` makes Strands treat it
-    as an already-formatted ToolResult (see strands.tools.decorator
-    ._wrap_tool_result) instead of falling back to ``str(result)`` — which would
-    inline the ENTIRE dict (all parsed rows) into agent.messages and re-send it
-    every turn. Bedrock's request formatter (BedrockModel
+    as an already-formatted ToolResult (see
+    ``strands.tools.decorator.DecoratedFunctionTool._wrap_tool_result``) instead of
+    falling back to serialising the whole return value as one text block — which
+    would inline the ENTIRE dict (all parsed rows) into agent.messages and re-send
+    it every turn. Bedrock's request formatter (BedrockModel
     ._format_request_message_content) transmits only this ``content`` (plus
     toolUseId/status), silently dropping any extra top-level keys — so the dense
     ``rows``/``mapped_rows`` we keep alongside for state/tests are never sent.
