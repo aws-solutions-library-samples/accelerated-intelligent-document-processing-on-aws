@@ -303,12 +303,30 @@ def _scope_profile(test_set_id):
         return str(meta.get(SCOPE_PROFILE_ATTRIBUTE) or "")
     if not meta:
         return ""
+    # Not recorded while a labeling job is in flight: how it ends decides whether
+    # its run counts (a FAILED job does not), and the write that ends it can land
+    # between this resolution and the record, which would then keep an answer
+    # nothing invalidates again (#1757). Re-resolved on each use until then.
+    in_flight = any(
+        job.get("status") not in ("COMPLETED", "FAILED")
+        for job in _label_jobs(test_set_id)
+    )
     profile = _resolve_set_config_version(test_set_id, meta)[0] or ""
+    if in_flight:
+        return profile
+    pointer = meta.get("labelJobId")
     try:
+        # A job started since `meta` was read repoints `labelJobId` and drops the
+        # record; this write must not land after that.
         db_client.update_item(
             key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
             update_expression=f"SET {SCOPE_PROFILE_ATTRIBUTE} = :p",
-            expression_attribute_values={":p": profile},
+            expression_attribute_values=(
+                {":p": profile, ":j": pointer} if pointer else {":p": profile}
+            ),
+            condition_expression=(
+                "labelJobId = :j" if pointer else "attribute_not_exists(labelJobId)"
+            ),
         )
     except Exception as e:  # noqa: BLE001 — the answer stands; recording is best effort
         logger.warning(f"Could not record the profile of test set {test_set_id}: {e}")

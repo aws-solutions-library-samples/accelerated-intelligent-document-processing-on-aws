@@ -13173,8 +13173,8 @@ class TestFailedJobIsNotADraftingRun:
         ):
             with pytest.raises(TestSetAccessDenied):
                 test_set_index._assert_set_access(event, "ts1")
-            # Non-vacuity: the mixed answer really was recorded.
-            assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == ""
+            # The mixed answer is not recorded while the job is in flight.
+            assert test_set_index.SCOPE_PROFILE_ATTRIBUTE not in self._meta(table)
 
             failed = test_set_index._harvest_label_job(
                 table.get_item(Key=key)["Item"], deadline=None
@@ -13182,3 +13182,98 @@ class TestFailedJobIsNotADraftingRun:
             assert failed["status"] == "FAILED"
 
             test_set_index._assert_set_access(event, "ts1")
+            assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == (
+                "prof-A"
+            )
+
+    def _seed_in_flight_reextract(self, table):
+        self._seed(
+            table,
+            [
+                ("runA", "COMPLETED", {}),
+                ("runF", "RUNNING", {"objectKeys": ["a.pdf"]}),
+            ],
+            {
+                "runA": {"ConfigVersion": "prof-A"},
+                "runF": {
+                    "ConfigVersion": "prof-B",
+                    "TestSetId": "ts1",
+                    "Files": ["a.pdf"],
+                    "Status": "FAILED",
+                },
+            },
+        )
+
+    def test_a_job_failing_during_the_resolution_leaves_no_stale_profile(
+        self, labeling_env
+    ):
+        """The job fails after the profile was resolved from it and before the
+        answer would be recorded."""
+        table, _ = labeling_env
+        self._seed_in_flight_reextract(table)
+        real = test_set_index._resolve_set_config_version
+        key = {"PK": "testset#ts1", "SK": "labeljob#runF"}
+
+        def resolve_then_fail(*args, **kwargs):
+            answer = real(*args, **kwargs)
+            test_set_index._harvest_label_job(
+                table.get_item(Key=key)["Item"], deadline=None
+            )
+            return answer
+
+        with patch.object(
+            test_set_index,
+            "_resolve_set_config_version",
+            side_effect=resolve_then_fail,
+        ):
+            # Non-vacuity: this resolution saw the in-flight job and read mixed.
+            assert test_set_index._scope_profile("ts1") == ""
+
+        assert table.get_item(Key=key)["Item"]["status"] == "FAILED"
+        assert test_set_index.SCOPE_PROFILE_ATTRIBUTE not in self._meta(table)
+        assert test_set_index._scope_profile("ts1") == "prof-A"
+
+    def test_a_job_started_during_the_resolution_leaves_no_stale_profile(
+        self, labeling_env
+    ):
+        """Starting a job repoints ``labelJobId`` and drops the record; the
+        record written by a resolution that read the set before must not land."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runA", "COMPLETED", {})],
+            {"runA": {"ConfigVersion": "prof-A"}},
+        )
+        real = test_set_index._resolve_set_config_version
+
+        def resolve_then_repoint(*args, **kwargs):
+            answer = real(*args, **kwargs)
+            table.update_item(
+                Key={"PK": "testset#ts1", "SK": "metadata"},
+                UpdateExpression="SET labelJobId = :j",
+                ExpressionAttributeValues={":j": "runNew"},
+            )
+            return answer
+
+        with patch.object(
+            test_set_index,
+            "_resolve_set_config_version",
+            side_effect=resolve_then_repoint,
+        ):
+            assert test_set_index._scope_profile("ts1") == "prof-A"
+
+        assert test_set_index.SCOPE_PROFILE_ATTRIBUTE not in self._meta(table)
+
+    def test_a_settled_set_records_its_profile(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._scope_profile("ts1") == "prof-A"
+        assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == "prof-A"
+
+    def test_a_set_with_no_labeling_job_records_its_profile(self, labeling_env):
+        table, _ = labeling_env
+        _seed_test_set(table, "ts1", configVersion="prof-D")
+
+        assert test_set_index._scope_profile("ts1") == "prof-D"
+        assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == "prof-D"
