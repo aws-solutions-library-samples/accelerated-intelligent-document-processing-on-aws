@@ -12139,9 +12139,15 @@ class TestRegroupWhileALabelingJobRuns:
         nobody has polled since does not block."""
         table, s3 = labeling_env
         result, _stamped = self._start_whole_document_reextract(table, s3)
-        uri = _seed_pipeline_result(
-            s3, f"{result['jobId']}/packet.pdf/sections/1/result.json", {"x": "new"}
+        key = f"{result['jobId']}/packet.pdf/sections/1/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {"document_class": {"type": "W2"}, "inference_result": {"x": "new"}}
+            ),
         )
+        uri = f"s3://output-bucket/{key}"
         table.update_item(
             Key={"PK": f"doc#{result['jobId']}/packet.pdf", "SK": "none"},
             UpdateExpression="SET ObjectStatus = :s, Sections = :sec",
@@ -12212,3 +12218,80 @@ class TestRegroupWhileALabelingJobRuns:
                 }
             )
         assert _baseline_bytes(s3) == stamped
+
+
+@pytest.mark.unit
+class TestWholeDocumentClassNotApplied:
+    """#1728 item 6: a whole-document re-extract whose run did not apply the class.
+
+    Only the classification step applies a forced class, and Bedrock Data Automation
+    mode does not run it, so the run comes back classified by BDA. Writing that over
+    the baseline replaced the class the reviewer had just corrected and reported the
+    re-extract as done. It now fails the way a section re-extract does: nothing is
+    written, and the error says why and what to do instead.
+    """
+
+    SINGLE = [("1", "Payslip", "draft-machine", [0, 1])]
+
+    def _harvest_with_class(self, table, s3, returned_class):
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        assert run_input["documentClass"] == "W2"
+        stamped = _baseline_bytes(s3)
+        key = f"{result['jobId']}/packet.pdf/sections/1/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {
+                    "document_class": {"type": returned_class},
+                    "split_document": {"page_indices": [0, 1]},
+                    "inference_result": {"new_field": "new"},
+                }
+            ),
+        )
+        _seed_completed_run(
+            table,
+            result["jobId"],
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": f"s3://output-bucket/{key}"}]},
+        )
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        return job, stamped
+
+    def test_a_run_that_ignored_the_class_writes_nothing_and_says_why(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+
+        job, stamped = self._harvest_with_class(table, s3, "Payslip")
+
+        assert job["status"] == "FAILED"
+        assert "'Payslip'" in job["error"] and "'W2'" in job["error"]
+        assert "Bedrock Data Automation" in job["error"]
+        assert _baseline_bytes(s3) == stamped
+        label = json.loads(stamped["ts1/baseline/packet.pdf/sections/1/result.json"])
+        assert label["document_class"]["type"] == "W2"
+
+    def test_a_run_that_applied_the_class_is_written(self, labeling_env):
+        table, s3 = labeling_env
+
+        job, _stamped = self._harvest_with_class(table, s3, "W2")
+
+        assert job["status"] == "COMPLETED"
+        label = json.loads(
+            _baseline_bytes(s3)["ts1/baseline/packet.pdf/sections/1/result.json"]
+        )
+        assert label["inference_result"] == {"new_field": "new"}
+
+    def test_the_job_records_the_class_it_forced(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+
+        _SECTION_FIXTURES._reextract(None, "W2")
+
+        job = table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#run2"})["Item"]
+        assert job["forcedClass"] == "W2"

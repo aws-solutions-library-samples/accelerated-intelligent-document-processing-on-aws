@@ -2238,6 +2238,10 @@ def generate_draft_labels(
         "createdAt": now,
         "startedBy": started_by,
     }
+    if document_class:
+        # The harvest writes the run's result only if the run applied this class
+        # (_write_draft_labels_for_doc): Bedrock Data Automation mode does not.
+        job_item["forcedClass"] = document_class
     if meta.get("labelJobId"):
         # The pointer is about to name this job. On a set drafted before job
         # records existed it is the only record of the drafting run, which stays
@@ -4262,6 +4266,7 @@ def _harvest_label_job(job, deadline=None):
                 confidence_fingerprint=run.get("ConfidenceFingerprint") or None,
                 only_section_id=job.get("sectionId") or None,
                 only_section_expected=_section_expected(job),
+                forced_class=job.get("forcedClass") or None,
             )
             # Keep the queue's summary of this document current as its draft lands.
             _refresh_summary(test_set_id, file_name)
@@ -4496,6 +4501,7 @@ def _write_draft_labels_for_doc(
     confidence_fingerprint=None,
     only_section_id=None,
     only_section_expected=None,
+    forced_class=None,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -4513,6 +4519,13 @@ def _write_draft_labels_for_doc(
     what a run that never applied the forced grouping looks like — Bedrock Data
     Automation mode, for one, does not run the classification step that applies it
     — and writing its section would put another span's fields into this label.
+
+    ``forced_class`` is set for a whole-document re-extract under a corrected class.
+    Every section that would be written must come back as that class, checked
+    before anything is written, or :class:`_TargetSectionMissing` is raised: a run
+    that did not apply the class (Bedrock Data Automation mode, again) would
+    otherwise replace the class the reviewer just corrected with the one they
+    corrected it from.
     """
     if only_section_id is not None:
         sections = [
@@ -4526,6 +4539,10 @@ def _write_draft_labels_for_doc(
             raise _TargetSectionMissing(
                 f"the run produced no section '{only_section_id}' for '{file_name}'"
             )
+    if forced_class is not None:
+        _check_forced_class_applied(
+            test_set_bucket, test_set_id, file_name, sections, forced_class
+        )
     wrote = False
     written_section_ids = set()
     for section in sections:
@@ -4625,6 +4642,36 @@ def _write_draft_labels_for_doc(
         )
 
     return wrote
+
+
+def _check_forced_class_applied(
+    test_set_bucket, test_set_id, file_name, sections, forced_class
+):
+    """Raise :class:`_TargetSectionMissing` unless every section the harvest would
+    write came back as ``forced_class``. Sections it keeps are not checked."""
+    for section in sections:
+        section_id = str(section.get("Id") or section.get("SectionId") or "")
+        output_uri = section.get("OutputJSONUri") or ""
+        if not section_id or not output_uri.startswith("s3://"):
+            continue
+        baseline_key = (
+            f"{test_set_id}/baseline/{file_name}/sections/{section_id}/result.json"
+        )
+        if _existing_label_is_human(test_set_bucket, baseline_key):
+            continue
+        src_bucket, src_key = output_uri[len("s3://") :].split("/", 1)
+        result = _read_json_or_none(src_bucket, src_key) or {}
+        got_class = (result.get("document_class") or {}).get("type")
+        if got_class != forced_class:
+            raise _TargetSectionMissing(
+                f"The run did not apply the corrected class: '{file_name}' came back "
+                f"as {got_class!r}, not {forced_class!r}, so nothing was written. A "
+                "configuration that uses Bedrock Data Automation classifies the "
+                "document itself and does not apply a corrected class. The class "
+                "is still corrected on this document; correct its fields by hand, "
+                "or re-extract under a configuration that does not use Bedrock Data "
+                "Automation."
+            )
 
 
 def _prune_superseded_draft_sections(

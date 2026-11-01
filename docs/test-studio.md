@@ -1297,7 +1297,12 @@ existing labels: the document is re-processed with classification **skipped** an
 your chosen class applied to every page, so extraction genuinely runs against that
 class's schema. (Writing it onto the labels alone does not work — the run
 classifies from the source document and would re-derive the class you just
-corrected.)
+corrected.) A configuration that uses Bedrock Data Automation (`use_bda: true`)
+classifies the document itself and does not apply your class, so if the run comes
+back under a different class the re-extract fails with that reason and nothing is
+written: the class stays corrected and the fields stay as they were, for you to
+correct by hand or re-extract under a configuration that does not use Bedrock Data
+Automation.
 
 Two consequences worth knowing:
 
