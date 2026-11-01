@@ -188,9 +188,12 @@ jobs:
           cfn-lint: "true"
           ui-deps: "true"
 
+      # SKIP_INSTALL=1, as on GitLab: the action above already installed
+      # idp_common[all,dev,test] constrained to uv.lock, and the target's own
+      # install would re-resolve `.[test]` without that constraint (#1707).
       - name: Run tests
         id: run-tests
-        run: make test-cicd -C lib/idp_common_pkg
+        run: make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
 
       # The step above writes ONE of the ratchet's trees. Without this step the
       # others resolve to no report at all, so the ratchet named them as
