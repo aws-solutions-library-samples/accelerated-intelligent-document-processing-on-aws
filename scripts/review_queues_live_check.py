@@ -4,15 +4,15 @@
 """
 Live end-to-end check of the review queues (``make stacktest-review-queues``).
 
-NOTE: needs reworking. The flow below self-claims the item (``claimReviewItem``)
-and uses a per-profile ``default`` queue; queues are now system-wide and an Admin
-assigns queue items to Annotators, so steps 2 and 4 no longer match the product.
-A document is queued only when HITL is enabled in its configuration
-(``hitl.enabled``), the Default queue is enabled (Review Studio › Review Management; it is
-seeded enabled), and the document raised confidence alerts (each field's own
-threshold, otherwise ``hitl.confidence_threshold``). Queues have no threshold of
-their own, so step 2 must turn HITL on in the profile and make sure a field scores
-under its threshold.
+Queues are system-wide and managed by Admins. A document is queued only when HITL
+is enabled in its configuration (``hitl.enabled``), the Default queue is enabled
+(Review Studio › Review Management; it is seeded enabled), and the document raised
+confidence alerts (each field's own threshold, otherwise
+``hitl.confidence_threshold``). An Annotator works only the queues whose Eligible
+Annotators list names them, and the Default queue is seeded with nobody listed, so on
+a fresh stack an Annotator sees no queue at all until an Admin lists them. This check
+does that listing itself, through the product's ``updateReviewQueue``, and takes the
+Annotator off the list again afterwards.
 
 Routes a real document into a review queue on a deployed stack, reviews it
 through the REST API with a real Annotator ID token, and waits for the
@@ -24,10 +24,14 @@ WHAT IT DOES
 ------------
   1. Resolves the stack and its ``HITLTableName`` output. No output (an
      older or headless stack) -> SKIP.
-  2. Uploads a temporary profile ``review-live-check-<rand>`` with HITL and
-     review queues on and ``hitl.confidence_threshold: 0.99`` (so the sample
-     routes), and creates a temporary Annotator who is a member of its
-     ``default`` queue by email.
+  2. Uploads a temporary profile ``review-live-check-<rand>`` with HITL on and
+     ``hitl.confidence_threshold: 0.99`` (so the sample routes), and creates a
+     temporary Annotator and a temporary Admin. The Annotator, not yet listed on
+     any queue, must see none (``getMyReviewQueues``); the Admin then adds the
+     Annotator to the Default queue's Eligible Annotators (``listReviewQueues``,
+     ``updateReviewQueue``, sending back the settings an update would reset). The Admin's
+     token is used for nothing else. A disabled Default queue is reported, not
+     switched on, since that would route other profiles' documents too.
   3. Uploads the sample document under that profile and waits for
      ``review/status.json`` = ``in_review`` and tracking ``HITL_IN_PROGRESS``.
   4. With the reviewer's token: ``getMyReviewQueues`` lists the item,
@@ -38,9 +42,13 @@ WHAT IT DOES
      status object's ``sequence`` is above 1.
   6. ``--check-events``: a temporary EventBridge rule on the status object key,
      targeting a temporary SQS queue; expects two events (in review, complete).
-  7. Always removes the document's queue rows and tracking row, the input and
-     output objects, the profile, the user, the rule and the queue, and
-     restores the app client's auth flows.
+  7. Always takes the Annotator off the Default queue's list (re-reading the
+     definition first, so an Admin's concurrent edit is kept, and reading again
+     after the resolver's 30-second cache if the first read predates the
+     listing; a removal that fails is a FAIL naming the user), removes the
+     document's queue rows and tracking row, the input and output objects, the
+     profile, both users, the rule and the queue, and restores the app client's
+     auth flows.
 
 OUTCOMES AND EXIT CODES
 -----------------------
@@ -85,6 +93,21 @@ EXIT_FAIL = 1
 EXIT_INCOMPLETE = 2
 
 APP_GROUP = "Annotator"
+ADMIN_GROUP = "Admin"
+#: The ``ReviewQueueDefinitionInput`` fields an update resets when it leaves them
+#: out, so they are sent back as read. ``skipReasons`` and ``enabled`` are left out on
+#: purpose: an update keeps the stored value of both, and echoing a value read from
+#: the resolver's 30-second cache could undo an Admin's change made inside it, such
+#: as switching the Default queue off.
+QUEUE_INPUT_FIELDS = (
+    "id",
+    "name",
+    "description",
+    "priority",
+    "checklist",
+    "rejectReasons",
+    "timeLimitMinutes",
+)
 SAMPLE = (
     Path(__file__).resolve().parents[1]
     / "samples"
@@ -97,6 +120,10 @@ POLL_SECONDS = 15.0
 ROUTE_TIMEOUT_SECONDS = 15 * 60
 FINALIZE_TIMEOUT_SECONDS = 15 * 60
 EVENT_WAIT_SECONDS = 120
+#: Each resolver container caches the queue definitions for 30 s (``QueueDefStore``'s
+#: ``ttl``), so a read this soon after the check's own write may predate it. Pinned
+#: above that default by scripts/tests/test_review_queues_live_check.py.
+QUEUE_CACHE_SECONDS = 31.0
 
 OUTPUT_KEYS = {
     "review_table": "HITLTableName",
@@ -265,6 +292,12 @@ class ReviewQueuesLiveCheck:
         self.profile = f"review-live-check-{tag}"
         self.user = f"review-live-{tag}@example.invalid"
         self.password = "Aa1!" + secrets.token_urlsafe(24)
+        self.admin = f"review-live-admin-{tag}@example.invalid"
+        self.admin_password = "Aa1!" + secrets.token_urlsafe(24)
+        self.admin_created = False
+        self.admin_token = ""
+        self.listed_on_default = False
+        self.listed_at = 0.0
         self.object_key = f"review-live-check-{tag}/{Path(args.sample).name}"
         self.rule = f"review-live-check-{tag}"
         self.ctx: dict = {}
@@ -311,6 +344,7 @@ class ReviewQueuesLiveCheck:
             raise CheckAborted(f"sample not found: {self.args.sample}")
 
         self._create_fixtures()
+        self._list_annotator_on_default_queue()
         if self.args.check_events:
             self._create_event_capture()
         self._upload_document()
@@ -341,6 +375,66 @@ class ReviewQueuesLiveCheck:
         config = {"hitl": {"enabled": True, "confidence_threshold": 0.99}}
         self.profile_created = True
         d.upload_profile(self.ctx["stack"], self.ctx["region"], self.profile, config)
+        self.admin_created = True
+        d.create_cognito_user(self.ctx, self.admin, ADMIN_GROUP, self.admin_password)
+
+    def _admin_api(self, field_name: str, args: dict) -> Any:
+        if not self.admin_token:
+            token = self.deps.get_id_token(self.ctx, self.admin, self.admin_password)
+            if not token or len(token) < 100:
+                raise CheckAborted(f"could not mint an ID token for {self.admin}")
+            self.admin_token = token
+        code, body = self._api(field_name, args, self.admin_token)
+        if code != 200 or body is None:
+            raise CheckAborted(f"{field_name} as Admin answered {code} {body!r:.200}")
+        return body
+
+    def _default_queue(self) -> dict:
+        queues = self._admin_api("listReviewQueues", {})
+        for q in queues if isinstance(queues, list) else []:
+            if isinstance(q, dict) and q.get("isDefaultQueue"):
+                return q
+        raise CheckAborted("listReviewQueues returned no Default queue")
+
+    def _put_default_queue(self, queue: dict, annotators: list[str]) -> dict:
+        update = {k: queue[k] for k in QUEUE_INPUT_FIELDS if queue.get(k) is not None}
+        update["eligibleAnnotators"] = annotators
+        return self._admin_api("updateReviewQueue", {"input": update})
+
+    def _list_annotator_on_default_queue(self) -> None:
+        """List the Annotator on the Default queue, after proving they need it."""
+        r = self.report
+        token = self.deps.get_id_token(self.ctx, self.user, self.password)
+        if not token or len(token) < 100:
+            raise CheckAborted(f"could not mint an ID token for {self.user}")
+        code, mine = self._api("getMyReviewQueues", {"itemLimit": 1}, token)
+        queues = (mine or {}).get("queues") if isinstance(mine, dict) else None
+        r.check(
+            "api-unlisted-annotator-sees-no-queue",
+            code == 200 and queues == [],
+            f"status={code} queues={None if queues is None else len(queues)}",
+        )
+        queue = self._default_queue()
+        if not queue.get("enabled"):
+            raise CheckAborted(
+                f"the Default queue ({queue.get('id')}) is disabled, so no document "
+                "can route; enable it in Review Studio › Review Management"
+            )
+        listed = [str(e).lower() for e in queue.get("eligibleAnnotators") or []]
+        self.listed_on_default = True
+        try:
+            saved = self._put_default_queue(queue, [*listed, self.user])
+        finally:
+            # After the call returns, which bounds when the write landed, even
+            # for an answer that failed after writing.
+            self.listed_at = self.deps.monotonic()
+        now = [str(e).lower() for e in (saved or {}).get("eligibleAnnotators") or []]
+        if not r.check(
+            "admin-lists-annotator-on-default-queue",
+            self.user in now and all(e in now for e in listed),
+            f"queue={queue.get('id')} eligible annotators {len(listed)} -> {len(now)}",
+        ):
+            raise CheckAborted("the Annotator could not be listed on the Default queue")
 
     def _create_event_capture(self) -> None:
         d, region = self.deps, self.ctx["region"]
@@ -619,7 +713,9 @@ class ReviewQueuesLiveCheck:
             ("tracking row", self._delete_tracking_row),
             ("documents", self._delete_objects),
             ("profile", self._delete_profile),
+            ("queue listing", self._unlist_annotator),
             ("user", self._delete_user),
+            ("admin user", self._delete_admin),
             ("auth flows", self._restore_auth),
         ]
         for label, step in steps:
@@ -627,6 +723,14 @@ class ReviewQueuesLiveCheck:
                 step()
             except Exception as e:  # noqa: BLE001 - keep cleaning up
                 print(f"  cleanup of {label} failed: {type(e).__name__}: {e}")
+                if step == self._unlist_annotator:
+                    # A lasting change to a shared stack's queue: never a pass.
+                    self.report.add(
+                        "cleanup-default-queue-listing",
+                        FAIL,
+                        f"{self.user} may still be listed on the Default queue; "
+                        "remove it in Review Studio › Review Management",
+                    )
 
     def _delete_rule(self) -> None:
         if not self.rule_created:
@@ -722,6 +826,31 @@ class ReviewQueuesLiveCheck:
     def _delete_user(self) -> None:
         if self.user_created:
             self.deps.delete_cognito_user(self.ctx, self.user)
+
+    def _unlist_annotator(self) -> None:
+        """Take only this run's Annotator off the list, from a fresh read."""
+        if not self.listed_on_default:
+            return
+        # The run can outlast the ID token minted at the start; mint a new one.
+        self.admin_token = ""
+        queue = self._default_queue()
+        listed = [str(e).lower() for e in queue.get("eligibleAnnotators") or []]
+        if self.user not in listed:
+            # Absent from a read that may be older than the add: wait out the cache
+            # and read again before concluding there is nothing to remove.
+            waited = self.deps.monotonic() - self.listed_at
+            if waited >= QUEUE_CACHE_SECONDS:
+                return
+            self.deps.sleep(QUEUE_CACHE_SECONDS - waited)
+            queue = self._default_queue()
+            listed = [str(e).lower() for e in queue.get("eligibleAnnotators") or []]
+            if self.user not in listed:
+                return
+        self._put_default_queue(queue, [e for e in listed if e != self.user])
+
+    def _delete_admin(self) -> None:
+        if self.admin_created:
+            self.deps.delete_cognito_user(self.ctx, self.admin)
 
     def _restore_auth(self) -> None:
         if self.auth_enabled:

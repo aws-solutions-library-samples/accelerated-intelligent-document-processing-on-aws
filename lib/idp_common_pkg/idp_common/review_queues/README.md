@@ -31,7 +31,7 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
 | `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths. Only Annotators are assigned work; Reviewers claim it |
 | `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch, cached for 30 s; the Default queue is seeded, enabled, whenever it is missing, and a stored Default is never overwritten |
-| `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins every queue; Annotators those whose `eligible_annotators` is empty or names them), failing closed |
+| `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins and Reviewers every queue; Annotators only those whose `eligible_annotators` names them, so an empty list means no Annotators), failing closed |
 | `reasons.py` | `build_reasons`: why a document is held (its sections' `confidence_threshold_alerts`, and in BDA mode a blueprint confidence under `hitl.confidence_threshold`); reads no S3 |
 | `regrouping.py` | `regroup_refusal`: who may change the page grouping of a document in review (only the holder of its `CLAIMED` item). Used by `updateDocumentSections` |
 | `routing.py` | `review_mode` (the `hitl.enabled` and Default-queue gate) and `route_for_review`: the one routing function both ProcessResults steps call |
