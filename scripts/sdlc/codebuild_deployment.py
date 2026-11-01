@@ -32,17 +32,20 @@ from botocore.config import Config as _BotoConfig
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # The in-repo library, for the ONE shared rule this script borrows: which state a
 # Step Functions execution's terminal failure is attributable to. `make setup` has
-# installed idp_common by the time CodeBuild runs this, but the checkout is added to
+# installed idp_common by the time CodeBuild runs this, but the checkout is put on
 # sys.path anyway so the revision read is the one being deployed rather than whatever
 # an editable-install pointer happens to name (the pattern check_retired_models.py
-# uses). `idp_common.stepfunctions_history` imports nothing outside the standard
-# library, so this costs no dependency.
-sys.path.append(
+# uses). It goes directly after the script's own directory, ahead of PYTHONPATH and
+# site-packages: appended, it came after the installed copy and was never read (#1747).
+# `idp_common.stepfunctions_history` imports nothing outside the standard library, so
+# this costs no dependency.
+sys.path.insert(
+    1,
     os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "lib",
         "idp_common_pkg",
-    )
+    ),
 )
 from failure_agent import (  # noqa: E402
     _update_configuration_module,

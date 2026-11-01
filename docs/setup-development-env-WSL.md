@@ -44,7 +44,7 @@ cd accelerated-intelligent-document-processing-on-aws
 
 ### 2.2 Run Automated Setup Script
 ```
-./scripts/wsl_setup.sh
+./scripts/setup/wsl_setup.sh
 ```
 This script automatically installs:
 - Git, Python 3, pip, and build tools
@@ -57,17 +57,16 @@ After running the setup script, go to your WSL home directory using ```cd ~```
 
 ## Step 3: Complete Manual Setup
 
-### 3.1 Create Python Virtual Environment
-```
-python3 -m venv venv
-source venv/bin/activate
+### 3.1 Install uv
+`make setup-venv`, which installs the Python packages in step 4.2, needs
+[`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the
+installed versions are the ones CI tests. Install it as the uv documentation
+describes, then confirm it is found:
+```bash
+uv --version
 ```
 
-### 3.2 Install Python Dependencies
-```bash
-pip install setuptools wheel boto3 rich PyYAML botocore ruff pytest typer
-```
-### 3.3 Configure AWS CLI
+### 3.2 Configure AWS CLI
 ```bash
 aws configure
 ```
@@ -86,18 +85,15 @@ npm --version (Example: 11.0.0)
 ```
 ### 4.2 Install the IDP CLI
 
-⚠️ **Critical**: install all three packages in a **single** `pip install`, from the
-repository root. They require each other by name, those names on public PyPI belong
-to unrelated parties, and installing them one at a time lets pip resolve a
-not-yet-installed sibling from the index instead of from `lib/`. See
-[Installing First-Party Packages Safely](dependency-confusion.md).
+From the repository root, create the virtual environment and install into it:
 
 ```bash
 cd accelerated-intelligent-document-processing-on-aws
-pip install -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
+make setup-venv
+source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies. `make setup` does the same thing and adds the rest of the development dependencies.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the development tools the lint and test targets use. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
 
 ### 4.3 Test Build Process
 
