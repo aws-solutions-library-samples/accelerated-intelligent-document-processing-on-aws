@@ -1689,6 +1689,9 @@ BDA rejects a whole blueprint when the class description or any field's descript
 
 The sync therefore rewrites those characters in the blueprint it sends. Your configuration is not changed. Where an equivalent exists, the character is replaced: dashes become `-`, the left single quote and backticks become `'`, other curly quotes outside the set become straight quotes, `…` becomes `...`, unusual spaces become a plain space, a bullet becomes `-`, `×` becomes `x`, `→` becomes `->`, and `{` and `}` become `(` and `)`. Accented letters outside the set lose the accent, so `ý` becomes `y`. A character with no equivalent, such as a CJK character, `^` or `~`, is removed. Each removal is reported as an `unsupported_characters` warning for the class, and a description that is blank, or has nothing left after removal, becomes `-`.
 
+**Integer fields:**
+BDA rejects a whole blueprint that declares `"type": "integer"` anywhere. The sync sends such a field as `number` and adds `(a whole number)` to its instruction, or `(whole numbers)` for a list of integers, so BDA is still told to return a whole number. Your configuration is not changed. A later sync from BDA to IDP reads the field back as `number`.
+
 ##### AWS Standard Blueprint Handling
 
 - AWS-provided blueprints (identifiable by `aws:blueprint` in ARN) are read-only

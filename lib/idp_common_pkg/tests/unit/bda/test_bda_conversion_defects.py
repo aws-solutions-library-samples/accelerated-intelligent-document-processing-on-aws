@@ -301,9 +301,10 @@ class TestPrimitiveArrayInsideADefinition:
         [
             ({"type": "array", "items": {"type": "string"}}, True),
             ({"type": "array", "items": {}}, True),
-            # Only string and number items were probed; others stay dropped.
+            # Only string and number items were probed; others stay dropped,
+            # except integer, which is sent as number (issue #1755).
             ({"type": "array", "items": {"type": "boolean"}}, False),
-            ({"type": "array", "items": {"type": "integer"}}, False),
+            ({"type": "array", "items": {"type": "integer"}}, True),
             ({"type": "array", "items": {"type": ["string", "null"]}}, False),
             ({"type": "array"}, False),
             ({"type": "array", "items": {"type": "object"}}, False),

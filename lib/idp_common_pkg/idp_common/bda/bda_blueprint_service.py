@@ -117,8 +117,17 @@ _BDA_TEXT_REPLACEMENTS = {
 
 
 # Item types of an array CreateBlueprint was measured to accept inside a
-# definition (see BdaBlueprintService._is_primitive_array).
-_PRIMITIVE_ARRAY_ITEM_TYPES = ("string", "number")
+# definition (see BdaBlueprintService._is_primitive_array). ``integer`` is listed
+# because it reaches BDA as ``number`` (see _convert_integer_types).
+_PRIMITIVE_ARRAY_ITEM_TYPES = ("string", "number", "integer")
+
+# CreateBlueprint rejects ``"type": "integer"`` wherever it appears — a leaf, an
+# array's items, a member of a definition — and accepts ``number`` in each of
+# those places (measured; catalog blueprints use only string, number and
+# boolean). An integer is therefore sent as a number, and this note is added to
+# its instruction so the whole-number meaning is not lost.
+_WHOLE_NUMBER_HINT = "(a whole number)"
+_WHOLE_NUMBERS_HINT = "(whole numbers)"
 
 
 def _has_visible_text(text: str) -> bool:
@@ -1062,6 +1071,8 @@ class BdaBlueprintService:
 
         self._drop_arrays_from_item_definitions(blueprint)
 
+        self._convert_integer_types(blueprint)
+
         # Last, so every path above (and every default it filled in) is covered.
         self._normalize_blueprint_text(blueprint)
 
@@ -1113,6 +1124,40 @@ class BdaBlueprintService:
         if "definitions" in blueprint and not definitions:
             # Nothing references an empty object, so it is not sent at all.
             del blueprint["definitions"]
+
+    def _convert_integer_types(self, blueprint: dict) -> None:
+        """Send every ``integer`` in the finished blueprint as ``number``.
+
+        CreateBlueprint rejects the whole blueprint over one ``"type": "integer"``
+        (issue #1755: four classes of the shipped ``ocr-benchmark`` preset), and
+        accepts ``number`` in the same place. The property keeps its whole-number
+        meaning through a note appended to its instruction. Only schema positions
+        are visited — ``properties`` values, ``items`` and definitions — so a
+        property that happens to be named ``type`` is never rewritten.
+        """
+        nodes = list((blueprint.get(SCHEMA_PROPERTIES) or {}).values())
+        for definition in (blueprint.get("definitions") or {}).values():
+            if isinstance(definition, dict):
+                nodes.extend((definition.get(SCHEMA_PROPERTIES) or {}).values())
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            items = node.get(SCHEMA_ITEMS)
+            if node.get(SCHEMA_TYPE) == "integer":
+                node[SCHEMA_TYPE] = "number"
+                hint = _WHOLE_NUMBER_HINT
+            elif isinstance(items, dict) and items.get(SCHEMA_TYPE) == "integer":
+                items[SCHEMA_TYPE] = "number"
+                hint = _WHOLE_NUMBERS_HINT
+            else:
+                continue
+            instruction = node.get("instruction")
+            if not isinstance(instruction, str) or not _has_visible_text(
+                instruction.replace("-", "")
+            ):
+                node["instruction"] = hint
+            elif hint not in instruction:
+                node["instruction"] = f"{instruction.rstrip()} {hint}"
 
     def _drop_properties_referring_to(self, blueprint: dict, def_name: str) -> None:
         """Drop and record every top-level property that refers to ``def_name``."""
@@ -1579,12 +1624,13 @@ class BdaBlueprintService:
 
     @staticmethod
     def _is_primitive_array(schema: object) -> bool:
-        """True for an array of strings or numbers.
+        """True for an array of strings or numbers (integers included).
 
         Such an array is representable inside a definition; an array of objects
         or of ``$ref`` items is not. Only ``string`` and ``number`` items were
-        probed (a leaf ``integer`` is rejected outright), so any other item type
-        is not treated as primitive and is dropped as before. ``items`` must be
+        probed there; ``integer`` items count because they are sent as
+        ``number`` (``_convert_integer_types``). Any other item type is not
+        treated as primitive and is dropped as before. ``items`` must be
         present: an array with no ``items`` inside a definition was not probed.
         """
         if (

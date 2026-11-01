@@ -213,6 +213,10 @@ An object or array that omits `"type"` is converted as the object or array its `
 
 Not covered: the blueprint's `class` value, which comes from the class id. BDA rejects an em dash or a brace there as well, but a BDA → IDP sync reads `class` back as the class id, so rewriting it would rename the class. It is left alone.
 
+### An integer is sent as a number
+
+`CreateBlueprint` rejects `"type": "integer"` wherever it appears: on a leaf, on an array's `items`, and on a member of a definition. It accepts `number` in each of those places (measured; catalog blueprints use only `string`, `number` and `boolean`). Four classes of the shipped `ocr-benchmark` preset were rejected over it (issue #1755). `_convert_integer_types` runs over the finished blueprint and sends each one as `number`, appending `(a whole number)` to a leaf's instruction, or `(whole numbers)` to an array's, so the meaning reaches BDA. It visits only schema positions, so a property named `type` is not rewritten. An array of integers counts as a primitive array inside a definition (`_PRIMITIVE_ARRAY_ITEM_TYPES`), because it is sent as an array of numbers. A BDA → IDP sync reads such a field back as `number`, with the note in its description.
+
 ### Property names are sanitized at every object level
 
 `_sanitize_property_names` removes characters outside `[a-zA-Z0-9_-]` from property names before the transform, recursing into nested objects and array items. An object or array that omits `"type"` is recursed into as well: an object is recognised by `properties` (`_is_inline_object`, the same test the transform hoists by) and an array by `items`. Before issue #1742 only a declared `"type": "object"` was recursed into, so an untyped inline object kept names such as `Name & Title` and the blueprint was rejected. A property that declares a scalar `type` is not recursed into, even with `properties` beside it.
