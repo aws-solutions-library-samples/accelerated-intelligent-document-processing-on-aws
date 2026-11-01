@@ -33,14 +33,13 @@ To get the sample project locally, run:
 git clone https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws.git
 ```
 
-Change your directory to access the mac_setup.sh file
-
 # Quickstart (One-Command Script)
 
-If you prefer to automate everything, download the script and run:
-```bash 
-chmod +x mac_setup.sh
-./mac_setup.sh
+If you prefer to automate everything, run the setup script from the repository root:
+```bash
+cd accelerated-intelligent-document-processing-on-aws
+chmod +x ./scripts/setup/mac_setup.sh
+./scripts/setup/mac_setup.sh
 ```
 
 

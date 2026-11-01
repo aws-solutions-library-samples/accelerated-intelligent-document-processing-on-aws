@@ -84,17 +84,36 @@ You should see `(.venv)` at the beginning of your prompt when activated.
 
 ## Step 3: Install the IDP CLI
 
-⚠️ **Critical**: install all three packages in a **single** `pip install`, from the
-repository root. They require each other by name, those names on public PyPI belong
+The packages are installed against the dependency lock, `lib/idp_common_pkg/uv.lock`,
+so the versions you get are the ones CI tests. On Linux and macOS `make setup-venv`
+does this; a native Windows setup has no `make`, so the same steps are written out
+here. Run them from the repository root with the virtual environment activated. They
+work in PowerShell and in Git Bash.
+
+```bash
+# uv reads the lock
+python -m pip install uv
+
+# Export the lock as a pip constraints file
+uv export --locked --project lib/idp_common_pkg --all-extras --all-groups --no-emit-project --no-hashes --quiet --output-file build/lock-constraints/idp_common_pkg.txt
+
+# Install the three packages in one command, constrained to the lock
+python -m pip install -c build/lock-constraints/idp_common_pkg.txt -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
+
+# Check that every first-party package was installed from this checkout
+python scripts/check_first_party_deps.py
+```
+
+⚠️ **Critical**: keep all three packages in the **single** `pip install`, and keep
+each one a path. They require each other by name, those names on public PyPI belong
 to unrelated parties, and installing them one at a time lets pip resolve a
 not-yet-installed sibling from the index instead of from `lib/`. See
 [Installing First-Party Packages Safely](dependency-confusion.md).
 
-```bash
-pip install -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
-```
-
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies. `make setup` does the same thing and adds the rest of the development dependencies.
+> **Note**: This installs the `idp-cli` command along with its Python dependencies.
+> `make setup-venv` installs against the same lock in the same single command, with
+> the `all`, `dev` and `test` extras of `idp_common`, and adds the MCP connector, the Feature Platform SDK, the
+> test dependencies and the pinned linters.
 
 ## Step 4: Configure AWS CLI
 

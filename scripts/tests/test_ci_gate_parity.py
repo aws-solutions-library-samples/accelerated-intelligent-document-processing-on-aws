@@ -1258,7 +1258,11 @@ def test_every_executing_ruff_install_pins_the_version() -> None:
         if not path.is_file():
             continue
         for line in _uncommented(path.read_text()).splitlines():
-            if not re.search(r"\b(pip|pip3|uv pip)\b.*\binstall\b", line):
+            # Case-insensitive and inside a word, so the installer variable `make
+            # setup` uses (`$$SETUP_PIP install`) is read. Matching only the bare
+            # words left that line unchecked, and the floor below then held only
+            # because the Ubuntu setup script installed ruff too (#1758).
+            if not re.search(r"(?i)\b(\w*pip\d*|uv pip)\b.*\binstall\b", line):
                 continue
             if not re.search(r"(?<![\w.-])ruff(?![\w.-])", line):
                 continue

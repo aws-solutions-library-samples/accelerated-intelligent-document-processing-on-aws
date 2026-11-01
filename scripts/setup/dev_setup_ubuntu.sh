@@ -10,7 +10,7 @@
 # on Ubuntu 24.04 systems. It installs Python 3.12, AWS CLI, SAM CLI, Node.js, Docker,
 # and other essential development tools.
 #
-# Usage: ./dev_setup_ubuntu.sh
+# Usage: ./scripts/setup/dev_setup_ubuntu.sh (from the repository root)
 # Note: Logout/login required after completion for Docker group permissions
 ##############################################################################################
 
@@ -27,12 +27,9 @@ sudo apt install build-essential -y
 sudo apt install python3.12 python3.12-venv python3-pip unzip wget zip -y
 sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 sudo update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
-pip3 install --upgrade pip --break-system-packages
-# ruff is pinned: the lint gates invoke it as a bare command, so whatever this
-# installs is what `make lint` measures, and findings and formatting are both
-# properties of the linter version. Keep in step with RUFF_VERSION in the
-# Makefile — scripts/tests/test_ci_gate_parity.py fails if they drift.
-pip3 install virtualenv typer 'ruff==0.15.13' --break-system-packages
+# No Python packages are installed into the system interpreter. `make setup-venv`,
+# run from the repository root after this script, installs them into .venv against
+# lib/idp_common_pkg/uv.lock, including the pinned ruff the lint gates measure.
 curl -LO https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda || bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda -u
 

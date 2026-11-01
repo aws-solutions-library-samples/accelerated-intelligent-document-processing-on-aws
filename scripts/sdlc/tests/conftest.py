@@ -29,10 +29,13 @@ if str(_TESTS_DIR) not in sys.path:
 # CodeBuild `make setup` has installed it, but the gate runs pytest from the repo
 # root with no PYTHONPATH — so add the in-repo package for a local/dev run.
 # Without this the whole Step 14 hook-package suite silently SKIPS via
-# importorskip, and a skipped test protects nothing.
+# importorskip, and a skipped test protects nothing. It goes first, ahead of
+# PYTHONPATH and site-packages. Appended, it lost to a copy earlier on the path (a
+# PYTHONPATH entry, a regular install or a static .pth editable install, #1747), and
+# the provenance guard below then refused the run (#1758).
 _IDP_COMMON_DIR = _SDLC_DIR.parent.parent / "lib" / "idp_common_pkg"
 if _IDP_COMMON_DIR.is_dir() and str(_IDP_COMMON_DIR) not in sys.path:
-    sys.path.append(str(_IDP_COMMON_DIR))
+    sys.path.insert(0, str(_IDP_COMMON_DIR))
 
 
 #: The pipeline variables that select what an integration run does. The scheduled

@@ -10,7 +10,7 @@
 # on Amazon Linux 2023 systems. It installs Python 3.13, AWS CLI, SAM CLI, Node.js, Docker,
 # and other essential development tools.
 #
-# Usage: ./dev_setup.sh
+# Usage: ./scripts/setup/dev_setup_al2023.sh (from the repository root)
 # Note: Reboot required after completion
 ##############################################################################################
 
