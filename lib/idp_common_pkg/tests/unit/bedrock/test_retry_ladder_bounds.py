@@ -134,6 +134,92 @@ def test_a_dropped_connection_is_retried_like_a_read_timeout(drops, monkeypatch)
     assert metrics["BedrockRequestsFailed"] == 0
 
 
+class _BodyCutShort(io.RawIOBase):
+    """A response body that delivers its first half and then, per ``reset``, has the
+    connection reset by the peer or ends cleanly short of its ``content-length``."""
+
+    def __init__(self, data: bytes, reset: bool):
+        self._data, self._cut, self._reset, self._at = data, len(data) // 2, reset, 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        if self._at >= self._cut:
+            if self._reset:
+                raise ConnectionResetError(104, "Connection reset by peer")
+            return 0
+        n = min(len(buffer), self._cut - self._at)
+        buffer[:n] = self._data[self._at : self._at + n]
+        self._at += n
+        return n
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reset", [True, False], ids=["reset", "short"])
+def test_a_body_cut_short_after_the_headers_is_retried(reset, monkeypatch):
+    """A failure while reading a NON-streamed ``converse`` body, after a 200 and its
+    headers arrived (#1759). botocore reads that body inside ``httpsession.send``, so
+    urllib3's ``ProtocolError`` there is rewrapped as ``ConnectionClosedError`` like
+    one before the response — measured here, not assumed, because a botocore that
+    read the body after ``send`` returned would hand the ladder the raw urllib3 error,
+    which it does not catch."""
+    body = json.dumps(_CONVERSE_OK).encode()
+    sent: list[str] = []
+    raised: list[BaseException] = []
+
+    def urlopen(pool, method, url, *args, **kwargs):
+        sent.append(url)
+        stream = (
+            io.BytesIO(body)
+            if len(sent) > 1
+            else io.BufferedReader(_BodyCutShort(body, reset))
+        )
+        return urllib3.HTTPResponse(
+            body=stream,
+            status=200,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(len(body)),
+            },
+            preload_content=False,
+            enforce_content_length=True,
+        )
+
+    runtime = _botocore_runtime_client()
+
+    def record_failure(caught_exception=None, **_kwargs):
+        if caught_exception is not None:
+            raised.append(caught_exception)
+
+    runtime.meta.events.register("needs-retry.bedrock-runtime.Converse", record_failure)
+    metrics: Counter = Counter()
+    client = _recording_client(metrics)
+    client._client = runtime
+    monkeypatch.setattr(urllib3.connectionpool.HTTPConnectionPool, "urlopen", urlopen)
+    monkeypatch.setattr(URLLib3Session, "send", _REAL_SEND)
+    result = client._invoke_with_retry(
+        model_id="us.amazon.nova-lite-v1:0",
+        converse_params={
+            "modelId": "us.amazon.nova-lite-v1:0",
+            "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+            "system": [{"text": "s"}],
+            "inferenceConfig": {"maxTokens": 10},
+            "additionalModelRequestFields": {},
+        },
+        retry_count=0,
+        max_retries=4,
+        request_start_time=0.0,
+    )
+
+    assert [type(e).__name__ for e in raised] == ["ConnectionClosedError"]
+    assert isinstance(raised[0].kwargs.get("error"), ProtocolError)
+    assert len(sent) == 2
+    assert result["response"]["stopReason"] == "end_turn"
+    assert metrics["BedrockTimeouts"] == 1
+    assert metrics["BedrockUnexpectedErrors"] == 0
+
+
 # --- LambdaHook ladder: the retry bound holds per request --------------------------
 #
 # Failure kinds the hook ladder retries, one per route it has: a function error the

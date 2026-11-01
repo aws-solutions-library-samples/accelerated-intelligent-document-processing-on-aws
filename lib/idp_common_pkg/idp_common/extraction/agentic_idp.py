@@ -2080,6 +2080,8 @@ async def _run_shard_agent(
         checkpoint_callback=checkpoint_callback,
         emit_field_assessment=emit_field_assessment,
         schema_validator=schema_validator,
+        # Shards exist only on the extraction path.
+        strands_throttle_retries=False,
     )
 
 
@@ -2253,6 +2255,7 @@ async def structured_output_async(
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
+    strands_throttle_retries: bool = True,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Extract structured data using Strands agents with tool-based validation.
@@ -2307,6 +2310,13 @@ async def structured_output_async(
                      approaches it. Raising it eats into the time the retry ladder
                      and the work itself have inside one shard invocation — see the
                      budget in ``idp_common.timeout_budget`` before changing it.
+        strands_throttle_retries: Keep Strands' default ``ModelRetryStrategy``,
+                     which retries a throttle inside each model call (default
+                     True). Agentic extraction passes False: its calls sit inside
+                     ``invoke_agent_with_retry`` with a Step Functions retrier
+                     behind it, and a retrier inside the call sleeps past the
+                     ladder's allowance and the Lambda deadline (#1759). Keep the
+                     default for a caller with no such retrier.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)
@@ -2545,6 +2555,23 @@ async def structured_output_async(
         conversation_manager=SummarizingConversationManager(
             summary_ratio=summary_ratio, preserve_recent_messages=preserve_recent
         ),
+        # With ``strands_throttle_retries=False`` (agentic extraction, the caller that
+        # has a Step Functions retrier behind this ladder) throttling is retried by
+        # ``invoke_agent_with_retry`` alone, for the reason botocore is pinned to one
+        # attempt above: a ladder inside the call is one
+        # neither the cumulative allowance nor the Lambda deadline can see. Strands'
+        # default ``ModelRetryStrategy`` sleeps 4+8+16+32+64 s inside a single model
+        # call and restarts that schedule after every successful one, so with the
+        # ladder around it persistent throttling slept 834 s of a 900 s function, and
+        # a throttle met 30 s before the deadline still slept 124 s (#1759, measured
+        # on a virtual clock with a real Agent and botocore client). ``None`` is
+        # Strands' spelling for one attempt. ``retry_strategy`` rejects a subclass; a
+        # separate hook could read the deadline, but it would still be a second
+        # ladder outside the backoff allowance. Agentic rules discovery keeps
+        # Strands' default: it runs from an SQS-triggered Lambda with no published
+        # deadline and no task-level retrier, so the in-call retries are the only
+        # throttle tolerance it has beyond this ladder's 90 s.
+        **({} if strands_throttle_retries else {"retry_strategy": None}),
     )
     if existing_data:
         agent.state.set("current_extraction", existing_data.model_dump(mode="json"))
@@ -2702,6 +2729,7 @@ def structured_output(
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
+    strands_throttle_retries: bool = True,
 ) -> tuple[BaseModel, BedrockInvokeModelResponse]:
     """
     Synchronous version of structured_output_async.
@@ -2793,6 +2821,7 @@ def structured_output(
                         schema_validator=schema_validator,
                         emit_field_assessment=emit_field_assessment,
                         attach_page_images=attach_page_images,
+                        strands_throttle_retries=strands_throttle_retries,
                     )
                 )
             except Exception as e:
@@ -2830,6 +2859,7 @@ def structured_output(
                 schema_validator=schema_validator,
                 emit_field_assessment=emit_field_assessment,
                 attach_page_images=attach_page_images,
+                strands_throttle_retries=strands_throttle_retries,
             )
         )
 
