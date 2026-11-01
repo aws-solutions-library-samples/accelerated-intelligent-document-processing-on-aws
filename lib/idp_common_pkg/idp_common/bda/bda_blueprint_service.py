@@ -130,6 +130,33 @@ _WHOLE_NUMBER_HINT = "(a whole number)"
 _WHOLE_NUMBERS_HINT = "(whole numbers)"
 
 
+# The warning ``type`` of a class that was not sent to BDA at all, because its
+# blueprint would have had no properties (see _skip_if_nothing_to_send).
+EMPTY_BLUEPRINT_WARNING = "empty_blueprint"
+
+
+def classes_not_sent(statuses: object) -> list:
+    """The classes a sync's status list reports as not sent to BDA.
+
+    Such a class's entry is a ``success`` — nothing went wrong, and there is
+    nothing to retry — but no blueprint exists for it, so a caller counting
+    synced classes should count it apart. Recognised by its
+    ``EMPTY_BLUEPRINT_WARNING`` warning.
+    """
+    if not isinstance(statuses, list):
+        return []
+    return [
+        entry.get("class")
+        for entry in statuses
+        if isinstance(entry, dict)
+        and entry.get("status") == "success"
+        and any(
+            isinstance(w, dict) and w.get("type") == EMPTY_BLUEPRINT_WARNING
+            for w in entry.get("warnings") or []
+        )
+    ]
+
+
 def _has_visible_text(text: str) -> bool:
     """False for text that is empty, whitespace, or zero-width spaces only."""
     return bool(text.replace("\u200b", "").strip())
@@ -148,6 +175,10 @@ class _DropRecording:
 
     class_name: Optional[str]
     drops: list = field(default_factory=list)
+    # False for a trial conversion whose drops may be discarded
+    # (``_skip_if_nothing_to_send``), so they are not also appended to the
+    # instance's ``_skipped_properties`` unless the trial's result is used.
+    mirrored: bool = True
 
 
 # The recording in force for the calling thread, or None when the transform is being
@@ -1534,7 +1565,8 @@ class BdaBlueprintService:
             recording.drops.append(entry)
         # Also kept on the instance as an ordered record of everything dropped,
         # independently of which class was being processed.
-        self._skipped_properties.append(entry)
+        if recording is None or recording.mirrored:
+            self._skipped_properties.append(entry)
         if class_name is None:
             logger.warning(message)
         else:
@@ -2055,6 +2087,10 @@ class BdaBlueprintService:
                 # below is attributed to it.
                 recording.class_name = docu_class
 
+                skipped = self._skip_if_nothing_to_send(custom_class, recording)
+                if skipped is not None:
+                    return skipped
+
                 blueprint_exists = self._blueprint_lookup(
                     existing_blueprints, docu_class
                 )
@@ -2186,6 +2222,53 @@ class BdaBlueprintService:
                     # ValidationException, say) was visible only in CloudWatch.
                     "error": str(e),
                 }
+
+    def _skip_if_nothing_to_send(
+        self, custom_class: dict, recording: _DropRecording
+    ) -> Optional[dict]:
+        """Skip a class whose blueprint would have no properties.
+
+        CreateBlueprint rejects a blueprint with no properties — an empty
+        ``properties``, none at all, or only ``definitions`` (measured). A class
+        with no fields, or whose every field is dropped as unrepresentable, used to
+        be sent anyway and reported failed with a bare ValidationException (issue
+        #1755: three shipped preset classes). It is now not sent, and the result is
+        a success carrying an ``empty_blueprint`` warning, on the same channel as a
+        dropped property, together with the drops that emptied it. No blueprint is
+        created or updated for it, so in replace mode a blueprint synced for it
+        earlier is removed like that of a deleted class.
+
+        The conversion here runs in its own recording, so when the class is *not*
+        skipped its drops are not reported twice: the create or update path that
+        follows runs the transform again and records them itself.
+
+        Returns:
+            The class's result if it is skipped, otherwise None.
+        """
+        with self._recording_drops_for(recording.class_name) as trial:
+            trial.mirrored = False
+            sanitized, _ = self._sanitize_property_names(deepcopy(custom_class))
+            candidate = self._transform_json_schema_to_bedrock_blueprint(sanitized)
+        if candidate.get(SCHEMA_PROPERTIES):
+            return None
+        recording.drops.extend(trial.drops)
+        self._skipped_properties.extend(trial.drops)
+        reason = (
+            "it has no properties"
+            if not trial.drops
+            else "none of its properties can be represented in a BDA blueprint"
+        )
+        self._record_skipped_property(
+            str(recording.class_name),
+            EMPTY_BLUEPRINT_WARNING,
+            f"Class '{recording.class_name}' was not sent to BDA: {reason}, and "
+            f"BDA rejects a blueprint with no fields.",
+        )
+        return {
+            "class": recording.class_name,
+            "status": "success",
+            "warnings": list(recording.drops),
+        }
 
     def _process_classes_parallel(
         self, classess: list, existing_blueprints: list

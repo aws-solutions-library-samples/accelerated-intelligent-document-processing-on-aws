@@ -7,7 +7,9 @@ from typing import Any, Dict
 
 import boto3
 from idp_common.bda.bda_blueprint_service import (
+    EMPTY_BLUEPRINT_WARNING,
     BdaBlueprintService,  # type: ignore[import-untyped]
+    classes_not_sent,
 )
 from idp_common.config import ConfigurationManager
 from idp_common.config_scope import (
@@ -353,9 +355,23 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         all_warnings = []
         failure_reasons = []
 
+        # A class with no field a blueprint can hold is not sent to BDA (issue
+        # #1755). Its entry is a success, but it is neither synced nor failed, so
+        # it is counted apart and named in every outcome's message.
+        unsent_classes = classes_not_sent(result)
+        unsent_detail = (
+            f". WARNING: {len(unsent_classes)} document class(es) were not sent "
+            f"to BDA because they have no field a BDA blueprint can hold, and BDA "
+            f"rejects a blueprint with none: {', '.join(unsent_classes)}"
+            if unsent_classes
+            else ""
+        )
+
         if isinstance(result, list):
             for item in result:
-                if item.get("status") == "success":
+                if classes_not_sent([item]):
+                    all_warnings.extend(item.get("warnings", []))
+                elif item.get("status") == "success":
                     sync_succeeded_classes.append(item.get("class"))
                     # Collect warnings (skipped properties) for this class
                     item_warnings = item.get("warnings", [])
@@ -393,7 +409,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 manager.set_bda_sync_status(versionName, "error")
             return {
                 "success": False,
-                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}{orphan_detail}",
+                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}{unsent_detail}{orphan_detail}",
                 "processedClasses": [],
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
@@ -412,7 +428,8 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     "type": "SYNC_ERROR",
                     "message": (
                         f"Failed to sync classes: "
-                        f"{', '.join(sync_failed_classes)}{orphan_detail}"
+                        f"{', '.join(sync_failed_classes)}{unsent_detail}"
+                        f"{orphan_detail}"
                     ),
                 },
             }
@@ -420,7 +437,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             # Partial failure
             return {
                 "success": True,  # Partial success
-                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}{orphan_detail}",
+                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}{unsent_detail}{orphan_detail}",
                 "processedClasses": sync_succeeded_classes,
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
@@ -440,10 +457,16 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
             # Build message with warning info if any
             message = f"Successfully synchronized {len(sync_succeeded_classes)} document classes {direction_label}"
-            if all_warnings:
+            # A class not sent at all is reported as a class, above, not as a
+            # dropped property.
+            message += unsent_detail
+            property_warnings = [
+                w for w in all_warnings if w.get("type") != EMPTY_BLUEPRINT_WARNING
+            ]
+            if property_warnings:
                 # Group warnings by class for cleaner reporting
                 warnings_by_class = {}
-                for w in all_warnings:
+                for w in property_warnings:
                     cls = w.get("class", "Unknown")
                     if cls not in warnings_by_class:
                         warnings_by_class[cls] = []

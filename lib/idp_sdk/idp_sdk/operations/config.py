@@ -977,6 +977,7 @@ class ConfigOperation:
         bda_orphaned_arns: list = []
         bda_classes_synced = 0
         bda_classes_failed = 0
+        bda_unsent_classes: list = []
 
         try:
             os.environ["STACK_NAME"] = name
@@ -1017,7 +1018,10 @@ class ConfigOperation:
                     config_version,
                 )
                 try:
-                    from idp_common.bda.bda_blueprint_service import BdaBlueprintService
+                    from idp_common.bda.bda_blueprint_service import (
+                        BdaBlueprintService,
+                        classes_not_sent,
+                    )
 
                     bda_project_arn = manager.get_bda_project_arn(config_version)
                     bda_service = BdaBlueprintService(
@@ -1042,8 +1046,14 @@ class ConfigOperation:
                     sync_failed = [
                         item for item in sync_result if item.get("status") != "success"
                     ]
+                    # A class not sent to BDA (no field a blueprint can hold) is
+                    # a success but has no blueprint, so it is counted apart.
+                    bda_unsent_classes = classes_not_sent(sync_result)
                     sync_succeeded = [
-                        item for item in sync_result if item.get("status") == "success"
+                        item
+                        for item in sync_result
+                        if item.get("status") == "success"
+                        and not classes_not_sent([item])
                     ]
 
                     bda_classes_synced = len(sync_succeeded)
@@ -1069,6 +1079,7 @@ class ConfigOperation:
                             bda_classes_synced=0,
                             bda_classes_failed=bda_classes_failed,
                             bda_orphaned_blueprint_arns=bda_orphaned_arns,
+                            bda_unsent_classes=bda_unsent_classes,
                             error="BDA sync failed for all classes — activation aborted",
                         )
                     elif bda_classes_failed > 0:
@@ -1117,6 +1128,7 @@ class ConfigOperation:
                 bda_classes_synced=bda_classes_synced,
                 bda_classes_failed=bda_classes_failed,
                 bda_orphaned_blueprint_arns=bda_orphaned_arns,
+                bda_unsent_classes=bda_unsent_classes,
             )
 
         except IDPResourceNotFoundError:
@@ -1138,6 +1150,7 @@ class ConfigOperation:
                 bda_classes_synced=bda_classes_synced,
                 bda_classes_failed=bda_classes_failed,
                 bda_orphaned_blueprint_arns=bda_orphaned_arns,
+                bda_unsent_classes=bda_unsent_classes,
                 error=str(e),
             )
 
@@ -1313,7 +1326,10 @@ class ConfigOperation:
 
         try:
             os.environ["STACK_NAME"] = name
-            from idp_common.bda.bda_blueprint_service import BdaBlueprintService
+            from idp_common.bda.bda_blueprint_service import (
+                BdaBlueprintService,
+                classes_not_sent,
+            )
             from idp_common.config.configuration_manager import ConfigurationManager
 
             manager = ConfigurationManager(region=self._client._region)
@@ -1432,9 +1448,13 @@ class ConfigOperation:
                 sync_mode=mode,
             )
 
-            # Process results
+            # Process results. A class not sent to BDA (no field a blueprint can
+            # hold) is a success with no blueprint, so it is counted apart.
+            unsent_classes = classes_not_sent(sync_result)
             sync_succeeded = [
-                item for item in sync_result if item.get("status") == "success"
+                item
+                for item in sync_result
+                if item.get("status") == "success" and not classes_not_sent([item])
             ]
             sync_failed = [
                 item for item in sync_result if item.get("status") != "success"
@@ -1494,6 +1514,7 @@ class ConfigOperation:
                 classes_synced=classes_synced,
                 classes_failed=classes_failed,
                 processed_classes=processed_names,
+                unsent_classes=unsent_classes,
                 orphaned_blueprint_arns=orphaned_arns,
                 error=f"{classes_failed} class(es) failed to sync"
                 if classes_failed > 0

@@ -1692,6 +1692,9 @@ The sync therefore rewrites those characters in the blueprint it sends. Your con
 **Integer fields:**
 BDA rejects a whole blueprint that declares `"type": "integer"` anywhere. The sync sends such a field as `number` and adds `(a whole number)` to its instruction, or `(whole numbers)` for a list of integers, so BDA is still told to return a whole number. Your configuration is not changed. A later sync from BDA to IDP reads the field back as `number`.
 
+**Classes with no fields BDA can hold:**
+BDA rejects a blueprint with no fields. A class that has no properties, such as one describing boilerplate pages, or whose every field is dropped for one of the reasons above, is therefore not sent to BDA. The sync names it in a warning, alongside the fields it dropped from it, and does not count it as synced; the rest of the sync goes ahead. The Web UI shows the warning in the sync message, `idp-cli config-sync-bda` and `config-activate` list the class as not sent, and the SDK returns it in `unsent_classes` (`bda_unsent_classes` from `activate`). In replace mode, a blueprint synced for that class earlier is removed. In merge mode it is kept, with the fields it had when it was last synced. To have BDA recognise such a document type, give the class at least one field BDA can represent.
+
 ##### AWS Standard Blueprint Handling
 
 - AWS-provided blueprints (identifiable by `aws:blueprint` in ARN) are read-only

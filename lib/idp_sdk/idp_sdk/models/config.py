@@ -161,6 +161,15 @@ class ConfigActivateResult(BaseModel):
             "have synced."
         ),
     )
+    bda_unsent_classes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Classes not sent to BDA because none of their fields can be "
+            "represented in a blueprint, and BDA rejects a blueprint with no "
+            "fields. Not a failure, and not counted as synced: no blueprint "
+            "exists for them."
+        ),
+    )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
 
@@ -300,6 +309,15 @@ class ConfigSyncBdaResult(BaseModel):
     )
     processed_classes: List[str] = Field(
         default_factory=list, description="Names of processed classes"
+    )
+    unsent_classes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Classes not sent to BDA because none of their fields can be "
+            "represented in a blueprint, and BDA rejects a blueprint with no "
+            "fields. Not a failure, and not counted as synced: no blueprint "
+            "exists for them."
+        ),
     )
     orphaned_blueprint_arns: List[str] = Field(
         default_factory=list,
