@@ -11138,7 +11138,9 @@ class TestReextractOneSection:
         that refusal — a job past the stale age does not block, and the baseline
         has other writers — so these tests reach it directly.
         """
-        return patch.object(test_set_index, "_label_job_to_write", return_value=None)
+        return patch.object(
+            test_set_index, "_label_job_to_write", return_value=(None, None)
+        )
 
     def _run_pipeline(self, table, s3, run_input, run_id="run2"):
         """Stand in for the pipeline: one result per section the run was told to
@@ -12398,3 +12400,192 @@ class TestWholeDocumentClassNotApplied:
 
         job = table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#run2"})["Item"]
         assert job["forcedClass"] == "W2"
+
+
+@pytest.mark.unit
+class TestReviewFollowups1728:
+    """Cases the PR #1737 review measured as wrong or untested."""
+
+    SINGLE = TestWholeDocumentClassNotApplied.SINGLE
+
+    def test_a_failed_whole_document_reextract_is_not_the_review_run(
+        self, labeling_env
+    ):
+        """Its run has a copy of the document under the pipeline's own class, and
+        the harvest never marks that copy as a test-set document, so a review saved
+        on it would reach nothing."""
+        table, s3 = labeling_env
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#run1",
+                "testSetId": "ts1",
+                "jobId": "run1",
+                "status": "COMPLETED",
+                "objectKeys": ["packet.pdf"],
+                "createdAt": "2000-01-01T00:00:00Z",
+            }
+        )
+        with patch.object(
+            test_set_index, "_resolve_set_config_version", return_value=(None, None)
+        ):
+            job, _ = TestWholeDocumentClassNotApplied()._harvest_with_class(
+                table, s3, "Payslip"
+            )
+        assert job["status"] == "FAILED"
+
+        per_doc, _default = test_set_index._run_id_by_object_key("ts1", {})
+
+        assert per_doc == {"packet.pdf": "run1"}
+
+    def test_a_missing_result_is_a_copy_failure_not_an_ignored_class(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, _run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        _seed_completed_run(
+            table,
+            result["jobId"],
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": "s3://output-bucket/gone"}]},
+        )
+
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert "could not be copied" in job["error"]
+        # The reason is S3's, not an artefact of reading a result that is not there.
+        assert "NoSuchKey" in job["error"]
+        assert "Bedrock Data Automation" not in job["error"]
+
+    def test_every_section_must_come_back_as_the_forced_class(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, _run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        stamped = _baseline_bytes(s3)
+        sections = []
+        for sid, cls in (("1", "W2"), ("2", "Payslip")):
+            key = f"{result['jobId']}/packet.pdf/sections/{sid}/result.json"
+            s3.put_object(
+                Bucket="output-bucket",
+                Key=key,
+                Body=json.dumps(
+                    {"document_class": {"type": cls}, "inference_result": {"x": sid}}
+                ),
+            )
+            sections.append({"Id": sid, "OutputJSONUri": f"s3://output-bucket/{key}"})
+        _seed_completed_run(
+            table, result["jobId"], "ts1", ["packet.pdf"], {"packet.pdf": sections}
+        )
+
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert "'Payslip'" in job["error"]
+        assert _baseline_bytes(s3) == stamped
+
+    def test_the_legacy_run_survives_a_second_reextract(self, labeling_env):
+        """The legacy run is the one the OLDEST job replaced; a later job's replaced
+        pointer names the job before it."""
+        table, _s3 = labeling_env
+        for run_id, created, previous, keys in (
+            ("run2", "2000-01-02T00:00:00Z", "run0", ["a.pdf"]),
+            ("run3", "2000-01-03T00:00:00Z", "run2", ["b.pdf"]),
+        ):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "objectKeys": keys,
+                    "createdAt": created,
+                    "previousLabelJobId": previous,
+                }
+            )
+
+        per_doc, default = test_set_index._run_id_by_object_key("ts1", {})
+
+        assert per_doc == {"a.pdf": "run2", "b.pdf": "run3"}
+        assert default == "run0"
+
+
+@pytest.mark.unit
+class TestRegroupRefusalEdges:
+    """More job shapes for the re-group refusal (#1728 item 3)."""
+
+    _helpers = TestRegroupWhileALabelingJobRuns()
+
+    def test_a_whole_set_job_with_no_named_documents_blocks(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        self._helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", [])
+
+        with pytest.raises(ValueError, match="being re-extracted or draft-labeled"):
+            self._helpers._regroup()
+
+    def test_a_job_that_gave_up_on_this_document_does_not_block(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        self._helpers._seed_run_in_progress(table, "run9", ["other.pdf"])
+        table.update_item(
+            Key={"PK": "testrun#run9", "SK": "metadata"},
+            UpdateExpression="SET Files = :f",
+            ExpressionAttributeValues={":f": ["other.pdf", "packet.pdf"]},
+        )
+        _seed_running_job(
+            table, "run9", ["other.pdf", "packet.pdf"], failedFiles=["packet.pdf"]
+        )
+
+        assert len(self._helpers._regroup()["sections"]) == 2
+        assert self._helpers._job_status(table, "run9") == "RUNNING"
+
+    def test_a_harvest_that_raises_is_not_reported_as_progress(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        self._helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+
+        with patch.object(
+            test_set_index, "_harvest_label_job", side_effect=RuntimeError("boom")
+        ):
+            with pytest.raises(ValueError) as caught:
+                self._helpers._regroup()
+
+        message = str(caught.value)
+        assert "could not be checked (boom)" in message
+        assert "Try again" in message
+        assert "right now" not in message
+
+    def test_every_job_shares_one_harvest_budget(self, labeling_env):
+        """The save must answer inside the dispatcher's timeout, so two in-flight
+        jobs do not each get a fresh harvest budget."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        for run_id in ("run8", "run9"):
+            self._helpers._seed_run_in_progress(table, run_id, ["other.pdf"])
+            _seed_running_job(table, run_id, [])
+        deadlines = []
+
+        def record(job, deadline=None):
+            deadlines.append(deadline)
+            done = dict(job)
+            done["status"] = "COMPLETED"
+            return done
+
+        with patch.object(test_set_index, "_harvest_label_job", side_effect=record):
+            self._helpers._regroup()
+
+        assert len(deadlines) == 2
+        assert deadlines[0] == deadlines[1]
+        assert deadlines[0] - time.monotonic() <= (
+            test_set_index.QUEUE_HARVEST_TIME_BUDGET_SECONDS
+        )
