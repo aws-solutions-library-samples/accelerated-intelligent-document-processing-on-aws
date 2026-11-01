@@ -1000,7 +1000,8 @@ The BedrockClient automatically handles common failure scenarios:
   it is made after the statement like every other retry: made from the body, the
   outer frame's own handlers caught whatever the nested ladder finally raised and
   retried it again on their own count, so with `max_retries=4` one function error
-  followed by read timeouts made 9 invocations instead of 5. A request now makes at
+  followed by read timeouts made 9 invocations instead of 5, and the worst mix of
+  function errors and throttles found made 22 (40 against 8 at the default of 7). A request now makes at
   most `max_retries + 1` invocations whatever mix of failures it meets;
   `tests/unit/bedrock/test_retry_ladder_bounds.py` checks every ordering of the three
   retryable failure kinds (#1706).

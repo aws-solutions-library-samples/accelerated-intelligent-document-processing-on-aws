@@ -491,12 +491,14 @@ def test_no_ladder_retries_from_inside_a_try_statement():
     again on this frame's count. The LambdaHook function-error retry was made that
     way, and with ``max_retries=4`` one function error followed by read timeouts made
     9 invocations (#1706). So the rule is lexical and total: no self-call inside any
-    part of a ``try`` statement. ``test_retry_ladder_bounds`` measures the bound
-    itself.
+    part of a ``try`` or ``try``/``except*`` statement. Calls are matched by name, as
+    in :func:`_self_calls`, so a retry spelled through ``getattr`` or an alias is not
+    seen here; ``test_retry_ladder_bounds`` measures the bound itself, which is what
+    catches those.
     """
     offenders = []
     for fn in _ladders():
-        tries = [t for t in ast.walk(fn) if isinstance(t, ast.Try)]
+        tries = [t for t in ast.walk(fn) if isinstance(t, (ast.Try, ast.TryStar))]
         for call in _self_calls(fn):
             if any(_within(call, t) for t in tries):
                 offenders.append(f"{fn.name} line {call.lineno}")
@@ -542,7 +544,7 @@ def _retrying_handlers() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     for fn in _ladders():
         for node in ast.walk(fn):
-            if not isinstance(node, ast.Try):
+            if not isinstance(node, (ast.Try, ast.TryStar)):
                 continue
             for h in node.handlers:
                 if _can_complete(h.body):

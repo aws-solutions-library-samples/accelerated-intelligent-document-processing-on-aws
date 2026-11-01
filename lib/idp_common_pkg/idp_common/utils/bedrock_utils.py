@@ -598,8 +598,8 @@ def async_exponential_backoff_retry[T, **P](
                         total_slept += backoff
                         delay = min(delay * exponential_base, max_delay)
                         # The next attempt starts after this handler exits, so the
-                        # failure is unreachable by then; but a timeout or a dropped
-                        # connection leaves botocore's reference cycle behind it (see
+                        # failure is unreachable by then; but a botocore timeout
+                        # leaves botocore's reference cycle behind it (see
                         # ``drop_failed_attempt``), so without this the failed
                         # attempt's serialised request stayed in memory until the
                         # cyclic collector ran. Measured with a real botocore client

@@ -136,8 +136,11 @@ dropped connection leaves a botocore reference cycle behind it
 (`Endpoint._send_request` holds the exception it raises in a local), so the failed
 attempt's serialised request, page images included, stayed in memory until the cyclic
 garbage collector next ran. Measured with a real botocore client and an 8 MB request
-with the collector off, 8, 16, 24 and 32 MB were still held at attempts 2 to 5, whether
-the botocore error arrived raw or raised `from` a wrapper. The retrying branch now
+with the collector off, 8, 16, 24 and 32 MB were still held at attempts 2 to 5 of a
+read timeout, whether the botocore error arrived raw or raised `from` a wrapper. (The
+decorator does not retry a raw dropped connection at all: botocore's
+`ConnectionClosedError` matches none of its retryable names, and Strands wraps only a
+throttle in a retryable exception.) The retrying branch now
 calls `drop_failed_attempt`, the helper `bedrock/client.py` uses, which detaches the
 tracebacks along the failure's chain and stops at any exception the caller was already
 handling. It lives in the leaf module `idp_common/failed_attempt.py` so that both
