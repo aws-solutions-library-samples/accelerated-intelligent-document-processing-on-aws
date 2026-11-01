@@ -1654,6 +1654,8 @@ BDA currently has limitations with complex nested structures that affect sync op
 }
 ```
 
+A top-level object like `employee` can be written inline, as above, or under `$defs` and referenced with `$ref`. BDA itself accepts only the second form, so the sync converts an inline object into a blueprint definition and a reference to it. The field keeps its name in the blueprint either way.
+
 **Nested Arrays Not Supported:**
 Arrays within object definitions are not supported by BDA:
 
