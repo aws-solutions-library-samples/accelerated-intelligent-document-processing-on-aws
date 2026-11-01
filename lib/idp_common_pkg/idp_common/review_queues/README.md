@@ -152,10 +152,15 @@ document, so it finishes with the new grouping.
   `listReviewQueues`, `createReviewQueue`, `updateReviewQueue` and
   `deleteReviewQueue`; the web UI doesn't offer `createReviewQueue`. Only Default can't be deleted (`PROTECTED_QUEUE`); an
   Escalation queue an earlier release seeded is an ordinary queue.
-  `ReviewQueueService.delete_queue` moves a queue's `OPEN` and `CLAIMED` items to
-  Default with `move` (unassigned; an assignee is told), re-points its `HOLDING`
-  items at Default, then deletes the definition. It refuses with
-  `QUEUE_FINALIZING` while one of the queue's items is `FINALIZING`.
+  `ReviewQueueService.delete_queue` refuses with `QUEUE_FINALIZING` while one of
+  the queue's items is `FINALIZING`, then deletes the definition, and only then
+  moves the queue's `OPEN` and `CLAIMED` items to Default with `move` (unassigned;
+  an assignee is told) and re-points its `HOLDING` items at Default. So a delete
+  the store refuses (`QUEUE_CHANGED`, or a fault) has moved nothing. A run that
+  stops part-way leaves items in a queue that is no longer defined, which the rest
+  of the service handles (a `HOLDING` item activates into Default; the overview
+  lists the queue); deleting it again moves the rest, and the web UI offers Delete
+  on such a queue while it still holds items.
 - Every definition carries a `version` (`Version` in the table), which
   `QueueDefStore.put` sets to 1 on create and bumps by one on every update; a
   definition stored before versions existed reads as 0. `delete` keeps the last

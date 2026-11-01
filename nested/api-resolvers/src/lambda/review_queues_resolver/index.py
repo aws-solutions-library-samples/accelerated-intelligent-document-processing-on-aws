@@ -365,7 +365,7 @@ def _update_queue(c, args):
 
 
 def _delete_queue(c, args):
-    """Delete a queue; its items move to the Default queue first."""
+    """Delete a queue; its items then move to the Default queue."""
     queue_id = str(args.get("id") or "").strip().lower()
     if not queue_id:
         raise ValueError("BAD_ARGUMENT: id is required")

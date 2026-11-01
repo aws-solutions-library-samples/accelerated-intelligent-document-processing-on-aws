@@ -235,6 +235,59 @@ class TestDeleteQueue:
         assert service.store.get_item("open.pdf").queue == "claims"
         assert service.store.queue_defs.get("claims") is not None
 
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            ReviewConflict("QUEUE_CHANGED", "changed"),
+            RuntimeError("throttled"),
+        ],
+        ids=["queue-changed", "fault"],
+    )
+    def test_a_refused_delete_moves_nothing(self, service, monkeypatch, refusal):
+        # The definition is deleted before any item moves, so a delete that is
+        # refused leaves the queue and every item in it as they were.
+        _seed(service, "open.pdf")
+        _seed(service, "held.pdf", state="CLAIMED", owner=ANN)
+        _seed(service, "hold.pdf", state="HOLDING")
+
+        def refused(_queue_id):
+            raise refusal
+
+        monkeypatch.setattr(service.directory.queue_defs, "delete", refused)
+        with pytest.raises(type(refusal)):
+            service.delete_queue(ADMIN, "claims")
+        for key in ("open.pdf", "held.pdf", "hold.pdf"):
+            assert service.store.get_item(key).queue == "claims", key
+        held = service.store.get_item("held.pdf")
+        assert (held.state, held.owner_email) == ("CLAIMED", ANN.email)
+        service.notify.claim_released.assert_not_called()
+        assert "moved" not in _history_events(service, "open.pdf")
+        assert service.store.queue_defs.read_current("claims") is not None
+
+    def test_the_definition_is_deleted_before_an_item_moves(self, service):
+        _seed(service, "open.pdf")
+        defs = service.directory.queue_defs
+        seen = []
+        real_move = service.move
+
+        def move(*args, **kwargs):
+            seen.append(defs.read_current("claims"))
+            return real_move(*args, **kwargs)
+
+        service.move = move
+        assert service.delete_queue(ADMIN, "claims") == 1
+        assert seen == [None]
+
+    def test_deleting_again_moves_what_a_failed_run_left(self, service):
+        # A run that deleted the definition and then failed part-way left items in
+        # a queue that no longer exists; deleting it again moves them.
+        _seed(service, "open.pdf")
+        _seed(service, "hold.pdf", state="HOLDING")
+        service.directory.queue_defs.delete("claims")
+        assert service.delete_queue(ADMIN, "claims") == 2
+        for key in ("open.pdf", "hold.pdf"):
+            assert service.store.get_item(key).queue == DEFAULT_QUEUE_ID, key
+
     def test_default_is_protected_and_admin_only(self, service):
         with pytest.raises(ReviewValidationError) as exc:
             service.delete_queue(ADMIN, "Default")
