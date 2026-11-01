@@ -24,6 +24,11 @@ that mutates IAM permissions** — unless the template is in
 ``DEPLOYMENT_ROLE_TEMPLATES``, which lists, with justification, the few roles
 that exist precisely in order to create the stack's roles.
 
+A statement grants an action when an ``Action`` pattern matches it (IAM
+wildcards, case-insensitive) or, for ``NotAction``, when its list does not
+exclude it: ``Allow`` + ``NotAction: [kms:Decrypt]`` grants every IAM mutation
+(issue #1767). ``NotResource`` counts as every resource it does not name.
+
 ``iam:PassRole`` is deliberately NOT in ``MUTATION_ACTIONS``. Passing a role is
 not adding a permission, and a custom resource that hands an execution role to
 a service legitimately needs it; the risk in ``PassRole`` is its *resource*
@@ -45,6 +50,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
@@ -194,33 +200,150 @@ def _statements(node: Any) -> Iterator[dict]:
 
 
 def _actions(statement: dict) -> list[str]:
-    """Literal action strings in a statement, across ``Fn::If`` branches.
+    """Literal ``Action`` strings in a statement, across ``Fn::If`` branches.
 
-    ``NotAction`` is read too: ``NotAction: ["s3:*"]`` with ``Effect: Allow``
-    grants everything else, IAM mutation included.
+    ``NotAction`` is deliberately not read here: its entries are what the
+    statement does *not* grant, so returning them as actions inverts their
+    meaning (an ``Allow`` with ``NotAction: [iam:*]`` used to be reported as
+    granting ``iam:*``). Whether a statement grants a given action is
+    :func:`_grants`, which reads both keys.
     """
     found: list[str] = []
-    for key in ("Action", "NotAction"):
-        for branch in _branches(statement.get(key)):
-            items = branch if isinstance(branch, list) else [branch]
-            for item in items:
-                for leaf in _branches(item):
-                    if isinstance(leaf, str):
-                        found.append(leaf.strip())
+    for branch in _branches(statement.get("Action")):
+        items = branch if isinstance(branch, list) else [branch]
+        for item in items:
+            for leaf in _branches(item):
+                if isinstance(leaf, str):
+                    found.append(leaf.strip())
     return found
 
 
+def _iam_pattern_matches(pattern: str, action: str) -> bool:
+    """Whether an IAM action pattern matches one concrete action.
+
+    IAM's rule, not a shell glob's: ``*`` matches any run of characters, ``?``
+    exactly one, the comparison is case-insensitive, and nothing else is
+    special (``fnmatch`` would read ``[`` as a character class).
+    """
+    regex = "".join(
+        ".*" if char == "*" else "." if char == "?" else re.escape(char)
+        for char in pattern.strip().lower()
+    )
+    return re.fullmatch(regex, action.lower(), flags=re.DOTALL) is not None
+
+
+def _excluded_by(item: Any, action: str) -> bool:
+    """Whether one ``NotAction`` entry excludes ``action`` on every leg.
+
+    An entry is only trusted to exclude when every ``Fn::If`` leg of it is a
+    literal pattern matching the action. A non-literal entry (``!Ref``,
+    ``!Sub``) excludes nothing, because reading an unknown value as "excludes
+    IAM" is the direction that fails open.
+    """
+    legs = _branches(item)
+    return all(
+        isinstance(leg, str) and _iam_pattern_matches(leg, action) for leg in legs
+    )
+
+
+# `!Ref` loads as `Fn::Ref` through this file's loader; JSON spells it `Ref`.
+_NO_VALUE = ({"Ref": "AWS::NoValue"}, {"Fn::Ref": "AWS::NoValue"})
+
+
+def _has_opaque_action(statement: dict) -> bool:
+    """Whether an ``Action`` entry, on some leg, is a value this reader cannot see.
+
+    ``!Sub 'iam:${Verb}'`` or ``!Ref Actions`` may name any action, so it is
+    read as granting every action, the same direction ``NotAction`` takes for
+    an entry it cannot read. ``AWS::NoValue`` removes the entry and grants
+    nothing.
+    """
+    for branch in _branches(statement.get("Action")):
+        items = branch if isinstance(branch, list) else [branch]
+        for item in items:
+            for leaf in _branches(item):
+                if (
+                    leaf is not None
+                    and not isinstance(leaf, str)
+                    and leaf not in _NO_VALUE
+                ):
+                    return True
+    return False
+
+
+def _may_allow(statement: dict) -> bool:
+    """Whether a statement's ``Effect`` is ``Allow`` on some ``Fn::If`` leg.
+
+    A missing ``Effect`` is read as ``Allow``. A non-literal leg is read as
+    ``Allow`` too: skipping it as if it were ``Deny`` is the direction that
+    fails open.
+    """
+    for leg in _branches(statement.get("Effect", "Allow")):
+        if not isinstance(leg, str) or leg.strip().lower() == "allow":
+            return True
+    return False
+
+
+def _grants(statement: dict, action: str) -> bool:
+    """Whether a statement, on some ``Fn::If`` leg, can allow ``action``.
+
+    ``Effect`` is not read here; callers skip ``Deny`` first.
+
+    * ``Action``: granted when any literal pattern on any leg matches, so
+      ``iam:*``, ``*`` and ``iam:Put*`` all grant ``iam:putrolepolicy``.
+    * ``NotAction``: an ``Allow`` with ``NotAction`` grants every action its
+      list does not exclude. The action is granted unless, on every leg of the
+      ``NotAction`` value, some entry excludes it. ``NotAction: [kms:Decrypt]``
+      therefore grants every IAM mutation, and ``NotAction: [iam:*]`` grants
+      none.
+    """
+    for pattern in _actions(statement):
+        if _iam_pattern_matches(pattern, action):
+            return True
+    if _has_opaque_action(statement):
+        return True
+    if "NotAction" not in statement:
+        return False
+    for leg in _branches(statement.get("NotAction")):
+        items = leg if isinstance(leg, list) else [leg]
+        if not any(_excluded_by(item, action) for item in items):
+            return True
+    return False
+
+
+def _mutation_names() -> list[str]:
+    """The concrete actions in ``MUTATION_ACTIONS``, without the ``iam:*`` entry.
+
+    ``iam:*`` is in the set so that the set reads as the rule; matching is
+    against concrete actions, and ``iam:*`` as a pattern matches all of them.
+    """
+    return sorted(a for a in MUTATION_ACTIONS if "*" not in a and "?" not in a)
+
+
 def _offending_actions(doc: Any) -> list[str]:
-    """Permission-mutating actions granted by an ``Allow`` statement in ``doc``."""
+    """Permission-mutating actions granted by an ``Allow`` statement in ``doc``.
+
+    A grant through ``Action`` is reported as the literal pattern that grants
+    it; a grant through ``NotAction`` as ``"<action> (via NotAction)"``, since
+    there is no literal to quote. ``Resource`` and ``NotResource`` are not
+    read: this rule is about which actions are allowed on anything at all.
+    """
     offending = []
+    names = _mutation_names()
     for statement in _statements(doc):
-        if str(statement.get("Effect", "Allow")).strip().lower() != "allow":
+        if not _may_allow(statement):
             continue
-        for action in _actions(statement):
-            lowered = action.lower()
-            # A bare "*" grants every action there is, iam: mutation included.
-            if lowered == "*" or lowered in MUTATION_ACTIONS:
-                offending.append(action)
+        if _has_opaque_action(statement):
+            offending.append(f"{statement.get('Action')!r} (not a literal)")
+        for pattern in _actions(statement):
+            if any(_iam_pattern_matches(pattern, name) for name in names):
+                offending.append(pattern)
+        if "NotAction" in statement:
+            plain = dict(statement)
+            plain.pop("Action", None)
+            for name in names:
+                if _grants(plain, name):
+                    offending.append(f"{name} (via NotAction)")
     return sorted(set(offending))
 
 
@@ -520,6 +643,28 @@ def test_the_agentcore_gateway_manager_grants_only_what_it_calls() -> None:
 PASS_ROLE_WILDCARD_ALLOWED: dict[str, str] = {}
 
 
+def _resource_is_open(statement: dict) -> bool:
+    """Whether a statement applies to every resource on some ``Fn::If`` leg.
+
+    ``Resource: "*"`` does. So does ``NotResource``: an ``Allow`` with
+    ``NotResource`` applies to every resource it does not name, which for
+    ``iam:PassRole`` is every role in the account but a listed few. A
+    ``NotResource`` leg is closed only when it names ``"*"`` itself, which
+    leaves nothing to apply to.
+    """
+    for branch in _branches(statement.get("Resource")):
+        resources = branch if isinstance(branch, list) else [branch]
+        if any(r == "*" for r in resources if isinstance(r, str)):
+            return True
+    if "NotResource" not in statement:
+        return False
+    for branch in _branches(statement.get("NotResource")):
+        resources = branch if isinstance(branch, list) else [branch]
+        if not any(r == "*" for r in resources if isinstance(r, str)):
+            return True
+    return False
+
+
 def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
     """``{relative path: statements}`` granting ``iam:PassRole`` on ``"*"``."""
     root = root or REPO_ROOT
@@ -529,14 +674,14 @@ def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
         if rel in DEPLOYMENT_ROLE_TEMPLATES or rel in PASS_ROLE_WILDCARD_ALLOWED:
             continue
         for statement in _statements(doc):
-            if str(statement.get("Effect", "Allow")).strip().lower() != "allow":
+            if not _may_allow(statement):
                 continue
-            if not any(a.lower() == "iam:passrole" for a in _actions(statement)):
+            if not _grants(statement, "iam:passrole"):
                 continue
-            for branch in _branches(statement.get("Resource")):
-                resources = branch if isinstance(branch, list) else [branch]
-                if any(r == "*" for r in resources if isinstance(r, str)):
-                    problems.setdefault(rel, []).append(str(statement.get("Action")))
+            if _resource_is_open(statement):
+                problems.setdefault(rel, []).append(
+                    str(statement.get("Action", statement.get("NotAction")))
+                )
     return problems
 
 
@@ -667,6 +812,244 @@ def test_gate_ignores_deny_and_read_only(tmp_path: Path) -> None:
         "                Resource: arn:aws:iam::123456789012:role/some-role\n"
     )
     assert not _scan(root=tmp_path), "the gate fired on a Deny or a read-only grant"
+
+
+def _probe_statement(tmp_path: Path, statement: str) -> Path:
+    """A one-statement SAM template under ``tmp_path``; ``statement`` is YAML.
+
+    ``statement`` is indented to sit under ``- Effect: ...`` at 14 spaces.
+    """
+    probe = tmp_path / "probe" / "template.yaml"
+    probe.parent.mkdir(parents=True)
+    body = "".join(f"              {line}\n" for line in statement.splitlines())
+    probe.write_text(
+        "Resources:\n"
+        "  MyFn:\n"
+        "    Type: AWS::Serverless::Function\n"
+        "    Properties:\n"
+        "      Policies:\n"
+        "        - Statement:\n"
+        "            - " + body.lstrip()
+    )
+    # A probe that fails to parse is never discovered, and an undiscovered
+    # probe passes every "not reported" assertion below; so is a statement
+    # the walk does not reach.
+    assert _template_paths(root=tmp_path) == [probe]
+    (found,) = list(_statements(_load_text(probe.read_text())))
+    assert found, statement
+    return tmp_path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement",
+    [
+        # The shape #1767 reported: one unrelated exclusion grants all of IAM.
+        (
+            "excludes-one-kms-action",
+            "Effect: Allow\nNotAction: [kms:Decrypt]\nResource: '*'",
+        ),
+        (
+            "excludes-another-service",
+            "Effect: Allow\nNotAction: ['s3:*']\nResource: '*'",
+        ),
+        ("no-effect-means-allow", "NotAction: ['s3:*']\nResource: '*'"),
+        # Excluding some IAM writes still grants the others (CreateRole, ...).
+        (
+            "excludes-part-of-iam",
+            "Effect: Allow\nNotAction: ['iam:Put*', 'iam:Attach*']\nResource: '*'",
+        ),
+        # IAM wildcards are not shell globs: `[p]` is literal, so it excludes
+        # no real action and everything is granted.
+        ("bracket-is-literal", "Effect: Allow\nNotAction: ['iam:[p]*']\nResource: '*'"),
+        # A value the reader cannot see is not trusted to exclude anything.
+        (
+            "non-literal-entry",
+            "Effect: Allow\nNotAction: [!Ref Excluded]\nResource: '*'",
+        ),
+        # Only one Fn::If leg excludes IAM; the other leg grants it.
+        (
+            "excluded-on-one-leg-only",
+            "Effect: Allow\nNotAction:\n  - !If [C, 'iam:*', 's3:*']\nResource: '*'",
+        ),
+        (
+            "whole-value-behind-fn-if",
+            "Effect: Allow\nNotAction: !If [C, ['iam:*'], ['s3:*']]\nResource: '*'",
+        ),
+        # NotResource does not narrow the action set; the mutation rule is
+        # about which actions are allowed on anything.
+        (
+            "action-with-not-resource",
+            "Effect: Allow\nAction: iam:CreateRole\nNotResource: arn:aws:iam::123456789012:role/x",
+        ),
+        # A wildcard in Action reaches the mutation set as well.
+        ("action-wildcard", "Effect: Allow\nAction: ['iam:Put*']\nResource: '*'"),
+        (
+            "opaque-not-action-value",
+            "Effect: Allow\nNotAction: !Ref Excl\nResource: '*'",
+        ),
+        ("opaque-action", "Effect: Allow\nAction: !Sub 'iam:${Verb}'\nResource: '*'"),
+        ("opaque-action-entry", "Effect: Allow\nAction: [!Ref Verb]\nResource: '*'"),
+        (
+            "effect-behind-fn-if",
+            "Effect: !If [C, Allow, Deny]\nNotAction: ['s3:*']\nResource: '*'",
+        ),
+        (
+            "allow-on-second-leg",
+            "Effect: !If [C, Deny, Allow]\nAction: iam:CreateRole\nResource: '*'",
+        ),
+        # The opaque leg of a whole-value Action: !If is the second one.
+        (
+            "opaque-action-on-second-leg",
+            "Effect: Allow\nAction: !If [C, [iam:GetRole], [!Ref Verb]]\nResource: '*'",
+        ),
+        ("padded-effect", "Effect: ' Allow '\nAction: iam:CreateRole\nResource: '*'"),
+        ("opaque-effect", "Effect: !Ref Effect\nAction: iam:CreateRole\nResource: '*'"),
+        (
+            "padded-pattern",
+            "Effect: Allow\nAction: [' iam:CreateRole ']\nResource: '*'",
+        ),
+        (
+            "action-single-char-wildcard",
+            "Effect: Allow\nAction: ['iam:CreateRol?']\nResource: '*'",
+        ),
+    ],
+)
+def test_gate_catches_not_action_grants(
+    case: str, statement: str, tmp_path: Path
+) -> None:
+    """Issue #1767: an ``Allow`` with ``NotAction`` grants all it does not exclude."""
+    assert _scan(root=_probe_statement(tmp_path, statement)), (
+        f"{case!r} grants an IAM mutation action and was NOT caught"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement",
+    [
+        ("excludes-all-of-iam", "Effect: Allow\nNotAction: ['iam:*']\nResource: '*'"),
+        ("excludes-everything", "Effect: Allow\nNotAction: ['*']\nResource: '*'"),
+        (
+            "case-insensitive",
+            "Effect: Allow\nNotAction: ['IAM:*', 's3:*']\nResource: '*'",
+        ),
+        (
+            "question-mark-wildcard",
+            "Effect: Allow\nNotAction: ['iam:?*']\nResource: '*'",
+        ),
+        (
+            "excluded-on-every-leg",
+            "Effect: Allow\nNotAction:\n  - !If [C, 'iam:*', '*']\nResource: '*'",
+        ),
+        (
+            "deny-is-not-a-grant",
+            "Effect: Deny\nNotAction: [kms:Decrypt]\nResource: '*'",
+        ),
+        (
+            "deny-on-every-leg",
+            "Effect: !If [C, Deny, Deny]\nAction: iam:CreateRole\nResource: '*'",
+        ),
+        (
+            "no-value-action-leg",
+            "Effect: Allow\nAction: [s3:GetObject, !If [C, iam:GetRole, !Ref AWS::NoValue]]\nResource: '*'",
+        ),
+        ("padded-exclusion", "Effect: Allow\nNotAction: [' iam:* ']\nResource: '*'"),
+        (
+            "long-form-no-value",
+            "Effect: Allow\nAction: [s3:GetObject, {Ref: AWS::NoValue}]\nResource: '*'",
+        ),
+        (
+            "read-wildcard",
+            "Effect: Allow\nAction: ['iam:Get*', 'iam:List*']\nResource: '*'",
+        ),
+    ],
+)
+def test_gate_accepts_not_action_that_excludes_iam_mutation(
+    case: str, statement: str, tmp_path: Path
+) -> None:
+    """The other direction: a ``NotAction`` that excludes IAM grants no mutation.
+
+    The reader used to return ``NotAction`` entries as granted actions, so
+    ``NotAction: [iam:*]`` was reported as granting ``iam:*``.
+    """
+    assert not _scan(root=_probe_statement(tmp_path, statement)), (
+        f"{case!r} grants no IAM mutation action but was reported"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement,reported",
+    [
+        (
+            "not-resource",
+            "Effect: Allow\nAction: iam:PassRole\nNotResource: arn:aws:iam::123456789012:role/x",
+            True,
+        ),
+        ("not-action", "Effect: Allow\nNotAction: ['s3:*']\nResource: '*'", True),
+        (
+            "action-wildcard",
+            "Effect: Allow\nAction: ['iam:Pass*']\nResource: '*'",
+            True,
+        ),
+        ("opaque-action", "Effect: Allow\nAction: !Ref Verbs\nResource: '*'", True),
+        (
+            "allow-on-second-leg",
+            "Effect: !If [C, Deny, Allow]\nAction: iam:PassRole\nResource: '*'",
+            True,
+        ),
+        (
+            "not-resource-star-grants-nothing",
+            "Effect: Allow\nAction: iam:PassRole\nNotResource: '*'",
+            False,
+        ),
+        (
+            "not-action-excludes-pass-role",
+            "Effect: Allow\nNotAction: ['iam:PassRole', 'iam:Create*', 'iam:Put*', "
+            "'iam:Attach*', 'iam:Update*', 'iam:Set*', 'iam:Add*', "
+            "'iam:DeleteRolePermissionsBoundary']\nResource: '*'",
+            False,
+        ),
+        (
+            "not-action-on-one-role",
+            "Effect: Allow\nNotAction: ['s3:*']\nResource: arn:aws:iam::123456789012:role/x",
+            False,
+        ),
+    ],
+)
+def test_pass_role_gate_reads_not_action_and_not_resource(
+    case: str, statement: str, reported: bool, tmp_path: Path
+) -> None:
+    """``NotResource`` applies to every resource it does not name.
+
+    So ``iam:PassRole`` with ``NotResource`` can pass any role but the listed
+    ones, and a ``NotAction`` that does not exclude ``iam:PassRole`` grants it.
+    """
+    root = _probe_statement(tmp_path, statement)
+    assert bool(_wildcard_pass_role(root=root)) is reported, case
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pattern,action,matches",
+    [
+        ("iam:*", "iam:createrole", True),
+        ("IAM:CreateRole", "iam:createrole", True),
+        ("iam:Create*", "iam:createrole", True),
+        ("iam:CreateRol?", "iam:createrole", True),
+        ("*", "iam:createrole", True),
+        ("iam:CreateRole*", "iam:createrole", True),
+        ("iam:Create", "iam:createrole", False),
+        ("iam:CreateRol?", "iam:createroles", False),
+        ("iam:[c]*", "iam:createrole", False),
+        ("iam:.*", "iam:createrole", False),
+        ("s3:*", "iam:createrole", False),
+    ],
+)
+def test_iam_pattern_matching(pattern: str, action: str, matches: bool) -> None:
+    """IAM's wildcard rule: ``*`` and ``?`` only, case-insensitive, whole string."""
+    assert _iam_pattern_matches(pattern, action) is matches
 
 
 @pytest.mark.unit
