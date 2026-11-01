@@ -217,6 +217,8 @@ Not covered: the blueprint's `class` value, which comes from the class id. BDA r
 
 `_sanitize_property_names` removes characters outside `[a-zA-Z0-9_-]` from property names before the transform, recursing into nested objects and array items. An object or array that omits `"type"` is recursed into as well: an object is recognised by `properties` (`_is_inline_object`, the same test the transform hoists by) and an array by `items`. Before issue #1742 only a declared `"type": "object"` was recursed into, so an untyped inline object kept names such as `Name & Title` and the blueprint was rejected. A property that declares a scalar `type` is not recursed into, even with `properties` beside it.
 
+The update check, `_check_for_updates`, sanitizes a copy of the class before transforming it, as the create and update paths do. It compares against a blueprint built from the sanitized class, so comparing the unsanitized one reported a change in every renamed property on every sync and re-versioned the blueprint each time (issue #1742).
+
 ### Every dropped property is a warning, not just a log line
 
 BDA supports neither objects inside objects nor arrays whose items nest further, so the

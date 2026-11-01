@@ -17,6 +17,8 @@ DOCUMENT, us-west-2), not assumed:
   ``items`` references (an array nested in an array).
 """
 
+import json
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -515,3 +517,63 @@ class TestUntypedObjectsWithoutDefs:
             "Rows": {"type": "array", "items": {"type": "string"}, "instruction": "-"},
         }
         assert "definitions" not in blueprint
+
+
+@pytest.mark.unit
+class TestCheckForUpdatesSanitizesFirst:
+    """Item 5: the update check compares like with like."""
+
+    CLASS = {
+        "$id": "T",
+        "description": "d",
+        "properties": {
+            "Name & Title": {"type": "string", "description": "who"},
+            "Owner": {"properties": {"Unit/Code": {"type": "string"}}},
+            "Total": {"type": "number"},
+        },
+    }
+
+    def _synced_blueprint(self, service, cls):
+        """The blueprint a create would have sent for ``cls``."""
+        sanitized, _ = service._sanitize_property_names(deepcopy(cls))
+        schema = service._transform_json_schema_to_bedrock_blueprint(sanitized)
+        return {"schema": json.dumps(schema)}
+
+    def test_an_unchanged_class_with_renamed_properties_is_not_an_update(self, service):
+        blueprint = self._synced_blueprint(service, self.CLASS)
+        assert service._check_for_updates(deepcopy(self.CLASS), blueprint) is False
+
+    def test_a_real_change_is_still_an_update(self, service):
+        blueprint = self._synced_blueprint(service, self.CLASS)
+        changed = deepcopy(self.CLASS)
+        changed["properties"]["Name & Title"]["description"] = "who, changed"
+        assert service._check_for_updates(changed, blueprint) is True
+
+    def test_a_rename_to_the_same_sanitized_name_is_not_an_update(self, service):
+        """Both spellings sanitize to NameTitle, so the blueprint is the same."""
+        blueprint = self._synced_blueprint(service, self.CLASS)
+        renamed = deepcopy(self.CLASS)
+        props = renamed["properties"]
+        props["Name/Title"] = props.pop("Name & Title")
+        renamed["properties"] = {k: props[k] for k in ("Name/Title", "Owner", "Total")}
+        assert service._check_for_updates(renamed, blueprint) is False
+
+    def test_the_class_passed_in_is_not_mutated(self, service):
+        blueprint = self._synced_blueprint(service, self.CLASS)
+        cls = deepcopy(self.CLASS)
+        service._check_for_updates(cls, blueprint)
+        assert cls == self.CLASS
+
+    def test_an_unchanged_class_is_not_re_versioned_by_a_sync(self, service):
+        """Through _process_single_class: no update_blueprint call."""
+        synced = self._synced_blueprint(service, self.CLASS)
+        existing = [
+            {
+                "blueprintArn": "arn:bp",
+                "blueprintName": f"{service.blueprint_name_prefix}-T-abcd1234",
+                **synced,
+            }
+        ]
+        result = service._process_single_class(deepcopy(self.CLASS), existing)
+        assert result["status"] == "success"
+        service.blueprint_creator.update_blueprint.assert_not_called()

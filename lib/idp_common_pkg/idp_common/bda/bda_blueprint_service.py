@@ -1934,9 +1934,13 @@ class BdaBlueprintService:
         if isinstance(blueprint_schema, str):
             blueprint_schema = json.loads(blueprint_schema)
 
-        # Transform the custom_class to Bedrock format for comparison
+        # Sanitize before transforming, exactly as the create and update paths
+        # do: the blueprint being compared against was built from the sanitized
+        # class, so comparing the unsanitized one reports a difference in every
+        # renamed property name even when nothing changed (issue #1742).
+        sanitized_class, _ = self._sanitize_property_names(deepcopy(custom_class))
         transformed_custom = self._transform_json_schema_to_bedrock_blueprint(
-            custom_class
+            sanitized_class
         )
 
         # Use DeepDiff to compare the schemas
