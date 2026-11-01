@@ -299,7 +299,7 @@ The solution creates various IAM roles to run different components of the system
   * `s3vectors:CreateIndex`, `s3vectors:DeleteIndex` on `bucket/*/index/<index name>` (the index name is exact)
   * `s3vectors:ListIndexes`, and `s3vectors:DeleteIndex` on any index, on the stack's own vector bucket only, named exactly — deleting the stack deletes every index in that bucket before the bucket, because S3 Vectors will not delete a bucket that still holds an index. Not granted when `pS3VectorBucketName` names the bucket
   * `bedrock:CreateKnowledgeBase`, `bedrock:DeleteKnowledgeBase`, `bedrock:GetKnowledgeBase`, `bedrock:UpdateKnowledgeBase`, `bedrock:ListKnowledgeBases`
-  * `iam:PassRole` (to hand the Knowledge Base Service Role to Bedrock)
+  * `iam:PassRole` on the Knowledge Base Service Role only, with an `iam:PassedToService` condition naming Bedrock (granted in a separate policy, because naming that role in this one would be a circular dependency)
 
 #### Monitoring & Evaluation Roles
 * **CloudWatch Dashboard Role**:

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import itertools
 import os
 import re
 from functools import lru_cache
@@ -75,6 +76,10 @@ MUTATION_ACTIONS = frozenset(
         "iam:attachrolepolicy",
         "iam:attachuserpolicy",
         "iam:attachgrouppolicy",
+        # Removing a policy widens a role whenever that policy carries a Deny
+        # (issue #1771).
+        "iam:detachrolepolicy",
+        "iam:deleterolepolicy",
         "iam:createpolicy",
         "iam:createpolicyversion",
         "iam:setdefaultpolicyversion",
@@ -665,8 +670,125 @@ def _resource_is_open(statement: dict) -> bool:
     return False
 
 
+# The resource part of two role ARNs no scoped PassRole names: one at the root
+# path, one under a path. An ARN pattern whose resource part matches both is
+# read as naming every role; a prefix (``role/MyStack-*``) or one role matches
+# neither.
+_ARBITRARY_ROLE_RESOURCES = (
+    "role/zq-unrelated-role-1771",
+    "role/service-role/xk-other-name",
+)
+# What every reference (``${X}``, ``!Ref X``, a list-form ``!Sub`` variable
+# that is not a literal) renders as. What it then stands for depends on which
+# ARN field it sits in: see _pattern_names_every_role.
+_UNRESOLVED = "\x01"
+_SUB_REFERENCE = re.compile(r"\$\{([^}!]*)\}")
+
+
+def _renderings(node: Any) -> list[str]:
+    """Every IAM pattern a resource value can render as; empty when none.
+
+    * a literal string is itself;
+    * ``Fn::If`` is every rendering of each leg;
+    * ``Fn::Sub`` (either form) renders each ``${...}`` as ``_UNRESOLVED``,
+      except a list-form variable whose value renders, which is followed;
+    * ``Fn::Join`` joins every combination of its parts' renderings, a part
+      that does not render (``!Ref``, ``!GetAtt``) becoming ``_UNRESOLVED``.
+
+    A ``Fn::If`` inside a ``Fn::Join`` part or a ``Fn::Sub`` variable is
+    therefore expanded too: ``!Join ['', ['...:role/', !If [C, x, '*']]]`` has a
+    ``role/*`` rendering. A whole-value ``!GetAtt``, ``!Ref`` or
+    ``!ImportValue`` renders as nothing: it names one resource the template
+    cannot see into.
+    """
+    if isinstance(node, str):
+        return [node]
+    if not isinstance(node, dict) or len(node) != 1:
+        return []
+    ((key, value),) = node.items()
+    if key == "Fn::If":
+        legs = _branches(node)
+        if legs == [node]:
+            return []
+        return [r for leg in legs for r in _renderings(leg)]
+    if key == "Fn::Sub":
+        template, local = value, {}
+        if isinstance(value, list) and value:
+            template = value[0]
+            if len(value) > 1 and isinstance(value[1], dict):
+                local = value[1]
+        if not isinstance(template, str):
+            return []
+        # re.split with one group alternates literal text and reference names.
+        pieces = _SUB_REFERENCE.split(template)
+        choices: list[list[str]] = []
+        for index, piece in enumerate(pieces):
+            if index % 2 == 0:
+                choices.append([piece])
+            elif piece in local:
+                choices.append(_renderings(local[piece]) or [_UNRESOLVED])
+            else:
+                choices.append([_UNRESOLVED])
+        return ["".join(combo) for combo in itertools.product(*choices)]
+    if key == "Fn::Join" and isinstance(value, list) and len(value) == 2:
+        delimiter, parts = value
+        if not isinstance(delimiter, str) or not isinstance(parts, list):
+            return []
+        choices = [_renderings(part) or [_UNRESOLVED] for part in parts]
+        return [delimiter.join(combo) for combo in itertools.product(*choices)]
+    return []
+
+
+def _pattern_names_every_role(pattern: str) -> bool:
+    """Whether a rendered resource pattern matches every role ARN.
+
+    The pattern is split into the six ARN fields (``maxsplit`` 5, since the
+    resource field may itself hold ``:``); it names every role when its service
+    field can be ``iam`` and its resource field matches both probe resources.
+    The partition, region and account fields are not read: every
+    role in another partition or account is still every role. An unresolved
+    reference in the resource field is read as one name (``role/${KbRole}``),
+    which matches neither probe; in the service field as ``*``. A pattern that
+    is not six fields (``*``, ``arn:*``) is matched whole against probe ARNs.
+    """
+    fields = pattern.split(":", 5)
+    if len(fields) == 6:
+        service = fields[2].replace(_UNRESOLVED, "*")
+        resource = fields[5].replace(_UNRESOLVED, "\x00")
+        if not _iam_pattern_matches(service, "iam"):
+            return False
+        return all(_iam_pattern_matches(resource, r) for r in _ARBITRARY_ROLE_RESOURCES)
+    whole = pattern.replace(_UNRESOLVED, "\x00")
+    return all(
+        _iam_pattern_matches(whole, f"arn:aws:iam::123456789012:{r}")
+        for r in _ARBITRARY_ROLE_RESOURCES
+    )
+
+
+def _resource_matches_every_role(statement: dict) -> bool:
+    """Whether a ``Resource`` entry, on some ``Fn::If`` leg, names every role.
+
+    ``arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*`` does, as do ``*``,
+    ``arn:*`` and the same pattern built with ``!Join`` (issue #1771: only the
+    literal ``"*"`` used to be recognised).
+    """
+    for branch in _branches(statement.get("Resource")):
+        resources = branch if isinstance(branch, list) else [branch]
+        for entry in resources:
+            if any(_pattern_names_every_role(p) for p in _renderings(entry)):
+                return True
+    return False
+
+
 def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
-    """``{relative path: statements}`` granting ``iam:PassRole`` on ``"*"``."""
+    """``{relative path: statements}`` granting ``iam:PassRole`` on every role.
+
+    ``Resource: "*"``, ``NotResource``, and any resource pattern matching
+    every role ARN (``role/*``) are reported. An ``iam:PassedToService``
+    condition does not exempt one: it limits the receiving service, not the
+    role, and "every role, to Lambda" is still an escalation path. Name the
+    role instead.
+    """
     root = root or REPO_ROOT
     problems: dict[str, list[str]] = {}
     for path, doc in _templates(root):
@@ -678,7 +800,7 @@ def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
                 continue
             if not _grants(statement, "iam:passrole"):
                 continue
-            if _resource_is_open(statement):
+            if _resource_is_open(statement) or _resource_matches_every_role(statement):
                 problems.setdefault(rel, []).append(
                     str(statement.get("Action", statement.get("NotAction")))
                 )
@@ -687,7 +809,10 @@ def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
 
 @pytest.mark.unit
 def test_pass_role_is_scoped() -> None:
-    """``iam:PassRole`` on ``Resource: "*"`` lets a role hand ANY role to a service.
+    """``iam:PassRole`` on every role lets a principal hand ANY role to a service.
+
+    ``Resource: "*"``, ``NotResource`` and ``role/*`` patterns all qualify
+    (see :func:`_wildcard_pass_role`).
 
     That is a privilege-escalation primitive in its own right whenever a
     reachable service will assume the passed role, so it is worth a gate even
@@ -696,10 +821,11 @@ def test_pass_role_is_scoped() -> None:
     """
     problems = _wildcard_pass_role()
     assert not problems, (
-        "iam:PassRole granted on Resource '*' — the principal can hand ANY role "
+        "iam:PassRole granted on every role — the principal can hand ANY role "
         f"in the account to a service that will assume it: {problems}. Scope the "
         "statement to the specific role ARN(s), and add an "
-        "iam:PassedToService condition where the service is known."
+        "iam:PassedToService condition where the service is known; the "
+        "condition alone does not satisfy this check."
     )
 
 
@@ -742,6 +868,9 @@ Resources:
         ("create-policy-version", "                - iam:CreatePolicyVersion\n"),
         ("trust-policy", "                - iam:UpdateAssumeRolePolicy\n"),
         ("boundary-removal", "                - iam:DeleteRolePermissionsBoundary\n"),
+        # Removing a policy that carries a Deny widens the role (#1771).
+        ("detach-managed-policy", "                - iam:DetachRolePolicy\n"),
+        ("delete-inline-policy", "                - iam:DeleteRolePolicy\n"),
         ("new-user-credentials", "                - iam:CreateAccessKey\n"),
         ("iam-wildcard", "                - iam:*\n"),
         ("full-wildcard", '                - "*"\n'),
@@ -1100,6 +1229,286 @@ def test_pass_role_gate_accepts_a_scoped_grant(tmp_path: Path) -> None:
     )
     assert not _wildcard_pass_role(root=tmp_path)
     assert not _scan(root=tmp_path)
+
+
+_ACCOUNT_ROLES = 'Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"'
+_BEDROCK_ONLY = (
+    "Condition:\n  StringEquals:\n"
+    '    iam:PassedToService: !Sub "bedrock.${AWS::URLSuffix}"'
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement,reported",
+    [
+        # The shape #1771 reported: every role in the account, no condition.
+        (
+            "account-roles-sub",
+            f"Effect: Allow\nAction: iam:PassRole\n{_ACCOUNT_ROLES}",
+            True,
+        ),
+        (
+            "account-roles-sub-list-form",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${Acct}:role/*", {Acct: !Ref AWS::AccountId}]',
+            True,
+        ),
+        (
+            "fn-if-inside-a-list-entry",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n  - !If\n    - C\n    - !GetAtt R.Arn\n"
+            '    - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        (
+            "list-form-named-role",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${N}", {N: !Ref KbRole}]',
+            False,
+        ),
+        (
+            "list-form-literal-star",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${N}", {N: "*"}]',
+            True,
+        ),
+        (
+            "account-roles-literal",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/*",
+            True,
+        ),
+        (
+            "any-account",
+            "Effect: Allow\nAction: iam:PassRole\nResource: 'arn:*:iam::*:*'",
+            True,
+        ),
+        (
+            "second-entry-of-a-list",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n  - !GetAtt R.Arn\n"
+            '  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        (
+            "behind-an-fn-if",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !If\n  - C\n  - !GetAtt R.Arn\n"
+            '  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        # A condition on the receiving service does not exempt it: the grant
+        # still covers every role, and passing every role to one service
+        # (Lambda, CloudFormation) is still an escalation path.
+        (
+            "account-roles-bedrock-only",
+            f"Effect: Allow\nAction: iam:PassRole\n{_ACCOUNT_ROLES}\n{_BEDROCK_ONLY}",
+            True,
+        ),
+        (
+            "account-roles-lambda-only",
+            f"Effect: Allow\nAction: iam:PassRole\n{_ACCOUNT_ROLES}\n"
+            "Condition:\n  StringEquals:\n    iam:PassedToService: lambda.amazonaws.com",
+            True,
+        ),
+        (
+            "star-with-condition",
+            f"Effect: Allow\nAction: iam:PassRole\nResource: '*'\n{_BEDROCK_ONLY}",
+            True,
+        ),
+        (
+            "arn-star-with-condition",
+            f"Effect: Allow\nAction: iam:PassRole\nResource: 'arn:*'\n{_BEDROCK_ONLY}",
+            True,
+        ),
+        # Other spellings of every role.
+        (
+            "fn-join",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:', !Ref AWS::Partition, ':iam::', !Ref AWS::AccountId, ':role/*']",
+            True,
+        ),
+        (
+            "account-parameter",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:iam::${AcctParam}:role/*"',
+            True,
+        ),
+        (
+            "list-form-account-from-getatt",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${A}:role/*", {A: !GetAtt X.AccountId}]',
+            True,
+        ),
+        (
+            "join-service-parameter",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ':'\n"
+            "  - ['arn', !Ref AWS::Partition, !Ref Svc, '', !Ref AWS::AccountId, 'role/*']",
+            True,
+        ),
+        (
+            "fn-if-inside-a-join-part",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:aws:iam::123456789012:role/', !If [C, x, '*']]",
+            True,
+        ),
+        (
+            "fn-if-inside-a-sub-variable",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:aws:iam::123456789012:role/${N}", {N: !If [C, x, "*"]}]',
+            True,
+        ),
+        (
+            "govcloud-literal",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws-us-gov:iam::123456789012:role/*",
+            True,
+        ),
+        (
+            "question-marks",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:rol?/*",
+            True,
+        ),
+        (
+            "mixed-case-service",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:IAM::123456789012:role/*",
+            True,
+        ),
+        (
+            "service-parameter",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:${Svc}::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        # Scoped resources are not every role.
+        (
+            "name-prefix",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-*"',
+            False,
+        ),
+        (
+            "named-role-sub",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${KbRole}"',
+            False,
+        ),
+        (
+            "whole-arn-from-a-parameter",
+            'Effect: Allow\nAction: iam:PassRole\nResource: !Sub "${KbRoleArn}"',
+            False,
+        ),
+        (
+            "another-service-star",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:s3:::*",
+            False,
+        ),
+        (
+            "short-prefix-not-six-fields",
+            "Effect: Allow\nAction: iam:PassRole\nResource: 'arn:*:role/zq*'",
+            False,
+        ),
+        (
+            "fn-if-every-leg-named",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:aws:iam::123456789012:role/', !If [C, a, b]]",
+            False,
+        ),
+        (
+            "shared-suffix-is-a-scope",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/*1771",
+            False,
+        ),
+        (
+            "join-named-role",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:', !Ref AWS::Partition, ':iam::', !Ref AWS::AccountId, ':role/', !Ref KbRole]",
+            False,
+        ),
+        (
+            "another-service",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:s3:::bucket/*",
+            False,
+        ),
+        # A prefix that one probe ARN happens to start with is still a prefix.
+        (
+            "short-name-prefix",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/z*",
+            False,
+        ),
+        (
+            "service-role-path",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/service-role/*",
+            False,
+        ),
+        # An every-role pattern on another action is not a PassRole grant.
+        (
+            "not-pass-role",
+            f"Effect: Allow\nAction: iam:GetRole\n{_ACCOUNT_ROLES}",
+            False,
+        ),
+    ],
+)
+def test_pass_role_gate_catches_every_role_patterns(
+    case: str, statement: str, reported: bool, tmp_path: Path
+) -> None:
+    """A resource pattern matching every role is as open as ``"*"`` for PassRole.
+
+    Issue #1771: ``role/*`` under ``!Sub`` passed, because only the literal
+    ``"*"`` was recognised. No condition exempts it; the remedy is to name the
+    role.
+    """
+    root = _probe_statement(tmp_path, statement)
+    assert bool(_wildcard_pass_role(root=root)) is reported, case
+
+
+@pytest.mark.unit
+def test_no_template_is_written_in_json() -> None:
+    """The walk reads YAML only, so it covers every template only while none is JSON.
+
+    A CloudFormation template in JSON would be read by neither rule here (nor by
+    ``scripts/discover_templates.sh``, which also matches ``*.yaml``/``*.yml``).
+    This asserts the premise over every tracked ``.json`` file rather than
+    widening the walk to thousands of non-template JSON files.
+    """
+    import json
+    import subprocess
+
+    listed = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.json",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout.decode()
+    names = [n for n in listed.split("\0") if n]
+    assert names, "git ls-files found no JSON at all; the premise was not checked"
+    templates = []
+    for name in names:
+        try:
+            doc = json.loads((REPO_ROOT / name).read_text())
+        except (ValueError, UnicodeDecodeError, OSError):
+            continue
+        if isinstance(doc, dict) and (
+            "AWSTemplateFormatVersion" in doc
+            or (
+                isinstance(doc.get("Resources"), dict)
+                and any(
+                    isinstance(r, dict)
+                    and str(r.get("Type", "")).startswith(("AWS::", "Custom::"))
+                    for r in doc["Resources"].values()
+                )
+            )
+        ):
+            templates.append(name)
+    assert not templates, (
+        f"JSON CloudFormation template(s) {templates}: the IAM gates here read "
+        "only YAML. Teach _templates() to read JSON before adding one."
+    )
 
 
 @pytest.mark.unit
