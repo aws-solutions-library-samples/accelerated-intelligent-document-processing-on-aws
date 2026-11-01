@@ -60,6 +60,56 @@ class TestSeeding:
         defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, enabled=False), create=True)
         assert defs.get(DEFAULT_QUEUE_ID).enabled is False
 
+    def test_a_listing_that_misses_default_reports_the_stored_one(
+        self, defs, monkeypatch
+    ):
+        # An eventually consistent query can miss a Default that exists; the seed is
+        # then refused, and what is listed must be the stored Default, not the seed.
+        defs.list()
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, priority=80), create=False)
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, priority=90), create=False)
+        monkeypatch.setattr(defs.client, "query_pages", lambda *a, **k: iter([{}]))
+        defs.invalidate()
+        (default,) = defs.list()
+        assert (default.version, default.priority) == (3, 90)
+        assert defs.read_current(DEFAULT_QUEUE_ID).version == 3
+
+    def test_a_stored_default_that_cannot_be_read_lists_the_seed(
+        self, defs, monkeypatch, caplog
+    ):
+        defs.list()
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, priority=80), create=False)
+        monkeypatch.setattr(defs.client, "query_pages", lambda *a, **k: iter([{}]))
+
+        def throttled(*_a, **_k):
+            raise DynamoDBError("slow down", "ProvisionedThroughputExceededException")
+
+        monkeypatch.setattr(defs.client, "get_item", throttled)
+        defs.invalidate()
+        (default,) = defs.list()
+        assert (default.id, default.version) == (DEFAULT_QUEUE_ID, 1)
+        assert "event=queue_default_read_failed" in caplog.text
+
+    def test_a_refused_seed_with_nothing_stored_lists_the_seed(self, defs, monkeypatch):
+        # Refused, then gone again by the time it is read: the seed is listed.
+        def refused(*_a, **_k):
+            raise DynamoDBError("exists", "ConditionalCheckFailedException")
+
+        monkeypatch.setattr(defs.client, "put_item", refused)
+        (default,) = defs.list()
+        assert (default.id, default.version) == (DEFAULT_QUEUE_ID, 1)
+
+    def test_a_seed_that_fails_for_another_reason_still_lists_default(
+        self, defs, monkeypatch, caplog
+    ):
+        def throttled(*_a, **_k):
+            raise DynamoDBError("slow down", "ProvisionedThroughputExceededException")
+
+        monkeypatch.setattr(defs.client, "put_item", throttled)
+        (default,) = defs.list()
+        assert (default.id, default.version) == (DEFAULT_QUEUE_ID, 1)
+        assert "event=queue_default_seed_failed queue=default" in caplog.text
+
     def test_new_fields_survive_an_update(self, defs):
         defs.list()
         defs.put(

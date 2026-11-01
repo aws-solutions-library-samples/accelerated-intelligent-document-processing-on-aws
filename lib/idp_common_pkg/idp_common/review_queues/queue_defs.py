@@ -388,7 +388,12 @@ class QueueDefStore:
         return QueuesView(self.list()).queue(queue_id)
 
     def seed_defaults(self) -> list[QueueDefinition]:
-        """Write the Default queue if absent; return the seeded definitions."""
+        """Write the Default queue if absent; return the definitions as stored.
+
+        When Default already exists (a listing that missed it, or a concurrent seed)
+        the stored definition is returned rather than the seed, so a listing never
+        reports the seed's settings and version 1 for a Default that has been edited.
+        """
         out = []
         for definition in default_definitions():
             definition = definition.model_copy(update={"version": 1})
@@ -397,10 +402,25 @@ class QueueDefStore:
                     definition.to_item(),
                     condition_expression="attribute_not_exists(PK)",
                 )
-            except Exception:  # noqa: BLE001 — already seeded, or seeded concurrently
-                logger.debug("queue %s already defined", definition.id)
+            except Exception as exc:  # noqa: BLE001
+                if _is_condition_failure(exc):
+                    logger.debug("queue %s already defined", definition.id)
+                    definition = self._stored_or(definition)
+                else:
+                    # Not written; listed anyway so the Default queue stays usable.
+                    logger.warning(
+                        "event=queue_default_seed_failed queue=%s", definition.id
+                    )
             out.append(definition)
         return out
+
+    def _stored_or(self, seed: QueueDefinition) -> QueueDefinition:
+        """The stored definition of ``seed``'s queue, or ``seed`` if it can't be read."""
+        try:
+            return self.read_current(seed.id) or seed
+        except Exception:  # noqa: BLE001 — listed from the seed rather than not at all
+            logger.warning("event=queue_default_read_failed queue=%s", seed.id)
+            return seed
 
     def put(
         self,
