@@ -96,26 +96,25 @@ sudo apt update && sudo apt install git -y
 
 ### Clone Repository
 
+```bash
 git clone https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
-
-### Go to directory
-
 cd accelerated-intelligent-document-processing-on-aws/
+```
 
-### Run the setup script for development tools which is scripts directory
+### Run the setup script for development tools
 
-cd scripts  
+The setup scripts are in `scripts/setup/`. Run them from the repository root.
 
 **For Amazon Linux 2023:**
 ```bash
-chmod +x ./dev_setup_al2023.sh
-./dev_setup_al2023.sh
+chmod +x ./scripts/setup/dev_setup_al2023.sh
+./scripts/setup/dev_setup_al2023.sh
 ```
 
 **For Ubuntu 24.04:**
 ```bash
-chmod +x ./dev_setup_ubuntu.sh
-./dev_setup_ubuntu.sh
+chmod +x ./scripts/setup/dev_setup_ubuntu.sh
+./scripts/setup/dev_setup_ubuntu.sh
 ```
 
 ### To upgrade the python version run this command on EC2 instance

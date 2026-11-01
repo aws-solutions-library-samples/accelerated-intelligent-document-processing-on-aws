@@ -215,7 +215,7 @@ fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-id
 # version inside that range the tree is formatted against.
 #
 # This is the SINGLE SOURCE OF TRUTH for the ruff version. Both CI configs
-# install this exact version, scripts/setup/dev_setup_ubuntu.sh installs it, and
+# install this exact version, `make setup` and `make setup-venv` install it, and
 # scripts/check_lint_debt.py reads it from here so that a finding-count mismatch
 # measured under a different ruff says so instead of looking like a code change.
 # scripts/tests/test_ci_gate_parity.py fails if any of those drift from this.

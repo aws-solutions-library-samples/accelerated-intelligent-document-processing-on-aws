@@ -10,7 +10,7 @@
 # on Windows Subsystem for Linux (WSL) Ubuntu systems. It installs Python 3, AWS CLI, 
 # SAM CLI, Node.js, and other essential development tools.
 #
-# Usage: ./wsl_setup.sh
+# Usage: ./scripts/setup/wsl_setup.sh (from the repository root)
 # Note: Run this script inside WSL Ubuntu environment
 ##############################################################################################
 
