@@ -99,6 +99,8 @@ class Document:
     
     # Confidence alerts
     confidence_alert_count: int = 0
+    # Required fields left absent, summed over sections
+    missing_required_field_count: int = 0
 ```
 
 #### The two review lists are `Optional` on purpose
@@ -196,6 +198,7 @@ class Section:
     extraction_result_uri: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
     confidence_threshold_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    missing_required_fields: List[Dict[str, Any]] = field(default_factory=list)
 ```
 
 ### Status

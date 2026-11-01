@@ -1915,6 +1915,9 @@ tokens** to the request.
 ## 5. HITL (Human Review)
 
 Fields whose confidence falls below a threshold can be routed to human review.
+A field extraction found no value for raises no confidence alert and does not route
+to review; see
+[Absent values and missing required fields](#absent-values-and-missing-required-fields).
 HITL is configured under the top-level `hitl` block in v0.6:
 
 ```yaml
@@ -1989,6 +1992,62 @@ to the `explainability_info` based on configuration.
   ]
 }
 ```
+
+### Absent values and missing required fields
+
+A confidence alert is raised only for a field that **has an extracted value**. A
+field whose value is absent keeps its `confidence` and `confidence_reason` in
+`explainability_info`, where the UI still shows them, but it is left out of the
+section's confidence alerts. So it does not count in the document's
+`ConfidenceAlertCount`, it does not trigger legacy HITL, and it does not become a
+review reason in review-queue mode. The rule is the same in every confidence mode
+(`separate`, `integrated`) and in BDA mode, with one exception: when Advanced
+(agentic) extraction is sharded and `separate` confidence runs inside the shards,
+the stored alerts on list rows are numbered from the start of each shard, so they
+cannot be matched to the row they describe. Those row alerts are kept as they are,
+and only the alerts on fields outside lists are judged.
+
+A value is **absent** when it is null, a blank string, an empty list or object, or
+an object or list that holds nothing but those, such as `{"City": null, "Zip": ""}`.
+`0` and `false` are values. Each confidence leaf is judged against its own value, so
+in a group only the empty sub-fields drop out, and in a list each row's empty cells
+drop out. A list with no rows has no confidence leaves at all, so it never alerted.
+
+Absent fields are not all dropped silently. Each section lists the fields its class
+schema marks **required** that extraction left absent, as `MissingRequiredFields`.
+Each entry has the same shape as a confidence alert (`attributeName`, `confidence`,
+`confidenceThreshold`, the last two null when the field has no score). The document
+carries the total as `MissingRequiredFieldCount`, and the Web UI shows it beside the
+confidence alerts: in Document Details, as a **Missing Required Fields** column in
+the sections table (hover the count for the field names), and as an optional column
+in the document list. Missing required fields are informational. Nothing routes on
+them.
+
+"Required" follows JSON Schema `required`:
+
+- A property is required when the `required` array of the object that declares it
+  names it.
+- A nested object's own `required` applies only when that object has a value. A
+  required object that is absent is one entry (`Address`), not one per sub-field;
+  an absent object that is not required adds nothing.
+- An array's item schema `required` applies to every row the list holds
+  (`Rows[2].Amount`), including a null or empty row. A list with no rows adds only
+  its own entry, and only when the list itself is required.
+- A class whose schema declares no `required` anywhere has a count of 0. For a
+  multi-instance class, the `instances` wrapper's own requirement is ignored and
+  each record's `required` applies per instance.
+- `$ref` into `$defs` is followed. `allOf`, `anyOf`, `oneOf` and conditional
+  schemas are not evaluated.
+
+The count is evaluated per section, against that section's class schema, and the
+document count is the sum over its sections.
+
+> ⚠️ **A field the extraction genuinely missed no longer raises an alert either.**
+> Nothing compares an absent scalar with the page text yet, so a value that is on
+> the page but came back empty is now visible only as a missing required field
+> (when the schema requires it) or in its own confidence score. Documents processed
+> before this change keep their stored alerts until their extraction or confidence
+> assessment runs again.
 
 ### Thresholds inside lists (arrays)
 

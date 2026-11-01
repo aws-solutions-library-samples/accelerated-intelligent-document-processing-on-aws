@@ -668,6 +668,10 @@ def _gsi_item_to_document(item):
         # future migration recreates the GSI with this attribute, this line will
         # start populating it automatically.
         "ProcessingIssueCount": item.get("ProcessingIssueCount"),
+        # Same as ProcessingIssueCount: not in the GSI's INCLUDE projection, so
+        # None (and dropped below) on this fast path until the index is
+        # recreated with it. getDocument and the date-range list return it.
+        "MissingRequiredFieldCount": item.get("MissingRequiredFieldCount"),
     }
 
     # Remove None values to keep response clean

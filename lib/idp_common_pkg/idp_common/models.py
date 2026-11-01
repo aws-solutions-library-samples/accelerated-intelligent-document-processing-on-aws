@@ -501,6 +501,18 @@ class Section:
     extraction_result_uri: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
     confidence_threshold_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    """Fields whose confidence fell below their threshold. A field whose
+    extracted value is absent never appears here (#1527): its score stays in
+    ``explainability_info``, and if the class schema requires it, it is listed in
+    :attr:`missing_required_fields` instead."""
+    missing_required_fields: List[Dict[str, Any]] = field(default_factory=list)
+    """Required fields (JSON Schema ``required`` in this section's class schema)
+    that extraction left absent, in the same shape as a confidence alert:
+    ``attribute_name``, ``confidence``, ``confidence_threshold`` (the last two
+    ``None`` when the field has no confidence leaf). Built by
+    ``idp_common.assessment.presence.collect_missing_required_fields``; summed
+    into ``Document.missing_required_field_count``. Informational only — nothing
+    routes on it yet."""
     processing_issues: List["ProcessingIssue"] = field(default_factory=list)
     """Structured issues detected for this section (assessment incomplete,
     recovered-with-retries, extraction incomplete, …). Rolled up to
@@ -561,6 +573,7 @@ class Section:
             extraction_result_uri=data.get("extraction_result_uri"),
             attributes=data.get("attributes"),
             confidence_threshold_alerts=data.get("confidence_threshold_alerts", []),
+            missing_required_fields=list(data.get("missing_required_fields") or []),
             processing_issues=[
                 ProcessingIssue.from_dict(pi)
                 for pi in data.get("processing_issues", [])
@@ -589,6 +602,8 @@ class Section:
         if self.confidence is not None:
             result["confidence"] = self.confidence
         # Only emit when non-empty to keep output compact / back-compatible.
+        if self.missing_required_fields:
+            result["missing_required_fields"] = self.missing_required_fields
         if self.processing_issues:
             result["processing_issues"] = [
                 pi.to_dict() for pi in self.processing_issues
@@ -904,6 +919,12 @@ class Document:
     # Confidence alerts (top-level count for GSI projection)
     confidence_alert_count: int = 0
 
+    # Required fields left absent, summed over sections (see
+    # Section.missing_required_fields). Kept as a stored count, like
+    # confidence_alert_count, because the tracking item caps the per-section
+    # lists it stores and a count derived from a truncated list would undercount.
+    missing_required_field_count: int = 0
+
     # Processing issues rolled up from sections (+ any document-level issues).
     # Kept as a top-level count for cheap GSI projection / list filtering,
     # mirroring confidence_alert_count. The full issue objects live on each
@@ -966,6 +987,11 @@ class Document:
             "confidence_alert_count": self.confidence_alert_count,
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
+
+        # Required fields left absent (#1527). Omitted at 0, like the issue
+        # count below, so payloads of documents without any are unchanged.
+        if self.missing_required_field_count:
+            result["missing_required_field_count"] = self.missing_required_field_count
 
         # Processing-issue rollup (top-level count for GSI / list filtering).
         # Only emit when non-zero to keep output compact / back-compatible.
@@ -1036,6 +1062,10 @@ class Document:
                 "extraction_result_uri": section.extraction_result_uri,
                 "confidence_threshold_alerts": section.confidence_threshold_alerts,
             }
+            if section.missing_required_fields:
+                section_dict["missing_required_fields"] = (
+                    section.missing_required_fields
+                )
             # Same convention as the pages above: omitted when not scored.
             if section.confidence is not None:
                 section_dict["confidence"] = section.confidence
@@ -1183,6 +1213,9 @@ class Document:
                     confidence_threshold_alerts=section_data.get(
                         "confidence_threshold_alerts", []
                     ),
+                    missing_required_fields=list(
+                        section_data.get("missing_required_fields") or []
+                    ),
                     processing_issues=[
                         ProcessingIssue.from_dict(pi)
                         for pi in section_data.get("processing_issues", [])
@@ -1239,6 +1272,9 @@ class Document:
 
         # Restore confidence alert count
         document.confidence_alert_count = int(data.get("confidence_alert_count", 0))
+        document.missing_required_field_count = int(
+            data.get("missing_required_field_count") or 0
+        )
 
         # Convert rule_validation_result if present (optional)
         if "rule_validation_result" in data:
