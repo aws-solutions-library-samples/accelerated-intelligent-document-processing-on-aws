@@ -746,7 +746,7 @@ check-branch-protection: ## Report whether branch protection actually requires t
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
 check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
-	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
+	@$(RUN_FIRST_PARTY) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
 
 ##@ Type Checking
 # `typecheck` is THE type gate, and it is what both CIs run. It reads
@@ -1104,7 +1104,7 @@ _STACKTEST_VPC_ARGS = $(if $(VPC_ID),--vpc-id $(VPC_ID),) $(if $(SUBNET_IDS),--s
 _STACKTEST_ARGS = $(if $(STACK_NAME),--stack-name $(STACK_NAME),) $(if $(REGION),--region $(REGION),) $(if $(TEMPLATE_URL),--template-url $(TEMPLATE_URL),) $(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL),) $(_STACKTEST_VPC_ARGS)
 
 stacktest-list: ## List the available deploy-variant stack-tests
-	$(PYTHON) scripts/sdlc/run_stacktest.py --list
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py --list
 
 # Usage: make api-test STACK_NAME=<stack-name> [REGION=<region>] [REPORT_DIR=<dir>] [NO_TEARDOWN=1]
 # Full RBAC test: runs the offline static scan (api-test-static) first, then
@@ -1151,7 +1151,7 @@ stacktest-review-queues: ## Review queues live check: routes a document, claims,
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
-	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+	$(RUN_FIRST_PARTY) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1205,19 +1205,19 @@ ux-record-deps: ## Check the tools the UX review recorder needs (ffmpeg, ffprobe
 # Reports default under ./scratch (gitignored) so a manual run never litters the
 # working tree; override the location with REPORT_DIR=.
 stacktest-zap: ## ZAP DAST scan (STACK_NAME=... [REPORT_DIR=./dir] or self-deploy w/ TEMPLATE_URL=...)
-	IDP_ZAP_REPORT_DIR=$(if $(REPORT_DIR),$(REPORT_DIR),./scratch/zap-reports) $(PYTHON) scripts/sdlc/run_stacktest.py zapdast $(_STACKTEST_ARGS)
+	IDP_ZAP_REPORT_DIR=$(if $(REPORT_DIR),$(REPORT_DIR),./scratch/zap-reports) $(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py zapdast $(_STACKTEST_ARGS)
 
 stacktest-hosting-global: ## APIGateway GLOBAL hosting variant
-	$(PYTHON) scripts/sdlc/run_stacktest.py apigw $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py apigw $(_STACKTEST_ARGS)
 
 stacktest-waf: ## WAF-enabled hosting variant
-	$(PYTHON) scripts/sdlc/run_stacktest.py waf $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py waf $(_STACKTEST_ARGS)
 
 stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VPC_ID=...)
-	$(PYTHON) scripts/sdlc/run_stacktest.py apigwpriv $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py apigwpriv $(_STACKTEST_ARGS)
 
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
-	$(PYTHON) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
 
 # --- Template-TRANSFORM deploy tests (--headless / --govcloud) ---------------
 # These do NOT go through run_stacktest.py: every probe there deploys the
@@ -1235,16 +1235,16 @@ _TRANSFORM_ARGS = $(if $(REGION),--region $(REGION),) \
 	$(if $(JSON_OUT),--json-out $(JSON_OUT),)
 
 transform-deploy-test-list: ## List the transform deploy-tests
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py --list
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py --list
 
 transform-deploy-test-headless: ## Deploy a REAL --headless stack + process a sample doc
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
 
 transform-deploy-test-govcloud: ## Deploy a REAL --govcloud stack + process a sample doc (REGION=us-gov-west-1 for a true GovCloud run)
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
 
 transform-deploy-test-all: ## Both transform deploy-tests, one after the other
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
 
 # Seller Entitlement Service e2e. Not a main-stack variant, so it does not go
 # through run_stacktest.py: it deploys its own standalone stack (into a seller
