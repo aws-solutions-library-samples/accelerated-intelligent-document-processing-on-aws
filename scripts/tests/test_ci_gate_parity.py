@@ -1375,6 +1375,14 @@ def test_every_ci_install_is_constrained_to_the_lock() -> None:
     installed first without it would leave a shared dependency at an unlocked
     version for the constrained pass to fight over; and no step after the
     environment step installs into the environment again.
+
+    The boundary of that last check: it reads the literal install commands in the
+    CI YAML and the one known reinstall (``make test-cicd`` in
+    ``lib/idp_common_pkg``) spelled with the directory on the command line. An
+    install made inside some other Makefile recipe (``make dev``, ``make setup``),
+    a ``cd`` before the ``make``, ``uv pip sync`` / ``uv run --with``, or an
+    ``--override`` beside the ``-c`` are not recognised. None exists in either CI
+    today.
     """
     makefile = MAKEFILE.read_text()
     default = re.search(r"^LOCK_CONSTRAINTS \?= (.*)$", makefile, re.M)
