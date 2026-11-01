@@ -1054,9 +1054,10 @@ assessment settings — but not across prompt tweaks.
 > (written when a set is created by the confbench planner or the synthetic-data
 > generator, and what the class picker and test runner already use); and the
 > configuration the set's **draft-labeling jobs** resolved (every labeling job's run
-> carries the `ConfigVersion` the runner resolved). If the jobs disagree — say one
-> document was re-extracted under another profile — no single curve applies and the
-> combined curve is used, labeled `mixed`. Within that profile it then resolves the
+> carries the `ConfigVersion` the runner resolved). A job that failed labeled nothing
+> and is not counted. If the jobs disagree — say one document was re-extracted under
+> another profile — no single curve applies and the combined curve is used, labeled
+> `mixed`. Within that profile it then resolves the
 > **revision family**: every run records a *confidence fingerprint* — a hash of the
 > confidence-relevant configuration (extraction model and sampling parameters,
 > assessment settings), so a prompt edit keeps the fingerprint and a model swap
@@ -1226,7 +1227,8 @@ A **Reviewer** works Test Studio queues without `allowedTestSets` and without be
 listed on a queue: they see, claim and label the documents of every test set whose
 configuration profile is in their `allowedConfigVersions`, or every test set when they
 have no such restriction. A set drafted under several profiles has no single profile
-and is shown only to Reviewers with no restriction. Reviewers claim their own
+and is shown only to Reviewers with no restriction. A labeling or re-extract job that
+failed drafted nothing, so it does not count toward a set's profiles. Reviewers claim their own
 documents; Admins assign documents to Annotators only.
 
 ### Working the queue collaboratively

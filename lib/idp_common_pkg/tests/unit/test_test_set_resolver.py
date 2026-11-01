@@ -12736,8 +12736,9 @@ class TestUndatedLabelJobIsStale:
     """#1746: a job record with no readable ``createdAt`` cannot be aged. Every job
     this resolver starts is stamped, so such a record is not a job in flight, and
     reading it as fresh let it block re-grouping and hold missing documents pending
-    for good. The record arises when a harvest's write lands after a label reset
-    deleted the job."""
+    for good. A harvest whose write landed after a label reset deleted the job used
+    to create one; it no longer can (#1757, :class:`TestHarvestAfterALabelReset`),
+    and a record already in that shape is still read as stale."""
 
     def test_a_job_recreated_by_a_harvest_after_a_reset_does_not_block_regrouping(
         self, labeling_env
@@ -12746,16 +12747,18 @@ class TestUndatedLabelJobIsStale:
         helpers = TestRegroupWhileALabelingJobRuns()
         _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
         helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
-        _seed_running_job(table, "run9", ["packet.pdf"])
-        key = {"PK": "testset#ts1", "SK": "labeljob#run9"}
-        job = table.get_item(Key=key)["Item"]
-        # The reset deletes the job between the harvest's read and its write.
-        table.delete_item(Key=key)
-        test_set_index._harvest_label_job(job, deadline=None)
-        recreated = table.get_item(Key=key).get("Item")
-        # Non-vacuity: the harvest did recreate an undated, whole-set record.
-        assert recreated is not None
-        assert "createdAt" not in recreated and "objectKeys" not in recreated
+        # The record as such a harvest left it: its own write, with no createdAt
+        # and no document list.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#run9",
+                "status": "RUNNING",
+                "labeled": 0,
+                "harvestedFiles": [],
+                "failedFiles": [],
+            }
+        )
 
         assert len(helpers._regroup()["sections"]) == 2
 
@@ -12810,3 +12813,372 @@ class TestUndatedLabelJobIsStale:
 
         assert result["status"] == "FAILED"
         assert result["failedDocuments"] == 1
+
+
+@pytest.mark.unit
+class TestHarvestAfterALabelReset:
+    """#1757: a label reset deletes a set's job records. A harvest that read a job
+    before the reset and writes after it must not bring the record back: the
+    recreated record has no ``createdAt`` and no document list, so it reads as a
+    whole-set job, and its status write would put the set's label state back."""
+
+    KEY = {"PK": "testset#ts1", "SK": "labeljob#run9"}
+
+    def _job_read_then_reset(self, table):
+        """The job as a harvest read it, after which the set's labels are reset."""
+        job = table.get_item(Key=self.KEY)["Item"]
+        test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+        # Non-vacuity: the reset really did delete the record the harvest holds.
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        return job
+
+    def _meta(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+    def _seed_running(self, table, s3):
+        helpers = TestRegroupWhileALabelingJobRuns()
+        _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
+        helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+        return helpers
+
+    def test_a_harvest_does_not_recreate_a_job_the_reset_deleted(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        job = self._job_read_then_reset(table)
+
+        with pytest.raises(test_set_index.ResourceNotFound):
+            test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        meta = self._meta(table)
+        assert "labelJobStatus" not in meta
+        assert meta["labelState"] == "unlabeled"
+
+    def test_a_completed_harvest_does_not_mark_the_reset_set_drafted(
+        self, labeling_env
+    ):
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        uri = _seed_pipeline_result(
+            _s3, "run9/a.pdf/sections/1/result.json", {"vendor": "Acme"}
+        )
+        _seed_completed_run(
+            table,
+            "run9",
+            "ts1",
+            ["a.pdf"],
+            {"a.pdf": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = self._job_read_then_reset(table)
+
+        with pytest.raises(test_set_index.ResourceNotFound):
+            test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        meta = self._meta(table)
+        assert meta["labelState"] == "unlabeled"
+        assert "labelJobStatus" not in meta
+
+    def test_failing_a_job_does_not_recreate_it(self, labeling_env):
+        """With no run record the harvest fails the job, through its own write."""
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = self._job_read_then_reset(table)
+
+        with pytest.raises(test_set_index.ResourceNotFound):
+            test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        assert "labelJobStatus" not in self._meta(table)
+
+    def test_failing_a_job_that_still_exists_still_fails_it(self, labeling_env):
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = table.get_item(Key=self.KEY)["Item"]
+
+        result = test_set_index._harvest_label_job(job, deadline=None)
+
+        assert result["status"] == "FAILED"
+        stored = table.get_item(Key=self.KEY)["Item"]
+        assert stored["status"] == "FAILED"
+        assert stored["createdAt"] == job["createdAt"]
+        assert self._meta(table)["labelJobStatus"] == "FAILED"
+
+    def test_a_reset_before_the_last_write_attempt_is_still_read_as_a_reset(
+        self, labeling_env
+    ):
+        """The write budget's last attempt re-reads the record too, so a deletion
+        that lands then is reported as the job being gone, not as a lost race."""
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        job = self._job_read_then_reset(table)
+
+        with patch.object(test_set_index, "_MAX_HARVEST_WRITE_ATTEMPTS", 1):
+            with pytest.raises(test_set_index.ResourceNotFound):
+                test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+    def test_another_write_failure_while_failing_a_job_is_not_read_as_a_reset(
+        self, labeling_env
+    ):
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = table.get_item(Key=self.KEY)["Item"]
+        throttled = test_set_index.DynamoDBError(
+            "throttled", "ProvisionedThroughputExceededException"
+        )
+
+        with patch.object(
+            test_set_index.db_client, "update_item", side_effect=throttled
+        ):
+            with pytest.raises(test_set_index.DynamoDBError) as caught:
+                test_set_index._fail_label_job(job, "Labeling run failed")
+
+        assert not isinstance(caught.value, test_set_index.ResourceNotFound)
+        assert caught.value is throttled
+
+    def _reset_before_harvesting(self, table, only_the_job=False):
+        """Run the real harvest, with the reset landing just after the caller read
+        the job. ``only_the_job`` deletes just the job record, the part of the
+        reset this is about, for a caller that needs the baseline still there."""
+        real = test_set_index._harvest_label_job
+
+        def harvest(job, deadline=None):
+            if only_the_job:
+                table.delete_item(Key=self.KEY)
+            else:
+                test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+            return real(job, deadline=deadline)
+
+        return patch.object(test_set_index, "_harvest_label_job", side_effect=harvest)
+
+    def test_the_progress_poll_reports_the_job_gone(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+
+        with self._reset_before_harvesting(table):
+            with pytest.raises(test_set_index.ResourceNotFound) as caught:
+                test_set_index.get_draft_label_job(
+                    {"testSetId": "ts1", "jobId": "run9"}
+                )
+
+        assert str(caught.value) == "Labeling job 'run9' not found"
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+    def test_the_queue_does_not_report_a_job_the_reset_deleted(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        meta = self._meta(table)
+
+        with self._reset_before_harvesting(table):
+            reported = test_set_index._harvest_active_label_job("ts1", meta)
+
+        assert reported is None
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+    def test_a_job_the_reset_deleted_does_not_block_regrouping(self, labeling_env):
+        table, s3 = labeling_env
+        helpers = self._seed_running(table, s3)
+
+        with self._reset_before_harvesting(table, only_the_job=True):
+            # Non-vacuity: the guard really reached the harvest.
+            result = helpers._regroup()
+            assert test_set_index._harvest_label_job.call_count == 1
+
+        assert len(result["sections"]) == 2
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+
+@pytest.mark.unit
+class TestFailedJobIsNotADraftingRun:
+    """#1757: a labeling job ends FAILED only when it labeled nothing, so its run
+    drafted none of the set's labels. Counting it as a drafting run let one failed
+    re-extract under another profile make the set read as mixed, which leaves it
+    with no single profile and so out of every scoped Reviewer's reach."""
+
+    @staticmethod
+    def _seed(table, jobs, runs):
+        """``jobs``: (run id, status, extra) oldest first; ``runs``: run id ->
+        run-record attributes."""
+        _seed_test_set(table, "ts1", fileCount=2, labelJobId=jobs[-1][0])
+        for day, (run_id, status, extra) in enumerate(jobs, start=1):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": status,
+                    "createdAt": f"2026-01-{day:02d}T00:00:00Z",
+                    **extra,
+                }
+            )
+        for run_id, attrs in runs.items():
+            table.put_item(Item={"PK": f"testrun#{run_id}", "SK": "metadata", **attrs})
+
+    def _meta(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+    def _seed_failed_reextract(self, table, failed_profile="prof-B"):
+        self._seed(
+            table,
+            [
+                ("runA", "COMPLETED", {}),
+                ("runF", "FAILED", {"objectKeys": ["a.pdf"]}),
+            ],
+            {
+                "runA": {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpA"},
+                "runF": {
+                    "ConfigVersion": failed_profile,
+                    "ConfidenceFingerprint": "fpF",
+                },
+            },
+        )
+
+    def test_a_failed_job_is_not_a_drafting_run(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._drafting_run_ids("ts1", self._meta(table)) == ["runA"]
+
+    def test_a_failed_reextract_under_another_profile_leaves_the_set_single(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._resolve_set_config_version("ts1", self._meta(table)) == (
+            "prof-A",
+            "drafting-run",
+        )
+
+    def test_a_failed_reextract_does_not_mix_the_fingerprint(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table, failed_profile="prof-A")
+
+        assert test_set_index._resolve_set_fingerprint(
+            "ts1", self._meta(table), "prof-A"
+        ) == ("fpA", "drafting-run")
+
+    @pytest.mark.parametrize(
+        "scope, admitted", [(["prof-A"], True), (["prof-B"], False)]
+    )
+    def test_a_scoped_reviewer_of_the_drafting_profile_is_admitted(
+        self, labeling_env, scope, admitted
+    ):
+        """The lockout itself, through the resolver's own access check. The second
+        case is the non-vacuity check: the scope really is enforced."""
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+        event = _caller("rev@example.com", "Reviewer")
+
+        with patch(
+            "idp_common.config_scope.resolve_allowed_config_versions",
+            return_value=scope,
+        ):
+            if admitted:
+                test_set_index._assert_set_access(event, "ts1")
+            else:
+                from idp_common.testset_scope import TestSetAccessDenied
+
+                with pytest.raises(TestSetAccessDenied):
+                    test_set_index._assert_set_access(event, "ts1")
+
+    def test_the_review_run_is_unchanged(self, labeling_env):
+        """#1737 already passed over a FAILED job when choosing a document's review
+        run; leaving it out of the drafting runs must not move that choice."""
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._run_id_by_object_key("ts1", self._meta(table)) == (
+            {},
+            "runA",
+        )
+
+    def test_a_failed_oldest_job_still_names_the_run_before_it(self, labeling_env):
+        """A failed job's ``previousLabelJobId`` is still a record of the run that
+        drafted the set before it."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runF", "FAILED", {"previousLabelJobId": "runL"})],
+            {"runF": {"ConfigVersion": "prof-B"}, "runL": {"ConfigVersion": "prof-A"}},
+        )
+        meta = self._meta(table)
+
+        assert test_set_index._drafting_run_ids("ts1", meta) == ["runL"]
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            "prof-A",
+            "drafting-run",
+        )
+        assert test_set_index._run_id_by_object_key("ts1", meta) == ({}, "runL")
+
+    def test_a_job_still_in_flight_is_a_drafting_run(self, labeling_env):
+        """Only a FAILED job is left out: a running re-extract is drafting labels."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runA", "COMPLETED", {}), ("runR", "RUNNING", {"objectKeys": ["a.pdf"]})],
+            {"runA": {"ConfigVersion": "prof-A"}, "runR": {"ConfigVersion": "prof-B"}},
+        )
+
+        assert test_set_index._resolve_set_config_version("ts1", self._meta(table)) == (
+            None,
+            "mixed",
+        )
+
+    @pytest.mark.parametrize("how", ["run-failed", "document-failed"])
+    def test_a_reviewer_refused_while_the_job_ran_is_admitted_once_it_fails(
+        self, labeling_env, how
+    ):
+        """The profile is recorded on first use (`_scope_profile`). Read while the
+        re-extract was in flight it is mixed, so the job failing has to drop it, or
+        the Reviewer stays locked out of a set whose profile is single again."""
+        from idp_common.testset_scope import TestSetAccessDenied
+
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [
+                ("runA", "COMPLETED", {}),
+                ("runF", "RUNNING", {"objectKeys": ["a.pdf"]}),
+            ],
+            {
+                "runA": {"ConfigVersion": "prof-A"},
+                "runF": {
+                    "ConfigVersion": "prof-B",
+                    "TestSetId": "ts1",
+                    "Files": ["a.pdf"],
+                    "Status": "FAILED" if how == "run-failed" else "RUNNING",
+                },
+            },
+        )
+        if how == "document-failed":
+            table.put_item(
+                Item={"PK": "doc#runF/a.pdf", "SK": "none", "ObjectStatus": "FAILED"}
+            )
+        event = _caller("rev@example.com", "Reviewer")
+        key = {"PK": "testset#ts1", "SK": "labeljob#runF"}
+
+        with patch(
+            "idp_common.config_scope.resolve_allowed_config_versions",
+            return_value=["prof-A"],
+        ):
+            with pytest.raises(TestSetAccessDenied):
+                test_set_index._assert_set_access(event, "ts1")
+            # Non-vacuity: the mixed answer really was recorded.
+            assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == ""
+
+            failed = test_set_index._harvest_label_job(
+                table.get_item(Key=key)["Item"], deadline=None
+            )
+            assert failed["status"] == "FAILED"
+
+            test_set_index._assert_set_access(event, "ts1")

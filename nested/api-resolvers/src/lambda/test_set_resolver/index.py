@@ -80,6 +80,11 @@ from idp_common.review_queues.testset_summaries import (  # type: ignore
     summarize_document,
 )
 from idp_common.s3 import find_matching_files  # type: ignore
+from idp_common.testset_label_jobs import (  # type: ignore
+    drafting_run_ids,
+    legacy_drafting_run,
+    oldest_first,
+)
 from idp_common.testset_scope import (  # type: ignore
     REVIEWER_GROUP,
     SCOPE_PROFILE_ATTRIBUTE,
@@ -1964,53 +1969,20 @@ def _label_jobs(test_set_id):
         if not next_key or next_key == start_key:
             break
         start_key = next_key
-    return sorted(jobs, key=lambda j: str(j.get("createdAt") or ""))
-
-
-def _label_job_run_id(job):
-    """The test run a labeling-job item records: its ``jobId``, else its SK."""
-    return job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1] or None
-
-
-def _legacy_drafting_run(jobs):
-    """The run the set's pointer named before its oldest job, when that run has
-    no job record of its own; otherwise None.
-
-    Starting a job repoints the set's ``labelJobId`` and keeps the run it replaced
-    as the job's ``previousLabelJobId``. Every job this resolver starts is recorded
-    before the pointer moves, so on the oldest job that run is normally a recorded
-    job too. When it is not, it is named nowhere else once the pointer has moved,
-    and it is counted as a drafting run. ``jobs`` is :func:`_label_jobs`'s list,
-    oldest first.
-    """
-    if not jobs:
-        return None
-    previous = jobs[0].get("previousLabelJobId")
-    if not previous:
-        return None
-    if previous in {_label_job_run_id(job) for job in jobs}:
-        return None
-    return previous
+    return oldest_first(jobs)
 
 
 def _drafting_run_ids(test_set_id, meta):
     """Every test run that drafted labels for a set, oldest first.
 
-    Each labeling job's run, preceded by the pointer's unrecorded earlier run when
-    there is one (:func:`_legacy_drafting_run`); a set with no job record at all is
-    named only by its ``labelJobId`` pointer. One list for the review-run, the
-    configuration and the fingerprint resolvers, so the three agree on which runs
-    drafted a set (#1746).
+    :func:`idp_common.testset_label_jobs.drafting_run_ids` over the set's job
+    records and its ``labelJobId`` pointer. One list for the configuration and the
+    fingerprint resolvers here and for the test-execution aggregation's
+    self-measurement guard, so they agree on which runs drafted a set (#1746,
+    #1757). A FAILED job drafted nothing and is left out of it, as the review-run
+    resolver below passes over one.
     """
-    jobs = _label_jobs(test_set_id)
-    if not jobs:
-        pointer = (meta or {}).get("labelJobId")
-        return [pointer] if pointer else []
-    run_ids = [_label_job_run_id(job) for job in jobs]
-    legacy = _legacy_drafting_run(jobs)
-    if legacy:
-        run_ids.insert(0, legacy)
-    return [run_id for run_id in run_ids if run_id]
+    return drafting_run_ids(_label_jobs(test_set_id), (meta or {}).get("labelJobId"))
 
 
 def _run_id_by_object_key(test_set_id, meta=None):
@@ -2040,7 +2012,7 @@ def _run_id_by_object_key(test_set_id, meta=None):
     if not jobs:
         return {}, (meta or {}).get("labelJobId") or None
     per_doc = {}
-    default_run = _legacy_drafting_run(jobs)
+    default_run = legacy_drafting_run(jobs)
     for job in jobs:
         run_id = job.get("jobId")
         if not run_id:
@@ -2096,11 +2068,15 @@ def _harvest_active_label_job(test_set_id, meta):
     for job in jobs:
         try:
             harvested.append(_harvest_label_job(job, deadline=deadline))
+        except _LabelJobGone:
+            continue  # deleted by a label reset since it was listed: not a job now
         except Exception as e:  # noqa: BLE001
             logger.error(
                 f"Queue harvest failed for labeling job {job.get('jobId')}: {e}"
             )
             harvested.append(job)
+    if not harvested:
+        return None
 
     # Report the job the UI is tracking when it is one of these, else the newest,
     # so a progress banner follows the run the user started.
@@ -2842,6 +2818,8 @@ def _label_job_to_write(test_set_id, object_key):
         error = None
         try:
             job = _harvest_label_job(job, deadline=deadline)
+        except _LabelJobGone:
+            continue  # deleted by a label reset: it will write nothing
         except Exception as e:  # noqa: BLE001 — judged on the stored state instead
             logger.warning(
                 f"Could not advance labeling job {job.get('jobId')} before "
@@ -4457,7 +4435,8 @@ def _harvest_label_job(job, deadline=None):
         # needs a writer outside this function -- a manual repair or a migration, since
         # every version of this code has stored both sorted.
         condition = (
-            "(attribute_not_exists(#h) OR #h = :exp_h) "
+            f"{_LABEL_JOB_EXISTS} "
+            "AND (attribute_not_exists(#h) OR #h = :exp_h) "
             "AND (attribute_not_exists(#f) OR #f = :exp_f)"
         )
         try:
@@ -4472,8 +4451,6 @@ def _harvest_label_job(job, deadline=None):
         except DynamoDBError as e:
             if e.error_code != "ConditionalCheckFailedException":
                 raise
-            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
-                raise
             # Merge rather than redo. The expensive part of this pass -- reading
             # each document and writing its draft labels to S3 -- has already
             # happened and is idempotent, so a lost conflict must not discard it
@@ -4482,6 +4459,16 @@ def _harvest_label_job(job, deadline=None):
             # the names still outstanding is what keeps the derived status honest
             # without recomputing it from the file list.
             fresh = db_client.get_item(job_key) or {}
+            if not fresh:
+                # The record was deleted, not raced: a label reset removed it. The
+                # set's status is left as the reset wrote it too.
+                logger.info(
+                    f"Draft labeling job {job_id}: the job was deleted while it "
+                    "was being harvested; not recording this pass"
+                )
+                raise _LabelJobGone(job_id)
+            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
+                raise
             expected_done = sorted(fresh.get("harvestedFiles") or [])
             expected_failed = sorted(set(fresh.get("failedFiles") or []))
             done |= set(expected_done)
@@ -4504,6 +4491,11 @@ def _harvest_label_job(job, deadline=None):
         # The set now carries machine labels; publishing freezes them as unreviewed.
         meta_expr += ", labelState = :ls"
         meta_values[":ls"] = "draft"
+    if status == "FAILED":
+        # A failed job is not a drafting run, so the set's profile may differ from
+        # the one recorded while the job was in flight; it is resolved again on
+        # next use (`_scope_profile`, #1757).
+        meta_expr += f" REMOVE {SCOPE_PROFILE_ATTRIBUTE}"
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=meta_expr,
@@ -4538,6 +4530,24 @@ def _harvest_label_job(job, deadline=None):
 
 class _TargetSectionMissing(Exception):
     """A section-scoped run did not produce the targeted section as it was asked to."""
+
+
+class _LabelJobGone(ResourceNotFound):
+    """The labeling job's record was deleted after it was read (#1757).
+
+    A label reset deletes every job record of the set. A harvest that read the job
+    before the reset and wrote after it used to recreate the record, with no
+    ``createdAt`` and no document list, and put the set's label state back; the job
+    writes are conditional on the record existing, and this is raised instead.
+    """
+
+    def __init__(self, job_id):
+        super().__init__(f"Labeling job '{job_id}' not found")
+
+
+# Every write to an existing job record carries this, so a reset that deleted the
+# record between the writer's read and its write wins (#1757).
+_LABEL_JOB_EXISTS = "attribute_exists(PK)"
 
 
 def _read_json_or_none(bucket, key):
@@ -4813,18 +4823,35 @@ def _existing_label_is_human(bucket, key):
 
 
 def _fail_label_job(job, message):
-    db_client.update_item(
-        key={
-            "PK": f"testset#{job['testSetId']}",
-            "SK": _label_job_sk(job["jobId"]),
-        },
-        update_expression="SET #st = :s, #er = :e",
-        expression_attribute_names={"#st": "status", "#er": "error"},
-        expression_attribute_values={":s": "FAILED", ":e": message},
-    )
+    """Record the job FAILED, and the set's job status with it.
+
+    Raises :class:`_LabelJobGone`, writing nothing, when the job's record no longer
+    exists: a label reset deleted it, and failing it would recreate it.
+    """
+    try:
+        db_client.update_item(
+            key={
+                "PK": f"testset#{job['testSetId']}",
+                "SK": _label_job_sk(job["jobId"]),
+            },
+            update_expression="SET #st = :s, #er = :e",
+            expression_attribute_names={"#st": "status", "#er": "error"},
+            expression_attribute_values={":s": "FAILED", ":e": message},
+            condition_expression=_LABEL_JOB_EXISTS,
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        logger.info(
+            f"Draft labeling job {job['jobId']} was deleted before it could be "
+            f"recorded as failed ({message}); leaving it deleted"
+        )
+        raise _LabelJobGone(job["jobId"]) from e
     db_client.update_item(
         key={"PK": f"testset#{job['testSetId']}", "SK": "metadata"},
-        update_expression="SET labelJobStatus = :s",
+        # As in the harvest: a failed job is not a drafting run, so the recorded
+        # profile is resolved again.
+        update_expression=f"SET labelJobStatus = :s REMOVE {SCOPE_PROFILE_ATTRIBUTE}",
         expression_attribute_values={":s": "FAILED"},
     )
     logger.error(f"Draft labeling job {job['jobId']} failed: {message}")
