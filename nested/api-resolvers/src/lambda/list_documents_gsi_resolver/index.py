@@ -4,9 +4,13 @@
 """
 Lambda resolver for listDocuments and getDocumentCount GraphQL queries.
 
-Uses the TypeDateIndex GSI on TrackingTable for efficient queries:
-- listDocuments: Paginated query with date range filtering and RBAC-based filtering
-- getDocumentCount: the header figure beside that list, carrying the same filters
+Uses two GSIs on TrackingTable that share one key schema (ItemType, InitialEventTime):
+- listDocuments: Paginated query with date range filtering and RBAC-based filtering,
+  on TypeDateIndexV2, falling back to TypeDateIndex while V2 is backfilling — see
+  `_query_list_index`
+- getDocumentCount: the header figure beside that list, carrying the same filters,
+  on TypeDateIndex. The two indexes hold the same rows (both are sparse on the same
+  key attributes), so the count and the list agree whichever index each reads.
 
 RBAC (Role-Based Access Control):
 - Admin/Author/Viewer: See all documents (scoped by allowedConfigVersions if set)
@@ -30,6 +34,7 @@ from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 # Vendored verbatim from idp_common/config_scope.py: this function has no
 # idp_common layer (it is on the hottest UI query and is kept dependency-free).
@@ -126,8 +131,26 @@ _COUNT_TIME_RESERVE_MS = 5_000
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 
-# GSI name
+# GSI names. Both are keyed (ItemType, InitialEventTime). TypeDateIndex is read by
+# getDocumentCount and by other resolvers; its projection cannot be widened in
+# place, so TypeDateIndexV2 projects the document attributes this list reads plus
+# the per-document counts it shows (ConfigRevision, MissingRequiredFieldCount,
+# ProcessingIssueCount). See the TrackingTable definition in template.yaml.
 TYPE_DATE_INDEX = "TypeDateIndex"
+LIST_INDEX = "TypeDateIndexV2"
+
+# The two ValidationException messages DynamoDB returns when LIST_INDEX cannot be
+# read, both recorded from live queries during an upgrade. "does not have the
+# specified index" is returned before the index exists and through the first,
+# resource-allocation phase of creating it (CREATING, Backfilling false), and
+# after it has been deleted by hand to recover a rolled-back upgrade; "backfilling"
+# is returned while it is filled. Matched on these phrases rather than on the
+# error code alone, so an invalid request is never silently retried against
+# another index.
+_LIST_INDEX_UNAVAILABLE_PHRASES = (
+    "backfilling global secondary index",
+    "does not have the specified index",
+)
 
 # TypeDateIndex hash-key values; must match idp_common.dynamodb.service. Documents
 # submitted by Test Studio carry their own ItemType, so they never appear in the
@@ -385,9 +408,8 @@ def list_documents(event):
     # a request that will be refused.
     allowed_versions = _caller_scope_or_deny(caller, "listDocuments")
 
-    # Build GSI query
+    # Build GSI query. The index is chosen by `_query_list_index`.
     query_kwargs = {
-        "IndexName": TYPE_DATE_INDEX,
         "Limit": limit,
         "ScanIndexForward": False,  # Newest first
     }
@@ -426,10 +448,10 @@ def list_documents(event):
         except (json.JSONDecodeError, TypeError):
             logger.warning(f"Invalid nextToken: {next_token}")
     
-    logger.info(f"Querying TypeDateIndex: limit={limit}, start={start_dt}, end={end_dt}")
+    logger.info(f"Querying {LIST_INDEX}: limit={limit}, start={start_dt}, end={end_dt}")
     
     try:
-        response = table.query(**query_kwargs)
+        response = _query_list_index(table, query_kwargs)
     except Exception as e:
         logger.error(f"GSI query failed: {e}")
         raise
@@ -461,6 +483,47 @@ def list_documents(event):
     }
     
     return result
+
+
+def _list_index_unavailable(error):
+    """Whether a query failed only because LIST_INDEX cannot be read yet (or any more)."""
+    details = error.response.get("Error", {}) if isinstance(error, ClientError) else {}
+    if details.get("Code") != "ValidationException":
+        return False
+    message = str(details.get("Message", "")).lower()
+    return LIST_INDEX.lower() in message and any(
+        phrase in message for phrase in _LIST_INDEX_UNAVAILABLE_PHRASES
+    )
+
+
+def _query_list_index(table, query_kwargs):
+    """Query LIST_INDEX, or TypeDateIndex while LIST_INDEX is unavailable.
+
+    A GSI added to an existing table cannot be queried until DynamoDB has finished
+    backfilling it, and CloudFormation reports the table updated before that: on a
+    live upgrade of a stack holding a handful of documents the table resource was
+    complete about eight minutes before the index became readable, and the window
+    grows with the table. DescribeTable can also report the index ACTIVE a little
+    before a query on it succeeds, so the query's own error is what decides. Until
+    then the list is served from TypeDateIndex, which has the
+    same keys and so the same rows, the same order and an interchangeable
+    `nextToken` (a GSI's LastEvaluatedKey is the table key plus the index key,
+    identical for both). What the fallback loses is only the attributes V2 adds:
+    those rows carry no counts, and the UI shows a dash for each.
+    """
+    try:
+        return table.query(IndexName=LIST_INDEX, **query_kwargs)
+    except ClientError as e:
+        if not _list_index_unavailable(e):
+            raise
+        logger.warning(
+            "%s is not readable (%s); serving listDocuments from %s, whose rows "
+            "carry no per-document counts.",
+            LIST_INDEX,
+            e.response.get("Error", {}).get("Message"),
+            TYPE_DATE_INDEX,
+        )
+        return table.query(IndexName=TYPE_DATE_INDEX, **query_kwargs)
 
 
 def _remaining_invocation_ms(context):
@@ -660,17 +723,12 @@ def _gsi_item_to_document(item):
         "HITLReviewedBy": item.get("HITLReviewedBy"),
         "PageCount": item.get("NumPages"),
         "ConfidenceAlertCount": confidence_alert_count,
-        # NOTE: ProcessingIssueCount is written to the base table item but is NOT
-        # part of this GSI's INCLUDE projection (DynamoDB does not allow adding
-        # attributes to an existing GSI's projection in-place). It therefore
-        # resolves to None on the fast list path and is filtered out below; the
-        # per-document view (getDocument, full item) returns the real count. If a
-        # future migration recreates the GSI with this attribute, this line will
-        # start populating it automatically.
+        # ProcessingIssueCount, MissingRequiredFieldCount and ConfigRevision are
+        # projected by TypeDateIndexV2 but not by TypeDateIndex. On a row served
+        # by the fallback (see `_query_list_index`), or one written before the
+        # count existed, they are None and dropped below; the UI then shows a
+        # dash rather than a 0 the row cannot support.
         "ProcessingIssueCount": item.get("ProcessingIssueCount"),
-        # Same as ProcessingIssueCount: not in the GSI's INCLUDE projection, so
-        # None (and dropped below) on this fast path until the index is
-        # recreated with it. getDocument and the date-range list return it.
         "MissingRequiredFieldCount": item.get("MissingRequiredFieldCount"),
     }
 

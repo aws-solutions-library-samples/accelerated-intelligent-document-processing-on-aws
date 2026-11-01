@@ -7203,6 +7203,44 @@ Resources:
               # projected attribute — see idp_common.dynamodb.service. (Same reason
               # VersionCount is deliberately absent; see the Document type in
               # schema.graphql.)
+        # TypeDateIndexV2: the same keys as TypeDateIndex, projecting what the
+        # document list reads, including the per-document counts TypeDateIndex
+        # cannot carry (see the NOTE above for why that index cannot be widened in
+        # place). Only listDocuments reads it, and it falls back to TypeDateIndex
+        # while this index is still backfilling after an upgrade — see
+        # list_documents_gsi_resolver. The same NOTE applies here: a further
+        # attribute means a further index, never an edit to this one.
+        #
+        # It cannot be a superset of TypeDateIndex: DynamoDB accepts at most 20
+        # NonKeyAttributes per index, and TypeDateIndex already uses all 20. So it
+        # omits the test-run and test-set attributes, which no document row has.
+        # INCLUDE rather than ALL because the list is polled: ALL would make every
+        # list page read whole document items (Sections, Pages, Metering), and a
+        # query page stops at 1 MB of items read.
+        - IndexName: TypeDateIndexV2
+          KeySchema:
+            - AttributeName: ItemType
+              KeyType: HASH
+            - AttributeName: InitialEventTime
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - ObjectKey
+              - ObjectStatus
+              - CompletionTime
+              - ConfigVersion
+              - EvaluationStatus
+              - NumPages
+              - ConfidenceAlertCount
+              - HITLTriggered
+              - HITLCompleted
+              - HITLStatus
+              - HITLReviewOwner
+              - HITLReviewedBy
+              - ConfigRevision
+              - MissingRequiredFieldCount
+              - ProcessingIssueCount
       TimeToLiveSpecification:
         AttributeName: ExpiresAfter
         Enabled: true

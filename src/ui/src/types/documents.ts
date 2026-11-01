@@ -188,7 +188,8 @@ type DocumentUiComputed = {
   confidenceAlertCount?: number;
   /** Null when the row carries neither the stored count nor its sections. */
   missingRequiredFieldCount?: number | null;
-  processingIssueCount?: number;
+  /** Null when the row carries neither the stored count nor its sections. */
+  processingIssueCount?: number | null;
   executionArn?: string;
 };
 

@@ -46,8 +46,14 @@ describe('processing-issue count precedence', () => {
     expect(row.processingIssueCount).toBe(1);
   });
 
-  it('reports zero when neither a count nor sections are present', () => {
-    expect(mapOne({ ObjectKey: 'd.pdf' }).processingIssueCount).toBe(0);
+  it('reports null, not zero, when neither a count nor sections are present', () => {
+    // A document-list row carries no Sections, so a row whose index entry lacks the
+    // count has nothing to measure from; the column renders a dash for it.
+    expect(mapOne({ ObjectKey: 'd.pdf' }).processingIssueCount).toBeNull();
+  });
+
+  it('derives zero from an empty sections list, which is a measurement', () => {
+    expect(mapOne({ ObjectKey: 'd.pdf', Sections: [] }).processingIssueCount).toBe(0);
   });
 });
 
