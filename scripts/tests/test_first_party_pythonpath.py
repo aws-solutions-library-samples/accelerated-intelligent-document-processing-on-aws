@@ -411,7 +411,13 @@ def test_every_pytest_recipe_line_goes_through_a_pinning_wrapper(
 # --------------------------------------------------------------------------- #
 # scripts run by a recipe, not only pytest
 # --------------------------------------------------------------------------- #
-_RECIPE_SCRIPT = re.compile(r"(?<![\w/.-])(scripts/[\w./-]+\.py)\b")
+#: A ``scripts/...py`` path as a word, bare or spelled ``./scripts/`` or
+#: ``$(CURDIR)/scripts/``.
+_RECIPE_SCRIPT = re.compile(
+    r"(?:^|[\s'\"=])(?:\./|\$\(CURDIR\)/)?(scripts/[\w./-]+\.py)\b"
+)
+#: The wrapper as the word that starts the interpreter, not text inside a value.
+_PINNED_COMMAND = re.compile(r"(?:^|\s)\$\(RUN_FIRST_PARTY\)\s")
 
 
 def _reaches_first_party(path: Path, packages: frozenset[str], seen: set) -> bool:
@@ -448,8 +454,12 @@ def _reaches_first_party(path: Path, packages: frozenset[str], seen: set) -> boo
 
 
 def _first_party_script_lines() -> list[str]:
-    """Recipe lines, in the root Makefile and ``make/*.mk``, that run a script
-    whose import closure reaches a first-party package."""
+    """Shell commands, in the root Makefile's and ``make/*.mk``'s recipes, that run
+    a script whose import closure reaches a first-party package.
+
+    One entry per command rather than per line, so a pinned command does not vouch
+    for an unpinned one joined to it with ``&&``, ``;`` or a pipe.
+    """
     packages = frozenset(_importable_first_party_packages())
     found = []
     for makefile in [MAKEFILE, *sorted((REPO_ROOT / "make").glob("*.mk"))]:
@@ -457,13 +467,20 @@ def _first_party_script_lines() -> list[str]:
             if not line.startswith("\t"):
                 continue
             body = line.lstrip("\t").lstrip("@").strip()
-            if body.startswith("#") or body.startswith("echo"):
+            if body.startswith("#"):
                 continue
-            for match in _RECIPE_SCRIPT.finditer(body):
-                script = REPO_ROOT / match.group(1)
-                if script.is_file() and _reaches_first_party(script, packages, set()):
-                    found.append(body)
-                    break
+            for command in re.split(r"&&|\|\||;|\|", body):
+                # An echo names a script without running it; judged per command
+                # so `echo ... | $(PYTHON) scripts/x.py` is still read.
+                if command.strip().startswith("echo"):
+                    continue
+                for match in _RECIPE_SCRIPT.finditer(command):
+                    script = REPO_ROOT / match.group(1)
+                    if script.is_file() and _reaches_first_party(
+                        script, packages, set()
+                    ):
+                        found.append(command.strip())
+                        break
     return found
 
 
@@ -478,14 +495,15 @@ def test_every_recipe_running_a_first_party_script_pins_this_checkout() -> None:
     ``idp_common`` and ``idp_sdk`` through a sibling module. The universe is derived
     from the scripts' imports, so a new target running such a script is covered.
 
-    Bound: a script reached other than by its ``scripts/...py`` path on the recipe
-    line (a variable holding the path, ``-m`` module form) is not seen.
+    Bound: a script reached other than by its path on the recipe line (a variable
+    holding the path, the ``-m`` module form, or a ``cd`` into ``scripts/`` followed
+    by a bare filename) is not seen.
     """
     lines = _first_party_script_lines()
     # Non-vacuity: the live checks and the stack-test runners are in this set.
     assert any("review_queues_live_check.py" in line for line in lines), lines
     assert any("run_stacktest.py" in line for line in lines), lines
-    unpinned = [line for line in lines if "$(RUN_FIRST_PARTY)" not in line]
+    unpinned = [line for line in lines if not _PINNED_COMMAND.search(line)]
     assert not unpinned, (
         "these recipe lines run a script that imports a first-party package "
         "without $(RUN_FIRST_PARTY), so the import reads whichever checkout the "
