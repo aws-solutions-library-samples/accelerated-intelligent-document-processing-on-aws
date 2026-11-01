@@ -1071,12 +1071,90 @@ class BdaBlueprintService:
                     REF_FIELD: self._normalize_ref_path(prop_value[REF_FIELD]),
                     "instruction": "-",
                 }
+            elif self._is_inline_object_shape(prop_value):
+                self._hoist_inline_object_property(prop_name, prop_value, result)
             else:
                 result["properties"][prop_name] = self._add_bda_fields_to_schema(
                     prop_value
                 )
 
         return result
+
+    @staticmethod
+    def _is_inline_object(schema: object) -> bool:
+        """True for an object schema written inline (with properties, no $ref)."""
+        return (
+            isinstance(schema, dict)
+            and REF_FIELD not in schema
+            and SCHEMA_PROPERTIES in schema
+            and schema.get(SCHEMA_TYPE, TYPE_OBJECT) == TYPE_OBJECT
+        )
+
+    def _is_inline_object_shape(self, prop_value: object) -> bool:
+        """True when a top-level property carries an object BDA needs hoisted.
+
+        BDA rejects a blueprint with an object written inline under
+        ``properties``, either as the property itself or as an array's ``items``
+        ("Request has invalid blueprint schema", issue #1732). It accepts the same
+        object moved into ``definitions`` and referenced with ``$ref``, which is
+        the only form any catalog blueprint uses.
+        """
+        if not isinstance(prop_value, dict):
+            return False
+        if self._is_inline_object(prop_value):
+            return True
+        return prop_value.get(
+            SCHEMA_TYPE, TYPE_ARRAY if SCHEMA_ITEMS in prop_value else None
+        ) == TYPE_ARRAY and self._is_inline_object(prop_value.get(SCHEMA_ITEMS))
+
+    def _hoist_inline_object_property(
+        self, prop_name: str, prop_value: dict, result: dict
+    ) -> None:
+        """Move an inline object property into ``result["definitions"]``.
+
+        On this path an inline object is treated exactly as if it had been
+        written under ``$defs``: it becomes a definition, processed by
+        ``_add_bda_fields_to_schema`` like every other definition (so a member
+        BDA cannot represent is dropped and recorded individually), and the
+        property becomes a ``$ref`` to it. An array whose ``items`` is an inline
+        object gets the same treatment for its items, under ``<name>Item``.
+
+        The property keeps its name, so extraction output paths are unchanged;
+        only the definition name is new, and it is made unique against the
+        definitions already present. A definition left with no properties at
+        all is not sent: the property is dropped and recorded instead.
+        """
+        is_array = not self._is_inline_object(prop_value)
+        # A missing "type" is inferred as object from "properties" here.
+        definition = self._add_bda_fields_to_schema(
+            prop_value[SCHEMA_ITEMS] if is_array else prop_value
+        )
+        if not definition.get(SCHEMA_PROPERTIES):
+            self._record_skipped_property(
+                prop_name,
+                "nested_array" if is_array else "nested_object",
+                f"Property '{prop_name}' skipped - none of its members can be "
+                f"represented in a BDA blueprint",
+            )
+            return
+
+        base_name = f"{prop_name}Item" if is_array else prop_name
+        def_name = base_name
+        suffix = 2
+        while def_name in result["definitions"]:
+            def_name = f"{base_name}{suffix}"
+            suffix += 1
+        result["definitions"][def_name] = definition
+
+        ref = {REF_FIELD: f"#/definitions/{def_name}"}
+        if is_array:
+            # A missing "type" is inferred as array from "items" here.
+            result["properties"][prop_name] = self._add_bda_fields_to_schema(
+                {**prop_value, SCHEMA_ITEMS: ref}
+            )
+        else:
+            # Same form as every other $ref property on this path.
+            result["properties"][prop_name] = {**ref, "instruction": "-"}
 
     def _process_flat_schema(self, properties: dict) -> dict:
         """Process flat nested schema (Pattern 2: from classes_discovery.py)."""
