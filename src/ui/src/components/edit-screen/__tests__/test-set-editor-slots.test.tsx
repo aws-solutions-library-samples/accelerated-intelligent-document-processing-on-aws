@@ -589,19 +589,45 @@ describe('the note a finished re-extract leaves (#1728)', () => {
     const sectionPicker = createWrapper(document.body)
       .findAllButtonDropdowns()
       .find((d) => (d.findNativeButton().getElement().getAttribute('aria-label') ?? '').startsWith('Section:'))!;
+    const before = fetchCalls();
     act(() => sectionPicker.openDropdown());
     act(() => sectionPicker.findItems()[1].click());
-    await waitFor(() => expect(screen.queryByText(/^Re-extracted section 1 as/)).not.toBeInTheDocument());
+    // Asserted once section 2 has loaded, not while it loads: the slot is not rendered in
+    // between, so an absent note then says nothing about whether it was cleared.
+    await waitFor(() => expect(fetchCalls()).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByText(/^Re-extracted section 1 as/)).not.toBeInTheDocument();
   });
 
   it('on authored ground truth, says the class was corrected and the values kept, not that it re-extracted', async () => {
     withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: { total: '1' } });
     await reextractSectionOne();
     const note = screen.getByText(/^Class corrected to Invoice/);
+    // Informational rather than a success: nothing was re-extracted.
+    expect(
+      createWrapper(document.body)
+        .findAllAlerts()
+        .find((a) => a.getElement().contains(note))
+        ?.getElement().outerHTML,
+    ).toMatch(/type-info/);
     expect(note).toHaveTextContent('authored ground truth');
     expect(note).toHaveTextContent('field values were kept');
     expect(note).toHaveTextContent('JSON Editor');
     expect(screen.queryByText(/^Re-extracted/)).not.toBeInTheDocument();
+  });
+
+  it('on a single-section document of draft labels, says it re-extracted', async () => {
+    withBaseline({ ...BASELINE, labelSource: 'draft-machine' });
+    const ONE_ALL: TestSetDocumentSectionRef[] = [{ ...SECTIONS[0], pageIndices: [0, 1, 2] }];
+    answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
+    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await reclassifyFirstAndSave();
+    await userEvent.click(await screen.findByRole('button', { name: /^Re-extract$/ }));
+    expect(await screen.findByText('Re-extracted as Invoice.')).toBeInTheDocument();
   });
 
   it('on a single-section document of authored ground truth, says the same of the document', async () => {
