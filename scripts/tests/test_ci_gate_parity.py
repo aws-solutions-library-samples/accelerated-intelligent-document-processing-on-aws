@@ -1473,6 +1473,60 @@ def test_every_ci_install_is_constrained_to_the_lock() -> None:
     )
 
 
+def _installer_segments(recipe: str) -> list[str]:
+    """Each shell command in ``recipe`` that runs an installer's ``install``.
+
+    The rule is about the installer, not about a spelling of it: a command counts
+    when the word before ``install`` names pip in any form (``$$SETUP_PIP``,
+    ``$(VENV_DIR)/bin/pip``, ``python -m pip``, ``uv pip``, ``pip3``). Bound: an
+    installer reached through a variable whose name does not contain ``pip``, or a
+    different subcommand (``uv sync``), is not recognised.
+    """
+    joined = re.sub(r"\\\n\s*", " ", _uncommented(recipe))
+    segments = re.split(r"&&|\|\||;|\n", joined)
+    found = []
+    for segment in segments:
+        words = segment.split()
+        for i, word in enumerate(words[1:], start=1):
+            if word == "install" and "pip" in words[i - 1].lower():
+                found.append(" ".join(words))
+                break
+    return found
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target", ["setup", "setup-venv"])
+def test_the_setup_targets_install_against_the_lock(target: str) -> None:
+    """``make setup`` and ``make setup-venv`` hold the versions CI tests (#1729).
+
+    Both CIs install against ``lib/idp_common_pkg/uv.lock`` (#1707); the two setup
+    targets did not, so a contributor's environment resolved afresh from the index
+    and could differ from CI on any package. Each must export the lock first and
+    pass it to every install. The one exemption is pip upgrading itself, which is
+    the installer rather than part of the environment under test.
+    """
+    header = re.search(rf"^{re.escape(target)}:(.*)$", MAKEFILE.read_text(), re.M)
+    assert header and "lock-constraints" in header.group(1).split("##")[0], (
+        f"`{target}` no longer depends on lock-constraints, so the constraints "
+        f"file it passes to -c may be absent or stale"
+    )
+    installs = _installer_segments(_recipe(target))
+    # Non-vacuity: the recipe installs the first-party packages, the capacity test
+    # requirements, cfn-lint and ruff. Finding none would mean the parse is wrong.
+    assert len(installs) >= 4, f"`{target}`: only found installs {installs}"
+    unconstrained = [
+        cmd
+        for cmd in installs
+        if '-c "$(LOCK_CONSTRAINTS)"' not in cmd
+        and [w for w in cmd.split("install", 1)[1].split() if not w.startswith("-")]
+        != ["pip"]
+    ]
+    assert not unconstrained, (
+        f'`{target}` installs without -c "$(LOCK_CONSTRAINTS)": {unconstrained}. '
+        f"Whatever these resolve is not the version CI tests."
+    )
+
+
 def _first_party_requirements() -> list[tuple[str, str]]:
     """``(pyproject, requirement)`` for every requirement of every ``lib/*`` package.
 

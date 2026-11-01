@@ -129,8 +129,12 @@ install-first-party: lock-constraints ## Install ALL first-party packages in ONE
 	@# Fails if any first-party package resolved from PyPI rather than the checkout.
 	$(PYTHON) scripts/check_first_party_deps.py
 
-setup: ## Install all packages into current Python environment (no venv)
-	@# Always use the current shell's pip, ignoring .venv even if it exists
+setup: lock-constraints ## Install all packages into current Python environment (no venv), constrained to uv.lock
+	@# Always use the current shell's pip, ignoring .venv even if it exists.
+	@# Every package install takes -c $(LOCK_CONSTRAINTS), the same lock export both
+	@# CIs install against, so a local environment holds the versions CI tests
+	@# (#1729). Only pip's own upgrade is unconstrained: it is the installer, not
+	@# part of the environment under test.
 	@SETUP_PIP=$$(python3 -m pip --version >/dev/null 2>&1 && echo "python3 -m pip" || echo "pip3"); \
 	SETUP_PYTHON=$$(command -v python3 2>/dev/null || echo python); \
 	echo "Installing packages into current Python environment..."; \
@@ -140,20 +144,20 @@ setup: ## Install all packages into current Python environment (no venv)
 	echo "Upgrading pip..."; \
 	$$SETUP_PIP install --upgrade pip && \
 	echo "Installing all first-party packages (single resolution pass)..." && \
-	$$SETUP_PIP install $(FIRST_PARTY_EDITABLES) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES) && \
 	echo "Verifying first-party packages resolved locally (not from PyPI)..." && \
 	$$SETUP_PYTHON scripts/check_first_party_deps.py && \
 	echo "Installing capacity planning test dependencies..." && \
-	$$SETUP_PIP install -r src/lambda/calculate_capacity/requirements-test.txt && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" -r src/lambda/calculate_capacity/requirements-test.txt && \
 	echo "Installing cfn-lint for CloudFormation template validation..." && \
-	$$SETUP_PIP install cfn-lint==$(CFN_LINT_VERSION) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" cfn-lint==$(CFN_LINT_VERSION) && \
 	echo "Installing the pinned ruff for the lint gates..." && \
-	$$SETUP_PIP install ruff==$(RUFF_VERSION) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" ruff==$(RUFF_VERSION) && \
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
 
-setup-venv: ## Create .venv and install all packages into it
+setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
 	@PYENV_PYTHON=$$(pyenv which python 2>/dev/null); \
 	SYS_PYTHON=$$(command -v python3 2>/dev/null); \
@@ -167,18 +171,19 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo "Upgrading pip..."
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	@echo "Installing all first-party packages (single resolution pass)..."
-	$(VENV_DIR)/bin/pip install $(FIRST_PARTY_EDITABLES)
+	@# -c on every package install, as in `setup` above (#1729).
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES)
 	@echo "Verifying first-party packages resolved locally (not from PyPI)..."
 	$(VENV_DIR)/bin/python scripts/check_first_party_deps.py
 	@echo "Installing capacity planning test dependencies..."
-	$(VENV_DIR)/bin/pip install -r src/lambda/calculate_capacity/requirements-test.txt
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" -r src/lambda/calculate_capacity/requirements-test.txt
 	@echo "Installing cfn-lint for CloudFormation template validation..."
-	$(VENV_DIR)/bin/pip install cfn-lint==$(CFN_LINT_VERSION)
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" cfn-lint==$(CFN_LINT_VERSION)
 	@# lib/idp_common_pkg declares ruff as a RANGE (>=0.14.0,<0.16), so the pass
 	@# above resolves to whatever the newest matching release is on the day. This
 	@# narrows it to the exact version CI runs — see RUFF_VERSION.
 	@echo "Installing the pinned ruff for the lint gates..."
-	$(VENV_DIR)/bin/pip install ruff==$(RUFF_VERSION)
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" ruff==$(RUFF_VERSION)
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
