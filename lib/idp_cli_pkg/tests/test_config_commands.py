@@ -817,6 +817,147 @@ def test_validate_accepts_an_empty_file_as_pure_defaults():
     assert "No document classes defined" in result.output
 
 
+@pytest.mark.unit
+def test_validate_reports_the_sdk_verdict_rather_than_computing_its_own():
+    """`config-validate` is a thin call to `client.config.validate` (#1729).
+
+    The SDK result here is one the real validator would never return for this
+    file — a valid config refused with a sentinel error — so the command can only
+    print it, and exit 1, by reporting what the SDK said. A command that validated
+    through `idp_common` itself would accept the file and print "Config is valid!".
+    """
+    from idp_sdk.models import ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=False,
+            errors=["sentinel refusal from the SDK"],
+            warnings=["sentinel warning from the SDK"],
+            class_count=1,
+        )
+        result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
+
+    assert result.exit_code == 1, result.output
+    assert "sentinel refusal from the SDK" in result.output
+    assert "sentinel warning from the SDK" in result.output
+    assert "Config is valid!" not in result.output
+    client.config.validate.assert_called_once()
+    assert client.config.validate.call_args.kwargs["config_file"] == "config.yaml"
+
+
+@pytest.mark.unit
+def test_validate_stops_at_a_file_the_sdk_could_not_load():
+    """`document_loaded` False is the SDK saying the file never parsed: the command
+    prints the SDK's reason and does not claim the syntax was valid."""
+    from idp_sdk.models import ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=False, document_loaded=False, errors=["sentinel load failure"]
+        )
+        result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
+
+    assert result.exit_code == 1
+    assert "sentinel load failure" in result.output
+    assert "YAML syntax valid" not in result.output
+    assert "Validation failed" not in result.output
+
+
+@pytest.mark.unit
+def test_validate_takes_the_class_count_and_strict_fields_from_the_sdk():
+    """The class count and `--strict`'s top-level fields come from the result.
+
+    Both disagree with the file on purpose (it defines one class and no extra
+    field), so the output can only match the result if the command read it.
+    """
+    from idp_sdk.models import ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=True, class_count=7
+        )
+        counted = runner.invoke(
+            cli, ["config-validate", "--config-file", "config.yaml"]
+        )
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=True,
+            class_count=1,
+            unknown_fields=["sentinelkey", "classification.nested"],
+            deprecated_fields=["oldkey"],
+        )
+        strict = runner.invoke(
+            cli, ["config-validate", "--config-file", "config.yaml", "--strict"]
+        )
+
+    assert counted.exit_code == 0, counted.output
+    assert "7 document class(es) defined" in counted.output
+    assert strict.exit_code == 1
+    flat = " ".join(strict.output.split())
+    assert "['oldkey', 'sentinelkey']" in flat, strict.output
+
+
+@pytest.mark.unit
+def test_validate_emit_migrated_is_written_by_the_sdk():
+    """`--emit-migrated` is `client.config.migrate(..., output=...)`, not a second
+    migration in the CLI."""
+    from idp_sdk.models import ConfigMigrateResult, ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=True, class_count=1
+        )
+        client.config.migrate.return_value = ConfigMigrateResult(
+            yaml_content="# x\n", output_path="migrated.yaml"
+        )
+        result = runner.invoke(
+            cli,
+            [
+                "config-validate",
+                "--config-file",
+                "config.yaml",
+                "--emit-migrated",
+                "migrated.yaml",
+            ],
+        )
+        written = os.path.exists("migrated.yaml")
+
+    assert result.exit_code == 0, result.output
+    client.config.migrate.assert_called_once_with(
+        config_file="config.yaml", output="migrated.yaml"
+    )
+    # The mock wrote nothing, so a file here would be the CLI migrating by itself.
+    assert not written
+    assert "Migrated config written to: migrated.yaml" in result.output
+
+
+@pytest.mark.unit
+def test_config_validate_imports_nothing_from_idp_common():
+    """The layering rule as a property of the command's code (#1729).
+
+    The behavioural tests above show the command reports the SDK's verdict; they
+    cannot show it does not ALSO consult `idp_common` for part of its output, as it
+    did for the class count and the migration. No import of it may appear in the
+    function.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from idp_cli.cli import config_validate
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(config_validate.callback)))
+    imported = [
+        node.module if isinstance(node, ast.ImportFrom) else alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    ]
+    assert imported, "found no imports at all, so this assertion reads nothing"
+    assert not [name for name in imported if name and name.startswith("idp_common")], (
+        imported
+    )
+
+
 # --------------------------------------------------------------------------- #
 # config-upload — a write to deployed state
 # --------------------------------------------------------------------------- #

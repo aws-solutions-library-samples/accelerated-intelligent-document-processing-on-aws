@@ -5161,65 +5161,44 @@ def config_validate(
     try:
         import yaml
 
-        from idp_common.config.merge_utils import load_yaml_file, validate_config
+        from idp_sdk import IDPClient
 
-        # Load the user's config
+        # The SDK loads, migrates and validates and this command only reports,
+        # so it and client.config.validate cannot read one file differently.
+        client = IDPClient()
+
         console.print(f"[bold blue]Validating: {config_file}[/bold blue]")
         console.print()
 
-        try:
-            from pathlib import Path
-
-            user_config = load_yaml_file(Path(config_file))
-            console.print("[green]✓ YAML syntax valid[/green]")
-        except yaml.YAMLError as e:
-            console.print(f"[red]✗ YAML syntax error: {e}[/red]")
+        result = client.config.validate(
+            config_file=config_file, pattern="pattern-2", show_merged=show_merged
+        )
+        if not result.document_loaded:
+            # A file that is not YAML, or cannot be read, or an installation that
+            # cannot run the checks: each error says which.
+            for error in result.errors:
+                console.print(f"[red]✗ {error}[/red]")
             sys.exit(1)
-        except Exception as e:
-            console.print(f"[red]✗ Failed to load file: {e}[/red]")
-            sys.exit(1)
+        console.print("[green]✓ YAML syntax valid[/green]")
 
-        # Emit the migrated (current-format) config if requested. Done up front so it
-        # works even when the file is an older format that would otherwise warn about
-        # deprecated fields — the whole point is to hand the user a pre-migrated file.
+        # Emit the migrated (current-format) config if requested. Before the
+        # strict and validity verdicts below, so it is written even when the file
+        # is an older format that fails them — the whole point is to hand the user
+        # a pre-migrated file.
         if emit_migrated:
-            from idp_common.config.migrations import migrate_config
-
-            migrated = migrate_config(user_config)
-            migrated_yaml = yaml.dump(
-                migrated,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-                width=120,
-            )
-            with open(emit_migrated, "w", encoding="utf-8") as f:
-                f.write(
-                    f"# Migrated to config_format_version {migrated.get('config_format_version', '?')} "
-                    f"from: {config_file}\n\n"
-                )
-                f.write(migrated_yaml)
+            client.config.migrate(config_file=config_file, output=emit_migrated)
             console.print(
                 f"[green]✓ Migrated config written to: {emit_migrated}[/green]"
             )
-
-        # Validate config. The unread-key findings come from validate_config rather
-        # than from a set difference computed here: a raw
-        # `set(config) - set(IDPConfig.model_fields)` reports every key IDPConfig
-        # does not declare, which told an operator that two keys the loader honours
-        # would be ignored — `description`, which update_configuration pops and
-        # stores, and `rule_classes`, which is renamed to `policy_classes` on load.
-        # It also sees only the top level, where a typo is least likely.
-        result = validate_config(user_config, pattern="pattern-2")
 
         # --strict keeps its contract: top-level fields only. A nested finding is
         # reported either way (in the warnings below, with the path and often the
         # field it was meant to be), and failing on one would fail configurations
         # that pass today, which is a decision for a release rather than a fix.
         top_level_extras = sorted(
-            finding["path"]
-            for finding in result.get("ignored_keys", [])
-            if "." not in finding["path"] and "[" not in finding["path"]
+            path
+            for path in [*result.deprecated_fields, *result.unknown_fields]
+            if "." not in path and "[" not in path
         )
         if strict and top_level_extras:
             console.print()
@@ -5232,22 +5211,21 @@ def config_validate(
             )
             sys.exit(1)
 
-        if result["valid"]:
+        if result.valid:
             console.print("[green]✓ Config merges with system defaults[/green]")
             console.print("[green]✓ Pydantic validation passed[/green]")
 
             # Show warnings
-            if result["warnings"]:
+            if result.warnings:
                 console.print()
                 console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result["warnings"]:
+                for warning in result.warnings:
                     console.print(f"  ⚠ {warning}")
 
             # Check for document classes
-            classes = user_config.get("classes", [])
-            if classes:
+            if result.class_count:
                 console.print(
-                    f"[green]✓ {len(classes)} document class(es) defined[/green]"
+                    f"[green]✓ {result.class_count} document class(es) defined[/green]"
                 )
             else:
                 console.print(
@@ -5262,7 +5240,7 @@ def config_validate(
                 console.print("[bold]Merged configuration:[/bold]")
                 console.print("-" * 60)
                 merged_yaml = yaml.dump(
-                    result["merged_config"],
+                    result.merged_config,
                     default_flow_style=False,
                     sort_keys=False,
                     allow_unicode=True,
@@ -5272,7 +5250,7 @@ def config_validate(
         else:
             console.print("[red]✗ Validation failed[/red]")
             console.print()
-            for error in result["errors"]:
+            for error in result.errors:
                 console.print(f"  [red]• {error}[/red]")
             # The unread-key findings belong on this branch too, not only on the
             # passing one. They are the likely explanation for the error above rather
@@ -5282,10 +5260,10 @@ def config_validate(
             # which of the two the author wrote. On this path `warnings` holds these
             # findings and nothing else, since every other check runs only after the
             # configuration validates, so there is no duplication with the block above.
-            if result["warnings"]:
+            if result.warnings:
                 console.print()
                 console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result["warnings"]:
+                for warning in result.warnings:
                     console.print(f"  ⚠ {warning}")
             sys.exit(1)
 

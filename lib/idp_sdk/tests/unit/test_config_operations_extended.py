@@ -56,10 +56,11 @@ import yaml
 from moto import mock_aws
 
 from idp_sdk import IDPClient
-from idp_sdk.exceptions import IDPResourceNotFoundError
+from idp_sdk.exceptions import IDPResourceNotFoundError, IDPValidationError
 from idp_sdk.models import (
     ConfigCreateResult,
     ConfigDownloadResult,
+    ConfigMigrateResult,
     ConfigSyncBdaResult,
     ConfigValidationResult,
 )
@@ -558,6 +559,157 @@ class TestValidate:
         assert result.errors and "halted" in result.errors[0], (
             "the cause is forwarded verbatim rather than re-worded into one shape"
         )
+
+
+@pytest.mark.unit
+@pytest.mark.config
+class TestValidateReportsWhatItRead:
+    """The two fields `idp-cli config-validate` reports from instead of reading the
+    file itself (#1729)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["classes: [unclosed\n  nested: {", None],
+        ids=["not-yaml", "unreadable"],
+    )
+    def test_a_file_that_did_not_load_says_so(self, tmp_path, text):
+        path = tmp_path / "c.yaml"
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+
+        result = IDPClient().config.validate(str(path))
+
+        assert result.document_loaded is False
+        assert result.class_count is None
+        assert result.valid is False
+
+    def test_a_file_that_loaded_says_so_even_when_invalid(self, tmp_path):
+        path = tmp_path / "c.yaml"
+        path.write_text("ocr: not-a-mapping\n", encoding="utf-8")
+
+        result = IDPClient().config.validate(str(path))
+
+        assert result.valid is False
+        assert result.document_loaded is True
+
+    @pytest.mark.parametrize(
+        ("text", "count"),
+        [
+            ("classes:\n  - name: a\n  - name: b\n  - name: c\n", 3),
+            ("ocr: {}\n", 0),
+            ("", 0),
+            ("- first\n- second\n", None),
+            # Not a list of classes, so it defines none; len() of it would count
+            # characters.
+            ("classes: abc\n", 0),
+        ],
+        ids=["three", "no-classes-key", "empty-file", "top-level-list", "not-a-list"],
+    )
+    def test_class_count_is_the_files_own_classes(self, tmp_path, text, count):
+        path = tmp_path / "c.yaml"
+        path.write_text(text, encoding="utf-8")
+
+        result = IDPClient().config.validate(str(path))
+
+        assert result.document_loaded is True
+        assert result.class_count == count
+
+    def test_an_import_failure_before_the_file_is_opened_has_not_loaded_it(
+        self, tmp_path
+    ):
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        operation = IDPClient().config
+
+        with _modules_absent("idp_common"):
+            result = operation.validate(str(path))
+
+        assert result.validation_available is False
+        assert result.document_loaded is False
+
+    def test_an_import_failure_inside_the_checks_has_loaded_it(self, tmp_path):
+        import idp_common.config.merge_utils  # noqa: F401
+
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        operation = IDPClient().config
+
+        with _modules_absent("idp_common.config.migrations"):
+            result = operation.validate(str(path))
+
+        assert result.validation_available is False
+        assert result.document_loaded is True
+
+
+@pytest.mark.unit
+@pytest.mark.config
+class TestMigrate:
+    """`config.migrate` — what `idp-cli config-validate --emit-migrated` writes."""
+
+    OLD = (
+        "classification:\n"
+        "  model: us.amazon.nova-lite-v1:0\n"
+        "  temperature: 0.2\n"
+        "classes:\n"
+        "  - name: invoice\n"
+    )
+
+    def test_the_result_is_the_loaders_migration_with_a_provenance_header(
+        self, tmp_path
+    ):
+        """The authority is `migrate_config` itself, applied to the same file."""
+        from idp_common.config.migrations import migrate_config
+
+        source = tmp_path / "old.yaml"
+        source.write_text(self.OLD, encoding="utf-8")
+
+        result = IDPClient().config.migrate(str(source))
+
+        assert isinstance(result, ConfigMigrateResult)
+        expected = migrate_config(yaml.safe_load(self.OLD))
+        assert expected != yaml.safe_load(self.OLD), (
+            "the fixture must be one the migration changes, or this compares "
+            "the input with itself"
+        )
+        assert yaml.safe_load(result.yaml_content) == expected
+        version = expected["config_format_version"]
+        assert result.config_format_version == str(version)
+        assert result.yaml_content.startswith(
+            f"# Migrated to config_format_version {version} from: {source}\n"
+        )
+        assert result.output_path is None
+
+    def test_output_writes_exactly_the_returned_content(self, tmp_path):
+        source = tmp_path / "old.yaml"
+        source.write_text(self.OLD, encoding="utf-8")
+        target = tmp_path / "new.yaml"
+
+        result = IDPClient().config.migrate(str(source), output=str(target))
+
+        assert result.output_path == str(target)
+        assert target.read_text(encoding="utf-8") == result.yaml_content
+
+    @pytest.mark.parametrize(
+        ("text", "prefix"),
+        [
+            ("classes: [unclosed\n  nested: {", "YAML syntax error:"),
+            (None, "Failed to load file:"),
+        ],
+        ids=["not-yaml", "unreadable"],
+    )
+    def test_a_file_that_does_not_load_is_a_validation_error(
+        self, tmp_path, text, prefix
+    ):
+        source = tmp_path / "old.yaml"
+        if text is not None:
+            source.write_text(text, encoding="utf-8")
+        target = tmp_path / "new.yaml"
+
+        with pytest.raises(IDPValidationError) as raised:
+            IDPClient().config.migrate(str(source), output=str(target))
+
+        assert str(raised.value).startswith(prefix)
+        assert not target.exists()
 
 
 # --------------------------------------------------------------------------
