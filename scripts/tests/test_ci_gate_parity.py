@@ -1280,6 +1280,114 @@ def test_every_executing_ruff_install_pins_the_version() -> None:
     )
 
 
+IDP_COMMON_LOCK = REPO_ROOT / "lib" / "idp_common_pkg" / "uv.lock"
+GITHUB_PYTHON_ENV = GITHUB_ACTIONS_DIR / "python-env" / "action.yml"
+LOCK_CONSTRAINTS_REF = '-c "$LOCK_CONSTRAINTS"'
+
+
+def _locked_version(name: str) -> str:
+    """The version ``lib/idp_common_pkg/uv.lock`` records for ``name``."""
+    import tomllib
+
+    lock = tomllib.loads(IDP_COMMON_LOCK.read_text())
+    versions = {p["version"] for p in lock["package"] if p["name"] == name}
+    assert len(versions) == 1, f"uv.lock records {name} at {sorted(versions)}"
+    return versions.pop()
+
+
+def _ci_python_setups() -> list[tuple[str, list[str]]]:
+    """``(label, commands)`` for the step each CI builds its Python environment in.
+
+    GitLab's is the ``.python_setup`` anchor, one command per list item (a folded
+    multi-line item is one command). GitHub's is the install step of the
+    ``python-env`` composite action, one command per uncommented line.
+    """
+    gitlab = yaml.safe_load(GITLAB.read_text())[".python_setup"]
+    action = yaml.safe_load(GITHUB_PYTHON_ENV.read_text())
+    (install,) = [
+        step["run"]
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Install Python dependencies"
+    ]
+    github = [line.strip() for line in _uncommented(install).splitlines()]
+    return [
+        (GITLAB.name, gitlab),
+        (str(GITHUB_PYTHON_ENV.relative_to(REPO_ROOT)), github),
+    ]
+
+
+@pytest.mark.unit
+def test_the_lock_pins_the_ruff_the_gate_runs() -> None:
+    """``uv.lock`` and ``RUFF_VERSION`` must name one ruff.
+
+    Every install in both CIs is constrained to the lock (below), so a lock that
+    pins another ruff makes the ``ruff==RUFF_VERSION`` install unsatisfiable —
+    and an environment built from the lock alone lints with a ruff the gate does
+    not run, which is how the two drifted apart (#1707). Bump them together:
+    a Dependabot update of ruff in the lock fails here until ``RUFF_VERSION``
+    follows it.
+    """
+    assert _locked_version("ruff") == _declared_version("RUFF_VERSION"), (
+        f"lib/idp_common_pkg/uv.lock pins ruff {_locked_version('ruff')} but "
+        f"RUFF_VERSION is {_declared_version('RUFF_VERSION')}. Re-lock with "
+        f"`uv lock --upgrade-package ruff==<RUFF_VERSION>` in lib/idp_common_pkg, "
+        f"or move RUFF_VERSION, so the lock and the gate agree."
+    )
+
+
+@pytest.mark.unit
+def test_every_ci_install_is_constrained_to_the_lock() -> None:
+    """Both CIs install against ``uv.lock``, by the same mechanism (#1707).
+
+    Unconstrained, the install resolved every dependency against the index on the
+    day, and CI tested a different dependency set from the one the lock records.
+    What is asserted, per CI: the constraints file is exported from the lock
+    before the first install, it is the file the ``Makefile`` names, and every
+    ``uv pip install`` in the environment step carries it — a tool installed
+    first without it would leave a shared dependency at an unlocked version for
+    the constrained pass to fight over. ``make install-first-party`` applies it
+    itself, which the last assertion holds.
+    """
+    default = re.search(r"^LOCK_CONSTRAINTS \?= (.*)$", MAKEFILE.read_text(), re.M)
+    assert default, "the Makefile no longer declares LOCK_CONSTRAINTS"
+    relative = default.group(1).strip().removeprefix("$(CURDIR)/")
+
+    for label, commands in _ci_python_setups():
+        installs = [i for i, c in enumerate(commands) if "uv pip install" in c]
+        assert installs, f"{label}: no `uv pip install` found; this check is vacuous"
+        exports = [
+            i
+            for i, c in enumerate(commands)
+            if re.match(r"export LOCK_CONSTRAINTS=", c)
+            and c.rstrip('"').endswith(relative)
+        ]
+        made = [i for i, c in enumerate(commands) if c == "make lock-constraints"]
+        assert exports and made, (
+            f"{label} no longer exports LOCK_CONSTRAINTS (= .../{relative}) and "
+            f"runs `make lock-constraints`, so its installs are not read from the lock"
+        )
+        assert exports[0] < made[0] < installs[0], (
+            f"{label}: the lock must be exported before the first install"
+        )
+        unconstrained = [
+            commands[i] for i in installs if LOCK_CONSTRAINTS_REF not in commands[i]
+        ]
+        assert not unconstrained, (
+            f"{label} installs without {LOCK_CONSTRAINTS_REF}: {unconstrained}"
+        )
+
+    assert "lock-constraints" in re.search(
+        r"^install-first-party:(.*)$", MAKEFILE.read_text(), re.M
+    ).group(1), "install-first-party no longer depends on lock-constraints"
+    assert re.search(
+        r"\$\(PIP\) install -c \"\$\(LOCK_CONSTRAINTS\)\" \$\(FIRST_PARTY_EDITABLES\)",
+        _uncommented(_recipe("install-first-party")),
+    ), "install-first-party no longer installs with -c $(LOCK_CONSTRAINTS)"
+    assert "uv export --frozen" in _recipe("lock-constraints"), (
+        "lock-constraints no longer exports the committed lock as-is"
+    )
+
+
 @pytest.mark.unit
 def test_integration_tests_stay_gitlab_only() -> None:
     """Documents the ONE deliberate asymmetry, so it cannot drift unnoticed.

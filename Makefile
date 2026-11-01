@@ -70,9 +70,39 @@ help: ## Show this help message
 .DEFAULT_GOAL := all
 all: lint test ## Run lint + test (default)
 
+# lib/idp_common_pkg/uv.lock, as a constraints file. Without it the install
+# resolved every dependency afresh against the index, so CI tested a different
+# dependency set from the one the lock records — and the one Dependabot bumps and
+# `make dep-audit` audits. Measured on a fresh environment built with each CI's
+# recipe: about half of the packages present in both the environment and the lock
+# were at a version other than the locked one; constrained to this export, none
+# were (#1707).
+#
+# Constraints rather than `uv sync`: the lock is idp_common_pkg's alone, while CI
+# installs all five first-party packages into one environment in one pass. A
+# constraint pins a package only if something asks for it, so the extras each CI
+# selects still decide WHAT is installed and the lock decides AT WHICH VERSION.
+# Packages only the other four first-party packages depend on are not in the lock
+# and still resolve from the index.
+#
+# --frozen reads the lock as committed; it does not re-resolve or check it against
+# pyproject.toml. Every extra and group is exported because a constraint that
+# nothing requests has no effect. Overridable so both CI configs can name the file
+# they then export as UV_CONSTRAINT.
+LOCK_CONSTRAINTS ?= $(CURDIR)/build/lock-constraints/idp_common_pkg.txt
+
+.PHONY: lock-constraints
+lock-constraints: ## Export lib/idp_common_pkg/uv.lock as a pip constraints file (needs uv)
+	@command -v uv >/dev/null 2>&1 || { \
+		echo -e "$(RED)ERROR: uv is required to read lib/idp_common_pkg/uv.lock (https://docs.astral.sh/uv/).$(NC)"; \
+		exit 1; }
+	@mkdir -p "$(dir $(LOCK_CONSTRAINTS))"
+	uv export --frozen --project lib/idp_common_pkg --all-extras --all-groups \
+		--no-emit-project --no-hashes --quiet --output-file "$(LOCK_CONSTRAINTS)"
+
 ##@ Setup
 .PHONY: install-first-party
-install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: make install-first-party PIP="uv pip")
+install-first-party: lock-constraints ## Install ALL first-party packages in ONE pip pass, constrained to uv.lock (CI: make install-first-party PIP="uv pip")
 	@# ONE invocation, deliberately — see the dependency-confusion note on
 	@# FIRST_PARTY_EDITABLES above. Splitting this lets pip resolve a
 	@# not-yet-installed sibling ("idp-sdk", "idp_common") from public PyPI, where
@@ -80,7 +110,9 @@ install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: ma
 	@#
 	@# PIP is overridable because CI builds its venv with `uv venv`, which does not
 	@# install pip into it; CI passes PIP="uv pip".
-	$(PIP) install $(FIRST_PARTY_EDITABLES)
+	@#
+	@# -c: the versions come from lib/idp_common_pkg/uv.lock — see LOCK_CONSTRAINTS.
+	$(PIP) install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES)
 	@# Fails if any first-party package resolved from PyPI rather than the checkout.
 	$(PYTHON) scripts/check_first_party_deps.py
 

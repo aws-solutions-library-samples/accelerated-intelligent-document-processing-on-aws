@@ -111,16 +111,28 @@ stages:
   - pip install uv
   - uv venv .venv
   - source .venv/bin/activate
+  # Every `uv pip install` below is constrained to lib/idp_common_pkg/uv.lock, so CI
+  # tests the dependency set the lock records rather than whatever the index
+  # resolves to today. The tool pins take the same `-c`, so a tool installed first
+  # cannot hold a shared dependency at an unlocked version. Passed per command
+  # rather than as UV_CONSTRAINT, which would reach every later `uv` call in the
+  # job. Same file, same form as .github/actions/python-env; see LOCK_CONSTRAINTS
+  # in the Makefile (#1707). The lock pins numpy 1.26.4, which has no wheel for
+  # this image's Python, so it is built from source here as it already is on
+  # GitHub.
+  - export LOCK_CONSTRAINTS="$CI_PROJECT_DIR/build/lock-constraints/idp_common_pkg.txt"
+  - make lock-constraints
   # Pinned: ruff gates every Python file via `make lint-cicd`, and an unpinned
   # linter can red-line develop with no code change when a release promotes a
   # check to ERROR class or changes `ruff format` output. Keep in step with
   # RUFF_VERSION in the Makefile, which is the single source of truth — the
   # Makefile installs this version, the GitHub composite action installs it, and
   # scripts/tests/test_ci_gate_parity.py fails if any of the three drift.
-  - uv pip install 'ruff==0.15.13'
+  - uv pip install -c "$LOCK_CONSTRAINTS" 'ruff==0.15.13'
   # Needed by publish.py for test imports
-  - uv pip install typer rich boto3
-  - uv pip install -e "lib/idp_common_pkg[test,evaluation]"
+  - uv pip install -c "$LOCK_CONSTRAINTS" typer rich boto3
+  - uv pip install -c "$LOCK_CONSTRAINTS"
+                   -e "lib/idp_common_pkg[test,evaluation]"
                    -e "lib/idp_sdk[test]"
                    -e "lib/idp_cli_pkg[test]"
                    -e "lib/idp_feature_sdk[test]"
