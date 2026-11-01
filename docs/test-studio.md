@@ -1287,8 +1287,10 @@ and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
 preset. After a section's class is changed and saved in **Edit Page Grouping**, the
 section says **Fields still reflect the previous class** and offers **Re-extract**,
-which re-runs that one document and waits for the new labels before returning, so you
-are never left looking at fields from the previous class.
+which re-runs that document and waits for the new labels before returning, so you
+are never left looking at fields from the previous class. On a document with one
+section it re-extracts the whole document; on a document with several it re-extracts
+only the section you are looking at (see below).
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
@@ -1299,22 +1301,40 @@ corrected.)
 
 Two consequences worth knowing:
 
-- **Re-extraction replaces this document's labels**, including confirmed ones.
+- **Re-extraction replaces the labels it re-extracts**, including confirmed ones:
+  the document's on a single-section document, the one section's on a packet.
   Asking to re-extract after correcting the class is a statement that the current
   labels are wrong, so they stop counting as reviewed. Everything else in the set
-  is untouched.
+  is untouched. Authored ground truth (labels with no **Draft** or **Reviewed**
+  source) keeps its field values; only the class is corrected.
 - **A class the configuration does not define stays selectable** if the document
   already carries it, so a class that was later renamed can still be seen and
   corrected rather than silently blanked.
 
-**Re-extract is offered only on a document with one section.** The re-run applies the
-corrected class to every page and produces a single section, so on a packet it would
-overwrite the class and the page grouping of every other section. On a document with
-more than one section the notice still says the fields reflect the previous class,
-but there is no **Re-extract** button: correct that section's fields by hand. The API
-refuses the same request (`reextractTestSetDocument` or `generateDraftLabels` with a
-`documentClass`, on a document whose baseline has more than one section) with a
-bad-request error before it writes anything, and `generateDraftLabels` forces a class
+**On a document with more than one section, Re-extract works on one section.**
+Changing the class for the whole document would merge all of its sections into one
+and discard their ground truth, because a whole-document re-run applies one class to
+every page and produces a single section. So on a packet the notice explains this
+and its **Re-extract** button re-extracts only the open section: the document is
+re-run with its grouping fixed, every other section keeping the pages and class its
+ground truth records, and only that section's labels are replaced. Every other
+section's labels, reviewed or not, are left exactly as they were. The re-run still
+extracts every section of the document, so it costs about as much as re-extracting
+the whole document; only the chosen section is written back. Each section must
+record its pages and a class for this to work; set them in **Edit Page Grouping**
+first if one does not. If the run does not come back with that section on the same
+pages under the corrected class, the re-extract fails and the section's fields are
+left as they were, with the reason as the error. That is what happens under a
+configuration that uses Bedrock Data Automation (`use_bda: true`), which does not
+apply a forced grouping. The same applies if the section's pages are changed in
+**Edit Page Grouping** while the re-extract runs: nothing is written, and you
+re-extract it again.
+
+The API follows the same rule. `reextractTestSetDocument` takes an optional
+`sectionId` with `documentClass` to re-extract one section. A `documentClass` without
+`sectionId` on a document whose baseline has more than one section is refused with a
+bad-request error, before anything is written, whose message says to pass `sectionId`
+instead; `generateDraftLabels` refuses a forced class there too, and forces a class
 only onto exactly one named document.
 
 Annotators can do this within their assigned sets; the operation is scope-checked
@@ -1374,7 +1394,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Re-extract**, offered after a class change on a document with a single section, is there if you would rather the model redo it. It is
+**Re-extract**, offered after a class change (on one section at a time on a document with several), is there if you would rather the model redo it. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1731,7 +1751,7 @@ Three kinds are distinguished, because they call for different fixes:
 
 | Issue | Meaning | What to do |
 |---|---|---|
-| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue (and re-extract, on a single-section document), then re-run. |
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue (and re-extract the document, or on a packet the section), then re-run. |
 | **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 
