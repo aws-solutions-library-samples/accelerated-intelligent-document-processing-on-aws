@@ -1339,7 +1339,8 @@ truth when it finishes, so a grouping saved in between would be overwritten by a
 whole-document re-extract, or would make a section re-extract fail. The save is
 refused with a message saying so; wait for the job to finish (a re-extract usually
 takes under a minute) and save again. A job that has already written the document,
-or one that started more than six hours ago, does not block the save.
+or one that started more than six hours ago or has no recorded start time, does not
+block the save.
 
 The API follows the same rule. `reextractTestSetDocument` takes an optional
 `sectionId` with `documentClass` to re-extract one section. A `documentClass` without

@@ -1967,6 +1967,52 @@ def _label_jobs(test_set_id):
     return sorted(jobs, key=lambda j: str(j.get("createdAt") or ""))
 
 
+def _label_job_run_id(job):
+    """The test run a labeling-job item records: its ``jobId``, else its SK."""
+    return job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1] or None
+
+
+def _legacy_drafting_run(jobs):
+    """The run the set's pointer named before its oldest job, when that run has
+    no job record of its own; otherwise None.
+
+    Starting a job repoints the set's ``labelJobId`` and keeps the run it replaced
+    as the job's ``previousLabelJobId``. Every job this resolver starts is recorded
+    before the pointer moves, so on the oldest job that run is normally a recorded
+    job too. When it is not, it is named nowhere else once the pointer has moved,
+    and it is counted as a drafting run. ``jobs`` is :func:`_label_jobs`'s list,
+    oldest first.
+    """
+    if not jobs:
+        return None
+    previous = jobs[0].get("previousLabelJobId")
+    if not previous:
+        return None
+    if previous in {_label_job_run_id(job) for job in jobs}:
+        return None
+    return previous
+
+
+def _drafting_run_ids(test_set_id, meta):
+    """Every test run that drafted labels for a set, oldest first.
+
+    Each labeling job's run, preceded by the pointer's unrecorded earlier run when
+    there is one (:func:`_legacy_drafting_run`); a set with no job record at all is
+    named only by its ``labelJobId`` pointer. One list for the review-run, the
+    configuration and the fingerprint resolvers, so the three agree on which runs
+    drafted a set (#1746).
+    """
+    jobs = _label_jobs(test_set_id)
+    if not jobs:
+        pointer = (meta or {}).get("labelJobId")
+        return [pointer] if pointer else []
+    run_ids = [_label_job_run_id(job) for job in jobs]
+    legacy = _legacy_drafting_run(jobs)
+    if legacy:
+        run_ids.insert(0, legacy)
+    return [run_id for run_id in run_ids if run_id]
+
+
 def _run_id_by_object_key(test_set_id, meta=None):
     """Which labeling run produced each document's pipeline copy.
 
@@ -1994,11 +2040,7 @@ def _run_id_by_object_key(test_set_id, meta=None):
     if not jobs:
         return {}, (meta or {}).get("labelJobId") or None
     per_doc = {}
-    default_run = None
-    recorded = {job.get("jobId") for job in jobs}
-    legacy_run = jobs[0].get("previousLabelJobId")
-    if legacy_run and legacy_run not in recorded:
-        default_run = legacy_run
+    default_run = _legacy_drafting_run(jobs)
     for job in jobs:
         run_id = job.get("jobId")
         if not run_id:
@@ -3683,15 +3725,7 @@ def _resolve_set_fingerprint(test_set_id, meta, config_version):
     fingerprints = set()
     unstamped = 0
     try:
-        run_ids = [
-            job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
-            for job in _label_jobs(test_set_id)
-        ]
-        # Same legacy fallback as the version resolver: a set drafted before
-        # labeljob# items existed names its run only through the pointer.
-        if not run_ids and meta.get("labelJobId"):
-            run_ids = [meta["labelJobId"]]
-        for run_id in run_ids:
+        for run_id in _drafting_run_ids(test_set_id, meta):
             fingerprint = _run_fingerprint(run_id)
             if fingerprint is None:
                 continue
@@ -3739,6 +3773,7 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
       ``labelJobId`` pointer alone: a one-document re-extract under another
       profile repoints that pointer, and the estimate would otherwise read a curve
       holding none of the set's review observations and call it the set's own.
+      The run list is :func:`_drafting_run_ids`.
     - ``"mixed"`` with ``None`` — the labeling jobs disagree. The caller falls back
       to the set's aggregate curve and can say why.
     - ``None, None`` — nothing identifies a configuration (uploaded labels with no
@@ -3770,8 +3805,7 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
 
     versions = set()
     try:
-        for job in _label_jobs(test_set_id):
-            run_id = job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
+        for run_id in _drafting_run_ids(test_set_id, meta):
             version = _run_version(run_id)
             if version:
                 versions.add(version)
@@ -3785,7 +3819,8 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
             f"({sorted(versions)}); no single curve applies"
         )
         return None, "mixed"
-    # Legacy sets recorded only the pointer, not per-run job items.
+    # The jobs could not be read, or no run they name has a record: the pointer is
+    # the last thing that names a run.
     version = _run_version(meta.get("labelJobId"))
     if version:
         return version, "drafting-run"
@@ -4167,14 +4202,22 @@ def _count_baseline_fields(bucket, key):
 
 
 def _label_job_is_stale(job):
-    """True when a job is old enough that a missing document will never arrive."""
+    """True when a job is old enough that a missing document will never arrive.
+
+    A job whose ``createdAt`` is missing or unreadable counts as stale. Every job
+    this resolver starts is stamped, so such a record is not a job it started: the
+    shape arises when a harvest's final write lands after a label reset deleted the
+    job, and recreates the item with only the fields it writes. Reading "cannot be
+    aged" as "fresh" let that record (which names no documents, so covers the whole
+    set) block re-grouping every document for good (#1746).
+    """
     created = str(job.get("createdAt") or "")
     if not created:
-        return False
+        return True
     try:
         started = datetime.fromisoformat(created.replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return True
     age_hours = (datetime.now(started.tzinfo) - started).total_seconds() / 3600.0
     return age_hours >= STALE_LABEL_JOB_HOURS
 
