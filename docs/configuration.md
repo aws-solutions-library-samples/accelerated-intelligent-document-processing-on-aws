@@ -953,13 +953,16 @@ Inside one shard, several durations draw on the same invocation:
 | Agentic `read_timeout` | 600 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
 | Confidence `read_timeout` | 300 s | One **non-streamed** `converse`, which bounds the whole response rather than a gap, so it is legitimately larger. Inside the shard invocation whenever confidence runs in `separate` mode |
 | botocore attempts per call | 1 | botocore retries a read timeout *itself*, multiplying either timeout above inside a single call, where no deadline check can see it |
+| Strands attempts per model call | 1 | Strands' default retry strategy sleeps up to 124 s on a throttle inside a single model call, and starts again after every successful one, where neither the allowance below nor the deadline can see it |
 | Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
 | Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
 
 With botocore held to one attempt, `BedrockClient`'s own ladder is what retries a
 transient network failure on the non-streamed `converse`: a read or connect timeout, a
 failed connection, and a connection dropped before the response arrived
-(`ConnectionClosedError`). The last of these used to fail the call on its first attempt.
+(`ConnectionClosedError`), including a connection reset or cut short while the
+response body is being read, which botocore reports the same way. The last of these
+used to fail the call on its first attempt.
 The retry ladder around the agentic extraction call retries the same four failures
 when they happen before the response arrives, including when the Strands agent reports
 one wrapped in its own exception, which it does for every model call after the first
@@ -967,7 +970,19 @@ tool use. Before, that ladder did not retry a dropped or failed connection at al
 retried such a read timeout only on the first model call of each attempt. It also
 retries a connection reset partway through a streamed response, which is safe because
 the Strands agent keeps no part of a response it could not finish reading and runs no
-tool from it.
+tool from it. It is also the only thing that retries a throttle: the extraction's
+Strands agent is built with its own throttle retries off, because with them on, persistent throttling
+kept one call asleep for 834 s of a 900 s invocation, and a throttle met 30 s before
+the deadline still slept 124 s. Throttling that outlasts the 90 s allowance is raised as
+a transient error, which the extraction task's Step Functions retrier runs again,
+rather than ending in a Lambda timeout. A streamed response that is reset partway is not metered: Bedrock reports a
+response's token usage only at its end, so the interrupted response's tokens are
+unknown. When the extraction then completes, every usage Bedrock did report is
+metered, including that of the earlier model calls of the attempt the reset ended.
+When the retry ladder gives up instead, nothing from that invocation is metered,
+although Bedrock billed the model calls that completed; the task retrier then runs
+the shard again. Throttling between 90 s and the length of the invocation now ends
+that way, where before it was usually ridden out inside the invocation.
 
 What keeps a shard inside its invocation is **not** that these numbers sum to less than
 900 — they do not. It is that the retry ladder refuses to *begin* an attempt the size of

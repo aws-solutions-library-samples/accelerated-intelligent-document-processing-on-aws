@@ -165,6 +165,40 @@ partial text may be printed twice; nothing else repeats.
 `test_strands_keeps_nothing_from_a_stream_reset_partway` pins that premise, and goes
 red if Strands starts acting on a partial stream.
 
+On agentic extraction a throttle is retried by this ladder alone. Every extraction
+caller passes `strands_throttle_retries=False` to `structured_output_async`, which then
+builds the agent with `retry_strategy=None`, Strands' spelling for one attempt per model
+call, for the reason botocore is held to one attempt: a retry inside the call is one neither the
+cumulative allowance nor the Lambda deadline can see. Strands' default
+`ModelRetryStrategy` sleeps 4, 8, 16, 32 and 64 s on `ModelThrottledException` within a
+single model call, and starts that schedule again after every call that succeeds.
+Measured on the production construction with a real botocore client, only `urlopen`
+replaced and time virtual (#1759): under persistent throttling the call slept 834 s
+across 36 requests, 744 s of it inside Strands, and with 30 s to the deadline it slept
+124 s. With one attempt it sleeps the ladder's 90 s allowance and raises the throttle,
+which `transient_errors` classifies as transient. `retry_strategy` rejects a subclass
+of `ModelRetryStrategy`; a separate Strands hook could read the deadline, but it would
+still be a second ladder outside the allowance. What deferring costs: a section that
+throttling stalls for longer than the allowance is handed to the task-level retrier
+instead of riding it out inside the invocation, and the model calls that invocation
+completed are billed and not metered, because usage is recorded only when the call
+returns. The flag defaults to keeping Strands' strategy, and agentic rules discovery
+(`discovery/rules_discovery.py`) keeps it: that job runs from an SQS-triggered Lambda
+with no published deadline and no Step Functions retrier, so Strands' in-call retries
+are the throttle tolerance it has beyond the ladder's allowance.
+`tests/unit/extraction/test_agentic_throttle_is_retried_once.py` measures both bounds,
+and `tests/unit/extraction/agentic_idp/test_throttle_retry_ownership.py` checks which
+callers' agents carry which strategy, read from the agent Strands built.
+
+**A stream reset partway is not metered, and cannot be.** Bedrock reports a streamed
+response's token usage once, in the `metadata` event after `messageStop` — botocore's
+model of `ConverseStream` gives no other event a usage member — so a stream reset
+before that event reports none and the tokens Bedrock counted for it are unknown here.
+They are not estimated. Every usage Bedrock did report is metered, including the earlier
+model calls of an attempt the reset ended, provided the ladder then succeeds, because
+Strands accumulates usage on the agent across the ladder's invocations;
+`test_a_reset_stream_meters_exactly_the_usage_bedrock_delivered` pins that.
+
 Only `__cause__`, the explicit
 `raise ... from` link, is followed: `__context__` is set on any exception raised while
 another is being handled, so following it would make a deterministic failure raised

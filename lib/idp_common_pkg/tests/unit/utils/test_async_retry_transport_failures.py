@@ -552,3 +552,58 @@ def test_a_stream_reset_partway_is_retried_without_repeating_anything(bedrock, s
         ("assistant", ["toolUse"]),
         ("user", ["toolResult"]),
     ] * tool_uses + [("assistant", ["text"])]
+
+
+# --- What a reset stream costs in metering (#1759) ---------------------------------
+#
+# Bedrock reports a streamed response's token usage once, in the ``metadata`` event
+# that follows ``messageStop``. A stream reset before that event therefore reports
+# none, and nothing on the client can recover it: the tokens Bedrock counted for the
+# interrupted response are unknown here, and estimating them would put a number in the
+# cost report that no service reported. What CAN be metered honestly is every usage
+# Bedrock did deliver, including the completed cycles of an attempt that a later reset
+# failed — and that is what the extraction meters, because Strands accumulates usage
+# on the agent across the ladder's invocations.
+
+
+@pytest.mark.unit
+def test_only_the_metadata_event_of_a_stream_reports_usage():
+    """The authority for the paragraph above: botocore's model of ConverseStream."""
+    import botocore.session
+
+    model = botocore.session.get_session().get_service_model("bedrock-runtime")
+    stream = model.operation_model("ConverseStream").output_shape.members["stream"]
+    events = dict(stream.members)
+    assert "messageStop" in events and "metadata" in events, sorted(events)
+    reporting = sorted(
+        name
+        for name, shape in events.items()
+        if "usage" in getattr(shape, "members", {})
+    )
+    assert reporting == ["metadata"], (
+        f"usage is reported by {reporting}; if an event before the end of the stream "
+        f"reports it, a reset stream's partial usage can be metered — revisit #1759"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("steps", sorted(_MID_STREAM_SCHEDULES))
+def test_a_reset_stream_meters_exactly_the_usage_bedrock_delivered(bedrock, steps):
+    from idp_common.extraction.agentic_idp import (
+        _accumulate_token_usage,
+        _initialize_token_usage,
+    )
+
+    make_agent, sent, _raised = bedrock
+    agent = make_agent(steps, streaming=True)
+    result = asyncio.run(invoke_agent_with_retry([{"text": "hi"}], agent))
+    metered = _initialize_token_usage()
+    _accumulate_token_usage(result, metered)
+
+    # Only a T or O response carried its metadata event; every other step was reset
+    # or cut before it.
+    delivered = sum(1 for step in sent if step in "TO")
+    usage = json.loads(_STREAM_METADATA[_STREAM_METADATA.index(b"{") : -4])["usage"]
+    assert delivered < len(sent), "no send in this schedule lost its metadata"
+    assert metered["inputTokens"] == delivered * usage["inputTokens"]
+    assert metered["outputTokens"] == delivered * usage["outputTokens"]

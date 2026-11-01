@@ -6180,6 +6180,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     attach_page_images=False,
                     config=self.config,
                     context="ExtractionEscalation",
+                    strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
                 )
@@ -6205,6 +6206,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     attach_page_images=False,
                     config=self.config,
                     context="ExtractionEscalation",
+                    strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
                 )
@@ -6749,6 +6751,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     attach_page_images=False,
                     config=self.config,
                     context="Extraction",
+                    strands_throttle_retries=False,
                     checkpoint_callback=self._checkpoint_callback,
                     checkpoint_buffer_data=checkpoint_buffer,
                     custom_instruction=custom_instruction,
