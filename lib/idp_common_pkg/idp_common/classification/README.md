@@ -74,6 +74,15 @@ its wrapping element when that element held nothing else, or appends a wrapped
 placeholder when the prompt has none. Both directions are logged with the
 call's path.
 
+A model that does not accept images refuses the request without naming the
+setting that sent them, so `_invoke_bedrock_model` appends a sentence naming the
+call's `modality.images` path, the image count and the model
+(`_annotate_image_refusal`). It does so only for a request that carried images and
+an error that reads as a capability refusal: an input overflow
+(`is_input_token_overflow`) or an image rejection for size or count
+(`is_image_request_rejection`) is a model that accepts images, so either one gets
+no hint even when its message mentions images, vision or multimodal input.
+
 The page limit (`document_shape.maxPagesForClassification`) is applied only when
 `sectionSplitting` is `disabled`; with boundary detection on it is set to `ALL`
 at construction, with a warning.
@@ -127,7 +136,9 @@ is the leading overlap, and the pages after it continue that window's document. 
 fold carries no `candidates`, so a merged segment built entirely from one reported
 segment gets that segment's list back, and one assembled from several gets none.
 
-A window the model refuses as too long (`is_input_token_overflow`) is split in two
+A window the model refuses as too long (`is_input_token_overflow`), or as carrying
+too many images (`is_image_count_rejection`: the per-request image cap, and the
+tighter dimension cap Bedrock applies only to many-image requests), is split in two
 by `_split_overflowing_window` and both halves are retried, recursively, with up to
 `overlap_pages` repeated at the junction; the halves are queued in page order so
 the merge's "earlier window wins" still holds. A one-page window that does not fit
@@ -137,7 +148,12 @@ repeated overlap is capped at about half the first half (and at least one page),
 each split shrinks the window by a fraction rather than by a page; a sub-window
 already requested is not requested again; and the calls made for split windows stop
 at twice the packet's page count, after which the remaining sub-windows are reported
-as not classified. A class-validation re-prompt that overflows keeps the answer
+as not classified. Any other image rejection — one image too large on its own —
+is not split, because no smaller window fixes it. The count markers are matched as
+`is_image_request_rejection` already records them: the many-image dimension wording
+is Bedrock's recorded message, while the exact wording of a per-request image-count
+refusal has not been measured against a live model, so a refusal worded otherwise
+fails the window as before. A class-validation re-prompt that overflows keeps the answer
 already received, with its metering, and assigns the fallback rather than splitting.
 
 A combined packet call validates every segment's class like the page path does:
@@ -797,7 +813,10 @@ are not sent rather than pointing at a missing image.
 
 ⚠️ **A genuinely empty page is kept out of `document.errors`.** `classify_page_bedrock`
 sets `metadata["page_empty"]` only when the page's text was read, is empty, and
-images are not sent. Such a page still carries `metadata["error"]`, which is what
+images are not sent. Text that is only whitespace counts as empty, since OCR of a
+blank sheet often yields line breaks rather than `""`, and with images on a page
+whose text is only whitespace is still classified from its image. An empty page
+still carries `metadata["error"]`, which is what
 this function keys on, but `_classify_pages_multimodal` does not copy it into
 `document.errors`: `processresults` fails the whole document on any entry there, so
 one blank separator sheet in a text-only configuration used to discard the
