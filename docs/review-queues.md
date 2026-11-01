@@ -231,6 +231,15 @@ their User Management record is created when they're first given a test set.
 Each row's actions menu offers **View** and **Settings**; a production queue also
 offers **Delete**. Each queue's page has a **Settings** button too.
 
+If another Admin saves a production queue's **Settings** while you have them open,
+your **Save** is refused rather than overwriting their change: the dialog says the
+queue was changed by someone else, and **Reload queue** fills it with the current
+settings so you can make your change again. Reloading replaces what you had entered.
+Through the API, send back the `version` that `listReviewQueues` returned with
+`updateReviewQueue`; a stale one is refused with `QUEUE_CHANGED`. An update that sends
+no `version` (an older client) replaces whatever is stored when it is made, and is
+refused only if another save lands while it is being written.
+
 **Production queues** are edited in **Settings** and deleted here. Queue
 Management has no **Create queue**: documents are routed to the Default queue, and
 any other queue that already exists stays listed and usable. Each queue has:
@@ -259,11 +268,15 @@ moves them there.
 if it was off, turn it on in Review Management. Documents from profiles with HITL
 off are no longer queued.
 
-Deleting a queue that still holds items moves them to the Default queue first, and
+Deleting a queue that still holds items moves them to the Default queue, and
 the confirmation says how many will move:
 open and assigned items become unassigned there (an assignee is told), and items
 still waiting for their first run to finish are activated in Default. Deleting is
 refused while one of the queue's items is being finalized; try again a minute later.
+The queue is deleted before its items move, so a delete that is refused has moved
+nothing. If one stops part-way, the queue stays listed as no longer defined while
+it still holds open or assigned items, and deleting it again moves them; items
+still waiting for their first run are activated in Default either way.
 An **Escalation** queue that an earlier release created is an ordinary queue and can
 be deleted.
 

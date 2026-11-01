@@ -3902,6 +3902,13 @@
         "name": "enabled",
         "non_null": false,
         "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "version",
+        "non_null": false,
+        "type": "Int"
       }
     ],
     "SectionInput": [

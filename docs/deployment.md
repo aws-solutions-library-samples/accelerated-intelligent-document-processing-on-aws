@@ -58,6 +58,8 @@ For programmatic deployment, updates, and batch processing, use the IDP CLI.
 
 #### Install the CLI
 
+`make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
+
 ```bash
 make setup-venv
 source .venv/bin/activate
@@ -153,6 +155,8 @@ Copy the repo to your computer. Either:
 The easiest way to build, publish, and deploy from source in a single command is using the IDP CLI with the `--from-code` option. This builds all artifacts, publishes them to S3, and deploys the CloudFormation stack — all in one step.
 
 #### Install the CLI
+
+`make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
 
 ```bash
 make setup-venv

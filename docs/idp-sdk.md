@@ -138,6 +138,7 @@ client.search.query(...)
 # Configuration operations
 client.config.create(...)
 client.config.validate(...)
+client.config.migrate(...)
 client.config.upload(...)
 client.config.download(...)
 client.config.list()
@@ -1512,7 +1513,14 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `document_loaded`, `class_count`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`document_loaded` is False when the file could not be read or is not valid YAML; the
+one error then starts `Failed to load file:` or `YAML syntax error:`, which have
+different remedies. `class_count` is the number of document classes the file itself
+defines, not counting the system defaults, and is None when the file did not load or
+its top level is not a mapping. `idp-cli config-validate` reports from these fields
+rather than reading the file itself.
 
 `validation_available` is False when this installation could not run the checks at
 all — `idp_common`, which does the checking, is not importable — and the missing
@@ -1536,6 +1544,32 @@ else:
 
 for warning in result.warnings:
     print(f"Warning: {warning}")
+```
+
+### config.migrate()
+
+Convert a configuration file to the current configuration format, the way the loader
+converts it on every read (for example, the pre-0.9 flat classification keys). Nothing
+is validated; call `config.validate()` for that. `idp-cli config-validate
+--emit-migrated <path>` is this method.
+
+**Parameters:**
+- `config_file` (str, required): Path to the configuration file
+- `output` (str, optional): Path to write the migrated YAML to
+
+**Returns:** `ConfigMigrateResult` with `yaml_content` (headed by a comment naming the
+format version and the source file), `config_format_version` and `output_path`
+
+**Raises:** `IDPValidationError` when the file is not valid YAML or cannot be read,
+with the same two messages `config.validate()` reports, or when its top level is not a
+mapping
+
+```python
+result = client.config.migrate(
+    config_file="./old-config.yaml",
+    output="./config-current.yaml",
+)
+print(result.config_format_version)
 ```
 
 ### config.upload()
@@ -2327,6 +2361,7 @@ from idp_sdk import (
 
     # Config models
     ConfigCreateResult,
+    ConfigMigrateResult,
     ConfigValidationResult,
     ConfigUploadResult,
     ConfigDownloadResult,

@@ -89,7 +89,7 @@ export interface TestSetEditorSlots {
   loadSection: (sectionId: string) => Promise<LoadedSection>;
   /** Bumped to re-read the open section after a regroup or re-extract rewrites it (its key is unchanged). */
   reloadToken: number;
-  onLoaded: () => void;
+  onLoaded: (sectionId: string) => void;
   classOptions: ConfigClassOption[];
   classConfig: ReturnType<typeof resolveClassConfigVersion>;
   headerExtras: EditorSlot;
@@ -123,7 +123,13 @@ export const useTestSetEditorSlots = ({
    */
   const [regroupedSectionIds, setRegroupedSectionIds] = useState<string[]>([]);
   const [isReextracting, setIsReextracting] = useState(false);
-  const [reextractNote, setReextractNote] = useState<string | null>(null);
+  /**
+   * What the last re-extract did, and the section it did it to. Kept while that section
+   * is re-read after the re-extract — the re-read is how its new fields reach the screen,
+   * so clearing on any load hid the note before it was ever seen — and cleared once a
+   * different section is opened, where it would describe something else.
+   */
+  const [reextractNote, setReextractNote] = useState<{ text: string; sectionId: string; kept?: boolean } | null>(null);
   // Sections whose class Edit Page Grouping just changed, by section id, with the class
   // their fields were extracted under: their fields no longer match their class until
   // they are re-extracted.
@@ -259,10 +265,13 @@ export const useTestSetEditorSlots = ({
    * the fields on screen are wrong until then; labels are harvested on read, so this poll
    * drives the write-back.
    */
-  const handleReextract = async (sectionId: string) => {
+  const handleReextract = async (sectionId: string, labelSource?: unknown) => {
     if (!documentClassType || !testSetId) return;
     // Captured now: the open section can change while the run is in flight.
     const target = perSection ? sectionId : null;
+    // Authored ground truth (neither a draft nor a reviewed draft) is never overwritten by
+    // the run: the class is corrected and the values stay, so "Re-extracted" would be untrue.
+    const authored = labelSource !== 'reviewed-human' && labelSource !== 'draft-machine';
     setIsReextracting(true);
     setError(null);
     setReextractNote(null);
@@ -295,17 +304,29 @@ export const useTestSetEditorSlots = ({
       }
       if (status === 'RUNNING') {
         // Not an error: the job is still running and the harvest is idempotent.
-        setReextractNote(
-          'Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.',
-        );
+        setReextractNote({
+          text: 'Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.',
+          sectionId,
+        });
         return;
       }
       setReloadToken((token) => token + 1);
       setReclassified({});
       setReextractNote(
-        target
-          ? `Re-extracted section ${target} as ${documentClassType}. The other sections were not changed.`
-          : `Re-extracted as ${documentClassType}.`,
+        authored
+          ? {
+              text: `Class corrected to ${documentClassType}${target ? ` on section ${target}` : ''}. This ${
+                target ? 'section' : 'document'
+              } has authored ground truth, so its field values were kept rather than re-extracted; if they need to change, edit them here or in the JSON Editor tab.`,
+              sectionId,
+              kept: true,
+            }
+          : {
+              text: target
+                ? `Re-extracted section ${target} as ${documentClassType}. The other sections were not changed.`
+                : `Re-extracted as ${documentClassType}.`,
+              sectionId,
+            },
       );
       onChanged();
     } catch (err) {
@@ -348,7 +369,7 @@ export const useTestSetEditorSlots = ({
           header="Fields still reflect the previous class"
           action={
             <Button
-              onClick={() => void handleReextract(ctx.selectedSectionId)}
+              onClick={() => void handleReextract(ctx.selectedSectionId, ctx.data?.labelSource)}
               loading={isReextracting}
               disabled={!mayChangeClass || refsPending}
               disabledReason={refsPending ? 'Loading the saved grouping…' : undefined}
@@ -375,7 +396,11 @@ export const useTestSetEditorSlots = ({
           type="info"
           header="Fields still reflect the previous class"
           action={
-            <Button onClick={() => void handleReextract(ctx.selectedSectionId)} loading={isReextracting} disabled={!mayChangeClass}>
+            <Button
+              onClick={() => void handleReextract(ctx.selectedSectionId, ctx.data?.labelSource)}
+              loading={isReextracting}
+              disabled={!mayChangeClass}
+            >
               {isReextracting ? 'Re-extracting…' : 'Re-extract'}
             </Button>
           }
@@ -390,7 +415,7 @@ export const useTestSetEditorSlots = ({
               : ' The class is corrected, but this document has authored ground truth, so its field values are kept.'}
         </Alert>
       )}
-      {reextractNote && <Alert type="success">{reextractNote}</Alert>}
+      {reextractNote && <Alert type={reextractNote.kept ? 'info' : 'success'}>{reextractNote.text}</Alert>}
       {splitPageIndices !== undefined && (
         <FormField
           label="Pages in this section"
@@ -475,7 +500,7 @@ export const useTestSetEditorSlots = ({
     reviewSections,
     loadSection,
     reloadToken,
-    onLoaded: () => setReextractNote(null),
+    onLoaded: (sectionId: string) => setReextractNote((note) => (note && note.sectionId !== sectionId ? null : note)),
     classOptions,
     classConfig,
     headerExtras,

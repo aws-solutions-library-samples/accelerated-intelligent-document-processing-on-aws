@@ -1520,6 +1520,13 @@ class ReviewQueueService:
         told), and HOLDING items are re-pointed at Default before they activate.
         Refused while an item is FINALIZING, because its finalize run still
         reads the queue (``QUEUE_FINALIZING``).
+
+        The definition is deleted first and the items are moved after it, so a
+        delete that is refused (``QUEUE_CHANGED``, or a fault) has moved nothing.
+        Items in a queue that no longer exists are a state the rest of the service
+        already handles — a HOLDING item activates into Default, the overview lists
+        the queue's items, and an Admin can move them — and deleting the queue again
+        moves whatever a run that failed part-way left behind.
         """
         self._require_admin(caller)
         queue_id = queue_id.strip().lower()
@@ -1532,6 +1539,7 @@ class ReviewQueueService:
                 "QUEUE_FINALIZING",
                 "an item in this queue is being finalized; try again in a minute",
             )
+        self.directory.queue_defs.delete(queue_id)
         ref = QueueRef(queue=queue_id)
         live: list[ReviewItemRecord] = []
         start: Optional[dict[str, Any]] = None
@@ -1569,7 +1577,6 @@ class ReviewQueueService:
             except DynamoDBTransactionCanceledError:
                 # Activated or withdrawn meanwhile: activation re-points it.
                 logger.info("event=review_queue_delete_hold_changed")
-        self.directory.queue_defs.delete(queue_id)
         logger.info("event=review_queue_deleted moved=%d", moved)
         return moved
 

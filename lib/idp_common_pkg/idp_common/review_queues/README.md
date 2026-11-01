@@ -152,10 +152,42 @@ document, so it finishes with the new grouping.
   `listReviewQueues`, `createReviewQueue`, `updateReviewQueue` and
   `deleteReviewQueue`; the web UI doesn't offer `createReviewQueue`. Only Default can't be deleted (`PROTECTED_QUEUE`); an
   Escalation queue an earlier release seeded is an ordinary queue.
-  `ReviewQueueService.delete_queue` moves a queue's `OPEN` and `CLAIMED` items to
-  Default with `move` (unassigned; an assignee is told), re-points its `HOLDING`
-  items at Default, then deletes the definition. It refuses with
-  `QUEUE_FINALIZING` while one of the queue's items is `FINALIZING`.
+  `ReviewQueueService.delete_queue` refuses with `QUEUE_FINALIZING` while one of
+  the queue's items is `FINALIZING`, then deletes the definition, and only then
+  moves the queue's `OPEN` and `CLAIMED` items to Default with `move` (unassigned;
+  an assignee is told) and re-points its `HOLDING` items at Default. So a delete
+  the store refuses (`QUEUE_CHANGED`, or a fault) has moved nothing. A run that
+  stops part-way leaves items in a queue that is no longer defined, which the rest
+  of the service handles (a `HOLDING` item activates into Default; the overview
+  lists the queue); deleting it again moves the rest, and the web UI offers Delete
+  on such a queue while it still holds items.
+- Every definition carries a `version` (`Version` in the table), which
+  `QueueDefStore.put` sets to 1 on create and bumps by one on every update; a
+  definition stored before versions existed reads as 0, and so does one whose
+  `Version` is not a non-negative whole number (logged as
+  `queue_definition_version_invalid`): it stays listed. A write at version 0
+  matches a missing `Version`, one that is not a number, and a number of 0 or
+  below, and stores a well-formed version. A positive fraction is not matched,
+  because a condition expression cannot test for one, so such a queue stays listed
+  but is refused as `QUEUE_CHANGED`; nothing here writes one. `delete` keeps the last
+  version under `QDEFGONE` / `Q#<id>`, and a create under that id continues from it,
+  so a version never repeats for an id. Both are single transactions conditional on
+  the versions they read (the definition's for a delete, the retired one for a
+  create), retried a few times when a concurrent write moves one; a create or
+  delete that cannot settle is refused with `QUEUE_CHANGED`. Given `expected_version`,
+  an update is a conditional write and is refused with `QUEUE_CHANGED`
+  (`ReviewConflict`) when the stored version has moved on, so two Admins' saves
+  built from one read cannot silently overwrite each other; a missing queue is still
+  `UNKNOWN_QUEUE`. Without it, an update replaces what is stored, retrying a few
+  times if a write lands between its consistent read and its put.
+  `updateReviewQueue` passes the input's optional `version` through, or, when an
+  older client sends none, the version of its own consistent read
+  (`read_current`): the client's fields replace what that read found, and it is
+  refused only if another write lands in between, which protects the fields the
+  resolver merges from the stored definition. So the store's own unversioned path
+  is not reached through the API. `listReviewQueues` calls `list(fresh=True)`, a
+  strongly consistent read past the 30 s cache, since it is what an Admin edits
+  from.
 - `create`/`updateReviewQueue` take `enabled`. A new queue is enabled; an update
   that leaves it out keeps the stored value, and a definition stored without it
   reads as enabled. Queues have no confidence threshold: a `confidenceThreshold`

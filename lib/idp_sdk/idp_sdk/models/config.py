@@ -17,10 +17,45 @@ class ConfigCreateResult(BaseModel):
     )
 
 
+class ConfigMigrateResult(BaseModel):
+    """Result of migrating a configuration file to the current format."""
+
+    yaml_content: str = Field(
+        description=(
+            "The migrated configuration as YAML, headed by a comment naming the "
+            "format version and the source file"
+        )
+    )
+    config_format_version: Optional[str] = Field(
+        default=None,
+        description="The config_format_version the configuration was migrated to",
+    )
+    output_path: Optional[str] = Field(
+        default=None, description="Path where the migrated config was written"
+    )
+
+
 class ConfigValidationResult(BaseModel):
     """Result of configuration validation."""
 
     valid: bool = Field(description="Whether configuration is valid")
+    document_loaded: bool = Field(
+        default=True,
+        description=(
+            "Whether the file was read and parsed as YAML. False when it could not "
+            "be read or is not valid YAML, in which case 'errors' says which, and "
+            "when idp_common cannot be imported at all, since the file is then "
+            "never opened."
+        ),
+    )
+    class_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Number of document classes the file itself defines, not counting the "
+            "system defaults. None when the file did not load or its top level is "
+            "not a mapping."
+        ),
+    )
     validation_available: bool = Field(
         default=True,
         description=(

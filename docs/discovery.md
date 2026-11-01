@@ -1654,11 +1654,13 @@ BDA currently has limitations with complex nested structures that affect sync op
 }
 ```
 
-**Nested Arrays Not Supported:**
-Arrays within object definitions are not supported by BDA:
+A top-level object like `employee` can be written inline, as above, or under `$defs` and referenced with `$ref`. BDA itself accepts only the second form, so the sync converts an inline object into a blueprint definition and a reference to it. The field keeps its name in the blueprint either way.
+
+**Arrays of Objects Within Objects Not Supported:**
+BDA does not accept an array of objects inside an object definition:
 
 ```json
-// ❌ NOT SUPPORTED: Arrays within object definitions
+// ❌ NOT SUPPORTED: An array of objects within an object definition
 {
   "Employee": {
     "type": "object",
@@ -1679,6 +1681,13 @@ Arrays within object definitions are not supported by BDA:
   }
 }
 ```
+
+An array of plain values, such as `{"type": "array", "items": {"type": "string"}}`, is kept inside an object definition, as long as no top-level array uses that object as its items. BDA rejects an array nested inside an array's items, so in an object such as `Employee` above, which `employees` uses as its items, an array of plain values is dropped too. Each dropped field is reported as a warning for the class.
+
+**Characters BDA does not accept in descriptions:**
+BDA rejects a whole blueprint when the class description or any field's description (which becomes the field's instruction) contains a character outside the set it accepts. That set is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the accented Latin letters and a few symbols such as `€`, `£`, `°` and `©`. Typographic dashes, the left single quote (`‘`), the ellipsis, the no-break space, bullets, Greek, Cyrillic, CJK and emoji are all rejected. The right single quote and both curly double quotes are accepted.
+
+The sync therefore rewrites those characters in the blueprint it sends. Your configuration is not changed. Where an equivalent exists, the character is replaced: dashes become `-`, the left single quote and backticks become `'`, other curly quotes outside the set become straight quotes, `…` becomes `...`, unusual spaces become a plain space, a bullet becomes `-`, `×` becomes `x`, `→` becomes `->`, and `{` and `}` become `(` and `)`. Accented letters outside the set lose the accent, so `ý` becomes `y`. A character with no equivalent, such as a CJK character, `^` or `~`, is removed. Each removal is reported as an `unsupported_characters` warning for the class, and a description that is blank, or has nothing left after removal, becomes `-`.
 
 ##### AWS Standard Blueprint Handling
 
@@ -1775,7 +1784,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 
 **3. Pre-Sync Validation Checklist:**
 - ✅ No nested objects within object definitions
-- ✅ No arrays within object definitions  
+- ✅ No arrays of objects within object definitions, and no arrays at all in an object used as a top-level array's items
 - ✅ All array properties have description or instruction fields
 - ✅ Field names follow BDA naming conventions (no special characters like &, /)
 - ✅ Schema uses supported data types (string, number, boolean)
