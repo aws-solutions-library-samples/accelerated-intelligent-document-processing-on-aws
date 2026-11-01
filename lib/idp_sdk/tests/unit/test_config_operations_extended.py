@@ -711,6 +711,20 @@ class TestMigrate:
         assert str(raised.value).startswith(prefix)
         assert not target.exists()
 
+    @pytest.mark.parametrize("text", ["- first\n- second\n", "just a string\n"])
+    def test_a_top_level_that_is_not_a_mapping_is_a_validation_error(
+        self, tmp_path, text
+    ):
+        """Not an AttributeError out of the migration (review of #1729)."""
+        source = tmp_path / "old.yaml"
+        source.write_text(text, encoding="utf-8")
+        target = tmp_path / "new.yaml"
+
+        with pytest.raises(IDPValidationError, match="must be a mapping"):
+            IDPClient().config.migrate(str(source), output=str(target))
+
+        assert not target.exists()
+
 
 # --------------------------------------------------------------------------
 # Stack resource resolution

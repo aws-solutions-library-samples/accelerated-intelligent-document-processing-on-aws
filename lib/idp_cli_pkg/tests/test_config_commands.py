@@ -931,6 +931,29 @@ def test_validate_emit_migrated_is_written_by_the_sdk():
 
 
 @pytest.mark.unit
+def test_validate_emit_migrated_is_written_even_when_strict_then_refuses():
+    """The migrated copy is the point of `--emit-migrated` for an old file, and an
+    old file is the one `--strict` refuses, so the refusal must come after it."""
+    with write_config("banana: 1\n" + VALID_MINIMAL) as runner:
+        result = runner.invoke(
+            cli,
+            [
+                "config-validate",
+                "--config-file",
+                "config.yaml",
+                "--strict",
+                "--emit-migrated",
+                "migrated.yaml",
+            ],
+        )
+        written = os.path.exists("migrated.yaml")
+
+    assert result.exit_code == 1
+    assert "Strict mode" in result.output
+    assert written, result.output
+
+
+@pytest.mark.unit
 def test_config_validate_imports_nothing_from_idp_common():
     """The layering rule as a property of the command's code (#1729).
 

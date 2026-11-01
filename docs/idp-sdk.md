@@ -1561,7 +1561,8 @@ is validated; call `config.validate()` for that. `idp-cli config-validate
 format version and the source file), `config_format_version` and `output_path`
 
 **Raises:** `IDPValidationError` when the file is not valid YAML or cannot be read,
-with the same two messages `config.validate()` reports
+with the same two messages `config.validate()` reports, or when its top level is not a
+mapping
 
 ```python
 result = client.config.migrate(

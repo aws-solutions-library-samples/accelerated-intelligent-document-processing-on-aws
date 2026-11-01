@@ -429,13 +429,22 @@ class ConfigOperation:
             ConfigMigrateResult with the migrated YAML and the format version
 
         Raises:
-            IDPValidationError: The file is not valid YAML or could not be read.
+            IDPValidationError: The file is not valid YAML, could not be read, or
+                its top level is not a mapping.
         """
         import yaml
 
         from idp_common.config.migrations import migrate_config
 
-        migrated = migrate_config(self._load_config_file(config_file))
+        user_config = self._load_config_file(config_file)
+        if not isinstance(user_config, dict):
+            # The loader and validate() refuse this too; migrate_config would raise
+            # an AttributeError from deep inside it.
+            raise IDPValidationError(
+                "The configuration's top level must be a mapping of section names "
+                f"to settings; this file holds a {type(user_config).__name__}."
+            )
+        migrated = migrate_config(user_config)
         version = migrated.get("config_format_version")
         yaml_content = (
             f"# Migrated to config_format_version {version or '?'} "
