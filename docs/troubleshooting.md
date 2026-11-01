@@ -139,7 +139,8 @@ of the confidence pass carries every page image of the section, and measured
 offline each one in flight costs about three times its serialised request, so
 memory grows with `extraction.agentic.max_concurrent_batches`; lowering that setting
 is the remedy for a section with many large page images. A throttled or timed-out
-retry no longer keeps a copy of the request it replaces (#1678). Before that,
+retry no longer keeps a copy of the request it replaces (#1678), and neither does a
+timed-out retry of the agentic extraction call (#1706). Before that,
 measured offline on a 17-page section with the default ten batches, peak memory went
 from about 1.0 GB with no retries to 3.1 GB with six throttled attempts per call or
 two timed-out ones, and to 7.1 GB with six timed-out ones, past the Assessment
