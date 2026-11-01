@@ -1297,7 +1297,12 @@ existing labels: the document is re-processed with classification **skipped** an
 your chosen class applied to every page, so extraction genuinely runs against that
 class's schema. (Writing it onto the labels alone does not work — the run
 classifies from the source document and would re-derive the class you just
-corrected.)
+corrected.) A configuration that uses Bedrock Data Automation (`use_bda: true`)
+classifies the document itself and does not apply your class, so if the run comes
+back under a different class the re-extract fails with that reason and nothing is
+written: the class stays corrected and the fields stay as they were, for you to
+correct by hand or re-extract under a configuration that does not use Bedrock Data
+Automation.
 
 Two consequences worth knowing:
 
@@ -1326,9 +1331,15 @@ first if one does not. If the run does not come back with that section on the sa
 pages under the corrected class, the re-extract fails and the section's fields are
 left as they were, with the reason as the error. That is what happens under a
 configuration that uses Bedrock Data Automation (`use_bda: true`), which does not
-apply a forced grouping. The same applies if the section's pages are changed in
-**Edit Page Grouping** while the re-extract runs: nothing is written, and you
-re-extract it again.
+apply a forced grouping.
+
+**Edit Page Grouping cannot save while a re-extract or a draft-labeling job is still
+to write that document.** The job writes its sections over the document's ground
+truth when it finishes, so a grouping saved in between would be overwritten by a
+whole-document re-extract, or would make a section re-extract fail. The save is
+refused with a message saying so; wait for the job to finish (a re-extract usually
+takes under a minute) and save again. A job that has already written the document,
+or one that started more than six hours ago, does not block the save.
 
 The API follows the same rule. `reextractTestSetDocument` takes an optional
 `sectionId` with `documentClass` to re-extract one section. A `documentClass` without

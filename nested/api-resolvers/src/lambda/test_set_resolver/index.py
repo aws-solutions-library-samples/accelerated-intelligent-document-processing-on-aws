@@ -1967,7 +1967,7 @@ def _label_jobs(test_set_id):
     return sorted(jobs, key=lambda j: str(j.get("createdAt") or ""))
 
 
-def _run_id_by_object_key(test_set_id):
+def _run_id_by_object_key(test_set_id, meta=None):
     """Which labeling run produced each document's pipeline copy.
 
     Review keys are ``{runId}/{filename}``, so this cannot be a single per-set
@@ -1980,18 +1980,36 @@ def _run_id_by_object_key(test_set_id):
     neighbours keep theirs. A job with no explicit ``objectKeys`` covered the whole
     set, and is applied as a default for documents no later job names. A failed
     section-scoped re-extract is passed over.
+
+    ``meta`` is the set's metadata item, for sets drafted before job records
+    existed, whose run is named only by the ``labelJobId`` pointer. The pointer is
+    used only while the set has no job record at all: starting a job repoints it,
+    so once one exists the pointer names that job — a failed section re-extract the
+    loop below passes over, on a set with no other record (#1728). The run a job's
+    pointer replaced is kept on the job as ``previousLabelJobId``; when the oldest
+    job's is not itself a recorded job, it is that legacy drafting run, and it is
+    the default for documents no job names.
     """
+    jobs = _label_jobs(test_set_id)
+    if not jobs:
+        return {}, (meta or {}).get("labelJobId") or None
     per_doc = {}
     default_run = None
-    for job in _label_jobs(test_set_id):
+    recorded = {job.get("jobId") for job in jobs}
+    legacy_run = jobs[0].get("previousLabelJobId")
+    if legacy_run and legacy_run not in recorded:
+        default_run = legacy_run
+    for job in jobs:
         run_id = job.get("jobId")
         if not run_id:
             continue
-        if job.get("sectionId") and job.get("status") == "FAILED":
-            # A section-scoped re-extract that failed wrote nothing, and its copy of
-            # the document may not have the baseline's sections at all (a run that
-            # ignored the grouping). The run before it is still the one that
-            # matches the labels.
+        if job.get("status") == "FAILED":
+            # A job is FAILED only when it labeled nothing, so the harvest marked
+            # none of its copies as a test-set document and a review saved on one
+            # would reach nothing. Its copy may not match the labels at all either:
+            # a re-extract whose run ignored the forced grouping or class (Bedrock
+            # Data Automation mode) has the pipeline's own sections and class. The
+            # run before it is still the one that matches the labels.
             continue
         object_keys = job.get("objectKeys") or []
         if object_keys:
@@ -2222,6 +2240,16 @@ def generate_draft_labels(
         "createdAt": now,
         "startedBy": started_by,
     }
+    if document_class:
+        # The harvest writes the run's result only if the run applied this class
+        # (_write_draft_labels_for_doc): Bedrock Data Automation mode does not.
+        job_item["forcedClass"] = document_class
+    if meta.get("labelJobId"):
+        # The pointer is about to name this job. On a set drafted before job
+        # records existed it is the only record of the drafting run, which stays
+        # the review run of every document this job does not replace
+        # (_run_id_by_object_key).
+        job_item["previousLabelJobId"] = meta["labelJobId"]
     if forced_sections:
         # The harvest replaces only this section's label, and only if the run kept
         # it as asked (_harvest_label_job).
@@ -2605,6 +2633,31 @@ def update_test_set_document_sections(args, event=None):
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
+    in_flight, harvest_failed = _label_job_to_write(test_set_id, object_key)
+    if in_flight and harvest_failed:
+        raise ValueError(
+            f"'{object_key}' still has labels to be written by a re-extract or "
+            f"draft-labeling job (job {in_flight.get('jobId')}), and that job's "
+            "progress could not be checked, so the page grouping was not saved: "
+            "saved now, it could be overwritten by the job. Try again in a few "
+            "minutes; if this keeps happening, the job is failing and an "
+            "administrator can find why in the test-set resolver's logs."
+        )
+    if in_flight:
+        # The harvest writes the run's sections over the baseline: a whole-document
+        # run would overwrite this grouping and prune the sections it adds, and a
+        # section-scoped run would fail on it (#1728). The job may also have
+        # finished and simply not been harvested to this document within the
+        # budget, so the message does not claim it is still running.
+        raise ValueError(
+            f"'{object_key}' still has labels to be written by a re-extract or "
+            f"draft-labeling job (job {in_flight.get('jobId')}), so the page "
+            "grouping was not saved: saved now, it would be overwritten by that "
+            "job or make it fail. Try again in a minute (a re-extract usually "
+            "finishes in under one, and each try also moves the job along), then "
+            "open Edit Page Grouping again."
+        )
+
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
     if not existing:
@@ -2713,6 +2766,54 @@ def update_test_set_document_sections(args, event=None):
             for position, section in enumerate(ordered, start=1)
         ],
     }
+
+
+def _label_job_to_write(test_set_id, object_key):
+    """The labeling job that is still to write ``object_key``'s labels, or None.
+
+    Returns ``(job, harvest_failed)``: ``harvest_failed`` is True when the job's
+    harvest raised, so the refusal can say so rather than describe a broken harvest
+    as progress. The exception itself is only logged: it can carry account and
+    resource names, and a ValueError's message reaches the caller.
+
+    A job counts while it is in flight, names the document (a job with no
+    ``objectKeys`` covered the whole set) and has neither written nor given up on
+    it. The job is harvested first, so a run that has finished but that nobody has
+    polled since does not count. A job past :data:`STALE_LABEL_JOB_HOURS` does not
+    count either: the harvest gives up on its missing documents at that age, and a
+    job stuck in flight must not block the document for good.
+
+    Every job shares one harvest budget, the queue's, so the save still answers
+    inside the dispatcher's timeout however many jobs are in flight; a job the
+    budget did not reach to the end stays in flight and the save is refused, which
+    the refusal's wording allows for: each try harvests further.
+    """
+    deadline = time.monotonic() + QUEUE_HARVEST_TIME_BUDGET_SECONDS
+    for job in reversed(_label_jobs(test_set_id)):
+        if job.get("status") in ("COMPLETED", "FAILED"):
+            continue
+        keys = job.get("objectKeys") or []
+        if keys and object_key not in keys:
+            continue
+        if _label_job_is_stale(job):
+            continue
+        error = None
+        try:
+            job = _harvest_label_job(job, deadline=deadline)
+        except Exception as e:  # noqa: BLE001 — judged on the stored state instead
+            logger.warning(
+                f"Could not advance labeling job {job.get('jobId')} before "
+                f"re-grouping {object_key}: {e}"
+            )
+            error = True
+        if job.get("status") in ("COMPLETED", "FAILED"):
+            continue
+        if object_key in (job.get("harvestedFiles") or []) or object_key in (
+            job.get("failedFiles") or []
+        ):
+            continue
+        return job, error
+    return None, None
 
 
 def _single_section_keys_for_forced_class(test_set_bucket, test_set_id, object_key):
@@ -3322,9 +3423,7 @@ def get_annotation_queue(args, event=None):
     # copy of a document, "{runId}/{filename}", not the test-set key. It is returned
     # so no client has to reconstruct that backend key layout.
     # Per document, not one pointer for the set: see _run_id_by_object_key.
-    per_doc_run, default_run = _run_id_by_object_key(test_set_id)
-    if not per_doc_run and not default_run:
-        default_run = meta.get("labelJobId")
+    per_doc_run, default_run = _run_id_by_object_key(test_set_id, meta)
     entries = []
     for doc in documents:
         state = claims.get(doc["objectKey"], {})
@@ -3495,10 +3594,8 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     from the set's most recent labeling run. Without one, nothing is claimed and
     every document reads as available.
     """
-    per_doc_run, default_run = _run_id_by_object_key(test_set_id)
-    if not per_doc_run and not default_run:
-        # Fall back to the set pointer for sets labeled before per-run resolution.
-        default_run = meta.get("labelJobId")
+    # The set pointer is the fallback for sets labeled before per-run resolution.
+    per_doc_run, default_run = _run_id_by_object_key(test_set_id, meta)
     if not per_doc_run and not default_run:
         return {}
 
@@ -4140,6 +4237,10 @@ def _harvest_label_job(job, deadline=None):
     pending_files = set()
     out_of_time = False
     section_failure = None
+    # Documents whose results this pass could not copy, with the reason. Neither
+    # pending nor failed while anything else was labeled (they are retried while
+    # the job is in flight), but they are why a job that labeled nothing failed.
+    harvest_errors = {}
     for file_name in files:
         if file_name in resolved:
             continue
@@ -4190,6 +4291,7 @@ def _harvest_label_job(job, deadline=None):
                 confidence_fingerprint=run.get("ConfidenceFingerprint") or None,
                 only_section_id=job.get("sectionId") or None,
                 only_section_expected=_section_expected(job),
+                forced_class=job.get("forcedClass") or None,
             )
             # Keep the queue's summary of this document current as its draft lands.
             _refresh_summary(test_set_id, file_name)
@@ -4222,6 +4324,7 @@ def _harvest_label_job(job, deadline=None):
             logger.error(
                 f"Draft labeling: failed to harvest '{file_name}' for job {job_id}: {e}"
             )
+            harvest_errors[file_name] = str(e)
 
     now = datetime.utcnow().isoformat() + "Z"
     job_key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
@@ -4237,13 +4340,22 @@ def _harvest_label_job(job, deadline=None):
     expected_failed = sorted(set(job.get("failedFiles") or []))
     for attempt in range(1, _MAX_HARVEST_WRITE_ATTEMPTS + 1):
         labeled = len(done)
+        uncopied = sorted(set(harvest_errors) - done - set(failed))
         if pending_files:
             status = "RUNNING"
-        elif failed and not labeled:
-            # Nothing to harvest and nothing left to wait for.
+        elif (failed or uncopied) and not labeled:
+            # Nothing to harvest and nothing left to wait for. A document whose
+            # results could not be copied counts here: without it a one-document
+            # job (every re-extract) whose copy raised ended COMPLETED with nothing
+            # written, and the editor reported the re-extract as done (#1728).
             status = "FAILED"
         else:
             status = "COMPLETED"
+        # A failed job is terminal, so a document it could not copy will not be
+        # retried; it is recorded as failed so the count says why.
+        failed_files = sorted(
+            set(failed) | (set(uncopied) if status == "FAILED" else set())
+        )
         update_expr = (
             "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
         )
@@ -4251,14 +4363,29 @@ def _harvest_label_job(job, deadline=None):
             ":s": status,
             ":n": labeled,
             ":h": sorted(done),
-            ":f": sorted(set(failed)),
+            ":f": failed_files,
         }
         if status == "FAILED":
             update_expr += ", #er = :e"
-            expr_values[":e"] = section_failure or (
-                f"All {len(set(failed))} document(s) failed processing; no labels were "
-                "produced"
-            )
+            if section_failure:
+                expr_values[":e"] = section_failure
+            elif uncopied:
+                name = uncopied[0]
+                expr_values[":e"] = (
+                    f"The results for '{name}' could not be copied into the test set "
+                    f"({harvest_errors[name][:300]}), so nothing was written for it"
+                    + (
+                        f" or for {len(uncopied) - 1} other document(s)"
+                        if len(uncopied) > 1
+                        else ""
+                    )
+                    + ". Repeating it is safe."
+                )
+            else:
+                expr_values[":e"] = (
+                    f"All {len(set(failed))} document(s) failed processing; no "
+                    "labels were produced"
+                )
         if status in ("COMPLETED", "FAILED"):
             update_expr += ", completedAt = :c"
             expr_values[":c"] = now
@@ -4356,7 +4483,7 @@ def _harvest_label_job(job, deadline=None):
             "status": status,
             "labeled": labeled,
             "harvestedFiles": sorted(done),
-            "failedFiles": sorted(set(failed)),
+            "failedFiles": failed_files,
         }
     )
     if status == "FAILED":
@@ -4399,6 +4526,7 @@ def _write_draft_labels_for_doc(
     confidence_fingerprint=None,
     only_section_id=None,
     only_section_expected=None,
+    forced_class=None,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -4416,6 +4544,13 @@ def _write_draft_labels_for_doc(
     what a run that never applied the forced grouping looks like — Bedrock Data
     Automation mode, for one, does not run the classification step that applies it
     — and writing its section would put another span's fields into this label.
+
+    ``forced_class`` is set for a whole-document re-extract under a corrected class.
+    Every section that would be written must come back as that class, checked
+    before anything is written, or :class:`_TargetSectionMissing` is raised: a run
+    that did not apply the class (Bedrock Data Automation mode, again) would
+    otherwise replace the class the reviewer just corrected with the one they
+    corrected it from.
     """
     if only_section_id is not None:
         sections = [
@@ -4429,6 +4564,10 @@ def _write_draft_labels_for_doc(
             raise _TargetSectionMissing(
                 f"the run produced no section '{only_section_id}' for '{file_name}'"
             )
+    if forced_class is not None:
+        _check_forced_class_applied(
+            test_set_bucket, test_set_id, file_name, sections, forced_class
+        )
     wrote = False
     written_section_ids = set()
     for section in sections:
@@ -4528,6 +4667,40 @@ def _write_draft_labels_for_doc(
         )
 
     return wrote
+
+
+def _check_forced_class_applied(
+    test_set_bucket, test_set_id, file_name, sections, forced_class
+):
+    """Raise :class:`_TargetSectionMissing` unless every section the harvest would
+    write came back as ``forced_class``. Sections it keeps are not checked."""
+    for section in sections:
+        section_id = str(section.get("Id") or section.get("SectionId") or "")
+        output_uri = section.get("OutputJSONUri") or ""
+        if not section_id or not output_uri.startswith("s3://"):
+            continue
+        baseline_key = (
+            f"{test_set_id}/baseline/{file_name}/sections/{section_id}/result.json"
+        )
+        if _existing_label_is_human(test_set_bucket, baseline_key):
+            continue
+        src_bucket, src_key = output_uri[len("s3://") :].split("/", 1)
+        result = _read_json_or_none(src_bucket, src_key)
+        if result is None:
+            # Missing or unreadable, which is not the run ignoring the class: the
+            # writer's own read then fails and reports it as a copy failure.
+            continue
+        got_class = (result.get("document_class") or {}).get("type")
+        if got_class != forced_class:
+            raise _TargetSectionMissing(
+                f"The run did not apply the corrected class: '{file_name}' came back "
+                f"as {got_class!r}, not {forced_class!r}, so nothing was written. A "
+                "configuration that uses Bedrock Data Automation classifies the "
+                "document itself and does not apply a corrected class. The class "
+                "is still corrected on this document; correct its fields by hand, "
+                "or re-extract under a configuration that does not use Bedrock Data "
+                "Automation."
+            )
 
 
 def _prune_superseded_draft_sections(
