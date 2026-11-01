@@ -316,3 +316,71 @@ class TestPrimitiveArrayInsideADefinition:
     )
     def test_is_primitive_array(self, schema, primitive):
         assert BdaBlueprintService._is_primitive_array(schema) is primitive
+
+
+@pytest.mark.unit
+class TestSanitizeUntypedObjects:
+    """Item 3: an untyped inline object's member names are sanitized too."""
+
+    def test_untyped_object_members_are_sanitized(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Owner": {"properties": {"Name & Title": {"type": "string"}}},
+                "Typed": {
+                    "type": "object",
+                    "properties": {"A/B": {"type": "string"}},
+                },
+            },
+        }
+        sanitized, mapping = service._sanitize_property_names(schema)
+        assert list(sanitized["properties"]["Owner"]["properties"]) == ["NameTitle"]
+        assert list(sanitized["properties"]["Typed"]["properties"]) == ["AB"]
+        assert mapping == {"Name & Title": "NameTitle", "A/B": "AB"}
+
+    def test_untyped_array_item_members_are_sanitized(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Rows": {"items": {"properties": {"Unit $": {"type": "number"}}}}
+            },
+        }
+        sanitized, mapping = service._sanitize_property_names(schema)
+        assert list(sanitized["properties"]["Rows"]["items"]["properties"]) == ["Unit"]
+        assert mapping == {"Unit $": "Unit"}
+
+    def test_a_declared_scalar_with_properties_is_not_descended(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Code": {"type": "string", "properties": {"x&y": {"type": "string"}}}
+            },
+        }
+        sanitized, mapping = service._sanitize_property_names(schema)
+        assert list(sanitized["properties"]["Code"]["properties"]) == ["x&y"]
+        assert mapping == {}
+
+    @pytest.mark.parametrize("with_defs", [True])
+    def test_every_blueprint_name_is_valid_after_a_sync_style_conversion(
+        self, service, with_defs
+    ):
+        import re
+
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Owner": {"properties": {"Name & Title": {"type": "string"}}},
+                "Rows": {"items": {"properties": {"Unit $": {"type": "number"}}}},
+            },
+        }
+        if with_defs:
+            schema["$defs"] = {"D": {"properties": {"Z": {"type": "string"}}}}
+        sanitized, _ = service._sanitize_property_names(schema)
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(sanitized)
+        names = list(blueprint["properties"]) + [
+            n
+            for d in blueprint.get("definitions", {}).values()
+            for n in d["properties"]
+        ]
+        assert "NameTitle" in names and "Unit" in names
+        assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", n) for n in names), names

@@ -833,17 +833,25 @@ class BdaBlueprintService:
                 new_name = sanitize_name(prop_name)
 
                 if isinstance(prop_value, dict):
-                    # Recursively sanitize nested object properties
-                    if (
-                        prop_value.get("type") == "object"
-                        and "properties" in prop_value
+                    # Recursively sanitize nested object properties. A missing
+                    # "type" counts as an object, as it does in the transform,
+                    # which hoists such an object with its member names intact.
+                    if self._is_inline_object(prop_value) and isinstance(
+                        prop_value["properties"], dict
                     ):
                         prop_value["properties"] = sanitize_properties(
                             prop_value["properties"]
                         )
 
-                    # Recursively sanitize array item properties
-                    if prop_value.get("type") == "array" and "items" in prop_value:
+                    # Recursively sanitize array item properties (a missing
+                    # "type" beside "items" counts as an array).
+                    if (
+                        prop_value.get(
+                            "type", "array" if "items" in prop_value else None
+                        )
+                        == "array"
+                        and "items" in prop_value
+                    ):
                         items = prop_value["items"]
                         if isinstance(items, dict) and "properties" in items:
                             items["properties"] = sanitize_properties(
