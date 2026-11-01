@@ -82,8 +82,10 @@ all: lint test ## Run lint + test (default)
 # installs all five first-party packages into one environment in one pass. A
 # constraint pins a package only if something asks for it, so the extras each CI
 # selects still decide WHAT is installed and the lock decides AT WHICH VERSION.
-# Packages only the other four first-party packages depend on are not in the lock
-# and still resolve from the index.
+# A package only the other four first-party packages require would therefore not
+# be pinned at all, so idp_common_pkg's `first-party-siblings` dependency group
+# names those and the lock records them too; scripts/tests/test_ci_gate_parity.py
+# fails on a first-party requirement the lock does not record (#1729).
 #
 # --locked, not --frozen: --frozen exports whatever the lock holds even when
 # pyproject.toml has moved on, so a dependency added without re-locking would be

@@ -1473,6 +1473,80 @@ def test_every_ci_install_is_constrained_to_the_lock() -> None:
     )
 
 
+def _first_party_requirements() -> list[tuple[str, str]]:
+    """``(pyproject, requirement)`` for every requirement of every ``lib/*`` package.
+
+    Runtime dependencies, every extra and every dependency group, so a requirement
+    is counted whichever selection a CI or ``make setup`` happens to install.
+    """
+    import tomllib
+
+    pairs = []
+    for pyproject in sorted(REPO_ROOT.glob("lib/*/pyproject.toml")):
+        data = tomllib.loads(pyproject.read_text())
+        project = data["project"]
+        reqs = list(project.get("dependencies", []))
+        for extra in project.get("optional-dependencies", {}).values():
+            reqs += extra
+        for group in data.get("dependency-groups", {}).values():
+            reqs += [r for r in group if isinstance(r, str)]  # skip include-group
+        rel = str(pyproject.relative_to(REPO_ROOT))
+        pairs += [(rel, r) for r in reqs]
+    return pairs
+
+
+@pytest.mark.unit
+def test_every_third_party_requirement_of_a_first_party_package_is_locked() -> None:
+    """Nothing a first-party package requires installs at an unlocked version (#1729).
+
+    Both CIs and ``make setup`` install all five ``lib/*`` packages constrained to
+    ``lib/idp_common_pkg/uv.lock``, and a constraint pins only a package the lock
+    records. A third-party requirement of one of the OTHER four that the lock does
+    not hold therefore resolves from the index on the day of the install — which is
+    how ``semver`` and ``pytest-mock`` floated after #1707 while every lock check
+    passed. The remedy is to name it in idp_common_pkg's ``first-party-siblings``
+    dependency group and re-lock.
+
+    Bound: this checks distribution names. An extra of a locked package that the
+    lock never resolved (``moto[dynamodb]`` against a lock that requested other moto
+    extras) is not checked; its dependencies happen to be locked today.
+    """
+    import tomllib
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    first_party = {
+        canonicalize_name(tomllib.loads(p.read_text())["project"]["name"])
+        for p in REPO_ROOT.glob("lib/*/pyproject.toml")
+    }
+    assert len(first_party) >= 5, f"lib/*/pyproject.toml found only {first_party}"
+    locked = {
+        canonicalize_name(p["name"])
+        for p in tomllib.loads(IDP_COMMON_LOCK.read_text())["package"]
+    }
+    requirements = _first_party_requirements()
+    third_party = [
+        (where, req)
+        for where, req in requirements
+        if canonicalize_name(Requirement(req).name) not in first_party
+    ]
+    # An empty universe would pass vacuously; the five packages require far more.
+    assert len(third_party) > 50, f"only {len(third_party)} requirements were read"
+    unlocked = [
+        f"{where}: {req}"
+        for where, req in third_party
+        if canonicalize_name(Requirement(req).name) not in locked
+    ]
+    assert not unlocked, (
+        "these first-party requirements name a distribution "
+        "lib/idp_common_pkg/uv.lock does not record, so every lock-constrained "
+        f"install resolves it from the index instead: {unlocked}. Add it to the "
+        "`first-party-siblings` dependency group in lib/idp_common_pkg/pyproject.toml "
+        "and run `uv lock` there."
+    )
+
+
 @pytest.mark.unit
 def test_integration_tests_stay_gitlab_only() -> None:
     """Documents the ONE deliberate asymmetry, so it cannot drift unnoticed.
