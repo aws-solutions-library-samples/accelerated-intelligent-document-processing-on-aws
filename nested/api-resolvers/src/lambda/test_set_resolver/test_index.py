@@ -932,7 +932,7 @@ def test_claim_state_keeps_rows_read_when_keys_stay_unprocessed(
     """A document left unread loses its claim state, loudly; the rows that were
     read keep theirs rather than being discarded with the batch."""
     index, stubber, sleeps = stubbed_ddb
-    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id: ({}, "run1"))
+    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id, _meta=None: ({}, "run1"))
     docs = [{"objectKey": "a.pdf"}, {"objectKey": "b.pdf"}, {"objectKey": "c.pdf"}]
     unclaimed = {"PK": {"S": "doc#run1/c.pdf"}, "SK": {"S": "none"}}
     claimed = {
@@ -962,7 +962,7 @@ def test_claim_state_keeps_rows_read_when_keys_stay_unprocessed(
 @pytest.mark.unit
 def test_claim_state_retries_unprocessed_keys(stubbed_ddb, monkeypatch):
     index, stubber, sleeps = stubbed_ddb
-    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id: ({}, "run1"))
+    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id, _meta=None: ({}, "run1"))
     docs = [{"objectKey": "a.pdf"}, {"objectKey": "b.pdf"}]
     item_b = {
         "PK": {"S": "doc#run1/b.pdf"},

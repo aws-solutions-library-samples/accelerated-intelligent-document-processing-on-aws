@@ -11990,6 +11990,35 @@ class TestReviewRunWithoutEarlierJobRecords:
         assert entries["packet.pdf"]["reviewObjectKey"] == "run2/packet.pdf"
         assert entries["other.pdf"]["reviewObjectKey"] == "run0/other.pdf"
 
+    def test_a_replaced_pointer_that_names_a_recorded_job_is_not_a_legacy_run(
+        self, labeling_env
+    ):
+        """Only a run with no job record of its own is a legacy drafting run. If the
+        oldest record's replaced pointer names another recorded job (clock skew
+        between two starts), that job covers only the documents it names."""
+        table, _s3 = labeling_env
+        for run_id, created, extra in (
+            ("runA", "2000-01-01T00:00:00Z", {"previousLabelJobId": "runB"}),
+            ("runB", "2000-01-02T00:00:00Z", {}),
+        ):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "objectKeys": ["a.pdf"] if run_id == "runA" else ["b.pdf"],
+                    "createdAt": created,
+                    **extra,
+                }
+            )
+
+        per_doc, default = test_set_index._run_id_by_object_key("ts1", {})
+
+        assert per_doc == {"a.pdf": "runA", "b.pdf": "runB"}
+        assert default is None
+
 
 def _seed_running_job(table, job_id, object_keys, **extra):
     item = {
@@ -12165,12 +12194,43 @@ class TestRegroupWhileALabelingJobRuns:
         )["Item"]
         assert job["status"] == "COMPLETED"
 
+    @staticmethod
+    def _seed_run_in_progress(table, run_id, files):
+        """A run whose documents are all still processing, so harvesting its job
+        leaves the job RUNNING. Without the run record the harvest fails the job,
+        and a check that is never reached would pass for the wrong reason."""
+        table.put_item(
+            Item={
+                "PK": f"testrun#{run_id}",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": files,
+                "Status": "RUNNING",
+            }
+        )
+        for name in files:
+            table.put_item(
+                Item={
+                    "PK": f"doc#{run_id}/{name}",
+                    "SK": "none",
+                    "ObjectStatus": "RUNNING",
+                    "Sections": [],
+                }
+            )
+
+    def _job_status(self, table, run_id):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": f"labeljob#{run_id}"})[
+            "Item"
+        ]["status"]
+
     def test_a_job_on_other_documents_does_not_block(self, labeling_env):
         table, s3 = labeling_env
         _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        self._seed_run_in_progress(table, "run9", ["other.pdf"])
         _seed_running_job(table, "run9", ["other.pdf"])
 
         assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "RUNNING"
 
     def test_a_job_too_old_to_finish_does_not_block(self, labeling_env):
         table, s3 = labeling_env
@@ -12178,6 +12238,7 @@ class TestRegroupWhileALabelingJobRuns:
         old = datetime.now(timezone.utc) - timedelta(
             hours=test_set_index.STALE_LABEL_JOB_HOURS + 1
         )
+        self._seed_run_in_progress(table, "run9", ["packet.pdf"])
         _seed_running_job(
             table,
             "run9",
@@ -12186,6 +12247,35 @@ class TestRegroupWhileALabelingJobRuns:
         )
 
         assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "RUNNING"
+
+    def test_a_job_that_wrote_this_document_and_waits_on_others_does_not_block(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        self._seed_run_in_progress(table, "run9", ["other.pdf"])
+        table.update_item(
+            Key={"PK": "testrun#run9", "SK": "metadata"},
+            UpdateExpression="SET Files = :f",
+            ExpressionAttributeValues={":f": ["other.pdf", "packet.pdf"]},
+        )
+        _seed_running_job(
+            table, "run9", ["other.pdf", "packet.pdf"], harvestedFiles=["packet.pdf"]
+        )
+
+        assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "RUNNING"
+
+    def test_a_job_the_harvest_fails_does_not_block(self, labeling_env):
+        """A job whose run record is gone is failed by the harvest without naming
+        the document; it will never write it."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        _seed_running_job(table, "run9", ["packet.pdf"])
+
+        assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "FAILED"
 
     def test_a_section_reextract_in_flight_blocks_too(self, labeling_env):
         table, s3 = labeling_env
@@ -12233,8 +12323,8 @@ class TestWholeDocumentClassNotApplied:
 
     SINGLE = [("1", "Payslip", "draft-machine", [0, 1])]
 
-    def _harvest_with_class(self, table, s3, returned_class):
-        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+    def _harvest_with_class(self, table, s3, returned_class, packet=None):
+        _SECTION_FIXTURES._seed(table, s3, packet or self.SINGLE)
         result, run_input = _SECTION_FIXTURES._reextract(None, "W2")
         assert run_input["documentClass"] == "W2"
         stamped = _baseline_bytes(s3)
@@ -12286,6 +12376,19 @@ class TestWholeDocumentClassNotApplied:
             _baseline_bytes(s3)["ts1/baseline/packet.pdf/sections/1/result.json"]
         )
         assert label["inference_result"] == {"new_field": "new"}
+
+    def test_authored_ground_truth_is_not_held_to_the_class(self, labeling_env):
+        """Nothing of the run is written over authored ground truth, so what class
+        it came back as does not matter: the correction stands and the job
+        completes, as it does when the run applied the class."""
+        table, s3 = labeling_env
+
+        job, stamped = self._harvest_with_class(
+            table, s3, "Payslip", packet=[("1", "Payslip", None, [0, 1])]
+        )
+
+        assert job["status"] == "COMPLETED"
+        assert _baseline_bytes(s3) == stamped
 
     def test_the_job_records_the_class_it_forced(self, labeling_env):
         table, s3 = labeling_env
