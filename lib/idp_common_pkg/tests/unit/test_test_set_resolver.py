@@ -11129,6 +11129,17 @@ class TestReextractOneSection:
         mock_lambda.invoke.assert_not_called()
         return str(caught.value)
 
+    @staticmethod
+    def _past_the_regroup_refusal():
+        """Re-group as if the run were not in flight.
+
+        ``updateTestSetDocumentSections`` refuses while a labeling job is still to
+        write the document (#1728). The harvest's own check is still needed behind
+        that refusal — a job past the stale age does not block, and the baseline
+        has other writers — so these tests reach it directly.
+        """
+        return patch.object(test_set_index, "_label_job_to_write", return_value=None)
+
     def _run_pipeline(self, table, s3, run_input, run_id="run2"):
         """Stand in for the pipeline: one result per section the run was told to
         build, as the classification step would build them from the grouping."""
@@ -11375,8 +11386,9 @@ class TestReextractOneSection:
         assert job["status"] == "FAILED"
 
     def test_a_regroup_during_the_run_is_not_overwritten(self, labeling_env):
-        """Re-grouping renumbers sections, and nothing stops it while the run is in
-        flight. By the time the harvest runs, the targeted id can name other pages;
+        """Re-grouping renumbers sections. Were it to happen while the run is in
+        flight (see _past_the_regroup_refusal), by the time the harvest runs the
+        targeted id could name other pages;
         writing the result there would put two sections on one page."""
         table, s3 = labeling_env
         self._seed(table, s3)
@@ -11384,36 +11396,37 @@ class TestReextractOneSection:
         result, run_input = self._reextract("2")
         self._run_pipeline(table, s3, run_input)
         # Split section 1 (pages 0, 1) in two: section 2 is now page 1.
-        test_set_index.update_test_set_document_sections(
-            {
-                "input": {
-                    "testSetId": "ts1",
-                    "objectKey": "packet.pdf",
-                    "sections": [
-                        {
-                            "sectionId": "1",
-                            "documentClass": "Payslip",
-                            "pageIndices": [0],
-                        },
-                        {
-                            "sectionId": "new",
-                            "documentClass": "Payslip",
-                            "pageIndices": [1],
-                        },
-                        {
-                            "sectionId": "2",
-                            "documentClass": "Bank-statement",
-                            "pageIndices": [2],
-                        },
-                        {
-                            "sectionId": "3",
-                            "documentClass": "Bank-checks",
-                            "pageIndices": [5, 3, 4],
-                        },
-                    ],
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0],
+                            },
+                            {
+                                "sectionId": "new",
+                                "documentClass": "Payslip",
+                                "pageIndices": [1],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "Bank-statement",
+                                "pageIndices": [2],
+                            },
+                            {
+                                "sectionId": "3",
+                                "documentClass": "Bank-checks",
+                                "pageIndices": [5, 3, 4],
+                            },
+                        ],
+                    }
                 }
-            }
-        )
+            )
         regrouped = _baseline_bytes(s3)
         job = test_set_index.get_draft_label_job(
             {"testSetId": "ts1", "jobId": result["jobId"]}
@@ -11433,31 +11446,32 @@ class TestReextractOneSection:
 
         result, run_input = self._reextract("2")
         self._run_pipeline(table, s3, run_input)
-        test_set_index.update_test_set_document_sections(
-            {
-                "input": {
-                    "testSetId": "ts1",
-                    "objectKey": "packet.pdf",
-                    "sections": [
-                        {
-                            "sectionId": "1",
-                            "documentClass": "Payslip",
-                            "pageIndices": [0],
-                        },
-                        {
-                            "sectionId": "2",
-                            "documentClass": "Bank-statement",
-                            "pageIndices": [1, 2],
-                        },
-                        {
-                            "sectionId": "3",
-                            "documentClass": "Bank-checks",
-                            "pageIndices": [5, 3, 4],
-                        },
-                    ],
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "Bank-statement",
+                                "pageIndices": [1, 2],
+                            },
+                            {
+                                "sectionId": "3",
+                                "documentClass": "Bank-checks",
+                                "pageIndices": [5, 3, 4],
+                            },
+                        ],
+                    }
                 }
-            }
-        )
+            )
         moved = _baseline_bytes(s3)
         job = test_set_index.get_draft_label_job(
             {"testSetId": "ts1", "jobId": result["jobId"]}
@@ -11474,21 +11488,22 @@ class TestReextractOneSection:
 
         result, run_input = self._reextract("2")
         self._run_pipeline(table, s3, run_input)
-        test_set_index.update_test_set_document_sections(
-            {
-                "input": {
-                    "testSetId": "ts1",
-                    "objectKey": "packet.pdf",
-                    "sections": [
-                        {
-                            "sectionId": "1",
-                            "documentClass": "Payslip",
-                            "pageIndices": [0, 1, 2, 5, 3, 4],
-                        }
-                    ],
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0, 1, 2, 5, 3, 4],
+                            }
+                        ],
+                    }
                 }
-            }
-        )
+            )
         merged = _baseline_bytes(s3)
         job = test_set_index.get_draft_label_job(
             {"testSetId": "ts1", "jobId": result["jobId"]}
@@ -11602,27 +11617,32 @@ class TestReextractOneSection:
 
         result, run_input = self._reextract("2")
         self._run_pipeline(table, s3, run_input)
-        test_set_index.update_test_set_document_sections(
-            {
-                "input": {
-                    "testSetId": "ts1",
-                    "objectKey": "packet.pdf",
-                    "sections": [
-                        {
-                            "sectionId": "1",
-                            "documentClass": "Payslip",
-                            "pageIndices": [0, 1],
-                        },
-                        {"sectionId": "2", "documentClass": "W2", "pageIndices": [2]},
-                        {
-                            "sectionId": "3",
-                            "documentClass": "Bank-checks",
-                            "pageIndices": [5, 3, 4],
-                        },
-                    ],
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0, 1],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "W2",
+                                "pageIndices": [2],
+                            },
+                            {
+                                "sectionId": "3",
+                                "documentClass": "Bank-checks",
+                                "pageIndices": [5, 3, 4],
+                            },
+                        ],
+                    }
                 }
-            }
-        )
+            )
         changed = _baseline_bytes(s3)
         job = test_set_index.get_draft_label_job(
             {"testSetId": "ts1", "jobId": result["jobId"]}
@@ -12045,3 +12065,150 @@ class TestHarvestErrorEndsTheJob:
         assert result["status"] == "COMPLETED"
         assert result["labeled"] == 1
         assert result["failedDocuments"] == 0
+
+
+@pytest.mark.unit
+class TestRegroupWhileALabelingJobRuns:
+    """#1728 item 3: re-grouping a document is refused while a labeling job is still
+    to write its labels.
+
+    The harvest writes the run's sections over the baseline, so a grouping saved in
+    between is overwritten by a whole-document run (and its extra sections pruned),
+    and makes a section-scoped run fail. A job that has already written the
+    document, a job on other documents and a job too old to finish do not block.
+    """
+
+    SINGLE = [("1", "Payslip", "draft-machine", [0, 1])]
+    REGROUP = [
+        {"sectionId": "1", "documentClass": "Payslip", "pageIndices": [0]},
+        {"sectionId": "new", "documentClass": "W2", "pageIndices": [1]},
+    ]
+
+    def _regroup(self):
+        return test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": self.REGROUP,
+                }
+            }
+        )
+
+    def _start_whole_document_reextract(self, table, s3, status="RUNNING"):
+        """A whole-document re-extract whose run has listed the document and has
+        not finished processing it."""
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, _run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        table.put_item(
+            Item={
+                "PK": f"testrun#{result['jobId']}",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": ["packet.pdf"],
+                "Status": "RUNNING",
+            }
+        )
+        table.put_item(
+            Item={
+                "PK": f"doc#{result['jobId']}/packet.pdf",
+                "SK": "none",
+                "ObjectStatus": status,
+                "Sections": [],
+            }
+        )
+        return result, _baseline_bytes(s3)
+
+    def test_refused_while_a_reextract_is_still_to_write_the_document(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        _result, stamped = self._start_whole_document_reextract(table, s3)
+
+        with pytest.raises(ValueError) as caught:
+            self._regroup()
+
+        message = str(caught.value)
+        assert "packet.pdf" in message
+        assert "being re-extracted or draft-labeled" in message
+        assert "Edit Page Grouping again" in message
+        assert _baseline_bytes(s3) == stamped
+
+    def test_allowed_once_the_job_has_written_the_document(self, labeling_env):
+        """The check drives the harvest first, so a run that has finished but that
+        nobody has polled since does not block."""
+        table, s3 = labeling_env
+        result, _stamped = self._start_whole_document_reextract(table, s3)
+        uri = _seed_pipeline_result(
+            s3, f"{result['jobId']}/packet.pdf/sections/1/result.json", {"x": "new"}
+        )
+        table.update_item(
+            Key={"PK": f"doc#{result['jobId']}/packet.pdf", "SK": "none"},
+            UpdateExpression="SET ObjectStatus = :s, Sections = :sec",
+            ExpressionAttributeValues={
+                ":s": "COMPLETED",
+                ":sec": [{"Id": "1", "OutputJSONUri": uri}],
+            },
+        )
+
+        written = self._regroup()
+
+        assert [s["sectionId"] for s in written["sections"]] == ["1", "2"]
+        job = table.get_item(
+            Key={"PK": "testset#ts1", "SK": f"labeljob#{result['jobId']}"}
+        )["Item"]
+        assert job["status"] == "COMPLETED"
+
+    def test_a_job_on_other_documents_does_not_block(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        _seed_running_job(table, "run9", ["other.pdf"])
+
+        assert len(self._regroup()["sections"]) == 2
+
+    def test_a_job_too_old_to_finish_does_not_block(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        old = datetime.now(timezone.utc) - timedelta(
+            hours=test_set_index.STALE_LABEL_JOB_HOURS + 1
+        )
+        _seed_running_job(
+            table,
+            "run9",
+            ["packet.pdf"],
+            createdAt=old.isoformat().replace("+00:00", "Z"),
+        )
+
+        assert len(self._regroup()["sections"]) == 2
+
+    def test_a_section_reextract_in_flight_blocks_too(self, labeling_env):
+        table, s3 = labeling_env
+        before = _SECTION_FIXTURES._seed(table, s3)
+        _result, run_input = _SECTION_FIXTURES._reextract("2")
+        stamped = _baseline_bytes(s3)
+        assert stamped != before
+        table.put_item(
+            Item={
+                "PK": "testrun#run2",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": [],
+                "Status": "QUEUED",
+            }
+        )
+
+        with pytest.raises(ValueError, match="being re-extracted or draft-labeled"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {"sectionId": "1", "pageIndices": [0, 1]},
+                            {"sectionId": "2", "pageIndices": [2]},
+                            {"sectionId": "3", "pageIndices": [5, 3, 4]},
+                        ],
+                    }
+                }
+            )
+        assert _baseline_bytes(s3) == stamped

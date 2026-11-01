@@ -1326,9 +1326,15 @@ first if one does not. If the run does not come back with that section on the sa
 pages under the corrected class, the re-extract fails and the section's fields are
 left as they were, with the reason as the error. That is what happens under a
 configuration that uses Bedrock Data Automation (`use_bda: true`), which does not
-apply a forced grouping. The same applies if the section's pages are changed in
-**Edit Page Grouping** while the re-extract runs: nothing is written, and you
-re-extract it again.
+apply a forced grouping.
+
+**Edit Page Grouping cannot save while a re-extract or a draft-labeling job is still
+to write that document.** The job writes its sections over the document's ground
+truth when it finishes, so a grouping saved in between would be overwritten by a
+whole-document re-extract, or would make a section re-extract fail. The save is
+refused with a message saying so; wait for the job to finish (a re-extract usually
+takes under a minute) and save again. A job that has already written the document,
+or one that started more than six hours ago, does not block the save.
 
 The API follows the same rule. `reextractTestSetDocument` takes an optional
 `sectionId` with `documentClass` to re-extract one section. A `documentClass` without

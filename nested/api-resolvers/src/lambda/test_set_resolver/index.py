@@ -2627,6 +2627,19 @@ def update_test_set_document_sections(args, event=None):
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
+    in_flight = _label_job_to_write(test_set_id, object_key)
+    if in_flight:
+        # The harvest writes the run's sections over the baseline: a whole-document
+        # run would overwrite this grouping and prune the sections it adds, and a
+        # section-scoped run would fail on it (#1728).
+        raise ValueError(
+            f"'{object_key}' is being re-extracted or draft-labeled right now (job "
+            f"{in_flight.get('jobId')}), and a page grouping saved before that "
+            "finishes would be overwritten by it or make it fail. Wait for it to "
+            "finish (a re-extract usually takes under a minute), then open Edit "
+            "Page Grouping again."
+        )
+
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
     if not existing:
@@ -2735,6 +2748,43 @@ def update_test_set_document_sections(args, event=None):
             for position, section in enumerate(ordered, start=1)
         ],
     }
+
+
+def _label_job_to_write(test_set_id, object_key):
+    """The labeling job that is still to write ``object_key``'s labels, or None.
+
+    A job counts while it is in flight, names the document (a job with no
+    ``objectKeys`` covered the whole set) and has neither written nor given up on
+    it. The job is harvested first, so a run that has finished but that nobody has
+    polled since does not count. A job past :data:`STALE_LABEL_JOB_HOURS` does not
+    count either: the harvest gives up on its missing documents at that age, and a
+    job stuck in flight must not block the document for good.
+    """
+    for job in reversed(_label_jobs(test_set_id)):
+        if job.get("status") in ("COMPLETED", "FAILED"):
+            continue
+        keys = job.get("objectKeys") or []
+        if keys and object_key not in keys:
+            continue
+        if _label_job_is_stale(job):
+            continue
+        try:
+            job = _harvest_label_job(
+                job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
+            )
+        except Exception as e:  # noqa: BLE001 — judged on the stored state instead
+            logger.warning(
+                f"Could not advance labeling job {job.get('jobId')} before "
+                f"re-grouping {object_key}: {e}"
+            )
+        if job.get("status") in ("COMPLETED", "FAILED"):
+            continue
+        if object_key in (job.get("harvestedFiles") or []) or object_key in (
+            job.get("failedFiles") or []
+        ):
+            continue
+        return job
+    return None
 
 
 def _single_section_keys_for_forced_class(test_set_bucket, test_set_id, object_key):
